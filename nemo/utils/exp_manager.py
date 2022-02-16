@@ -756,18 +756,6 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         self.best_model_path = best_k_models[0]
         self.best_model_score = self.best_k_models[self.best_model_path]
 
-    # TODO remove _save_last_checkpoint after fix for issue #https://github.com/PyTorchLightning/pytorch-lightning/issues/11451
-    def _save_last_checkpoint(self, trainer, monitor_candidates) -> None:
-        if not self.save_last:
-            return
-
-        filepath = self.format_checkpoint_name(monitor_candidates, self.CHECKPOINT_NAME_LAST)
-        if self.last_model_path and self.last_model_path != filepath:
-            trainer.training_type_plugin.remove_checkpoint(self.last_model_path)
-
-        self.last_model_path = filepath
-        trainer.save_checkpoint(filepath, self.save_weights_only)
-
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         # output = None
         output = super().on_save_checkpoint(trainer, pl_module, checkpoint)

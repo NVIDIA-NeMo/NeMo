@@ -36,6 +36,8 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 2) `Buffered_Transducer_Inference`: In this notebook, we explore a simple algorithm to perform streaming audio recognition in a buffered manner for Transducer models. This enables the use of transducers on very long speech segments, similar to CTC models.
 
+3) `Buffered_Transducer_Inference_with_LCS_Merge`: This is an optional notebook, that discusses a different merge algorithm that can be utilized for streaming/buffered inference for Transducer models. It is not a required tutorial, but is useful for researchers who wish to analyse and improve buffered inference algorithms.
+
 ----------------
 
 # Speech Command Recognition

@@ -22,6 +22,7 @@ import torch
 from omegaconf import DictConfig
 from omegaconf.omegaconf import open_dict
 from pytorch_lightning import Trainer
+from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset
 from nemo.collections.asr.data.audio_to_label_dataset import get_tarred_speech_label_dataset
@@ -444,3 +445,36 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         else:
             logging.info(" two audio files are from different speakers")
             return False
+
+    @staticmethod
+    @torch.no_grad()
+    def get_batch_embeddings(speaker_model, manifest_filepath, batch_size=32, sample_rate=16000, device='cuda'):
+
+        speaker_model.eval()
+        if device == 'cuda':
+            speaker_model.to(device)
+
+        featurizer = WaveformFeaturizer(sample_rate=sample_rate)
+        dataset = AudioToSpeechLabelDataset(manifest_filepath=manifest_filepath, labels=None, featurizer=featurizer)
+
+        dataloader = torch.utils.data.DataLoader(
+            dataset=dataset, batch_size=batch_size, collate_fn=dataset.fixed_seq_collate_fn,
+        )
+
+        all_logits = []
+        all_labels = []
+        all_embs = []
+
+        for test_batch in tqdm(dataloader):
+            if device == 'cuda':
+                test_batch = [x.to(device) for x in test_batch]
+            audio_signal, audio_signal_len, labels, _ = test_batch
+            logits, embs = speaker_model.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+
+            all_logits.extend(logits.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_embs.extend(embs.cpu().numpy())
+
+        all_logits, true_labels, all_embs = np.asarray(all_logits), np.asarray(all_labels), np.asarray(all_embs)
+
+        return all_embs, all_logits, true_labels, dataset.id2label

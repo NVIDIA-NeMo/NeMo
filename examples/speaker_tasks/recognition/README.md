@@ -44,7 +44,7 @@ We provide generic scripts for manifest file creation, embedding extraction, Vox
 We explain here the process for voxceleb EER calculation on voxceleb-O cleaned [trail file](https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt)
 
 ### Manifest Creation
-We first generate manifest file to get embeddings, The embeddings are then used by `voxceleb_eval.py` script to get EER  
+We first generate manifest file to get embeddings. The embeddings are then used by `voxceleb_eval.py` script to get EER  
 
 ```bash
 # create list of files from voxceleb1 test folder (40 speaker test set)
@@ -70,12 +70,13 @@ python voxceleb_eval.py --trial_file='/path/to/trail/file' --emb='./embeddings/v
 The above command gives the performance of models on voxceleb-o cleaned trial file. 
 
 ### SpeakerID inference
+Using data from an enrollment set, one can infer labels on a test set using various backends such as cosine-similarity or a neural classifier.
 
-To infer speaker labels on a model trained with known speaker labels (or fine tuned using pretrained model)
+To infer speaker labels using cosine_similarity backend
 ```bash 
-python speaker_reco_infer.py --spkr_model='/path/to/.nemo/file' --train_manifest='/path/to/train/manifest/file'
---test_manifest='/path/to/test/manifest/file'
+python speaker_identification_infer.py data.enrollment_manifest=<path/to/enrollment_manifest> data.test_manifest=<path/to/test_manifest> backend.backend_model=cosine_similarity
 ``` 
+refer to conf/speaker_identification_infer.yaml for more options.
 
 ## Voxceleb Data Preparation
 

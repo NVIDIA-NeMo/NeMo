@@ -2085,50 +2085,44 @@ pipeline {
             16"
       }
     }
-  // # TODO uncomment once prompt tuning works with apex fwd/bwd functions
-  //   stage('L2: Megatron GPT Prompt Tuning and Inference') {
-  //     when {
-	// anyOf {
-	//   branch 'main'
-	//   changeRequest target: 'main'
-	// }
-  //     }
-  //     failFast true
-  //     steps {
-	// sh "python tests/collections/nlp/test_prompt_tuning.py"
-	// sh "python examples/nlp/language_modeling/megatron_gpt_prompt_tuning.py \
-	//    --config-name=megatron_gpt_config \
-	//    trainer.gpus=1 \
-	//    trainer.max_steps=10 \
-	//    trainer.val_check_interval=1 \
-	//    exp_manager.name='megatron_gpt125M_prompt_tuning' \
-	//    exp_manager.checkpoint_callback_params.save_top_k=2 \
-	//    exp_manager.checkpoint_callback_params.save_nemo_on_train_end=True \
-	//    restore_from_path='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
-	//    +model.use_soft_prompts=True \
-	//    +model.num_prompt_tokens=10 \
-  //          +model.new_prompt_tags=['Winogrande, BoolQ'] \
-	//    +model.new_prompt_init_text=['logic choose person name, None'] \
-	//    +model.new_prompt_init_methods=['text, random'] \
-  //          model.data.data_prefix=None \
-	//    +model.data.train_ds='/home/TestData/nlp/prompt_tuning/wino_bool_prompt_tuning_train.json' \
-	//    +model.data.valid_ds='/home/TestData/nlp/prompt_tuning/wino_bool_prompt_tuning_val.json' \
-	//    +model.data.test_ds='/home/TestData/nlp/prompt_tuning/wino_bool_prompt_tuning_val.json' \
-	//    +model.data.batch_size=8 \
-	//    model.optim.lr=2e-2 \
-	//    model.optim.sched.min_lr=2e-3 \
-	//    model.optim.sched.warmup_steps=2 \
-	//    model.optim.sched.constant_steps=8 \
-	//    model.encoder_seq_length=2048"
-	// sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-	//     --use_soft_prompts \
-	//     --model_file=nemo_experiments/megatron_gpt125M_prompt_tuning/checkpoints/megatron_gpt125M_prompt_tuning.nemo \
-	//     --tokens_to_generate=3 \
-	//     --prompt_tag='Winogrande' \
-	//     --prompt='option1: wood option2: bag sentence: The _ is soft. answer:'"
-	// sh "rm -rf nemo_experiments"
-  //     }
-  //   }
+  
+    stage('L2: Megatron GPT Prompt Tuning and Inference') {
+      when {
+	anyOf {
+	  branch 'main'
+	  changeRequest target: 'main'
+	}
+      }
+      failFast true
+      steps {
+	sh "python tests/collections/nlp/test_prompt_tuning.py"
+	sh "python examples/nlp/language_modeling/megatron_gpt_prompt_tuning.py \
+    --config-name=megatron_prompt_tuning_gpt \
+    restore_from_path='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
+    trainer.val_check_interval=2 \
+    trainer.max_steps=5 \
+    model.new_prompt_tags=['Winogrande, BoolQ'] \
+    model.new_prompt_init_text=['logic choose person name, None'] \
+    model.new_prompt_init_methods=['text, random'] \
+    model.data.train_ds='/home/TestData/nlp/prompt_tuning/wino_bool_prompt_tuning_train.json' \
+    model.data.valid_ds='/home/TestData/nlp/prompt_tuning/wino_bool_prompt_tuning_val.json' \
+    +model.data.test_ds='/home/TestData/nlp/prompt_tuning/wino_bool_prompt_tuning_val.json' \
+    model.micro_batch_size=2 \
+    model.global_batch_size=4 \
+    model.optim.lr=2e-2 \
+    model.optim.sched.min_lr=2e-3 \
+    model.optim.sched.warmup_steps=2 \
+    model.optim.sched.constant_steps=8 \
+    model.encoder_seq_length=2048"
+	sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
+	    --use_soft_prompts \
+	    --model_file=nemo_experiments/PromptTuning/checkpoints/PromptTuning.nemo \
+	    --tokens_to_generate=3 \
+	    --prompt_tag='Winogrande' \
+	    --prompt='option1: wood option2: bag sentence: The _ is soft. answer:'"
+	sh "rm -rf nemo_experiments"
+      }
+    }
 
 
     stage('L2: Megatron GPT Convert from Megatron-LM checkpoing and Eval') {

@@ -1,40 +1,40 @@
-name: megatron_gpt
-restore_from_path: null # used when starting from a .nemo file
+name: PromptTuning
+restore_from_path: ???  # used when starting from a .nemo file
 
 trainer:
   gpus: 1
   num_nodes: 1
   accelerator: ddp
-  precision: 16
+  precision: 32
   logger: False # logger provided by exp_manager
   checkpoint_callback: False
   replace_sampler_ddp: False
   max_epochs: null
-  max_steps: 100000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  max_steps: 1000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
-  val_check_interval: 100
+  val_check_interval: 50
   limit_val_batches: 50
   limit_test_batches: 500
   accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
-  gradient_clip_val: 1.0
+  gradient_clip_val: null
 
 exp_manager:
   explicit_log_dir: null
   exp_dir: null
-  name: megatron_gpt
+  name: PromptTuning
   create_wandb_logger: False
   wandb_logger_kwargs:
-    project: null
-    name: null
+    project: None
+    name: None
   resume_if_exists: True
   resume_ignore_no_checkpoint: True
   create_checkpoint_callback: True
   checkpoint_callback_params:
     monitor: val_loss
-    save_top_k: 10
+    save_top_k: 3
     mode: min
     always_save_nemo: False # saves nemo file during validation, not implemented for model parallel
-    save_nemo_on_train_end: False # not recommended when training large models on clusters with short time limits
+    save_nemo_on_train_end: True # not recommended when training large models on clusters with short time limits
     filename: 'megatron_gpt--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
@@ -43,12 +43,12 @@ model:
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
   micro_batch_size: 4 # limited by GPU memory
-  global_batch_size: 8 # will use more micro batches to reach global batch size
+  global_batch_size: 16 # will use more micro batches to reach global batch size
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
 
   # model architecture
-  encoder_seq_length: 512
+  encoder_seq_length: 2048
   max_position_embeddings: ${.encoder_seq_length}
   num_layers: 12
   hidden_size: 768
@@ -63,7 +63,7 @@ model:
   pre_process: True # add embedding
   post_process: True # add pooler
   persist_layer_norm: True # Use of persistent fused layer norm kernel.
-  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+  gradient_as_bucket_view: False # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
 
   tokenizer:
     library: 'megatron'
@@ -71,6 +71,16 @@ model:
     model: null
     vocab_file: null
     merge_file: null 
+
+  # Prompt Tuning
+  use_soft_prompts: True
+  num_prompt_tokens: 150
+  existing_prompt_tags: []
+  new_prompt_tags: ???
+  new_prompt_init_text: ['some initialization text goes here']
+  new_prompt_init_methods: ['text']
+  calc_loss_on_answer_only: False
+
 
   # precision
   native_amp_init_scale: 4294967296 # 2 ** 32
@@ -92,15 +102,9 @@ model:
   activations_checkpoint_num_layers: 1 
 
   data:
-    # Path to data must be specified by the user.
-    # can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
-    # Or see example below: 
-    # data_prefix: 
-    #   - .5
-    #   - /raid/data/pile/my-gpt3_00_text_document
-    #   - .5
-    #   - /raid/data/pile/my-gpt3_01_text_document
-    data_prefix: ???
+    data_prefix: None
+    train_ds: ???
+    valid_ds: ???
     data_impl: mmap
     splits_string: 900,50,50
     seq_length: ${model.encoder_seq_length}
@@ -120,6 +124,6 @@ model:
     - 0.98
     sched:
       name: CosineAnnealing
-      warmup_steps: 500
-      constant_steps: 50000
+      warmup_steps: 50
+      constant_steps: 10
       min_lr: 2e-5

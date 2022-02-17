@@ -101,7 +101,7 @@ class GPTModel(MegatronModule):
         onnx_safe=False,
         use_soft_prompts=False,
         num_prompt_tokens=10,
-        prompt_tags=None,
+        existing_prompt_tags=None,
     ):
 
         super(GPTModel, self).__init__()
@@ -147,7 +147,7 @@ class GPTModel(MegatronModule):
             onnx_safe=onnx_safe,
             use_soft_prompts=use_soft_prompts,
             num_prompt_tokens=num_prompt_tokens,
-            prompt_tags=prompt_tags,
+            existing_prompt_tags=existing_prompt_tags,
         )
 
         self.initialize_word_embeddings(
@@ -164,7 +164,7 @@ class GPTModel(MegatronModule):
         position_ids,
         attention_mask,
         labels=None,
-        prompt_tags=None,
+        prompt_ids=None,
         tokentype_ids=None,
         layer_past=None,
         get_key_value=False,
@@ -176,7 +176,7 @@ class GPTModel(MegatronModule):
             input_ids,
             position_ids,
             attention_mask,
-            prompt_tags=prompt_tags,
+            prompt_ids=prompt_ids,
             layer_past=layer_past,
             get_key_value=get_key_value,
             encoder_input=encoder_input,
@@ -219,8 +219,8 @@ class GPTModel(MegatronModule):
             state_dict = state_dict[self._language_model_key]
         self.language_model.load_state_dict(state_dict, strict=strict)
 
-    def _init_prompt_from_random(self, prompt_tag):
-        self.language_model._init_prompt_from_random(prompt_tag)
+    def _init_prompt_from_random(self, prompt_tag, prompt_id):
+        self.language_model._init_prompt_from_random(prompt_tag, prompt_id)
 
-    def _init_prompt_from_text(self, prompt_tag, init_token_ids):
-        self.language_model._init_prompt_from_text(prompt_tag, init_token_ids)
+    def _init_prompt_from_text(self, prompt_tag, prompt_id, init_token_ids):
+        self.language_model._init_prompt_from_text(prompt_tag, prompt_id, init_token_ids)

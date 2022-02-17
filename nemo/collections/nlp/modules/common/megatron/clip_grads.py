@@ -67,6 +67,9 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2):
         if grad_not_none and is_not_shared and is_not_tp_duplicate:
             grads_for_norm.append(grad)
 
+    if not grads_for_norm:
+        raise ValueError("No grads found, please disable gradient clipping")
+
     # Norm parameters.
     max_norm = float(max_norm)
     norm_type = float(norm_type)

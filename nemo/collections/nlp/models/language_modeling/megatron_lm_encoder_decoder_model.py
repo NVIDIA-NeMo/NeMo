@@ -266,7 +266,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         keys = ['text_enc', 'text_dec', 'labels', 'loss_mask', 'enc_mask', 'dec_mask']
         datatype = torch.int64
-
         data = batch
         data_b = tensor_parallel.broadcast_data(keys, data, datatype)
 

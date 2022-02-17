@@ -39,8 +39,13 @@ import time
 import numpy as np
 import torch
 
+from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
+    get_datasets_weights_and_num_samples,
+    get_train_valid_test_split_,
+)
 from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import make_dataset as make_indexed_dataset
+from nemo.collections.nlp.data.language_modeling.megatron.lm_adapted_t5_dataset import T5LMAdaptedDataset
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
 
@@ -57,38 +62,9 @@ except (ImportError, ModuleNotFoundError):
 DSET_TYPE_BERT = 'standard_bert'
 DSET_TYPE_ICT = 'ict'
 DSET_TYPE_T5 = 't5'
+DSET_TYPE_T5_LM = 't5_prefix_lm'
 
-DSET_TYPES = [DSET_TYPE_BERT, DSET_TYPE_ICT, DSET_TYPE_T5]
-
-
-def get_datasets_weights_and_num_samples(data_prefix, train_valid_test_num_samples):
-
-    # The data prefix should be in the format of:
-    #   weight-1, data-prefix-1, weight-2, data-prefix-2, ..
-    assert len(data_prefix) % 2 == 0
-    num_datasets = len(data_prefix) // 2
-    weights = [0] * num_datasets
-    prefixes = [0] * num_datasets
-    for i in range(num_datasets):
-        weights[i] = float(data_prefix[2 * i])
-        prefixes[i] = (data_prefix[2 * i + 1]).strip()
-    # Normalize weights
-    weight_sum = 0.0
-    for weight in weights:
-        weight_sum += weight
-    assert weight_sum > 0.0
-    weights = [weight / weight_sum for weight in weights]
-
-    # Add 0.5% (the 1.005 factor) so in case the bleding dataset does
-    # not uniformly distribute the number of samples, we still have
-    # samples left to feed to the network.
-    datasets_train_valid_test_num_samples = []
-    for weight in weights:
-        datasets_train_valid_test_num_samples.append(
-            [int(math.ceil(val * weight * 1.005)) for val in train_valid_test_num_samples]
-        )
-
-    return prefixes, weights, datasets_train_valid_test_num_samples
+DSET_TYPES = [DSET_TYPE_BERT, DSET_TYPE_ICT, DSET_TYPE_T5, DSET_TYPE_T5_LM]
 
 
 def compile_helper():
@@ -634,6 +610,8 @@ def _build_train_valid_test_datasets(
             )
 
             if dataset_type == DSET_TYPE_ICT:
+                raise NotImplementedError("ICT dataset is not implemented yet.")
+                '''
                 dataset = ICTDataset(
                     block_dataset=indexed_dataset,
                     title_dataset=title_dataset,
@@ -642,8 +620,10 @@ def _build_train_valid_test_datasets(
                     binary_head=binary_head,
                     **kwargs,
                 )
+                '''
             elif dataset_type == DSET_TYPE_T5:
                 assert tokenizer is not None, "Tokenizer is required for T5 dataset"
+                logging.info("Instatiating T5 Dataset ...")
                 dataset = T5Dataset(
                     cfg=cfg,
                     trainer=trainer,
@@ -661,12 +641,25 @@ def _build_train_valid_test_datasets(
                     **kwargs,
                 )
             elif dataset_type == DSET_TYPE_BERT:
+                logging.info("Instatiating BERT Dataset ...")
                 dataset = BertDataset(
                     indexed_dataset=indexed_dataset,
                     masked_lm_prob=masked_lm_prob,
                     short_seq_prob=short_seq_prob,
                     binary_head=binary_head,
                     tokenizer=tokenizer,
+                    **kwargs,
+                )
+            elif dataset_type == DSET_TYPE_T5_LM:
+                documents = np.arange(start=splits[index], stop=splits[index + 1], step=1, dtype=np.int32)
+                logging.info("Instatiating T5 Prefix-LM Dataset ...")
+                dataset = T5LMAdaptedDataset(
+                    cfg=cfg,
+                    trainer=trainer,
+                    tokenizer=tokenizer,
+                    documents=documents,
+                    indexed_dataset=indexed_dataset,
+                    num_samples=int(train_valid_test_num_samples[index]),
                     **kwargs,
                 )
             else:
@@ -700,33 +693,6 @@ def get_indexed_dataset_(data_prefix, data_impl, skip_warmup):
     logging.info('    number of sentences: {}'.format(indexed_dataset.sizes.shape[0]))
 
     return indexed_dataset
-
-
-def get_train_valid_test_split_(splits_string, size):
-    """ Get dataset splits from comma or '/' separated string list."""
-
-    splits = []
-    if splits_string.find(',') != -1:
-        splits = [float(s) for s in splits_string.split(',')]
-    elif splits_string.find('/') != -1:
-        splits = [float(s) for s in splits_string.split('/')]
-    else:
-        splits = [float(splits_string)]
-    while len(splits) < 3:
-        splits.append(0.0)
-    splits = splits[:3]
-    splits_sum = sum(splits)
-    assert splits_sum > 0.0
-    splits = [split / splits_sum for split in splits]
-    splits_index = [0]
-    for index, split in enumerate(splits):
-        splits_index.append(splits_index[index] + int(round(split * float(size))))
-    diff = splits_index[-1] - size
-    for index in range(1, len(splits_index)):
-        splits_index[index] -= diff
-    assert len(splits_index) == 4
-    assert splits_index[-1] == size
-    return splits_index
 
 
 def get_samples_mapping(

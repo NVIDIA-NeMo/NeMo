@@ -108,6 +108,7 @@ model:
     num_workers: 0
     dataloader_type: single # cyclic
     masked_lm_prob: 0.15
+    dataset_type: 't5'
     short_seq_prob: 0.0
     max_ngram_size: 10
     mean_ngram_size: null

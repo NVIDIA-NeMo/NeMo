@@ -14,13 +14,13 @@
 
 """Gradient clipping."""
 
-import amp_C
 import torch
 from torch._six import inf
 
 from nemo.collections.nlp.modules.common.megatron.module import param_is_not_shared
 
 try:
+    import amp_C
     from apex.multi_tensor_apply import multi_tensor_applier
     from apex.transformer import parallel_state
     from apex.transformer.tensor_parallel.layers import param_is_not_tensor_parallel_duplicate

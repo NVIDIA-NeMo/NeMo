@@ -28,6 +28,18 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 
+class ApexGuardDefaults(object):
+    """
+    This class can be used to replace missing classes when apex is missing.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def __getattr__(self, item):
+        return None
+
+
 def parallel_lm_logits(input_, word_embeddings_weight, parallel_output, bias=None):
     """LM logits using word embedding weights."""
     # Parallel logits.

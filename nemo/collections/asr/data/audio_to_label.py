@@ -605,7 +605,7 @@ class _TarredAudioLabelDataset(IterableDataset):
                 self.iterator = iterator
                 self.collection = collection
                 self.file_occurence = file_occurence
-                self._iterable = None
+                self._iterable = self._internal_generator()
 
             def __iter__(self):
                 self._iterable = self._internal_generator()

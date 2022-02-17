@@ -26,7 +26,6 @@ class TestASRDatasets:
     labels = ["fash", "fbbh", "fclc"]
     unique_labels_in_seq = ['0', '1', '2', '3', "zero", "one", "two", "three"]
 
-    @pytest.mark.skip("This test is failing inside 22.01 container.")
     @pytest.mark.unit
     def test_tarred_dataset(self, test_data_dir):
         manifest_path = os.path.abspath(os.path.join(test_data_dir, 'asr/tarred_an4/tarred_audio_manifest.json'))
@@ -54,7 +53,6 @@ class TestASRDatasets:
             count += 1
         assert count == 32
 
-    @pytest.mark.skip("This test is failing inside 22.01 container.")
     @pytest.mark.unit
     def test_tarred_dataset_duplicate_name(self, test_data_dir):
         manifest_path = os.path.abspath(

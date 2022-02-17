@@ -22,6 +22,13 @@ import torch.nn as nn
 
 from nemo.utils import logging
 
+try:
+    import onnxruntime
+
+    ort_available = True
+except (ImportError, ModuleNotFoundError):
+    ort_available = False
+
 
 class ExportFormat(Enum):
     """Which format to use when exporting a Neural Module for deployment"""
@@ -110,29 +117,14 @@ def verify_runtime(
 ):
     # Verify the model can be read, and is valid
     onnx_model = onnx.load(output)
-    try:
-        import onnxruntime
-    except (ImportError, ModuleNotFoundError):
-        logging.warning(f"ONNX generated at {output}, not verified - please install onnxruntime.\n")
+    global ort_available
+    if not ort_available:
+        logging.warning(f"ONNX generated at {output}, not verified - please install onnxruntime_gpu package.\n")
         onnx.checker.check_model(onnx_model, full_check=True)
         return
 
     onnx_session_opt = onnxruntime.SessionOptions()
     onnx_session_opt.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-    providers = [
-        (
-            'CUDAExecutionProvider',
-            {
-                'device_id': 0,
-                'arena_extend_strategy': 'kNextPowerOfTwo',
-                'gpu_mem_limit': 16 * 1024 * 1024 * 1024,
-                'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                # 'do_copy_in_default_stream': True,
-            },
-        )
-    ]
-
     sess = onnxruntime.InferenceSession(
         onnx_model.SerializeToString(), sess_options=onnx_session_opt, providers=['CUDAExecutionProvider']
     )
@@ -262,9 +254,9 @@ def replace_modules(
 
 default_replacements = {
     "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
+    "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),
+    "LayerNorm": wrap_module(nn.LayerNorm, CastToFloat),
 }
-
-default_replacements.update(default_Apex_replacements)
 
 
 def replace_for_export(model: nn.Module) -> nn.Module:
@@ -277,4 +269,5 @@ def replace_for_export(model: nn.Module) -> nn.Module:
     Returns:
         model, possibly modified in-place
     """
+    replace_modules(model, default_Apex_replacements)
     replace_modules(model, default_replacements)

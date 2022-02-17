@@ -95,7 +95,6 @@ class ConformerLayer(torch.nn.Module):
         Returns:
             x (torch.Tensor): (B, T, d_model)
         """
-        dtype = x.dtype
         residual = x
         x = self.norm_feed_forward1(x)
         x = self.feed_forward1(x)
@@ -119,7 +118,7 @@ class ConformerLayer(torch.nn.Module):
         residual = residual + self.dropout(x) * self.fc_factor
 
         x = self.norm_out(residual)
-        return x.to(dtype=dtype)
+        return x
 
 
 class ConformerConvolution(nn.Module):

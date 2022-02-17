@@ -127,10 +127,10 @@ def nemo_export(argv):
         if args.autocast:
             autocast = torch.cuda.amp.autocast
         with autocast(), torch.inference_mode():
-            logging.info(f"Exporting model with autocast={args.autocast}")
-
+            logging.info(f"Getting output example")
             input_list, input_dict = parse_input_example(input_example)
             output_example = forward_method(model)(*input_list, **input_dict)
+            logging.info(f"Exporting model with autocast={args.autocast}")
             input_names = model.input_names
             output_names = model.output_names
 

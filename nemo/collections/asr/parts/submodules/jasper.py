@@ -374,9 +374,13 @@ class MaskedConv1d(nn.Module):
 
         return out, lens
 
-    def update_masked_length(self, max_len, device):
-        self.lens, self.max_len = _masked_conv_init_lens(self.lens, max_len, self.max_len)
-        self.lens = self.lens.to(device)
+    def update_masked_length(self, max_len, seq_range=None, device=None):
+        if seq_range is None:
+            self.lens, self.max_len = _masked_conv_init_lens(self.lens, max_len, self.max_len)
+            self.lens = self.lens.to(device)
+        else:
+            self.lens = seq_range
+            self.max_len = max_len
 
     def mask_input(self, x, lens):
         max_len = x.size(2)
@@ -462,17 +466,21 @@ class SqueezeExcite(nn.Module):
         self.change_context_window(context_window=context_window)
 
         # Set default max sequence length
-        self.set_max_len(1)
+        self.set_max_len(16)
 
     def forward(self, x, lengths):
         return self.forward_for_export(x, lengths)
 
     def forward_for_export(self, x, lengths):
         # The use of negative indices on the transpose allow for expanded SqueezeExcite
+        max_len = x.shape[-1]
+        if max_len > self.max_len:
+            self.set_max_len(max_len)
+        dtype = x.dtype
         # Computes in float32 to avoid instabilities during training with AMP.
         with torch.cuda.amp.autocast(enabled=False):
             # Create sample mask - 1 represents value, 0 represents pad
-            mask = self.make_pad_mask(lengths, max_audio_length=x.shape[-1], device=x.device)
+            mask = self.make_pad_mask(lengths, max_audio_length=max_len, device=x.device)
             mask = ~mask  # 0 represents value, 1 represents pad
             x = x.float()  # For stable AMP, SE must be computed at fp32.
             x.masked_fill_(mask, 0.0)  # mask padded values explicitly to 0
@@ -481,12 +489,12 @@ class SqueezeExcite(nn.Module):
             y = self.fc(y)  # [B, 1, C]
             y = y.transpose(1, -1)  # [B, C, 1]
 
-        # Note: Keep for future, in case we improve WER from doing so.
-        # if self.context_window >= 0:
-        #     y = F.interpolate(y, size=x.shape[-1], mode=self.interpolation_mode)
+            # Note: Keep for future, in case we improve WER from doing so.
+            # if self.context_window >= 0:
+            #     y = F.interpolate(y, size=x.shape[-1], mode=self.interpolation_mode)
 
-        y = torch.sigmoid(y)
-        y = x * y
+            y = torch.sigmoid(y)
+            y = x * y
         return y, lengths
 
     def _se_pool_step(self, x, mask):
@@ -506,28 +514,29 @@ class SqueezeExcite(nn.Module):
                 y = _se_pool_step_script_infer(x, self.context_window, mask)
         return y
 
-    def set_max_len(self, max_len):
+    def set_max_len(self, max_len, seq_range=None):
         """ Sets maximum input length.
             Pre-calculates internal seq_range mask.
         """
         self.max_len = max_len
-        device = next(self.parameters()).device
-        seq_range = torch.arange(0, self.max_len, device=device)
-        self.register_buffer('seq_range', seq_range, persistent=False)
+        if seq_range is None:
+            device = next(self.parameters()).device
+            seq_range = torch.arange(0, self.max_len, device=device)
+        if hasattr(self, 'seq_range'):
+            self.seq_range = seq_range
+        else:
+            self.register_buffer('seq_range', seq_range, persistent=False)
 
     def make_pad_mask(self, seq_lens, max_audio_length, device=None):
         """Make masking for padding."""
         if device and self.seq_range.device != device:
             self.seq_range = self.seq_range.to(device)
-
         if self.seq_range.device != seq_lens.device:
             seq_lens = seq_lens.to(self.seq_range.device)
 
         mask = self.seq_range[:max_audio_length].expand(seq_lens.size(0), -1) < seq_lens.unsqueeze(-1)  # [B, T]; bool
         mask = mask.unsqueeze(1)  # [B, 1, T]
 
-        if device and mask.device != device:
-            mask = mask.to(device)
         return mask
 
     def change_context_window(self, context_window: int):

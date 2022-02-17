@@ -194,6 +194,8 @@ def main():
     print("***************************")
     print(response)
     print("***************************")
+    if args.prompt and not args.compute_logprobs:
+        print(f'Prompt: {args.prompt}\n\nResponse: {response[0][0][0]}')
 
 
 if __name__ == '__main__':

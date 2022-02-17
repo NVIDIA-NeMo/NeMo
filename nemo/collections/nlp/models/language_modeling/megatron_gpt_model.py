@@ -54,7 +54,7 @@ try:
         forward_backward_pipelining_without_interleaving,
     )
     from apex.transformer.pipeline_parallel.schedules.fwd_bwd_no_pipelining import forward_backward_no_pipelining
-    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches, _reconfigure_microbatch_calculator
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -385,6 +385,20 @@ class MegatronGPTModel(NLPModel):
             return output_tensor, loss_func
 
         return fwd_output_and_loss_func
+
+    def get_forward_output_only_func(self):
+        def fwd_output_only_func(batch, model):
+            batch = [x.cuda() for x in batch]
+            tokens, attention_mask, position_ids = batch
+            attention_mask = attention_mask[0:1]
+            output_tensor = model(tokens, position_ids, attention_mask)
+
+            def id_func(output_tensor):
+                return output_tensor, {'logits': output_tensor}
+
+            return output_tensor, id_func
+
+        return fwd_output_only_func
 
     def validation_step(self, batch, batch_idx):
         """
@@ -828,9 +842,14 @@ class MegatronGPTModel(NLPModel):
                 * offsets: list of tokens start positions in text
                 
         """
-        # TODO: Add raise with message to use previous commit ID / version of NeMo
-        if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
-            raise ValueError('complete method is not yet supported for pipeline')
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=1,
+            micro_batch_size=1,
+            data_parallel_size=1,
+        )
 
         results = []
         request_tokens = request["tokens"]
@@ -839,6 +858,8 @@ class MegatronGPTModel(NLPModel):
 
             # For prompt tuned GPT models
             if self.use_soft_prompts:
+                if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+                    raise ValueError('complete method is not yet supported for pipeline with soft prompts')
                 prompt_tags = request["prompt_tags"][idx]
             else:
                 prompt_tags = None
@@ -871,26 +892,54 @@ class MegatronGPTModel(NLPModel):
                         eod_mask_loss=self.cfg.get('eod_mask_loss', False),
                     )
 
-                # get output tensor
-                # No labels during inference. Still need masks to not attend to the right
-                output_tensor = self(tokens, position_ids, attention_mask, prompt_tags=prompt_tags, labels=None)
-                output_tensor = tensor_parallel.gather_from_tensor_model_parallel_region(output_tensor)
+                batch = [tokens, attention_mask, position_ids]
+                tensor_shape = [tokens.shape[1], 1, self.cfg.hidden_size]
+                if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+                    output_tensor = forward_backward_pipelining_without_interleaving(
+                        forward_step_func=self.get_forward_output_only_func(),
+                        batch=batch,
+                        model=self.model,
+                        forward_only=True,
+                        tensor_shape=tensor_shape,
+                        dtype=self.autocast_dtype,
+                    )
+                else:
+                    output_tensor = forward_backward_no_pipelining(
+                        forward_step_func=self.get_forward_output_only_func(),
+                        batch=batch,
+                        model=self.model,
+                        forward_only=True,
+                        tensor_shape=tensor_shape,
+                        dtype=self.autocast_dtype,
+                    )
 
-                log_probs, token_ids = torch.max(logsoftmaxlayer(output_tensor), dim=-1)
-                reached_eos = token_ids[0, -1].item() == self.tokenizer.eos_id
-                tokens = torch.cat([tokens, torch.unsqueeze(token_ids[:, -1], 1)], dim=1)
+                # get output tensor
+                if parallel_state.is_pipeline_last_stage():
+                    output_tensor = output_tensor[0]['logits']
+                    output_tensor = tensor_parallel.gather_from_tensor_model_parallel_region(output_tensor)
+
+                    log_probs, token_ids = torch.max(logsoftmaxlayer(output_tensor), dim=-1)
+                    tokens = torch.cat([tokens, torch.unsqueeze(token_ids[:, -1], 1)], dim=1)
+                else:
+                    log_probs = torch.zeros((tokens.shape[0], tokens.shape[1]), dtype=torch.float).cuda()
+                    tokens = torch.zeros((tokens.shape[0], tokens.shape[1] + 1), dtype=tokens.dtype).cuda()
+
+                torch.distributed.broadcast(tokens, get_last_rank())
+                torch.distributed.broadcast(log_probs, get_last_rank())
 
             # add to results as (text, tokens, log_probs, offsets)
             for token, prob in zip(tokens, log_probs.tolist()):
                 results.append(
-                    (self.tokenizer.ids_to_text(token[:-1]), self.tokenizer.ids_to_tokens(token[:-1]), prob, [0])
+                    (self.tokenizer.ids_to_text(token[:-1]), self.tokenizer.ids_to_tokens(token[:-1]), prob, [0],)
                 )
+
         # offsets calculation
         for item in results:
             for index, token in enumerate(item[1]):
                 if index != len(item[1]) - 1:
                     item[3].append(len(token) + item[3][-1])
-        # returnprompts in order they were inputted
+
+        # return prompts in the order that they were input
         response = [0 for i in range(len(positions))]
         for item, index in zip(results, positions):
             response[index] = item
@@ -914,13 +963,23 @@ class MegatronGPTModel(NLPModel):
             * log_probs: list of log_softmax's from output_tensor in respect to text tokens
             * offsets: list of tokens start positions in text
         """
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=1,
+            micro_batch_size=1,
+            data_parallel_size=1,
+        )
+
         results = []
         request_tokens = request["tokens"]
-        logsoftmaxlayer = torch.nn.LogSoftmax(dim=-1)
         for idx, tokens in enumerate(request_tokens):
             tokens_cut = tokens[:, :-1]
             # For prompt tuned GPT models
             if self.use_soft_prompts:
+                if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+                    raise ValueError('compute_logprobs method is not yet supported for pipeline with soft prompts')
                 prompt_tags = request["prompt_tags"][idx]
             else:
                 prompt_tags = None
@@ -947,8 +1006,39 @@ class MegatronGPTModel(NLPModel):
                     reset_attention_mask=self.cfg.get('reset_attention_mask', False),
                     eod_mask_loss=self.cfg.get('eod_mask_loss', False),
                 )
-            output_tensor = self(tokens_cut, position_ids, attention_mask, prompt_tags=prompt_tags, labels=None)
-            output_tensor = tensor_parallel.gather_from_tensor_model_parallel_region(output_tensor)
+
+            batch = [tokens_cut, attention_mask, position_ids]
+            tensor_shape = [tokens_cut.shape[1], 1, self.cfg.hidden_size]
+            if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+                output_tensor = forward_backward_pipelining_without_interleaving(
+                    forward_step_func=self.get_forward_output_only_func(),
+                    batch=batch,
+                    model=self.model,
+                    forward_only=True,
+                    tensor_shape=tensor_shape,
+                    dtype=self.autocast_dtype,
+                )
+            else:
+                output_tensor = forward_backward_no_pipelining(
+                    forward_step_func=self.get_forward_output_only_func(),
+                    batch=batch,
+                    model=self.model,
+                    forward_only=True,
+                    tensor_shape=tensor_shape,
+                    dtype=self.autocast_dtype,
+                )
+
+            # get output tensor
+            if parallel_state.is_pipeline_last_stage():
+                output_tensor = output_tensor[0]['logits']
+                output_tensor = tensor_parallel.gather_from_tensor_model_parallel_region(output_tensor)
+
+            else:
+                output_tensor = torch.zeros(
+                    (tokens_cut.shape[0], tokens_cut.shape[1], self.padded_vocab_size), dtype=torch.float
+                ).cuda()
+
+            torch.distributed.broadcast(output_tensor, get_last_rank())
 
             log_probs = []
             for output in output_tensor:
@@ -958,6 +1048,7 @@ class MegatronGPTModel(NLPModel):
 
             for token, prob in zip(tokens, log_probs):
                 results.append((self.tokenizer.ids_to_text(token), self.tokenizer.ids_to_tokens(token), prob, [0]))
+
         # offsets calculation
         for item in results:
             for index, token in enumerate(item[1]):

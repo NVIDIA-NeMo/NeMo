@@ -2141,6 +2141,8 @@ pipeline {
         --hparams_file=/home/TestData/nlp/megatron_gpt/data/gpt/iter_0008700/hparams.yaml \
         --nemo_file_path=examples/nlp/language_modeling/small_gpt.nemo \
         --model_type=gpt \
+        --pipeline_model_parallel_size=1 \
+        --gpus_per_node=2 \
         --tensor_model_parallel_size=2"
         sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
         --model_file=examples/nlp/language_modeling/small_gpt.nemo \

@@ -14,7 +14,7 @@
 
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -46,9 +46,11 @@ from nemo.utils import AppState, logging
 
 try:
     from apex.transformer import parallel_state, tensor_parallel
+    from apex.contrib.layer_norm.layer_norm import FastLayerNorm
+    from apex.normalization.fused_layer_norm import FusedLayerNorm  # NOQA
     from apex.transformer.pipeline_parallel.schedules.common import (
         build_model,
-        _get_params_for_weight_decay_optimization,
+        listify_model,
     )
     from apex.transformer.pipeline_parallel.schedules.fwd_bwd_pipelining_without_interleaving import (
         forward_backward_pipelining_without_interleaving,
@@ -59,6 +61,33 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
+
+
+def _get_params_for_weight_decay_optimization(
+    model: Union[torch.nn.Module, List[torch.nn.Module]],
+) -> Dict[str, torch.nn.Parameter]:
+    """Divide params into with-weight-decay and without-weight-decay groups.
+
+    Layernorms and biases will have no weight decay but the rest will.
+    """
+    modules = listify_model(model)
+    weight_decay_params = {'params': []}
+    no_weight_decay_params = {'params': [], 'weight_decay': 0.0}
+    for module in modules:
+        for module_ in module.modules():
+            if isinstance(module_, (FusedLayerNorm, FastLayerNorm)):
+                no_weight_decay_params['params'].extend(
+                    [p for p in list(module_._parameters.values()) if p is not None]
+                )
+            else:
+                weight_decay_params['params'].extend(
+                    [p for n, p in list(module_._parameters.items()) if p is not None and n != 'bias']
+                )
+                no_weight_decay_params['params'].extend(
+                    [p for n, p in list(module_._parameters.items()) if p is not None and n == 'bias']
+                )
+
+    return weight_decay_params, no_weight_decay_params
 
 
 class MegatronGPTModel(NLPModel):

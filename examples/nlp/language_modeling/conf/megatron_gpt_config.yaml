@@ -46,6 +46,7 @@ model:
   global_batch_size: 8 # will use more micro batches to reach global batch size
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
+  resume_from_checkpoint: null # manually set the checkpoint file to load from
 
   # model architecture
   encoder_seq_length: 512

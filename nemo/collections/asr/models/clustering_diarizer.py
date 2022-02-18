@@ -392,7 +392,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         if paths2audio_files:
             if type(paths2audio_files) is list:
-                self._diarizer_params.manifest_filepath = os.path.json(self._out_dir, 'paths2audio_filepath.json')
+                self._diarizer_params.manifest_filepath = os.path.join(self._out_dir, 'paths2audio_filepath.json')
                 self.path2audio_files_to_manifest(paths2audio_files, self._diarizer_params.manifest_filepath)
             else:
                 raise ValueError("paths2audio_files must be of type list of paths to file containing audio file")

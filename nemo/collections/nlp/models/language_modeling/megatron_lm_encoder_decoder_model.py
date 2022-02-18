@@ -93,6 +93,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             bias_gelu_fusion=cfg.get('bias_gelu_fusion', True),
             masked_softmax_fusion=cfg.get('masked_softmax_fusion', True),
             onnx_safe=cfg.get('onnx_safe', False),
+            activation=cfg.get('activation', 'gelu'),
         )
 
         self.setup_optimizer_param_groups()

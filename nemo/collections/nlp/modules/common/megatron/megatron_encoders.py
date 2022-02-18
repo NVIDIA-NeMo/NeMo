@@ -67,6 +67,7 @@ def get_encoder_model(
     masked_softmax_fusion=True,
     persist_layer_norm=False,
     openai_gelu=False,
+    activation="gelu",
     onnx_safe=False,
     hidden_steps=-1,
     hidden_blocks=1,
@@ -112,6 +113,7 @@ def get_encoder_model(
             persist_layer_norm=persist_layer_norm,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
+            activation=activation,
         )
     else:
         raise ValueError(f"Unknown encoder arch = {arch}. Available encoder arch = {AVAILABLE_ENCODERS}")

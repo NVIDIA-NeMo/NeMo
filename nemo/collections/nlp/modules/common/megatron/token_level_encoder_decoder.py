@@ -98,6 +98,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         bias_gelu_fusion=True,
         masked_softmax_fusion=True,
         openai_gelu=False,
+        activation='gelu',
         onnx_safe=False,
         hidden_steps=-1,
         hidden_blocks=1,
@@ -159,6 +160,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
             onnx_safe=onnx_safe,
             hidden_steps=hidden_steps,
             hidden_blocks=hidden_blocks,
+            activation=activation,
         )
 
         decoder = get_decoder_model(
@@ -190,6 +192,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
             onnx_safe=onnx_safe,
             hidden_steps=hidden_steps,
             hidden_blocks=hidden_blocks,
+            activation=activation,
         )
 
         self.enc_dec_model = MegatronTransformerEncoderDecoderModule(encoder=encoder, decoder=decoder,)

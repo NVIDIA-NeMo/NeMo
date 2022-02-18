@@ -59,6 +59,7 @@ class MegatronTransformerEncoderModule(MegatronModule):
         persist_layer_norm=False,
         openai_gelu=False,
         onnx_safe=False,
+        activation='gelu',
     ):
         super(MegatronTransformerEncoderModule, self).__init__()
 
@@ -104,6 +105,7 @@ class MegatronTransformerEncoderModule(MegatronModule):
             persist_layer_norm=persist_layer_norm,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
+            activation=activation,
         )
         self._model_key = 'model'
 

@@ -28,6 +28,7 @@ from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_b
 from nemo.collections.nlp.modules.common.megatron.fused_layer_norm import get_layer_norm
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, attention_mask_func, erf_gelu
+from nemo.utils import logging
 
 try:
     from apex.transformer import parallel_state, tensor_parallel
@@ -76,21 +77,42 @@ class ParallelMLP(MegatronModule):
         bias_gelu_fusion=True,
         openai_gelu=False,
         onnx_safe=False,
+        activation='gelu',
     ):
         super(ParallelMLP, self).__init__()
+        self.activation = activation
+
+        if activation not in ['gelu', 'geglu']:
+            raise ValueError(f"Activation {activation} not supported. Only gelu and geglu are supported.")
 
         # Project to 4h.
         self.dense_h_to_4h = tensor_parallel.ColumnParallelLinear(
             hidden_size,
-            ffn_hidden_size,
+            ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
             gather_output=False,
             init_method=init_method,
             skip_bias_add=True,
             use_cpu_initialization=use_cpu_initialization,
         )
 
+        if activation == 'geglu':
+            # Separate linear layer for GEGLU activation.
+            # Source: https://github.com/huggingface/transformers/blob/bee361c6f1f7704f8c688895f2f86f6e5ff84727/src/transformers/models/t5/modeling_t5.py#L292
+            self.dense_h_to_4h_2 = tensor_parallel.ColumnParallelLinear(
+                hidden_size,
+                ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
+                gather_output=False,
+                init_method=init_method,
+                skip_bias_add=True,
+                use_cpu_initialization=use_cpu_initialization,
+            )
+
         self.bias_gelu_fusion = bias_gelu_fusion
         self.activation_func = F.gelu
+        if activation == 'geglu':
+            self.activation_func = 'geglu'  # Implemented using F.gelu
+            if bias_gelu_fusion:
+                logging.warning("Bias Gelu Fusion is not supported for GEGLU activation. Running with pytorch F.gelu")
         if openai_gelu:
             self.activation_func = openai_gelu
         elif onnx_safe:
@@ -111,7 +133,14 @@ class ParallelMLP(MegatronModule):
         # [s, b, 4hp]
         intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
 
-        if self.bias_gelu_fusion:
+        if self.activation == 'geglu':
+            intermediate_parallel_2, bias_parallel_2 = self.dense_h_to_4h_2(hidden_states)
+
+        if self.activation == 'geglu':
+            intermediate_parallel = F.gelu(intermediate_parallel + bias_parallel) * (
+                intermediate_parallel_2 + bias_parallel_2
+            )
+        elif self.bias_gelu_fusion and self.activation == 'gelu':
             intermediate_parallel = fused_bias_gelu(intermediate_parallel, bias_parallel)
         else:
             intermediate_parallel = self.activation_func(intermediate_parallel + bias_parallel)
@@ -411,6 +440,7 @@ class ParallelTransformerLayer_(MegatronModule):
         onnx_safe=False,
         masked_softmax_fusion=True,
         attention_dropout=0.1,
+        activation='gelu',
     ):
         super(ParallelTransformerLayer_, self).__init__()
 
@@ -448,6 +478,7 @@ class ParallelTransformerLayer_(MegatronModule):
             attention_dropout=attention_dropout,
         )
         self.hidden_dropout = hidden_dropout
+        self.attention_dropout = attention_dropout
         self.bias_dropout_fusion = bias_dropout_fusion  # if true, enable bias dropout fusion
 
         # Layernorm on the attention output
@@ -482,6 +513,7 @@ class ParallelTransformerLayer_(MegatronModule):
             bias_gelu_fusion=bias_gelu_fusion,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
+            activation=activation,
         )
 
     def forward(
@@ -633,6 +665,7 @@ class ParallelTransformer(MegatronModule):
         persist_layer_norm=False,
         openai_gelu=False,
         onnx_safe=False,
+        activation='gelu',
     ):
         super(ParallelTransformer, self).__init__()
 
@@ -682,6 +715,7 @@ class ParallelTransformer(MegatronModule):
                 persist_layer_norm=persist_layer_norm,
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
+                activation=activation,
             )
 
         if parallel_state.get_virtual_pipeline_model_parallel_rank() is not None:

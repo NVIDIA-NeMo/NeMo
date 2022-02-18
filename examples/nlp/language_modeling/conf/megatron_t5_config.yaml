@@ -66,6 +66,7 @@ model:
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   encoder_arch: 'transformer'
   decoder_arch: 'transformer'
+  activation: 'gelu'
 
   tokenizer:
     library: 'megatron'

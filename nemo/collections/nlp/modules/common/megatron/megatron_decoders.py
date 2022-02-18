@@ -23,6 +23,7 @@ import torch.nn.init as init
 from nemo.collections.nlp.modules.common.megatron.megatron_transformer_decoder import MegatronTransformerDecoderModule
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import (
+    ApexGuardDefaults,
     get_linear_layer,
     init_method_normal,
     scaled_init_method_normal,
@@ -34,6 +35,8 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
+    # fake missing classes with None attributes
+    AttnMaskType = ApexGuardDefaults()
 
 
 __all__ = []

@@ -15,6 +15,7 @@
 """Transformer based language model."""
 
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 
 try:
     from apex.transformer.enums import AttnMaskType
@@ -22,8 +23,8 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
-
-    AttnMaskType = None
+    # fake missing classes with None attributes
+    AttnMaskType = ApexGuardDefaults()
 
 
 __all__ = ["MegatronTransformerEncoderDecoderModule"]

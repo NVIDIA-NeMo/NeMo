@@ -19,6 +19,7 @@ import torch
 from nemo.collections.nlp.modules.common.megatron.language_model import get_language_model
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import (
+    ApexGuardDefaults,
     init_method_normal,
     parallel_lm_logits,
     scaled_init_method_normal,
@@ -31,6 +32,8 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
+    # fake missing classes with None attributes
+    AttnMaskType = ApexGuardDefaults()
 
 
 def post_language_model_processing(

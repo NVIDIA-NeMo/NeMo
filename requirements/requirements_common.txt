@@ -1,0 +1,2 @@
+sentencepiece<1.0.0
+youtokentome>=1.0.5

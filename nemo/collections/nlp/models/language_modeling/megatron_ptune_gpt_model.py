@@ -25,11 +25,13 @@ from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import (
     make_attention_mask_3d,
     make_history_mask_3d,
 )
-from nemo.collections.nlp.models.language_modeling.megatron.t5_model import t5_position_ids
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
+from nemo.collections.nlp.modules.common.megatron.utils import (
+    average_losses_across_data_parallel_group,
+    build_position_ids,
+)
 from nemo.collections.nlp.modules.common.prompt_encoder import PromptEncoder
 from nemo.utils import logging
 
@@ -158,7 +160,7 @@ class MegatronGPTPTuneModel(NLPModel):
 
         input_embeds = self.embed_input(enc_input, enc_taskname)
 
-        encoder_position_ids = t5_position_ids(enc_input)
+        encoder_position_ids = build_position_ids(enc_input)
 
         position_embeddings = self.model.model.language_model.embedding.position_embeddings(encoder_position_ids)
 

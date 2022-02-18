@@ -20,6 +20,7 @@ from nemo.collections.nlp.modules.common.megatron.language_model import get_lang
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.transformer import get_layer_norm
 from nemo.collections.nlp.modules.common.megatron.utils import (
+    ApexGuardDefaults,
     build_position_ids,
     erf_gelu,
     get_linear_layer,
@@ -38,6 +39,8 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
+    # fake missing classes with None attributes
+    AttnMaskType = ApexGuardDefaults()
 
 
 def bert_extended_attention_mask(attention_mask):

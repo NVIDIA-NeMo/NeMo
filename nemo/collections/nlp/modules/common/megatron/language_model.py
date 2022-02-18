@@ -38,6 +38,7 @@ except (ImportError, ModuleNotFoundError):
 
     # fake missing classes with None attributes
     AttnMaskType = ApexGuardDefaults()
+    LayerType = ApexGuardDefaults()
 
 
 def get_language_model(

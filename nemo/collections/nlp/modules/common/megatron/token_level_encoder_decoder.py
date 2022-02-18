@@ -22,6 +22,7 @@ from nemo.collections.nlp.modules.common.megatron.megatron_encoder_decoder impor
 from nemo.collections.nlp.modules.common.megatron.megatron_encoders import get_encoder_model
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import (
+    ApexGuardDefaults,
     build_position_ids,
     init_method_normal,
     parallel_lm_logits,
@@ -35,6 +36,8 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
+    # fake missing classes with None attributes
+    AttnMaskType = ApexGuardDefaults()
 
 
 __all__ = ["MegatronTokenLevelHead", "MegatronTokenLevelEncoderDecoderModule"]

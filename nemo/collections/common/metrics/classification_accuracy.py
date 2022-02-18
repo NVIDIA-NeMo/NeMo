@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from typing import List
 
 import torch
@@ -152,17 +153,37 @@ def compute_topk_accuracy(correct_counts_k, total_counts_k):
     return top_k_scores
 
 
-class ExactStringMatchMetric(Metric):
-    def __init__(self, dist_sync_on_step=False):
+class ExactStringPerCategoryMatchMetric(Metric):
+    def __init__(self, categories=[], dist_sync_on_step=False):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
+        self.categories = set(categories)
 
         self.add_state("correct", default=torch.tensor(0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+        for category in categories:
+            self.add_state(f"{category}_total", default=torch.tensor(0), dist_reduce_fx="sum")
+            self.add_state(f"{category}_correct", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    def update(self, pred: str, target: str):
+    def update(self, pred: str, target: str, category: str = None):
         if pred == target:
             self.correct += 1
         self.total += 1
+        if category is None:
+            return
+        if category in self.categories:
+            val = getattr(self, f"{category}_total")
+            setattr(self, f"{category}_total", val + 1)
+            if pred == target:
+                val = getattr(self, f"{category}_correct")
+                setattr(self, f"{category}_correct", val + 1)
+        else:
+            logging.warn(f'{category} is not in the pre-defined list')
 
     def compute(self):
-        return self.correct.float() / self.total
+        results = {}
+        results['acc'] = self.correct.float() / self.total
+        for category in self.categories:
+            results[category] = getattr(self, f"{category}_correct") / getattr(self, f"{category}_total")
+        for category in self.categories:
+            results[f"{category}_total"] = getattr(self, f"{category}_total")
+        return results

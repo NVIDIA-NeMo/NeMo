@@ -1,7 +1,7 @@
-name: megatron_t5_glue
+name: megatron_t5_glue_xnli
 
 trainer:
-  gpus: 2
+  gpus: 1
   num_nodes: 1
   accelerator: ddp
   precision: 16
@@ -18,7 +18,7 @@ trainer:
 exp_manager:
   explicit_log_dir: null
   exp_dir: null
-  name: megatron_t5_glue
+  name: megatron_t5_glue_xnli
   create_wandb_logger: False
   wandb_logger_kwargs:
     project: null
@@ -40,6 +40,7 @@ model:
   tensor_model_parallel_size: 1
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   megatron_amp_O2: False # Enable O2 optimization for megatron amp
+  eval_languages: ['fr', 'de', 'en', 'es'] # List of languages to evaluate zero-shot XNLI performance.
 
   data:
     train_ds:
@@ -52,8 +53,17 @@ model:
       max_seq_length: 512
 
     validation_ds:
-      task_name: 'mnli'
-      file_path: ??? # Path to the TSV file for MNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
+      task_name: 'xnli'
+      file_path: ??? # Path to the TSV file for XNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
+      batch_size: 32
+      shuffle: False
+      num_workers: 8
+      pin_memory: True
+      max_seq_length: 512
+
+    test_ds:
+      task_name: 'xnli'
+      file_path: ??? # Path to the TSV file for XNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
       batch_size: 32
       shuffle: False
       num_workers: 8

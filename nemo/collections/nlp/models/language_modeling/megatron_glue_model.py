@@ -20,15 +20,18 @@ from omegaconf import OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
-from nemo.collections.common.metrics.classification_accuracy import ExactStringMatchMetric
+from nemo.collections.common.metrics.classification_accuracy import ExactStringPerCategoryMatchMetric
 from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import TextToTextGLUEDataset
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
+from nemo.core.optim.lr_scheduler import prepare_lr_scheduler
+from nemo.core.optim.optimizer_with_main_params import MainParamsOptimizerWrapper
 from nemo.utils import logging
 
 try:
     from apex.transformer import parallel_state
+    from apex.transformer.pipeline_parallel.schedules.common import _get_params_for_weight_decay_optimization
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -50,6 +53,7 @@ class MegatronT5FineTuneModel(NLPModel):
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super().__init__(cfg, trainer)
+        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
         # TODO: Fix this once apex patches FusedScaledMaskedSoftmax.
         # This is a workaround for the fact that `masked_softmax_fusion` has issues with certain input sizes that may be present while finetuning.
         t5_cfg = MegatronT5Model.restore_from(
@@ -58,12 +62,14 @@ class MegatronT5FineTuneModel(NLPModel):
         OmegaConf.set_struct(t5_cfg, True)
         with open_dict(t5_cfg):
             t5_cfg.masked_softmax_fusion = False
+            t5_cfg.megatron_amp_O2 = self.megatron_amp_o2
 
         self.model = MegatronT5Model.restore_from(
             self.register_artifact('t5_base_model', cfg.restore_from_path),
             trainer=trainer,
             override_config_path=t5_cfg,
         )
+        self.setup_optimizer_param_groups()
 
     def training_step(self, batch, batch_idx):
         pass
@@ -86,20 +92,53 @@ class MegatronT5FineTuneModel(NLPModel):
     def setup(self, stage=None):
         pass
 
-    def setup_training_data(self):
+    def setup_training_data(self, train_data_config=None):
         pass
 
-    def setup_validation_data(self):
+    def setup_validation_data(self, validation_data_config=None):
         pass
 
-    def setup_test_data(self):
+    def setup_test_data(self, test_data_config=None):
         pass
 
-    def on_before_optimizer_step(self, optimizer, optimizer_idx):
-        """PTL hook that is called after unscaling gradients when using native amp.
-           We use gradient clipping implementation from megatron-lm.
-        """
-        pass
+    def configure_optimizers(self):
+        self.setup_optimization()
+
+        # Wrap the baseline optimizer with the optimizer class with master parameters
+        if self.megatron_amp_o2 and self._optimizer is not None:
+            if self.cfg.precision == 'bf16':
+                fp32_grad_accum = True
+                contiguous_grad_bucket = True
+                async_grad_allreduce = True
+
+            elif self.cfg.precision == 16:
+                fp32_grad_accum = False
+                # TODO: contiguous grad bucket for fp16 is also planned to be supported
+                contiguous_grad_bucket = False
+                async_grad_allreduce = False
+
+            self._optimizer = MainParamsOptimizerWrapper(
+                self._optimizer,
+                fp32_grad_accum=fp32_grad_accum,
+                contiguous_grad_bucket=contiguous_grad_bucket,
+                async_grad_allreduce=async_grad_allreduce,
+            )
+            assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
+            if hasattr(self._cfg.optim, 'sched'):
+                sched_config = self._cfg.optim.sched
+                sched_config['max_steps'] = self._trainer.max_steps
+                self._scheduler = prepare_lr_scheduler(
+                    optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
+                )
+
+        if self._scheduler is None:
+            return self._optimizer
+        else:
+            return [self._optimizer], [self._scheduler]
+
+    def setup_optimizer_param_groups(self):
+        """ModelPT override. Optimizer will get self._optimizer_param_groups"""
+        self._optimizer_param_groups = _get_params_for_weight_decay_optimization([self.model.enc_dec_model])
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
         return self.model.prediction_step(batch, batch_idx, dataloader_idx)
@@ -117,7 +156,7 @@ class MegatronT5GLUEModel(MegatronT5FineTuneModel):
             )
         super().__init__(cfg=cfg, trainer=trainer)
         self.cfg = cfg
-        self.acc_metric = ExactStringMatchMetric()
+        self.acc_metric = ExactStringPerCategoryMatchMetric()
 
     def training_step(self, batch, batch_idx):
         tokens_enc, tokens_dec, loss_mask, labels, enc_mask, dec_mask = self.process_batch(batch)
@@ -175,7 +214,7 @@ class MegatronT5GLUEModel(MegatronT5FineTuneModel):
         averaged_loss = average_losses_across_data_parallel_group(losses)
         val_acc = self.acc_metric.compute()
         self.log('validation_loss', averaged_loss)
-        self.log('validation_acc', val_acc)
+        self.log('validation_acc', val_acc['acc'])
         self.acc_metric.reset()
         return averaged_loss[0], val_acc
 
@@ -254,7 +293,7 @@ class MegatronT5GLUEModel(MegatronT5FineTuneModel):
             return
         self.setup_training_data()
 
-    def setup_training_data(self):
+    def setup_training_data(self, train_data_config=None):
         self._train_dl = self.build_pretraining_data_loader(
             self._train_ds,
             self.cfg.data.train_ds.batch_size,
@@ -263,7 +302,7 @@ class MegatronT5GLUEModel(MegatronT5FineTuneModel):
             pin_memory=self.cfg.data.train_ds.pin_memory,
         )
 
-    def setup_validation_data(self):
+    def setup_validation_data(self, validation_data_config=None):
         self._validation_dl = self.build_pretraining_data_loader(
             self._validation_ds,
             self.cfg.data.validation_ds.batch_size,

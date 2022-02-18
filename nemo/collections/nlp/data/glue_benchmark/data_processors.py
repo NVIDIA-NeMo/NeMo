@@ -30,6 +30,7 @@ __all__ = [
     'QnliProcessor',
     'RteProcessor',
     'WnliProcessor',
+    'XNlIProcessor',
 ]
 
 
@@ -44,6 +45,9 @@ class MrpcProcessor(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
 
     def get_labels(self):
         """See base class."""
@@ -80,6 +84,9 @@ class MnliProcessor(DataProcessor):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev_matched.tsv")), "dev_matched")
 
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
+
     def get_labels(self):
         """See base class."""
         return ["contradiction", "entailment", "neutral"]
@@ -104,12 +111,53 @@ class MnliProcessor(DataProcessor):
         return label
 
 
+class XNlIProcessor(DataProcessor):
+    """Processor for the MultiNLI data set (GLUE version)."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(self._read_tsv(os.path.join(data_dir, "data.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(self._read_tsv(os.path.join(data_dir, "data.tsv")), "dev")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
+
+    def get_labels(self):
+        """See base class."""
+        return ["contradiction", "entailment", "neutral"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, line[0])
+            text_a = line[6]
+            text_b = line[7]
+            label = line[1]
+            examples.append(InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+    def get_t5_prompted_query(self, text_a, text_b):
+        return f"mnli hypothesis: {text_a} premise: {text_b}"
+
+    def label2string(self, label):
+        return label
+
+
 class MnliMismatchedProcessor(MnliProcessor):
     """Processor for the MultiNLI Mismatched data set (GLUE version)."""
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev_mismatched.tsv")), "dev_matched")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
 
 
 class ColaProcessor(DataProcessor):
@@ -122,6 +170,9 @@ class ColaProcessor(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
 
     def get_labels(self):
         """See base class."""
@@ -155,6 +206,9 @@ class Sst2Processor(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
 
     def get_labels(self):
         """See base class."""
@@ -191,6 +245,9 @@ class StsbProcessor(DataProcessor):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
 
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
+
     def get_labels(self):
         """See base class."""
         return [None]
@@ -225,6 +282,9 @@ class QqpProcessor(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
 
     def get_labels(self):
         """See base class."""
@@ -264,6 +324,9 @@ class QnliProcessor(DataProcessor):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
 
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
+
     def get_labels(self):
         """See base class."""
         return ["entailment", "not_entailment"]
@@ -299,6 +362,9 @@ class RteProcessor(DataProcessor):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
 
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
+
     def get_labels(self):
         """See base class."""
         return ["entailment", "not_entailment"]
@@ -333,6 +399,9 @@ class WnliProcessor(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_examples(self, file_path):
+        return self._create_examples(self._read_tsv(file_path), "example")
 
     def get_labels(self):
         """See base class."""

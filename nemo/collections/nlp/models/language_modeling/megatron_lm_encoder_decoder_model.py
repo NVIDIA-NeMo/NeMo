@@ -186,11 +186,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 async_grad_allreduce=async_grad_allreduce,
             )
             assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
-            sched_config = self._cfg.optim.sched
-            sched_config['max_steps'] = self._trainer.max_steps
-            self._scheduler = prepare_lr_scheduler(
-                optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
-            )
+            if hasattr(self._cfg.optim, 'sched'):
+                sched_config = self._cfg.optim.sched
+                sched_config['max_steps'] = self._trainer.max_steps
+                self._scheduler = prepare_lr_scheduler(
+                    optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
+                )
 
         if self._scheduler is None:
             return self._optimizer

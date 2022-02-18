@@ -16,6 +16,7 @@ import json
 import os
 import time
 from argparse import ArgumentParser
+from glob import glob
 from typing import List, Tuple
 
 from joblib import Parallel, delayed
@@ -29,7 +30,6 @@ try:
     ASR_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
     ASR_AVAILABLE = False
-
 
 try:
     import pynini
@@ -223,9 +223,10 @@ class NormalizerWithAudio(Normalizer):
         """
         if pred_text == "":
             return input_text, 1000
-        normalized_texts = calculate_cer(normalized_texts, pred_text, remove_punct)
-        normalized_texts = sorted(normalized_texts, key=lambda x: x[1])
-        normalized_text, cer = normalized_texts[0]
+
+        normalized_texts_cer = calculate_cer(normalized_texts, pred_text, remove_punct)
+        normalized_texts_cer = sorted(normalized_texts_cer, key=lambda x: x[1])
+        normalized_text, cer = normalized_texts_cer[0]
 
         if verbose:
             print('-' * 30)
@@ -294,7 +295,11 @@ def parse_args():
         help="number of tagged options to consider, -1 - return all possible tagged options",
     )
     parser.add_argument("--verbose", help="print info for debugging", action="store_true")
-    parser.add_argument("--remove_punct", help="remove punctuation before calculating cer", action="store_true")
+    parser.add_argument(
+        "--no_remove_punct_for_cer",
+        help="Set to True to NOT remove punctuation before calculating CER",
+        action="store_true",
+    )
     parser.add_argument(
         "--no_punct_post_process", help="set to True to disable punctuation post processing", action="store_true"
     )
@@ -307,58 +312,88 @@ def parse_args():
         type=str,
     )
     parser.add_argument("--n_jobs", default=-2, type=int, help="The maximum number of concurrently running jobs")
+    parser.add_argument("--batch_size", default=200, type=int, help="Number of examples for each process")
     return parser.parse_args()
 
 
-def _normalize_line(normalizer: NormalizerWithAudio, line: str):
+def _normalize_line(normalizer: NormalizerWithAudio, n_tagged, verbose, line: str, remove_punct, punct_post_process):
     line = json.loads(line)
     pred_text = line["pred_text"]
 
     normalized_texts = normalizer.normalize(
-        text=line["text"],
-        verbose=args.verbose,
-        n_tagged=args.n_tagged,
-        punct_post_process=not args.no_punct_post_process,
+        text=line["text"], verbose=verbose, n_tagged=n_tagged, punct_post_process=punct_post_process,
     )
+
     normalized_text, cer = normalizer.select_best_match(
         normalized_texts=normalized_texts,
         input_text=line["text"],
         pred_text=pred_text,
-        verbose=args.verbose,
-        remove_punct=args.remove_punct,
+        verbose=verbose,
+        remove_punct=remove_punct,
     )
     line["nemo_normalized"] = normalized_text
     line["CER_nemo_normalized"] = cer
     return line
 
 
-def normalize_manifest(args):
+def normalize_manifest(
+    normalizer,
+    audio_data: str,
+    n_jobs: int,
+    n_tagged: int,
+    remove_punct: bool,
+    punct_post_process: bool,
+    batch_size: int,
+):
     """
     Args:
         args.audio_data: path to .json manifest file.
     """
-    normalizer = NormalizerWithAudio(
-        input_case=args.input_case,
-        lang=args.language,
-        cache_dir=args.cache_dir,
-        overwrite_cache=args.overwrite_cache,
-        whitelist=args.whitelist,
-    )
-    manifest_out = args.audio_data.replace('.json', '_normalized.json')
-    with open(args.audio_data, 'r') as f:
+
+    def __process_batch(batch_idx, batch, dir_name):
+        normalized_lines = [
+            _normalize_line(
+                normalizer,
+                n_tagged,
+                verbose=False,
+                line=line,
+                remove_punct=remove_punct,
+                punct_post_process=punct_post_process,
+            )
+            for line in tqdm(batch)
+        ]
+
+        with open(f"{dir_name}/{batch_idx}.json", "w") as f_out:
+            for line in normalized_lines:
+                f_out.write(json.dumps(line, ensure_ascii=False) + '\n')
+
+        print(f"Batch -- {batch_idx} -- is complete")
+        return normalized_lines
+
+    manifest_out = audio_data.replace('.json', '_normalized.json')
+    with open(audio_data, 'r') as f:
         lines = f.readlines()
 
-        print(f'Normalizing {len(lines)}lines of {args.audio_data}...')
-        with open(manifest_out, 'w') as f_out:
-            # to save intermediate results to a file
-            batch = max(round(len(lines) / 10), 1000)
-            for i in range(0, len(lines), batch):
-                print(f'Processing batch {i} out of {round(len(lines)/batch)}.')
-                normalized_lines = Parallel(n_jobs=args.n_jobs)(
-                    delayed(_normalize_line)(normalizer, line) for line in tqdm(lines[i : i + batch])
-                )
-                for line in normalized_lines:
-                    f_out.write(json.dumps(line, ensure_ascii=False) + '\n')
+    print(f'Normalizing {len(lines)} lines of {audio_data}...')
+
+    # to save intermediate results to a file
+    batch = min(len(lines), batch_size)
+
+    tmp_dir = manifest_out.replace(".json", "_parts")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    Parallel(n_jobs=n_jobs)(
+        delayed(__process_batch)(idx, lines[i : i + batch], tmp_dir)
+        for idx, i in enumerate(range(0, len(lines), batch))
+    )
+
+    # aggregate all intermediate files
+    with open(manifest_out, "w") as f_out:
+        for batch_f in sorted(glob(f"{tmp_dir}/*.json")):
+            with open(batch_f, "r") as f_in:
+                lines = f_in.read()
+            f_out.write(lines)
+
     print(f'Normalized version saved at {manifest_out}')
 
 
@@ -396,7 +431,7 @@ if __name__ == "__main__":
                 pred_text=pred_text,
                 input_text=args.text,
                 verbose=args.verbose,
-                remove_punct=args.remove_punct,
+                remove_punct=not args.no_remove_punct_for_cer,
             )
             print(f"Transcript: {pred_text}")
             print(f"Normalized: {normalized_text}")
@@ -407,7 +442,22 @@ if __name__ == "__main__":
     elif not os.path.exists(args.audio_data):
         raise ValueError(f"{args.audio_data} not found.")
     elif args.audio_data.endswith('.json'):
-        normalize_manifest(args)
+        normalizer = NormalizerWithAudio(
+            input_case=args.input_case,
+            lang=args.language,
+            cache_dir=args.cache_dir,
+            overwrite_cache=args.overwrite_cache,
+            whitelist=args.whitelist,
+        )
+        normalize_manifest(
+            normalizer=normalizer,
+            audio_data=args.audio_data,
+            n_jobs=args.n_jobs,
+            n_tagged=args.n_tagged,
+            remove_punct=not args.no_remove_punct_for_cer,
+            punct_post_process=not args.no_punct_post_process,
+            batch_size=args.batch_size,
+        )
     else:
         raise ValueError(
             "Provide either path to .json manifest in '--audio_data' OR "

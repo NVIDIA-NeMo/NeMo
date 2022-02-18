@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig, open_dict
@@ -217,7 +219,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             "text": NeuralType(('B', 'T_text'), TokenIndex()),
             "durs": NeuralType(('B', 'T_text'), TokenDurationType()),
             "pitch": NeuralType(('B', 'T_audio'), RegressionValuesType()),
-            "speaker": NeuralType(('B'), Index()),
+            "speaker": NeuralType(('B'), Index(), optional=True),
             "pace": NeuralType(optional=True),
             "spec": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType(), optional=True),
             "attn_prior": NeuralType(('B', 'T_spec', 'T_text'), ProbsType(), optional=True),
@@ -231,7 +233,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         text,
         durs=None,
         pitch=None,
-        speaker=0,
+        speaker=None,
         pace=1.0,
         spec=None,
         attn_prior=None,
@@ -251,7 +253,9 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         )
 
     @typecheck(output_types={"spect": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType())})
-    def generate_spectrogram(self, tokens: 'torch.tensor', speaker: int = 0, pace: float = 1.0) -> torch.tensor:
+    def generate_spectrogram(
+        self, tokens: 'torch.tensor', speaker: Optional[int] = None, pace: float = 1.0
+    ) -> torch.tensor:
         if self.training:
             logging.warning("generate_spectrogram() is meant to be called in eval mode.")
         if isinstance(speaker, int):

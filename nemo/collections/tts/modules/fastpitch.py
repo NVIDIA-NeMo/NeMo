@@ -179,7 +179,7 @@ class FastPitchModule(NeuralModule):
             "text": NeuralType(('B', 'T_text'), TokenIndex()),
             "durs": NeuralType(('B', 'T_text'), TokenDurationType()),
             "pitch": NeuralType(('B', 'T_audio'), RegressionValuesType()),
-            "speaker": NeuralType(('B'), Index()),
+            "speaker": NeuralType(('B'), Index(), optional=True),
             "pace": NeuralType(optional=True),
             "spec": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType(), optional=True),
             "attn_prior": NeuralType(('B', 'T_spec', 'T_text'), ProbsType(), optional=True),

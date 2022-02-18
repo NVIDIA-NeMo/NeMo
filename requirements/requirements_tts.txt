@@ -1,2 +1,3 @@
 librosa
 nltk
+pynini==2.1.4

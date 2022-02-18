@@ -26,10 +26,10 @@ class BetaBinomialInterpolator:
         The implementation is taken from https://github.com/NVIDIA/DeepLearningExamples.
     """
 
-    def __init__(self, round_mel_len_to=100, round_text_len_to=20):
+    def __init__(self, round_mel_len_to=50, round_text_len_to=10, cache_size=500):
         self.round_mel_len_to = round_mel_len_to
         self.round_text_len_to = round_text_len_to
-        self.bank = functools.lru_cache(beta_binomial_prior_distribution)
+        self.bank = functools.lru_cache(maxsize=cache_size)(beta_binomial_prior_distribution)
 
     def round(self, val, to):
         return max(1, int(np.round((val + 1) / to))) * to

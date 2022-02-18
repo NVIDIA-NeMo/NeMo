@@ -37,7 +37,7 @@ RUN pip uninstall -y sacrebleu torchtext
 
 # build torchaudio (change latest release version to match pytorch)
 WORKDIR /tmp/torchaudio_build
-RUN git clone --depth 1 --branch release/0.10 https://github.com/pytorch/audio.git && \
+RUN git clone --depth 1 --branch release/0.11 https://github.com/pytorch/audio.git && \
     cd audio && \
     git submodule update --init --recursive && \
     BUILD_SOX=1 python setup.py install && \

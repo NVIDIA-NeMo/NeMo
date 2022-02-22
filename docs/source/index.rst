@@ -34,8 +34,10 @@ NVIDIA NeMo User Guide
    :maxdepth: 2
    :caption: Natural Language Processing
    :name: Natural Language Processing
-
-   nlp/intro
+   
+   nlp/megatron
+   nlp/models
+   nlp/api
 
 .. toctree::
    :maxdepth: 2

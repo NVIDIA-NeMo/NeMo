@@ -1,9 +1,9 @@
 .. _nlp_models:
 
-Models
-======
+Tasks
+=====
 
-NeMo's NLP collection supports the following models:
+NeMo's NLP collection supports provides the following task-specific models:
 
 .. toctree::
    :maxdepth: 1

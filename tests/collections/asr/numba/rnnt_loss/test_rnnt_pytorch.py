@@ -28,10 +28,14 @@ if torch.cuda.is_available():
 
 
 def wrap_and_call(fn, acts, labels, device):
-    acts = torch.FloatTensor(acts)
+    if not torch.is_tensor(acts):
+        acts = torch.FloatTensor(acts)
+
     if 'cuda' in device:
         acts = acts.cuda()
-    acts.requires_grad = True
+
+    if not acts.requires_grad:
+        acts.requires_grad = True
 
     lengths = [acts.shape[1]] * acts.shape[0]
     label_lengths = [len(l) for l in labels]
@@ -50,7 +54,12 @@ def wrap_and_call(fn, acts, labels, device):
     if 'cuda' in device:
         torch.cuda.synchronize()
 
-    return costs.data.cpu().numpy(), acts.grad.data.cpu().numpy()
+    if acts.grad is not None:
+        grad = acts.grad.data.cpu().numpy()
+    else:
+        grad = None
+
+    return costs.data.cpu().numpy(), grad
 
 
 class TestRNNTLossPytorch:
@@ -357,6 +366,72 @@ class TestRNNTLossPytorch:
         assert np.allclose(pt_cost, expected_cost, rtol=1e-6), "small_test costs mismatch."
         assert np.allclose(pt_cost, np_cost, rtol=1e-6), "small_test costs mismatch."
         assert np.allclose(pt_grads, np_grads), "small_test gradient mismatch."
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('device', DEVICES)
+    def test_case_small_random_accumulated(self, device):
+        if device == 'cuda':
+            numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+
+        torch.manual_seed(0)
+        base_layer = torch.randn(3, 5, requires_grad=True)
+
+        mid1 = torch.randn(1, 4, 3, 3, requires_grad=True)
+        labels1 = [[1, 3]]
+
+        mid2 = torch.randn(1, 6, 5, 3, requires_grad=True)
+        labels2 = [[1, 2, 3, 4]]
+
+        def zero_grad():
+            if base_layer.grad is not None:
+                base_layer.grad = None
+            if mid1.grad is not None:
+                mid1.grad = None
+            if mid2.grad is not None:
+                mid2.grad = None
+
+        fn_pt = RNNTLossNumba(blank=0, reduction='sum')
+        fn_np = RNNTLoss_Numpy()
+
+        # run 1
+        acts1 = torch.matmul(mid1, base_layer)  # [1, 4, 3, 5]
+        pt_cost1, _ = wrap_and_call(fn_pt, acts1, labels1, device)
+        pt_grads1 = base_layer.grad.clone().cpu().numpy()
+
+        zero_grad()
+
+        acts1 = torch.matmul(mid1, base_layer)  # [1, 4, 3, 5]
+        np_cost1, _ = wrap_and_call(fn_np, acts1, labels1, device)
+        np_grads1 = base_layer.grad.clone().cpu().numpy()
+
+        zero_grad()
+
+        assert np.allclose(pt_grads1, np_grads1, atol=1e-6)
+
+        # run 2
+        acts2 = torch.matmul(mid2, base_layer)  # [1, 4, 3, 5]
+        pt_cost2, _ = wrap_and_call(fn_pt, acts2, labels2, device)
+        pt_grads2 = base_layer.grad.clone().cpu().numpy()
+
+        zero_grad()
+
+        acts2 = torch.matmul(mid2, base_layer)  # [1, 4, 3, 5]
+        np_cost2, _ = wrap_and_call(fn_np, acts2, labels2, device)
+        np_grads2 = base_layer.grad.clone().cpu().numpy()
+
+        zero_grad()
+
+        assert np.allclose(pt_grads2, np_grads2, atol=1e-6)
+
+        # run 1 + 2
+        acts1 = torch.matmul(mid1, base_layer)  # [1, 4, 3, 5]
+        pt_cost1, _ = wrap_and_call(fn_pt, acts1, labels1, device)
+
+        acts2 = torch.matmul(mid2, base_layer)  # [1, 6, 5, 5]
+        pt_cost2, _ = wrap_and_call(fn_pt, acts2, labels2, device)
+        pt_grads1_p_2 = base_layer.grad.clone().cpu().numpy()
+
+        assert np.allclose(pt_grads1_p_2, np_grads1 + np_grads2, atol=1e-6)
 
 
 if __name__ == "__main__":

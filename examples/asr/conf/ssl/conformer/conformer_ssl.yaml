@@ -36,8 +36,8 @@ model:
     pin_memory: false
     use_start_end_token: true
     trim_silence: false
-    max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
-    min_duration: 3.0
+    max_duration: 16.7
+    min_duration: 8.0
     # tarred datasets
     is_tarred: false
     tarred_audio_filepaths: null
@@ -54,7 +54,7 @@ model:
     num_workers: 8
     pin_memory: true
     use_start_end_token: false
-
+    min_duration: 8.0
 
 
   preprocessor:
@@ -73,11 +73,11 @@ model:
     pad_value: 0.0
 
   spec_augment:
-    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 4
-    time_masks: 10
-    freq_width: 27
-    time_width: 0.05
+    _target_: nemo.collections.asr.modules.MaskedPatchAugmentation
+    freq_masks: 3
+    freq_width: 20
+    patch_size: 48
+    mask_patches: 10
 
   encoder:
     _target_: nemo.collections.asr.modules.ConformerEncoder
@@ -120,15 +120,18 @@ model:
     feat_hidden: 128
     feat_out: *dec_out
     stride_layers: 0
-    non_stride_layers: 2
-
+    #if loss.combine_time_steps is less than the encoder stride, then a corresponding amount of stride_layers needs to
+    #be added to the decoder (here stride and combine_time_steps are both 4)
+    non_stride_layers: 0
 
   loss:
     _target_: nemo.collections.asr.losses.ContrastiveLoss
     in_dim: *n_mels
     proj_dim: *dec_out
-    combine_time_steps: 4
-    codebook_size: 1200
+    combine_time_steps: 4 #how many spectrogram time steps are used for one target/representation for contrastive task
+    quantized_targets: false #should quantizer or linear layer be used
+    sample_from_same_utterance_only: true #should negatives be sampled only from the same utterance
+    sample_from_non_masked: false #should negatives be sampled from non-masked steps
 
   optim:
     name: adamw

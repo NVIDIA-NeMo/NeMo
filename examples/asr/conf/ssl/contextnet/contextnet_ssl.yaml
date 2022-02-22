@@ -25,6 +25,7 @@ model:
     batch_size: 16  # Can be increased if memory allows or when using smaller model
     trim_silence: false
     max_duration: 16.7
+    min_duration: 8.0
     shuffle: true
     use_start_end_token: false
     num_workers: 16
@@ -46,6 +47,7 @@ model:
     use_start_end_token: false
     num_workers: 16
     pin_memory: true
+    min_duration: 8.0
 
   model_defaults:
     filters: 1024
@@ -73,11 +75,11 @@ model:
     stft_conv: false
 
   spec_augment:
-    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 4
-    time_masks: 10  # can be 5 for small-med models, 10 for larger models.
-    freq_width: 27
-    time_width: 0.05
+    _target_: nemo.collections.asr.modules.MaskedPatchAugmentation
+    freq_masks: 3
+    freq_width: 20
+    patch_size: 48
+    mask_patches: 10
 
   encoder:
     _target_: nemo.collections.asr.modules.ConvASREncoder
@@ -374,13 +376,18 @@ model:
     feat_hidden: 128
     feat_out: ${model.model_defaults.decoder_out_channels}
     stride_layers: 1
+    #if loss.combine_time_steps is less than the encoder stride, then a corresponding amount of stride_layers needs to
+    #be added to the decoder (here stride is 8 and combine_time_steps is 4, so 1 stride layer is added)
+    non_stride_layers: 0
 
   loss:
     _target_: nemo.collections.asr.losses.ContrastiveLoss
     in_dim: *n_mels
     proj_dim: ${model.model_defaults.decoder_out_channels}
-    combine_time_steps: 4
-    codebook_size: 1200
+    combine_time_steps: 4 #how many spectrogram time steps are used for one target/representation for contrastive task
+    quantized_targets: false #should quantizer or linear layer be used
+    sample_from_same_utterance_only: true #should negatives be sampled only from the same utterance
+    sample_from_non_masked: false #should negatives be sampled from non-masked steps
 
   optim:
     name: novograd

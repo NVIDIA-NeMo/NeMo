@@ -11,7 +11,7 @@ model:
     batch_size: 32
     trim_silence: false
     max_duration: 35.0
-    min_duration: 3.0
+    min_duration: 4.0
     shuffle: true
     is_tarred: false
     tarred_audio_filepaths: null
@@ -27,7 +27,7 @@ model:
     shuffle: false
     use_start_end_token: false
     max_duration: 35.0
-    min_duration: 3.0
+    min_duration: 4.0
 
   model_defaults:
     repeat: 1
@@ -55,11 +55,11 @@ model:
     stft_conv: false
 
   spec_augment:
-    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 4
-    time_masks: 10
-    freq_width: 27
-    time_width: 0.05
+    _target_: nemo.collections.asr.modules.MaskedPatchAugmentation
+    freq_masks: 3
+    freq_width: 20
+    patch_size: 16
+    mask_patches: 10
 
   encoder:
     _target_: nemo.collections.asr.modules.ConvASREncoder
@@ -403,8 +403,10 @@ model:
     in_dim: *n_mels
     proj_dim: ${model.model_defaults.decoder_out_channels}
     combine_time_steps: 4
-    codebook_size: 300
-
+    sample_from_non_masked: false
+    num_negatives: 30
+    quantized_targets: false
+    sample_from_same_utterance_only: true
 
   optim:
     name: novograd

@@ -48,12 +48,13 @@ class ContrastiveLoss(Loss):
         proj_dim: int = 128,
         combine_time_steps: int = 1,
         num_negatives: int = 100,
-        quantized_targets: bool = True,
+        quantized_targets: bool = False,
         codebook_size: int = 320,
         prob_ppl_weight: float = 0.1,
         logit_temp: float = 0.1,
         reduce: str = "sum",
-        sample_from_non_masked: bool = True,
+        sample_from_same_utterance_only: bool = True,
+        sample_from_non_masked: bool = False,
         sample_from_codebook: bool = False,
         group_loss: bool = False,
         num_groups: int = 2,
@@ -76,6 +77,7 @@ class ContrastiveLoss(Loss):
             prob_ppl_weight: Float multiplier on the perplexity loss for target quantization.
             logit_temp: Float temperature for normalizing logits.
             reduce: String representing the type of reduction used for cross entropy.
+            sample_from_same_utterance_only: Bool that determines if negatives should be sampled only from same utterance.
             sample_from_non_masked: Bool that determines if negatives should be sampled from non-masked steps of the spectrogram.
             sample_from_codebook: Bool that determines if negatives should be sampled from entire codebook.
             group_loss: Bool that determines if loss should be computed separately for each group in the quantizer codebook.
@@ -107,6 +109,7 @@ class ContrastiveLoss(Loss):
         self.logit_temp = logit_temp
         self.reduce = reduce
         self.combine_time_steps = combine_time_steps
+        self.sample_from_same_utterance_only = sample_from_same_utterance_only
         self.sample_from_non_masked = sample_from_non_masked
         self.sample_from_codebook = sample_from_codebook
         self.group_loss = group_loss
@@ -116,13 +119,16 @@ class ContrastiveLoss(Loss):
             self.target_proj = nn.Linear(in_dim * combine_time_steps, proj_dim)
 
     def sample_negatives(self, y, num):
+        # y - T'xBxC or T'xC
 
         high = y.shape[0]
-        with torch.no_grad():
-            neg_idxs = torch.randint(low=0, high=high - 1, size=(self.num_negatives * num,))
+        neg_idxs = torch.multinomial(torch.ones((num, high), device=y.device), self.num_negatives)
 
         negs = y[neg_idxs.view(-1)]
-        negs = negs.view(num, self.num_negatives, y.shape[-1]).permute(1, 0, 2)  # to NxTxC
+        negs = negs.view((num, self.num_negatives) + y.shape[1:])
+        negs = negs.transpose(0, 1)
+        # negs - NxT'xBxC or NxT'xC
+
         return negs, neg_idxs
 
     @typecheck()
@@ -133,46 +139,79 @@ class ContrastiveLoss(Loss):
         # BxTxC
 
         targets = targets.reshape(targets.shape[0], targets.shape[1] // self.combine_time_steps, -1)
-        masks = masks.reshape(targets.shape)
+        masks = masks.reshape(targets.shape[0], targets.shape[1], -1)
 
         if self.quantized_targets:
             targets, prob_ppl_loss, cur_codebook_temp = self.quantizer(targets)
         else:
             targets = self.target_proj(targets)
 
-        masks = masks.mean(-1) > self.mask_threshold
-        out_masked_only = decoder_outputs[masks]
-        targets_masked_only = targets[masks]
+        if self.sample_from_same_utterance_only:
+            bs = decoder_outputs.shape[0]
+            masks = masks.mean(-1) > self.mask_threshold
+            out_masked_only = decoder_outputs[masks]
+            targets_masked_only = targets[masks]
+            out_masked_only = out_masked_only.reshape(bs, -1, out_masked_only.shape[-1])
+            targets_masked_only = targets_masked_only.reshape(bs, -1, targets_masked_only.shape[-1])
 
-        # T'xC
-        # number of masked time steps to predict (T')
+            # BxT'xC
+            # number of masked time steps to predict (T')
+            # -> T'xBxC
 
-        if self.group_loss:
-            num_groups = self.quantizer.groups
-            negatives = self.quantizer.vars.reshape(num_groups, self.quantizer.num_vars, -1)
-            # GxNx(C//G)
-            negatives = negatives.transpose(0, 1)
-            # NxGx(C//G)
-            negatives = negatives.unsqueeze(1).expand(-1, out_masked_only.shape[0], -1, -1)
-            # NxT'xGx(C//G)
-            negatives = negatives.reshape(negatives.shape[0], -1, negatives.shape[-1])
-            # NxT'Gx(C//G)
+            out_masked_only = out_masked_only.transpose(0, 1)
+            targets_masked_only = targets_masked_only.transpose(0, 1)
+            # -> T'xBxC
 
-            out_masked_only = out_masked_only.reshape(-1, out_masked_only.shape[-1] // num_groups)
-            targets_masked_only = targets_masked_only.reshape(-1, targets_masked_only.shape[-1] // num_groups)
-            # T'Gx(C//G)
-        elif self.sample_from_codebook:
-            # sample from the full codebook
-            negatives = self.quantizer.sample_from_codebook(self.num_negatives, targets_masked_only.size(0))
-        elif self.sample_from_non_masked:
-            # sample from all steps in batch
-            negatives, _ = self.sample_negatives(
-                targets.reshape(targets.shape[0] * targets.shape[1], -1), targets_masked_only.size(0),  # BTxC
-            )  # T'
+            if self.sample_from_non_masked:
+                # sample from all steps in utterance
+                negatives, _ = self.sample_negatives(
+                    targets.transpose(0, 1), targets_masked_only.size(0),  # TxBxC  # T'
+                )
+            else:
+                # only sample from masked steps in utterance
+                negatives, _ = self.sample_negatives(targets_masked_only, targets_masked_only.size(0))  # T'xBxC  # T'
+            # NxT'xBxC
+
+            out_masked_only = out_masked_only.reshape(-1, out_masked_only.shape[-1])
+            targets_masked_only = targets_masked_only.reshape(-1, targets_masked_only.shape[-1])
+            negatives = negatives.reshape(self.num_negatives, -1, negatives.shape[-1])
+
+            # T'BxC and NxT'BxC
+
         else:
-            # only sample from masked steps
-            negatives, _ = self.sample_negatives(targets_masked_only, targets_masked_only.size(0))  # T'xC  # T'
-            # NxT'xC
+            masks = masks.mean(-1) > self.mask_threshold
+            out_masked_only = decoder_outputs[masks]
+            targets_masked_only = targets[masks]
+
+            # T'xC
+            # number of masked time steps to predict (T')
+
+            if self.group_loss:
+                num_groups = self.quantizer.groups
+                negatives = self.quantizer.vars.reshape(num_groups, self.quantizer.num_vars, -1)
+                # GxNx(C//G)
+                negatives = negatives.transpose(0, 1)
+                # NxGx(C//G)
+                negatives = negatives.unsqueeze(1).expand(-1, out_masked_only.shape[0], -1, -1)
+                # NxT'xGx(C//G)
+                negatives = negatives.reshape(negatives.shape[0], -1, negatives.shape[-1])
+                # NxT'Gx(C//G)
+
+                out_masked_only = out_masked_only.reshape(-1, out_masked_only.shape[-1] // num_groups)
+                targets_masked_only = targets_masked_only.reshape(-1, targets_masked_only.shape[-1] // num_groups)
+                # T'Gx(C//G)
+            elif self.sample_from_codebook:
+                # sample from the full codebook
+                negatives = self.quantizer.sample_from_codebook(self.num_negatives, targets_masked_only.size(0))
+            elif self.sample_from_non_masked:
+                # sample from all steps in batch
+                negatives, _ = self.sample_negatives(
+                    targets.reshape(targets.shape[0] * targets.shape[1], -1), targets_masked_only.size(0),  # BTxC
+                )  # T'
+            else:
+                # only sample from masked steps
+                negatives, _ = self.sample_negatives(targets_masked_only, targets_masked_only.size(0))  # T'xC  # T'
+                # NxT'xC
 
         # Calculate similarity between logits and all targets
         similarity_scores = self._calculate_similarity(out_masked_only, negatives, targets_masked_only)
@@ -198,6 +237,7 @@ class ContrastiveLoss(Loss):
 
         if not isinstance(loss, torch.Tensor):
             loss = torch.Tensor([0]).to(device=decoder_outputs.device)
+
         return loss
 
     def _calculate_similarity(self, logits, negatives, targets):
@@ -217,4 +257,5 @@ class ContrastiveLoss(Loss):
         return logits
 
     def set_num_updates(self, num_updates):
-        self.quantizer.set_num_updates(num_updates)
+        if self.quantized_targets:
+            self.quantizer.set_num_updates(num_updates)

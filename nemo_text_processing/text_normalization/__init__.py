@@ -21,7 +21,7 @@ try:
 except (ModuleNotFoundError, ImportError):
     logging.warning(
         "`pynini` is not installed ! \n"
-        "Please run the `nemo_text_processing/setup.sh` script"
+        "Please run the `nemo_text_processing/setup.sh` script "
         "prior to usage of this toolkit."
     )
 

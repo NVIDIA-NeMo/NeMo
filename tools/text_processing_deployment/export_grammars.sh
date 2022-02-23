@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This script compiles and exports WFST-grammars from nemo_text_processing, builds C++ production backend Sparrowhawk (https://github.com/google/sparrowhawk) in docker, 
+# This script compiles and exports WFST-grammars from nemo_text_processing, builds C++ production backend Sparrowhawk (https://github.com/google/sparrowhawk) in docker,
 # plugs grammars into Sparrowhawk and returns prompt inside docker.
 # For inverse text normalization run:
 #       bash export_grammars.sh --GRAMMARS=itn_grammars --LANGUAGE=en
@@ -32,7 +32,7 @@
 
 GRAMMARS="itn_grammars" # tn_grammars
 INPUT_CASE="cased" # lower_cased, only for tn_grammars
-LANGUAGE="en" # language, 'en' supports both TN and ITN, {'de', 'ru', 'es', 'fr'} supports ITN only
+LANGUAGE="en" # language, {'en', 'es', 'de'} supports both TN and ITN, {'ru', 'fr'} supports ITN only
 MODE="export"
 OVERWRITE_CACHE="True" # Set to False to re-use .far files
 FORCE_REBUILD="False" # Set to True to re-build docker file

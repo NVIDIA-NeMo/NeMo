@@ -1,0 +1,17 @@
+1,2-a~uno coma dos a
+a-5~a cinco
+200 m~doscientos metros
+3 h~tres horas
+1 h~una hora
+245 mph~doscientas cuarenta y cinco millas por hora
+2 kg~dos kilogramos
+60,2400 kg~sesenta coma dos cuatro cero cero kilogramos
+-60,2400 kg~menos sesenta coma dos cuatro cero cero kilogramos
+8,52 %~ocho coma cincuenta y dos por ciento
+-8,52 %~menos ocho coma cincuenta y dos por ciento
+1 %~uno por ciento
+3 cm~tres centímetros
+4 s~cuatro segundos
+5 l~cinco litros
+4,51/s~cuatro coma cincuenta y uno por segundo
+0,0101 s~cero coma cero uno cero un segundos

@@ -12,8 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_CHAR, NEMO_SIGMA, GraphFst, delete_space
 
 try:
@@ -21,6 +19,7 @@ try:
     from pynini.lib import pynutil
 
     PYNINI_AVAILABLE = True
+
 except (ModuleNotFoundError, ImportError):
     PYNINI_AVAILABLE = False
 

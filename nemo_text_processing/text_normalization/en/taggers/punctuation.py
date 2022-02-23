@@ -22,7 +22,7 @@ try:
     import pynini
     from pynini.lib import pynutil
 
-    PYNINI_AVAILABLE = False
+    PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
     PYNINI_AVAILABLE = False
 

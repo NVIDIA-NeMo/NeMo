@@ -55,15 +55,15 @@ To run this script with a .json manifest file, the manifest file should contain 
     "audio_data" - path to the audio file
     "text" - raw text
     "pred_text" - ASR model prediction
-    
+
     See https://github.com/NVIDIA/NeMo/blob/main/examples/asr/transcribe_speech.py on how to add ASR predictions
-        
+
     When the manifest is ready, run:
         python normalize_with_audio.py \
                --audio_data PATH/TO/MANIFEST.JSON \
-               --language en 
-     
-        
+               --language en
+
+
 To run with a single audio file, specify path to audio and text with:
     python normalize_with_audio.py \
            --audio_data PATH/TO/AUDIO.WAV \
@@ -71,18 +71,18 @@ To run with a single audio file, specify path to audio and text with:
            --text raw text OR PATH/TO/.TXT/FILE
            --model QuartzNet15x5Base-En \
            --verbose
-    
+
 To see possible normalization options for a text input without an audio file (could be used for debugging), run:
     python python normalize_with_audio.py --text "RAW TEXT"
-    
+
 Specify `--cache_dir` to generate .far grammars once and re-used them for faster inference
 """
 
 
 class NormalizerWithAudio(Normalizer):
     """
-    Normalizer class that converts text from written to spoken form. 
-    Useful for TTS preprocessing. 
+    Normalizer class that converts text from written to spoken form.
+    Useful for TTS preprocessing.
 
     Args:
         input_case: expected input capitalization
@@ -282,7 +282,7 @@ def parse_args():
         "--input_case", help="input capitalization", choices=["lower_cased", "cased"], default="cased", type=str
     )
     parser.add_argument(
-        "--language", help="Select target language", choices=["en", "ru", "de"], default="en", type=str
+        "--language", help="Select target language", choices=["en", "ru", "de", "es"], default="en", type=str
     )
     parser.add_argument("--audio_data", default=None, help="path to an audio file or .json manifest")
     parser.add_argument(

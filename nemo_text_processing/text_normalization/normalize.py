@@ -46,8 +46,8 @@ SPACE_DUP = re.compile(' {2,}')
 
 class Normalizer:
     """
-    Normalizer class that converts text from written to spoken form. 
-    Useful for TTS preprocessing. 
+    Normalizer class that converts text from written to spoken form.
+    Useful for TTS preprocessing.
 
     Args:
         input_case: expected input capitalization
@@ -83,10 +83,11 @@ class Normalizer:
             from nemo_text_processing.text_normalization.ru.taggers.tokenize_and_classify import ClassifyFst
             from nemo_text_processing.text_normalization.ru.verbalizers.verbalize_final import VerbalizeFinalFst
         elif lang == 'de':
-            # Ru TN only support non-deterministic cases and produces multiple normalization options
-            # use normalize_with_audio.py
             from nemo_text_processing.text_normalization.de.taggers.tokenize_and_classify import ClassifyFst
             from nemo_text_processing.text_normalization.de.verbalizers.verbalize_final import VerbalizeFinalFst
+        elif lang == 'es':
+            from nemo_text_processing.text_normalization.es.taggers.tokenize_and_classify import ClassifyFst
+            from nemo_text_processing.text_normalization.es.verbalizers.verbalize_final import VerbalizeFinalFst
         self.tagger = ClassifyFst(
             input_case=input_case,
             deterministic=deterministic,
@@ -106,7 +107,7 @@ class Normalizer:
 
     def normalize_list(self, texts: List[str], verbose=False, punct_post_process: bool = False) -> List[str]:
         """
-        NeMo text normalizer 
+        NeMo text normalizer
 
         Args:
             texts: list of input strings
@@ -357,7 +358,7 @@ class Normalizer:
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("input_string", help="input string", type=str)
-    parser.add_argument("--language", help="language", choices=["en", "de"], default="en", type=str)
+    parser.add_argument("--language", help="language", choices=["en", "de", "es"], default="en", type=str)
     parser.add_argument(
         "--input_case", help="input capitalization", choices=["lower_cased", "cased"], default="cased", type=str
     )

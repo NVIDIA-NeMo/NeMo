@@ -67,7 +67,7 @@ def tn_grammars(**kwargs):
 
 def export_grammars(output_dir, grammars):
     """
-    Exports tokenizer_and_classify and verbalize Fsts as OpenFst finite state archive (FAR) files. 
+    Exports tokenizer_and_classify and verbalize Fsts as OpenFst finite state archive (FAR) files.
 
     Args:
         output_dir: directory to export FAR files to. Subdirectories will be created for tagger and verbalizer respectively.
@@ -109,7 +109,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
 
-    if args.language in ['ru', 'fr', 'es', 'vi'] and args.grammars == 'tn_grammars':
+    if args.language in ['ru', 'fr', 'vi'] and args.grammars == 'tn_grammars':
         raise ValueError('Only ITN grammars could be deployed in Sparrowhawk for the selected languages.')
 
     if args.language == 'en':
@@ -148,6 +148,10 @@ if __name__ == '__main__':
         from nemo_text_processing.inverse_text_normalization.es.verbalizers.verbalize import (
             VerbalizeFst as ITNVerbalizeFst,
         )
+        from nemo_text_processing.text_normalization.es.taggers.tokenize_and_classify import (
+            ClassifyFst as TNClassifyFst,
+        )
+        from nemo_text_processing.text_normalization.es.verbalizers.verbalize import VerbalizeFst as TNVerbalizeFst
     elif args.language == 'fr':
         from nemo_text_processing.inverse_text_normalization.fr.taggers.tokenize_and_classify import (
             ClassifyFst as ITNClassifyFst,

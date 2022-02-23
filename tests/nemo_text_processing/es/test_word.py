@@ -35,3 +35,30 @@ class TestWord:
     def test_denorm_es(self, test_input, expected):
         pred = self.inverse_normalizer_es.inverse_normalize(test_input, verbose=False)
         assert pred == expected
+
+    normalizer_es = (
+        Normalizer(input_case='cased', lang='es', cache_dir=CACHE_DIR, overwrite_cache=False)
+        if PYNINI_AVAILABLE
+        else None
+    )
+    normalizer_with_audio_es = (
+        NormalizerWithAudio(input_case='cased', lang='es', cache_dir=CACHE_DIR, overwrite_cache=False)
+        if PYNINI_AVAILABLE and CACHE_DIR
+        else None
+    )
+
+    @parameterized.expand(parse_test_case_file('es/data_text_normalization/test_cases_word.txt'))
+    @pytest.mark.skipif(
+        not PYNINI_AVAILABLE, reason="`pynini` not installed, please install via nemo_text_processing/setup.sh"
+    )
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_norm(self, test_input, expected):
+        pred = self.normalizer_es.normalize(test_input, verbose=False)
+        assert pred == expected, f"input: {test_input}"
+
+        if self.normalizer_with_audio_es:
+            pred_non_deterministic = self.normalizer_with_audio_es.normalize(
+                test_input, n_tagged=150, punct_post_process=False
+            )
+            assert expected in pred_non_deterministic, f"input: {test_input}"

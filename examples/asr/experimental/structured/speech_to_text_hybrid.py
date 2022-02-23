@@ -26,7 +26,7 @@ python speech_to_text_hybrid.py \
     --config-name="quartznet_15x5" \
     model.train_ds.manifest_filepath="/home/smajumdar/PycharmProjects/NeMo-som/examples/asr/an4/train_manifest.json" \
     model.validation_ds.manifest_filepath="/home/smajumdar/PycharmProjects/NeMo-som/examples/asr/an4/test_manifest.json" \
-    trainer.gpus=1
+    trainer.devices=1
 """
 
 

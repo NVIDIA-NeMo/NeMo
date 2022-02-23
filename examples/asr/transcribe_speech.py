@@ -108,11 +108,16 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     # setup GPU
     if cfg.cuda is None:
         if torch.cuda.is_available():
-            cfg.cuda = 0  # use 0th CUDA device
+            device = [0]  # use 0th CUDA device
+            accelerator = 'gpu'
         else:
-            cfg.cuda = -1  # use CPU
+            device = 1
+            accelerator = 'cpu'
+    else:
+        device = [cfg.cuda]
+        accelerator = 'gpu'
 
-    device = torch.device(f'cuda:{cfg.cuda}' if cfg.cuda >= 0 else 'cpu')
+    map_location = torch.device('cuda:{}'.format(device[0]) if accelerator == 'gpu' else 'cpu')
 
     # setup model
     if cfg.model_path is not None:
@@ -121,14 +126,18 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         classpath = model_cfg.target  # original class path
         imported_class = model_utils.import_class_by_path(classpath)  # type: ASRModel
         logging.info(f"Restoring model : {imported_class.__name__}")
-        asr_model = imported_class.restore_from(restore_path=cfg.model_path, map_location=device)  # type: ASRModel
+        asr_model = imported_class.restore_from(
+            restore_path=cfg.model_path, map_location=map_location
+        )  # type: ASRModel
         model_name = os.path.splitext(os.path.basename(cfg.model_path))[0]
     else:
         # restore model by name
-        asr_model = ASRModel.from_pretrained(model_name=cfg.pretrained_name, map_location=device)  # type: ASRModel
+        asr_model = ASRModel.from_pretrained(
+            model_name=cfg.pretrained_name, map_location=map_location
+        )  # type: ASRModel
         model_name = cfg.pretrained_name
 
-    trainer = pl.Trainer(gpus=[cfg.cuda] if cfg.cuda >= 0 else 0)
+    trainer = pl.Trainer(devices=device, accelerator=accelerator)
     asr_model.set_trainer(trainer)
     asr_model = asr_model.eval()
 

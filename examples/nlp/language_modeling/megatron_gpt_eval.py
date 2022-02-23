@@ -116,9 +116,11 @@ def main():
     if args.precision in ["32", "16"]:
         args.precision = int(float(args.precision))
 
+    # trainer required for restoring model parallel models
     trainer = Trainer(
         plugins=NLPDDPPlugin(),
-        gpus=args.tensor_model_parallel_size * args.pipeline_model_parallel_size,
+        devices=args.tensor_model_parallel_size * args.pipeline_model_parallel_size,
+        accelerator='gpu',
         precision=args.precision,
     )
 

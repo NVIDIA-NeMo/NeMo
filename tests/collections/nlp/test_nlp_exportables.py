@@ -84,7 +84,7 @@ class TestExportableClassifiers:
     #         config = OmegaConf.load(config_file)
     #         config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
     #         config.model.data_dir = dummy_data
-    #         config.trainer.gpus = 1
+    #         config.trainer.devices = 1
     #         config.trainer.precision = 32
     #         config.trainer.accelerator = None
     #         trainer = pl.Trainer(**config.trainer)
@@ -113,9 +113,9 @@ class TestExportableClassifiers:
             config = OmegaConf.load(config_file)
             config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
             config.model.data_dir = dummy_data
-            config.trainer.gpus = 1
+            config.trainer.devices = 1
             config.trainer.precision = 32
-            config.trainer.accelerator = None
+            config.trainer.strategy = None
             trainer = pl.Trainer(**config.trainer)
             model = IntentSlotClassificationModel(config.model, trainer=trainer)
             filename = os.path.join(tmpdir, 'isc.pt')

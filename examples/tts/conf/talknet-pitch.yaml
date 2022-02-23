@@ -159,15 +159,15 @@ model:
       warmup_ratio: 0.02
 
 trainer:
-  gpus: 1
+  devices: 1
   max_epochs: ???
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   accumulate_grad_batches: 1
-  checkpoint_callback: False
+  enable_checkpointing: False
   logger: False
   gradient_clip_val: 1.0
-  flush_logs_every_n_steps: 1000
   log_every_n_steps: 200
   check_val_every_n_epoch: 25
 

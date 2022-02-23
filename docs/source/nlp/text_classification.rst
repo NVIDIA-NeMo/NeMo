@@ -95,7 +95,8 @@ Example of a command for training a Text Classification model on two GPUs for 50
         model.training_ds.file_path=<TRAIN_FILE_PATH> \
         model.validation_ds.file_path=<VALIDATION_FILE_PATH> \
         trainer.max_epochs=50 \
-        trainer.gpus=[0,1] \
+        trainer.devices=[0,1] \
+        trainer.accelerator='gpu' \
         optim.name=adam \
         optim.lr=0.0001 \
         model.nemo_path=<NEMO_FILE_PATH>

@@ -51,7 +51,7 @@ by default. You may update the config file from the file directly. The other opt
     model.train_ds.file=<TRAIN_JSON_FILE>
     model.validation_ds=<VAL_JSON_FILE>
     trainer.max_epochs=<NUM_EPOCHS>
-    trainer.gpus=[<CHANGE_TO_GPU_YOU_WANT_TO_USE>]
+    trainer.devices=[<CHANGE_TO_GPU_YOU_WANT_TO_USE>]
 
 
 ***Model Evaluation***

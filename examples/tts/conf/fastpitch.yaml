@@ -127,15 +127,15 @@ model:
       d_model: 1  # Disable scaling based on model dim
 
 trainer:
-  gpus: -1 # number of gpus
+  devices: -1 # number of gpus
   max_epochs: 1500
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   accumulate_grad_batches: 1
-  checkpoint_callback: False  # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: False  # Provided by exp_manager
   gradient_clip_val: 1000.0
-  flush_logs_every_n_steps: 1000
   log_every_n_steps: 100
   check_val_every_n_epoch: 5
 

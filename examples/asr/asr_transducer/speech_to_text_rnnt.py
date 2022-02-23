@@ -20,7 +20,8 @@ Basic run (on CPU for 50 epochs):
         # (Optional: --config-path=<path to dir of configs> --config-name=<name of config without .yaml>) \
         model.train_ds.manifest_filepath="<path to manifest file>" \
         model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.gpus=0 \
+        trainer.devices=1 \
+        trainer.accelerator='cpu' \
         trainer.max_epochs=50
 
 
@@ -38,7 +39,7 @@ Override some args of optimizer:
     --config-name="config_rnnt" \
     model.train_ds.manifest_filepath="./an4/train_manifest.json" \
     model.validation_ds.manifest_filepath="./an4/test_manifest.json" \
-    trainer.gpus=2 \
+    trainer.devices=2 \
     trainer.precision=16 \
     trainer.max_epochs=2 \
     model.optim.betas=[0.8,0.5] \
@@ -50,7 +51,7 @@ Override optimizer entirely
     --config-name="config_rnnt" \
     model.train_ds.manifest_filepath="./an4/train_manifest.json" \
     model.validation_ds.manifest_filepath="./an4/test_manifest.json" \
-    trainer.gpus=2 \
+    trainer.devices=2 \
     trainer.precision=16 \
     trainer.max_epochs=2 \
     model.optim.name=adamw \

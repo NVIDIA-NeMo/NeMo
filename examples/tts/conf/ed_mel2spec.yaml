@@ -85,14 +85,14 @@ model:
     validate_scores: True # Slow!
 
 trainer:
-  gpus: 1 # number of gpus
+  devices: 1 # number of gpus
   max_epochs: 200
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   accumulate_grad_batches: 1
-  checkpoint_callback: False  # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: False  # Provided by exp_manager
-  flush_logs_every_n_steps: 2000
   log_every_n_steps: 200
   check_val_every_n_epoch: 10
   precision: 32

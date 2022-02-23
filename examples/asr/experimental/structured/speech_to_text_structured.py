@@ -128,7 +128,7 @@ def main():
     cfg.model.optim.sched.warmup_ratio = 0.01
 
     # Trainer config
-    cfg.trainer.gpus = 1
+    cfg.trainer.devices = 1
     cfg.trainer.max_epochs = 5
 
     # Exp Manager config

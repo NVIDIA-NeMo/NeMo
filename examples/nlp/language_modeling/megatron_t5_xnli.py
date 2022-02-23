@@ -34,7 +34,6 @@ def main(cfg) -> None:
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
     plugins = [
         NLPDDPPlugin(
-            num_nodes=cfg.trainer.num_nodes,
             no_ddp_communication_hook=(
                 megatron_amp_o2 and cfg.trainer.precision == 'bf16'
             ),  # Only bf16 uses fp32_grad_accum.

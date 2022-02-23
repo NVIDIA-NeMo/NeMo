@@ -249,7 +249,8 @@ A NeMo configuration file should look similar to the following:
     # PyTorch Lightning Trainer configuration
     # any argument of the Trainer object can be set here
     trainer:
-        gpus: 1 # number of gpus per node
+        devices: 1 # number of gpus per node
+        accelerator: gpu
         num_nodes: 1 # number of nodes
         max_epochs: 10 # how many training epochs to run
         val_check_interval: 1.0 # run validation after every epoch
@@ -308,7 +309,8 @@ With Hydra, arguments are set using the ``=`` operator:
     python examples/asr/asr_ctc/speech_to_text_ctc.py \
         model.train_ds.manifest_filepath=/path/to/my/train/manifest.json \
         model.validation_ds.manifest_filepath=/path/to/my/validation/manifest.json \
-        trainer.gpus=2 \
+        trainer.devices=2 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50
 
 We can use the ``+`` operator to add arguments from the CLI:
@@ -318,7 +320,8 @@ We can use the ``+`` operator to add arguments from the CLI:
     python examples/asr/asr_ctc/speech_to_text_ctc.py \
         model.train_ds.manifest_filepath=/path/to/my/train/manifest.json \
         model.validation_ds.manifest_filepath=/path/to/my/validation/manifest.json \
-        trainer.gpus=2 \
+        trainer.devices=2 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +trainer.fast_dev_run=true
 
@@ -330,7 +333,8 @@ We can use the ``~`` operator to remove configurations:
         model.train_ds.manifest_filepath=/path/to/my/train/manifest.json \
         model.validation_ds.manifest_filepath=/path/to/my/validation/manifest.json \
         ~model.test_ds \
-        trainer.gpus=2 \
+        trainer.devices=2 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +trainer.fast_dev_run=true
 
@@ -344,7 +348,8 @@ We can specify configuration files using the ``--config-path`` and ``--config-na
         model.train_ds.manifest_filepath=/path/to/my/train/manifest.json \
         model.validation_ds.manifest_filepath=/path/to/my/validation/manifest.json \
         ~model.test_ds \
-        trainer.gpus=2 \
+        trainer.devices=2 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +trainer.fast_dev_run=true
 

@@ -45,7 +45,7 @@ By setting the trainer config you may control these configs. For example to do t
 
 python transcribe_speech_parallel.py \
     trainer.precision=16 \
-    trainer.gpus=2 \
+    trainer.devices=2 \
     ...
 
 You may control the dataloader's config by setting the predict_ds:
@@ -91,8 +91,8 @@ class ParallelTranscriptionConfig:
     use_cer: bool = False
 
     # decoding strategy for RNNT models
-    rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig(fused_batch_size=-1)
-    trainer: TrainerConfig = TrainerConfig(gpus=-1, accelerator="ddp")
+    rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig()
+    trainer: TrainerConfig = TrainerConfig(devices=-1, accelerator="gpu", strategy="ddp")
 
 
 def match_train_config(predict_ds, train_ds):

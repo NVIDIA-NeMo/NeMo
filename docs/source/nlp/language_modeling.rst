@@ -182,7 +182,8 @@ The following script trains 6-layer Transformer LM:
 
     python examples/nlp/language_modeling/transformer_lm.py \
       -cn transformer_lm_config \
-      trainer.gpus=2 \
+      trainer.devices=2 \
+      trainer.accelerator='gpu' \
       +exp_manager.exp_dir=/path/to/store/results \
       +exp_manager.create_checkpoint_callback=True \
       +exp_manager.checkpoint_callback_params.monitor=val_PPL \

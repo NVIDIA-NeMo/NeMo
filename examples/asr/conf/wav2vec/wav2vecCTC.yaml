@@ -117,11 +117,12 @@ model:
       warmup_ratio: null
 
 trainer:
-  gpus: 0 # number of gpus
+  devices: 1 # number of gpus
   num_nodes: 1
   max_epochs: 100
   max_steps: null # computed at runtime if not set
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
   precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
@@ -142,7 +143,7 @@ exp_manager:
     monitor: "val_wer"
     mode: "min"
     save_top_k: 5
-    every_n_val_epochs: 1
+    every_n_epochs: 1
     always_save_nemo: true
   create_wandb_logger: false
   wandb_logger_kwargs:

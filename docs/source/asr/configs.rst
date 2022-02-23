@@ -739,7 +739,8 @@ Fine-tuning via a NeMo model
         --config-name=<name of config without .yaml>) \
         model.train_ds.manifest_filepath="<path to manifest file>" \
         model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.gpus=-1 \
+        trainer.devices=-1 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +init_from_nemo_model="<path to .nemo model file>"
 
@@ -754,7 +755,8 @@ Fine-tuning via a NeMo pretrained model name
         --config-name=<name of config without .yaml>) \
         model.train_ds.manifest_filepath="<path to manifest file>" \
         model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.gpus=-1 \
+        trainer.devices=-1 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +init_from_pretrained_model="<name of pretrained checkpoint>"
 
@@ -768,6 +770,7 @@ Fine-tuning via a Pytorch Lightning checkpoint
         --config-name=<name of config without .yaml>) \
         model.train_ds.manifest_filepath="<path to manifest file>" \
         model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.gpus=-1 \
+        trainer.devices=-1 \
+        trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +init_from_ptl_ckpt="<name of pytorch lightning checkpoint>"

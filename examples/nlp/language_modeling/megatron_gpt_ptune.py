@@ -45,7 +45,7 @@ def main(cfg) -> None:
         )
         register_taskdata_processor(processor_config.taskname, processor)
 
-    plugins = [NLPDDPPlugin(num_nodes=cfg.trainer.num_nodes)]
+    plugins = [NLPDDPPlugin()]
     if cfg.trainer.precision == 16:
         scaler = GradScaler(
             init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),

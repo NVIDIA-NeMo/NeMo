@@ -1,9 +1,9 @@
 name: megatron_t5_glue_xnli
 
 trainer:
-  gpus: 1
+  devices: 1
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
   precision: 16
   logger: False # logger provided by exp_manager
   checkpoint_callback: False

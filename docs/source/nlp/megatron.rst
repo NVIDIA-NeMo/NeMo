@@ -239,7 +239,8 @@ Example Prompt Tuning Command for the First Task
   echo "Prompt tuning starting"
   python megatron_gpt_prompt_tuning.py \
           --config-name=megatron_gpt_config \
-          trainer.gpus=$GPUS \
+          trainer.devices=$GPUS \
+          trainer.accelerator='gpu' \
           trainer.max_steps=$MAX_STEPS \
           restore_from_path=$RESTORE_PATH \
           exp_manager.name=$EXPR_NAME \
@@ -277,7 +278,8 @@ and to use the .nemo file saved at the end of the last prompt tuning run.
   echo "Prompt tuning starting"
   python megatron_gpt_prompt_tuning.py \
           --config-name=megatron_gpt_config \
-          trainer.gpus=$GPUS \
+          trainer.devices=$GPUS \
+          trainer.accelerator='gpu' \
           trainer.max_steps=$MAX_STEPS \
           trainer.val_check_interval=$VAL_CHECK_INTERVAL \
           restore_from_path=$RESTORE_PATH \

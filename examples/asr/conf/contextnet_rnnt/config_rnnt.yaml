@@ -227,14 +227,15 @@ model:
       last_epoch: -1
 
 trainer:
-  gpus: 0 # number of gpus
+  devices: 1 # number of gpus
   max_epochs: 5
   max_steps: null # computed at runtime if not set
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   precision: 32
   accumulate_grad_batches: 1
-  checkpoint_callback: False  # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: False  # Provided by exp_manager
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations

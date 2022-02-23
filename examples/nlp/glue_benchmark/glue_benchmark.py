@@ -26,7 +26,7 @@ To train GLUEModel with the default config file, run:
     model.dataset.data_dir=<PATH_TO_DATA_DIR>  \
     model.task_name=TASK_NAME \
     trainer.max_epochs=<NUM_EPOCHS> \
-    trainer.gpus="[<CHANGE_TO_GPU_YOU_WANT_TO_USE>]
+    trainer.devices="[<CHANGE_TO_GPU_YOU_WANT_TO_USE>]
 
 Supported task names:
 ["cola", "sst-2", "mrpc", "sts-b", "qqp", "mnli", "qnli", "rte", "wnli"]

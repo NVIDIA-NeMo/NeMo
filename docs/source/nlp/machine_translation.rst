@@ -331,7 +331,8 @@ Tarred datasets can be created in two ways:
          model.encoder_tokenizer.vocab_size=32000 \
          model.decoder_tokenizer.vocab_size=32000 \
          ~model.test_ds \
-         trainer.gpus=[0,1,2,3] \
+         trainer.devices=[0,1,2,3] \
+         trainer.accelerator='gpu' \
          +trainer.fast_dev_run=true \
          exp_manager=null \
 
@@ -414,7 +415,8 @@ from :cite:`nlp-machine_translation-vaswani2017attention`.
     python examples/nlp/machine_translation/enc_dec_nmt.py \
       -cn aayn_base \
       do_training=true \
-      trainer.gpus=8 \
+      trainer.devices=8 \
+      trainer.accelerator='gpu' \
       ~trainer.max_epochs \
       +trainer.max_steps=100000 \
       +trainer.val_check_interval=1000 \

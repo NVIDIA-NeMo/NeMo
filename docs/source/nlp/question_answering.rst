@@ -220,7 +220,8 @@ Example of the command for training the model:
            model.dataset.version_2_with_negative=<ALLOW_UNANSWERABLE_SAMPLES>  \
            model.dataset.do_lower_case=<DO_LOWER_CASE> \
            trainer.max_epochs=<NUM_EPOCHS> \
-           trainer.gpus=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>]
+           trainer.devices=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>] \
+           trainer.accelerator='gpu'
 
 .. Note:: 
   

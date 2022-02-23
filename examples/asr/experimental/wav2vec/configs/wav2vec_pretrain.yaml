@@ -118,10 +118,11 @@ model:
       warmup_ratio: null
 
 trainer:
-  gpus: -1 # number of gpus
+  devices: -1 # number of gpus
   num_nodes: 1
+  accelerator: gpu
+  strategy: ddp
   max_steps: 400000 # computed at runtime if not set
-  accelerator: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
   precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
@@ -130,7 +131,7 @@ trainer:
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   check_val_every_n_epoch: 10 # number of evaluations on validation every n epochs
   sync_batchnorm: true
-  checkpoint_callback: false # Provided by exp_manager
+  enable_checkpointing: False # Provided by exp_manager
   logger: false # Provided by exp_manager
 
 exp_manager:

@@ -152,8 +152,8 @@ model:
       warmup_ratio: 0.35
 
 trainer:
-  num_nodes: 1
   devices: 1
+  num_nodes: 1
   accelerator: gpu
   strategy: ddp
   precision: 32

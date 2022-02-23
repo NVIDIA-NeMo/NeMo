@@ -78,8 +78,7 @@ class ExampleModel(ModelPT):
 
 def instantiate_multinode_ddp_if_possible():
     num_gpus = torch.cuda.device_count()
-    trainer = Trainer(gpus=num_gpus, accelerator='ddp', logger=None, checkpoint_callback=False)
-
+    trainer = Trainer(devices=num_gpus, accelerator='gpu', strategy='ddp', logger=None, enable_checkpointing=False)
     exp_manager_cfg = ExpManagerConfig(exp_dir='./ddp_check/', use_datetime_version=False, version="")
     exp_manager(trainer, cfg=OmegaConf.structured(exp_manager_cfg))
     return trainer

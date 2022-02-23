@@ -25,7 +25,7 @@ import nemo.collections.nlp.models as models
 
 
 def get_metrics(data_dir, model):
-    trainer = pl.Trainer(gpus=[0])
+    trainer = pl.Trainer(devices=[0], accelerator='gpu')
 
     model.set_trainer(trainer)
     model.update_data_dir(data_dir)
@@ -49,7 +49,7 @@ def get_metrics(data_dir, model):
 
 
 def get_metrics_new_format(data_dir, model):
-    trainer = pl.Trainer(gpus=[0])
+    trainer = pl.Trainer(devices=[0], accelerator='gpu')
 
     model.set_trainer(trainer)
 

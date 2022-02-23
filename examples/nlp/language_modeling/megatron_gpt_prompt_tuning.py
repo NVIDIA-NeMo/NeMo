@@ -51,7 +51,7 @@ PROMPT_LENGTH=20
 echo "Prompt tuning starting"
 python megatron_gpt_prompt_tuning.py \
         --config-name=megatron_gpt_config \
-        trainer.gpus=$GPUS \
+        trainer.devices=$GPUS \
         trainer.max_steps=$MAX_STEPS \
         restore_from_path=$RESTORE_PATH \
         exp_manager.name=$EXPR_NAME \
@@ -87,7 +87,7 @@ VAL_CHECK_INTERVAL=50
 echo "Prompt tuning starting"
 python megatron_gpt_prompt_tuning.py \
         --config-name=megatron_gpt_config \
-        trainer.gpus=$GPUS \
+        trainer.devices=$GPUS \
         trainer.max_steps=$MAX_STEPS \
         trainer.val_check_interval=$VAL_CHECK_INTERVAL \
         restore_from_path=$RESTORE_PATH \
@@ -123,7 +123,7 @@ RESTORE_PATH='rte_winogrande_megatron_gpt.nemo'
 echo "Prompt tuning starting"
 python megatron_gpt_prompt_tuning.py \
         --config-name=megatron_gpt_config \
-        trainer.gpus=$GPUS \
+        trainer.devices=$GPUS \
         trainer.max_steps=$MAX_STEPS \
         exp_manager.name=$EXPR_NAME \
         exp_manager.checkpoint_callback_params.save_nemo_on_train_end=True \
@@ -156,9 +156,9 @@ def main(cfg) -> None:
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
     plugins = [
         NLPDDPPlugin(
-            num_nodes=cfg.trainer.num_nodes,
             no_ddp_communication_hook=True,
             gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
+            find_unused_parameters=False,
         )
     ]
     if cfg.trainer.precision in [16, 'bf16']:

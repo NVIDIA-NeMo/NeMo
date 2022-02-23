@@ -1,7 +1,8 @@
 name: megatron_ptune_gpt
 
 trainer:
-  gpus: 2
+  devices: 2
+  accelerator: gpu
   num_nodes: 1
   precision: 16
   logger: False # logger provided by exp_manager

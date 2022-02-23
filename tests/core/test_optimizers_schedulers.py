@@ -819,11 +819,12 @@ class TestOptimizersSchedulers:
         ):
             trainer = pl.Trainer(
                 max_epochs=max_epochs,
-                accelerator="ddp_cpu",
+                strategy="ddp_spawn",
+                accelerator="cpu",
                 num_processes=num_processes,
                 accumulate_grad_batches=accumulate_grad_batches,
                 limit_train_batches=limit_train_batches,
-                checkpoint_callback=False,
+                enable_checkpointing=False,
                 progress_bar_refresh_rate=0,
                 weights_summary=None,
             )
@@ -906,11 +907,12 @@ class TestOptimizersSchedulers:
         ):
             trainer = pl.Trainer(
                 max_steps=max_steps,
-                accelerator="ddp_cpu",
+                strategy="ddp_spawn",
+                accelerator="cpu",
                 num_processes=num_processes,
                 accumulate_grad_batches=accumulate_grad_batches,
                 limit_train_batches=limit_train_batches,
-                checkpoint_callback=False,
+                enable_checkpointing=False,
                 progress_bar_refresh_rate=0,
                 weights_summary=None,
             )

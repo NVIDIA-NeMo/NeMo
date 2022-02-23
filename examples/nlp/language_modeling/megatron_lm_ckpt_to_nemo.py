@@ -357,7 +357,8 @@ def convert(local_rank, rank, world_size, args):
     pipeline_model_parallel_size = world_size // args.tensor_model_parallel_size
     assert args.pipeline_model_parallel_size == pipeline_model_parallel_size
 
-    trainer = Trainer(gpus=args.gpus_per_node, num_nodes=num_nodes)
+    trainer = Trainer(devices=args.gpus_per_node, accelerator='gpu', num_nodes=num_nodes)
+
     # TODO: reach out to PTL For an API-safe local rank override
     trainer.accelerator.training_type_plugin._local_rank = local_rank
 

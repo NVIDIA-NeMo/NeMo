@@ -35,7 +35,7 @@ class AppConfig(Config):
     """
 
     name: str = "Training of a LeNet-5 Model using a pure PyTorchLightning approach - using DDP on 2 GPUs."
-    trainer: TrainerConfig = TrainerConfig(gpus=2, accelerator="ddp")
+    trainer: TrainerConfig = TrainerConfig(devices=2, accelerator="gpu", strategy="ddp")
     model: MNISTLeNet5Config = MNISTLeNet5Config()
 
 

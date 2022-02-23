@@ -67,10 +67,14 @@ def main(cfg: DictConfig) -> None:
 
     if not hasattr(cfg.model, 'test_ds'):
         raise ValueError(f'model.test_ds was not found in the config, skipping evaluation')
-    else:
-        gpu = 1 if cfg.trainer.gpus != 0 else 0
 
-    trainer = pl.Trainer(gpus=gpu, precision=cfg.trainer.precision, logger=False, checkpoint_callback=False,)
+    trainer = pl.Trainer(
+        devices=1,
+        precision=cfg.trainer.precision,
+        logger=False,
+        enable_checkpointing=False,
+        accelerator=cfg.trainer.accelerator,
+    )
     exp_dir = exp_manager(trainer, cfg.exp_manager)
 
     if not cfg.pretrained_model:

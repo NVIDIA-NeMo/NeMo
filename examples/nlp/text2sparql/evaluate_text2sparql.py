@@ -50,7 +50,7 @@ from nemo.utils import logging
 @hydra_runner(config_path="conf", config_name="text2sparql_config")
 def main(cfg: DictConfig) -> None:
     logging.info(f"Config:\n {OmegaConf.to_yaml(cfg)}")
-    trainer = pl.Trainer(gpus=cfg.trainer.gpus)
+    trainer = pl.Trainer(devices=cfg.trainer.devices, accelerator=cfg.trainer.accelerator)
     nmt_model = Text2SparqlModel.restore_from(restore_path=cfg.model.nemo_path)
     nmt_model.setup_test_data(cfg.model.test_ds)
     results = trainer.test(nmt_model)

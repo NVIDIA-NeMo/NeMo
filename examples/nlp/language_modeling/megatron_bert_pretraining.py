@@ -31,7 +31,7 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
-    plugins = [NLPDDPPlugin(num_nodes=cfg.trainer.num_nodes, find_unused_parameters=False)]
+    plugins = [NLPDDPPlugin(find_unused_parameters=False)]
     if cfg.trainer.precision == 16:
         scaler = GradScaler(
             init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),

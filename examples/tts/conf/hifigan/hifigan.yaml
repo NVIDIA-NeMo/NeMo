@@ -76,9 +76,8 @@ trainer:
   precision: 32
   max_steps: ${model.max_steps}
   accumulate_grad_batches: 1
-  checkpoint_callback: false # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: false # Provided by exp_manager
-  flush_logs_every_n_steps: 200
   log_every_n_steps: 100
   check_val_every_n_epoch: 10
 

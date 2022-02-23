@@ -223,10 +223,11 @@ model:
       min_lr: 0.0
 
 trainer:
-  gpus: 0 # number of gpus
+  devices: 1 # number of gpus
   max_epochs: 5
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   accumulate_grad_batches: 1
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations

@@ -67,14 +67,10 @@ class NLPDDPPlugin(DDPPlugin):
         with FP32 gradient accumulation.
     """
 
-    accelerator = "ddp"
-
     def __init__(
         self,
         parallel_devices: Optional[List[torch.device]] = None,
-        num_nodes: int = 1,
         cluster_environment: ClusterEnvironment = None,
-        sync_batchnorm: bool = False,
         checkpoint_io: Optional[CheckpointIO] = None,
         no_ddp_communication_hook: bool = False,
         **kwargs: Union[Any, Dict[str, Any]],
@@ -83,7 +79,7 @@ class NLPDDPPlugin(DDPPlugin):
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-        super().__init__(parallel_devices, num_nodes, cluster_environment, checkpoint_io, sync_batchnorm, **kwargs)
+        super().__init__(parallel_devices, cluster_environment, checkpoint_io, **kwargs)
 
         self.no_ddp_communication_hook = no_ddp_communication_hook
 

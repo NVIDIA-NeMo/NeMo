@@ -72,7 +72,7 @@ def main():
     model_cfg.validation_ds.manifest_filepath = ""
 
     # Trainer config
-    cfg.trainer.gpus = 1
+    cfg.trainer.devices = 1
     cfg.trainer.max_epochs = 5
 
     # Exp Manager config

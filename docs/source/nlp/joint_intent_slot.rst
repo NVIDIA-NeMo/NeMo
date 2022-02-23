@@ -161,7 +161,8 @@ The following is an example of the command for training the model:
     python examples/nlp/intent_slot_classification/intent_slot_classification.py
            model.data_dir=<PATH_TO_DATA_DIR> \
            trainer.max_epochs=<NUM_EPOCHS> \
-           trainer.gpus=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>]
+           trainer.devices=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>] \
+           trainer.accelerator='gpu'
 
 
 Required Arguments for Training

@@ -46,7 +46,7 @@ def main():
     torch.set_grad_enabled(False)
 
     # trainer required for restoring model parallel models
-    trainer = Trainer(plugins=NLPDDPPlugin(), gpus=args.tensor_model_parallel_size, precision=16)
+    trainer = Trainer(plugins=NLPDDPPlugin(), devices=args.tensor_model_parallel_size, precision=16, accelerator='gpu')
 
     app_state = AppState()
     if args.tensor_model_parallel_size > 1:

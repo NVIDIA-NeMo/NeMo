@@ -1,17 +1,18 @@
 project_dir: null
 name: SelfAlignmentPretrainingForMedicalEntityLinking
 trainer:
-  gpus: 1
+  devices: 1
   num_nodes: 1
   max_epochs: 2
   max_steps: null
   accumulate_grad_batches: 1
   precision: 16
-  accelerator: ddp
+  accelerator: gpu
+  strategy: ddp
   gradient_clip_val: 0.0
   log_every_n_steps: 1
   val_check_interval: 2
-  checkpoint_callback: false
+  enable_checkpointing: False
   logger: false
 model:
   nemo_path: ???

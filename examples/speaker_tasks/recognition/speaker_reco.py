@@ -31,7 +31,7 @@ python ./speaker_reco.py --config-path='conf' --config-name='SpeakerNet_recognit
     model.train_ds.batch_size=64 model.validation_ds.batch_size=64 \
     model.train_ds.manifest_filepath="<train_manifest>" model.validation_ds.manifest_filepath="<dev_manifest>" \
     model.test_ds.manifest_filepath="<test_manifest>" \
-    trainer.gpus=1 \
+    trainer.devices=1 \
     model.decoder.params.num_classes=2 \
     exp_manager.name=$EXP_NAME +exp_manager.use_datetime_version=False \
     exp_manager.exp_dir='./speaker_exps'
@@ -63,8 +63,7 @@ def main(cfg):
         speaker_model.save_to(model_path)
 
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
-        gpu = 1 if cfg.trainer.gpus != 0 else 0
-        trainer = pl.Trainer(gpus=gpu)
+        trainer = pl.Trainer(devices=1, accelerator=cfg.trainer.accelerator)
         if speaker_model.prepare_test(trainer):
             trainer.test(speaker_model)
 

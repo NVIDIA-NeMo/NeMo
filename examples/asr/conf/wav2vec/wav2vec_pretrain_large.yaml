@@ -117,10 +117,11 @@ model:
       warmup_ratio: null
 
 trainer:
-  gpus: 0  # number of gpus
+  devices: 1  # number of gpus
   num_nodes: 1
   max_steps: 250000 # computed at runtime if not set
-  accelerator: ddp
+  accelerator: cpu
+  strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
   amp_backend: apex
@@ -144,7 +145,7 @@ exp_manager:
     monitor: "val_loss"
     mode: "min"
     save_top_k: 5
-    every_n_val_epochs: 1
+    every_n_epochs: 1
     always_save_nemo: true
   wandb_logger_kwargs:
     name: null

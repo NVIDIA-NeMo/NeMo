@@ -50,7 +50,7 @@ If using text2sparql_config.yaml, you must first update the following fields in 
     - exp_manager.exp_dir: Directory to log results from the experiment.
 
 It is highly recommended to also adjust these parameters as necessary:
-    - trainer.gpus: Set to 0 to use CPU. Otherwise the number denotes the number of GPUs.
+    - trainer.devices: Set to 0 to use CPU. Otherwise the number denotes the number of GPUs.
     - trainer.max_epochs: Maximum number of epochs to train for.
     - model.batch_size: 8 is sufficient to train a decent Bart model for Text2Sparql.
     - model.max_seq_length: Maximum (tokenized) sequence length. 150 is sufficient for Text2Sparql.

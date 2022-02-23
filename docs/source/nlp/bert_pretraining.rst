@@ -115,7 +115,8 @@ Example of the command for training the model:
     python bert_pretraining.py \
            model.train_ds.data_file=<PATH_TO_DATA>  \
            trainer.max_epochs=<NUM_EPOCHS> \
-           trainer.gpus=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>]
+           trainer.devices=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>] \
+           trainer.accelerator='gpu'
 
 
 Fine-tuning on Downstream Tasks

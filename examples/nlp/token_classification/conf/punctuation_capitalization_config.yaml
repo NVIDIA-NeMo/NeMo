@@ -18,15 +18,16 @@ pretrained_model: null # pretrained Punctuation and Capitalization model from li
 # punctuation_en_bert or punctuation_en_distilbert
 # or your_model.nemo
 trainer:
-  gpus: 1 # the number of gpus, 0 for CPU
+  devices: 1 # the number of gpus, 0 for CPU
   num_nodes: 1
   max_epochs: 3
   max_steps: null # precedence over max_epochs
   accumulate_grad_batches: 1 # accumulates grads every k batches
   gradient_clip_val: 0.0
   precision: 16 # Should be set to 16 for O1 and O2, default is 16 as PT ignores it when am_level is O0
+  accelerator: gpu
   strategy: ddp
-  checkpoint_callback: false  # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: false  # Provided by exp_manager
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations

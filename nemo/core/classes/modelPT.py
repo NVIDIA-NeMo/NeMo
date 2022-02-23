@@ -1201,8 +1201,7 @@ class ModelPT(LightningModule, Model):
         DDP_WARN = """\n\nDuring testing, it is currently advisable to construct a new Trainer "
                     "with single GPU and no DDP to obtain accurate results.
                     "Following pattern should be used: "
-                    "gpu = 1 if cfg.trainer.gpus != 0 else 0"
-                    "trainer = Trainer(gpus=gpu)"
+                    "trainer = Trainer(devices=1, accelerator='gpu')" 
                     "if model.prepare_test(trainer):"
                     "  trainer.test(model)\n\n"""
 

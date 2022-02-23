@@ -2,9 +2,9 @@ name: PromptTuning
 restore_from_path: ???  # used when starting from a .nemo file
 
 trainer:
-  gpus: 1
+  devices: 1
   num_nodes: 1
-  accelerator: ddp
+  accelerator: gpu
   precision: 32
   logger: False # logger provided by exp_manager
   checkpoint_callback: False

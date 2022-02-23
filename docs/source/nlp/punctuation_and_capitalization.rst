@@ -787,7 +787,8 @@ To train the model from scratch, run:
              model.validation_ds.ds_item=<PATH/TO/DEV/DATA_DIR> \
              model.validation_ds.text_file=<NAME_OF_DEV_TEXT_FILE> \
              model.validation_ds.labels_file=<NAME_OF_DEV_LABELS_FILE> \
-             trainer.gpus=[0,1] \
+             trainer.devices=[0,1] \
+             trainer.accelerator='gpu' \
              optim.name=adam \
              optim.lr=0.0001
 

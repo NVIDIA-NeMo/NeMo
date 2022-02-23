@@ -1123,7 +1123,7 @@ class MegatronGPTModel(NLPModel):
             for output in output_tensor:
                 probs = F.log_softmax(output, dim=1)
                 probs = probs[-len(tokens_cut[0]) :]
-                log_probs.append(probs.to(dtype=torch.float16))
+                log_probs.append(probs)
 
             for token, prob in zip(tokens, log_probs):
                 results.append((self.tokenizer.ids_to_text(token), self.tokenizer.ids_to_tokens(token), prob, [0]))

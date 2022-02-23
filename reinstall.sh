@@ -42,7 +42,7 @@ else
     ${PIP} install "${DIST_FILE}[all]"
 fi
 
-echo 'Installing additional nemo_text_processing conda dependency'
+echo 'Installing additional nemo_text_processing dependency'
 bash nemo_text_processing/setup.sh > /dev/null 2>&1 && echo "nemo_text_processing installed!" || echo "nemo_text_processing could not be installed!"
 
 echo 'All done!'

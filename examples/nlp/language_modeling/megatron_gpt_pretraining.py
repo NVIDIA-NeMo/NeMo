@@ -23,7 +23,6 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import Meg
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
     MegatronHalfPrecisionPlugin,
-    NLPDataConnector,
     NLPDDPPlugin,
     PipelineMixedPrecisionPlugin,
 )
@@ -58,10 +57,6 @@ def main(cfg) -> None:
         plugins.append(TorchElasticEnvironment())
 
     trainer = Trainer(plugins=plugins, **cfg.trainer)
-
-    # NLPDataConnector used to provide global batches which are needed
-    # for Apex fwd/bwd functions
-    trainer._data_connector = NLPDataConnector(trainer)
 
     exp_manager(trainer, cfg.exp_manager)
 

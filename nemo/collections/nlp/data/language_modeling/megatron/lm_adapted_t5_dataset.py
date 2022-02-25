@@ -32,6 +32,7 @@ class T5LMAdaptedDataset(GPTDataset):
         super().__init__(
             cfg,
             trainer,
+            tokenizer,
             name,
             data_prefix,
             documents,
@@ -42,8 +43,7 @@ class T5LMAdaptedDataset(GPTDataset):
         )
 
     def __getitem__(self, idx):
-        text = super().__getitem__(idx)
-        text = text['text']
+        text = super()._get_text(idx)
 
         # Split text sequence into encoder and decoder inputs
         tokens_enc = text[: self.seq_length_encoder]

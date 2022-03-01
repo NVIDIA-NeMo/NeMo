@@ -105,7 +105,7 @@ class DecimalFst(GraphFst):
 
         graph_fractional = pynutil.insert("fractional_part: \"") + graph_decimal + pynutil.insert("\"")
 
-        cardinal_graph = cardinal.graph_no_exception | pynini.string_file(get_abs_path("data/numbers/es/zero.tsv"))
+        cardinal_graph = cardinal.graph_no_exception | pynini.string_file(get_abs_path("data/numbers/zero.tsv"))
         graph_integer = pynutil.insert("integer_part: \"") + cardinal_graph + pynutil.insert("\"")
         final_graph_wo_sign = (
             pynini.closure(graph_integer + delete_extra_space, 0, 1)

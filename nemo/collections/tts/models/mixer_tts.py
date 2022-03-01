@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import contextlib
 from typing import List, Optional
 
 import numpy as np
@@ -648,7 +648,12 @@ class MixerTTSModel(SpectrogramGenerator, Exportable):
             logging.warning("parse() is meant to be called in eval mode.")
         if normalize and self.text_normalizer_call is not None:
             text = self.text_normalizer_call(text, **self.text_normalizer_call_kwargs)
-        with self.tokenizer.set_phone_prob(prob=1.0):
+
+        eval_phon_mode = contextlib.nullcontext()
+        if hasattr(self.tokenizer, "set_phone_prob"):
+            eval_phon_mode = self.tokenizer.set_phone_prob(prob=1.0)
+
+        with eval_phon_mode:
             tokens = self.tokenizer.encode(text)
         return torch.tensor(tokens).long().unsqueeze(0).to(self.device)
 

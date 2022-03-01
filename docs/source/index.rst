@@ -31,13 +31,14 @@ NVIDIA NeMo User Guide
    asr/speaker_diarization/intro
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: Natural Language Processing
    :name: Natural Language Processing
-   
-   nlp/megatron
+
    nlp/models
+   nlp/megatron
    nlp/api
+   nlp/text_normalization/intro
 
 .. toctree::
    :maxdepth: 2
@@ -55,12 +56,6 @@ NVIDIA NeMo User Guide
 
    common/intro
 
-.. toctree::
-   :maxdepth: 2
-   :caption: Text Processing
-   :name: Text Processing
-
-   nemo_text_processing/intro
 
 .. toctree::
    :maxdepth: 2

@@ -1,3 +1,5 @@
+.. _wfst_api:
+
 NeMo Text Processing API
 ========================
 

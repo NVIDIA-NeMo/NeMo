@@ -671,9 +671,16 @@ The most important component at the top level is the ``strategy``. It can take o
   decoding:
     strategy: "greedy_batch"
 
+    # preserve decoding alignments
+    preserve_alignments: false
+
+    # Overrides the fused batch size after training.
+    # Setting it to -1 will process whole batch at once when combined with `greedy_batch` decoding strategy
+    fused_batch_size: Optional[int] = -1
+
     # greedy strategy config
     greedy:
-      max_symbols: 30
+      max_symbols: 10
 
     # beam strategy config
     beam:

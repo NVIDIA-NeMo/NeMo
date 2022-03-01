@@ -6,7 +6,7 @@ trainer:
   num_nodes: 1
   precision: 16
   logger: False # logger provided by exp_manager
-  checkpoint_callback: False
+  enable_checkpointing: False
   replace_sampler_ddp: False
   max_epochs: 3
   max_steps: null # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches

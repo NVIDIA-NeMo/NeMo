@@ -1,7 +1,7 @@
-.. _text_normalization:
+.. _nn_text_normalization:
 
-Text Normalization Models
-==========================
+Neural Text Normalization Models
+================================
 Text normalization is the task of converting a written text into its spoken form. For example,
 ``$123`` should be verbalized as ``one hundred twenty three dollars``, while ``123 King Ave``
 should be verbalized as ``one twenty three King Avenue``. At the same time, the inverse problem
@@ -279,7 +279,7 @@ The argument ``data.train_ds.decoder_data_augmentation`` in the config file cont
 References
 ----------
 
-.. bibliography:: nlp_all.bib
+.. bibliography:: tn_itn_all.bib
     :style: plain
     :labelprefix: NLP-TEXTNORM
     :keyprefix: nlp-textnorm-

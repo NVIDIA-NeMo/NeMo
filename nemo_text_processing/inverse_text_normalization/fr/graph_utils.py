@@ -53,7 +53,6 @@ try:
     # French frequently compounds numbers with hyphen.
     delete_hyphen = pynutil.delete(pynini.closure("-", 0, 1))
     insert_hyphen = pynutil.insert("-")
-
     suppletive = pynini.string_file(get_abs_path("data/suppletive.tsv"))
 
     _s = NEMO_SIGMA + pynutil.insert("s")

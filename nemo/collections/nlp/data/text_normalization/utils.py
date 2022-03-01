@@ -216,8 +216,8 @@ def post_process_punct(input: str, normalized_text: str):
     punct_default = [x for x in string.punctuation]
     punct_unicode = [chr(i) for i in range(sys.maxunicode) if category(chr(i)).startswith("P")]
     punct_marks = set(punct_default + punct_unicode)
-    try:
-        for punct in punct_marks:
+    for punct in punct_marks:
+        try:
             equal = True
             if input.count(punct) != normalized_text.count(punct):
                 equal = False
@@ -253,8 +253,8 @@ def post_process_punct(input: str, normalized_text: str):
                         normalized_text[idx_out] = normalized_text[idx_out] + " "
                 idx_out += 1
                 idx_in += 1
-    except:
-        logging.debug(f"Skipping post-processing of {''.join(normalized_text)} for '{punct}'")
+        except:
+            logging.debug(f"Skipping post-processing of {''.join(normalized_text)} for '{punct}'")
 
     normalized_text = "".join(normalized_text)
     return re.sub(r' +', ' ', normalized_text)

@@ -1,12 +1,29 @@
+.. _wfst_itn:
+
 Inverse Text Normalization
 ==========================
 
 Inverse text normalization (ITN) is a part of the Automatic Speech Recognition (ASR) post-processing pipeline.
 ITN is the task of converting the raw spoken output of the ASR model into its written form to improve text readability.
 
-For example, 
-`"in nineteen seventy"` -> `"in 1975"` 
-and `"it costs one hundred and twenty three dollars"` -> `"it costs $123"`.
+Quick Start Guide
+-----------------
+
+.. code-block:: python
+
+    # import WFST-based ITN module
+    from nemo_text_processing.inverse_text_normalization.inverse_normalize import InverseNormalizer
+
+    # initialize inverse normalizer
+    inverse_normalizer = InverseNormalizer(lang="en")
+
+    # try normalizer on a few examples
+    print(inverse_normalizer.normalize("it costs one hundred and twenty three dollars"))
+    # >>>"it costs $123"
+
+    print(inverse_normalizer.normalize("in nineteen seventy"))
+    # >>> "in 1970"
+
 
 NeMo ITN :cite:`textprocessing-itn-zhang2021nemo` is based on WFST-grammars :cite:`textprocessing-itn-Mohri2009`. We also provide a deployment route to C++ using `Sparrowhawk <https://github.com/google/sparrowhawk>`_ :cite:`textprocessing-itn-sparrowhawk` -- an open-source version of Google Kestrel :cite:`textprocessing-itn-ebden2015kestrel`.
 See :doc:`Text Procesing Deployment <../tools/text_processing_deployment>` for details.
@@ -17,11 +34,8 @@ See :doc:`Text Procesing Deployment <../tools/text_processing_deployment>` for d
 
 
 
-
-
-
 Classes
-----------------------------------
+--------
 
 
 The base class for every grammar is :class:`GraphFst<nemo_text_processing.text_normalization.en.GraphFst>`.
@@ -75,13 +89,25 @@ Example evaluation run on (cleaned) `Google's text normalization dataset <https:
 
     python run_evaluation.py  --input=./en_with_types/output-00001-of-00100 <--language LANGUAGE> [--cat CLASS_CATEGORY] [--filter]
 
+Supported Languages
+-------------------
 
+ITN supports: English, Spanish, German, French, Vietnamese, and Russian languages.
+
+Installation
+------------
+
+`nemo_text_processing` is installed with the `nemo_toolkit`.
+
+See :doc:`NeMo Introduction <../starthere/intro>` for installation details.
+
+Additional requirements can be found in `setup.sh <https://github.com/NVIDIA/NeMo/blob/stable/nemo_text_processing/setup.sh>`_.
 
 
 References
 ----------
 
-.. bibliography:: textprocessing_all.bib
+.. bibliography:: ../tn_itn_all.bib
     :style: plain
     :labelprefix: TEXTPROCESSING-ITN
     :keyprefix: textprocessing-itn-

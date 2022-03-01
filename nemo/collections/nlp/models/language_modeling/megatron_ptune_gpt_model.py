@@ -87,6 +87,8 @@ class MegatronGPTPTuneModel(NLPModel):
             num_layers=cfg.prompt_encoder.num_layers,
         )
 
+        self._reduced_loss_buffer = []
+
         # load prompt encoder
         self.hidden_size = hidden_size
         self.tokenizer.add_special_tokens({'additional_special_tokens': [cfg.pseudo_token]})
@@ -192,16 +194,16 @@ class MegatronGPTPTuneModel(NLPModel):
         # Reduced loss for logging.
         reduced_loss = average_losses_across_data_parallel_group([loss])
         # cache reduced loss while accumulating gradients
-        self.model._reduced_loss_buffer.append(reduced_loss[0])
+        self._reduced_loss_buffer.append(reduced_loss[0])
 
         if (batch_idx + 1) % self.trainer.accumulate_grad_batches == 0:
             # Reduced loss for logging.
-            average_reduced_loss = sum(self.model._reduced_loss_buffer) / len(self.model._reduced_loss_buffer)
+            average_reduced_loss = sum(self._reduced_loss_buffer) / len(self._reduced_loss_buffer)
             self.log('reduced_train_loss', average_reduced_loss, prog_bar=True)
             lr = self._optimizer.param_groups[0]['lr']
             self.log('lr', lr)
             self.log('global_step', self.trainer.global_step, prog_bar=True)
-            self.model._reduced_loss_buffer = []
+            self._reduced_loss_buffer = []
 
         return loss
 
@@ -242,7 +244,7 @@ class MegatronGPTPTuneModel(NLPModel):
 
                 input_embeds = self.embed_input(predicted_tokens_dec, enc_taskname)
 
-                encoder_position_ids = t5_position_ids(predicted_tokens_dec)
+                encoder_position_ids = build_position_ids(predicted_tokens_dec)
                 position_embeddings = self.model.model.language_model.embedding.position_embeddings(
                     encoder_position_ids
                 )

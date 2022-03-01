@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import contextlib
 from typing import Optional
 
 import torch
@@ -204,8 +204,12 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             str_input = self.text_normalizer_call(str_input, **self.text_normalizer_call_kwargs)
 
         if self.learn_alignment:
-            # Disable mixed g2p representation
-            with self.vocab.set_phone_prob(prob=1.0):
+            eval_phon_mode = contextlib.nullcontext()
+            if hasattr(self.vocab, "set_phone_prob"):
+                eval_phon_mode = self.vocab.set_phone_prob(prob=1.0)
+
+            # Disable mixed g2p representation if necessary
+            with eval_phon_mode:
                 tokens = self.parser(str_input)
         else:
             # TODO(Oktai15): remove it in 1.8.0 version
@@ -438,7 +442,11 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         if cfg.dataset._target_ == "nemo.collections.asr.data.audio_to_text.FastPitchDataset":
             dataset = instantiate(cfg.dataset, parser=self.parser)
         elif cfg.dataset._target_ == "nemo.collections.tts.torch.data.TTSDataset":
-            with self.vocab.set_phone_prob(prob=None if name == "val" else self.vocab.phoneme_probability):
+            phon_mode = contextlib.nullcontext()
+            if hasattr(self.vocab, "set_phone_prob"):
+                phon_mode = self.vocab.set_phone_prob(prob=None if name == "val" else self.vocab.phoneme_probability)
+
+            with phon_mode:
                 dataset = instantiate(
                     cfg.dataset,
                     text_normalizer=self.normalizer,

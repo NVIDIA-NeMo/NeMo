@@ -16,6 +16,7 @@
 import os
 
 from nemo_text_processing.text_normalization.en.graph_utils import (
+    NEMO_WHITE_SPACE,
     GraphFst,
     delete_extra_space,
     delete_space,
@@ -80,14 +81,30 @@ class ClassifyFst(GraphFst):
 
             classify = pynutil.add_weight(whitelist_graph, 1) | pynutil.add_weight(word_graph, 100)
 
-            punct = pynutil.insert("tokens { ") + pynutil.add_weight(punct_graph, weight=1.1) + pynutil.insert(" }")
+            punct = pynutil.insert("tokens { ") + pynutil.add_weight(punct_graph, weight=2.1) + pynutil.insert(" }")
+            punct = pynini.closure(
+                pynini.compose(pynini.closure(NEMO_WHITE_SPACE, 1), delete_extra_space)
+                | (pynutil.insert(" ") + punct),
+                1,
+            )
             token = pynutil.insert("tokens { ") + classify + pynutil.insert(" }")
             token_plus_punct = (
                 pynini.closure(punct + pynutil.insert(" ")) + token + pynini.closure(pynutil.insert(" ") + punct)
             )
 
-            graph = token_plus_punct + pynini.closure(delete_extra_space + token_plus_punct)
+            graph = (
+                token_plus_punct
+                + pynini.closure(
+                    (
+                        pynini.compose(pynini.closure(NEMO_WHITE_SPACE, 1), delete_extra_space)
+                        | (pynutil.insert(" ") + punct + pynutil.insert(" "))
+                    )
+                    + token_plus_punct
+                ).optimize()
+            )
+
             graph = delete_space + graph + delete_space
+            graph |= punct
 
             self.fst = graph.optimize()
 

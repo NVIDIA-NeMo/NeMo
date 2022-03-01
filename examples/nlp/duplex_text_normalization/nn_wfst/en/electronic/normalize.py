@@ -47,7 +47,7 @@ class ElectronicNormalizer(Normalizer):
         from nn_wfst.en.electronic.tokenize_and_classify import ClassifyFst
         from nn_wfst.en.electronic.verbalize_final import VerbalizeFinalFst
 
-        self.tagger = self.tagger = ClassifyFst(
+        self.tagger = ClassifyFst(
             input_case=input_case, deterministic=deterministic, cache_dir=cache_dir, overwrite_cache=overwrite_cache
         )
         self.verbalizer = VerbalizeFinalFst(deterministic=deterministic)

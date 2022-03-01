@@ -113,8 +113,8 @@ extensions = [
 bibtex_bibfiles = [
     'asr/asr_all.bib',
     'nlp/nlp_all.bib',
+    'nlp/text_normalization/tn_itn_all.bib',
     'tools/tools_all.bib',
-    'nemo_text_processing/textprocessing_all.bib',
     'tts_all.bib',
 ]
 

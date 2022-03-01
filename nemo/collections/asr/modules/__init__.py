@@ -30,5 +30,6 @@ from nemo.collections.asr.modules.conv_asr import (
     ParallelConvASREncoder,
     SpeakerDecoder,
 )
+from nemo.collections.asr.modules.graph_decoder import ViterbiDecoderWithGraph
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder
 from nemo.collections.asr.modules.rnnt import RNNTDecoder, RNNTJoint

@@ -60,6 +60,10 @@ RUN for f in $(ls requirements*.txt); do pip install --disable-pip-version-check
 COPY nemo_text_processing /tmp/nemo/nemo_text_processing/
 RUN /bin/bash /tmp/nemo/nemo_text_processing/setup.sh
 
+# install k2, skip if installation fails
+COPY scripts /tmp/nemo/scripts/
+RUN /bin/bash /tmp/nemo/scripts/speech_recognition/k2/setup.sh; exit 0
+
 # copy nemo source into a scratch image
 FROM scratch as nemo-src
 COPY . .

@@ -57,7 +57,7 @@ Key Features
     * `Pretrained models on different languages. <https://ngc.nvidia.com/catalog/collections/nvidia:nemo_asr>`_: English, Spanish, German, Russian, Chinese, French, Italian, Polish, ...
     * `NGC collection of pre-trained speech processing models. <https://ngc.nvidia.com/catalog/collections/nvidia:nemo_asr>`_
 * Natural Language Processing
-    * `Compatible with Hugging Face Transformers and NVIDIA Megatron <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/megatron_finetuning.html>`_
+    * `NeMo Megatron pre-training of Large Language Models <https://https://developer.nvidia.com/nemo-megatron-early-access>`_
     * `Neural Machine Translation (NMT) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/machine_translation.html>`_
     * `Punctuation and Capitalization <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/punctuation_and_capitalization.html>`_
     * `Token classification (named entity recognition) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/token_classification.html>`_

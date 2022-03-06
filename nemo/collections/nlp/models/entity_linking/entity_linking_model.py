@@ -175,7 +175,7 @@ class EntityLinkingModel(NLPModel, Exportable):
             batch_size=cfg.batch_size,
             collate_fn=dataset.collate_fn,
             shuffle=cfg.get("shuffle", True),
-            num_workers=cfg.get("num_wokers", 2),
+            num_workers=cfg.get("num_workers", 2),
             pin_memory=cfg.get("pin_memory", False),
             drop_last=cfg.get("drop_last", False),
         )

@@ -163,7 +163,7 @@ class ConformerConvolution(nn.Module):
         x = nn.functional.glu(x, dim=1)
 
         if pad_mask is not None:
-            x.masked_fill_(pad_mask.unsqueeze(1), 0.0)
+            x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
 
         x = self.depthwise_conv(x)
 

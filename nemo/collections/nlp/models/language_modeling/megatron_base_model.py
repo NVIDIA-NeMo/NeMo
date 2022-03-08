@@ -59,3 +59,7 @@ class MegatronBaseModel(NLPModel):
             tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
             seed=self._cfg.get('seed', 1234),
         )
+
+    def _enable_nvidia_optimizations(self):
+        # by default, this method do nothing
+        pass

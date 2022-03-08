@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-import pathlib
+from pathlib import Path
 
 import torch
 from omegaconf.omegaconf import OmegaConf, open_dict
@@ -24,14 +24,14 @@ from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionP
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.data.glue_benchmark.gpt_ptune_dataset import TemplateProcessor, register_taskdata_processor
-from nemo.collections.nlp.models.language_modeling.megatron_ptune_gpt_model import MegatronGPTPTuneModel
+from nemo.collections.nlp.models.language_modeling.megatron_ptune_t5_model import MegatronT5PTuneModel
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler, NLPDDPPlugin
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import StatelessTimer, exp_manager
 
 
-@hydra_runner(config_path="conf", config_name="megatron_ptune_gpt")
+@hydra_runner(config_path="conf", config_name="megatron_ptune_t5")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
@@ -71,7 +71,7 @@ def main(cfg) -> None:
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):
         cfg.model.precision = cfg.trainer.precision
-    model = MegatronGPTPTuneModel(cfg.model, trainer)
+    model = MegatronT5PTuneModel(cfg.model, trainer)
     trainer.fit(model)
 
     if cfg.model.data.test_ds.file_path:
@@ -83,7 +83,7 @@ def main(cfg) -> None:
         # extract the path of the best checkpoint from the training, you may update it to any checkpoint
         checkpoint_path = trainer.checkpoint_callback.best_model_path
         tensor_parallel_size = cfg.model.tensor_model_parallel_size
-        pathobj = pathlib.Path(checkpoint_path)
+        pathobj = Path(checkpoint_path)
         checkpoint_folder = str(pathobj.parent)
         checkpoint_name = str(pathobj.name)
 
@@ -95,7 +95,7 @@ def main(cfg) -> None:
             checkpoint_path = os.path.join(checkpoint_folder, checkpoint_name)
 
         # Load the checkpoint
-        best_eval_model = MegatronGPTPTuneModel.load_from_checkpoint(
+        best_eval_model = MegatronT5PTuneModel.load_from_checkpoint(
             checkpoint_path=checkpoint_path, strict=False, trainer=trainer
         )
         logging.info(f'Best checkpoint path: {checkpoint_path}')

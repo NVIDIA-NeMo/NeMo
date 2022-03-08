@@ -91,7 +91,8 @@ class AudioText(_Collection):
     """List of audio-transcript text correspondence with preprocessing."""
 
     OUTPUT_TYPE = collections.namedtuple(
-        typename='AudioTextEntity', field_names='id audio_file duration text_tokens offset text_raw speaker orig_sr',
+        typename='AudioTextEntity',
+        field_names='id audio_file duration text_tokens offset text_raw speaker orig_sr lang',
     )
 
     def __init__(
@@ -103,6 +104,7 @@ class AudioText(_Collection):
         offsets: List[str],
         speakers: List[Optional[int]],
         orig_sampling_rates: List[Optional[int]],
+        langs: List[Optional[str]],
         parser: parsers.CharParser,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
@@ -120,6 +122,7 @@ class AudioText(_Collection):
             offsets: List of duration offsets or None.
             speakers: List of optional speakers ids.
             orig_sampling_rates: List of original sampling rates of audio files.
+            langs: List of language ids, one for eadh sample, or None.
             parser: Instance of `CharParser` to convert string to tokens.
             min_duration: Minimum duration to keep entry with (default: None).
             max_duration: Maximum duration to keep entry with (default: None).
@@ -133,8 +136,8 @@ class AudioText(_Collection):
         if index_by_file_id:
             self.mapping = {}
 
-        for id_, audio_file, duration, offset, text, speaker, orig_sr in zip(
-            ids, audio_files, durations, offsets, texts, speakers, orig_sampling_rates
+        for id_, audio_file, duration, offset, text, speaker, orig_sr, lang in zip(
+            ids, audio_files, durations, offsets, texts, speakers, orig_sampling_rates, langs
         ):
             # Duration filters.
             if min_duration is not None and duration < min_duration:
@@ -147,7 +150,14 @@ class AudioText(_Collection):
                 num_filtered += 1
                 continue
 
-            text_tokens = parser(text)
+            if hasattr(parser, "is_aggregate") and parser.is_aggregate:
+                if lang is not None:
+                    text_tokens = parser(text, lang)
+                else:
+                    raise ValueError("lang required in manifest when using aggregate tokenizers")
+            else:
+                text_tokens = parser(text)
+
             if text_tokens is None:
                 duration_filtered += duration
                 num_filtered += 1
@@ -155,7 +165,7 @@ class AudioText(_Collection):
 
             total_duration += duration
 
-            data.append(output_type(id_, audio_file, duration, text_tokens, offset, text, speaker, orig_sr))
+            data.append(output_type(id_, audio_file, duration, text_tokens, offset, text, speaker, orig_sr, lang))
             if index_by_file_id:
                 file_id, _ = os.path.splitext(os.path.basename(audio_file))
                 self.mapping[file_id] = len(data) - 1
@@ -189,7 +199,7 @@ class ASRAudioText(AudioText):
             **kwargs: Kwargs to pass to `AudioText` constructor.
         """
 
-        ids, audio_files, durations, texts, offsets, speakers, orig_srs = [], [], [], [], [], [], []
+        ids, audio_files, durations, texts, offsets, speakers, orig_srs, langs = [], [], [], [], [], [], [], []
         for item in manifest.item_iter(manifests_files):
             ids.append(item['id'])
             audio_files.append(item['audio_file'])
@@ -198,8 +208,9 @@ class ASRAudioText(AudioText):
             offsets.append(item['offset'])
             speakers.append(item['speaker'])
             orig_srs.append(item['orig_sr'])
+            langs.append(item['lang'])
 
-        super().__init__(ids, audio_files, durations, texts, offsets, speakers, orig_srs, *args, **kwargs)
+        super().__init__(ids, audio_files, durations, texts, offsets, speakers, orig_srs, langs, *args, **kwargs)
 
 
 class SpeechLabel(_Collection):

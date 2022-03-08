@@ -27,6 +27,7 @@ from torch.nn import functional as F
 from torch.utils.data import ChainDataset
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.core.neural_types import *
@@ -945,10 +946,14 @@ class AudioToBPEDataset(_AudioTextDataset):
 
         class TokenizerWrapper:
             def __init__(self, tokenizer):
+                if isinstance(tokenizer, tokenizers.aggregate_tokenizer.AggregateTokenizer):
+                    self.is_aggregate = True
+                else:
+                    self.is_aggregate = False
                 self._tokenizer = tokenizer
 
-            def __call__(self, text):
-                t = self._tokenizer.text_to_ids(text)
+            def __call__(self, *args):
+                t = self._tokenizer.text_to_ids(*args)
                 return t
 
         super().__init__(
@@ -1448,10 +1453,14 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
 
         class TokenizerWrapper:
             def __init__(self, tokenizer):
+                if isinstance(tokenizer, tokenizers.aggregate_tokenizer.AggregateTokenizer):
+                    self.is_aggregate = True
+                else:
+                    self.is_aggregate = False
                 self._tokenizer = tokenizer
 
-            def __call__(self, text):
-                t = self._tokenizer.text_to_ids(text)
+            def __call__(self, *args):
+                t = self._tokenizer.text_to_ids(*args)
                 return t
 
         super().__init__(

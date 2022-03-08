@@ -149,6 +149,7 @@ custom tokenizers:
 
 - Google Sentencepiece tokenizers (tokenizer type of ``bpe`` in the config)
 - HuggingFace WordPiece tokenizers (tokenizer type of ``wpe`` in the config)
+- Aggregate tokenizers ((tokenizer type of ``agg`` in the config), see below)
 
 In order to build custom tokenizers, refer to the ``ASR_with_Subword_Tokenization`` notebook available in the
 ASR tutorials directory.
@@ -162,6 +163,28 @@ The following example sets up a ``SentencePiece Tokenizer`` at a path specified 
     tokenizer:
       dir: "<path to the directory that contains the custom tokenizer files>"
       type: "bpe"  # can be "bpe" or "wpe"
+
+The Aggregate (``agg``) tokenizer feature makes it possible to combine tokenizers in order to train multilingual 
+models. The config file would look like this:
+
+.. code-block:: yaml
+
+  model:
+    ...
+    tokenizer:
+      type: "agg"  # aggregate tokenizer
+      langs: 
+        en:
+          dir: "<path to the directory that contains the tokenizer files>"
+          type: "bpe"  # can be "bpe" or "wpe"
+        es:
+          dir: "<path to the directory that contains the tokenizer files>"
+          type: "bpe"  # can be "bpe" or "wpe"  
+
+In the above config file, each language is associated with its own pre-trained tokenizer, which gets assigned 
+a token id range in the order the tokenizers are listed. To train a multilingual model, one needs to populate the 
+``lang`` field in the manifest file, allowing the routing of each sample to the correct tokenizer. At inference time,
+the routing is done based on the inferred token id range.
 
 For models which utilize sub-word tokenization, we share the decoder module (``ConvASRDecoder``) with character tokenization models. 
 All parameters are shared, but for models which utilize sub-word encoding, there are minor differences when setting up the config. For 

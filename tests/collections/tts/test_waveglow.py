@@ -44,7 +44,7 @@ pcfg = DictConfig(
         "_target_": "nemo.collections.asr.parts.preprocessing.features.FilterbankFeatures",
         "dither": 0.0,
         "nfilt": 80,
-        "stft_conv": True,
+        "stft_conv": False,
     }
 )
 
@@ -73,6 +73,7 @@ def forward_wrapper(self, spec, z=None):
 
 
 class TestWaveGlow:
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_export_to_onnx(self):

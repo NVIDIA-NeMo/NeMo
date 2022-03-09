@@ -182,7 +182,7 @@ Megatron GPT training requires NVIDIA Apex to be installed.
 
     git clone https://github.com/NVIDIA/apex
     cd apex
-    git checkout c8bcc98176ad8c3a0717082600c70c907891f9cb
+    git checkout 89edb8196546187247c487a0494f7b6767ff0dc5
     pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" ./
 
 Docker containers:
@@ -200,7 +200,7 @@ If you chose to work with main branch, we recommend using NVIDIA's PyTorch conta
 
     docker run --gpus all -it --rm -v <nemo_github_folder>:/NeMo --shm-size=8g \
     -p 8888:8888 -p 6006:6006 --ulimit memlock=-1 --ulimit \
-    stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:22.01-py3
+    stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:22.02-py3
 
 Examples
 --------

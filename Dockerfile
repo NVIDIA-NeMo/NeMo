@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.01-py3
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.02-py3
 
 
 # build an image that includes only the nemo dependencies, ensures that dependencies
@@ -70,7 +70,7 @@ COPY . .
 
 # start building the final container
 FROM nemo-deps as nemo
-ARG NEMO_VERSION=1.7.0
+ARG NEMO_VERSION=1.8.0
 
 # Check that NEMO_VERSION is set. Build will fail without this. Expose NEMO and base container
 # version information as runtime environment variable for introspection purposes
@@ -85,7 +85,7 @@ RUN --mount=from=nemo-src,target=/tmp/nemo cd /tmp/nemo && pip install ".[all]" 
     python -c "import nemo.collections.tts as nemo_tts" && \
     python -c "import nemo_text_processing.text_normalization as text_normalization"
 
-# TODO: Update to newer numba 0.56.0RC1 for 22.02 container
+# TODO: Update to newer numba 0.56.0RC1 for 22.03 container if possible
 # install pinned numba version
 # RUN conda install -c conda-forge numba==0.54.1
 

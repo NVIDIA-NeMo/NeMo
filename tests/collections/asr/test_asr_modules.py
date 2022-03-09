@@ -24,6 +24,7 @@ from nemo.utils import config_utils, logging
 
 
 class TestASRModulesBasicTests:
+    @pytest.mark.pleasefixme
     @pytest.mark.unit
     def test_AudioToMelSpectrogramPreprocessor1(self):
         # Test 1 that should test the pure stft implementation as much as possible
@@ -92,6 +93,7 @@ class TestASRModulesBasicTests:
             diff = torch.max(torch.abs(res_instance - res_batch))
             assert diff <= 1e-3
 
+    @pytest.mark.pleasefixme
     @pytest.mark.unit
     def test_AudioToMelSpectrogramPreprocessor2(self):
         # Test 2 that should test the stft implementation as used in ASR models

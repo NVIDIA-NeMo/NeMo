@@ -18,6 +18,7 @@ from nemo.collections.nlp.modules.common.bert_module import BertModule
 from nemo.collections.nlp.modules.common.huggingface import (
     AlbertEncoder,
     BertEncoder,
+    CamembertEncoder,
     DistilBertEncoder,
     RobertaEncoder,
 )

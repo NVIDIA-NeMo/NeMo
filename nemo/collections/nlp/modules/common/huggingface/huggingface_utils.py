@@ -19,12 +19,14 @@ from transformers import (
     ALBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     ALL_PRETRAINED_CONFIG_ARCHIVE_MAP,
     BERT_PRETRAINED_MODEL_ARCHIVE_LIST,
+    CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     DISTILBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     GPT2_PRETRAINED_MODEL_ARCHIVE_LIST,
     ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST,
     AlbertConfig,
     AutoModel,
     BertConfig,
+    CamembertConfig,
     DistilBertConfig,
     GPT2Config,
     RobertaConfig,
@@ -32,6 +34,7 @@ from transformers import (
 
 from nemo.collections.nlp.modules.common.huggingface.albert import AlbertEncoder
 from nemo.collections.nlp.modules.common.huggingface.bert import BertEncoder
+from nemo.collections.nlp.modules.common.huggingface.camembert import CamembertEncoder
 from nemo.collections.nlp.modules.common.huggingface.distilbert import DistilBertEncoder
 from nemo.collections.nlp.modules.common.huggingface.gpt2 import GPT2Encoder
 from nemo.collections.nlp.modules.common.huggingface.roberta import RobertaEncoder
@@ -52,6 +55,12 @@ HUGGINGFACE_MODELS = {
         "class": DistilBertEncoder,
         "config": DistilBertConfig,
         "pretrained_model_list": DISTILBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
+    },
+    "CamembertModel": {
+        "default": "camembert-base-uncased",
+        "class": CamembertEncoder,
+        "config": CamembertConfig,
+        "pretrained_model_list": CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     },
     "RobertaModel": {
         "default": "roberta-base",
@@ -78,6 +87,7 @@ VOCAB_FILE_NAME = {
     'RobertaTokenizer': "vocab.json",
     'BertTokenizer': "vocab.txt",
     'DistilBertTokenizer': "vocab.txt",
+    'CamembertTokenizer': "sentencepiece.bpe.model",
     "GPT2Tokenizer": "vocab.json",
 }
 
@@ -127,10 +137,10 @@ def get_huggingface_lm_model(
 def get_huggingface_pretrained_lm_models_list(include_external: bool = False,) -> List[str]:
     """
     Returns the list of pretrained HuggingFace language models
-    
+
     Args:
         include_external if true includes all HuggingFace model names, not only those supported language models in NeMo.
-    
+
     Returns the list of HuggingFace models
     """
 

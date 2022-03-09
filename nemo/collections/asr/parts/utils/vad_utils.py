@@ -115,7 +115,7 @@ def write_vad_infer_manifest(file, args_func):
     try:
         sr = 16000
         x, _sr = librosa.load(filepath, sr=sr, offset=in_offset, duration=in_duration)
-        duration = librosa.get_duration(x, sr=sr)
+        duration = librosa.get_duration(y=x, sr=sr)
         left = duration
         current_offset = in_offset
 
@@ -161,7 +161,7 @@ def write_vad_infer_manifest(file, args_func):
     except Exception as e:
         err_file = "error.log"
         with open(err_file, 'w', encoding='utf-8') as fout:
-            fout.write(file + ":" + str(e))
+            fout.write(filepath + ":" + str(e))
     return res
 
 
@@ -748,7 +748,7 @@ def plot(
     FRAME_LEN = 0.01
 
     audio, sample_rate = librosa.load(path=path2audio_file, sr=16000, mono=True, offset=offset, duration=duration)
-    dur = librosa.get_duration(audio, sr=sample_rate)
+    dur = librosa.get_duration(y=audio, sr=sample_rate)
 
     time = np.arange(offset, offset + dur, FRAME_LEN)
     frame = np.loadtxt(path2_vad_pred)

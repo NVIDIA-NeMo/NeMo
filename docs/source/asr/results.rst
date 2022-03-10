@@ -76,6 +76,10 @@ Fine-tuning on Different Datasets
 
 There are multiple ASR tutorials provided in the :ref:`Tutorials <tutorials>` section. Most of these tutorials explain how to instantiate a pre-trained model, prepare the model for fine-tuning on some dataset (in the same language) as a demonstration.
 
+Inference Execution Flow Diagram
+--------------------------------
+
+When preparing your own inference scripts, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/README.md>`_.
 
 Automatic Speech Recognition Models
 -----------------------------------

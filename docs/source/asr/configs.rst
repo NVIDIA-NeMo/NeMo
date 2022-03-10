@@ -804,3 +804,13 @@ Fine-tuning via a Pytorch Lightning checkpoint
         trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
         +init_from_ptl_ckpt="<name of pytorch lightning checkpoint>"
+
+Fine-tuning Execution Flow Diagram
+----------------------------------
+
+When preparing your own training or fine-tuning scripts, please follow the execution flow diagram order for correct inference.
+
+Depending on the type of model, there may be extra steps that must be performed -
+
+* CTC Models - `Examples directory for CTC Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_ctc/README.md>`_
+* RNN Transducer Models - `Examples directory for Transducer Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_transducer/README.md>`_

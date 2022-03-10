@@ -102,3 +102,14 @@ for training models.
       feat_in: *enc_final_filters
       return_logits: true # return logits if true, else return softmax output
       pooling_type: 'avg' # AdaptiveAvgPool1d 'avg' or AdaptiveMaxPool1d 'max'
+
+
+Fine-tuning Execution Flow Diagram
+----------------------------------
+
+When preparing your own training or fine-tuning scripts, please follow the execution flow diagram order for correct inference.
+
+Depending on the type of model, there may be extra steps that must be performed -
+
+* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/speech_classification/README.md>`_
+

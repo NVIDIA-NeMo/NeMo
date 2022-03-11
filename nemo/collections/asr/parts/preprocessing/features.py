@@ -218,22 +218,26 @@ class FilterbankFeatures(nn.Module):
         max_duration=16.7,
         frame_splicing=1,
         exact_pad=False,
-        stft_exact_pad=False,  # TODO: Remove this in 1.1.0
-        stft_conv=False,  # TODO: Remove this in 1.1.0
         pad_value=0,
         mag_power=2.0,
         use_grads=False,
         rng=None,
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
+        # Deprecated arguments; kept for config compatibility
+        stft_exact_pad=False,  # TODO: Remove this in 1.1.0
+        stft_conv=False,  # TODO: Remove this in 1.1.0
     ):
         super().__init__()
         if stft_conv or stft_exact_pad:
             logging.warning(
-                "Using torch_stft is deprecated and will be removed in 1.1.0. Please set stft_conv and stft_exact_pad "
-                "to False for FilterbankFeatures and AudioToMelSpectrogramPreprocessor. Please set exact_pad to True "
+                "Using torch_stft is deprecated and has been removed. The values have been forcibly set to False "
+                "for FilterbankFeatures and AudioToMelSpectrogramPreprocessor. Please set exact_pad to True "
                 "as needed."
             )
+            stft_conv = False
+            stft_exact_pad = False
+
         if (exact_pad or stft_exact_pad) and n_window_stride % 2 == 1:
             raise NotImplementedError(
                 f"{self} received exact_pad == True, but hop_size was odd. If audio_length % hop_size == 0. Then the "

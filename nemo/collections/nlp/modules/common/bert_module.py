@@ -31,8 +31,8 @@ class BertModule(NeuralModule, Exportable):
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
         return {
             "input_ids": NeuralType(('B', 'T'), ChannelType()),
-            "token_type_ids": NeuralType(('B', 'T'), ChannelType(), optional=True),
             "attention_mask": NeuralType(('B', 'T'), MaskType(), optional=True),
+            "token_type_ids": NeuralType(('B', 'T'), ChannelType(), optional=True),
         }
 
     @property
@@ -82,4 +82,5 @@ class BertModule(NeuralModule, Exportable):
         input_ids = torch.randint(low=0, high=2048, size=sz, device=sample.device)
         token_type_ids = torch.randint(low=0, high=1, size=sz, device=sample.device)
         attention_mask = torch.randint(low=0, high=1, size=sz, device=sample.device)
-        return tuple([input_ids, token_type_ids, attention_mask])
+        input_dict = {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids}
+        return tuple([input_dict])

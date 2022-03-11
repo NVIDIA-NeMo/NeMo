@@ -130,6 +130,16 @@ German
 
 -----------------------------
 
+French
+^^^^^^
+.. csv-table::
+   :file: data/benchmark_fr.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1
+   
+-----------------------------
+
 Polish
 ^^^^^^
 .. csv-table::

@@ -117,6 +117,14 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         results.append(model)
 
         model = PretrainedModelInfo(
+            pretrained_model_name="stt_es_citrinet_1024_gamma_0_25",
+            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_citrinet_1024_gamma_0_25",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_es_citrinet_1024_gamma_0_25/versions/1.8.0/files/stt_es_citrinet_1024_gamma_0_25.nemo",
+        )
+
+        results.append(model)
+
+        model = PretrainedModelInfo(
             pretrained_model_name="stt_en_conformer_ctc_small",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_small",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_en_conformer_ctc_small/versions/1.6.0/files/stt_en_conformer_ctc_small.nemo",
@@ -176,6 +184,13 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             pretrained_model_name="stt_de_conformer_ctc_large",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_conformer_ctc_large",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_de_conformer_ctc_large/versions/1.5.0/files/stt_de_conformer_ctc_large.nemo",
+        )
+        results.append(model)
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="stt_es_conformer_ctc_large",
+            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_conformer_ctc_large",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_es_conformer_ctc_large/versions/1.8.0/files/stt_es_conformer_ctc_large.nemo",
         )
         results.append(model)
 

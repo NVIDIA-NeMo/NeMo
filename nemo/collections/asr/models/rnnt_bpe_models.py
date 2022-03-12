@@ -121,6 +121,13 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         results.append(model)
 
         model = PretrainedModelInfo(
+            pretrained_model_name="stt_es_contextnet_1024",
+            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_contextnet_1024",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_es_contextnet_1024/versions/1.8.0/files/stt_es_contextnet_1024.nemo",
+        )
+        results.append(model)
+
+        model = PretrainedModelInfo(
             pretrained_model_name="stt_de_conformer_transducer_large",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_conformer_transducer_large",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_de_conformer_transducer_large/versions/1.5.0/files/stt_de_conformer_transducer_large.nemo",
@@ -131,6 +138,13 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             pretrained_model_name="stt_fr_conformer_transducer_large",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_transducer_large",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_de_conformer_transducer_large/versions/1.5/files/stt_fr_conformer_transducer_large.nemo",
+        )
+        results.append(model)
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="stt_es_conformer_transducer_large",
+            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_conformer_transducer_large",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_es_conformer_transducer_large/versions/1.8.0/files/stt_es_conformer_transducer_large.nemo",
         )
         results.append(model)
 

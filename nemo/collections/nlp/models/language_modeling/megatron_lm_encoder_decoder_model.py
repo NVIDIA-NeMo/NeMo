@@ -475,7 +475,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         response['masked_input'] = ' '.join(self.tokenizer.ids_to_tokens(tokens_enc[0]))
         enc_mask = tokens_enc != self.tokenizer.pad_id
-        enc_mask = enc_mask < 0.5
 
         predicted_tokens_ids, log_probs = self.decode(tokens_enc, enc_mask, int(request['tokens_to_generate']))
         predicted_tokens_ids = predicted_tokens_ids.cpu().numpy()[0].tolist()

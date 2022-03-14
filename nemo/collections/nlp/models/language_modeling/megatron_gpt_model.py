@@ -604,19 +604,21 @@ class MegatronGPTModel(NLPModel):
                 batch_sampler = MegatronPretrainingBatchSampler(
                     total_samples=len(dataset),
                     consumed_samples=consumed_samples,
-                    num_micro_batch_times_micro_batch_size=self.cfg.global_batch_size
-                    // parallel_state.get_data_parallel_world_size(),
+                    micro_batch_size=self.cfg.micro_batch_size,
+                    global_batch_size=self.cfg.global_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
+                    drop_last=self.cfg.get('drop_last', True),
                 )
             elif self.cfg.data.dataloader_type == 'cyclic':
                 batch_sampler = MegatronPretrainingRandomBatchSampler(
                     total_samples=len(dataset),
                     consumed_samples=consumed_samples,
-                    num_micro_batch_times_micro_batch_size=self.cfg.global_batch_size
-                    // parallel_state.get_data_parallel_world_size(),
+                    micro_batch_size=self.cfg.micro_batch_size,
+                    global_batch_size=self.cfg.global_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
+                    drop_last=self.cfg.get('drop_last', True),
                 )
             else:
                 raise ValueError('cfg.data.dataloader_type must be "single" or "cyclic"')

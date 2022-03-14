@@ -173,18 +173,20 @@ Prompt tuning is a continuous or soft prompt approach to finding the optimal pro
 Implementation Overview
 ^^^^^^^^^^
 
-Our current prompt tuning implementation adapt’s Lester et. al’s EMNLP 2021 "`The Power of Scale for Parameter-Efficient Prompt Tuning <https://arxiv.org/abs/2104.08691>`_" to prompt tuning for GPT style models. In this implementation, a number of soft tokens specified by the user are prepended to the beginning of the discrete token input embeddings during the forward pass. During training, all model parameters are frozen except for those corresponding to the soft tokens. Only the soft prompt parameters are updated via gradient decent in the backward pass. Each soft token has the same dimensionality as a regular token embedding from the model’s vocabulary corresponding to the ``hidden_size`` hyperparameter. Soft token embeddings can be initialized randomly or with selected existing embeddings from the pretrained model.
+Our current prompt tuning implementation adapt’s Lester et. al’s EMNLP 2021 "`The Power of Scale for Parameter-Efficient Prompt Tuning <https://arxiv.org/abs/2104.08691>`_" to prompt tuning for GPT style models. In this implementation, a number of soft tokens specified by the user are prepended to the beginning of the discrete token input embeddings during the forward pass. During training, all model parameters are frozen except for those corresponding to the soft tokens. Only the soft prompt parameters are updated via gradient decent in the backward pass. Each soft token has the same dimensionality as a regular token embedding from the model’s vocabulary corresponding to the ``hidden_size`` hyperparameter. Soft token embeddings can be initialized randomly or with selected existing embeddings from the pretrained model. 
+
+As of NeMo 1.7 prompt tuning now works with tensor parallel > 1. 
 
 Data Formatting
 ^^^^^^^^^^
 
-The dataset should be a .json file where each json object has 2 fields: ``prompt_tag`` and ``text``.
+The dataset should be a .jsonl file where each json object has 3 fields: ``prompt_tag``, ``text``, and ``answer``.
 
 .. code::
 
-  {"prompt_tag": [tag1], "text": [text1]}
-  {"prompt_tag": [tag1], "text": [text2]}
-  {"prompt_tag": [tag1], "text": [text3]}
+  {"prompt_tag": [tag1], "text": [text1], "answer": [answer1]}
+  {"prompt_tag": [tag1], "text": [text2], "answer": [answer2]}
+  {"prompt_tag": [tag1], "text": [text3], "answer": [answer3]}
   
 .. _data-example-label:
 
@@ -218,6 +220,9 @@ Prompt Tuning Specific Config Values
    * - **model.new_prompt_init_text**
      - list of strings
      - The text you want to use for soft prompt initalization if ``model.new_prompt_init_methods`` is set to ['text']. The text is tokenized and clipped or tiled to match ``model.num_prompt_tokens``. The vocab embeddings associated with each token are copied and use to initialize the soft prompts.
+   * - **model.calc_loss_on_answer_only**
+     - bool
+     - Whether to calculate cross entropy loss on the full text input or only the answer portion of the input during prompt tuning. 
    * - **model.data.train_ds**
      - string
      - path to training dataset .json or .jsonl file. See `Data Formatting`_ for an example
@@ -228,6 +233,7 @@ Prompt Tuning Specific Config Values
 
 Example Prompt Tuning Command for the First Task
 ^^^^^^^^^^
+
 .. code::
   
   EXPR_NAME='winogrande_prompt_tuning'

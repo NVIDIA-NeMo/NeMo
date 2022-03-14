@@ -162,18 +162,13 @@ def create_tokens_and_tokentypes(tokens_a, tokens_b, cls_id, sep_id):
 MaskedLmInstance = collections.namedtuple("MaskedLmInstance", ["index", "label"])
 
 
-def is_start_piece(piece, tokenizer_type='wordpiece'):
+def is_start_piece(piece):
     """Check if the current word piece is the starting piece. (BERT)"""
     # When a word has been split into
     # WordPieces, the first token does not have any marker and any subsequence
     # tokens are prefixed with ##. So whenever we see the ## token, we
     # append it to the previous set of word indexes.
-    if tokenizer_type == 'wordpiece':
-        return not piece.startswith("##")
-    elif tokenizer_type == 'sentencepiece':
-        return piece.startswith('▁')
-    else:
-        raise ValueError(f"Tokenizer type {tokenizer_type} is not supported.")
+    return not piece.startswith("##")
 
 
 def create_masked_lm_predictions(
@@ -217,15 +212,11 @@ def create_masked_lm_predictions(
         # Note that Whole Word Masking does *not* change the training code
         # at all -- we still predict each WordPiece independently, softmaxed
         # over the entire vocabulary.
-        if (
-            whole_word_masking
-            and len(cand_indexes) >= 1
-            and not is_start_piece(vocab_id_to_token_dict[token], tokenizer_type=tokenizer_type)
-        ):
+        if whole_word_masking and len(cand_indexes) >= 1 and not is_start_piece(vocab_id_to_token_dict[token]):
             cand_indexes[-1].append(i)
         else:
             cand_indexes.append([i])
-            if is_start_piece(vocab_id_to_token_dict[token], tokenizer_type=tokenizer_type):
+            if is_start_piece(vocab_id_to_token_dict[token]):
                 token_boundary[i] = 1
 
     output_tokens = list(tokens)

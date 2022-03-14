@@ -27,11 +27,11 @@ exp_manager:
   resume_ignore_no_checkpoint: True
   create_checkpoint_callback: True
   checkpoint_callback_params:
-    monitor: val_acc
+    monitor: validation_acc
     save_top_k: 10
     mode: max
     always_save_nemo: False # TODO: add support
-    filename: 'megatron_t5--{val_acc:.3f}-{step}'
+    filename: 'megatron_t5--{validation_acc:.3f}-{step}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
 

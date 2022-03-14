@@ -10,9 +10,9 @@ trainer:
   enable_checkpointing: False
   replace_sampler_ddp: False
   max_epochs: null
-  max_steps: 1000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  max_steps: 3000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
-  val_check_interval: 50
+  val_check_interval: 250
   limit_val_batches: 50
   limit_test_batches: 500
   accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
@@ -43,7 +43,7 @@ model:
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
   micro_batch_size: 4 # limited by GPU memory
-  global_batch_size: 16 # will use more micro batches to reach global batch size
+  global_batch_size: 8 # will use more micro batches to reach global batch size
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
 
@@ -117,7 +117,7 @@ model:
   
   optim:
     name: fused_adam
-    lr: 2e-4
+    lr: 1e-5
     weight_decay: 0.01 
     betas: 
     - 0.9
@@ -126,4 +126,4 @@ model:
       name: CosineAnnealing
       warmup_steps: 50
       constant_steps: 10
-      min_lr: 2e-5
+      min_lr: 1e-6

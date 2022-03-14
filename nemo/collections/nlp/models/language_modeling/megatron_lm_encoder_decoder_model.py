@@ -325,7 +325,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         )
 
     def setup(self, stage=None):
-        resume_checkpoint_path = self.trainer.checkpoint_connector.resume_checkpoint_path
+        resume_checkpoint_path = self.trainer.checkpoint_connector.resume_from_checkpoint_fit_path
         if resume_checkpoint_path:
             try:
                 init_consumed_samples = int(

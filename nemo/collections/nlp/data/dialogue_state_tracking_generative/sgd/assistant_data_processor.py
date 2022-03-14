@@ -43,20 +43,24 @@ class DialogueAssistantInputExample(DialogueInputExample):
         },
         "label_positions":{
             "slots": {
-                "<slot-name1>": {
-                    "exclusive_end": 46,
+                "<slot-name1>": { 
+                    # note for the Assistant dataset, start and end are word positions rather than char position
+                    # these are whitespace-delimited word positions rather than tokenization-specific sub-word tokens.
+                    "exclusive_end": 3, 
                     "slot": "restaurant_name",
-                    "start": 34
-              },
+                    "start": 1 
+                },
             }
         },
         "possible_labels": {
             "service": [<service1>, <service2>, ...],
             "intent": [<intent1>, <intent2>, ...],
             "slots": {
-                #all slots for categorical variables
-                "<slot-name1>": [<slot-value1>, <slot-value2>, ...],
-                "<slot-name2>": [<slot-value1>, <slot-value2>, ...],
+                # all slots for categorical variables
+                # empty list for extractive slots
+                # Assistant only support extractive slots
+                "<slot-name1>": [],
+                "<slot-name2>": [],
             }
         }
     }
@@ -75,6 +79,10 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
         """
         self.data_dir = data_dir
         self._tokenizer = tokenizer
+        self.intents = self.open_file("dict.intents.csv")
+        self.slots = self.open_file("dict.slots.csv")
+        self.services = sorted(list(set([intent.split('_')[0] for intent in self.intents])))
+        self.empty_slot_id = str(len(self.slots) - 1)
 
     def open_file(self, filename):
         """
@@ -117,16 +125,12 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
         Process raw files into DialogueInputExample
         Args: 
             dataset_split: {train, dev, test}
-        For the assistant dataset, there is no explicit dev set.
+        For the assistant dataset, there is no explicit dev set (instead uses the test set as the dev set)
         Therefore, this function creates a dev set and a new train set from the train set.
         This is done by taking every 10th example and putting it into the dev set,
         with all other examples going into the new train set.
         """
         examples = []
-        intents = self.open_file("dict.intents.csv")
-        services = sorted(list(set([intent.split('_')[0] for intent in intents])))
-        slots = self.open_file("dict.slots.csv")
-        self.empty_slot_id = str(len(slots) - 1)
 
         dataset_split_print = {"train": "train", "dev": "train", "test": "test"}
 
@@ -154,10 +158,10 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
             utterance, intent_id = raw_examples_intent[i].split('\t')
             slot_ids = raw_examples_slots[i].split()
             utterance_tokens = utterance.split()
-            intent = intents[int(intent_id)]
+            intent = self.intents[int(intent_id)]
             slot_id_to_start_and_exclusive_end = self.get_continuous_slots(slot_ids)
             slot_to_start_and_exclusive_end = {
-                slots[int(slot_id)]: position for slot_id, position in slot_id_to_start_and_exclusive_end.items()
+                self.slots[int(slot_id)]: position for slot_id, position in slot_id_to_start_and_exclusive_end.items()
             }
             slot_to_words = {
                 slot: ' '.join(utterance_tokens[position[0] : position[1]])
@@ -173,11 +177,13 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
                     }
                 },
                 "possible_labels": {
-                    "service": services,
-                    "intent": intents,
+                    "service": self.services,
+                    "intent": self.intents,
                     "slots": {
+                        # this dataset does not support categorical slots (i.e. only extractive slots)
+                        # therefore use empty list for all values
                         slot: []
-                        for slot in slots  # this dataset does not support categorical slots (i.e. only extractive slots)
+                        for slot in self.slots
                     },
                 },
             }

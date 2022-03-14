@@ -106,6 +106,9 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models.dialogue_state_tracking_generative.dialogue_gpt_model import DialogueGPTModel
 from nemo.collections.nlp.models.dialogue_state_tracking_sgdqa.sgdqa_model import SGDQAModel
+from nemo.collections.nlp.models.intent_slot_classification_refactor.intent_slot_classification_model import (
+    IntentSlotClassificationModel,
+)
 from nemo.collections.nlp.modules.common.megatron.megatron_utils import compute_model_parallel_rank
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
 from nemo.core.config import hydra_runner
@@ -130,7 +133,10 @@ def main(cfg: DictConfig) -> None:
         app_state.model_parallel_rank = compute_model_parallel_rank(trainer.local_rank, app_state.model_parallel_size)
 
     if 'bert' in cfg.model.language_model.pretrained_model_name:
-        model_class = SGDQAModel
+        if cfg.model.dataset.task == 'sgd':
+            model_class = SGDQAModel
+        else:
+            model_class = IntentSlotClassificationModel
     elif 'gpt' in cfg.model.language_model.pretrained_model_name.lower():
         model_class = DialogueGPTModel
 

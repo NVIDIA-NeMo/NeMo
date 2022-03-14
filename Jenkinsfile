@@ -779,7 +779,29 @@ pipeline {
             model.language_model.pretrained_model_name=bert-base-cased \
             trainer.accelerator=gpu \
             exp_manager=null  && \
-            rm -rf sgd_gen_bert_outputs && TRANSFORMERS_OFFLINE=1'
+            rm -rf sgd_gen_bert_outputs'
+          }
+        }
+        stage('SGD-GEN Backward compatible with IntentSlotClassificationModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue_state_tracking_generative && \
+            python sgd_gen.py \
+            model.dataset.data_dir=/home/TestData/nlp/processed_assistant \
+            model.dataset.dialogues_example_dir=sgd_gen_bert_intent_classification_outputs \
+            model.dataset.task=assistant \
+            trainer.max_steps=1 \
+            trainer.max_epochs=1 \
+            model.train_ds.batch_size=2 \
+            model.validation_ds.batch_size=2 \
+            model.test_ds.batch_size=2 \
+            model.nemo_path=null \
+            trainer.val_check_interval=0.0 \
+            trainer.devices=[1] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=bert-base-uncased \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf sgd_gen_bert_intent_classification_outputs && TRANSFORMERS_OFFLINE=1'
           }
         }
       }

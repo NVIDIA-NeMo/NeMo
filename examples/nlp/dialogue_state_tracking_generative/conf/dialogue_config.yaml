@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 pretrained_model: null # pretrained QAModel model from list_available_models()
 do_training: true # training mode, for testing change to false
 trainer:
@@ -35,6 +34,20 @@ model:
   tensor_model_parallel_size: 1
   nemo_path: null # filename to save the model and associated artifacts to .nemo file
   library: huggingface # huggingface or megatron
+
+  # megatron prompt tuning model args
+  new_prompt_tags: [] # brief short name (each element is a string "<tag>")
+  new_prompt_init_methods: [] # text (preferably) or random
+  new_prompt_init_text: [] # long descriptive text to init
+
+  # intent_slot_classification model args
+  class_balancing: null # or weighted_loss
+  intent_loss_weight: 0.6 # relation of intent to slot loss in total loss (between 0 to 1)
+  data_dir: ${model.dataset.data_dir}
+  head:
+    num_output_layers: 2
+    fc_dropout: 0.1
+    
   tokenizer:
       tokenizer_name: ${model.language_model.pretrained_model_name} # or sentencepiece
       vocab_file: null # path to vocab file
@@ -45,16 +58,33 @@ model:
 
   language_model:
     pretrained_model_name: gpt2
+    max_seq_length: 50
     lm_checkpoint: null
     config_file: null # json file, precedence over config
     config: null
 
+  tokens_to_generate: 32 # for generation mode only
+    
   encoder:
     dropout: 0.1
 
   dataset:
     task: sgd
+    field: intent # intemt, slots, service
+    prompt_template: default # default, prompt_tuning, i_want_to
+    target_template: default # default, with_description, with_slots
+    few_shot: 0 # int ; 0 to 10, for number of examples in prompt
+    debug_mode: false # small number of examples for debugging
     eval_mode: ranking # ranking or generation or binary_score
+    binary_score_subsample: false # subsample negative examples for binary score training
+    binary_score_subsample_ratio: 2 # number of negative examples per postive example
+    
+    num_samples: -1
+    pad_label: -1 # if -1 not slot token will be used
+    ignore_extra_tokens: false
+    ignore_start_end: true # do not use first and last token for slot training
+    do_lowercase: false 
+    
     max_seq_length: 128 # the maximum length BERT supports is 512
     max_num_cat_slot: 6 # maximum number of different categorical slots per service in dataset 
     max_num_noncat_slot: 12 # maximum number of different non-categorical slots per service in dataset 
@@ -71,6 +101,7 @@ model:
 
   train_ds:
     ds_item: "train"
+    prefix: train
     batch_size: 128
     shuffle: true
     num_workers: 3
@@ -78,6 +109,7 @@ model:
     pin_memory: false
 
   validation_ds:
+    prefix: test
     ds_item: ["dev"] # ["dev", "test"]
     batch_size: 8
     shuffle: false
@@ -86,6 +118,7 @@ model:
     pin_memory: false
 
   test_ds:
+    prefix: test
     ds_item: ["test"]
     batch_size: 8
     shuffle: false

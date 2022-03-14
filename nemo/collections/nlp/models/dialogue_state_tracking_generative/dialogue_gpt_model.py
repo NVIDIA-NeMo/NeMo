@@ -20,11 +20,12 @@ https://github.com/google-research/google-research/blob/master/schema_guided_dst
 
 import collections
 import os
+import random
 from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 from transformers import AutoModelWithLMHead
@@ -38,9 +39,9 @@ from nemo.collections.nlp.data.dialogue_state_tracking_generative.sgd.assistant_
     DialogueAssistantDataProcessor,
 )
 from nemo.collections.nlp.metrics.classification_report import ClassificationReport
+from nemo.collections.nlp.models.dialogue_state_tracking_generative.dialogue_metrics import IntentSlotMetrics
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.models.nlp_model import NLPModel
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
@@ -54,14 +55,36 @@ class DialogueGPTModel(NLPModel):
     def __init__(
         self, cfg: DictConfig, trainer: Trainer = None,
     ):
+
+        self.cfg = cfg
         self.data_prepared = False
+
         self.setup_tokenizer(cfg.tokenizer)
         super().__init__(cfg=cfg, trainer=trainer)
-        if cfg.library == "huggingface":
+
+        if self.cfg.library == "huggingface":
             self.language_model = AutoModelWithLMHead.from_pretrained(cfg.language_model.pretrained_model_name)
             self.language_model.resize_token_embeddings(len(self.tokenizer.tokenizer))
-        elif cfg.library == "megatron":
+        elif self.cfg.library == "megatron":
             self.language_model = MegatronGPTModel.restore_from(cfg.language_model.lm_checkpoint, trainer=trainer)
+            # 1 corresponds to intent slot; 0 corresponds to squad
+            self.prompt_tags = [1, 0] if 'prompt_table' in dir(self.language_model) else []
+            if hasattr(self.language_model, 'prompt_table'):
+                self.language_model.prompt_tuning_param_freeze_and_optimizer_setup()
+
+            # Init all new prompts
+            for idx, tag in enumerate(cfg.new_prompt_tags):
+                self.prompt_tags.append(tag)
+                init_method = cfg.new_prompt_init_methods[idx]
+                if init_method == "text":
+                    init_text = cfg.new_prompt_init_text[idx]
+                    self.language_model.init_prompt_from_text(tag, init_text)
+                elif init_method == 'random':
+                    self.language_model.init_prompt_from_random(tag)
+                else:
+                    raise ValueError(
+                        f'\n Soft prompt init method {init_method} is not recognized, please use text or random'
+                    )
 
         all_labels = list(
             self._train_dl.dataset.all_possible_labels.union(
@@ -83,28 +106,47 @@ class DialogueGPTModel(NLPModel):
         self.cfg = cfg
 
     def training_step(self, batch, batch_idx):
+
         (
             input_ids,
             attn_masks,
             labels,
-            generate_input_ids,
-            generate_attn_masks,
             candidate_input_ids,
             candidate_attn_masks,
             template_length,
             utterance_length,
             correct_candidate,
         ) = batch
-
+        # construct training samples as generating " Answer: yes/no" after "<utterance> <label_type>: <candidate_label>"
         if self.eval_mode == "binary_score":
             new_input_ids = []
             new_attn_masks = []
             for i in range(candidate_input_ids.size(0)):
-                for j in range(0, candidate_input_ids.size(1), 2):
-                    if j > 0 and torch.equal(candidate_input_ids[i, j, :], candidate_input_ids[i, 0, :]):
-                        break
-                    new_input_ids.append(candidate_input_ids[i, j, :])
-                    new_attn_masks.append(candidate_attn_masks[i, j, :])
+                # in some datasets like assistant, there might be 60+ possible intents with 1 correct intent
+                # therefore we might not want to use all possible intents as negative samples
+                # instead use {binary_score_subsample_ratio} negative samples for every positive sample
+                if self.cfg.dataset.binary_score_subsample:
+                    new_input_ids.append(candidate_input_ids[i, 2 * correct_candidate[i].item(), :])
+                    new_attn_masks.append(candidate_attn_masks[i, 2 * correct_candidate[i].item(), :])
+                    possible_negatives = []
+                    for j in range(0, candidate_input_ids.size(1), 2):
+                        if j > 0 and torch.equal(candidate_input_ids[i, j, :], candidate_input_ids[i, 0, :]):
+                            break
+                        if j != 2 * correct_candidate[i].item():
+                            possible_negatives.append(j)
+                    negative_samples = random.choices(
+                        possible_negatives, k=int(self.cfg.dataset.binary_score_subsample_ratio)
+                    )
+                    for negative_sample in negative_samples:
+                        new_input_ids.append(candidate_input_ids[i, negative_sample, :])
+                        new_attn_masks.append(candidate_attn_masks[i, negative_sample, :])
+
+                else:
+                    for j in range(0, candidate_input_ids.size(1), 2):
+                        if j > 0 and torch.equal(candidate_input_ids[i, j, :], candidate_input_ids[i, 0, :]):
+                            break
+                        new_input_ids.append(candidate_input_ids[i, j, :])
+                        new_attn_masks.append(candidate_attn_masks[i, j, :])
             input_ids = torch.stack(new_input_ids)
             attn_masks = torch.stack(new_attn_masks)
             labels = self.get_binary_score_labels(input_ids)
@@ -123,15 +165,67 @@ class DialogueGPTModel(NLPModel):
         self.eval_epoch_end(outputs, mode='test')
 
     def eval_epoch_end(self, outputs, mode='val'):
+
+        generated_field = []
+        ground_truth_field = []
+        inputs = []
+        for output in outputs:
+            generated_field += output["generated_field"]
+            ground_truth_field += output["ground_truth_field"]
+            inputs += output["input"]
+
+        with_slots = self.cfg.dataset.target_template == "with_slots"
+
+        generated_labels, generated_slots = IntentSlotMetrics.split_label_and_slots(
+            generated_field, with_slots=with_slots
+        )
+        ground_truth_labels, ground_truth_slots = IntentSlotMetrics.split_label_and_slots(
+            ground_truth_field, with_slots=with_slots
+        )
+
+        os.makedirs(self.cfg.dataset.dialogues_example_dir, exist_ok=True)
+        filename = os.path.join(self.cfg.dataset.dialogues_example_dir, f"{mode}_predictions.jsonl")
+
+        IntentSlotMetrics.save_predictions(
+            filename,
+            generated_labels,
+            generated_slots,
+            ground_truth_labels,
+            ground_truth_slots,
+            generated_field,
+            ground_truth_field,
+            inputs,
+        )
+
+        label_acc = np.mean([int(generated_labels[i] == ground_truth_labels[i]) for i in range(len(generated_labels))])
+
+        generated_field_ids = torch.tensor([self.label_to_ids[label] for label in generated_labels], dtype=int).to(
+            self.classification_report.device
+        )
+
+        ground_truth_field_ids = torch.tensor(
+            [self.label_to_ids[label] for label in ground_truth_labels], dtype=int
+        ).to(self.classification_report.device)
+
+        tp, fn, fp, _ = self.classification_report(generated_field_ids, ground_truth_field_ids)
+
         precision, recall, f1, report = self.classification_report.compute()
+        self.classification_report.reset()
+
+        slot_precision, slot_recall, slot_f1, slot_joint_goal_accuracy = IntentSlotMetrics.get_slot_filling_metrics(
+            generated_slots, ground_truth_slots
+        )
 
         logging.info(report)
-        acc = np.mean([output["acc"] for output in outputs])
 
-        self.log('precision', precision)
-        self.log('f1', f1)
-        self.log('recall', recall)
-        self.log('{}_accuracy'.format(mode), acc * 100)
+        self.log('{}_precision'.format(self.cfg.dataset.field), precision)
+        self.log('{}_f1'.format(self.cfg.dataset.field), f1)
+        self.log('{}_recall'.format(self.cfg.dataset.field), recall)
+        self.log('{}_{}_accuracy'.format(mode, self.cfg.dataset.field), label_acc * 100)
+        self.log('slot_precision', slot_precision)
+        self.log('slot_recall', slot_recall)
+        self.log('slot_f1', slot_f1)
+        self.log('slot_joint_goal_accuracy', slot_joint_goal_accuracy)
 
     def test_step(self, batch, batch_idx):
         return self.eval_step_helper(batch=batch, mode='test')
@@ -146,23 +240,60 @@ class DialogueGPTModel(NLPModel):
         if self.cfg.library == "huggingface":
             output = self.language_model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = output['loss']
+
         elif self.cfg.library == "megatron":
-            position_ids = torch.arange(input_ids.size(1), dtype=torch.long, device=input_ids.device)
-            position_ids = position_ids.unsqueeze(0).repeat(input_ids.size(0), 1)
-            unmasked_unreduced_loss = self.language_model(
-                input_ids, position_ids, attention_mask=attention_mask > 0, labels=labels
+            num_prompt_tokens = (
+                self.language_model.num_prompt_tokens if hasattr(self.language_model, 'num_prompt_tokens') else 0
+            )
+            position_ids = torch.arange(
+                start=num_prompt_tokens,
+                end=num_prompt_tokens + input_ids.size(1),
+                dtype=torch.long,
+                device=input_ids.device,
             )
 
-            # labels_mask = torch.tensor([0 if (i == -100 or i == self.tokenizer.tokenizer.pad_token_id) else 1 for i in labels])
-            filler = torch.zeros_like(labels)
-            labels_mask_0 = torch.where(labels != -100, labels, filler)
-            labels_mask_1 = torch.abs(torch.where(labels != self.tokenizer.tokenizer.pad_token_id, labels, filler))
-            # labels_mask is where labels is neither -100 nor the pad token id
-            labels_mask_with_id = torch.minimum(labels_mask_0, labels_mask_1)
-            labels_mask = labels_mask_with_id > 0
+            position_ids = position_ids.unsqueeze(0).repeat(input_ids.size(0), 1)
+
+            # 'assit_intent_and_slot' has prompt_id of 1
+            # 'assit_intent_and_slot_with_options' has prompt_id of 2
+            prompt_ids = torch.tensor([1] * input_ids.size(0)) if self.prompt_tags else None
+
+            # this makes a 1d tensor of values 2 rather than 1, which is the prompt_id of 'assit_intent_and_slot_with_options'
+            if self.cfg.dataset.prompt_template == "prompt_tuning_with_options" and prompt_ids is not None:
+                prompt_ids = prompt_ids * 2
+            attn_mask_add_on = torch.ones((attention_mask.size(0), num_prompt_tokens), device=attention_mask.device)
+            full_attention_mask = torch.cat([attn_mask_add_on, attention_mask], axis=-1)
+            full_attention_mask_expand = torch.tril(
+                full_attention_mask.unsqueeze(2).tile(full_attention_mask.size(1))
+            ).unsqueeze(1)
+
+            attn_mask = full_attention_mask_expand > 0
+
+            prompt_token_labels = torch.full(
+                size=(input_ids.size(0), num_prompt_tokens),
+                fill_value=self.tokenizer.tokenizer.pad_token_id,
+                dtype=torch.long,
+                device=input_ids.device,
+            )
+
+            input_ids_new = torch.cat([prompt_token_labels, input_ids], axis=1)
+            make_up_last_column_input_ids = (
+                torch.ones_like(input_ids_new[:, -1:]) * self.tokenizer.tokenizer.pad_token_id
+            )
+            left_shifted_input_ids = torch.cat([input_ids_new[:, 1:], make_up_last_column_input_ids], axis=-1)
+
+            unmasked_unreduced_loss = self.language_model(
+                input_ids, position_ids, attn_mask, left_shifted_input_ids, prompt_ids=prompt_ids
+            )
+
+            labels = torch.cat([torch.zeros_like(prompt_token_labels), labels], axis=1)
+            make_up_last_column_labels = torch.ones_like(labels[:, -1:]) * self.tokenizer.tokenizer.pad_token_id
+            new_labels = torch.cat([labels[:, 1:], make_up_last_column_labels], axis=-1)
+            filler = torch.zeros_like(new_labels)
+            labels_mask_0 = torch.where(new_labels != -100, new_labels, filler)
+            labels_mask = labels_mask_0 > 0
 
             loss = self.language_model.loss_func(labels_mask, unmasked_unreduced_loss)
-            loss = average_losses_across_data_parallel_group([loss])
 
         return loss
 
@@ -221,7 +352,7 @@ class DialogueGPTModel(NLPModel):
 
         candidate_tokens = torch.stack(best_candidate_input_ids)
         generated_field, ground_truth_field = self.process_into_structured_fields(
-            candidate_tokens, labels, left_padding=False, template_length=template_length
+            candidate_tokens, labels, template_length=template_length
         )
         return generated_field, ground_truth_field
 
@@ -281,23 +412,91 @@ class DialogueGPTModel(NLPModel):
 
         candidate_tokens = torch.stack(best_candidate_input_ids)
         generated_field, ground_truth_field = self.process_into_structured_fields(
-            candidate_tokens, labels, left_padding=False, template_length=template_length
+            candidate_tokens, labels, template_length=template_length
         )
         return generated_field, ground_truth_field
 
-    def generate_candidates(self, generate_input_ids, generate_attn_masks, labels):
-        if self.cfg.library == "huggingface":
-            param_dict = {
-                "input_ids": generate_input_ids,
-                "attention_masks": generate_attn_masks,
-                "max_length": self._cfg.dataset.max_seq_length + 32,
-                "pad_token_id": self.tokenizer.tokenizer.pad_token_id,
-            }
+    def prepare_megatron_generation(self, labels, input_ids, template_length):
+        """
+        # adapted from MegatronGPTModel._bucketize_gpt_inference 
+        """
+        batch_size = labels.size(0)
+        prompt_tags = [self.prompt_tags[0]] * batch_size if self.prompt_tags else None
+        batch_tokens = input_ids.tolist()
 
-            generated_tokens = self.language_model.generate(**param_dict)
+        # unpad tokens
+        lens = template_length
+        indxs = [index for index in range(batch_size)]
+        for lenn, index in zip(lens, indxs):
+            batch_tokens[index] = batch_tokens[index][:lenn]
+
+        # chunk tokens by same length
+        pre_buckets, lens = [], list(set(lens.tolist()))
+        for lenn in lens:
+            pre_buckets.append([(tokens, index) for index, tokens in enumerate(batch_tokens) if len(tokens) == lenn])
+
+        buckets, positions, bucket_prompt_tags = [], [], []
+
+        # get buckets and prompts initial positions
+        for bucket in pre_buckets:
+            buckets.append(torch.tensor([item[0] for item in bucket]).to(device=labels.device))
+            positions.append([item[1] for item in bucket])
+
+            # bucket prompt tags identically to their corresponding examples
+            if prompt_tags:
+                bucket_prompt_tags.append([prompt_tags[item[1]] for item in bucket])
+
+        # Flatten position list
+        positions = [item for sublist in positions for item in sublist]
+
+        # Flatten buckets and bucket_prompt_tags # temp fix for megatron complete issue. However, this is also slower than bucketized inference
+        buckets = [item.unsqueeze(0) for sublist in buckets for item in sublist]
+        bucket_prompt_tags = [[item] for sublist in bucket_prompt_tags for item in sublist]
+
+        request = {"tokens": buckets, "prompt_tags": bucket_prompt_tags}
+
+        return positions, request
+
+    def post_process_megatron_generation(self, outputs):
+        text_outputs = [output[0] for output in outputs]
+        generated_tokens = self.tokenizer.tokenizer(text_outputs, padding=True, return_tensors="pt").data["input_ids"]
+        return generated_tokens
+
+    def generate_candidates(self, labels, template_length, input_ids, attn_masks):
+
+        tokens_to_generate = self.cfg.tokens_to_generate
+
+        if self.cfg.library == "huggingface":
+            generated_tokens = []
+            max_length = 0
+            for i in range(input_ids.size(0)):
+                param_dict = {
+                    "input_ids": input_ids[i : i + 1, : template_length[i]],
+                    "attention_masks": attn_masks[i : i + 1, : template_length[i]],
+                    "max_length": template_length[i] + tokens_to_generate,
+                    "pad_token_id": self.tokenizer.tokenizer.pad_token_id,
+                }
+                generated_tokens.append(self.language_model.generate(**param_dict))
+                max_length = max(max_length, generated_tokens[-1].size(1))
+
+            # pad each generated to ensure they are of same length in dim 1, therefore stack-able
+            generated_tokens = [
+                torch.cat(
+                    [i, torch.ones((1, max_length - i.size(1))).to(i.device) * self.tokenizer.tokenizer.pad_token_id],
+                    axis=-1,
+                )
+                for i in generated_tokens
+            ]
+            generated_tokens = torch.cat(generated_tokens, axis=0)
+
         elif self.cfg.library == "megatron":
-            raise NotImplementedError()
-        generated_field, ground_truth_field = self.process_into_structured_fields(generated_tokens, labels)
+            positions, request = self.prepare_megatron_generation(labels, input_ids, template_length)
+            outputs = self.language_model.complete(request, positions, tokens_to_generate)
+            generated_tokens = self.post_process_megatron_generation(outputs)
+
+        generated_field, ground_truth_field = self.process_into_structured_fields(
+            generated_tokens, labels, template_length=template_length
+        )
 
         return generated_field, ground_truth_field
 
@@ -306,8 +505,6 @@ class DialogueGPTModel(NLPModel):
             input_ids,
             attn_masks,
             labels,
-            generate_input_ids,
-            generate_attn_masks,
             candidate_input_ids,
             candidate_attn_masks,
             template_length,
@@ -316,19 +513,20 @@ class DialogueGPTModel(NLPModel):
         ) = batch
 
         loss = self(input_ids, attn_masks, labels)
-
         self.log("{}_loss".format(mode), loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-        # ranking using perplexity of candidates
+        # ranking using perplexity of candidates following the "<utterance> <label_type>:"
         if self.eval_mode == "ranking":
             generated_field, ground_truth_field = self.rank_candidates(
                 candidate_input_ids, candidate_attn_masks, utterance_length, labels, template_length
             )
-        # generate candidates (possibly with constraint)
+        # autoregressively generate candidates (possibly with constraint)
         elif self.eval_mode == "generation":
             generated_field, ground_truth_field = self.generate_candidates(
-                generate_input_ids, generate_attn_masks, labels
+                labels, template_length, input_ids, attn_masks
             )
+        # comparing likelihood based on the perplexity of generating " Answer: yes" after "<utterance> <label_type>: <candidate_label>"
+        # (optionally, the difference of that with " Answer: no" using the flag minus_negative=True)
         elif self.eval_mode == "binary_score":
             generated_field, ground_truth_field = self.binary_score_candidates(
                 candidate_input_ids, candidate_attn_masks, utterance_length, labels, template_length, correct_candidate
@@ -339,50 +537,38 @@ class DialogueGPTModel(NLPModel):
                 "{} is not among supported options (ranking, generation, binary_score)".format(self.eval_mode)
             )
 
-        generated_field_ids = torch.tensor(
-            [self.label_to_ids[label.strip()] for label in generated_field], dtype=int
-        ).to(labels.device)
-        ground_truth_field_ids = torch.tensor(
-            [self.label_to_ids[label.strip()] for label in ground_truth_field], dtype=int
-        ).to(labels.device)
-
-        tp, fn, fp, _ = self.classification_report(generated_field_ids, ground_truth_field_ids)
-
-        acc = np.mean(
-            [int(generated_field[i].strip() == ground_truth_field[i].strip()) for i in range(len(generated_field))]
-        )
-
         return {
             'loss': loss,
+            'input': self.tokenizer.tokenizer.batch_decode(input_ids, skip_special_tokens=True),
             'generated_field': generated_field,
             'ground_truth_field': ground_truth_field,
-            'tp': tp,
-            'fn': fn,
-            'fp': fp,
-            'acc': acc,
         }
 
-    def process_into_structured_fields(self, generated_tokens, labels, left_padding=True, template_length=None):
+    def process_into_structured_fields(self, generated_tokens, labels, template_length=None):
 
         generated_field = []
 
         for i in range(generated_tokens.size(0)):
-            if left_padding and template_length is None:
-                start_point = self._cfg.dataset.max_seq_length
-            else:
-                start_point = template_length[i].item()
-
+            start_point = 0 if template_length is None else template_length[i].item()
             stop_point = generated_tokens.size(1)
 
             for j in range(start_point, stop_point):
                 if generated_tokens.data[i, j] == self.tokenizer.tokenizer.pad_token_id:
                     stop_point = j
                     break
+
             # this is to account for the tokens ' Answer: ' + 'yes'/'no'/'true'/'false'
             if self.eval_mode == "binary_score":
                 stop_point -= 3
-            generated_field.append(self.decode(generated_tokens[i, start_point:stop_point]).strip())
 
+            one_generated_field = self.decode(generated_tokens[i, start_point:stop_point]).strip()
+            generated_field.append(one_generated_field)
+
+        ground_truth_field = self.process_ground_truth_field(labels)
+
+        return generated_field, ground_truth_field
+
+    def process_ground_truth_field(self, labels):
         ground_truth_field = []
 
         for i in range(labels.size(0)):
@@ -391,7 +577,7 @@ class DialogueGPTModel(NLPModel):
             )
             ground_truth_field.append(self.decode(correct_label).strip())
 
-        return generated_field, ground_truth_field
+        return ground_truth_field
 
     def prepare_data(self):
         """
@@ -423,15 +609,13 @@ class DialogueGPTModel(NLPModel):
                 schema_config=schema_config,
                 subsample=self._cfg.dataset.subsample,
             )
+            if is_global_rank_zero():
+                overwrite_dial_files = not self._cfg.dataset.use_cache
+                self.dialogues_processor.save_dialog_examples(overwrite_dial_files=overwrite_dial_files)
         elif self._cfg.dataset.task == 'assistant':
             self.dialogues_processor = DialogueAssistantDataProcessor(
                 data_dir=self._cfg.dataset.data_dir, tokenizer=self.tokenizer,
             )
-
-        if is_global_rank_zero():
-            overwrite_dial_files = not self._cfg.dataset.use_cache
-            if self._cfg.dataset.task == 'sgd':
-                self.dialogues_processor.save_dialog_examples(overwrite_dial_files=overwrite_dial_files)
         self.data_prepared = True
 
     def update_data_dirs(self, data_dir: str, dialogues_example_dir: str):

@@ -175,6 +175,15 @@ def parse_dataset_as_name(name: str) -> str:
     if 'dataset' in name:
         name = name.replace('dataset', '')
 
+    # Test if the manifes/dataset name was simply `manifest.yaml` or `dataset.yaml`: Invalid names.
+    if name == '':
+        raise ValueError(
+            "Provided dataset / manifest filename was `manifest.json` or `dataset.json`.\n"
+            "Such a name is invalid, since multiple datasets/manifests can share the same name,\n"
+            "thereby overriding their results during logging. Please pick a more discriptive filename \n"
+            "for the provided dataset / manifest file."
+        )
+
     if '_' != name[-1]:
         name = name + '_'
 

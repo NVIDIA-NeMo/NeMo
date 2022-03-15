@@ -1,7 +1,7 @@
 pipeline {
   agent {
         docker {
-      image 'nvcr.io/nvidia/pytorch:22.02-py3'
+      image 'gitlab-master.nvidia.com/sandeepsub/nemo_containers:nemo-180-2202-ci-apex-2998a235292bdf1c7de1500ff3baaa96732b6a4f'
       args '--device=/dev/nvidia0 --gpus all -e TRANSFORMERS_OFFLINE=1 --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
         }
   }

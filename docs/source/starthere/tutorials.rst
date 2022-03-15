@@ -84,13 +84,13 @@ To run a tutorial:
      - `Streaming inference <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/asr/Streaming_ASR.ipynb>`_
    * - ASR
      - Buffered Transducer inference for ASR
-     - `Buffered Transducer inference <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/asr/Buffered_Transducer_Inference.ipynb>`_
+     - `Buffered Transducer inference <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Buffered_Transducer_Inference.ipynb>`_
    * - ASR
      - Buffered Transducer inference with LCS Merge Algorithm
-     - `Buffered Transducer inference with LCS Merge <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/asr/Buffered_Transducer_Inference_with_LCS_Merge.ipynb>`_
+     - `Buffered Transducer inference with LCS Merge <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Buffered_Transducer_Inference_with_LCS_Merge.ipynb>`_
    * - ASR
      - Self-supervised pre-training for ASR
-     - `Self-supervised Pre-training for ASR <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/asr/Self_Supervised_Pre_Training.ipynb>`_
+     - `Self-supervised Pre-training for ASR <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Self_Supervised_Pre_Training.ipynb>`_
    * - NLP
      - Using Pretrained Language Models for Downstream Tasks
      - `Pretrained Language Models for Downstream Tasks <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/01_Pretrained_Language_Models_for_Downstream_Tasks.ipynb>`_

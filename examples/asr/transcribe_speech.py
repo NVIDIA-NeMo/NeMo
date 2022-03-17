@@ -25,6 +25,8 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.models.ctc_models import EncDecCTCModel
+from nemo.collections.asr.parts.utils.transcribe_utils import transcribe_partial_audio
 from nemo.core.config import hydra_runner
 from nemo.utils import logging, model_utils
 
@@ -140,6 +142,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     trainer = pl.Trainer(devices=device, accelerator=accelerator)
     asr_model.set_trainer(trainer)
     asr_model = asr_model.eval()
+    partial_audio = False
 
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
@@ -151,10 +154,21 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     else:
         # get filenames from manifest
         filepaths = []
+        if os.stat(cfg.dataset_manifest).st_size == 0:
+            logging.error(f"The input dataset_manifest {cfg.dataset_manifest} is empty. Exiting!")
+            return None
+
         with open(cfg.dataset_manifest, 'r') as f:
+            has_two_fields = []
             for line in f:
                 item = json.loads(line)
+                if "offset" in item and "duration" in item:
+                    has_two_fields.append(True)
+                else:
+                    has_two_fields.append(False)
                 filepaths.append(item['audio_filepath'])
+        partial_audio = all(has_two_fields)
+
     logging.info(f"\nTranscribing {len(filepaths)} files...\n")
 
     # setup AMP (optional)
@@ -187,7 +201,26 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     # transcribe audio
     with autocast():
         with torch.no_grad():
-            transcriptions = asr_model.transcribe(filepaths, batch_size=cfg.batch_size, num_workers=cfg.num_workers)
+            if partial_audio:
+                if isinstance(asr_model, EncDecCTCModel):
+                    transcriptions = transcribe_partial_audio(
+                        asr_model=asr_model,
+                        path2manifest=cfg.dataset_manifest,
+                        batch_size=cfg.batch_size,
+                        num_workers=cfg.num_workers,
+                    )
+                else:
+                    logging.warning(
+                        "RNNT models do not support transcribe partial audio for now. Transcribing full audio."
+                    )
+                    transcriptions = asr_model.transcribe(
+                        paths2audio_files=filepaths, batch_size=cfg.batch_size, num_workers=cfg.num_workers,
+                    )
+            else:
+                transcriptions = asr_model.transcribe(
+                    paths2audio_files=filepaths, batch_size=cfg.batch_size, num_workers=cfg.num_workers,
+                )
+
     logging.info(f"Finished transcribing {len(filepaths)} files !")
 
     logging.info(f"Writing transcriptions into file: {cfg.output_filename}")
@@ -195,7 +228,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     # if transcriptions form a tuple (from RNNT), extract just "best" hypothesis
     if type(transcriptions) == tuple and len(transcriptions) == 2:
         transcriptions = transcriptions[0]
-
     # write audio transcriptions
     with open(cfg.output_filename, 'w', encoding='utf-8') as f:
         if cfg.audio_dir is not None:

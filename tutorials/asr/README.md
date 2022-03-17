@@ -28,6 +28,8 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 10) `Self_Supervised_Pre_Training`: It can often be difficult to obtain labeled data for ASR training. In this tutorial, we demonstrate how to pre-train a speech model in an unsupervised manner, and then fine-tune with CTC loss.
 
+11) `Offline_ASR_with_VAD_for_CTC_models`: In this tutorial, we will demonstrate how to use offline VAD to extract speech segments and transcribe the speech segments with CTC models. This will help to exclude some non_speech utterances and could save computation resources by removing unnecessary input to the ASR system.
+
 ----------------
 
 # Streaming / Buffered Automatic Speech Recognition

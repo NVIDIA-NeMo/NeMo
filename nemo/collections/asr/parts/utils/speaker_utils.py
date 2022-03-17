@@ -480,28 +480,37 @@ def write_rttm2manifest(AUDIO_RTTM_MAP, manifest_file):
                     start, dur, _ = float(vad_out[0]), float(vad_out[1]), vad_out[2]
                 start, dur = float("{:.3f}".format(start)), float("{:.3f}".format(dur))
 
-                if time_tup[0] >= 0 and start > time_tup[1]:
-                    dur2 = float("{:.3f}".format(time_tup[1] - time_tup[0]))
-                    if time_tup[0] < max_duration and dur2 > 0:
-                        meta = {"audio_filepath": audio_path, "offset": time_tup[0], "duration": dur2, "label": 'UNK'}
-                        json.dump(meta, outfile)
-                        outfile.write("\n")
-                    else:
-                        logging.warning(
-                            "RTTM label has been truncated since start is greater than duration of audio file"
-                        )
-                    time_tup = (start, start + dur)
+                if start == 0 and dur == 0:  # No speech segments
+                    continue
                 else:
-                    if time_tup[0] == -1:
-                        end_time = start + dur
-                        if end_time > max_duration:
-                            end_time = max_duration
-                        time_tup = (start, end_time)
+
+                    if time_tup[0] >= 0 and start > time_tup[1]:
+                        dur2 = float("{:.3f}".format(time_tup[1] - time_tup[0]))
+                        if time_tup[0] < max_duration and dur2 > 0:
+                            meta = {
+                                "audio_filepath": audio_path,
+                                "offset": time_tup[0],
+                                "duration": dur2,
+                                "label": 'UNK',
+                            }
+                            json.dump(meta, outfile)
+                            outfile.write("\n")
+                        else:
+                            logging.warning(
+                                "RTTM label has been truncated since start is greater than duration of audio file"
+                            )
+                        time_tup = (start, start + dur)
                     else:
-                        end_time = max(time_tup[1], start + dur)
-                        if end_time > max_duration:
-                            end_time = max_duration
-                        time_tup = (min(time_tup[0], start), end_time)
+                        if time_tup[0] == -1:
+                            end_time = start + dur
+                            if end_time > max_duration:
+                                end_time = max_duration
+                            time_tup = (start, end_time)
+                        else:
+                            end_time = max(time_tup[1], start + dur)
+                            if end_time > max_duration:
+                                end_time = max_duration
+                            time_tup = (min(time_tup[0], start), end_time)
             dur2 = float("{:.3f}".format(time_tup[1] - time_tup[0]))
             if time_tup[0] < max_duration and dur2 > 0:
                 meta = {"audio_filepath": audio_path, "offset": time_tup[0], "duration": dur2, "label": 'UNK'}

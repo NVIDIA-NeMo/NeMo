@@ -189,4 +189,23 @@ Catalan
    :widths: 40, 10, 50
    :header-rows: 1
 
+-----------------------------
+
+Hindi
+^^^^^^^
+.. csv-table::
+   :file: data/benchmark_hi.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1
+
+-----------------------------
+
+Marathi
+^^^^^^^
+.. csv-table::
+   :file: data/benchmark_mr.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1
 

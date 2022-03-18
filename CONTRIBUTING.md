@@ -29,7 +29,7 @@ pytest --with_downloads
 1. For changes to NeMo's core: @ericharper, @titu1994, @blisc, or @okuchaiev  
 1. For changes to NeMo's ASR collection: @titu1994, @redoctopus, @jbalam-nv, or @okuchaiev
 1. For changes to NeMo's NLP collection: @MaximumEntropy, @ericharper, @ekmb, @yzhang123, @VahidooX, @vladgets, or @okuchaiev 
-1. For changes to NeMo's TTS collection: @blisc or @Oktai15, or @okuchaiev
+1. For changes to NeMo's TTS collection: @blisc, or @okuchaiev
 
 Note that some people may self-assign to review your PR - in which case, please wait for them to add a review.
 
@@ -43,6 +43,17 @@ Your  pull requests must pass all checks and peer-review before they can be merg
 1. **Readable**: code should be easier to read.
 1. **Legal**: if you copy even one line of code from the Internet, make sure that the code allows the license that NeMo supports. Give credit and link back to the code.
 1. **Sensible**: code should make sense. If you think a piece of code might be confusing, write comments.
+
+## Class naming conventions
+* No “I”, “Interface”, “NM” nor “NeMo” pre/postfixes anywhere
+* Core interfaces have simple names: Typing, Cloud, Serialization, FileIO*
+* Core classes have the simplest names ever: NeuralModule, Model, Graph, Dataset, Loss, Module*
+* Abstract classes in the Model hierarchy have Model postfix
+* A config class for MyModel should be called MyModelConfig
+* Leaf Neural Module classes have simple names without any postfixes (e.g. AudioPreprocess)
+* Leaf Datasets have Dataset postfix (e.g. MNISTDataset)
+* Leaf Losses have Loss postfix (e.g. CTCLoss)
+* Leaf Models do not have any postfix, just name (e.g. QuartzNet)
 
 ## Python style
 We use ``black`` as our style guide. To check whether your code will pass style check (from the NeMo's repo folder) run:

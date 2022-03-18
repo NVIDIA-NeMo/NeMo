@@ -3,8 +3,6 @@
 1.ª~primera
 2.º~segundo
 2.ª~segunda
-ii~segundo
-II~segundo
 3.ᵉʳ~tercer
 3.º~tercero
 3.ª~tercera
@@ -106,32 +104,4 @@ II~segundo
 1248.ª~milésima ducentésima cuadragésima octava
 2000.º~dosmilésimo
 100 000.º~cienmilésimo
-i~primero
-I~primero
-ii~segundo
-II~segundo
-iii~tercero
-III~tercero
-iv~cuarto
-IV~cuarto
-V~quinto
-VI~sexto
-VII~séptimo
-VIII~octavo
-IX~noveno
-X~décimo
-XI~undécimo
-XII~duodécimo
-XIII~decimotercero
-XX~vigésimo
-XXI~vigesimoprimero
-XXX~trigésimo
-XL~cuadragésimo
-L~quincuagésimo
-XC~nonagésimo
-C~centésimo
-CD~cuadringentésimo
-D~quingentésimo
-CM~noningentésimo
 999.º~noningentésimo nonagésimo noveno
-cmxcix~noningentésimo nonagésimo noveno

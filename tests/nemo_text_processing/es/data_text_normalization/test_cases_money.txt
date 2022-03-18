@@ -15,10 +15,11 @@ $1,50~un dólar cincuenta centavos
 5,01 £~cinco libras un penique
 21 czk~veintiuna coronas checas
 czk21~veintiuna coronas checas
-czk21,1 millones~veintiuna coma una millones de coronas checas
+czk21,1 millones~veintiuno coma un millones de coronas checas
 czk 5,50 billones~cinco coma cincuenta billones de coronas checas
 rs 5,50 billones~cinco coma cincuenta billones de rupias
 czk5,50 billones~cinco coma cincuenta billones de coronas checas
 0,55 $~cincuenta y cinco centavos
 1,01 $~un dólar un centavo
 ¥12,05~doce yenes cinco centavos
+£200.000.001~doscientos millones una libras

@@ -1,4 +1,3 @@
-1~un
 2~dos
 3~tres
 4~cuatro
@@ -18,7 +17,6 @@
 18~dieciocho
 19~diecinueve
 20~veinte
-21~veintiún
 22~veintidós
 23~veintitrés
 24~veinticuatro
@@ -28,46 +26,31 @@
 28~veintiocho
 29~veintinueve
 30~treinta
-31~treinta y un
 40~cuarenta
-41~cuarenta y un
 50~cincuenta
-51~cincuenta y un
 60~sesenta
 70~setenta
 80~ochenta
 90~noventa
 100~cien
-101~ciento un
+102~ciento dos
 120~ciento veinte
-121~ciento veintiún
 130~ciento treinta
-131~ciento treinta y un
-200~doscientos
-201~doscientos un
-300~trescientos
-301~trescientos un
 1000~mil
 1 000~mil
 1.000~mil
-1001~mil un
 1010~mil diez
 1020~mil veinte
-1021~mil veintiún
 1100~mil cien
-1101~mil ciento un
 1110~mil ciento diez
 1111~mil ciento once
-1234~mil doscientos treinta y cuatro
 2000~dos mil
-2001~dos mil un
+2002~dos mil dos
 2010~dos mil diez
 2020~dos mil veinte
 2100~dos mil cien
-2101~dos mil ciento un
 2110~dos mil ciento diez
 2111~dos mil ciento once
-2222~dos mil doscientos veintidós
 10000~diez mil
 10 000~diez mil
 10.000~diez mil
@@ -76,11 +59,11 @@
 100.000~cien mil
 1 000 000~un millón
 1.000.000~un millón
-1 234 568~un millón doscientos treinta y cuatro mil quinientos sesenta y ocho
+1 034 068~un millón treinta y cuatro mil sesenta y ocho
 2.000.000~dos millones
 1.000.000.000~mil millones
 2.000.000.000~dos mil millones
 3 000 000 000 000~tres billones
 3.000.000.000.000~tres billones
 100 000 000 000 000 000 000 000~cien mil trillones
-100 000 000 000 000 000 000 001~cien mil trillones un
+100 000 000 000 000 000 000 002~cien mil trillones dos

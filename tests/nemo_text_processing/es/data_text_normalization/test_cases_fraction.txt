@@ -1,7 +1,3 @@
-1/2~medio
-1 1/2~uno y medio
-3/2~tres medios
-1 3/2~uno y tres medios
 1/3~un tercio
 2/3~dos tercios
 1/4~un cuarto
@@ -41,7 +37,7 @@
 1/90~un noventavo
 1/100~un centésimo
 2/100~dos centésimos
-1 2/100~uno y dos centésimos
+3 2/100~tres y dos centésimos
 1/101~uno sobre ciento uno
 1/110~uno sobre ciento diez
 1/111~uno sobre ciento once
@@ -62,7 +58,7 @@
 1/900~un noningentésimo
 1/1000~un milésimo
 2/1000~dos milésimos
-1 2/1000~uno y dos milésimos
+2 2/1000~dos y dos milésimos
 1/1001~uno sobre mil uno
 1/1100~uno sobre mil cien
 1/1200~uno sobre mil doscientos

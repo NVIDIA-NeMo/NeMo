@@ -42,7 +42,7 @@ class FractionFst(GraphFst):
 	Finite state transducer for verbalizing fraction
 		e.g. tokens { fraction { integer: "treinta y tres" numerator: "cuatro" denominator: "quinto" } } ->
             treinta y tres y cuatro quintos
-		
+
 
 	Args:
 		deterministic: if True will provide a single transduction option,
@@ -55,6 +55,7 @@ class FractionFst(GraphFst):
         # Derivational strings append 'avo' as a suffix. Adding space for processing aid
         fraction_stem = pynutil.insert(" avo")
         plural = pynutil.insert("s")
+        conjunction = pynutil.insert(" y ")
 
         integer = (
             pynutil.delete("integer_part: \"")
@@ -82,13 +83,12 @@ class FractionFst(GraphFst):
         )
 
         denominator_singular = pynini.union(denominator_add_stem, denominator_ordinal)
-        denominator_plural = denominator_singular + plural
-
         if not deterministic:
             # Occasional exceptions
             denominator_singular |= denominator_add_stem @ pynini.string_map(
                 [("once avo", "undécimo"), ("doce avo", "duodécimo")]
             )
+        denominator_plural = denominator_singular + plural
 
         # Merging operations
         merge = pynini.cdrewrite(
@@ -109,6 +109,7 @@ class FractionFst(GraphFst):
         merge_into_single_word = merge @ remove_accents @ delete_duplicates
 
         fraction_default = numerator + delete_space + insert_space + (denominator_plural @ merge_into_single_word)
+
         fraction_with_one = (
             numerator_one + delete_space + insert_space + (denominator_singular @ merge_into_single_word)
         )
@@ -117,8 +118,6 @@ class FractionFst(GraphFst):
         fraction_with_cardinal += (
             delete_space + pynutil.insert(" sobre ") + strip_cardinal_apocope(denominator_cardinal)
         )
-
-        conjunction = pynutil.insert(" y ")
 
         if not deterministic:
             # There is an alternative rendering where ordinals act as adjectives for 'parte'. This requires use of the feminine
@@ -150,8 +149,10 @@ class FractionFst(GraphFst):
             fraction_with_one_fem += pynini.union(
                 denominator_singular_fem @ merge_stem, denominator_singular_fem @ merge_into_single_word
             )  # Both forms exists
-            fraction_with_one_fem @= pynini.cdrewrite(pynini.cross("una media", "media"), "", "", NEMO_SIGMA)
             fraction_with_one_fem += pynutil.insert(" parte")
+            fraction_with_one_fem @= pynini.cdrewrite(
+                pynini.cross("una media", "media"), "", "", NEMO_SIGMA
+            )  # "media" not "una media"
 
             fraction_default_fem = numerator_fem + delete_space + insert_space
             fraction_default_fem += pynini.union(
@@ -167,18 +168,32 @@ class FractionFst(GraphFst):
             fraction_with_one |= numerator_one + delete_space + insert_space + denominator_singular @ merge_stem
             fraction_with_one |= fraction_with_one_fem
 
-            # Integers are influenced by dominant noun, need to allow feminine forms as well
-            integer |= shift_cardinal_gender(integer)
-
-        # Remove 'un medio'
-        fraction_with_one @= pynini.cdrewrite(pynini.cross("un medio", "medio"), "", "", NEMO_SIGMA)
-
-        integer = pynini.closure(integer + delete_space + conjunction, 0, 1)
+        fraction_with_one @= pynini.cdrewrite(
+            pynini.cross("un medio", "medio"), "", "", NEMO_SIGMA
+        )  # "medio" not "un medio"
 
         fraction = fraction_with_one | fraction_default | fraction_with_cardinal
+        graph_masc = pynini.closure(integer + delete_space + conjunction, 0, 1) + fraction
 
-        graph = integer + fraction
+        # Manage cases of fem gender (only shows on integer except for "medio")
+        integer_fem = shift_cardinal_gender(integer)
+        fraction_default |= (
+            shift_cardinal_gender(numerator)
+            + delete_space
+            + insert_space
+            + (denominator_plural @ pynini.cross("medios", "medias"))
+        )
+        fraction_with_one |= (
+            pynutil.delete(numerator_one) + delete_space + (denominator_singular @ pynini.cross("medio", "media"))
+        )
 
-        self.graph = graph
+        fraction_fem = fraction_with_one | fraction_default | fraction_with_cardinal
+        graph_fem = pynini.closure(integer_fem + delete_space + conjunction, 0, 1) + fraction_fem
+
+        self.graph_masc = pynini.optimize(graph_masc)
+        self.graph_fem = pynini.optimize(graph_fem)
+
+        self.graph = graph_masc | graph_fem
+
         delete_tokens = self.delete_tokens(self.graph)
         self.fst = delete_tokens.optimize()

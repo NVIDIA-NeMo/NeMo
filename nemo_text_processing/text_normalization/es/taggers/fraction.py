@@ -95,7 +95,7 @@ class FractionFst(GraphFst):
         )
         graph_fractions_cardinals @= NEMO_CHAR.plus @ pynini.cdrewrite(
             pynutil.delete("0"), pynini.accep("[BOS]"), pynini.accep("[EOS]"), NEMO_SIGMA
-        )  # Empty characters become '0' for NEMO_CHAR fst, so ned to block
+        )  # Empty characters become '0' for NEMO_CHAR fst, so need to block
         graph_fractions_cardinals @= cardinal_graph
         graph_fractions_cardinals += pynutil.insert(
             "\" morphosyntactic_features: \"add_root\""

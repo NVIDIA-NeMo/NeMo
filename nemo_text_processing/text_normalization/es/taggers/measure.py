@@ -13,8 +13,8 @@
 # limitations under the License.
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_ALPHA,
-    NEMO_DIGIT,
     NEMO_NON_BREAKING_SPACE,
+    NEMO_SIGMA,
     NEMO_SPACE,
     GraphFst,
     convert_space,
@@ -98,7 +98,7 @@ class MeasureFst(GraphFst):
         subgraph_decimal = decimal.fst + insert_space + pynini.closure(NEMO_SPACE, 0, 1) + unit_plural
 
         subgraph_cardinal = (
-            (optional_graph_negative + (pynini.closure(NEMO_DIGIT) - "1")) @ cardinal.fst
+            (optional_graph_negative + (NEMO_SIGMA - "1")) @ cardinal.fst
             + insert_space
             + pynini.closure(delete_space, 0, 1)
             + unit_plural
@@ -111,7 +111,7 @@ class MeasureFst(GraphFst):
             + unit_singular_graph
         )
 
-        subgraph_fraction = fraction.fst + insert_space + pynini.closure(delete_space, 0, 1) + unit_plural
+        subgraph_fraction = fraction.fst + insert_space + pynini.closure(delete_space, 0, 1) + unit_singular_graph
 
         decimal_times = (
             pynutil.insert("decimal { ")
@@ -170,10 +170,10 @@ class MeasureFst(GraphFst):
         final_graph = (
             subgraph_decimal
             | subgraph_cardinal
-            | subgraph_fraction
             | cardinal_dash_alpha
             | alpha_dash_cardinal
             | decimal_dash_alpha
+            | subgraph_fraction
             | decimal_times
             | cardinal_times
             | alpha_dash_decimal

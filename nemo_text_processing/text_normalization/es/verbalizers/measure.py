@@ -20,7 +20,7 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     delete_extra_space,
     delete_preserve_order,
 )
-from nemo_text_processing.text_normalization.es.graph_utils import ones, shift_cardinal_gender
+from nemo_text_processing.text_normalization.es.graph_utils import ones
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
 
 try:
@@ -52,7 +52,7 @@ class MeasureFst(GraphFst):
     """
     Finite state transducer for verbalizing measure, e.g.
         measure { cardinal { integer: "dos" units: "gramos" } } -> "dos gramos"
-        measure { cardinal { integer_part: "dos" quantity: "millones" units: "gramos" } } -> "dos millones de gramos"
+        measure { decimal { integer_part: "dos" quantity: "millones" units: "gramos" } } -> "dos millones de gramos"
 
     Args:
         decimal: DecimalFst
@@ -65,9 +65,12 @@ class MeasureFst(GraphFst):
     def __init__(self, decimal: GraphFst, cardinal: GraphFst, fraction: GraphFst, deterministic: bool):
         super().__init__(name="measure", kind="verbalize", deterministic=deterministic)
 
-        graph_decimal = decimal.fst
-        graph_cardinal = cardinal.fst
-        graph_fraction = fraction.fst
+        graph_decimal_masc = decimal.delete_tokens(decimal.graph_masc)
+        graph_decimal_fem = decimal.delete_tokens(decimal.graph_fem)
+        graph_cardinal_masc = cardinal.delete_tokens(cardinal.graph_masc)
+        graph_cardinal_fem = cardinal.delete_tokens(cardinal.graph_fem)
+        graph_fraction_fem = fraction.delete_tokens(fraction.graph_fem)
+        graph_fraction_masc = fraction.delete_tokens(fraction.graph_masc)
 
         unit_masc = (unit_plural_masc | unit_singular_masc) + pynini.closure(
             NEMO_WHITE_SPACE + "por" + pynini.closure(NEMO_NOT_QUOTE, 1), 0, 1
@@ -80,10 +83,18 @@ class MeasureFst(GraphFst):
         )
         unit_fem = pynutil.delete("units: \"") + (pynini.closure(NEMO_NOT_QUOTE) @ unit_fem) + pynutil.delete("\"")
 
-        graph_masc = (graph_cardinal | graph_decimal | graph_fraction) + NEMO_WHITE_SPACE + unit_masc
-        graph_fem = (
-            shift_cardinal_gender(graph_cardinal | graph_decimal | graph_fraction) + NEMO_WHITE_SPACE + unit_fem
+        graph_masc = (graph_cardinal_masc | graph_decimal_masc) + NEMO_WHITE_SPACE + unit_masc
+        graph_masc |= graph_fraction_masc + NEMO_WHITE_SPACE + pynutil.insert("de ") + unit_masc
+        graph_masc |= pynutil.add_weight(
+            graph_fraction_masc @ (NEMO_SIGMA + pynini.union("medio", "medios")) + NEMO_WHITE_SPACE + unit_masc, -0.001
+        )  # "medio litro" not "medio de litro"
+
+        graph_fem = (graph_cardinal_fem | graph_decimal_fem) + NEMO_WHITE_SPACE + unit_fem
+        graph_fem |= graph_fraction_fem + NEMO_WHITE_SPACE + pynutil.insert("de ") + unit_fem
+        graph_fem |= pynutil.add_weight(
+            graph_fraction_fem @ (NEMO_SIGMA + pynini.union("media", "medias")) + NEMO_WHITE_SPACE + unit_fem, -0.001
         )
+
         graph = graph_masc | graph_fem
 
         graph = (
@@ -98,8 +109,8 @@ class MeasureFst(GraphFst):
         # To manage alphanumeric combonations ("a-8, 5x"), we let them use a weighted default path.
         alpha_num_unit = pynutil.delete("units: \"") + pynini.closure(NEMO_NOT_QUOTE) + pynutil.delete("\"")
         graph_alpha_num = pynini.union(
-            (graph_cardinal | graph_decimal) + NEMO_SPACE + alpha_num_unit,
-            alpha_num_unit + delete_extra_space + (graph_cardinal | graph_decimal),
+            (graph_cardinal_masc | graph_decimal_masc) + NEMO_SPACE + alpha_num_unit,
+            alpha_num_unit + delete_extra_space + (graph_cardinal_masc | graph_decimal_masc),
         )
 
         graph |= pynutil.add_weight(graph_alpha_num, 0.01)

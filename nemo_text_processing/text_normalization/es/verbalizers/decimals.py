@@ -20,6 +20,7 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
 )
 from nemo_text_processing.text_normalization.es import LOCALIZATION
 from nemo_text_processing.text_normalization.es.graph_utils import (
+    add_cardinal_apocope_fem,
     shift_cardinal_gender,
     shift_number_gender,
     strip_cardinal_apocope,
@@ -49,38 +50,45 @@ class DecimalFst(GraphFst):
     def __init__(self, deterministic: bool = True):
         super().__init__(name="decimal", kind="classify", deterministic=deterministic)
 
-        self.optional_sign = pynini.closure(pynini.cross("negative: \"true\"", "menos ") + delete_space, 0, 1)
-        self.integer = pynutil.delete("integer_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
-        self.fractional_default = (
+        optional_sign = pynini.closure(pynini.cross("negative: \"true\"", "menos ") + delete_space, 0, 1)
+        integer = pynutil.delete("integer_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
+        fractional_default = (
             pynutil.delete("fractional_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
         )
 
         conjunction = pynutil.insert(" punto ") if LOCALIZATION == "am" else pynutil.insert(" coma ")
         if not deterministic:
             conjunction |= pynutil.insert(pynini.union(" con ", " y "))
-            self.fractional_default |= strip_cardinal_apocope(self.fractional_default)
-        self.fractional = conjunction + self.fractional_default
+            fractional_default |= strip_cardinal_apocope(fractional_default)
+        fractional = conjunction + fractional_default
 
-        self.quantity = (
+        quantity = (
             delete_space
             + insert_space
             + pynutil.delete("quantity: \"")
             + pynini.closure(NEMO_NOT_QUOTE, 1)
             + pynutil.delete("\"")
         )
-        self.optional_quantity = pynini.closure(self.quantity, 0, 1)
+        optional_quantity = pynini.closure(quantity, 0, 1)
 
-        graph = self.optional_sign + pynini.union(
-            (self.integer + self.quantity), (self.integer + delete_space + self.fractional + self.optional_quantity)
+        graph_masc = optional_sign + pynini.union(
+            (integer + quantity), (integer + delete_space + fractional + optional_quantity)
         )
 
-        self.numbers = graph.optimize()
-        self.numbers_no_quantity = self.integer + delete_space + self.fractional + self.optional_quantity
+        # Allowing permutation for fem gender, don't include quantity since "million","billion", etc.. are masculine
+        graph_fem = optional_sign + (shift_cardinal_gender(integer) + delete_space + shift_number_gender(fractional))
+        if not deterministic:  # "una" will drop to "un" in certain cases
+            graph_fem |= add_cardinal_apocope_fem(graph_fem)
 
-        if not deterministic:
-            graph |= self.optional_sign + (
-                shift_cardinal_gender(self.integer + delete_space) + shift_number_gender(self.fractional)
-            )
+        self.numbers_only_quantity = (
+            optional_sign
+            + pynini.union((integer + quantity), (integer + delete_space + fractional + quantity)).optimize()
+        )
+
+        self.graph_masc = (graph_masc + delete_preserve_order).optimize()
+        self.graph_fem = (graph_fem + delete_preserve_order).optimize()
+
+        graph = graph_masc | graph_fem
 
         graph += delete_preserve_order
         delete_tokens = self.delete_tokens(graph)

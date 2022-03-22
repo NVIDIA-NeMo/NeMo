@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torchmetrics import Metric
 from torchmetrics.utilities.data import METRIC_EPS
 
-__all__ = ['ClassificationReport']
+__all__ = ['ClassificationReport', 'MultiLabelClassificationReport']
 
 
 class ClassificationReport(Metric):
@@ -83,7 +83,17 @@ class ClassificationReport(Metric):
             "num_examples_per_class", default=torch.zeros(num_classes), dist_reduce_fx='sum', persistent=False
         )
 
-    def update(self, predictions: torch.Tensor, labels: torch.Tensor):
+    def update(self, predictions: torch.Tensor, labels: torch.Tensor) -> None:
+        """
+        Updates attributes needed for new classification report (true positive, false negative, false postive, examples per class)
+
+        Args:
+            predictions: predicted labels 
+            labels: actual labels
+
+        Return:
+            None
+        """
         TP = []
         FN = []
         FP = []
@@ -105,10 +115,11 @@ class ClassificationReport(Metric):
         self.fp += fp
         self.num_examples_per_class += num_examples_per_class
 
-    def compute(self):
+    def compute(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Aggregates and then calculates logs classification report similar to sklearn.metrics.classification_report.
         Typically used during epoch_end.
+
         Return:
             aggregated precision, recall, f1, report
         """
@@ -171,3 +182,79 @@ class ClassificationReport(Metric):
                 f'{self.mode} mode is not supported. Choose "macro" to get aggregated numbers \
             or "all" to get values for each class.'
             )
+
+
+class MultiLabelClassificationReport(ClassificationReport):
+    """
+    This metric computes the number of True Positive, False Negative, and False Positive examples per class for
+    a multi-label dataset.
+    
+    When doing distributed training/evaluation the result of res=ClassificationReport(predictions, labels) calls
+    will be all-reduced between all workers using SUM operations.
+
+    If used with PytorchLightning LightningModule, include TPs, FNs, and FPs inside validation_step results.
+    Then aggregate them at the end of validation epoch to correctly compute validation precision, recall, f1
+    using get_precision_recall_f1().
+
+    Example:
+        def validation_step(self, batch, batch_idx):
+            ...
+            tp, fn, fp, _ = self.classification_report(preds, labels)
+
+            return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
+
+        def validation_epoch_end(self, outputs):
+            ...
+            # calculate metrics and classification report
+            precision, recall, f1, report = self.classification_report.compute()
+
+            logging.info(report)
+
+            self.log('val_loss', avg_loss, prog_bar=True)
+            self.log('precision', precision)
+            self.log('f1', f1)
+            self.log('recall', recall)
+
+    Args:
+        num_classes: number of classes in the dataset
+        label_ids (optional): label name to label id mapping
+        mode: how to compute the average
+        dist_sync_on_step: sync across ddp
+        process_group: which processes to sync across
+    Return:
+        aggregated precision, recall, f1, report
+    """
+
+    def update(self, predictions: torch.Tensor, labels: torch.Tensor) -> None:
+        """
+        Updates attributes needed for new classification report (true positive, false negative, false postive, examples per class)
+
+        Args:
+            predictions: predicted labels 
+            labels: actual labels
+
+        Return:
+            None
+        """
+        predictions = predictions.t()
+
+        TP = []
+        FN = []
+        FP = []
+
+        for label_id in range(self.num_classes):
+            current_label = labels[label_id]
+            labels_predicted = predictions[label_id]
+            TP.append((labels_predicted == current_label)[labels_predicted == 1].sum())
+            FP.append((labels_predicted != current_label)[labels_predicted == 1].sum())
+            FN.append((labels_predicted != current_label)[current_label == 1].sum())
+
+        tp = torch.tensor(TP).to(predictions.device)
+        fn = torch.tensor(FN).to(predictions.device)
+        fp = torch.tensor(FP).to(predictions.device)
+        num_examples_per_class = tp + fn
+
+        self.tp += tp
+        self.fn += fn
+        self.fp += fp
+        self.num_examples_per_class += num_examples_per_class

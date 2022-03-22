@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,42 +29,44 @@ from nemo.utils import logging
 from nemo.utils.env_var_parsing import get_envint
 
 __all__ = [
-    'DataProcessor',
-    'get_label_stats',
-    'partition_data',
-    'write_files',
-    'write_data',
-    'create_dataset',
-    'read_csv',
-    'get_dataset',
-    'partition',
-    'map_entities',
-    'get_entities',
-    'get_data',
-    'reverse_dict',
-    'get_intent_labels',
-    'get_stats',
-    'DATABASE_EXISTS_TMP',
-    'MODE_EXISTS_TMP',
-    'is_whitespace',
-    'write_vocab',
-    'if_exist',
-    'remove_punctuation_from_sentence',
-    'dataset_to_ids',
-    'get_freq_weights',
-    'fill_class_weights',
-    'normalize_answer',
-    'get_labels_to_labels_id_mapping',
-    'get_vocab',
-    'find_newlines',
-    'load_data_indices',
-    'chinese_punctuation',
-    'check_chinese_char',
-    'normalize_chinese_answer',
+    "DataProcessor",
+    "get_label_stats",
+    "get_multi_label_stats",
+    "partition_data",
+    "write_files",
+    "write_data",
+    "create_dataset",
+    "read_csv",
+    "get_dataset",
+    "partition",
+    "map_entities",
+    "get_entities",
+    "get_data",
+    "reverse_dict",
+    "get_intent_labels",
+    "get_stats",
+    "DATABASE_EXISTS_TMP",
+    "MODE_EXISTS_TMP",
+    "is_whitespace",
+    "write_vocab",
+    "if_exist",
+    "remove_punctuation_from_sentence",
+    "dataset_to_ids",
+    "get_freq_weights",
+    "get_freq_weights_bce_with_logits_loss",
+    "fill_class_weights",
+    "normalize_answer",
+    "get_labels_to_labels_id_mapping",
+    "get_vocab",
+    "find_newlines",
+    "load_data_indices",
+    "chinese_punctuation",
+    "check_chinese_char",
+    "normalize_chinese_answer",
 ]
 
-DATABASE_EXISTS_TMP = '{} dataset has already been processed and stored at {}'
-MODE_EXISTS_TMP = '{} mode of {} dataset has already been processed and stored at {}'
+DATABASE_EXISTS_TMP = "{} dataset has already been processed and stored at {}"
+MODE_EXISTS_TMP = "{} mode of {} dataset has already been processed and stored at {}"
 
 
 class DataProcessor(object):
@@ -96,40 +98,40 @@ class DataProcessor(object):
 
 
 chinese_punctuation = {
-    '——',
-    '‘',
-    '’',
-    '“',
-    '”',
-    '…',
-    '、',
-    '。',
-    '〈',
-    '〉',
-    '《',
-    '》',
-    '「',
-    '」',
-    '『',
-    '』',
-    '【',
-    '】',
-    '〔',
-    '〕',
-    '！',
-    '（',
-    '）',
-    '，',
-    '．',
-    '：',
-    '；',
-    '？',
+    "——",
+    "‘",
+    "’",
+    "“",
+    "”",
+    "…",
+    "、",
+    "。",
+    "〈",
+    "〉",
+    "《",
+    "》",
+    "「",
+    "」",
+    "『",
+    "』",
+    "【",
+    "】",
+    "〔",
+    "〕",
+    "！",
+    "（",
+    "）",
+    "，",
+    "．",
+    "：",
+    "；",
+    "？",
 }
 
 
 def check_chinese_char(ch):
     """Check if a character is in Chinese."""
-    if u'\u4e00' <= ch <= u'\u9fff' or ch in chinese_punctuation:
+    if "\u4e00" <= ch <= "\u9fff" or ch in chinese_punctuation:
         return True
     else:
         return False
@@ -140,7 +142,7 @@ def normalize_chinese_answer(text):
 
     def remove_punc(text):
         exclude = chinese_punctuation
-        return ''.join(ch for ch in text if ch not in exclude)
+        return "".join(ch for ch in text if ch not in exclude)
 
     def separate_char(text):
         ch_list = []
@@ -155,14 +157,14 @@ def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
 
     def remove_articles(text):
-        return re.sub(r'\b(a|an|the)\b', ' ', text)
+        return re.sub(r"\b(a|an|the)\b", " ", text)
 
     def white_space_fix(text):
-        return ' '.join(text.split())
+        return " ".join(text.split())
 
     def remove_punc(text):
         exclude = set(string.punctuation)
-        return ''.join(ch for ch in text if ch not in exclude)
+        return "".join(ch for ch in text if ch not in exclude)
 
     def lower(text):
         return text.lower()
@@ -170,32 +172,76 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
 
-def get_label_stats(labels, outfile='stats.tsv', verbose=True):
-    '''
-
+def get_label_stats(labels, outfile="stats.tsv", verbose=True):
+    """
     Args:
         labels: list of all labels
         outfile: path to the file where to save label stats
-
     Returns:
         total (int): total number of labels
         label_frequencies (list of tuples): each tuple represent (label, label frequency)
         max id of the labels
-    '''
+    """
     labels = Counter(labels)
     total = sum(labels.values())
-    out = open(outfile, 'w')
+    out = open(outfile, "w")
     i = 0
     freq_dict = {}
     label_frequencies = labels.most_common()
     for k, v in label_frequencies:
-        out.write(f'{k}\t\t{round(v/total,5)}\t\t{v}\n')
+        out.write(f"{k}\t\t{round(v/total,5)}\t\t{v}\n")
         if verbose and i < 3:
-            logging.info(f'label: {k}, {v} out of {total} ({(v / total)*100.0:.2f}%).')
+            logging.info(f"label: {k}, {v} out of {total} ({(v / total)*100.0:.2f}%).")
         i += 1
         freq_dict[k] = v
 
     return total, freq_dict, max(labels.keys())
+
+
+def get_multi_label_stats(labels, outfile="stats.tsv", verbose=True):
+    """
+    Args:
+        labels: list of tuples containing labels for each utterance
+            Example: If there are 5 intents in total, then (0,1,1,1,0) represents the labels 
+                     for an individual utterance. (0,1,1,1,0) indicates that the utterance has labels
+                     at index/line 1,2, and 3 in dict.intents. The list of tuples contain labels for 
+                     all utterances.
+
+        outfile: path to the file where to save label stats
+
+    Returns:
+        total (int): total number of labels
+        freq_dict (list of tuples): each tuple represents class counts in the form of (negative, positive)
+    """
+    total = len(labels)
+    positive_class_total = 0
+    class_count_dict = {}
+
+    # Get the count of each label in the label dictionary, both the positive and negative classes
+    for label in labels:
+        for label_index, val in enumerate(label):
+            if label_index not in class_count_dict:
+                class_count_dict[label_index] = [0, 0]
+
+            if val == 1:
+                positive_class_total += 1
+                class_count_dict[label_index][1] += 1
+            else:
+                class_count_dict[label_index][0] += 1
+
+    if verbose:
+        three_most_frequent_classes = sorted(class_count_dict, key=lambda idx: class_count_dict[idx][1], reverse=True)
+
+        for cnt, idx in enumerate(three_most_frequent_classes):
+            if cnt > 2:
+                break
+
+            positives = class_count_dict[idx][1]
+            logging.info(
+                f"label: {idx}, {positives} out of {positive_class_total} ({(positives / positive_class_total)*100.0:.2f}%)."
+            )
+
+    return total, class_count_dict, len(labels[0]) - 1
 
 
 def partition_data(intent_queries, slot_tags, split=0.1):
@@ -204,8 +250,8 @@ def partition_data(intent_queries, slot_tags, split=0.1):
     dev_idx = set(random.sample(range(n), n_dev))
     dev_intents, dev_slots, train_intents, train_slots = [], [], [], []
 
-    dev_intents.append('sentence\tlabel\n')
-    train_intents.append('sentence\tlabel\n')
+    dev_intents.append("sentence\tlabel\n")
+    train_intents.append("sentence\tlabel\n")
 
     for i, item in enumerate(intent_queries):
         if i in dev_idx:
@@ -218,43 +264,43 @@ def partition_data(intent_queries, slot_tags, split=0.1):
 
 
 def write_files(data, outfile):
-    with open(outfile, 'w') as f:
+    with open(outfile, "w") as f:
         for item in data:
-            item = f'{item.strip()}\n'
+            item = f"{item.strip()}\n"
             f.write(item)
 
 
 def write_data(data, slot_dict, intent_dict, outfold, mode, uncased):
-    intent_file = open(f'{outfold}/{mode}.tsv', 'w')
-    intent_file.write('sentence\tlabel\n')
-    slot_file = open(f'{outfold}/{mode}_slots.tsv', 'w')
+    intent_file = open(f"{outfold}/{mode}.tsv", "w")
+    intent_file.write("sentence\tlabel\n")
+    slot_file = open(f"{outfold}/{mode}_slots.tsv", "w")
     for tokens, slots, intent in data:
-        text = ' '.join(tokens)
+        text = " ".join(tokens)
         if uncased:
             text = text.lower()
-        intent_file.write(f'{text}\t{intent_dict[intent]}\n')
+        intent_file.write(f"{text}\t{intent_dict[intent]}\n")
         slots = [str(slot_dict[slot]) for slot in slots]
-        slot_file.write(' '.join(slots) + '\n')
+        slot_file.write(" ".join(slots) + "\n")
     intent_file.close()
     slot_file.close()
 
 
 def create_dataset(train, dev, slots, intents, uncased, outfold):
     os.makedirs(outfold, exist_ok=True)
-    if 'O' in slots:
-        slots.remove('O')
-    slots = sorted(list(slots)) + ['O']
+    if "O" in slots:
+        slots.remove("O")
+    slots = sorted(list(slots)) + ["O"]
     intents = sorted(list(intents))
-    slots = write_vocab(slots, f'{outfold}/dict.slots.csv')
-    intents = write_vocab(intents, f'{outfold}/dict.intents.csv')
-    write_data(train, slots, intents, outfold, 'train', uncased)
-    write_data(dev, slots, intents, outfold, 'test', uncased)
+    slots = write_vocab(slots, f"{outfold}/dict.slots.csv")
+    intents = write_vocab(intents, f"{outfold}/dict.intents.csv")
+    write_data(train, slots, intents, outfold, "train", uncased)
+    write_data(dev, slots, intents, outfold, "test", uncased)
 
 
 def read_csv(file_path):
     rows = []
-    with open(file_path, 'r') as csvfile:
-        read_csv = csv.reader(csvfile, delimiter=',')
+    with open(file_path, "r") as csvfile:
+        read_csv = csv.reader(csvfile, delimiter=",")
         for row in read_csv:
             rows.append(row)
     return rows
@@ -286,14 +332,14 @@ def partition(data, split=0.1):
 
 def map_entities(entity2value, entities):
     for key in entities:
-        if 'data' in entities[key]:
+        if "data" in entities[key]:
             if key not in entity2value:
                 entity2value[key] = set([])
 
             values = []
-            for value in entities[key]['data']:
-                values.append(value['value'])
-                values.extend(value['synonyms'])
+            for value in entities[key]["data"]:
+                values.append(value["value"])
+                values.extend(value["synonyms"])
             entity2value[key] = entity2value[key] | set(values)
 
     return entity2value
@@ -302,32 +348,32 @@ def map_entities(entity2value, entities):
 def get_entities(files):
     entity2value = {}
     for file in files:
-        with open(file, 'r') as json_file:
+        with open(file, "r") as json_file:
             data = json.load(json_file)
-            entity2value = map_entities(entity2value, data['entities'])
+            entity2value = map_entities(entity2value, data["entities"])
 
     value2entity = reverse_dict(entity2value)
     return entity2value, value2entity
 
 
 def get_data(files):
-    all_data, all_slots, all_intents = [], set(['O']), set()
+    all_data, all_slots, all_intents = [], set(["O"]), set()
     for file in files:
         file_data = []
-        with open(file, 'r') as json_file:
+        with open(file, "r") as json_file:
             data = json.load(json_file)
-            for intent in data['intents']:
+            for intent in data["intents"]:
                 all_intents.add(intent)
-                utterances = data['intents'][intent]['utterances']
+                utterances = data["intents"][intent]["utterances"]
                 for utterance in utterances:
                     tokens, slots = [], []
-                    for frag in utterance['data']:
-                        frag_tokens = frag['text'].strip().split()
+                    for frag in utterance["data"]:
+                        frag_tokens = frag["text"].strip().split()
                         tokens.extend(frag_tokens)
-                        if 'slot_name' not in frag:
-                            slot = 'O'
+                        if "slot_name" not in frag:
+                            slot = "O"
                         else:
-                            slot = frag['slot_name']
+                            slot = frag["slot_name"]
                             all_slots.add(slot)
                         slots.extend([slot] * len(frag_tokens))
                     file_data.append((tokens, slots, intent))
@@ -346,7 +392,7 @@ def reverse_dict(entity2value):
 def get_intent_labels(intent_file):
     labels = {}
     label = 0
-    with open(intent_file, 'r') as f:
+    with open(intent_file, "r") as f:
         for line in f:
             intent = line.strip()
             labels[intent] = label
@@ -355,16 +401,16 @@ def get_intent_labels(intent_file):
 
 
 def get_stats(lengths):
-    logging.info('Some stats of the lengths of the sequences:')
+    logging.info("Some stats of the lengths of the sequences:")
     lengths = np.asarray(lengths)
     logging.info(
-        f'Min: {np.min(lengths)} | \
+        f"Min: {np.min(lengths)} | \
                  Max: {np.max(lengths)} | \
                  Mean: {np.mean(lengths)} | \
-                 Median: {np.median(lengths)}'
+                 Median: {np.median(lengths)}"
     )
-    logging.info(f'75 percentile: {np.percentile(lengths, 75):.2f}')
-    logging.info(f'99 percentile: {np.percentile(lengths, 99):.2f}')
+    logging.info(f"75 percentile: {np.percentile(lengths, 75):.2f}")
+    logging.info(f"99 percentile: {np.percentile(lengths, 99):.2f}")
 
 
 def is_whitespace(c):
@@ -376,23 +422,23 @@ def is_whitespace(c):
 def write_vocab(items, outfile):
     vocab = {}
     idx = 0
-    with open(outfile, 'w') as f:
+    with open(outfile, "w") as f:
         for item in items:
-            f.write(item + '\n')
+            f.write(item + "\n")
             vocab[item] = idx
             idx += 1
     return vocab
 
 
 def get_labels_to_labels_id_mapping(file):
-    '''
+    """
     Reads labels from the file and returns labels to id mapping dictionary
     Args:
         file: path to file
     Returns:
         labels to id mapping dictionary
-    '''
-    lines = open(file, 'r').readlines()
+    """
+    lines = open(file, "r").readlines()
     lines = [line.strip() for line in lines if line.strip()]
     label_ids = {lines[i]: i for i in range(len(lines))}
     return label_ids
@@ -402,18 +448,20 @@ def if_exist(outfold, files):
     if not os.path.exists(outfold):
         return False
     for file in files:
-        if not os.path.exists(f'{outfold}/{file}'):
+        if not os.path.exists(f"{outfold}/{file}"):
             return False
     return True
 
 
 def remove_punctuation_from_sentence(sentence):
-    sentence = re.sub('[' + string.punctuation + ']', '', sentence)
+    sentence = re.sub("[" + string.punctuation + "]", "", sentence)
     sentence = sentence.lower()
     return sentence
 
 
-def dataset_to_ids(dataset, tokenizer, cache_ids=False, add_bos_eos=True, cache_data_per_node=False, use_cache=False):
+def dataset_to_ids(
+    dataset, tokenizer, cache_ids=False, add_bos_eos=True, cache_data_per_node=False, use_cache=False,
+):
     """
     Reads dataset from file line by line, tokenizes each line with tokenizer,
     and returns list of lists which corresponds to ids of tokenized strings.
@@ -438,7 +486,7 @@ def dataset_to_ids(dataset, tokenizer, cache_ids=False, add_bos_eos=True, cache_
         logging.info(f"Tokenizing dataset {dataset}...")
         data = open(dataset, "rb").readlines()
         ids = []
-        for sentence in tqdm(data, desc='Tokenizing sentence'):
+        for sentence in tqdm(data, desc="Tokenizing sentence"):
             sent_ids = tokenizer.text_to_ids(sentence.decode("utf-8"))
             if add_bos_eos:
                 sent_ids = [tokenizer.bos_id] + sent_ids + [tokenizer.eos_id]
@@ -461,7 +509,34 @@ def get_freq_weights(label_freq):
     for lf in label_freq.values():
         total_size += lf
     weighted_slots = {label: (total_size / (len(label_freq) * freq)) for label, freq in label_freq.items()}
+
     return weighted_slots
+
+
+def get_freq_weights_bce_with_logits_loss(label_freq):
+    """
+    Calculate positive class weights to be passed to BCEWithLogitsLoss
+    https://pytorch.org/docs/1.9.1/generated/torch.nn.BCEWithLogitsLoss.html
+
+    Args: 
+        label_freq: dictionary of tuples where keys represents class id, and tuple represents counts of positive and negative classes,
+                    positive classes are at index 1 and negative at index 0
+    Returns:
+        weights: dictionary of labels with their weights
+    """
+    weights = {}
+
+    for label_id, class_values in label_freq.items():
+        positive_class = class_values[1]
+        negative_class = class_values[0]
+
+        if positive_class == 0:
+            weights[label_id] = 0
+
+        else:
+            weights[label_id] = float(negative_class) / float(positive_class)
+
+    return weights
 
 
 def fill_class_weights(weights, max_id=-1):
@@ -488,7 +563,7 @@ def fill_class_weights(weights, max_id=-1):
 
 
 def get_vocab(file):
-    lines = open(file, 'r').readlines()
+    lines = open(file, "r").readlines()
     lines = [line.strip() for line in lines if line.strip()]
     labels = {i: lines[i] for i in range(len(lines))}
     return labels
@@ -524,8 +599,8 @@ def load_data_indices(idx_file: str, data_file: str, savename: str):
     """
     Loads dataset index file if it exsits
     """
-    data_dir = data_file[: data_file.rfind('/')]
-    mode = data_file[data_file.rfind('/') + 1 : data_file.rfind('.')]
+    data_dir = data_file[: data_file.rfind("/")]
+    mode = data_file[data_file.rfind("/") + 1 : data_file.rfind(".")]
     idx_file = f"{data_dir}/{mode}_{savename}.pkl"
 
     if os.path.isfile(idx_file):

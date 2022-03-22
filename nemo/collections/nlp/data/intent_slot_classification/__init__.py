@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,4 +19,10 @@ from nemo.collections.nlp.data.intent_slot_classification.intent_slot_classifica
 )
 from nemo.collections.nlp.data.intent_slot_classification.intent_slot_classification_descriptor import (
     IntentSlotDataDesc,
+)
+from nemo.collections.nlp.data.intent_slot_classification.multi_label_intent_slot_classification_dataset import (
+    MultiLabelIntentSlotClassificationDataset,
+)
+from nemo.collections.nlp.data.intent_slot_classification.multi_label_intent_slot_classification_descriptor import (
+    MultiLabelIntentSlotDataDesc,
 )

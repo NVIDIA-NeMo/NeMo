@@ -995,6 +995,18 @@ pipeline {
             exp_manager=null'
           }
         }
+      }
+    }
+
+    stage('L2: Intent and Slot Classification Tasks') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
         stage('L2: Intent and Slot Classification') {
           steps {
             sh 'cd examples/nlp/intent_slot_classification && \
@@ -1011,7 +1023,7 @@ pipeline {
         }
         stage('L2: Multi-Label Intent and Slot Classification') {
           steps {
-            sh 'cd examples/nlp/multi_label_intent_slot_classification && \
+            sh 'cd examples/nlp/intent_slot_classification && \
             python multi_label_intent_slot_classification.py \
             model.data_dir=/home/TestData/nlp/new_multiatis \
             model.validation_ds.prefix=dev \

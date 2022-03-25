@@ -57,7 +57,8 @@ class MultiLabelIntentSlotClassificationModel(IntentSlotClassificationModel):
         # Check the presence of data_dir.
         if not cfg.data_dir or not os.path.exists(cfg.data_dir):
             # Disable setup methods.
-            MultiLabelIntentSlotClassificationModel._set_model_restore_state(is_being_restored=True)
+            if not MultiLabelIntentSlotClassificationModel._is_model_being_restored():
+                MultiLabelIntentSlotClassificationModel._set_model_restore_state(is_being_restored=True)
             # Set default values of data_desc.
             self._set_defaults_data_desc(cfg)
         else:

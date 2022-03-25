@@ -219,7 +219,7 @@ class ZeroShotIntentInferenceDataset(GLUEDataset):
         queries: List[str],
         candidate_labels: List[str],
         tokenizer: TokenizerSpec,
-        max_seq_length: str,
+        max_seq_length: int,
         hypothesis_template: str,
     ):
         """

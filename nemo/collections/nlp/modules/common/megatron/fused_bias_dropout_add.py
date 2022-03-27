@@ -40,9 +40,11 @@ def bias_dropout_add_fused_train_(
 
 
 def bias_dropout_add_fused_train(x, bias, residual, prob):
-    args = _cast_if_autocast_enabled(x, bias, residual, prob)
-    with torch.cuda.amp.autocast(enabled=False):
-        return bias_dropout_add_fused_train_(*args)
+    # re-enable torch grad to enable fused optimization.
+    with torch.enable_grad():
+        args = _cast_if_autocast_enabled(x, bias, residual, prob)
+        with torch.cuda.amp.autocast(enabled=False):
+            return bias_dropout_add_fused_train_(*args)
 
 
 @torch.jit.script

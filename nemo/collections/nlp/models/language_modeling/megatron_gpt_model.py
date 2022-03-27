@@ -106,7 +106,7 @@ class MegatronGPTModel(NLPModel):
         self._validate_trainer()
 
         # used in NVIDIA NGC PyTorch containers
-        # self._enable_nvidia_optimizations()
+        self._enable_nvidia_optimizations()
 
         if self.cfg.get('use_cpu_initialization', False) is False:
             torch.cuda.set_device(trainer.local_rank)

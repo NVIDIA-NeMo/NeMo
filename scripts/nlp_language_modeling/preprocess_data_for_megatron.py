@@ -66,6 +66,7 @@ class Encoder(object):
             tokenizer_model=self.args.tokenizer_model,
             vocab_file=self.args.vocab_file,
             merges_file=self.args.merge_file,
+            delimiter=self.args.delimiter,
         )
         if self.args.split_sentences:
             if not nltk_available:
@@ -121,7 +122,7 @@ def get_args():
         '--tokenizer-library',
         type=str,
         required=True,
-        choices=['yttm', 'sentencepiece', 'megatron', 'huggingface'],
+        choices=['yttm', 'sentencepiece', 'megatron', 'huggingface', 'tabular'],
         help='What tokenizer library to use.',
     )
     group.add_argument(
@@ -132,6 +133,7 @@ def get_args():
     )
     group.add_argument('--vocab-file', type=str, default=None, help='Path to the vocab file')
     group.add_argument('--merge-file', type=str, default=None, help='Path to the BPE merge file (if necessary).')
+    group.add_argument('--delimiter', type=str, default=None, help='delimiter used for tabular tokenizer')
     group.add_argument('--append-eod', action='store_true', help='Append an <eod> token to the end of a document.')
 
     group = parser.add_argument_group(title='output data')
@@ -193,6 +195,7 @@ def main():
         tokenizer_model=args.tokenizer_model,
         vocab_file=args.vocab_file,
         merges_file=args.merge_file,
+        delimiter=args.delimiter,
     )
 
     level = "document"

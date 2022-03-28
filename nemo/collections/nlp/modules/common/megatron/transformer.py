@@ -248,9 +248,55 @@ class ParallelAttention(MegatronModule):
             use_cpu_initialization=use_cpu_initialization,
         )
 
-    def forward(self, hidden_states, attention_mask, layer_past=None, get_key_value=False, encoder_output=None):
+        # Inference key-value memory
+        self.inference_key_memory = None
+        self.inference_value_memory = None
+        self.inference_current_sequence_len = 0
+
+    def _allocate_memory(self, inference_max_sequence_len, batch_size, dtype):
+        return torch.empty(
+            inference_max_sequence_len,
+            batch_size,
+            self.num_attention_heads_per_partition,
+            self.hidden_size_per_attention_head,
+            dtype=dtype,
+            device=torch.cuda.current_device(),
+        )
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask,
+        layer_past=None,
+        get_key_value=False,
+        encoder_output=None,
+        set_inference_key_value_memory=False,
+        inference_max_sequence_len=None,
+    ):
         # hidden_states: [sq, b, h]
 
+        # =================================================
+        # Pre-allocate memory for key-values for inference.
+        # =================================================
+        if set_inference_key_value_memory:
+            assert inference_max_sequence_len and inference_max_sequence_len > 0
+            self.inference_key_memory = self._allocate_memory(
+                inference_max_sequence_len, hidden_states.size(1), hidden_states.dtype
+            )
+            self.inference_value_memory = self._allocate_memory(
+                inference_max_sequence_len, hidden_states.size(1), hidden_states.dtype
+            )
+            self.inference_current_sequence_len = 0
+        # Some consistency check.
+        if inference_max_sequence_len:
+            assert self.inference_current_sequence_len < self.inference_key_memory.size(0)
+            assert inference_max_sequence_len == self.inference_key_memory.size(0)
+        # This is added for safety. In case inference_max_sequence_len
+        # is not provided, make sure there is no potential memory left
+        # from previous inference.
+        if not inference_max_sequence_len:
+            self.inference_key_memory = None
+            self.inference_value_memory = None
         # =====================
         # Query, Key, and Value
         # =====================
@@ -291,9 +337,22 @@ class ParallelAttention(MegatronModule):
             )
             query_layer = query_layer.view(*new_tensor_shape)
 
-        # ==================================
-        # Adjust key and value for inference
-        # ==================================
+        # ===================================================
+        # Adjust key, value, and attention mask for inference
+        # ===================================================
+
+        if inference_max_sequence_len:
+            # Adjust the range variables.
+            start = self.inference_current_sequence_len
+            self.inference_current_sequence_len += key_layer.size(0)
+            end = self.inference_current_sequence_len
+            # Copy key and values.
+            self.inference_key_memory[start:end, ...] = key_layer
+            self.inference_value_memory[start:end, ...] = value_layer
+            key_layer = self.inference_key_memory[:end, ...]
+            value_layer = self.inference_value_memory[:end, ...]
+            # Adjust attention mask
+            attention_mask = attention_mask[..., start:end, :end]
 
         if layer_past is not None:
             past_key, past_value = layer_past
@@ -524,6 +583,8 @@ class ParallelTransformerLayer_(MegatronModule):
         enc_dec_attn_mask=None,
         layer_past=None,
         get_key_value=False,
+        set_inference_key_value_memory=False,
+        inference_max_sequence_len=None,
     ):
         # hidden_states: [b, s, h]
 
@@ -531,7 +592,12 @@ class ParallelTransformerLayer_(MegatronModule):
         layernorm_output = self.input_layernorm(hidden_states)
         # Self attention.
         attention_output, attention_bias = self.self_attention(
-            layernorm_output, attention_mask, layer_past=layer_past, get_key_value=get_key_value
+            layernorm_output,
+            attention_mask,
+            layer_past=layer_past,
+            get_key_value=get_key_value,
+            set_inference_key_value_memory=set_inference_key_value_memory,
+            inference_max_sequence_len=inference_max_sequence_len,
         )
 
         if get_key_value:
@@ -617,15 +683,30 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
         enc_dec_attn_mask=None,
         layer_past=None,
         get_key_value=False,
+        set_inference_key_value_memory=False,
+        inference_max_sequence_len=None,
     ):
-
         if self.dtype == torch.float32:
             return super().forward(
-                hidden_states, attention_mask, encoder_output, enc_dec_attn_mask, layer_past, get_key_value
+                hidden_states,
+                attention_mask,
+                encoder_output,
+                enc_dec_attn_mask,
+                layer_past,
+                get_key_value,
+                set_inference_key_value_memory,
+                inference_max_sequence_len,
             )
         with torch.autocast(device_type="cuda", dtype=self.dtype):
             return super().forward(
-                hidden_states, attention_mask, encoder_output, enc_dec_attn_mask, layer_past, get_key_value
+                hidden_states,
+                attention_mask,
+                encoder_output,
+                enc_dec_attn_mask,
+                layer_past,
+                get_key_value,
+                set_inference_key_value_memory,
+                inference_max_sequence_len,
             )
 
 
@@ -810,8 +891,13 @@ class ParallelTransformer(MegatronModule):
         get_key_value=False,
         encoder_output=None,
         enc_dec_attn_mask=None,
+        set_inference_key_value_memory=False,
+        inference_max_sequence_len=None,
     ):
         # Checks.
+        if inference_max_sequence_len:
+            assert self.activations_checkpoint_method is None, 'inference does not work with activation checkpointing'
+
         if layer_past is not None:
             assert get_key_value, 'for not None values in layer_past, ' 'expected get_key_value to be set'
         if get_key_value:
@@ -853,6 +939,8 @@ class ParallelTransformer(MegatronModule):
                     enc_dec_attn_mask=enc_dec_attn_mask,
                     layer_past=past,
                     get_key_value=get_key_value,
+                    set_inference_key_value_memory=set_inference_key_value_memory,
+                    inference_max_sequence_len=inference_max_sequence_len,
                 )
                 if get_key_value:
                     hidden_states, present = hidden_states

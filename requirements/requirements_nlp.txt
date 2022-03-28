@@ -13,3 +13,4 @@ opencc
 pangu
 jieba
 ftfy
+flask_restful

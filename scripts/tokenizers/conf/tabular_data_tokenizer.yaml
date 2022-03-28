@@ -1,0 +1,33 @@
+table_structure:
+  - name: col_a
+    code_type: float
+    args:
+      code_len: 4  # number of tokens used to code the column
+      base: 16   # the positional base number. ie. it uses 16 tokens for one digit
+      fillall: False # whether to use full base number for each token or derive it from the data.
+      hasnan: False # can it handles nan or not
+      transform: yeo-johnson # can be ['yeo-johnson', 'quantile', 'robust'], check https://scikit-learn.org/stable/modules/classes.html#module-sklearn.preprocessing 
+  - name: col_b
+    code_type: float
+    args:
+      code_len: 4
+      base: 32
+      fillall: True
+      hasnan: True
+      transform: quantile
+  - name: col_c
+    code_type: int
+    args:
+      code_len: 3
+      base: 12
+      fillall: True
+      hasnan: True
+  - name: col_d
+    code_type: category
+    args:
+      code_len: 3
+      base: 12
+      fillall: True
+      hasnan: True
+tokenizer_file: ???  # tabular tokneizer output file path
+table_csv_file: ???  # input table csv file

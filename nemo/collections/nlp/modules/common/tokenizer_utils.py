@@ -21,6 +21,7 @@ from nemo.collections.common.tokenizers.bytelevel_tokenizers import ByteLevelTok
 from nemo.collections.common.tokenizers.char_tokenizer import CharTokenizer
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.common.tokenizers.regex_tokenizer import RegExTokenizer
+from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
 from nemo.collections.common.tokenizers.word_tokenizer import WordTokenizer
 from nemo.collections.common.tokenizers.youtokentome_tokenizer import YouTokenToMeTokenizer
 from nemo.collections.nlp.modules.common.huggingface.huggingface_utils import get_huggingface_pretrained_lm_models_list
@@ -149,6 +150,7 @@ def get_nmt_tokenizer(
     bpe_dropout: Optional[float] = 0.0,
     r2l: Optional[bool] = False,
     legacy: Optional[bool] = False,
+    delimiter: Optional[str] = None,
 ):
     """
     Args:
@@ -200,6 +202,8 @@ def get_nmt_tokenizer(
             f'Getting Megatron tokenizer for pretrained model name: {model_name} and custom vocab file: {vocab_file}'
         )
         return get_tokenizer(tokenizer_name=model_name, vocab_file=vocab_file, merges_file=merges_file)
+    elif library == 'tabular':
+        return TabularTokenizer(vocab_file, delimiter=delimiter)
     else:
         raise NotImplementedError(
             'Currently we only support "yttm", "huggingface", "sentencepiece", "megatron", and "byte-level" tokenizer'

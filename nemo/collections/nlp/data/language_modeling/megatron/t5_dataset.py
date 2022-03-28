@@ -15,6 +15,7 @@
 """T5 Style dataset."""
 
 import collections
+import os
 
 import numpy as np
 import torch
@@ -69,6 +70,16 @@ class T5Dataset(MegatronDataset):
         # Dataset.
         self.indexed_dataset = indexed_dataset
 
+        # save index mappings to a configurable dir
+        self.index_mapping_dir = cfg.data.get('index_mapping_dir', None)
+
+        # create index_mapping_dir on rank 0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_rank() == 0:
+                if self.index_mapping_dir is not None and not os.path.isdir(self.index_mapping_dir):
+                    os.makedirs(self.index_mapping_dir)
+            torch.distributed.barrier()
+
         # Build the samples mapping.
         self.samples_mapping = get_samples_mapping(
             indexed_dataset=self.indexed_dataset,
@@ -80,6 +91,7 @@ class T5Dataset(MegatronDataset):
             seed=self.seed,
             name=self.name,
             binary_head=False,
+            index_mapping_dir=self.index_mapping_dir,
         )
 
         self.tokenizer = tokenizer

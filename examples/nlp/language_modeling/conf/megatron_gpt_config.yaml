@@ -103,6 +103,7 @@ model:
     #   - .5
     #   - /raid/data/pile/my-gpt3_01_text_document
     data_prefix: ???
+    index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap
     splits_string: 900,50,50
     seq_length: ${model.encoder_seq_length}

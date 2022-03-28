@@ -204,9 +204,26 @@ class GPTDataset(MegatronDataset):
         self.eod_mask_loss = cfg.data.get('eod_mask_loss', False)
         self.eos_id = tokenizer.eos_id
 
+        # save index mappings to a configurable dir
+        self.index_mapping_dir = cfg.data.get('index_mapping_dir', None)
+
+        # create index_mapping_dir on rank 0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_rank() == 0:
+                if self.index_mapping_dir is not None and not os.path.isdir(self.index_mapping_dir):
+                    os.makedirs(self.index_mapping_dir)
+            torch.distributed.barrier()
+
         # Build index mappings.
         self.doc_idx, self.sample_idx, self.shuffle_idx = _build_index_mappings(
-            self.name, data_prefix, documents, self.indexed_dataset.sizes, num_samples, seq_length, seed
+            self.name,
+            data_prefix,
+            documents,
+            self.indexed_dataset.sizes,
+            num_samples,
+            seq_length,
+            seed,
+            index_mapping_dir=self.index_mapping_dir,
         )
 
     def __len__(self):
@@ -305,7 +322,9 @@ def _create_ltor_masks_and_position_ids(
     return attention_mask, loss_mask, position_ids
 
 
-def _build_index_mappings(name, data_prefix, documents, sizes, num_samples, seq_length, seed):
+def _build_index_mappings(
+    name, data_prefix, documents, sizes, num_samples, seq_length, seed, index_mapping_dir: str = None
+):
     """Build doc-idx, sample-idx, and shuffle-idx.
     doc-idx: is an array (ordered) of documents to be used in training.
     sample-idx: is the start document index and document offset for each
@@ -319,7 +338,10 @@ def _build_index_mappings(name, data_prefix, documents, sizes, num_samples, seq_
     np_rng = np.random.RandomState(seed=seed)
 
     # Filename of the index mappings.
-    _filename = data_prefix
+    if index_mapping_dir is not None:
+        _filename = os.path.join(index_mapping_dir, os.path.basename(data_prefix))
+    else:
+        _filename = data_prefix
     _filename += '_{}_indexmap'.format(name)
     _filename += '_{}ns'.format(num_samples)
     _filename += '_{}sl'.format(seq_length)

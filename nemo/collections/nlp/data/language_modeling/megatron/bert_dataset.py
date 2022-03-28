@@ -14,6 +14,7 @@
 
 """BERT Style dataset."""
 
+import os
 from typing import Any, Optional
 
 import numpy as np
@@ -32,6 +33,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import
 class BertDataset(torch.utils.data.Dataset):
     def __init__(
         self,
+        cfg: dict,
         name: str,
         indexed_dataset: MMapIndexedDataset,
         data_prefix: str,
@@ -55,6 +57,16 @@ class BertDataset(torch.utils.data.Dataset):
         # Dataset.
         self.indexed_dataset = indexed_dataset
 
+        # save index mappings to a configurable dir
+        self.index_mapping_dir = cfg.data.get('index_mapping_dir', None)
+
+        # create index_mapping_dir on rank 0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_rank() == 0:
+                if self.index_mapping_dir is not None and not os.path.isdir(self.index_mapping_dir):
+                    os.makedirs(self.index_mapping_dir)
+            torch.distributed.barrier()
+
         # Build the samples mapping.
         self.samples_mapping = get_samples_mapping(
             self.indexed_dataset,
@@ -66,6 +78,7 @@ class BertDataset(torch.utils.data.Dataset):
             self.seed,
             self.name,
             self.binary_head,
+            index_mapping_dir=self.index_mapping_dir,
         )
 
         # Vocab stuff.

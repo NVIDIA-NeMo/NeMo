@@ -296,7 +296,10 @@ def main():
             src_lines = []
             for line in src_f:
                 src_lines.append(line.strip().split('\t'))
-            assert len(all_reverse_scores) == len(all_lm_scores) == len(all_forward_scores) == len(src_lines)
+            if not (len(all_reverse_scores) == len(all_lm_scores) == len(all_forward_scores) == len(src_lines)):
+                raise ValueError(
+                    f"Length of scores files do not match. {len(all_reverse_scores)} != {len(all_lm_scores)} != {len(all_forward_scores)} != {len(src_lines)}. This is most likely because --beam_size is set incorrectly. This needs to be set to the same value that was used to generate translations."
+                )
             for f, r, lm, sl, tl, src in zip(
                 all_forward_scores, all_reverse_scores, all_lm_scores, all_src_lens, all_tgt_lens, src_lines
             ):

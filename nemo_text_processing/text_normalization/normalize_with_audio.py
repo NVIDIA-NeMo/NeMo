@@ -363,7 +363,7 @@ def normalize_manifest(
             for line in tqdm(batch)
         ]
 
-        with open(f"{dir_name}/{batch_idx}.json", "w") as f_out:
+        with open(f"{dir_name}/{batch_idx:05}.json", "w") as f_out:
             for line in normalized_lines:
                 f_out.write(json.dumps(line, ensure_ascii=False) + '\n')
 

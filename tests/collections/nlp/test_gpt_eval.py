@@ -60,6 +60,8 @@ class TestGPTEval:
     @pytest.mark.skipif(True, reason='skip')
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.skip()
+    # TODO renable the test
     def test_gpt_eval(self):
         # test greedy
         length_params: LengthParam = {

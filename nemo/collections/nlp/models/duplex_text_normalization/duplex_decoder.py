@@ -71,11 +71,11 @@ class DuplexDecoderModel(NLPModel):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_gpus
 
-        self._tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
 
-        super().__init__(cfg=cfg, trainer=trainer)
+        super().__init__(cfg=cfg, trainer=trainer, no_lm_init=True)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(cfg.transformer)
-        self.max_sequence_len = cfg.get('max_sequence_len', self._tokenizer.model_max_length)
+        self.max_sequence_len = cfg.get('max_sequence_len', self.tokenizer.model_max_length)
         self.mode = cfg.get('mode', 'joint')
 
         self.transformer_name = cfg.transformer
@@ -103,7 +103,7 @@ class DuplexDecoderModel(NLPModel):
         self.neural_confidence_threshold = cfg.get('neural_confidence_threshold', 0.99)
         self.n_tagged = cfg.get('n_tagged', 1)
         input_case = 'cased'  # input_case is cased by default
-        if hasattr(self._tokenizer, 'do_lower_case') and self._tokenizer.do_lower_case:
+        if hasattr(self.tokenizer, 'do_lower_case') and self.tokenizer.do_lower_case:
             input_case = 'lower_cased'
         if not PYNINI_AVAILABLE:
             raise Exception(
@@ -158,7 +158,7 @@ class DuplexDecoderModel(NLPModel):
             labels=batch['labels'],
         )
 
-        labels_str = self._tokenizer.batch_decode(
+        labels_str = self.tokenizer.batch_decode(
             torch.ones_like(batch['labels']) * ((batch['labels'] == -100) * 100) + batch['labels'],
             skip_special_tokens=True,
         )
@@ -291,7 +291,7 @@ class DuplexDecoderModel(NLPModel):
         )
 
         generated_ids, sequence_toks_scores = outputs['sequences'], outputs['scores']
-        generated_texts = self._tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        generated_texts = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
         return generated_texts, generated_ids, sequence_toks_scores
 
@@ -319,7 +319,7 @@ class DuplexDecoderModel(NLPModel):
 
         if sum(nb_spans) == 0:
             return [[]] * len(sents)
-        model, tokenizer = self.model, self._tokenizer
+        model, tokenizer = self.model, self.tokenizer
         ctx_size = constants.DECODE_CTX_SIZE
         extra_id_0 = constants.EXTRA_ID_0
         extra_id_1 = constants.EXTRA_ID_1
@@ -370,7 +370,7 @@ class DuplexDecoderModel(NLPModel):
                 # Compute selected_toks_probs
                 selected_toks_probs = []
                 for jx, _id in enumerate(cur_generated_ids):
-                    if _id != self._tokenizer.pad_token_id:
+                    if _id != self.tokenizer.pad_token_id:
                         selected_toks_probs.append(cur_toks_probs[jx, _id])
                     else:
                         selected_toks_probs.append(1)
@@ -481,7 +481,7 @@ class DuplexDecoderModel(NLPModel):
 
             dataset = TextNormalizationDecoderDataset(
                 input_file=input_file,
-                tokenizer=self._tokenizer,
+                tokenizer=self.tokenizer,
                 tokenizer_name=self.transformer_name,
                 mode=self.mode,
                 max_len=self.max_sequence_len,
@@ -504,7 +504,7 @@ class DuplexDecoderModel(NLPModel):
                 self._val_id_to_class.append({v: k for k, v in dataset.label_ids_semiotic.items()})
 
             data_collator = DataCollatorForSeq2Seq(
-                self._tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID, padding=True
+                self.tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID, padding=True
             )
             dl = torch.utils.data.DataLoader(
                 dataset=dataset,

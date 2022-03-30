@@ -29,7 +29,6 @@ from nemo.collections.nlp.data.question_answering_squad.qa_squad_processing impo
 )
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common import TokenClassifier
-from nemo.collections.nlp.modules.common.lm_utils import get_lm_model
 from nemo.collections.nlp.parts.utils_funcs import tensor2list
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types import NeuralType
@@ -43,29 +42,10 @@ class QAModel(NLPModel):
     BERT encoder with QA head training.
     """
 
-    @property
-    def input_types(self) -> Optional[Dict[str, NeuralType]]:
-        return self.bert_model.input_types
-
-    @property
-    def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        return self.classifier.output_types
-
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        self.setup_tokenizer(cfg.tokenizer)
         super().__init__(cfg=cfg, trainer=trainer)
-        self.bert_model = get_lm_model(
-            pretrained_model_name=cfg.language_model.pretrained_model_name,
-            config_file=self.register_artifact('language_model.config_file', cfg.language_model.config_file),
-            config_dict=OmegaConf.to_container(cfg.language_model.config) if cfg.language_model.config else None,
-            checkpoint_file=cfg.language_model.lm_checkpoint,
-            vocab_file=self.register_artifact('tokenizer.vocab_file', cfg.tokenizer.vocab_file)
-            if cfg.tokenizer is not None
-            else None,
-        )
-
         self.classifier = TokenClassifier(
-            hidden_size=self.bert_model.config.hidden_size,
+            hidden_size=self.hidden_size,
             num_classes=cfg.token_classifier.num_classes,
             num_layers=cfg.token_classifier.num_layers,
             activation=cfg.token_classifier.activation,
@@ -77,10 +57,13 @@ class QAModel(NLPModel):
         self.loss = SpanningLoss()
 
     @typecheck()
-    def forward(self, input_ids, token_type_ids, attention_mask):
-        hidden_states = self.bert_model(
-            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
-        )
+    def forward(self, input_ids, attention_mask, token_type_ids):
+        if self._cfg.tokenizer.get('library', '') == 'megatron':
+            hidden_states, _ = self.bert_model(input_ids, attention_mask, tokentype_ids=token_type_ids, lm_labels=None)
+        else:
+            hidden_states = self.bert_model(
+                input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
+            )
         logits = self.classifier(hidden_states=hidden_states)
         return logits
 

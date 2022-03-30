@@ -15,7 +15,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from omegaconf.omegaconf import MISSING, DictConfig, OmegaConf
+from omegaconf.omegaconf import MISSING, DictConfig, OmegaConf, open_dict
 
 from nemo.collections.nlp.data.token_classification.punctuation_capitalization_dataset import (
     PunctuationCapitalizationEvalDataConfig,
@@ -287,7 +287,7 @@ def legacy_model_config_to_new_model_config(model_cfg: DictConfig) -> DictConfig
     dataset = model_cfg.dataset
     punct_head_config = model_cfg.get('punct_head', {})
     capit_head_config = model_cfg.get('capit_head', {})
-    return OmegaConf.structured(
+    omega_conf = OmegaConf.structured(
         PunctuationCapitalizationModelConfig(
             class_labels=model_cfg.class_labels,
             common_dataset_parameters=CommonDatasetParametersConfig(
@@ -323,3 +323,8 @@ def legacy_model_config_to_new_model_config(model_cfg: DictConfig) -> DictConfig
             optim=model_cfg.optim,
         )
     )
+    with open_dict(omega_conf):
+        retain_during_legacy_conversion = model_cfg.get('retain_during_legacy_conversion', {})
+        for key in retain_during_legacy_conversion.keys():
+            omega_conf[key] = retain_during_legacy_conversion[key]
+    return omega_conf

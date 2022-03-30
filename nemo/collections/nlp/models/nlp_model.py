@@ -28,6 +28,8 @@ from transformers import TRANSFORMERS_CACHE
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.nlp.modules import BertModule
 from nemo.collections.nlp.modules.common.huggingface.huggingface_utils import VOCAB_FILE_NAME
+from nemo.collections.nlp.modules.common.lm_utils import get_lm_model
+from nemo.collections.nlp.modules.common.megatron.megatron_utils import MEGATRON_CONFIG_MAP
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.core.classes import ModelPT
@@ -45,11 +47,51 @@ class NLPModel(ModelPT, Exportable):
     """Base class for NLP Models.
     """
 
-    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None, no_lm_init=False):
+
+        self.hidden_size = None
+        self.bert_model = None
+        vocab_file = None
+        nemo_file = None
+        config_dict = None
+        config_file = None
+
+        # tokenizer needs to get initialized before the super.__init__()
+        # as dataloaders and datasets need it to process the data
+        if cfg.get('tokenizer'):
+            # Some models have their own tokenizer setup
+            if not hasattr(self, 'tokenizer') and cfg.tokenizer.get('tokenizer_name'):
+                self.setup_tokenizer(cfg.tokenizer)
+            if cfg.get('tokenizer.vocab_file'):
+                vocab_file = self.register_artifact('tokenizer.vocab_file', cfg.tokenizer.vocab_file)
+
         super().__init__(cfg, trainer)
         # handles model parallel save and restore logic
         self._save_restore_connector = NLPSaveRestoreConnector()
-        self.set_world_size(trainer)
+
+        if cfg.get('language_model') and not no_lm_init:
+            if cfg.get('language_model.nemo_file'):
+                nemo_file = self.register_artifact('language_model.nemo_file', cfg.language_model.nemo_file)
+            if cfg.get('language_model.config'):
+                config_dict = OmegaConf.to_container(cfg.language_model.config)
+            if cfg.get('language_model.config_file'):
+                config_file = self.register_artifact('language_model.config_file', cfg.language_model.config_file)
+            self.bert_model = get_lm_model(
+                config_file=config_file, config_dict=config_dict, vocab_file=vocab_file, trainer=trainer, cfg=cfg,
+            )
+            if cfg.language_model.get('downstream'):
+                cfg.language_model.downstream = True
+
+            # Required to pull up the config for MegatronBert models
+            self.pretrained_model_name = cfg.language_model.pretrained_model_name
+
+            # register encoder config
+            self.register_bert_model()
+
+            if cfg.tokenizer.get("library", "") == 'megatron':
+                self.hidden_size = self.bert_model.cfg.hidden_size
+            else:
+                self.hidden_size = self.bert_model.config.hidden_size
 
     def register_artifact(
         self, config_path: str, src: str, verify_src_exists: bool = False,
@@ -63,11 +105,8 @@ class NLPModel(ModelPT, Exportable):
         """Adds encoder config to .nemo archive for Jarvis.
         """
         # check if there is an encoder, warn if not
-        if self.bert_model is None:
-            raise ValueError('Instantiate self.bert_model before registering it.')
-        else:
+        if self.bert_model is not None:
             # get encoder config and create source for artifact
-
             if isinstance(self.bert_model, BertModule):
                 # HuggingFace Transformer Config
                 pretrained_model_name = self.bert_model.name_or_path
@@ -77,6 +116,24 @@ class NLPModel(ModelPT, Exportable):
                 encoder_config_src = os.path.join(NEMO_NLP_TMP, encoder_config_path + '.json')
                 self.bert_model.config.to_json_file(encoder_config_src)  # name requested by jarvis team
                 self.register_artifact('language_model.config_file', encoder_config_src)  # for .nemo
+            # MegatronBertModel's superclass is NLP model, hence can't check for isinstance of self.bert_modelel
+            elif hasattr(self, 'pretrained_model_name') and 'megatron' in self.pretrained_model_name:
+                if self.pretrained_model_name in MEGATRON_CONFIG_MAP:
+                    output_config = MEGATRON_CONFIG_MAP[self.pretrained_model_name]["config"]
+                    if output_config is not None:
+                        encoder_config_path = self.pretrained_model_name + '_encoder_config'
+                        encoder_config_src = os.path.join(NEMO_NLP_TMP, encoder_config_path + '.json')
+                        with open(encoder_config_src, 'w', encoding='utf-8') as f:
+                            f.write(json.dumps(output_config, indent=2, sort_keys=True) + '\n')
+                        self.register_artifact('language_model.config_file', encoder_config_src)  # for .nemo
+                    else:
+                        # No defaults as this case can be any possible hyper-parameter combination of MegatronBert config
+                        logging.info(f'For {self.pretrained_model_name}, set the config_file in the YAML file')
+                else:
+                    logging.info(
+                        f'Registering MegatronBERT model config for {self.pretrained_model_name} is not yet supported. \
+                        Please override this method if needed.'
+                    )
             else:
                 logging.info(
                     f'Registering BERT model config for {self.bert_model} is not yet supported. Please override this method if needed.'
@@ -97,7 +154,7 @@ class NLPModel(ModelPT, Exportable):
             cfg (DictConfig): Tokenizer config
         """
         vocab_file = None
-        if cfg.vocab_file:
+        if cfg.get('vocab_file'):
             vocab_file = self.register_artifact(config_path='tokenizer.vocab_file', src=cfg.vocab_file)
         self.tokenizer = get_tokenizer(
             tokenizer_name=cfg.tokenizer_name,

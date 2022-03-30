@@ -46,7 +46,6 @@ from nemo.collections.nlp.models.token_classification.punctuation_capitalization
     legacy_model_config_to_new_model_config,
 )
 from nemo.collections.nlp.modules.common import TokenClassifier
-from nemo.collections.nlp.modules.common.lm_utils import get_lm_model
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.neural_types import LogitsType, NeuralType
@@ -82,11 +81,6 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
     """
 
     @property
-    def input_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Neural types of a :meth:`forward` method input."""
-        return self.bert_model.input_types
-
-    @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """Neural types of a :meth:`forward` method output."""
         return {
@@ -98,10 +92,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         """Initializes BERT Punctuation and Capitalization model."""
         if is_legacy_model_config(cfg):
             cfg = legacy_model_config_to_new_model_config(cfg)
-        self.setup_tokenizer(cfg.tokenizer)
-        self.world_size = 1
-        if trainer is not None:
-            self.world_size = trainer.num_nodes * trainer.num_gpus
+
         # For structure of `self.metrics` attribute see `self._setup_metrics_dictionary` method.
         self.metrics: Optional[torch.nn.ModuleDict] = None
         self.label_ids_are_set: bool = False
@@ -110,16 +101,9 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         super().__init__(cfg=cfg, trainer=trainer)
         if not self.label_ids_are_set:
             self._set_label_ids()
-        self.bert_model = get_lm_model(
-            pretrained_model_name=cfg.language_model.pretrained_model_name,
-            config_file=self.register_artifact('language_model.config_file', cfg.language_model.config_file),
-            config_dict=OmegaConf.to_container(cfg.language_model.config) if cfg.language_model.config else None,
-            checkpoint_file=cfg.language_model.lm_checkpoint,
-            vocab_file=self.register_artifact('tokenizer.vocab_file', cfg.tokenizer.vocab_file),
-        )
 
         self.punct_classifier = TokenClassifier(
-            hidden_size=self.bert_model.config.hidden_size,
+            hidden_size=self.hidden_size,
             num_classes=len(self.punct_label_ids),
             activation=cfg.punct_head.activation,
             log_softmax=False,
@@ -129,7 +113,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         )
 
         self.capit_classifier = TokenClassifier(
-            hidden_size=self.bert_model.config.hidden_size,
+            hidden_size=self.hidden_size,
             num_classes=len(self.capit_label_ids),
             activation=cfg.capit_head.activation,
             log_softmax=False,
@@ -166,9 +150,13 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 - ``capit_logits`` (:obj:`torch.Tensor`): a float torch tensor of shape
                   ``[Batch, Time, NumCapitalizationLabels]`` containing capitalization logits
         """
-        hidden_states = self.bert_model(
-            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
-        )
+        if self._cfg.tokenizer.get('library', '') == 'megatron':
+            hidden_states, _ = self.bert_model(input_ids, attention_mask, tokentype_ids=token_type_ids, lm_labels=None)
+        else:
+            hidden_states = self.bert_model(
+                input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
+            )
+
         punct_logits = self.punct_classifier(hidden_states=hidden_states)
         capit_logits = self.capit_classifier(hidden_states=hidden_states)
         return punct_logits, capit_logits
@@ -1153,10 +1141,6 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             ),
         ]
         return result
-
-    @property
-    def input_module(self) -> Any:
-        return self.bert_model
 
     @property
     def output_module(self):

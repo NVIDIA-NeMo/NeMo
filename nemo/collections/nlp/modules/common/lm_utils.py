@@ -17,6 +17,7 @@ import os
 from typing import List, Optional, Union
 
 from attr import asdict
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 
 from nemo.collections.nlp.modules.common.bert_module import BertModule
@@ -48,13 +49,11 @@ def get_pretrained_lm_models_list(include_external: bool = False) -> List[str]:
 
 
 def get_lm_model(
-    pretrained_model_name: str,
     config_dict: Optional[dict] = None,
     config_file: Optional[str] = None,
-    checkpoint_file: Optional[str] = None,
-    nemo_file: Optional[str] = None,
     vocab_file: Optional[str] = None,
     trainer: Optional[Trainer] = None,
+    cfg: DictConfig = None,
 ) -> BertModule:
     """
     Helper function to instantiate a language model encoder, either from scratch or a pretrained model.
@@ -62,23 +61,25 @@ def get_lm_model(
     If a configuration is passed, whether as a file or dictionary, the model is initialized with random weights.
 
     Args:
-        pretrained_model_name: pretrained model name, for example, bert-base-uncased or megatron-bert-cased.
-            See get_pretrained_lm_models_list() for full list.
         config_dict: path to the model configuration dictionary
         config_file: path to the model configuration file
-        checkpoint_file: path to the pretrained model checkpoint
         vocab_file: path to vocab_file to be used with Megatron-LM
-
+        trainer: an instance of a PyTorch Lightning trainer
+        cfg: a model configuration
     Returns:
         Pretrained BertModule
     """
 
     # check valid model type
-    if not pretrained_model_name or pretrained_model_name not in get_pretrained_lm_models_list(include_external=False):
-        logging.warning(
-            f'{pretrained_model_name} is not in get_pretrained_lm_models_list(include_external=False), '
-            f'will be using AutoModel from HuggingFace.'
-        )
+    if cfg.language_model.get('pretrained_model_name'):
+        if (
+            not cfg.language_model.pretrained_model_name
+            or cfg.language_model.pretrained_model_name not in get_pretrained_lm_models_list(include_external=False)
+        ):
+            logging.warning(
+                f'{cfg.language_model.pretrained_model_name} is not in get_pretrained_lm_models_list(include_external=False), '
+                f'will be using AutoModel from HuggingFace.'
+            )
 
     # warning when user passes both configuration dict and file
     if config_dict and config_file:
@@ -86,7 +87,7 @@ def get_lm_model(
             f"Both config_dict and config_file were found, defaulting to use config_file: {config_file} will be used."
         )
 
-    if nemo_file is not None:
+    if cfg.tokenizer is not None and cfg.tokenizer.get("library", "") == 'megatron':
         import torch
 
         from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
@@ -98,21 +99,30 @@ def get_lm_model(
             def forward(self, x, *args):
                 return x
 
-        model = MegatronBertModel.restore_from(restore_path=nemo_file, trainer=trainer)
+        # For finetuning a different downstream task dataset
+        if cfg.language_model.get('downstream'):
+            model = MegatronBertModel(cfg=cfg, trainer=trainer)
+        # For finetuning on a downstream task dataset for the first time
+        else:
+            model = MegatronBertModel.restore_from(restore_path=cfg.language_model.lm_checkpoint, trainer=trainer)
+
         # remove the headers that are only revelant for pretraining
         model.model.lm_head = Identity()
         model.model.binary_head = Identity()
         model.model.language_model.pooler = Identity()
+
     else:
         model = get_huggingface_lm_model(
-            config_dict=config_dict, config_file=config_file, pretrained_model_name=pretrained_model_name,
+            config_dict=config_dict,
+            config_file=config_file,
+            pretrained_model_name=cfg.language_model.pretrained_model_name,
         )
 
-    if checkpoint_file:
-        app_state = AppState()
-        if not app_state.is_model_being_restored and not os.path.exists(checkpoint_file):
-            raise ValueError(f'{checkpoint_file} not found')
-        model.restore_weights(restore_path=checkpoint_file)
+        if cfg.language_model.get("lm_checkpoint"):
+            app_state = AppState()
+            if not app_state.is_model_being_restored and not os.path.exists(cfg.language_model.lm_checkpoint):
+                raise ValueError(f'{cfg.language_model.lm_checkpoint} not found')
+            model.restore_weights(restore_path=cfg.language_model.lm_checkpoint)
 
     return model
 

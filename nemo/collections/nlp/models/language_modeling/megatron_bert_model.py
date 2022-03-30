@@ -32,6 +32,7 @@ from nemo.collections.nlp.modules.common.megatron.clip_grads import clip_grad_no
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.core.neural_types import ChannelType, MaskType, NeuralType
 from nemo.utils import AppState, logging
 
 try:
@@ -65,6 +66,9 @@ class MegatronBertModel(NLPModel):
         self._reduced_loss_buffer = []
         self._reduced_lm_loss_buffer = []
         self._reduced_sop_loss_buffer = []
+
+        # not saved as part of nemo model graph but required during export to ONNX
+        input_names = ['input_ids', 'attention_mask', 'token_type_ids']
 
         initialize_model_parallel_for_nemo(
             world_size=trainer.world_size,
@@ -114,6 +118,8 @@ class MegatronBertModel(NLPModel):
             activations_checkpoint_method=cfg.get('activations_checkpoint_method', None),
             activations_checkpoint_num_layers=cfg.get('activations_checkpoint_num_layers', 1),
             layernorm_epsilon=cfg.get('layernorm_epsilon', 1e-5),
+            masked_softmax_fusion=cfg.get('masked_softmax_fusion', False),
+            bias_gelu_fusion=cfg.get('bias_gelu_fusion', False),
             onnx_safe=cfg.get('onnx_safe', False),
             add_binary_head=cfg.bert_binary_head,
         )
@@ -429,3 +435,27 @@ class MegatronBertModel(NLPModel):
         else:
             # Not a Nvidia container. Dependency check is on users
             pass
+
+    # Required for ONNX export
+    @property
+    def input_types(self) -> Optional[Dict[str, NeuralType]]:
+        return {
+            "input_ids": NeuralType(('B', 'T'), ChannelType()),
+            "attention_mask": NeuralType(('B', 'T'), MaskType(), optional=True),
+            "token_type_ids": NeuralType(('B', 'T'), ChannelType(), optional=True),
+        }
+
+    # Required for ONNX export
+    def input_example(self, max_batch=1, max_dim=256):
+        """
+        Generates input examples for tracing etc.
+        Returns:
+            A tuple of input examples.
+        """
+        sample = next(self.parameters())
+        sz = (max_batch, max_dim)
+        input_ids = torch.randint(low=0, high=2048, size=sz, device=sample.device)
+        token_type_ids = torch.randint(low=0, high=1, size=sz, device=sample.device)
+        attention_mask = torch.randint(low=0, high=1, size=sz, device=sample.device)
+        input_dict = {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids}
+        return tuple([input_dict])

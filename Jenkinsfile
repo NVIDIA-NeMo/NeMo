@@ -2001,34 +2001,34 @@ pipeline {
         sh "rm -rf examples/nlp/language_modeling/bert_index_mappings"
       }
     }
-    stage('L2: Megatron P-Tuning GPT LM') {
-      when {
-        anyOf {
-          branch 'main'
-          changeRequest target: 'main'
-        }
-      }
-      failFast true
-      steps {
-        sh "python  examples/nlp/text_classification/ptune_text_classification.py \
-        trainer.devices=2 \
-        trainer.accelerator=gpu \
-        trainer.max_epochs=1 \
-        +trainer.limit_val_batches=10 \
-        +trainer.limit_train_batches=10 \
-        +trainer.limit_test_batches=10 \
-        exp_manager.exp_dir=examples/nlp/language_modeling/ptune_results \
-        model.tokenizer.vocab_file=/home/TestData/nlp/ptune/gpt2-vocab.json \
-        model.tensor_model_parallel_size=2 \
-        model.tokenizer.merge_file=/home/TestData/nlp/ptune/gpt2-merges.txt \
-        model.language_model.nemo_file=/home/TestData/nlp/ptune/small_gpt.nemo \
-        model.dataset.classes=[positive,neutral,negative] \
-        model.train_ds.file_path=/home/TestData/nlp/ptune/data/train_0.txt \
-        model.validation_ds.file_path=/home/TestData/nlp/ptune/data/validation_0.txt \
-        model.test_ds.file_path=/home/TestData/nlp/ptune/data/test_0.txt "
-        sh "rm -rf examples/nlp/language_modeling/ptune_results"
-      }
-    }
+    // stage('L2: Megatron P-Tuning GPT LM') {
+    //   when {
+    //     anyOf {
+    //       branch 'main'
+    //       changeRequest target: 'main'
+    //     }
+    //   }
+    //   failFast true
+    //   steps {
+    //     sh "python  examples/nlp/text_classification/ptune_text_classification.py \
+    //     trainer.devices=2 \
+    //     trainer.accelerator=gpu \
+    //     trainer.max_epochs=1 \
+    //     +trainer.limit_val_batches=10 \
+    //     +trainer.limit_train_batches=10 \
+    //     +trainer.limit_test_batches=10 \
+    //     exp_manager.exp_dir=examples/nlp/language_modeling/ptune_results \
+    //     model.tokenizer.vocab_file=/home/TestData/nlp/ptune/gpt2-vocab.json \
+    //     model.tensor_model_parallel_size=2 \
+    //     model.tokenizer.merge_file=/home/TestData/nlp/ptune/gpt2-merges.txt \
+    //     model.language_model.nemo_file=/home/TestData/nlp/ptune/small_gpt.nemo \
+    //     model.dataset.classes=[positive,neutral,negative] \
+    //     model.train_ds.file_path=/home/TestData/nlp/ptune/data/train_0.txt \
+    //     model.validation_ds.file_path=/home/TestData/nlp/ptune/data/validation_0.txt \
+    //     model.test_ds.file_path=/home/TestData/nlp/ptune/data/test_0.txt "
+    //     sh "rm -rf examples/nlp/language_modeling/ptune_results"
+    //   }
+    // }
     stage('L2: Megatron GPT Pretraining and Resume Training TP=2') {
       when {
         anyOf {

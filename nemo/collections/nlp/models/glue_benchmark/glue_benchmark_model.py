@@ -27,7 +27,6 @@ from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import GLUE
 from nemo.collections.nlp.models.glue_benchmark.metrics_for_glue import compute_metrics
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common import SequenceClassifier, SequenceRegression
-from nemo.collections.nlp.modules.common.lm_utils import get_lm_model
 from nemo.collections.nlp.parts.utils_funcs import list2str, tensor2list
 from nemo.core.classes import typecheck
 from nemo.core.neural_types import NeuralType
@@ -97,19 +96,9 @@ class GLUEModel(NLPModel):
             cfg.train_ds.ds_item = os.path.join(cfg.dataset.data_dir, cfg.train_ds.ds_item)
             logging.info(f'Using {cfg.validation_ds.ds_item} for model evaluation.')
 
-        self.setup_tokenizer(cfg.tokenizer)
         super().__init__(cfg=cfg, trainer=trainer)
 
         num_labels = GLUE_TASKS_NUM_LABELS[self.task_name]
-
-        self.bert_model = get_lm_model(
-            pretrained_model_name=cfg.language_model.pretrained_model_name,
-            config_file=self.register_artifact('language_model.config_file', cfg.language_model.config_file),
-            config_dict=OmegaConf.to_container(cfg.language_model.config) if cfg.language_model.config else None,
-            checkpoint_file=cfg.language_model.lm_checkpoint,
-            vocab_file=self.register_artifact('tokenizer.vocab_file', cfg.tokenizer.vocab_file),
-        )
-
         # uses [CLS] token for classification (the first token)
         if self.task_name == "sts-b":
             self.pooler = SequenceRegression(hidden_size=self.bert_model.config.hidden_size)

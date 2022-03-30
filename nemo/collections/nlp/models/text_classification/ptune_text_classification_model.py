@@ -58,7 +58,7 @@ class PTuneTextClassificationModel(NLPModel, Exportable):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         """Initializes the PTune TextClassifier model."""
-        super().__init__(cfg=cfg, trainer=trainer)
+        super().__init__(cfg=cfg, trainer=trainer, no_lm_init=True)
 
         initialize_model_parallel_for_nemo(
             world_size=trainer.world_size,

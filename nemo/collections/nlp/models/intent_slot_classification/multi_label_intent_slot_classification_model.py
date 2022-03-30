@@ -51,14 +51,8 @@ class MultiLabelIntentSlotClassificationModel(IntentSlotClassificationModel):
         self.threshold = 0.5
         self.max_f1 = 0
 
-        # Setup tokenizer.
-        self.setup_tokenizer(cfg.tokenizer)
-
         # Check the presence of data_dir.
         if not cfg.data_dir or not os.path.exists(cfg.data_dir):
-            # Disable setup methods.
-            if not MultiLabelIntentSlotClassificationModel._is_model_being_restored():
-                MultiLabelIntentSlotClassificationModel._set_model_restore_state(is_being_restored=True)
             # Set default values of data_desc.
             self._set_defaults_data_desc(cfg)
         else:
@@ -68,9 +62,6 @@ class MultiLabelIntentSlotClassificationModel(IntentSlotClassificationModel):
 
         # init superclass
         super().__init__(cfg=cfg, trainer=trainer)
-
-        # Enable setup methods.
-        MultiLabelIntentSlotClassificationModel._set_model_restore_state(is_being_restored=False)
 
         # Initialize Classifier.
         self._reconfigure_classifier()

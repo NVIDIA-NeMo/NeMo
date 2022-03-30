@@ -58,7 +58,7 @@ class BertJointIRModel(BaseIRModel):
         self.loss = SmoothedCrossEntropyLoss(pad_id=self.tokenizer.pad_id)
 
     @typecheck()
-    def forward(self, input_ids, token_type_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, token_type_ids):
 
         hidden_states = self.bert_model(
             input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
@@ -73,8 +73,8 @@ class BertJointIRModel(BaseIRModel):
 
         unnormalized_scores = self(
             input_ids=input_ids.view(-1, seq_length),
-            token_type_ids=input_type_ids.view(-1, seq_length),
             attention_mask=input_mask.view(-1, seq_length),
+            token_type_ids=input_type_ids.view(-1, seq_length),
         ).view(batch_size, 1, num_passages)
         scores = torch.log_softmax(unnormalized_scores, dim=-1)
 

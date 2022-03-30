@@ -22,7 +22,6 @@ from transformers import AutoTokenizer
 from nemo.collections.common.losses import MultiSimilarityLoss
 from nemo.collections.nlp.data import EntityLinkingDataset
 from nemo.collections.nlp.models.nlp_model import NLPModel
-from nemo.collections.nlp.modules.common.lm_utils import get_lm_model
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.neural_types import ChannelType, LogitsType, MaskType, NeuralType
@@ -39,10 +38,6 @@ class EntityLinkingModel(NLPModel, Exportable):
     """
 
     @property
-    def input_types(self) -> Optional[Dict[str, NeuralType]]:
-        return self.model.input_types
-
-    @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         return {"logits": NeuralType(('B', 'D'), LogitsType())}
 
@@ -53,13 +48,6 @@ class EntityLinkingModel(NLPModel, Exportable):
         self._setup_tokenizer(cfg.tokenizer)
 
         super().__init__(cfg=cfg, trainer=trainer)
-
-        self.model = get_lm_model(
-            pretrained_model_name=cfg.language_model.pretrained_model_name,
-            config_file=cfg.language_model.config_file,
-            config_dict=cfg.language_model.config,
-            checkpoint_file=cfg.language_model.lm_checkpoint,
-        )
 
         # Token to use for the self-alignment loss, typically the first token, [CLS]
         self._idx_conditioned_on = 0
@@ -74,7 +62,9 @@ class EntityLinkingModel(NLPModel, Exportable):
 
     @typecheck()
     def forward(self, input_ids, token_type_ids, attention_mask):
-        hidden_states = self.model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
+        hidden_states = self.bert_model(
+            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
+        )
 
         # normalize to unit sphere
         logits = torch.nn.functional.normalize(hidden_states[:, self._idx_conditioned_on], p=2, dim=1)

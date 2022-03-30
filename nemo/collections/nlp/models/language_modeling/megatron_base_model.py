@@ -41,7 +41,10 @@ class MegatronBaseModel(NLPModel):
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-        super().__init__(cfg, trainer=trainer)
+        # this prevents base constructor from initializing tokenizer
+        self.tokenizer = None
+
+        super().__init__(cfg, trainer=trainer, no_lm_init=True)
 
         # used in NVIDIA NGC PyTorch containers
         self._enable_nvidia_optimizations()

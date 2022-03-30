@@ -25,6 +25,7 @@ import tempfile
 import onnx
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 import nemo.collections.nlp as nemo_nlp
 from nemo.core.classes import typecheck
@@ -32,7 +33,9 @@ from nemo.core.classes import typecheck
 
 def get_pretrained_bert_345m_uncased_model():
     model_name = "megatron-bert-345m-uncased"
-    model = nemo_nlp.modules.get_lm_model(pretrained_model_name=model_name)
+    config = {"language_model": {"pretrained_model_name": model_name}, "tokenizer": {}}
+    omega_conf = OmegaConf.create(config)
+    model = nemo_nlp.modules.get_lm_model(cfg=omega_conf)
     if torch.cuda.is_available():
         model = model.cuda()
     return model

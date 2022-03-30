@@ -104,8 +104,9 @@ class MegatronGPTModel(NLPModel, TextGeneration):
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-        super().__init__(cfg, trainer=trainer)
-        self.cfg = cfg
+        # this prevents base constructor from initializing tokenizer
+        self.tokenizer = None
+        super().__init__(cfg, trainer=trainer, no_lm_init=True)
 
         self._validate_trainer()
 

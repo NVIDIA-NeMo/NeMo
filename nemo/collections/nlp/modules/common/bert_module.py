@@ -79,8 +79,12 @@ class BertModule(NeuralModule, Exportable):
         """
         sample = next(self.parameters())
         sz = (max_batch, max_dim)
-        input_ids = torch.randint(low=0, high=2048, size=sz, device=sample.device)
+        input_ids = torch.randint(low=0, high=max_dim - 1, size=sz, device=sample.device)
         token_type_ids = torch.randint(low=0, high=1, size=sz, device=sample.device)
         attention_mask = torch.randint(low=0, high=1, size=sz, device=sample.device)
-        input_dict = {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids}
+        input_dict = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "token_type_ids": token_type_ids,
+        }
         return tuple([input_dict])

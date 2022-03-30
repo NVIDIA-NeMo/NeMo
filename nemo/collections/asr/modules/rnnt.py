@@ -208,7 +208,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         Args:
             y: Optional torch tensor of shape [B, U] of dtype long which will be passed to the Embedding.
-                If None, creates a zero tensor of shape [B, 1, H] which mimics output of pad-token on Embedding.
+                If None, creates a zero tensor of shape [B, 1, H] which mimics output of pad-token on EmbeddiNg.
 
             state: An optional list of states for the RNN. Eg: For LSTM, it is the state list length is 2.
                 Each state must be a tensor of shape [L, B, H].

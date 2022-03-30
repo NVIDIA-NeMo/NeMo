@@ -17,6 +17,7 @@ import tempfile
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 import nemo.collections.nlp as nemo_nlp
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
@@ -34,6 +35,9 @@ def do_export(model, name: str):
 
 
 class TestHuggingFace:
+    config = {"language_model": {"pretrained_model_name": ""}, "tokenizer": {}}
+    omega_conf = OmegaConf.create(config)
+
     @pytest.mark.unit
     def test_list_pretrained_models(self):
         pretrained_lm_models = nemo_nlp.modules.get_pretrained_lm_models_list()
@@ -42,28 +46,32 @@ class TestHuggingFace:
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_get_pretrained_bert_model(self):
-        model = nemo_nlp.modules.get_lm_model(pretrained_model_name='bert-base-uncased')
+        self.omega_conf.language_model.pretrained_model_name = 'bert-base-uncased'
+        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
         assert isinstance(model, nemo_nlp.modules.BertEncoder)
         do_export(model, "bert-base-uncased")
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_get_pretrained_distilbert_model(self):
-        model = nemo_nlp.modules.get_lm_model(pretrained_model_name='distilbert-base-uncased')
+        self.omega_conf.language_model.pretrained_model_name = 'distilbert-base-uncased'
+        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
         assert isinstance(model, nemo_nlp.modules.DistilBertEncoder)
         do_export(model, "distilbert-base-uncased")
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_get_pretrained_roberta_model(self):
-        model = nemo_nlp.modules.get_lm_model(pretrained_model_name='roberta-base')
+        self.omega_conf.language_model.pretrained_model_name = 'roberta-base'
+        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
         assert isinstance(model, nemo_nlp.modules.RobertaEncoder)
         do_export(model, "roberta-base-uncased")
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_get_pretrained_albert_model(self):
-        model = nemo_nlp.modules.get_lm_model(pretrained_model_name='albert-base-v1')
+        self.omega_conf.language_model.pretrained_model_name = 'albert-base-v1'
+        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
         assert isinstance(model, nemo_nlp.modules.AlbertEncoder)
         do_export(model, "albert-base-v1")
 
@@ -71,7 +79,8 @@ class TestHuggingFace:
     @pytest.mark.unit
     def test_get_pretrained_chinese_bert_wwm_model(self):
         model_name = 'hfl/chinese-bert-wwm'
-        model = nemo_nlp.modules.get_lm_model(pretrained_model_name=model_name)
+        self.omega_conf.language_model.pretrained_model_name = model_name
+        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
         assert isinstance(model, nemo_nlp.modules.BertModule)
         tokenizer = get_tokenizer(tokenizer_name=model_name)
         assert isinstance(tokenizer, AutoTokenizer)
@@ -80,7 +89,8 @@ class TestHuggingFace:
     @pytest.mark.unit
     def test_get_pretrained_arabic_model(self):
         model_name = 'asafaya/bert-base-arabic'
-        model = nemo_nlp.modules.get_lm_model(pretrained_model_name=model_name)
+        self.omega_conf.language_model.pretrained_model_name = model_name
+        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
         assert isinstance(model, nemo_nlp.modules.BertModule)
         tokenizer = get_tokenizer(tokenizer_name=model_name)
         assert isinstance(tokenizer, AutoTokenizer)

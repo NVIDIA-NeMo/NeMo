@@ -32,6 +32,7 @@ from nemo.collections.nlp.modules.common.megatron.clip_grads import clip_grad_no
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import ChannelType, MaskType, NeuralType
 from nemo.utils import AppState, logging
 
@@ -393,8 +394,40 @@ class MegatronBertModel(NLPModel):
         parameters = self.model.parameters()
         clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val)
 
-    def list_available_models(self):
-        return None
+    @classmethod
+    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+        """
+        This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
+        Returns:
+            List of available pre-trained models.
+        """
+        result = []
+        for vocab in ['cased', 'uncased']:
+            result.append(
+                PretrainedModelInfo(
+                    pretrained_model_name=f"megatron_bert_345m_{vocab}",
+                    location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/megatron_bert_345m_{vocab}/versions/1/files/megatron_bert_345m_{vocab}.nemo",
+                    description=f"345M parameter BERT Megatron model with {vocab} vocab.",
+                )
+            )
+        for vocab_size in ['50k', '30k']:
+            for vocab in ['cased', 'uncased']:
+                result.append(
+                    PretrainedModelInfo(
+                        pretrained_model_name=f"biomegatron345m_biovocab_{vocab_size}_{vocab}",
+                        location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/biomegatron345m_biovocab_{vocab_size}_{vocab}/versions/1/files/BioMegatron345m-biovocab-{vocab_size}_{vocab}.nemo",
+                        description="Megatron 345m parameters model with biomedical vocabulary ({vocab_size} size) {vocab}, pre-trained on PubMed biomedical text corpus.",
+                    )
+                )
+        for vocab in ['cased', 'uncased']:
+            result.append(
+                PretrainedModelInfo(
+                    pretrained_model_name=f"biomegatron345m{vocab}",
+                    location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/megatron_bert_345m_{vocab}/versions/1/files/megatron_bert_345m_{vocab}.nemo",
+                    description=f"Megatron pretrained on {vocab} biomedical dataset PubMed with 345 million parameters.",
+                )
+            )
+        return result
 
     def _vocab_size_with_padding(self, orig_vocab_size, make_vocab_size_divisible_by, tensor_model_parallel_size):
         """Pad vocab size so it is divisible by model parallel size and

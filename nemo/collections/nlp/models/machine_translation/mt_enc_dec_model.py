@@ -34,7 +34,7 @@ from nemo.collections.common.metrics import GlobalAverageLossMetric
 from nemo.collections.common.parts import transformer_weights_init
 from nemo.collections.common.tokenizers.bytelevel_tokenizers import ByteLevelProcessor
 from nemo.collections.common.tokenizers.chinese_tokenizers import ChineseProcessor
-from nemo.collections.common.tokenizers.en_ja_tokenizers import EnJaProcessor
+from nemo.collections.common.tokenizers.en_ja_tokenizers import EnJaProcessor, JaMecabProcessor
 from nemo.collections.common.tokenizers.indic_tokenizers import IndicProcessor
 from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
 from nemo.collections.nlp.data import TarredTranslationDataset, TranslationDataset
@@ -427,9 +427,13 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
                     _translations += [t for (t, g) in tr_and_gt[rank]]
                     _ground_truths += [g for (t, g) in tr_and_gt[rank]]
 
-                if self.tgt_language in ['ja']:
+                if self.multilingual and isinstance(self.tgt_language, ListConfig):
+                    tgt_language = self.tgt_language[dataloader_idx]
+                else:
+                    tgt_language = self.tgt_language
+                if tgt_language in ['ja', 'ja-mecab']:
                     sacre_bleu = corpus_bleu(_translations, [_ground_truths], tokenize="ja-mecab")
-                elif self.tgt_language in ['zh']:
+                elif tgt_language in ['zh']:
                     sacre_bleu = corpus_bleu(_translations, [_ground_truths], tokenize="zh")
                 else:
                     sacre_bleu = corpus_bleu(_translations, [_ground_truths], tokenize="13a")
@@ -862,7 +866,9 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         if encoder_tokenizer_library == 'byte-level':
             source_processor = ByteLevelProcessor()
         elif (source_lang == 'en' and target_lang == 'ja') or (source_lang == 'ja' and target_lang == 'en'):
-            source_processor = EnJaProcessor(source_lang)
+            self.source_processor = EnJaProcessor(source_lang)
+        elif source_lang == 'ja-mecab':
+            self.source_processor = JaMecabProcessor()
         elif source_lang == 'zh':
             source_processor = ChineseProcessor()
         elif source_lang == 'hi':
@@ -875,7 +881,9 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         if decoder_tokenizer_library == 'byte-level':
             target_processor = ByteLevelProcessor()
         elif (source_lang == 'en' and target_lang == 'ja') or (source_lang == 'ja' and target_lang == 'en'):
-            target_processor = EnJaProcessor(target_lang)
+            self.target_processor = EnJaProcessor(target_lang)
+        elif target_lang == 'ja-mecab':
+            self.target_processor = JaMecabProcessor()
         elif target_lang == 'zh':
             target_processor = ChineseProcessor()
         elif target_lang == 'hi':

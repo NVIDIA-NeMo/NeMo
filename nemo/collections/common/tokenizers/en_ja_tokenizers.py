@@ -11,8 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
 from typing import List
 
+import ipadic
+import MeCab
+from pangu import spacing
 from sacremoses import MosesDetokenizer, MosesPunctNormalizer, MosesTokenizer
 
 
@@ -55,3 +59,29 @@ class EnJaProcessor:
             return self.normalizer.normalize(text)
         else:
             return text
+
+
+class JaMecabProcessor:
+    """
+    Tokenizer, Detokenizer and Normalizer utilities for Japanese MeCab & English
+    """
+
+    def __init__(self):
+        self.mecab_tokenizer = MeCab.Tagger(ipadic.MECAB_ARGS + " -Owakati")
+
+    def detokenize(self, text: List[str]) -> str:
+        RE_WS_IN_FW = re.compile(
+            r'([\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef])\s+(?=[\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef])'
+        )
+
+        detokenize = lambda s: spacing(RE_WS_IN_FW.sub(r'\1', s)).strip()
+        return detokenize(' '.join(text))
+
+    def tokenize(self, text) -> str:
+        """
+        Tokenizes text using Moses. Returns a string of tokens.
+        """
+        return self.mecab_tokenizer.parse(text).strip()
+
+    def normalize(self, text) -> str:
+        return text

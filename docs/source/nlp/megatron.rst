@@ -7,7 +7,7 @@ Megatron-LM :cite:`nlp-megatron-shoeybi2019megatron` is a large, powerful transf
 team at NVIDIA. Currently NeMo Megatron supports 3 types of models:
 
 * GPT-style models (decoder only)
-* T5-style models (encoder-decoder)
+* T5/BART-style models (encoder-decoder)
 * BERT-style models (encoder only)
 
 .. note::

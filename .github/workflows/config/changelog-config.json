@@ -1,35 +1,35 @@
 {
     "categories": [
       {
-        "title": "## ASR",
+        "title": "## ASR \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["asr"]
       },
       {
-        "title": "## TTS",
+        "title": "## TTS \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["tts"]
       },
       {
-        "title": "## NLP / NMT",
+        "title": "## NLP / NMT \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["nlp", "nmt", "megatron"]
       },
       {
-        "title": "## Text Normalization / Inverse Text Normalization",
+        "title": "## Text Normalization / Inverse Text Normalization \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["tn", "itn"]
       },
       {
-        "title": "## NeMo Tools",
+        "title": "## NeMo Tools \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["tools"]
       },
       {
-        "title": "## Export",
+        "title": "## Export \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["export"]
       },
       {
-        "title": "## Documentation",
+        "title": "## Documentation \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["docs"]
       },
       {
-        "title": "## Bugfixes",
+        "title": "## Bugfixes \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["bug"]
       }
     ],
@@ -37,7 +37,7 @@
       "ignore"
     ],
     "sort": "ASC",
-    "template": "${{CHANGELOG}}\nUncategorized:\n${{UNCATEGORIZED}}\n\n",
+    "template": "\n${{CHANGELOG}}\nUncategorized:\n${{UNCATEGORIZED}}\n\n",
     "pr_template": "- ${{TITLE}} by @${{AUTHOR}} :: PR: #${{NUMBER}}",
     "empty_template": "${{OWNER}}\n${{REPO}}\n${{FROM_TAG}}\n${{TO_TAG}}",
     "label_extractor": [

@@ -1,7 +1,7 @@
 pipeline {
   agent {
         docker {
-      image 'gitlab-master.nvidia.com/sandeepsub/nemo_containers:nemo-180-2202-ci-apex-2998a235292bdf1c7de1500ff3baaa96732b6a4f'
+      image 'gitlab-master.nvidia.com/sandeepsub/nemo_containers:nemo-180-2203-ci-apex-8cc91ceaa8faa64451d90e11b8ad4732393b32aa'
       args '--device=/dev/nvidia0 --gpus all -e TRANSFORMERS_OFFLINE=1 --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
         }
   }

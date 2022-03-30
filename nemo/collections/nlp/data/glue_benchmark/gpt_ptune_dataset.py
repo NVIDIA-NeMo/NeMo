@@ -21,16 +21,15 @@ import csv
 import functools
 import json
 import re
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from sympy import substitution
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import (
-    make_attention_mask_3d,
-    make_history_mask_3d,
+from nemo.collections.nlp.modules.common.megatron.utils import (
+    make_inference_attention_mask_3d,
+    make_inference_history_mask_3d,
 )
 from nemo.core.classes import Dataset
 from nemo.core.neural_types import CategoricalValuesType, ChannelType, MaskType, NeuralType, RegressionValuesType
@@ -369,8 +368,8 @@ class GPTPTuneDataset(TaskDataset):
         label_position = torch.cat([label_start.unsqueeze(1), label_position.unsqueeze(1)], 1)
         loss_mask[labels == SMALL_NUM] = 0
 
-        input_attn_mask = make_attention_mask_3d(enc_input, enc_input, self.pad_id)
-        input_attn_mask = (input_attn_mask * make_history_mask_3d(enc_input)).long()
+        input_attn_mask = make_inference_attention_mask_3d(enc_input, enc_input, self.pad_id)
+        input_attn_mask = (input_attn_mask * make_inference_history_mask_3d(enc_input)).long()
 
         return {
             'enc_input': enc_input,

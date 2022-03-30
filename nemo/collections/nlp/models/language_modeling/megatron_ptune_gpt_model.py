@@ -21,15 +21,13 @@ from pytorch_lightning.trainer.trainer import Trainer
 from torch import Tensor
 
 from nemo.collections.nlp.data.glue_benchmark.gpt_ptune_dataset import GPTPTuneDataset, GPTPTuneInferenceDataset
-from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import (
-    make_attention_mask_3d,
-    make_history_mask_3d,
-)
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
+    make_inference_attention_mask_3d,
+    make_inference_history_mask_3d,
 )
 from nemo.collections.nlp.modules.common.prompt_encoder import PromptEncoder
 from nemo.utils import logging
@@ -238,8 +236,10 @@ class MegatronGPTPTuneModel(MegatronBaseModel):
             label_start = label_position[:, 0].clone()
 
             for _ in range(num_tokens_to_generate):
-                attn_mask = make_attention_mask_3d(predicted_tokens_dec, predicted_tokens_dec, self.pad_token_id)
-                attn_mask = attn_mask * make_history_mask_3d(predicted_tokens_dec)
+                attn_mask = make_inference_attention_mask_3d(
+                    predicted_tokens_dec, predicted_tokens_dec, self.pad_token_id
+                )
+                attn_mask = attn_mask * make_inference_history_mask_3d(predicted_tokens_dec)
 
                 attn_mask = attn_mask < 0.5
 

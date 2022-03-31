@@ -25,7 +25,7 @@ def get_args():
     parser.add_argument("--target_language", default="es", type=str, required=True)
     parser.add_argument("--source_language", default="en", type=str, required=True)
     parser.add_argument("--text", default="Hello!", type=str, required=True)
-    parser.add_argument("--port", default=50052, type=int, required=False)
+    parser.add_argument("--server_url", default='localhost:50052', type=str, required=False)
 
     args = parser.parse_args()
     return args
@@ -33,7 +33,7 @@ def get_args():
 
 if __name__ == '__main__':
     args = get_args()
-    with grpc.insecure_channel(f'localhost:{args.port}') as channel:
+    with grpc.insecure_channel(f'{args.server_url}') as channel:
         stub = nmtsrv.RivaTranslateStub(channel)
 
         iterations = 1

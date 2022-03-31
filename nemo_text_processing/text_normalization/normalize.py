@@ -207,6 +207,10 @@ class Normalizer:
 
         Returns: spoken form
         """
+        assert (
+            len(text.split()) < 500
+        ), "Your input is too long. Please split up the input into sentences, or strings with fewer than 500 words"
+
         original_text = text
         if punct_pre_process:
             text = pre_process(text)

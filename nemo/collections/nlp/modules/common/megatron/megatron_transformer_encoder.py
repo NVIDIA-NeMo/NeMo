@@ -23,14 +23,14 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 )
 
 try:
-    from apex.transformer.enums import AttnMaskType
+    from apex.transformer.enums import AttnMaskType, ModelType
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
     # fake missing classes with None attributes
     AttnMaskType = ApexGuardDefaults()
-
+    ModelType = ApexGuardDefaults()
 
 __all__ = ["MegatronTransformerEncoderModule"]
 
@@ -66,6 +66,7 @@ class MegatronTransformerEncoderModule(MegatronModule):
         openai_gelu=False,
         onnx_safe=False,
         activation='gelu',
+        parent_model_type=ModelType.encoder_or_decoder,
     ):
         super(MegatronTransformerEncoderModule, self).__init__()
 
@@ -77,6 +78,7 @@ class MegatronTransformerEncoderModule(MegatronModule):
         self.model_attn_mask_type = encoder_attn_mask_type
         self.hidden_dropout = hidden_dropout
         self.output_layer_init_method = output_layer_init_method
+        self.parent_model_type = parent_model_type
 
         if kv_channels is None:
 
@@ -112,6 +114,7 @@ class MegatronTransformerEncoderModule(MegatronModule):
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
             activation=activation,
+            model_type=parent_model_type,
         )
         self._model_key = 'model'
 
@@ -131,10 +134,8 @@ class MegatronTransformerEncoderModule(MegatronModule):
         enc_output = self.model(
             enc_input, attn_mask_postprocess(enc_attn_mask_3d), layer_past=layer_past, get_key_value=get_key_value,
         )
-        # we copy input mask for transformer
-        enc_output_mask = enc_attn_mask
 
-        return enc_output, enc_output_mask
+        return enc_output
 
     def state_dict_for_save_checkpoint(self, destination=None, prefix='', keep_vars=False):
         """For easy load."""

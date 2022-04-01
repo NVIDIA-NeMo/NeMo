@@ -12,7 +12,7 @@ trainer:
   max_steps: null # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 300
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
 
 exp_manager:
@@ -38,27 +38,36 @@ exp_manager:
 model:
   restore_from_path: ??? # Path to a trained T5 .nemo file
   tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 1
+  pipeline_model_parallel_split_rank: 0
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   megatron_amp_O2: False # Enable O2 optimization for megatron amp
+  resume_from_checkpoint: null
+  hidden_dropout: 0.1 # Override dropout prob from pretraining
+  attention_dropout: 0.1 # Override attention dropout prob from pretraining 
 
   data:
     train_ds:
       task_name: 'mnli'
       file_path: ??? # Path to the TSV file for MNLI train ex: '/raid/Data/GLUE/MNLI/train.tsv'
-      batch_size: 32
+      global_batch_size: 128
+      micro_batch_size: 64
       shuffle: True
       num_workers: 8
       pin_memory: True
       max_seq_length: 512
+      drop_last: True
 
     validation_ds:
       task_name: 'mnli'
-      file_path: ??? # Path to the TSV file for MNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
-      batch_size: 32
+      file_path: ??? # Path to the TSV file for MNLI train ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
+      global_batch_size: 128
+      micro_batch_size: 64
       shuffle: False
       num_workers: 8
       pin_memory: True
       max_seq_length: 512
+      drop_last: True # TODO: Figure out if there is a way to avoid dropping last.
 
   optim:
     name: fused_adam

@@ -11,255 +11,254 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from operator import itemgetter
-from typing import Any, Optional
-
 import torch
-from omegaconf import OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.common.metrics.classification_accuracy import ExactStringPerCategoryMatchMetric
-from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import TextToTextGLUEDataset
+from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import (
+    TextToTextGLUEDataset,
+    TextToTextXNLIDataset,
+)
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
-from nemo.collections.nlp.models.nlp_model import NLPModel
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
-from nemo.core.optim.lr_scheduler import prepare_lr_scheduler
-from nemo.core.optim.optimizer_with_main_params import MainParamsOptimizerWrapper
-from nemo.utils import logging
+from nemo.utils import AppState, logging
 
 try:
     from apex.transformer import parallel_state
-    from apex.transformer.pipeline_parallel.schedules.common import _get_params_for_weight_decay_optimization
+    from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 
-__all__ = ['MegatronT5FineTuneModel']
+__all__ = ['MegatronT5GLUEModel']
 
 
-class MegatronT5FineTuneModel(NLPModel):
-    """
-    Base class for finetuning pre-trained T5 models.
-    Inherit from this class and implement the dataset building and train/validation steps.
-    """
+class MegatronT5GLUEModel(MegatronT5Model):
+    """GLUE Model that Inherits from MegatronT5Model instead."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
-        if not HAVE_APEX:
-            raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
-            )
-        super().__init__(cfg, trainer)
-        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
-        # TODO: Fix this once apex patches FusedScaledMaskedSoftmax.
-        # This is a workaround for the fact that `masked_softmax_fusion` has issues with certain input sizes that may be present while finetuning.
-        t5_cfg = MegatronT5Model.restore_from(
-            self.register_artifact('t5_base_model', cfg.restore_from_path), trainer=trainer, return_config=True
-        )
-        OmegaConf.set_struct(t5_cfg, True)
-        with open_dict(t5_cfg):
-            t5_cfg.masked_softmax_fusion = False
-            t5_cfg.megatron_amp_O2 = self.megatron_amp_o2
-
-        self.model = MegatronT5Model.restore_from(
-            self.register_artifact('t5_base_model', cfg.restore_from_path),
-            trainer=trainer,
-            override_config_path=t5_cfg,
-        )
-        self.setup_optimizer_param_groups()
-
-    def training_step(self, batch, batch_idx):
-        pass
-
-    def validation_step(self, batch, batch_idx):
-        pass
-
-    def validation_epoch_end(self, outputs):
-        pass
-
-    def process_batch(self, batch):
-        return self.model.process_batch(batch)
-
-    def build_train_valid_test_datasets(self):
-        pass
-
-    def build_pretraining_data_loader(self, dataset):
-        pass
+        super().__init__(cfg, trainer=trainer)
+        if hasattr(self.cfg, 'eval_languages'):
+            self.acc_metric = ExactStringPerCategoryMatchMetric(self.cfg.eval_languages)
+        else:
+            self.acc_metric = ExactStringPerCategoryMatchMetric()
 
     def setup(self, stage=None):
-        pass
+        # This is just to keep the parent class happy since we override its setup() method.
+        self.init_consumed_samples = 0
 
-    def setup_training_data(self, train_data_config=None):
-        pass
+        if stage == 'predict':
+            return
 
-    def setup_validation_data(self, validation_data_config=None):
-        pass
+        # NOTE: PTL uses the same stage string "test" for both testing and validation.
+        self.build_train_valid_test_datasets(stage=stage)
+        if hasattr(self, '_validation_ds'):
+            self.setup_validation_data()
+        if hasattr(self, '_test_ds'):
+            self.setup_test_data()
+        if hasattr(self, '_train_ds'):
+            self.setup_training_data()
 
-    def setup_test_data(self, test_data_config=None):
-        pass
+    def _process_global_batch(self, global_batch):
+        """ Prepares the global batch for apex fwd/bwd functions.
+            Global batch is a list of micro batches.
+        """
+        text_enc_list = []
+        text_dec_list = []
+        labels_list = []
+        loss_mask_list = []
+        enc_mask_list = []
+        dec_mask_list = []
 
-    def configure_optimizers(self):
-        self.setup_optimization()
+        # Determine the maximum encoder and decoder sequence lengths amongst microbatches and pad each microbatch to the max seq length.
+        # NOTE: This should only happen for model finetuning where we pad dynamically. Training uses fixed training shapes.
 
-        # Wrap the baseline optimizer with the optimizer class with master parameters
-        if self.megatron_amp_o2 and self._optimizer is not None:
-            if self.cfg.precision == 'bf16':
-                fp32_grad_accum = True
-                contiguous_grad_bucket = True
-                async_grad_allreduce = True
+        max_enc_seq_lenth = max([micro_batch['text_enc'].shape[1] for micro_batch in global_batch])
+        max_dec_seq_lenth = max([micro_batch['text_dec'].shape[1] for micro_batch in global_batch])
 
-            elif self.cfg.precision == 16:
-                fp32_grad_accum = False
-                # TODO: contiguous grad bucket for fp16 is also planned to be supported
-                contiguous_grad_bucket = False
-                async_grad_allreduce = False
-
-            self._optimizer = MainParamsOptimizerWrapper(
-                self._optimizer,
-                fp32_grad_accum=fp32_grad_accum,
-                contiguous_grad_bucket=contiguous_grad_bucket,
-                async_grad_allreduce=async_grad_allreduce,
-            )
-            assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
-            if hasattr(self._cfg.optim, 'sched'):
-                sched_config = self._cfg.optim.sched
-                sched_config['max_steps'] = self._trainer.max_steps
-                self._scheduler = prepare_lr_scheduler(
-                    optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
+        for micro_batch in global_batch:
+            text_enc, text_dec, loss_mask, labels, enc_mask, dec_mask = self.process_micro_batch(micro_batch)
+            # Check if encoder sequence length < max encoder sequence length of the global batch and pad.
+            if text_enc.shape[1] < max_enc_seq_lenth:
+                text_enc = torch.nn.functional.pad(
+                    text_enc, (0, max_enc_seq_lenth - text_enc.shape[1], 0, 0), 'constant', self.tokenizer.pad_id
                 )
+                enc_mask = torch.nn.functional.pad(
+                    enc_mask, (0, max_enc_seq_lenth - enc_mask.shape[1], 0, 0), 'constant', 0
+                )
+            if text_dec.shape[1] < max_dec_seq_lenth:
+                text_dec = torch.nn.functional.pad(
+                    text_dec, (0, max_dec_seq_lenth - text_dec.shape[1], 0, 0), 'constant', self.tokenizer.pad_id
+                )
+                dec_mask = torch.nn.functional.pad(
+                    dec_mask, (0, max_dec_seq_lenth - dec_mask.shape[1], 0, 0), 'constant', 0
+                )
+            text_enc_list.append(text_enc)
+            text_dec_list.append(text_dec)
+            labels_list.append(labels)
+            loss_mask_list.append(loss_mask)
+            enc_mask_list.append(enc_mask)
+            dec_mask_list.append(dec_mask)
 
-        if self._scheduler is None:
-            return self._optimizer
+        # Concatenate to (num_microbatches x micro_batch_size x seq_len)
+        tokens_enc_tensor = torch.concat(text_enc_list, dim=0)
+        tokens_dec_tensor = torch.concat(text_dec_list, dim=0)
+        labels_tensor = torch.concat(labels_list, dim=0)
+        loss_mask_tensor = torch.concat(loss_mask_list, dim=0)
+        enc_mask_tensor = torch.concat(enc_mask_list, dim=0)
+        dec_mask_tensor = torch.concat(dec_mask_list, dim=0)
+
+        return tokens_enc_tensor, tokens_dec_tensor, loss_mask_tensor, labels_tensor, enc_mask_tensor, dec_mask_tensor
+
+    def process_global_batch(self, global_batch):
+        """Process a list of microbatches into a global batch."""
+        # If there is no language information in the global batch (ex: English MNLI), we can use the parent global batch processor as is.
+        if len(global_batch[0]) == 6:
+            return self._process_global_batch(global_batch)
+
+        # For validation data (XNLI), we need to process the global batch and and then deal with language info separately.
         else:
-            return [self._optimizer], [self._scheduler]
-
-    def setup_optimizer_param_groups(self):
-        """ModelPT override. Optimizer will get self._optimizer_param_groups"""
-        self._optimizer_param_groups = _get_params_for_weight_decay_optimization([self.model.enc_dec_model])
-
-    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
-        return self.model.prediction_step(batch, batch_idx, dataloader_idx)
-
-
-class MegatronT5GLUEModel(MegatronT5FineTuneModel):
-    """
-    Megatron T5 finetuning for GLUE datasets.
-    """
-
-    def __init__(self, cfg: DictConfig, trainer: Trainer):
-        if not HAVE_APEX:
-            raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+            assert len(global_batch[0]) == 7
+            langs_list = []
+            (
+                tokens_enc_tensor,
+                tokens_dec_tensor,
+                loss_mask_tensor,
+                labels_tensor,
+                enc_mask_tensor,
+                dec_mask_tensor,
+            ) = self._process_global_batch(
+                [{k: v for k, v in micro_batch.items() if k != 'lang'} for micro_batch in global_batch]
             )
-        super().__init__(cfg=cfg, trainer=trainer)
-        self.cfg = cfg
-        self.acc_metric = ExactStringPerCategoryMatchMetric()
+            for micro_batch in global_batch:
+                langs_list.extend(micro_batch['lang'])
+            return (
+                tokens_enc_tensor,
+                tokens_dec_tensor,
+                loss_mask_tensor,
+                labels_tensor,
+                enc_mask_tensor,
+                dec_mask_tensor,
+                langs_list,
+            )
 
-    def training_step(self, batch, batch_idx):
-        tokens_enc, tokens_dec, loss_mask, labels, enc_mask, dec_mask = self.process_batch(batch)
-
-        tokens_loss = itemgetter("tokens_loss")(
-            self.model(tokens_enc, tokens_dec, enc_mask, dec_mask, tokentype_ids=None, lm_labels=labels,)
+    def on_validation_model_eval(self):
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=self.cfg.data.validation_ds.global_batch_size,
+            micro_batch_size=self.cfg.data.validation_ds.micro_batch_size,
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
+        return super().on_validation_model_eval()
 
-        loss = self.model.loss_func(loss_mask, tokens_loss)
-        self.log('train_loss', loss)
-        # Reduced loss for logging.
-        reduced_loss = average_losses_across_data_parallel_group([loss])
-        # cache reduced loss while accumulating gradients
-        self.model._reduced_loss_buffer.append(reduced_loss[0])
+    def on_validation_model_train(self):
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=self.cfg.data.train_ds.global_batch_size,
+            micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
+        )
+        return super().on_validation_model_train()
 
-        if (batch_idx + 1) % self.trainer.accumulate_grad_batches == 0:
-            # Reduced loss for logging.
-            average_reduced_loss = sum(self.model._reduced_loss_buffer) / len(self.model._reduced_loss_buffer)
-            self.log('reduced_train_loss', average_reduced_loss, prog_bar=True)
-            lr = self._optimizer.param_groups[0]['lr']
-            self.log('lr', lr)
-            self.log('global_step', self.trainer.global_step, prog_bar=True)
-            self.model._reduced_loss_buffer = []
+    def inference_step(self, batch, batch_idx):
+        batch_has_lang_information = len(batch[0]) == 7
+        # XNLI Batches have language information that need to be removed before calling the parent validation step.
+        if batch_has_lang_information:
+            processed_batch = []
+            for micro_batch in batch:
+                micro_batch = {k: v for k, v in micro_batch.items() if k != 'lang'}
+                processed_batch.append(micro_batch)
+        else:
+            processed_batch = batch
+
+        # Call parent validation step to get the loss.
+        loss = super().validation_step(processed_batch, batch_idx, reconfigure_microbatch_size=True)
+
+        # Remainder of the code is to run the decoding loop, and compute accuracies.
+        if batch_has_lang_information:
+            tokens_enc, _, _, labels, enc_mask, _, langs = self.process_global_batch(batch)
+        else:
+            tokens_enc, _, _, labels, enc_mask, _ = self.process_global_batch(batch)
+
+        predicted_token_ids, _ = self.decode(tokens_enc=tokens_enc, enc_mask=enc_mask, num_tokens_to_generate=10)
+
+        preds_text, labels_text = self.preds_and_labels_to_text(predicted_token_ids, labels)
+
+        if not batch_has_lang_information:
+            langs = [None] * len(preds_text)
+
+        assert len(langs) == len(preds_text) == len(labels_text)
+        for _, (pred, label, lang) in enumerate(zip(preds_text, labels_text, langs)):
+            _ = self.acc_metric(pred, label, lang)
 
         return loss
 
-    def inference_step(self, batch, batch_idx):
-        loss = self.model.validation_step(batch, batch_idx)
-
-        tokens_enc, _, _, labels, enc_mask, _ = self.process_batch(batch)
-
-        predicted_token_ids, log_probs = self.model.decode(
-            tokens_enc=tokens_enc, enc_mask=enc_mask, num_tokens_to_generate=10
-        )
-
-        preds = predicted_token_ids.cpu().numpy().tolist()
+    def preds_and_labels_to_text(self, preds, labels):
+        preds = preds.cpu().numpy().tolist()
         labels = labels.cpu().numpy().tolist()
-        for i, (pred, label) in enumerate(zip(preds, labels)):
-            if self.model.tokenizer.eos_id in pred:
-                idx = pred.index(self.model.tokenizer.eos_id)
+        preds_text, labels_text = [], []
+        for _, (pred, label) in enumerate(zip(preds, labels)):
+            if self.tokenizer.eos_id in pred:
+                idx = pred.index(self.tokenizer.eos_id)
                 pred = pred[:idx]
 
             # Legacy sentencepiece detokenization still preserves special tokens which messes up exact string match.
-            if hasattr(self.model.tokenizer, 'special_token_to_id'):
-                pred = [id for id in pred if id not in self.model.tokenizer.special_token_to_id.values()]
-                label = [id for id in label if id not in self.model.tokenizer.special_token_to_id.values()]
-            pred = self.model.tokenizer.ids_to_text(pred)
-            label = self.model.tokenizer.ids_to_text(label)
-            _ = self.acc_metric(pred, label)
+            if hasattr(self.tokenizer, 'special_token_to_id'):
+                pred = [id for id in pred if id not in self.tokenizer.special_token_to_id.values()]
+                label = [id for id in label if id not in self.tokenizer.special_token_to_id.values()]
+            pred = self.tokenizer.ids_to_text(pred)
+            label = self.tokenizer.ids_to_text(label)
+            preds_text.append(pred)
+            labels_text.append(label)
 
-        return {'loss': loss}
+        return preds_text, labels_text
 
-    def inference_epoch_end(self, outputs):
-        losses = [x['loss'] for x in outputs]
-        averaged_loss = average_losses_across_data_parallel_group(losses)
-        val_acc = self.acc_metric.compute()
-        self.log('validation_loss', averaged_loss)
-        self.log('validation_acc', val_acc['acc'])
+    def inference_epoch_end(self, outputs, mode):
+        # Parent class will handle logging of the loss.
+        if mode == 'validation':
+            averaged_loss = super().validation_epoch_end(outputs)
+        else:
+            averaged_loss = super().test_epoch_end(outputs)
+        accuracy = self.acc_metric.compute()
+        self.log(f'{mode}_loss', averaged_loss)
+        self.log(f'{mode}_acc', accuracy['acc'])
+        if hasattr(self.cfg, 'eval_languages'):
+            for lang in self.cfg.eval_languages:
+                self.log(f'{lang}_acc', accuracy[lang])
+                logging.info(f"{mode} {lang} accuracy: {accuracy[lang]} total: {accuracy[lang+'_total']}")
+        logging.info(f"{mode} accuracy: {accuracy['acc']}")
         self.acc_metric.reset()
-        return averaged_loss[0], val_acc
+        return averaged_loss, accuracy['acc']
 
     def validation_step(self, batch, batch_idx):
         return self.inference_step(batch, batch_idx)
 
     def validation_epoch_end(self, outputs):
-        val_loss, val_acc = self.inference_epoch_end(outputs)
-        self.log('val_loss', val_loss, prog_bar=True)
-        self.log('val_acc', val_acc, prog_bar=True)
-        logging.info(f'Validation loss: {val_loss}')
-        logging.info(f'Validation accuracy: {val_acc}')
+        _ = self.inference_epoch_end(outputs, 'validation')
 
     def test_step(self, batch, batch_idx):
-        raise NotImplementedError(
-            "Testing is not supported for GLUE because the test data does not have labels. To evaluate on the validation dataset, call trainer.validate(model)"
-        )
+        return self.inference_step(batch, batch_idx)
 
     def test_epoch_end(self, outputs):
-        raise NotImplementedError(
-            "Testing is not supported for GLUE because the test data does not have labels. To evaluate on the validation dataset, call trainer.validate(model)"
-        )
+        _ = self.inference_epoch_end(outputs, 'test')
 
-    def build_train_valid_test_datasets(self, validation_only=False):
-        logging.info('Building GLUE datasets.')
-        self._validation_ds = TextToTextGLUEDataset(
-            self.cfg.data.validation_ds.file_path,
-            task_name=self.cfg.data.validation_ds.task_name,
-            tokenizer=self.model.tokenizer,
-            max_seq_length=self.cfg.data.validation_ds.max_seq_length,
-        )
-        if validation_only:
-            return None, self._validation_ds
-        self._train_ds = TextToTextGLUEDataset(
-            self.cfg.data.train_ds.file_path,
-            task_name=self.cfg.data.train_ds.task_name,
-            tokenizer=self.model.tokenizer,
-            max_seq_length=self.cfg.data.train_ds.max_seq_length,
-        )
-        logging.info(f'Length of train dataset: {len(self._train_ds)}')
-        logging.info(f'Length of val dataset: {len(self._validation_ds)}')
-        logging.info(f'Finished building T5 datasets.')
-        return self._train_ds, self._validation_ds
-
-    def build_pretraining_data_loader(self, dataset, batch_size, shuffle, num_workers, pin_memory):
+    def build_data_loader(
+        self,
+        dataset,
+        micro_batch_size,
+        global_batch_size,
+        shuffle,
+        num_workers,
+        pin_memory,
+        drop_last,
+        check_validation_interval,
+    ):
         """Buld dataloader given an input dataset."""
 
         if dataset is None:
@@ -270,54 +269,94 @@ class MegatronT5GLUEModel(MegatronT5FineTuneModel):
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, num_replicas=world_size, rank=rank, shuffle=shuffle
         )
+        # This check makes sure the val_check_interval is less than the number of global batches.
+        # Normally, PTL would do this check and properly account for gradient accumulation.
+        # But now, it is implicit in the apex fwd/bwd functions and so we need to check for this somewhere.
+        # The consequence of not doing this is that training loop will never run validation.
+        # NOTE: Prog bar is also broken as a result of this.
+        if self.trainer.val_check_interval > (sampler.num_samples // global_batch_size) and check_validation_interval:
+            raise ValueError(
+                f"trainer.val_check_interval {self.trainer.val_check_interval} is > number of global batches {sampler.num_samples // global_batch_size}"
+            )
 
         # Data loader. Note that batch size is the per GPU batch size.
         return torch.utils.data.DataLoader(
             dataset,
             collate_fn=dataset.collate_fn,
-            batch_size=batch_size,
             sampler=sampler,
+            batch_size=micro_batch_size,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            drop_last=False,
+            drop_last=drop_last,
         )
 
-    def setup(self, stage=None):
-        if stage == 'predict':
-            return
-
-        # NOTE: PTL uses the same stage string "test" for both testing and validation.
-        self.build_train_valid_test_datasets(validation_only=stage == 'validate')
-        self.setup_validation_data()
-        if stage == 'validate':
-            return
-        self.setup_training_data()
-
-    def setup_training_data(self, train_data_config=None):
-        self._train_dl = self.build_pretraining_data_loader(
+    def setup_training_data(self):
+        self._train_dl = self.build_data_loader(
             self._train_ds,
-            self.cfg.data.train_ds.batch_size,
+            micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
+            global_batch_size=self.cfg.data.train_ds.global_batch_size,
             shuffle=self.cfg.data.train_ds.shuffle,
             num_workers=self.cfg.data.train_ds.num_workers,
             pin_memory=self.cfg.data.train_ds.pin_memory,
+            drop_last=self.cfg.data.train_ds.drop_last,
+            check_validation_interval=True,
         )
 
-    def setup_validation_data(self, validation_data_config=None):
-        self._validation_dl = self.build_pretraining_data_loader(
+    def setup_validation_data(self):
+        self._validation_dl = self.build_data_loader(
             self._validation_ds,
-            self.cfg.data.validation_ds.batch_size,
+            micro_batch_size=self.cfg.data.validation_ds.micro_batch_size,
+            global_batch_size=self.cfg.data.validation_ds.global_batch_size,
             shuffle=self.cfg.data.validation_ds.shuffle,
             num_workers=self.cfg.data.validation_ds.num_workers,
             pin_memory=self.cfg.data.validation_ds.pin_memory,
+            drop_last=self.cfg.data.validation_ds.drop_last,
+            check_validation_interval=False,
         )
 
-    @classmethod
-    def list_available_models(cls):
-        """
-        This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
+    def setup_test_data(self):
+        self._test_dl = self.build_data_loader(
+            self._test_ds,
+            micro_batch_size=self.cfg.data.test_ds.micro_batch_size,
+            global_batch_size=self.cfg.data.test_ds.global_batch_size,
+            shuffle=self.cfg.data.test_ds.shuffle,
+            num_workers=self.cfg.data.test_ds.num_workers,
+            pin_memory=self.cfg.data.test_ds.pin_memory,
+            drop_last=self.cfg.data.test_ds.drop_last,
+            check_validation_interval=False,
+        )
 
-        Returns:
-            List of available pre-trained models.
-        """
-        result = []
-        return result
+    def _build_dataset(self, data_cfg):
+        if data_cfg.task_name == 'xnli':
+            dataset = TextToTextXNLIDataset(
+                data_cfg.file_path,
+                task_name=data_cfg.task_name,
+                tokenizer=self.tokenizer,
+                max_seq_length=data_cfg.max_seq_length,
+                lang_list=self.cfg.eval_languages,
+            )
+        else:
+            dataset = TextToTextGLUEDataset(
+                data_cfg.file_path,
+                task_name=data_cfg.task_name,
+                tokenizer=self.tokenizer,
+                max_seq_length=data_cfg.max_seq_length,
+            )
+        return dataset
+
+    def build_train_valid_test_datasets(self, stage):
+        logging.info('Building GLUE/XNLI datasets.')
+        if stage != 'test':
+            self._validation_ds = self._build_dataset(self.cfg.data.validation_ds)
+            logging.info(f'Length of val dataset: {len(self._validation_ds)}')
+
+        if stage != 'validation':
+            if hasattr(self.cfg.data, 'test_ds'):
+                self._test_ds = self._build_dataset(self.cfg.data.test_ds)
+                logging.info(f'Length of test dataset: {len(self._test_ds)}')
+
+        if stage == 'validation' or stage == 'test':
+            return
+        self._train_ds = self._build_dataset(self.cfg.data.train_ds)
+        logging.info(f'Length of train dataset: {len(self._train_ds)}')
+        logging.info(f'Finished building GLUE/XNLI datasets.')

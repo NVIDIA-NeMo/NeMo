@@ -16,11 +16,16 @@ from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.plugins.environments.torchelastic_environment import TorchElasticEnvironment
-from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_glue_model import MegatronT5GLUEModel
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler, MegatronHalfPrecisionPlugin, NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import (
+    GlobalBatchFitLoop,
+    GradScaler,
+    MegatronHalfPrecisionPlugin,
+    NLPDDPPlugin,
+    PipelineMixedPrecisionPlugin,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import StatelessTimer, exp_manager
@@ -34,9 +39,7 @@ def main(cfg) -> None:
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
     plugins = [
         NLPDDPPlugin(
-            no_ddp_communication_hook=(
-                megatron_amp_o2 and cfg.trainer.precision == 'bf16'
-            ),  # Only bf16 uses fp32_grad_accum.
+            no_ddp_communication_hook=True,
             gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
             find_unused_parameters=False,
         )
@@ -52,17 +55,24 @@ def main(cfg) -> None:
         if megatron_amp_o2:
             plugins.append(MegatronHalfPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
         else:
-            plugins.append(NativeMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+            plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
 
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
 
     trainer = Trainer(plugins=plugins, **cfg.trainer)
 
+    # GlobalBatchFitLoop used to provide global batches which are needed
+    # for Apex fwd/bwd functions
+    trainer.fit_loop = GlobalBatchFitLoop(trainer.fit_loop.min_epochs, trainer.fit_loop.max_epochs)
+
     exp_manager(trainer, cfg.exp_manager)
 
     # update resume from checkpoint found by exp_manager
-    resume_from_checkpoint = trainer._checkpoint_connector.resume_from_checkpoint_fit_path
+    if cfg.model.resume_from_checkpoint is not None:
+        resume_from_checkpoint = cfg.model.resume_from_checkpoint
+    else:
+        resume_from_checkpoint = trainer._checkpoint_connector.resume_from_checkpoint_fit_path
     logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
 
     trainer._checkpoint_connector = CheckpointConnector(trainer, resume_from_checkpoint=resume_from_checkpoint)
@@ -71,13 +81,35 @@ def main(cfg) -> None:
         if isinstance(callback, Timer):
             trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
+    # Get the T5 Base configuration.
+    t5_cfg = MegatronT5GLUEModel.restore_from(
+        restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True
+    )
 
-    model = MegatronT5GLUEModel(cfg.model, trainer)
+    # Override the T5 configuration with the one from the config file.
+    OmegaConf.set_struct(t5_cfg, True)
+    with open_dict(t5_cfg):
+        t5_cfg.masked_softmax_fusion = False
+        t5_cfg.megatron_amp_O2 = cfg.model.get('megatron_amp_O2', False)
+        t5_cfg.hidden_dropout = cfg.model.get('hidden_dropout', 0.1)
+        t5_cfg.attention_dropout = cfg.model.get('attention_dropout', 0.1)
+        t5_cfg.data = cfg.model.data
+        t5_cfg.precision = cfg.trainer.precision
+        t5_cfg.optim = cfg.model.optim
+        t5_cfg.micro_batch_size = cfg.model.data.train_ds.micro_batch_size
+        t5_cfg.global_batch_size = cfg.model.data.train_ds.global_batch_size
+        # XNLI has eval languages in the yaml config.
+        if hasattr(cfg.model, 'eval_languages'):
+            t5_cfg.eval_languages = cfg.model.eval_languages
+
+    model = MegatronT5GLUEModel.restore_from(
+        restore_path=cfg.model.restore_from_path, trainer=trainer, override_config_path=t5_cfg
+    )
+
     trainer.fit(model)
     trainer.validate(model)
+    if hasattr(cfg.model.data, 'test_ds'):
+        trainer.test(model)
 
 
 if __name__ == '__main__':

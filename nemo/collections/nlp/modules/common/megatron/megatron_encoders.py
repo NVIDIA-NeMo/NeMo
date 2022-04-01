@@ -30,14 +30,14 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 )
 
 try:
-    from apex.transformer.enums import AttnMaskType
+    from apex.transformer.enums import AttnMaskType, ModelType
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
     # fake missing classes with None attributes
     AttnMaskType = ApexGuardDefaults()
-
+    ModelType = ApexGuardDefaults()
 
 __all__ = []
 
@@ -74,6 +74,7 @@ def get_encoder_model(
     onnx_safe=False,
     hidden_steps=-1,
     hidden_blocks=1,
+    parent_model_type=ModelType.encoder_or_decoder,
 ):
     """Build language model and return along with the key to save."""
 
@@ -117,6 +118,7 @@ def get_encoder_model(
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
             activation=activation,
+            parent_model_type=parent_model_type,
         )
     else:
         raise ValueError(f"Unknown encoder arch = {arch}. Available encoder arch = {AVAILABLE_ENCODERS}")

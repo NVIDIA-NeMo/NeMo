@@ -49,10 +49,11 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
                     f"dataset_type must be either 't5' or 't5_prefix_lm'. found {self._cfg.data.get('dataset_type')}"
                 )
 
-        if self._cfg.data.seq_length_dec < self._cfg.data.seq_length * self._cfg.data.masked_lm_prob:
-            raise ValueError(
-                f"Cannot have decoder max sequence length ({self._cfg.data.seq_length_dec}) less than encoder sequence length ({self._cfg.data.seq_length}) * masked_lm_prob ({self._cfg.data.masked_lm_prob})"
-            )
+        if hasattr(self._cfg.data, 'seq_length_dec') and self._cfg.data.get('dataset_type') == 't5':
+            if self._cfg.data.seq_length_dec < self._cfg.data.seq_length * self._cfg.data.masked_lm_prob:
+                raise ValueError(
+                    f"Cannot have decoder max sequence length ({self._cfg.data.seq_length_dec}) less than encoder sequence length ({self._cfg.data.seq_length}) * masked_lm_prob ({self._cfg.data.masked_lm_prob})"
+                )
 
     @property
     def _build_train_valid_test_datasets_kwargs(self):
@@ -120,8 +121,7 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
 
     def build_train_valid_test_datasets(self):
         logging.info(f'Building {self.model_name} datasets.')
-
-        global_batch_size = self.trainer.world_size * self._cfg.micro_batch_size / self._cfg.tensor_model_parallel_size
+        global_batch_size = self._cfg.global_batch_size
         eval_iters = (self.trainer.max_steps // self.trainer.val_check_interval + 1) * self.trainer.limit_val_batches
         test_iters = self.trainer.limit_test_batches
         train_valid_test_num_samples = [

@@ -1,7 +1,7 @@
 name: megatron_t5_glue_xnli
 
 trainer:
-  devices: 1
+  devices: 2
   num_nodes: 1
   accelerator: gpu
   precision: 16
@@ -12,7 +12,7 @@ trainer:
   max_steps: null # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 300
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
 
 exp_manager:
@@ -36,39 +36,50 @@ exp_manager:
     save_best_model: True
 
 model:
-  restore_from_path: ??? # Path to a trained T5 .nemo file
+  restore_from_path: ???
   tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 2
+  pipeline_model_parallel_split_rank: 1
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+  resume_from_checkpoint: null
   megatron_amp_O2: False # Enable O2 optimization for megatron amp
+  hidden_dropout: 0.1 # Override dropout prob from pretraining
+  attention_dropout: 0.1 # Override attention dropout prob from pretraining 
   eval_languages: ['fr', 'de', 'en', 'es'] # List of languages to evaluate zero-shot XNLI performance.
 
   data:
     train_ds:
       task_name: 'mnli'
       file_path: ??? # Path to the TSV file for MNLI train ex: '/raid/Data/GLUE/MNLI/train.tsv'
-      batch_size: 32
+      global_batch_size: 128
+      micro_batch_size: 64
       shuffle: True
       num_workers: 8
       pin_memory: True
       max_seq_length: 512
+      drop_last: True
 
     validation_ds:
       task_name: 'xnli'
       file_path: ??? # Path to the TSV file for XNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
-      batch_size: 32
+      global_batch_size: 128
+      micro_batch_size: 64
       shuffle: False
       num_workers: 8
       pin_memory: True
       max_seq_length: 512
+      drop_last: True
 
     test_ds:
       task_name: 'xnli'
       file_path: ??? # Path to the TSV file for XNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
-      batch_size: 32
+      global_batch_size: 128
+      micro_batch_size: 64
       shuffle: False
       num_workers: 8
       pin_memory: True
       max_seq_length: 512
+      drop_last: False
 
   optim:
     name: fused_adam

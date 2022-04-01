@@ -32,7 +32,7 @@ from nemo.utils import logging
 
 try:
     from apex.transformer import parallel_state, tensor_parallel
-    from apex.transformer.enums import AttnMaskType, AttnType, LayerType
+    from apex.transformer.enums import AttnMaskType, AttnType, LayerType, ModelType
     from apex.transformer.functional.fused_softmax import FusedScaleMaskSoftmax
     from apex.transformer.utils import divide as safe_divide
 
@@ -41,7 +41,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
     # fake missing classes with None attributes
-    AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
+    ModelType = AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
 
 """ We use the following notation throughout this file:
      h: hidden size
@@ -741,6 +741,7 @@ class ParallelTransformer(MegatronModule):
         openai_gelu=False,
         onnx_safe=False,
         activation='gelu',
+        model_type=ModelType.encoder_or_decoder,
     ):
         super(ParallelTransformer, self).__init__()
 
@@ -755,17 +756,20 @@ class ParallelTransformer(MegatronModule):
         self.post_process = post_process
         self.input_tensor = None
         self.self_attn_mask_type = self_attn_mask_type
+        self.model_type = model_type
 
         # Store activation checkpointing flag.
         self.activations_checkpoint_method = activations_checkpoint_method
         self.activations_checkpoint_num_layers = activations_checkpoint_num_layers
 
-        # Number of layers.
-        assert (
-            num_layers % parallel_state.get_pipeline_model_parallel_world_size() == 0
-        ), 'num_layers must be divisible by pipeline_model_parallel_size'
-        self.num_layers = num_layers // parallel_state.get_pipeline_model_parallel_world_size()
+        if self.model_type == ModelType.encoder_or_decoder:
+            assert (
+                num_layers % parallel_state.get_pipeline_model_parallel_world_size() == 0
+            ), 'num_layers must be divisible by pipeline_model_parallel_size'
 
+        # TODO: Add similar assert for encoder-decoder.
+
+        self.num_layers = self.get_num_layers(num_layers)
         # Transformer layers.
         def build_layer(layer_number):
             return ParallelTransformerLayer(
@@ -793,10 +797,11 @@ class ParallelTransformer(MegatronModule):
                 activation=activation,
             )
 
-        if parallel_state.get_virtual_pipeline_model_parallel_rank() is not None:
+        if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
             assert num_layers % parallel_state.get_virtual_pipeline_model_parallel_world_size() == 0, (
                 'num_layers_per_stage must be divisible by ' 'virtual_pipeline_model_parallel_size'
             )
+            assert self.model_type != ModelType.encoder_or_decoder
             # Number of layers in each model chunk is the number of layers in the stage,
             # divided by the number of model chunks in a stage.
             self.num_layers = self.num_layers // parallel_state.get_virtual_pipeline_model_parallel_world_size()
@@ -813,7 +818,18 @@ class ParallelTransformer(MegatronModule):
             ) + (parallel_state.get_pipeline_model_parallel_rank() * self.num_layers)
         else:
             # Each stage gets a contiguous set of layers.
-            offset = parallel_state.get_pipeline_model_parallel_rank() * self.num_layers
+            if (
+                self.model_type == ModelType.encoder_and_decoder
+                and parallel_state.get_pipeline_model_parallel_world_size() > 1
+            ):
+                pipeline_rank = parallel_state.get_pipeline_model_parallel_rank()
+                if layer_type == LayerType.encoder:
+                    offset = pipeline_rank * self.num_layers
+                else:
+                    num_ranks_in_enc = parallel_state.get_pipeline_model_parallel_split_rank()
+                    offset = (pipeline_rank - num_ranks_in_enc) * self.num_layers
+            else:
+                offset = parallel_state.get_pipeline_model_parallel_rank() * self.num_layers
 
         self.layers = torch.nn.ModuleList([build_layer(i + 1 + offset) for i in range(self.num_layers)])
 
@@ -823,6 +839,31 @@ class ParallelTransformer(MegatronModule):
 
     def _get_layer(self, layer_number):
         return self.layers[layer_number]
+
+    def get_num_layers(self, num_layers):
+        """Compute the number of transformer layers resident on the current rank."""
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+            if self.model_type == ModelType.encoder_and_decoder:
+                assert parallel_state.get_pipeline_model_parallel_split_rank() is not None
+                num_ranks_in_encoder = parallel_state.get_pipeline_model_parallel_split_rank()
+                num_ranks_in_decoder = parallel_state.get_pipeline_model_parallel_world_size() - num_ranks_in_encoder
+                assert (
+                    num_layers % num_ranks_in_encoder == 0
+                ), 'num_layers must be divisible by number of ranks given to encoder'
+                assert (
+                    num_layers % num_ranks_in_decoder == 0
+                ), 'num_layers must be divisible by number of ranks given to decoder'
+                if parallel_state.is_pipeline_stage_before_split():
+                    num_layers = num_layers // num_ranks_in_encoder
+                else:
+                    num_layers = num_layers // num_ranks_in_decoder
+            else:
+                assert (
+                    num_layers % parallel_state.get_pipeline_model_parallel_world_size() == 0
+                ), 'num_layers must be divisible by pipeline_model_parallel_size'
+                num_layers = num_layers // parallel_state.get_pipeline_model_parallel_world_size()
+
+        return num_layers
 
     def _checkpointed_forward(self, hidden_states, attention_mask, encoder_output, enc_dec_attn_mask):
         """Forward method with activation checkpointing."""

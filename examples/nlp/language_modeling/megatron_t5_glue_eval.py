@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from omegaconf.omegaconf import OmegaConf
+from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.plugins.environments.torchelastic_environment import TorchElasticEnvironment
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 
 from nemo.collections.nlp.models.language_modeling.megatron_glue_model import MegatronT5GLUEModel
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler, MegatronHalfPrecisionPlugin, NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import (
+    GlobalBatchFitLoop,
+    GradScaler,
+    MegatronHalfPrecisionPlugin,
+    NLPDDPPlugin,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import StatelessTimer, exp_manager
@@ -33,10 +38,7 @@ def main(cfg) -> None:
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
     plugins = [
         NLPDDPPlugin(
-            num_nodes=cfg.trainer.num_nodes,
-            no_ddp_communication_hook=(
-                megatron_amp_o2 and cfg.trainer.precision == 'bf16'
-            ),  # Only bf16 uses fp32_grad_accum.
+            no_ddp_communication_hook=True,
             gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
             find_unused_parameters=False,
         )
@@ -58,6 +60,11 @@ def main(cfg) -> None:
         plugins.append(TorchElasticEnvironment())
 
     trainer = Trainer(plugins=plugins, **cfg.trainer)
+
+    # GlobalBatchFitLoop used to provide global batches which are needed
+    # for Apex fwd/bwd functions
+    trainer.fit_loop = GlobalBatchFitLoop(trainer.fit_loop.min_epochs, trainer.fit_loop.max_epochs)
+
     exp_manager(trainer, cfg.exp_manager)
 
     # Override timer callback to a stateless one
@@ -65,10 +72,25 @@ def main(cfg) -> None:
         if isinstance(callback, Timer):
             trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
-    model = MegatronT5GLUEModel.restore_from(restore_path=cfg.model.restore_from_finetuned_path, trainer=trainer)
-    model.freeze()
+    # Get the T5 Base configuration.
+    t5_cfg = MegatronT5GLUEModel.restore_from(
+        restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True
+    )
 
+    # Override the T5 configuration with the one from the config file.
+    # NOTE: Only data can be overriden here since this the file being restored here should already correspond to a GLUE/XNLI finetuned model.
+    OmegaConf.set_struct(t5_cfg, True)
+    with open_dict(t5_cfg):
+        t5_cfg.masked_softmax_fusion = False
+        t5_cfg.data = cfg.data
+
+    model = MegatronT5GLUEModel.restore_from(
+        restore_path=cfg.model.restore_from_path, trainer=trainer, override_config_path=t5_cfg
+    )
+    model.freeze()
     trainer.validate(model)
+    if hasattr(cfg.data, 'test_ds'):
+        trainer.test(model)
 
 
 if __name__ == '__main__':

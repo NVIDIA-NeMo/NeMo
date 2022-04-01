@@ -29,7 +29,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 )
 
 try:
-    from apex.transformer import parallel_state, tensor_parallel
+    from apex.transformer import tensor_parallel
     from apex.transformer.enums import AttnMaskType, LayerType
 
     HAVE_APEX = True
@@ -212,6 +212,16 @@ class Embedding(MegatronModule):
 
         # Embeddings dropout
         self.embedding_dropout = torch.nn.Dropout(embedding_dropout_prob)
+
+    def zero_parameters(self):
+        """Zero out all parameters in embedding."""
+        self.word_embeddings.weight.data.fill_(0)
+        self.word_embeddings.weight.shared = True
+        self.position_embeddings.weight.data.fill_(0)
+        self.position_embeddings.weight.shared = True
+        if self.num_tokentypes > 0:
+            self.tokentype_embeddings.weight.data.fill_(0)
+            self.tokentype_embeddings.weight.shared = True
 
     def add_tokentype_embeddings(self, num_tokentypes):
         """Add token-type embedding. This function is provided so we can add
@@ -649,9 +659,6 @@ class TransformerLanguageModel(MegatronModule):
 
         # Decoder
         if self.add_decoder:
-            assert (
-                parallel_state.get_pipeline_model_parallel_world_size() == 1
-            ), 'pipeline parallelism is not supported in the presence of decoder'
             self.decoder = ParallelTransformer(
                 layer_type=LayerType.decoder,
                 self_attn_mask_type=self.decoder_attn_mask_type,

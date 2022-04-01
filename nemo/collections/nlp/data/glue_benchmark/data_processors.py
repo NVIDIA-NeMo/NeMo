@@ -30,7 +30,7 @@ __all__ = [
     'QnliProcessor',
     'RteProcessor',
     'WnliProcessor',
-    'XNlIProcessor',
+    'XNLIProcessor',
 ]
 
 
@@ -111,16 +111,8 @@ class MnliProcessor(DataProcessor):
         return label
 
 
-class XNlIProcessor(DataProcessor):
+class XNLIProcessor(DataProcessor):
     """Processor for the MultiNLI data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(self._read_tsv(os.path.join(data_dir, "data.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(self._read_tsv(os.path.join(data_dir, "data.tsv")), "dev")
 
     def get_examples(self, file_path):
         return self._create_examples(self._read_tsv(file_path), "example")

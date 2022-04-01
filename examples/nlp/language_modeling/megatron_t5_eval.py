@@ -21,8 +21,8 @@ from torch.utils.data import DataLoader
 
 from nemo.collections.nlp.data.language_modeling.megatron.request_dataset import T5RequestDataset
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
-from nemo.collections.nlp.modules.common.megatron.megatron_utils import compute_model_parallel_rank
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
+from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
+from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchFitLoop, NLPDDPPlugin
 from nemo.utils.app_state import AppState
 
 assert torch.cuda.is_available()
@@ -38,23 +38,53 @@ def main():
         "--tokens_to_generate", type=int, default="16", required=False, help="How many tokens to add to prompt"
     )
     parser.add_argument(
-        "--tensor_model_parallel_size", type=int, default=1, required=True,
+        "--tensor_model_parallel_size", type=int, default=1, required=False,
     )
-
+    parser.add_argument(
+        "--pipeline_model_parallel_size", type=int, default=1, required=False,
+    )
+    parser.add_argument(
+        "--pipeline_model_parallel_split_rank", type=int, default=0, required=False,
+    )
+    parser.add_argument("--precision", default="16", type=str, help="PyTorch Lightning Trainer precision flag")
     args = parser.parse_args()
 
-    torch.set_grad_enabled(False)
+    # cast precision to int if 32 or 16
+    if args.precision in ["32", "16"]:
+        args.precision = int(float(args.precision))
 
     # trainer required for restoring model parallel models
-    trainer = Trainer(plugins=NLPDDPPlugin(), devices=args.tensor_model_parallel_size, precision=16, accelerator='gpu')
+    trainer = Trainer(
+        plugins=NLPDDPPlugin(),
+        devices=args.tensor_model_parallel_size * args.pipeline_model_parallel_size,
+        accelerator='gpu',
+        precision=args.precision,
+    )
+
+    # GlobalBatchFitLoop used to provide global batches which are needed
+    # for Apex fwd/bwd functions
+    trainer.fit_loop = GlobalBatchFitLoop(trainer.fit_loop.min_epochs, trainer.fit_loop.max_epochs)
 
     app_state = AppState()
-    if args.tensor_model_parallel_size > 1:
-        app_state.model_parallel_size = args.tensor_model_parallel_size
-        app_state.model_parallel_rank = compute_model_parallel_rank(trainer.local_rank, app_state.model_parallel_size)
+    if args.tensor_model_parallel_size > 1 or args.pipeline_model_parallel_size > 1:
+        app_state.model_parallel_size = args.tensor_model_parallel_size * args.pipeline_model_parallel_size
+        (
+            app_state.tensor_model_parallel_rank,
+            app_state.pipeline_model_parallel_rank,
+            app_state.model_parallel_size,
+            app_state.data_parallel_size,
+            app_state.pipeline_model_parallel_split_rank,
+        ) = fake_initialize_model_parallel(
+            world_size=app_state.model_parallel_size,
+            rank=trainer.global_rank,
+            tensor_model_parallel_size_=args.tensor_model_parallel_size,
+            pipeline_model_parallel_size_=args.pipeline_model_parallel_size,
+            pipeline_model_parallel_split_rank_=args.pipeline_model_parallel_split_rank,
+        )
 
     model = MegatronT5Model.restore_from(restore_path=args.model_file, trainer=trainer)
     model.freeze()
+
     request = {
         "prompt": args.prompt,
         "tokens_to_generate": args.tokens_to_generate,

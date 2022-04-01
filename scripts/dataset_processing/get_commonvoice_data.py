@@ -164,7 +164,7 @@ def main():
         tar = tarfile.open(target_file)
         tar.extractall(target_unpacked_dir)
         tar.close()
-        if cleanup:
+        if args.cleanup:
             logging.info("removing tar archive to save space")
             os.remove(target_file)
 

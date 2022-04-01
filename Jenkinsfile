@@ -1489,10 +1489,10 @@ pipeline {
               model.decoder.inner_size=256 \
               trainer.devices=[0] \
               trainer.accelerator="gpu" \
-              +trainer.val_check_interval=2 \
+              +trainer.val_check_interval=10 \
               +trainer.limit_val_batches=1 \
               +trainer.limit_test_batches=1 \
-              +trainer.max_steps=4 \
+              +trainer.max_steps=10 \
               +exp_manager.explicit_log_dir=examples/nlp/machine_translation/nmt_results \
               +exp_manager.create_checkpoint_callback=true \
               +exp_manager.resume_if_exists=True \

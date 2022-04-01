@@ -74,7 +74,6 @@ class TrainerConfig:
     profiler: Optional[Any] = None
     benchmark: bool = False
     deterministic: bool = False
-    reload_dataloaders_every_epoch: bool = False
     auto_lr_find: Any = False
     replace_sampler_ddp: bool = True
     detect_anomaly: bool = False

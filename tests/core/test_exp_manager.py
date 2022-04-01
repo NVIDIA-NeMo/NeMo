@@ -185,7 +185,7 @@ class TestExpManager:
                 "create_checkpoint_callback": False,
                 "exp_dir": str(tmp_path),
                 "create_wandb_logger": True,
-                "wandb_logger_kwargs": {"name": "", "project": ""},
+                "wandb_logger_kwargs": {"name": "", "project": "", "offline": True},
             },
         )
         assert isinstance(test_trainer.logger, pl.loggers.WandbLogger)
@@ -326,7 +326,7 @@ class TestExpManager:
         )
         checkpoint = Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last.ckpt")
         assert (
-            Path(test_trainer.checkpoint_connector.resume_from_checkpoint_fit_path).resolve() == checkpoint.resolve()
+            Path(test_trainer._checkpoint_connector.resume_from_checkpoint_fit_path).resolve() == checkpoint.resolve()
         )
 
         # Succeed again and make sure that run_0 exists and previous log files were moved
@@ -334,7 +334,7 @@ class TestExpManager:
         exp_manager(test_trainer, {"resume_if_exists": True, "explicit_log_dir": str(log_dir)})
         checkpoint = Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last.ckpt")
         assert (
-            Path(test_trainer.checkpoint_connector.resume_from_checkpoint_fit_path).resolve() == checkpoint.resolve()
+            Path(test_trainer._checkpoint_connector.resume_from_checkpoint_fit_path).resolve() == checkpoint.resolve()
         )
         prev_run_dir = Path(tmp_path / "test_resume" / "default" / "version_0" / "run_0")
         assert prev_run_dir.exists()

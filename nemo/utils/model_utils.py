@@ -584,11 +584,25 @@ def resolve_cache_dir() -> Path:
     return path
 
 
+def uninject_model_parallel_rank(filepath):
+    filepath = str(filepath)
+    if 'mp_rank' in filepath or 'tp_rank' in filepath:
+        dirname = os.path.dirname(os.path.dirname(filepath))
+        basename = os.path.basename(filepath)
+        filepath = os.path.join(dirname, basename)
+        return filepath
+    else:
+        return filepath
+
+
 def inject_model_parallel_rank(filepath):
     """
     Injects tensor/pipeline model parallel ranks into the filepath.
     Does nothing if not using model parallelism.
     """
+    # first make sure filepath does not have rank
+    filepath = uninject_model_parallel_rank(filepath)
+
     app_state = AppState()
     if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
         # filepath needs to be updated to include mp_rank
@@ -598,16 +612,6 @@ def inject_model_parallel_rank(filepath):
             filepath = f'{dirname}/mp_rank_{app_state.tensor_model_parallel_rank:02d}/{basename}'
         else:
             filepath = f'{dirname}/tp_rank_{app_state.tensor_model_parallel_rank:02d}_pp_rank_{app_state.pipeline_model_parallel_rank:03d}/{basename}'
-        return filepath
-    else:
-        return filepath
-
-
-def uninject_model_parallel_rank(filepath):
-    if 'mp_rank' or 'tp_rank' in filepath:
-        dirname = os.path.dirname(os.path.dirname(filepath))
-        basename = os.path.basename(filepath)
-        filepath = os.path.join(dirname, basename)
         return filepath
     else:
         return filepath

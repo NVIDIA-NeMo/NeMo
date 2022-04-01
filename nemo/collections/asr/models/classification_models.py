@@ -475,7 +475,6 @@ class EncDecClassificationModel(_EncDecBaseModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
-        self.training_step_end()
         audio_signal, audio_signal_len, labels, labels_len = batch
         logits = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
         loss_value = self.loss(logits=logits, labels=labels)
@@ -675,7 +674,6 @@ class EncDecRegressionModel(_EncDecBaseModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-        self.training_step_end()
         audio_signal, audio_signal_len, targets, targets_len = batch
         logits = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
         loss = self.loss(preds=logits, labels=targets)

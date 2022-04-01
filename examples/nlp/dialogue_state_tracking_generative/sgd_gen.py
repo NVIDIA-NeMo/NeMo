@@ -171,6 +171,7 @@ def main(cfg: DictConfig) -> None:
             model._cfg.dataset = cfg.model.dataset
 
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.ds_item is not None:
+        plugin = NLPDDPPlugin()
         trainer = pl.Trainer(devices=1, accelerator=cfg.trainer.accelerator, plugins=plugin, precision=16)
         model.setup_multiple_test_data(test_data_config=cfg.model.test_ds)
         if model.prepare_test(trainer):

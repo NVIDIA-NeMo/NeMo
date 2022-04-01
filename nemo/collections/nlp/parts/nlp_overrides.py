@@ -149,10 +149,14 @@ class NLPDDPPlugin(DDPPlugin):
                 app_state.data_parallel_size = parallel_state.get_data_parallel_world_size()
                 app_state.pipeline_model_parallel_group = parallel_state.get_pipeline_model_parallel_group()
 
-    def save_checkpoint(self, checkpoint: Dict[str, Any], filepath: _PATH) -> None:
+    def save_checkpoint(
+        self, checkpoint: Dict[str, Any], filepath: _PATH, storage_options: Optional[Any] = None
+    ) -> None:
+        app_state = AppState()
         # PTL override to accomodate model parallel checkpoints
         filepath = inject_model_parallel_rank(filepath)
-        return super().save_checkpoint(checkpoint, filepath)
+        if self.is_global_zero or app_state.data_parallel_rank == 0:
+            self.checkpoint_io.save_checkpoint(checkpoint, filepath, storage_options=storage_options)
 
     def load_model_state_dict(self, checkpoint: Mapping[str, Any]) -> None:
         # Release strict state dict matching when using Megatron AMP-O2 to skip matching
@@ -184,20 +188,12 @@ class NLPDDPPlugin(DDPPlugin):
         return self.checkpoint_io.load_checkpoint(checkpoint_path)
 
     def remove_checkpoint(self, filepath: _PATH) -> None:
+        app_state = AppState()
         # PTL override to accomodate model parallel checkpoints
         filepath = inject_model_parallel_rank(filepath)
-        logging.info(f'Removing checkpoint: {filepath}')
-        return super().remove_checkpoint(filepath)
-
-    @property
-    def should_rank_save_checkpoint(self) -> bool:
-        # PTL override that determines if checkpoints should be saved based on rank
-        # for model parallel we need data_parallel_rank==0
-        app_state = AppState()
-        if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
-            return app_state.data_parallel_rank == 0
-        else:
-            return super().should_rank_save_checkpoint
+        if self.is_global_zero or app_state.data_parallel_rank == 0:
+            logging.info(f'Removing checkpoint: {filepath}')
+            self.checkpoint_io.remove_checkpoint(filepath)
 
     @property
     def distributed_sampler_kwargs(self):

@@ -250,6 +250,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         return reduced_loss
 
     def validation_epoch_end(self, outputs):
+        if not outputs:
+            return
         averaged_loss = average_losses_across_data_parallel_group(outputs)
         self.log('val_loss', averaged_loss[0], prog_bar=True)
         self.log('consumed_samples', self.compute_consumed_samples(self.trainer.global_step - self.init_global_step))
@@ -325,7 +327,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         )
 
     def setup(self, stage=None):
-        resume_checkpoint_path = self.trainer.checkpoint_connector.resume_from_checkpoint_fit_path
+        resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
         if resume_checkpoint_path:
             try:
                 init_consumed_samples = int(

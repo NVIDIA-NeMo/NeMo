@@ -1030,7 +1030,7 @@ class ModelPT(LightningModule, Model):
                         trainer = self.trainer
                         if (
                             hasattr(trainer, 'resume_from_checkpoint')
-                            and trainer.checkpoint_connector.resume_checkpoint_path is not None
+                            and trainer._checkpoint_connector.resume_checkpoint_path is not None
                         ):
                             logging.info(
                                 "Model training is being resumed via Pytorch Lightning.\n"

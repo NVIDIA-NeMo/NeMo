@@ -1,2 +1,2 @@
 Model Name,Model Base Class,Model Card
-stt_hi_conformer_ctc_medium,EncDecCTCBPEModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_hi_conformer_ctc_medium"
+stt_hi_conformer_ctc_medium,EncDecCTCModelBPE,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_hi_conformer_ctc_medium"

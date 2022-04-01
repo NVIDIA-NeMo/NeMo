@@ -1,8 +1,8 @@
 Model,Model Base Class,Model Card
 stt_fr_quartznet15x5,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_quartznet15x5"
-stt_fr_citrinet_1024_gamma_0_25,EncDecCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_citrinet_1024_gamma_0_25"
-stt_fr_no_hyphen_citrinet_1024_gamma_0_25,EncDecCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_citrinet_1024_gamma_0_25"
+stt_fr_citrinet_1024_gamma_0_25,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_citrinet_1024_gamma_0_25"
+stt_fr_no_hyphen_citrinet_1024_gamma_0_25,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_citrinet_1024_gamma_0_25"
 stt_fr_contextnet_1024,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_contextnet_1024"
-stt_fr_conformer_ctc_large,EncDecCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_ctc_large"
-stt_fr_no_hyphen_conformer_ctc_large,EncDecCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_ctc_large"
+stt_fr_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_ctc_large"
+stt_fr_no_hyphen_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_ctc_large"
 stt_fr_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_transducer_large"

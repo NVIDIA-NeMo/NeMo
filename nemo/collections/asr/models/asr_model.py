@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union
 
@@ -60,6 +61,23 @@ class ASRModel(ModelPT, ABC):
         # recursively walk the subclasses to generate pretrained model info
         list_of_models = model_utils.resolve_subclass_pretrained_model_info(cls)
         return list_of_models
+
+    def on_after_backward(self):
+        """
+        zero-out the gradients which any of them is NAN or INF
+        """
+        super().on_after_backward()
+        if "skip_nan_grad" in self._cfg and self._cfg["skip_nan_grad"]:
+            valid_gradients = True
+            for param_name, param in self.named_parameters():
+                if param.grad is not None:
+                    valid_gradients = not (torch.isnan(param.grad).any() or torch.isinf(param.grad).any())
+                    if not valid_gradients:
+                        break
+
+            if not valid_gradients:
+                logging.warning(f'detected inf or nan values in gradients! Setting gradients to zero.')
+                self.zero_grad()
 
 
 class ExportableEncDecModel(Exportable):

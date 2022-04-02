@@ -187,7 +187,7 @@ model:
 
     # greedy strategy config
     greedy:
-      max_symbols: 30
+      max_symbols: 10
 
     # beam strategy config
     beam:

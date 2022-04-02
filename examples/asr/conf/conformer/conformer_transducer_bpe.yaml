@@ -26,6 +26,7 @@ model:
   sample_rate: &sample_rate 16000
   compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
   log_prediction: true # enables logging sample predictions in the output during training
+  skip_nan_grad: false
 
   model_defaults:
     enc_hidden: ${model.encoder.d_model}
@@ -38,7 +39,7 @@ model:
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: true
     num_workers: 8
-    pin_memory: false
+    pin_memory: true
     use_start_end_token: false
     trim_silence: false
     max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
@@ -57,7 +58,7 @@ model:
     batch_size: 16
     shuffle: false
     num_workers: 8
-    pin_memory: false
+    pin_memory: true
     use_start_end_token: false
 
   test_ds:
@@ -66,7 +67,7 @@ model:
     batch_size: 16
     shuffle: false
     num_workers: 8
-    pin_memory: false
+    pin_memory: true
     use_start_end_token: false
 
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
@@ -208,10 +209,10 @@ model:
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
-  max_epochs: 1000
+  max_epochs: 500
   max_steps: null # computed at runtime if not set
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
-  accelerator: gpu
+  accelerator: auto
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0

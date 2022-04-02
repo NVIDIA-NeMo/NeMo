@@ -511,13 +511,22 @@ Conformer-Transducer
 
 Please refer to the model page of `Conformer-Transducer <./models.html#Conformer-Transducer>`__ for more information on this model.
 
+LSTM-Transducer and LSTM-CTC
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The config files for LSTM-Transducer and LSTM-CTC models can be found at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml`` and ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml`` respectively.
+Most of the of the configs of are similar to other ctc or transducer models. The main difference is the encoder part.
+The encoder section includes the details about the RNN-based encoder architecture. You may find more information in the
+config files and also :doc:`nemo.collections.asr.modules.RNNEncoder<./api.html#nemo.collections.asr.modules.RNNEncoder>`.
+
+
 Transducer Configurations
 -------------------------
 
 All CTC-based ASR model configs can be modified to support Transducer loss training. Below, we discuss the modifications required in the config to enable Transducer training. All modifications are made to the ``model`` config.
 
 Model Defaults
-~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~
 
 It is a subsection to the model config representing the default values shared across the entire model represented as ``model.model_defaults``.
 

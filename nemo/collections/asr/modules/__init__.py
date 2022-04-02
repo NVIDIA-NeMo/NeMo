@@ -32,4 +32,5 @@ from nemo.collections.asr.modules.conv_asr import (
 )
 from nemo.collections.asr.modules.graph_decoder import ViterbiDecoderWithGraph
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder
+from nemo.collections.asr.modules.rnn_encoder import RNNEncoder
 from nemo.collections.asr.modules.rnnt import RNNTDecoder, RNNTJoint

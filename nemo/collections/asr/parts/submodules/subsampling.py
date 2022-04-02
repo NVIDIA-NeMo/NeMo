@@ -18,11 +18,34 @@ import torch
 import torch.nn as nn
 
 
+class StackingSubsampling(torch.nn.Module):
+    """Stacking subsampling which simply stacks consecutive frames to reduce the sampling rate
+    Args:
+        subsampling_factor (int): The subsampling factor
+        feat_in (int): size of the input features
+        feat_out (int): size of the output features
+    """
+
+    def __init__(self, subsampling_factor, feat_in, feat_out):
+        super(StackingSubsampling, self).__init__()
+        self.subsampling_factor = subsampling_factor
+        self.proj_out = torch.nn.Linear(subsampling_factor * feat_in, feat_out)
+
+    def forward(self, x, lengths):
+        b, t, h = x.size()
+        pad_size = self.subsampling_factor - (t % self.subsampling_factor)
+        x = torch.nn.functional.pad(x, (0, 0, 0, pad_size))
+        _, t, _ = x.size()
+        x = torch.reshape(x, (b, t // self.subsampling_factor, h * self.subsampling_factor))
+        x = self.proj_out(x)
+        lengths = torch.div(lengths + pad_size, self.subsampling_factor, rounding_mode='floor')
+        return x, lengths
+
+
 class ConvSubsampling(torch.nn.Module):
     """Convolutional subsampling which supports VGGNet and striding approach introduced in:
-    VGGNet Subsampling: https://arxiv.org/pdf/1910.12977.pdf
-    Striding Subsampling:
-        "Speech-Transformer: A No-Recurrence Sequence-to-Sequence Model for Speech Recognition" by Linhao Dong et al.
+    VGGNet Subsampling: Transformer-transducer: end-to-end speech recognition with self-attention (https://arxiv.org/pdf/1910.12977.pdf)
+    Striding Subsampling: "Speech-Transformer: A No-Recurrence Sequence-to-Sequence Model for Speech Recognition" by Linhao Dong et al. (https://ieeexplore.ieee.org/document/8462506)
     Args:
         subsampling (str): The subsampling technique from {"vggnet", "striding"}
         subsampling_factor (int): The subsampling factor which should be a power of 2

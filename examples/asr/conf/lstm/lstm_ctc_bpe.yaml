@@ -1,30 +1,16 @@
-# It contains the default values for training a Conformer-CTC ASR model, large size (~120M) with CTC loss and sub-word encoding.
+# It contains the default values for training an LSTM-CTC ASR model, large size (~170M for bidirectional and ~130M for unidirectional) with CTC loss and sub-word encoding.
 
 # Architecture and training config:
 # Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
 # batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
-# Here are the recommended configs for different variants of Conformer-CTC, other parameters are the same as in this config file.
-# One extra layer (compared to original paper) is added to the medium and large variants to compensate for replacing the LSTM decoder with a linear one.
-#
-#  +-------------+---------+---------+----------+------------+-----+
-#  | Model       | d_model | n_heads | n_layers | time_masks | lr  |
-#  +=============+=========+========+===========+============+=====+
-#  | Small  (13M)|   176   |    4   |    16     |     5      | 5.0 |
-#  +-------------+---------+--------+-----------+------------+-----+
-#  | Medium (30M)|   256   |    4   |    18     |     5      | 5.0 |
-#  +-------------+---------+--------+-----------+------------+-----+
-#  | Large (121M)|   512   |    8   |    18     |     10     | 2.0 |
-#  +---------------------------------------------------------------+
-#
-# If you do not want to train with AMP, you may use weight decay of 0.0 or reduce the number of time maskings to 2
-# with time_width=100. It may help when you want to train for fewer epochs and need faster convergence.
-# With weight_decay=0.0, learning rate may need to get reduced to 2.0.
 
-# You may find more info about Conformer-CTC here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-ctc
-# Pre-trained models of Conformer-CTC can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
-# The checkpoint of the large model trained on LibriSpeech with this recipe can be found here: https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_large_ls
+# Followed the architecture suggested in the following paper:
+# 'STREAMING END-TO-END SPEECH RECOGNITION FOR MOBILE DEVICES' by Yanzhang He et al. (https://arxiv.org/pdf/1811.06621.pdf)
 
-name: "Conformer-CTC-BPE"
+# You may find more info about LSTM-CTC here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#lstm-transducer
+# Pre-trained models of LSTM-CTC can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
+
+name: "LSTM-CTC-BPE"
 
 model:
   sample_rate: 16000
@@ -37,7 +23,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: true
-    num_workers: 8
+    num_workers: 4
     pin_memory: true
     use_start_end_token: false
     trim_silence: false
@@ -56,7 +42,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: false
-    num_workers: 8
+    num_workers: 4
     pin_memory: true
     use_start_end_token: false
 
@@ -65,14 +51,13 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: false
-    num_workers: 8
+    num_workers: 4
     pin_memory: true
     use_start_end_token: false
 
-  # recommend small vocab size of 128 or 256 when using 4x sub-sampling
-  # you may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
-    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
     type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
 
   preprocessor:
@@ -84,52 +69,33 @@ model:
     window: "hann"
     features: 80
     n_fft: 512
-    log: true
     frame_splicing: 1
     dither: 0.00001
     pad_to: 0
-    pad_value: 0.0
 
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it
-    # you may use lower time_masks for smaller models to have a faster convergence
     time_masks: 10 # set to zero to disable it
     freq_width: 27
     time_width: 0.05
 
   encoder:
-    _target_: nemo.collections.asr.modules.ConformerEncoder
+    _target_: nemo.collections.asr.modules.RNNEncoder
     feat_in: ${model.preprocessor.features}
-    feat_out: -1 # you may set it if you need different output size other than the default d_model
-    n_layers: 18
-    d_model: 512
+    n_layers: 8
+    d_model: 2048
+    proj_size: 640 # you may set it if you need different output size other than the default d_model
+    rnn_type: "lstm" # it can be lstm, gru or rnn
+    bidirectional: true # need to set it to false if you want to make the model causal
 
     # Sub-sampling params
-    subsampling: striding # vggnet or striding, vggnet may give better results but needs more memory
-    subsampling_factor: 4 # must be power of 2
-    subsampling_conv_channels: -1 # -1 sets it to d_model
-
-    # Feed forward module's params
-    ff_expansion_factor: 4
-
-    # Multi-headed Attention Module's params
-    self_attention_model: rel_pos # rel_pos or abs_pos
-    n_heads: 8 # may need to be lower for smaller d_models
-    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
-    att_context_size: [-1, -1] # -1 means unlimited context
-    xscaling: true # scales up the input embeddings by sqrt(d_model)
-    untie_biases: true # unties the biases of the TransformerXL layers
-    pos_emb_max_len: 5000
-
-    # Convolution module's params
-    conv_kernel_size: 31
-    conv_norm_type: 'batch_norm' # batch_norm or layer_norm
+    subsampling: stacking # stacking, vggnet or striding
+    subsampling_factor: 4
+    subsampling_conv_channels: -1 # set to -1 to make it equal to the d_model
 
     ### regularization
-    dropout: 0.1 # The dropout used in most of the Conformer Modules
-    dropout_emb: 0.0 # The dropout used for embeddings
-    dropout_att: 0.1 # The dropout for multi-headed attention modules
+    dropout: 0.2 # The dropout used in most of the Conformer Modules
 
   decoder:
     _target_: nemo.collections.asr.modules.ConvASRDecoder
@@ -139,13 +105,10 @@ model:
 
   optim:
     name: adamw
-    lr: 2.0
+    lr: 5.0
     # optimizer arguments
     betas: [0.9, 0.98]
-    # less necessity for weight_decay as we already have large augmentations with SpecAug
-    # you may need weight_decay for large models, stable AMP training, small datasets, or when lower augmentations are used
-    # weight decay of 0.0 with lr of 2.0 also works fine
-    weight_decay: 1e-3
+    weight_decay: 1e-2
 
     # scheduler setup
     sched:
@@ -159,13 +122,13 @@ model:
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
-  max_epochs: 1000
+  max_epochs: 500
   max_steps: null # computed at runtime if not set
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
-  accelerator: auto
+  accelerator: gpu
   strategy: ddp
   accumulate_grad_batches: 1
-  gradient_clip_val: 0.0
+  gradient_clip_val: 0.3
   precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
   log_every_n_steps: 10  # Interval of logging.
   progress_bar_refresh_rate: 10
@@ -175,6 +138,7 @@ trainer:
   sync_batchnorm: true
   enable_checkpointing: False  # Provided by exp_manager
   logger: false  # Provided by exp_manager
+
 
 exp_manager:
   exp_dir: null

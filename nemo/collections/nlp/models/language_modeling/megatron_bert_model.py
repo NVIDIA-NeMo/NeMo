@@ -119,21 +119,22 @@ class MegatronBertModel(NLPModel):
             activations_checkpoint_method=cfg.get('activations_checkpoint_method', None),
             activations_checkpoint_num_layers=cfg.get('activations_checkpoint_num_layers', 1),
             layernorm_epsilon=cfg.get('layernorm_epsilon', 1e-5),
-            masked_softmax_fusion=cfg.get('masked_softmax_fusion', False),
-            bias_gelu_fusion=cfg.get('bias_gelu_fusion', False),
+            masked_softmax_fusion=cfg.get('masked_softmax_fusion', True),
+            bias_gelu_fusion=cfg.get('bias_gelu_fusion', True),
             onnx_safe=cfg.get('onnx_safe', False),
             add_binary_head=cfg.bert_binary_head,
+            megatron_legacy=cfg.get('megatron_legacy', False),
         )
 
-    def forward(self, tokens, attention_mask, tokentype_ids, lm_labels):
-        output_tensor = self.model(tokens, attention_mask, tokentype_ids=tokentype_ids, lm_labels=lm_labels)
+    def forward(self, input_ids, attention_mask, token_type_ids, lm_labels=None):
+        output_tensor = self.model(input_ids, attention_mask, token_type_ids=token_type_ids, lm_labels=lm_labels)
         return output_tensor
 
     def training_step(self, batch, batch_idx):
         tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = self.process_batch(batch)
         if not self.cfg.bert_binary_head:
             types = None
-        output_tensor = self(tokens, padding_mask, tokentype_ids=types, lm_labels=lm_labels)
+        output_tensor = self(tokens, padding_mask, token_type_ids=types, lm_labels=lm_labels)
         loss_dict = self.loss_func(loss_mask, sentence_order, output_tensor)
         if 'sop loss' in loss_dict:
             lm_loss = loss_dict['lm loss']
@@ -176,7 +177,7 @@ class MegatronBertModel(NLPModel):
         tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = self.process_batch(batch)
         if not self.cfg.bert_binary_head:
             types = None
-        output_tensor = self(tokens, padding_mask, tokentype_ids=types, lm_labels=lm_labels)
+        output_tensor = self(tokens, padding_mask, token_type_ids=types, lm_labels=lm_labels)
         loss_dict = self.loss_func(loss_mask, sentence_order, output_tensor)
         if 'sop loss' in loss_dict:
             lm_loss = loss_dict['lm loss']

@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Unio
 
 import pytorch_lightning as pl
 import torch
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.loops.fit_loop import FitLoop
 from pytorch_lightning.overrides import LightningDistributedModule
 from pytorch_lightning.plugins.environments.cluster_environment import ClusterEnvironment
@@ -29,6 +30,7 @@ from pytorch_lightning.plugins.io.checkpoint_plugin import CheckpointIO
 from pytorch_lightning.plugins.precision import NativeMixedPrecisionPlugin
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.plugins.training_type.ddp import DDPPlugin
+from pytorch_lightning.trainer.trainer import Trainer
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
 from pytorch_lightning.utilities.fetching import (
     AbstractDataFetcher,
@@ -307,6 +309,111 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
 
         else:
             return super().save_to(model, save_path)
+
+    def restore_from(
+        self,
+        calling_cls,
+        restore_path: str,
+        override_config_path: Optional[Union[OmegaConf, str]] = None,
+        map_location: Optional[torch.device] = None,
+        strict: bool = True,
+        return_config: bool = False,
+        trainer: Trainer = None,
+    ):
+        """
+        Restores model instance (weights and configuration) into .nemo file
+
+        Args:
+            restore_path: path to .nemo file from which model should be instantiated
+            override_config_path: path to a yaml config that will override the internal
+                config file or an OmegaConf / DictConfig object representing the model config.
+            map_location: Optional torch.device() to map the instantiated model to a device.
+                By default (None), it will select a GPU if available, falling back to CPU otherwise.
+            strict: Passed to load_state_dict. By default True
+            return_config: If set to true, will return just the underlying config of the restored
+                model as an OmegaConf DictConfig object without instantiating the model.
+
+        Example:
+            ```
+            model = nemo.collections.nlp.models.TextClassification.restore_from('asr.nemo')
+            assert isinstance(model, nemo.collections.nlp.models.TextClassification)
+            ```
+
+        Returns:
+            An instance of type cls or its underlying config (if return_config is set).
+        """
+        # Get path where the command is executed - the artifacts will be "retrieved" there
+        # (original .nemo behavior)
+        cwd = os.getcwd()
+
+        if map_location is None:
+            if torch.cuda.is_available():
+                map_location = torch.device('cuda')
+            else:
+                map_location = torch.device('cpu')
+
+        app_state = AppState()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                self._unpack_nemo_file(path2file=restore_path, out_folder=tmpdir)
+                os.chdir(tmpdir)
+                if override_config_path is None:
+                    config_yaml = os.path.join(tmpdir, self.model_config_yaml)
+                else:
+                    # can be str path or OmegaConf / DictConfig object
+                    config_yaml = override_config_path
+                if not isinstance(config_yaml, (OmegaConf, DictConfig)):
+                    conf = OmegaConf.load(config_yaml)
+                else:
+                    conf = config_yaml
+                    if override_config_path is not None:
+                        # Resolve the override config
+                        conf = OmegaConf.to_container(conf, resolve=True)
+                        conf = OmegaConf.create(conf)
+                # If override is top level config, extract just `model` from it
+                if 'model' in conf:
+                    conf = conf.model
+
+                if return_config:
+                    instance = conf
+                    return instance
+                else:
+                    if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
+                        model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
+                    else:
+                        model_weights = os.path.join(tmpdir, self.model_weights_ckpt)
+                OmegaConf.set_struct(conf, True)
+                os.chdir(cwd)
+                # get the class
+                calling_cls._set_model_restore_state(is_being_restored=True, folder=tmpdir)
+                instance = calling_cls.from_config_dict(config=conf, trainer=trainer)
+                instance = instance.to(map_location)
+                # add load_state_dict override
+                if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
+                    model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
+                state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location)
+                if conf.get('megatron_legacy', False):
+                    new_state_dict = {}
+                    for key in state_dict.keys():
+                        new_key = key.replace('bert_model.language_model', 'bert_model.model.language_model')
+                        new_key = new_key.replace('transformer', 'encoder')
+                        new_key = new_key.replace('.attention.', '.self_attention.')
+                        new_state_dict[new_key] = state_dict[key]
+                    state_dict = new_state_dict
+                if conf.get('megatron_amp_O2', False):
+                    new_state_dict = {}
+                    for key in state_dict.keys():
+                        new_key = key.replace('model.', 'model.module.', 1)
+                        new_state_dict[new_key] = state_dict[key]
+                    state_dict = new_state_dict
+                instance.load_state_dict(state_dict, strict=strict)
+
+                logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
+                instance._set_model_restore_state(is_being_restored=False)
+            finally:
+                os.chdir(cwd)
+
+        return instance
 
 
 class PipelineMixedPrecisionPlugin(NativeMixedPrecisionPlugin):

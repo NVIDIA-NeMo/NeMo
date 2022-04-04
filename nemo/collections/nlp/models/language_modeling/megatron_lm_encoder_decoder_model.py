@@ -185,7 +185,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         decoder_input_ids,
         encoder_attn_mask,
         decoder_attn_mask,
-        tokentype_ids=None,
+        token_type_ids=None,
         lm_labels=None,
         enc_hidden_states=None,
         enc_output_mask=None,
@@ -197,7 +197,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             dec_input_ids=decoder_input_ids,
             enc_attn_mask=encoder_attn_mask,
             dec_attn_mask=decoder_attn_mask,
-            tokentype_ids=tokentype_ids,
+            token_type_ids=token_type_ids,
             labels=lm_labels,
             enc_hidden_states=enc_hidden_states,
             enc_output_mask=enc_output_mask,
@@ -414,7 +414,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 encoder_attn_mask,  # enc_attn_mask
                 decoder_input_ids,  # dec_input_ids
                 decoder_attn_mask,  # dec_attn_mask
-                None,  # tokentype_ids
+                None,  # token_type_ids
                 lm_labels,  # labels
                 None,  # enc_hidden_states
             )
@@ -437,7 +437,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 encoder_attn_mask,  # enc_attn_mask
                 decoder_input_ids,  # dec_input_ids
                 decoder_attn_mask,  # dec_attn_mask
-                None,  # tokentype_ids
+                None,  # token_type_ids
                 None,  # labels
                 None,  # enc_hidden_states
             )

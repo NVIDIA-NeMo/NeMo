@@ -146,6 +146,7 @@ class SaveRestoreConnector:
                 if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
                     model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
                 state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location)
+
                 if conf.get('megatron_amp_O2', False):
                     new_state_dict = {}
                     for key in state_dict.keys():

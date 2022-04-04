@@ -272,7 +272,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         enc_attn_mask,
         dec_input_ids,
         dec_attn_mask,
-        tokentype_ids=None,
+        token_type_ids=None,
         labels=None,
         enc_hidden_states=None,
         enc_output_mask=None,
@@ -285,7 +285,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         if self.pre_process and self.add_encoder:
             # encoder embeddings
             enc_position_ids = build_position_ids(enc_input_ids)
-            enc_input = self.encoder_embedding(enc_input_ids, enc_position_ids, tokentype_ids=tokentype_ids)
+            enc_input = self.encoder_embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
         else:
             enc_input = None
 
@@ -297,7 +297,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         else:
             if self.pre_process and self.add_decoder:
                 dec_position_ids = build_position_ids(dec_input_ids)
-                dec_input = self.decoder_embedding(dec_input_ids, dec_position_ids, tokentype_ids=tokentype_ids)
+                dec_input = self.decoder_embedding(dec_input_ids, dec_position_ids, token_type_ids=token_type_ids)
             else:
                 # Note: This is when the decoder itself is split across PP ranks.
                 dec_input = None

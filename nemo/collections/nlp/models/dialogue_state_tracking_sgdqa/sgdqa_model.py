@@ -66,6 +66,9 @@ class SGDQAModel(NLPModel):
         token_embeddings = self.bert_model(
             input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
         )
+        if isinstance(token_embeddings, tuple):
+            token_embeddings = token_embeddings[0]
+
         encoded_utterance, token_embeddings = self.encoder(hidden_states=token_embeddings)
         (
             logit_intent_status,

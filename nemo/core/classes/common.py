@@ -530,6 +530,7 @@ class FileIO(ABC):
         return_config: bool = False,
         trainer: Optional['Trainer'] = None,
         save_restore_connector: SaveRestoreConnector = None,
+        megatron_legacy: Optional[bool] = False,
     ):
         """Restores module/model with weights"""
         raise NotImplementedError()

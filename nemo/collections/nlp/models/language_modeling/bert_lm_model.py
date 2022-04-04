@@ -129,6 +129,9 @@ class BERTLMModel(ModelPT):
         hidden_states = self.bert_model(
             input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
         )
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+
         mlm_log_probs = self.mlm_classifier(hidden_states=hidden_states)
         if self.only_mlm_loss:
             return (mlm_log_probs,)

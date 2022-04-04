@@ -198,6 +198,9 @@ class IntentSlotClassificationModel(NLPModel):
         hidden_states = self.bert_model(
             input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
         )
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+
         intent_logits, slot_logits = self.classifier(hidden_states=hidden_states)
         return intent_logits, slot_logits
 

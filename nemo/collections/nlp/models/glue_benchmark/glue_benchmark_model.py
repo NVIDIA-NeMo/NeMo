@@ -135,6 +135,9 @@ class GLUEModel(NLPModel):
         hidden_states = self.bert_model(
             input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
         )
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+
         output = self.pooler(hidden_states=hidden_states)
         return output
 

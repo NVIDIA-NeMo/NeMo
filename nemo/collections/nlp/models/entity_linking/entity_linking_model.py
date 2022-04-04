@@ -65,6 +65,8 @@ class EntityLinkingModel(NLPModel, Exportable):
         hidden_states = self.bert_model(
             input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
         )
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
 
         # normalize to unit sphere
         logits = torch.nn.functional.normalize(hidden_states[:, self._idx_conditioned_on], p=2, dim=1)

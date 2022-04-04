@@ -75,6 +75,7 @@ def get_language_model(
     use_soft_prompts=False,
     num_prompt_tokens=10,
     existing_prompt_tags=None,
+    megatron_legacy=False,
 ):
     """Build language model and return along with the key to save."""
 
@@ -124,6 +125,7 @@ def get_language_model(
         use_soft_prompts=use_soft_prompts,
         num_prompt_tokens=num_prompt_tokens,
         existing_prompt_tags=existing_prompt_tags,
+        megatron_legacy=megatron_legacy,
     )
     # key used for checkpoints.
     language_model_key = 'language_model'
@@ -237,7 +239,7 @@ class Embedding(MegatronModule):
         # Initialize the token-type embeddings.
         self.init_method(self.tokentype_embeddings.weight)
 
-    def forward(self, input_ids, position_ids, tokentype_ids=None, separate_embeddings=False):
+    def forward(self, input_ids, position_ids, token_type_ids=None, separate_embeddings=False):
         # Embeddings.
         words_embeddings = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
@@ -247,9 +249,9 @@ class Embedding(MegatronModule):
             return words_embeddings, position_embeddings
 
         embeddings = words_embeddings + position_embeddings
-        if tokentype_ids is not None:
+        if token_type_ids is not None:
             assert self.tokentype_embeddings is not None
-            embeddings = embeddings + self.tokentype_embeddings(tokentype_ids)
+            embeddings = embeddings + self.tokentype_embeddings(token_type_ids)
         else:
             assert self.tokentype_embeddings is None
 
@@ -373,7 +375,7 @@ class PromptEmbedding(MegatronModule):
 
         self.embedding_dropout = torch.nn.Dropout(prompt_embedding_dropout_prob)
 
-    def forward(self, tokentype_ids=None):
+    def forward(self, token_type_ids=None):
         # Embeddings.
         device = next(self.prompt_embeddings.parameters()).device
         prompt_embeddings = self.prompt_embeddings(self.ids.to(device))
@@ -579,6 +581,7 @@ class TransformerLanguageModel(MegatronModule):
         use_soft_prompts=False,
         num_prompt_tokens=100,
         existing_prompt_tags=None,
+        megatron_legacy=False,
     ):
         super(TransformerLanguageModel, self).__init__()
 
@@ -654,6 +657,7 @@ class TransformerLanguageModel(MegatronModule):
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
             masked_softmax_fusion=masked_softmax_fusion,
+            megatron_legacy=megatron_legacy,
         )
         self._encoder_key = 'encoder'
 
@@ -684,6 +688,7 @@ class TransformerLanguageModel(MegatronModule):
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
                 masked_softmax_fusion=masked_softmax_fusion,
+                megatron_legacy=megatron_legacy,
             )
             self._decoder_key = 'decoder'
 
@@ -712,7 +717,7 @@ class TransformerLanguageModel(MegatronModule):
         dec_position_ids=None,
         dec_attn_mask=None,
         enc_dec_attn_mask=None,
-        tokentype_ids=None,
+        token_type_ids=None,
         layer_past=None,
         get_key_value=False,
         pooling_sequence_index=0,
@@ -724,7 +729,7 @@ class TransformerLanguageModel(MegatronModule):
     ):
         # Embeddings.
         if self.pre_process and encoder_input is None:
-            embedding_output = self.embedding(enc_input_ids, enc_position_ids, tokentype_ids=tokentype_ids)
+            embedding_output = self.embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
 
             # Soft prompts
             if self.use_soft_prompts and prompt_ids != None:

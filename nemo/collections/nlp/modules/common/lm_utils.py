@@ -87,7 +87,7 @@ def get_lm_model(
             f"Both config_dict and config_file were found, defaulting to use config_file: {config_file} will be used."
         )
 
-    if cfg.tokenizer is not None and cfg.tokenizer.get("library", "") == 'megatron':
+    if cfg.tokenizer is not None and "megatron" in cfg.tokenizer.get("tokenizer_name", ""):
         import torch
 
         from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
@@ -99,12 +99,7 @@ def get_lm_model(
             def forward(self, x, *args):
                 return x
 
-        # For finetuning a different downstream task dataset
-        if cfg.language_model.get('downstream'):
-            model = MegatronBertModel(cfg=cfg, trainer=trainer)
-        # For finetuning on a downstream task dataset for the first time
-        else:
-            model = MegatronBertModel.restore_from(restore_path=cfg.language_model.lm_checkpoint, trainer=trainer)
+        model = MegatronBertModel.restore_from(restore_path=cfg.language_model.lm_checkpoint, trainer=trainer)
 
         # remove the headers that are only revelant for pretraining
         model.model.lm_head = Identity()

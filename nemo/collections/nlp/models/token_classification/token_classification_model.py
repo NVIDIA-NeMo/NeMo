@@ -104,13 +104,11 @@ class TokenClassificationModel(NLPModel):
 
     @typecheck()
     def forward(self, input_ids, attention_mask, token_type_ids):
-        if self._cfg.tokenizer.get('library', '') == 'megatron':
-            hidden_states, _ = self.bert_model(input_ids, attention_mask, tokentype_ids=token_type_ids, lm_labels=None)
-        else:
-            hidden_states = self.bert_model(
-                input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
-            )
-
+        hidden_states = self.bert_model(
+            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
+        )
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
         logits = self.classifier(hidden_states=hidden_states)
         return logits
 

@@ -79,8 +79,6 @@ class NLPModel(ModelPT, Exportable):
             self.bert_model = get_lm_model(
                 config_file=config_file, config_dict=config_dict, vocab_file=vocab_file, trainer=trainer, cfg=cfg,
             )
-            if cfg.language_model.get('downstream'):
-                cfg.language_model.downstream = True
 
             # Required to pull up the config for MegatronBert models
             self.pretrained_model_name = cfg.language_model.pretrained_model_name
@@ -88,7 +86,7 @@ class NLPModel(ModelPT, Exportable):
             # register encoder config
             self.register_bert_model()
 
-            if cfg.tokenizer.get("library", "") == 'megatron':
+            if "megatron" in cfg.tokenizer.get("tokenizer_name", ""):
                 self.hidden_size = self.bert_model.cfg.hidden_size
             else:
                 self.hidden_size = self.bert_model.config.hidden_size

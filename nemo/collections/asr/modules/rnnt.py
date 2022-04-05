@@ -907,7 +907,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
                     sub_transcripts = sub_transcripts.detach()
 
                     original_log_prediction = self.wer.log_prediction
-                    if batch_idx == 0:
+                    if original_log_prediction and batch_idx == 0:
                         self.wer.log_prediction = True
                     else:
                         self.wer.log_prediction = False

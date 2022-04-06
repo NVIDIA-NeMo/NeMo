@@ -86,7 +86,7 @@ Built for speed, NeMo can utilize NVIDIA's Tensor Cores and scale out training t
 Requirements
 ------------
 
-1) Python 3.6, 3.7 or 3.8
+1) Python 3.8 or above
 2) Pytorch 1.10.0 or above
 3) NVIDIA GPU for training
 

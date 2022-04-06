@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ntpath
 import os
 from typing import Dict, List, Optional
 
+import ntpath
 import onnx
 import torch
 from omegaconf import DictConfig, OmegaConf

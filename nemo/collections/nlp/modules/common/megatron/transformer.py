@@ -28,7 +28,6 @@ from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_b
 from nemo.collections.nlp.modules.common.megatron.fused_layer_norm import get_layer_norm
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, attention_mask_func, erf_gelu
-from nemo.utils import logging
 
 try:
     from apex.transformer import parallel_state, tensor_parallel
@@ -82,8 +81,8 @@ class ParallelMLP(MegatronModule):
         super(ParallelMLP, self).__init__()
         self.activation = activation
 
-        if activation not in ['gelu', 'geglu']:
-            raise ValueError(f"Activation {activation} not supported. Only gelu and geglu are supported.")
+        if activation not in ['gelu', 'geglu', 'reglu', 'swiglu']:
+            raise ValueError(f"Activation {activation} not supported. Only gelu, geglu, reglu, swiglu are supported.")
 
         # Project to 4h.
         self.dense_h_to_4h = tensor_parallel.ColumnParallelLinear(
@@ -95,28 +94,47 @@ class ParallelMLP(MegatronModule):
             use_cpu_initialization=use_cpu_initialization,
         )
 
-        if activation == 'geglu':
-            # Separate linear layer for GEGLU activation.
+        if activation in ['geglu', 'reglu', 'swiglu']:
+            # Separate linear layer for *GLU activations.
             # Source: https://github.com/huggingface/transformers/blob/bee361c6f1f7704f8c688895f2f86f6e5ff84727/src/transformers/models/t5/modeling_t5.py#L292
             self.dense_h_to_4h_2 = tensor_parallel.ColumnParallelLinear(
                 hidden_size,
-                ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
+                ffn_hidden_size,  # NOTE: When using *glu, divide ffn dim by 2/3 to keep overall params the same.
                 gather_output=False,
                 init_method=init_method,
                 skip_bias_add=True,
                 use_cpu_initialization=use_cpu_initialization,
             )
+            glu_activation_family = True
+        else:
+            glu_activation_family = False
+
+        if glu_activation_family and bias_gelu_fusion:
+            raise ValueError(
+                f"Cannot use bias_gelu_fusion with {activation} activation. Please turn bias gelu fusion off."
+            )
+
+        if glu_activation_family and openai_gelu:
+            raise ValueError(
+                f"Cannot use openai_gelu with specificed activation function : {activation} Please turn openai gelu off."
+            )
+
+        if glu_activation_family and onnx_safe:
+            raise ValueError(
+                f"Cannot use onnx_safe with specificed activation function : {activation} Please turn onnx safe off."
+            )
 
         self.bias_gelu_fusion = bias_gelu_fusion
-        self.activation_func = F.gelu
-        if activation == 'geglu':
-            self.activation_func = 'geglu'  # Implemented using F.gelu
-            if bias_gelu_fusion:
-                logging.warning("Bias Gelu Fusion is not supported for GEGLU activation. Running with pytorch F.gelu")
-        if openai_gelu:
+
+        if activation == "gelu":
+            self.activation_func = F.gelu
+        elif openai_gelu:
             self.activation_func = openai_gelu
         elif onnx_safe:
             self.activation_func = erf_gelu
+        else:
+            # Remaining acitvations are implemeted in the forward function.
+            self.activation_func = None
 
         # Project back to h.
         self.dense_4h_to_h = tensor_parallel.RowParallelLinear(
@@ -133,11 +151,20 @@ class ParallelMLP(MegatronModule):
         # [s, b, 4hp]
         intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
 
-        if self.activation == 'geglu':
+        if self.activation in ['geglu', 'reglu', 'swiglu']:
             intermediate_parallel_2, bias_parallel_2 = self.dense_h_to_4h_2(hidden_states)
 
         if self.activation == 'geglu':
             intermediate_parallel = F.gelu(intermediate_parallel + bias_parallel) * (
+                intermediate_parallel_2 + bias_parallel_2
+            )
+        elif self.activation == 'swiglu':
+            # SiLU or sigmoid linear unit is the same as swish with beta = 1 (which is what https://arxiv.org/pdf/2002.05202.pdf uses.)
+            intermediate_parallel = F.silu(intermediate_parallel + bias_parallel) * (
+                intermediate_parallel_2 + bias_parallel_2
+            )
+        elif self.activation == 'reglu':
+            intermediate_parallel = F.relu(intermediate_parallel + bias_parallel) * (
                 intermediate_parallel_2 + bias_parallel_2
             )
         elif self.bias_gelu_fusion and self.activation == 'gelu':

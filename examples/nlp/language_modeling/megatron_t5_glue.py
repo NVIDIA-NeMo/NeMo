@@ -20,10 +20,10 @@ from pytorch_lightning.trainer.connectors.checkpoint_connector import Checkpoint
 
 from nemo.collections.nlp.models.language_modeling.megatron_glue_model import MegatronT5GLUEModel
 from nemo.collections.nlp.parts.nlp_overrides import (
-    GlobalBatchFitLoop,
     GradScaler,
     MegatronHalfPrecisionPlugin,
     NLPDDPPlugin,
+    NLPSaveRestoreConnector,
     PipelineMixedPrecisionPlugin,
 )
 from nemo.core.config import hydra_runner
@@ -62,10 +62,6 @@ def main(cfg) -> None:
 
     trainer = Trainer(plugins=plugins, **cfg.trainer)
 
-    # GlobalBatchFitLoop used to provide global batches which are needed
-    # for Apex fwd/bwd functions
-    trainer.fit_loop = GlobalBatchFitLoop(trainer.fit_loop.min_epochs, trainer.fit_loop.max_epochs)
-
     exp_manager(trainer, cfg.exp_manager)
 
     # update resume from checkpoint found by exp_manager
@@ -103,7 +99,10 @@ def main(cfg) -> None:
             t5_cfg.eval_languages = cfg.model.eval_languages
 
     model = MegatronT5GLUEModel.restore_from(
-        restore_path=cfg.model.restore_from_path, trainer=trainer, override_config_path=t5_cfg
+        restore_path=cfg.model.restore_from_path,
+        trainer=trainer,
+        override_config_path=t5_cfg,
+        save_restore_connector=NLPSaveRestoreConnector(),
     )
 
     trainer.fit(model)

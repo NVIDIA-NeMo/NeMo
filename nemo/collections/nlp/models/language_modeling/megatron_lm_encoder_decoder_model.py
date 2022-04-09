@@ -143,7 +143,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
     def model_provider_func(self, pre_process, post_process, add_encoder, add_decoder):
         # TODO: create get_encoder_decoder_model()here for different losses (e..g, nll, vae, mim)
-        # print(f"Add encoder {add_encoder} and decoder {add_decoder}, pre_process {pre_process}, post_process {post_process}")
+
         model = MegatronTokenLevelEncoderDecoderModule(
             encoder_arch=self.cfg.encoder_arch,
             decoder_arch=self.cfg.decoder_arch,
@@ -192,7 +192,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         output_enc_hidden_only=False,
         enc_input=None,
     ):
-        ret_dict = self.enc_dec_model(
+        output_tensor = self.enc_dec_model(
             enc_input_ids=encoder_input_ids,
             dec_input_ids=decoder_input_ids,
             enc_attn_mask=encoder_attn_mask,
@@ -205,7 +205,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             enc_input=enc_input,
         )
 
-        return ret_dict
+        return output_tensor
 
     def setup_optimizer_param_groups(self):
         """ModelPT override. Optimizer will get self._optimizer_param_groups"""
@@ -449,23 +449,10 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         return fwd_output_only_func
 
-    def validation_step(self, batch, batch_idx, reconfigure_microbatch_size=False):
-        app_state = AppState()
+    def validation_step(self, batch, batch_idx):
         batch_for_pipeline = self.process_global_batch(batch)
         encoder_seq_length = batch_for_pipeline[0].size(1)
         decoder_seq_length = batch_for_pipeline[1].size(1)
-        global_batch_size = batch_for_pipeline[0].size(0)
-
-        # This happens on epoch boundaries where micro batch size can be less than what is specified in the config.
-        if reconfigure_microbatch_size and (global_batch_size // get_num_microbatches()) != get_micro_batch_size():
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=global_batch_size
-                * get_num_microbatches(),  # TODO: What if global_batch // micro_batch_size != num_microbatches?
-                micro_batch_size=batch_for_pipeline[0] // get_num_microbatches(),
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
 
         tensor_shape = [encoder_seq_length, get_micro_batch_size(), self.cfg.hidden_size]
 
@@ -527,6 +514,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         return self.validation_step(batch, batch_idx)
 
     def test_epoch_end(self, outputs):
+        if not outputs:
+            return
         if parallel_state.is_pipeline_last_stage():
             # only the last pipeline parallel stages return loss
             averaged_loss = torch.stack(outputs).mean()
@@ -536,7 +525,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # we can only log on one rank if it is rank zero so we broadcast from last rank
         torch.distributed.broadcast(averaged_loss, get_last_rank())
         self.log('test_loss', averaged_loss, prog_bar=True, rank_zero_only=True)
-        self.log('consumed_samples', self.compute_consumed_samples(self.trainer.global_step), rank_zero_only=True)
+        self.log(
+            'consumed_samples',
+            self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
+            rank_zero_only=True,
+        )
+
+        return averaged_loss
 
     def loss_func(self, loss_mask, tokens_loss):
         """
@@ -748,22 +743,23 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
     def decode(self, tokens_enc, enc_mask, num_tokens_to_generate):
         app_state = AppState()
-        micro_batch_size = tokens_enc.size(0)
+        global_batch_per_gpu = tokens_enc.size(0)
+        num_micro_batches_before_decode = get_num_microbatches()
         # Reconfigure microbatch calculator here to set num microbatches to 1 while decoding since its not clear how to decode with "grad acc".
         # TODO: reconfigure back to how things were before decode?
         _reconfigure_microbatch_calculator(
             rank=app_state.global_rank,
             rampup_batch_size=None,
-            global_batch_size=micro_batch_size * parallel_state.get_data_parallel_world_size(),
-            micro_batch_size=micro_batch_size,
+            global_batch_size=global_batch_per_gpu * parallel_state.get_data_parallel_world_size(),
+            micro_batch_size=global_batch_per_gpu,  # Make sure that there is no "grad acc" while decoding.
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
         predicted_tokens_dec = (
-            torch.LongTensor([self.tokenizer.bos_id] * micro_batch_size).unsqueeze(1).to(tokens_enc.device)
+            torch.LongTensor([self.tokenizer.bos_id] * global_batch_per_gpu).unsqueeze(1).to(tokens_enc.device)
         )
         encoder_seq_length = tokens_enc.size(1)
-        tensor_shape = [encoder_seq_length, micro_batch_size, self.cfg.hidden_size]
-        assert predicted_tokens_dec.size(0) == micro_batch_size
+        tensor_shape = [encoder_seq_length, global_batch_per_gpu, self.cfg.hidden_size]
+        assert predicted_tokens_dec.size(0) == global_batch_per_gpu
 
         for i in range(num_tokens_to_generate):
             # No microbatches in decoding. Just the global batch.
@@ -822,6 +818,14 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                     group=parallel_state.get_model_parallel_group(),
                 )
 
+        # Reset microbatch calculator to what it was before decoding.
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=global_batch_per_gpu * parallel_state.get_data_parallel_world_size(),
+            micro_batch_size=global_batch_per_gpu // num_micro_batches_before_decode,
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
+        )
         return predicted_tokens_dec, log_probs
 
     def complete(self, request: Dict):
@@ -840,6 +844,16 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                     * text: completion text (as a single string)
 
         """
+        app_state = AppState()
+
+        # The complete method only works with global batch = micro batch size = data parallel size = 1.
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=1,
+            micro_batch_size=1,
+            data_parallel_size=1,
+        )
         app_state = AppState()
 
         response = {}

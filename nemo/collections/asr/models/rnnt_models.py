@@ -119,6 +119,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
 
         self.setup_optim_normalization()
 
+        # Setup optional Optimization flags
+        self.setup_optimization_flags()
+
     def setup_optim_normalization(self):
         """
         Helper method to setup normalization of certain parts of the model prior to the optimization step.

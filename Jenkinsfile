@@ -2001,6 +2001,24 @@ pipeline {
         sh "rm -rf examples/nlp/language_modeling/bert_index_mappings"
       }
     }
+    stage('L2: BioMegatron Bert NER Task') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps {
+        sh "python examples/nlp/token_classification/token_classification_train.py \
+        exp_manager.exp_dir=examples/nlp/language_modeling/token_classification_results \
+        trainer.max_epochs=1 \
+        model.dataset.data_dir=/home/TestData/nlp/ner \
+        model.language_model.pretrained_model_name=biomegatron345m_biovocab_30k_cased \
+        model.tokenizer.tokenizer_name=null"
+        sh "rm -rf examples/nlp/language_modeling/token_classification_results"
+      }
+    }
     // stage('L2: Megatron P-Tuning GPT LM') {
     //   when {
     //     anyOf {
@@ -2523,6 +2541,77 @@ pipeline {
         model.activations_checkpoint_num_layers=1 \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document,.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document]"
         sh "rm -rf examples/nlp/language_modeling/bart_pretrain_results"
+      }
+    }
+    stage('L2: Megatron T5 GLUE/XNLI Finetuning') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        // TODO(Oktai15): update it in 1.8.0 version
+        stage('T5 GLUE RTE') {
+          steps {
+            sh "python examples/nlp/language_modeling/megatron_t5_glue.py \
+            trainer.devices=1 \
+            trainer.accelerator=gpu \
+            trainer.log_every_n_steps=1 \
+            trainer.val_check_interval=1 \
+            +trainer.limit_val_batches=2 \
+            trainer.accumulate_grad_batches=1 \
+            trainer.max_steps=2 \
+            trainer.precision=16 \
+            exp_manager.exp_dir=examples/nlp/language_modeling/t5_glue_results \
+            model.restore_from_path=/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m-refactor.nemo \
+            model.pipeline_model_parallel_size=1 \
+            model.pipeline_model_parallel_split_rank=0 \
+            model.data.train_ds.task_name=rte \
+            model.data.train_ds.global_batch_size=4 \
+            model.data.train_ds.micro_batch_size=2 \
+            model.data.validation_ds.global_batch_size=4 \
+            model.data.validation_ds.micro_batch_size=2 \
+            model.data.train_ds.file_path=/home/TestData/nlp/megatron_t5/data/train_ci.tsv \
+            model.data.validation_ds.task_name=rte \
+            model.data.validation_ds.file_path=/home/TestData/nlp/megatron_t5/data/dev_ci.tsv \
+            "
+            sh "rm -rf examples/nlp/language_modeling/t5_glue_results"
+          }
+        }
+        stage('T5 GLUE XNLI') {
+          steps {
+            sh "python examples/nlp/language_modeling/megatron_t5_glue.py \
+            -cn megatron_t5_config_finetune_glue_xnli \
+            trainer.devices=1 \
+            trainer.accelerator=gpu \
+            trainer.log_every_n_steps=1 \
+            trainer.val_check_interval=1 \
+            +trainer.limit_val_batches=2 \
+            trainer.accumulate_grad_batches=1 \
+            trainer.max_steps=2 \
+            trainer.precision=16 \
+            exp_manager.exp_dir=examples/nlp/language_modeling/t5_xnli_results \
+            model.restore_from_path=/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m-refactor.nemo \
+            model.pipeline_model_parallel_size=1 \
+            model.pipeline_model_parallel_split_rank=0 \
+            model.data.train_ds.global_batch_size=4 \
+            model.data.train_ds.micro_batch_size=2 \
+            model.data.validation_ds.global_batch_size=4 \
+            model.data.validation_ds.micro_batch_size=2 \
+            model.data.train_ds.task_name=rte \
+            model.data.train_ds.file_path=/home/TestData/nlp/megatron_t5/data/train_ci.tsv \
+            model.data.validation_ds.task_name=xnli \
+            model.data.validation_ds.file_path=/home/TestData/nlp/megatron_t5/data/xnli_dev_ci.tsv \
+            model.data.test_ds.global_batch_size=4 \
+            model.data.test_ds.micro_batch_size=2 \
+            model.data.test_ds.task_name=xnli \
+            model.data.test_ds.file_path=/home/TestData/nlp/megatron_t5/data/xnli_dev_ci.tsv \
+            "
+            sh "rm -rf examples/nlp/language_modeling/t5_xnli_results"
+          }
+        }
       }
     }
     stage('L2: TTS Fast dev runs 1') {

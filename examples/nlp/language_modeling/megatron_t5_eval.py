@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 from nemo.collections.nlp.data.language_modeling.megatron.request_dataset import T5RequestDataset
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
-from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchFitLoop, NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
 from nemo.utils.app_state import AppState
 
 assert torch.cuda.is_available()
@@ -60,10 +60,6 @@ def main():
         accelerator='gpu',
         precision=args.precision,
     )
-
-    # GlobalBatchFitLoop used to provide global batches which are needed
-    # for Apex fwd/bwd functions
-    trainer.fit_loop = GlobalBatchFitLoop(trainer.fit_loop.min_epochs, trainer.fit_loop.max_epochs)
 
     app_state = AppState()
     if args.tensor_model_parallel_size > 1 or args.pipeline_model_parallel_size > 1:

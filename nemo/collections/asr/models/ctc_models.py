@@ -201,6 +201,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             log_prediction=self._cfg.get("log_prediction", False),
         )
 
+        # Setup optional Optimization flags
+        self.setup_optimization_flags()
+
     @torch.no_grad()
     def transcribe(
         self,

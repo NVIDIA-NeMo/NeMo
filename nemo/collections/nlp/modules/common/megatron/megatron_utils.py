@@ -28,6 +28,7 @@ __all__ = [
     "get_megatron_checkpoint",
     "is_lower_cased_megatron",
     "get_megatron_tokenizer",
+    "get_megatron_pretrained_bert_models",
 ]
 
 
@@ -98,6 +99,15 @@ MEGATRON_CONFIG_MAP = {
 
 def compute_model_parallel_rank(local_rank, model_parallel_size):
     return local_rank % model_parallel_size
+
+
+def get_megatron_pretrained_bert_models() -> List[str]:
+    from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
+
+    all_pretrained_megatron_bert_models = [
+        model.pretrained_model_name for model in MegatronBertModel.list_available_models()
+    ]
+    return all_pretrained_megatron_bert_models
 
 
 def get_megatron_lm_models_list() -> List[str]:

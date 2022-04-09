@@ -237,9 +237,11 @@ class TarredSentenceDataset(IterableDataset):
             logging.info(
                 "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
             )
+            self.length = self.metadata['num_batches'] // world_size
 
         elif shard_strategy == 'replicate':
             logging.info("All tarred dataset shards will be replicated across all nodes.")
+            self.length = self.metadata['num_batches']
 
         else:
             raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
@@ -270,4 +272,4 @@ class TarredSentenceDataset(IterableDataset):
         return self._dataset.__iter__()
 
     def __len__(self):
-        return self.metadata['num_batches']
+        return self.length

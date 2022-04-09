@@ -33,8 +33,6 @@ from pytorch_lightning.callbacks.timer import Interval, Timer
 from pytorch_lightning.loggers import LoggerCollection as _LoggerCollection
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.trainer.states import RunningStage
-from pytorch_lightning.utilities.distributed import rank_zero_info
 
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
 from nemo.utils import logging, timers
@@ -799,6 +797,8 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         # Load the best model and then re-save it
         if self.save_best_model:
+            # wait for all processes
+            trainer.training_type_plugin.barrier("SaveBestCheckpointConnector.resume_end")
             if self.best_model_path == "":
                 logging.warning(
                     f"{self} was told to save the best checkpoint at the end of training, but no saved checkpoints "
@@ -904,24 +904,9 @@ class StatelessTimer(Timer):
     def __init__(self, duration: timedelta = None, interval: str = Interval.step, verbose: bool = True,) -> None:
         super().__init__(duration, interval, verbose)
 
-    def on_save_checkpoint(self, trainer, pl_module, checkpoint) -> Dict[str, Any]:
-        return
+    # Override PTL Timer's state dict to not store elapsed time information so that we can restore and continue training.
+    def state_dict(self) -> Dict[str, Any]:
+        return {}
 
-    def on_load_checkpoint(self, trainer, pl_module, callback_state) -> None:
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         return
-
-    def _check_time_remaining(self, trainer) -> None:
-        # Default timer only checks for train time exceeding max_time, this includes time for all stages.
-        train_duration = self.time_elapsed(RunningStage.TRAINING)
-        validation_duration = self.time_elapsed(RunningStage.VALIDATING)
-        test_duration = self.time_elapsed(RunningStage.TESTING)
-        total_duration = train_duration + validation_duration + test_duration
-        should_stop = total_duration >= self._duration
-        # should_stop = trainer.training_type_plugin.broadcast(should_stop)
-        should_stop = trainer.training_type_plugin.reduce_boolean_decision(should_stop)
-        trainer.should_stop = trainer.should_stop or should_stop
-        if should_stop and self._verbose:
-            rank_zero_info(f"Time limit reached. Signaling Trainer to stop.")
-            rank_zero_info(
-                f"Spent {timedelta(seconds=train_duration)} seconds on training, {timedelta(seconds=validation_duration)} seconds on validation and {timedelta(seconds=test_duration)} seconds on testing"
-            )

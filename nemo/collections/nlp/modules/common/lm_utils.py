@@ -27,6 +27,7 @@ from nemo.collections.nlp.modules.common.huggingface.huggingface_utils import (
     get_huggingface_lm_model,
     get_huggingface_pretrained_lm_models_list,
 )
+from nemo.collections.nlp.modules.common.megatron.megatron_utils import get_megatron_pretrained_bert_models
 from nemo.collections.nlp.modules.common.transformer.transformer import NeMoTransformerConfig
 from nemo.collections.nlp.modules.common.transformer.transformer_utils import (
     get_huggingface_transformer,
@@ -87,7 +88,15 @@ def get_lm_model(
             f"Both config_dict and config_file were found, defaulting to use config_file: {config_file} will be used."
         )
 
-    if cfg.tokenizer is not None and "megatron" in cfg.tokenizer.get("tokenizer_name", ""):
+    pretrain_model_name = ''
+    if cfg.get('language_model') and cfg.language_model.get('pretrained_model_name', ''):
+        pretrain_model_name = cfg.language_model.get('pretrained_model_name', '')
+    all_pretrained_megatron_bert_models = get_megatron_pretrained_bert_models()
+    if (
+        cfg.tokenizer is not None
+        and cfg.tokenizer.get("tokenizer_name", "") is not None
+        and "megatron" in cfg.tokenizer.get("tokenizer_name", "")
+    ) or pretrain_model_name in all_pretrained_megatron_bert_models:
         import torch
 
         from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
@@ -99,8 +108,10 @@ def get_lm_model(
             def forward(self, x, *args):
                 return x
 
-        model = MegatronBertModel.restore_from(restore_path=cfg.language_model.lm_checkpoint, trainer=trainer)
-
+        if cfg.language_model.get("lm_checkpoint"):
+            model = MegatronBertModel.restore_from(restore_path=cfg.language_model.lm_checkpoint, trainer=trainer)
+        else:
+            model = MegatronBertModel.from_pretrained(cfg.language_model.get('pretrained_model_name'), trainer=trainer)
         # remove the headers that are only revelant for pretraining
         model.model.lm_head = Identity()
         model.model.binary_head = Identity()

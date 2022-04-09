@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import hashlib
 import json
 import os
@@ -29,7 +30,10 @@ from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTo
 from nemo.collections.nlp.modules import BertModule
 from nemo.collections.nlp.modules.common.huggingface.huggingface_utils import VOCAB_FILE_NAME
 from nemo.collections.nlp.modules.common.lm_utils import get_lm_model
-from nemo.collections.nlp.modules.common.megatron.megatron_utils import MEGATRON_CONFIG_MAP
+from nemo.collections.nlp.modules.common.megatron.megatron_utils import (
+    MEGATRON_CONFIG_MAP,
+    get_megatron_pretrained_bert_models,
+)
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.core.classes import ModelPT
@@ -58,27 +62,59 @@ class NLPModel(ModelPT, Exportable):
 
         # tokenizer needs to get initialized before the super.__init__()
         # as dataloaders and datasets need it to process the data
+        pretrain_model_name = ''
+        if cfg.get('language_model') and cfg.language_model.get('pretrained_model_name', ''):
+            pretrain_model_name = cfg.language_model.get('pretrained_model_name', '')
+        all_pretrained_megatron_bert_models = get_megatron_pretrained_bert_models()
+
         if cfg.get('tokenizer'):
             # Some models have their own tokenizer setup
-            if not hasattr(self, 'tokenizer') and cfg.tokenizer.get('tokenizer_name'):
+            if (
+                not hasattr(self, 'tokenizer')
+                and cfg.tokenizer.get('tokenizer_name')
+                and pretrain_model_name not in all_pretrained_megatron_bert_models
+            ):
                 self.setup_tokenizer(cfg.tokenizer)
-            if cfg.get('tokenizer.vocab_file'):
+            elif pretrain_model_name in all_pretrained_megatron_bert_models:
+                copy_cfg = copy.deepcopy(cfg)
+                bert_model = get_lm_model(
+                    config_file=config_file,
+                    config_dict=config_dict,
+                    vocab_file=vocab_file,
+                    trainer=trainer,
+                    cfg=copy_cfg,
+                )
+                # set the tokenizer if it is not initialized explicitly
+                if (
+                    (hasattr(self, 'tokenizer') and self.tokenizer is None) or not hasattr(self, 'tokenizer')
+                ) and hasattr(bert_model, 'tokenizer'):
+                    self.tokenizer = bert_model.tokenizer
+            if (
+                cfg.get('tokenizer')
+                and hasattr(cfg.get('tokenizer'), 'vocab_file')
+                and cfg.get('tokenizer').get('vocab_file')
+            ):
                 vocab_file = self.register_artifact('tokenizer.vocab_file', cfg.tokenizer.vocab_file)
-
         super().__init__(cfg, trainer)
+
         # handles model parallel save and restore logic
         self._save_restore_connector = NLPSaveRestoreConnector()
 
         if cfg.get('language_model') and not no_lm_init:
-            if cfg.get('language_model.nemo_file'):
+            if cfg.get('language_model').get('nemo_file'):
                 nemo_file = self.register_artifact('language_model.nemo_file', cfg.language_model.nemo_file)
-            if cfg.get('language_model.config'):
+            if cfg.get('language_model').get('config'):
                 config_dict = OmegaConf.to_container(cfg.language_model.config)
-            if cfg.get('language_model.config_file'):
+            if cfg.get('language_model').get('config_file'):
                 config_file = self.register_artifact('language_model.config_file', cfg.language_model.config_file)
-            self.bert_model = get_lm_model(
+            bert_model = get_lm_model(
                 config_file=config_file, config_dict=config_dict, vocab_file=vocab_file, trainer=trainer, cfg=cfg,
             )
+            # set the tokenizer if it is not initialized explicitly
+            if ((hasattr(self, 'tokenizer') and self.tokenizer is None) or not hasattr(self, 'tokenizer')) and hasattr(
+                bert_model, 'tokenizer'
+            ):
+                self.tokenizer = bert_model.tokenizer
 
             # Required to pull up the config for MegatronBert models
             self.pretrained_model_name = cfg.language_model.pretrained_model_name
@@ -86,10 +122,17 @@ class NLPModel(ModelPT, Exportable):
             # register encoder config
             self.register_bert_model()
 
-            if "megatron" in cfg.tokenizer.get("tokenizer_name", ""):
-                self.hidden_size = self.bert_model.cfg.hidden_size
+            if (
+                cfg.tokenizer is not None
+                and cfg.tokenizer.get("tokenizer_name", "") is not None
+                and "megatron" in cfg.tokenizer.get("tokenizer_name", "")
+            ) or pretrain_model_name in all_pretrained_megatron_bert_models:
+                self.hidden_size = bert_model.cfg.hidden_size
             else:
-                self.hidden_size = self.bert_model.config.hidden_size
+                self.hidden_size = bert_model.config.hidden_size
+
+        if cfg.get('language_model') and not no_lm_init:
+            self.bert_model = bert_model
 
     def register_artifact(
         self, config_path: str, src: str, verify_src_exists: bool = False,
@@ -154,12 +197,16 @@ class NLPModel(ModelPT, Exportable):
         vocab_file = None
         if cfg.get('vocab_file'):
             vocab_file = self.register_artifact(config_path='tokenizer.vocab_file', src=cfg.vocab_file)
-        self.tokenizer = get_tokenizer(
-            tokenizer_name=cfg.tokenizer_name,
-            vocab_file=vocab_file,
-            special_tokens=OmegaConf.to_container(cfg.special_tokens) if cfg.special_tokens else None,
-            tokenizer_model=self.register_artifact(config_path='tokenizer.tokenizer_model', src=cfg.tokenizer_model),
-        )
+        # only load tokenizer if vocab_file and tokenizer_model is not None
+        if cfg.tokenizer_name or vocab_file or cfg.tokenizer_model:
+            self.tokenizer = get_tokenizer(
+                tokenizer_name=cfg.tokenizer_name,
+                vocab_file=vocab_file,
+                special_tokens=OmegaConf.to_container(cfg.special_tokens) if cfg.special_tokens else None,
+                tokenizer_model=self.register_artifact(
+                    config_path='tokenizer.tokenizer_model', src=cfg.tokenizer_model
+                ),
+            )
 
         if vocab_file is None:
             # when there is no vocab file we try to get the vocab from the tokenizer and register it

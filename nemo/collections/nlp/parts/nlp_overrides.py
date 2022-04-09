@@ -18,7 +18,7 @@ import shutil
 import tempfile
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, Generator, Iterator, List, Mapping, Optional, Sized, Union
 
 import pytorch_lightning as pl
 import torch
@@ -32,15 +32,8 @@ from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionP
 from pytorch_lightning.plugins.training_type.ddp import DDPPlugin
 from pytorch_lightning.trainer.trainer import Trainer
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
-from pytorch_lightning.utilities.fetching import (
-    AbstractDataFetcher,
-    DataFetcher,
-    DataLoaderIterDataFetcher,
-    InterBatchParallelDataFetcher,
-)
-from pytorch_lightning.utilities.signature_utils import is_param_in_hook_signature
+from pytorch_lightning.utilities.fetching import DataFetcher
 from pytorch_lightning.utilities.types import _PATH
-from pytorch_lightning.utilities.warnings import rank_zero_warn
 from torch.distributed.algorithms.ddp_comm_hooks.debugging_hooks import noop_hook
 from torch.nn.parallel import DistributedDataParallel
 
@@ -679,33 +672,6 @@ class MegatronHalfPrecisionPlugin(NativeMixedPrecisionPlugin):
             pass
 
 
-class GlobalBatchFitLoop(FitLoop):
-    """ Override PTL FitLoop. Used to select globa batch data fetcher."""
-
-    def __init__(self, min_epochs: int = 0, max_epochs: int = 1000,) -> None:
-        super().__init__(min_epochs, max_epochs)
-
-    def _select_data_fetcher(self) -> AbstractDataFetcher:
-        if self.trainer.sanity_checking:
-            return GlobalBatchDataFetcher()
-
-        training_step_fx = getattr(self.trainer.lightning_module, "training_step")
-        if self.trainer.training and is_param_in_hook_signature(training_step_fx, "dataloader_iter", explicit=True):
-            rank_zero_warn(
-                "Found `dataloader_iter` argument in the `training_step`. Note that the support for "
-                "this signature is experimental and the behavior is subject to change."
-            )
-            return DataLoaderIterDataFetcher()
-
-        elif self.trainer.training and os.getenv("PL_INTER_BATCH_PARALLELISM", "0") == "1":
-            # note: this is an experimental feature
-            if not self.trainer.training_type_plugin.on_gpu:
-                raise MisconfigurationException("Inter batch parallelism is available only when using Nvidia GPUs.")
-            return InterBatchParallelDataFetcher()
-
-        return GlobalBatchDataFetcher()
-
-
 class GlobalBatchDataFetcher(DataFetcher):
     """ Overrides PTL DataFetcher. Used to fetch global batches."""
 
@@ -715,14 +681,14 @@ class GlobalBatchDataFetcher(DataFetcher):
             logging.warning("Apex was not found. Using model parallel or megatron models will error out.")
 
         super().__init__(prefetch_batches=prefetch_batches, store_on_device=store_on_device)
-        self.num_micro_batches = get_num_microbatches()
 
-    def _fetch_next_batch(self):
-        """ Fetches the next global batch which is a list of micro batches"""
-        with self.apply_profiler(f"get_{self.stage}_batch"):
-            with self.fetching_context():
-                data = self.on_fetch_start()
-                with self.apply_profiler(f"fetch_next_{self.stage}_batch"):
-                    batch = [next(self.dataloader_iter) for _ in range(self.num_micro_batches)]
-                self.fetched += 1
-                self.on_fetch_end(batch, data)
+    def _fetch_next_batch(self, iterator: Iterator) -> None:
+        start_output = self.on_fetch_start()
+        batch = [next(iterator) for _ in range(get_num_microbatches())]
+        self.fetched += 1
+        if not self.prefetch_batches and self._has_len:
+            # when we don't prefetch but the dataloader is sized, we use the length for `done`
+            dataloader = self.dataloader
+            assert isinstance(dataloader, Sized)  # `_has_len` is True
+            self.done = self.fetched >= len(dataloader)
+        self.on_fetch_end(batch, start_output)

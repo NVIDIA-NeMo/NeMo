@@ -21,6 +21,7 @@ from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import (
     TextToTextXNLIDataset,
 )
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
+from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
 from nemo.utils import AppState, logging
 
 try:
@@ -48,7 +49,7 @@ class MegatronT5GLUEModel(MegatronT5Model):
     def setup(self, stage=None):
         # This is just to keep the parent class happy since we override its setup() method.
         self.init_consumed_samples = 0
-
+        self.init_global_step = 0
         if stage == 'predict':
             return
 
@@ -94,6 +95,12 @@ class MegatronT5GLUEModel(MegatronT5Model):
                 )
                 dec_mask = torch.nn.functional.pad(
                     dec_mask, (0, max_dec_seq_lenth - dec_mask.shape[1], 0, 0), 'constant', 0
+                )
+                labels = torch.nn.functional.pad(
+                    labels, (0, max_dec_seq_lenth - labels.shape[1], 0, 0), 'constant', self.tokenizer.pad_id
+                )
+                loss_mask = torch.nn.functional.pad(
+                    loss_mask, (0, max_dec_seq_lenth - loss_mask.shape[1], 0, 0), 'constant', 0
                 )
             text_enc_list.append(text_enc)
             text_dec_list.append(text_dec)
@@ -144,7 +151,7 @@ class MegatronT5GLUEModel(MegatronT5Model):
                 langs_list,
             )
 
-    def on_validation_model_eval(self):
+    def on_validation_epoch_start(self):
         app_state = AppState()
         _reconfigure_microbatch_calculator(
             rank=app_state.global_rank,
@@ -153,9 +160,9 @@ class MegatronT5GLUEModel(MegatronT5Model):
             micro_batch_size=self.cfg.data.validation_ds.micro_batch_size,
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
-        return super().on_validation_model_eval()
+        return super().on_validation_epoch_start()
 
-    def on_validation_model_train(self):
+    def on_validation_epoch_end(self):
         app_state = AppState()
         _reconfigure_microbatch_calculator(
             rank=app_state.global_rank,
@@ -164,7 +171,7 @@ class MegatronT5GLUEModel(MegatronT5Model):
             micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
-        return super().on_validation_model_train()
+        return super().on_validation_epoch_end()
 
     def inference_step(self, batch, batch_idx):
         batch_has_lang_information = len(batch[0]) == 7
@@ -178,7 +185,7 @@ class MegatronT5GLUEModel(MegatronT5Model):
             processed_batch = batch
 
         # Call parent validation step to get the loss.
-        loss = super().validation_step(processed_batch, batch_idx, reconfigure_microbatch_size=True)
+        loss = super().validation_step(processed_batch, batch_idx)
 
         # Remainder of the code is to run the decoding loop, and compute accuracies.
         if batch_has_lang_information:
@@ -226,7 +233,7 @@ class MegatronT5GLUEModel(MegatronT5Model):
         else:
             averaged_loss = super().test_epoch_end(outputs)
         accuracy = self.acc_metric.compute()
-        self.log(f'{mode}_loss', averaged_loss)
+        # Loss is logged in the parent epoch end class.
         self.log(f'{mode}_acc', accuracy['acc'])
         if hasattr(self.cfg, 'eval_languages'):
             for lang in self.cfg.eval_languages:
@@ -360,3 +367,15 @@ class MegatronT5GLUEModel(MegatronT5Model):
         self._train_ds = self._build_dataset(self.cfg.data.train_ds)
         logging.info(f'Length of train dataset: {len(self._train_ds)}')
         logging.info(f'Finished building GLUE/XNLI datasets.')
+
+    def on_train_start(self) -> None:
+        """PTL hook used to override DataFetcher with GlobalBatchDataFetcher """
+        self.trainer.fit_loop._data_fetcher = GlobalBatchDataFetcher()
+
+    def on_validation_start(self) -> None:
+        """PTL hook used to override DataFetcher with GlobalBatchDataFetcher """
+        self.trainer.fit_loop.epoch_loop.val_loop._data_fetcher = GlobalBatchDataFetcher()
+        self.trainer.validate_loop._data_fetcher = GlobalBatchDataFetcher()
+
+    def on_test_start(self) -> None:
+        self.trainer.test_loop._data_fetcher = GlobalBatchDataFetcher()

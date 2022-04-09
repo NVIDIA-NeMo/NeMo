@@ -113,6 +113,7 @@ decoder_exp_manager:
     save_top_k: 3
     monitor: "val_loss"
     mode: "min"
+    save_best_model: True
 
 # Data
 data:

@@ -58,14 +58,14 @@ class DuplexTaggerModel(NLPModel):
         return self
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        self._tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer, add_prefix_space=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer, add_prefix_space=True)
         super().__init__(cfg=cfg, trainer=trainer)
         self.num_labels = len(constants.ALL_TAG_LABELS)
         self.mode = cfg.get('mode', 'joint')
 
         self.model = AutoModelForTokenClassification.from_pretrained(cfg.transformer, num_labels=self.num_labels)
         self.transformer_name = cfg.transformer
-        self.max_sequence_len = cfg.get('max_sequence_len', self._tokenizer.model_max_length)
+        self.max_sequence_len = cfg.get('max_sequence_len', self.tokenizer.model_max_length)
 
         # Loss Functions
         self.loss_fct = nn.CrossEntropyLoss(ignore_index=constants.LABEL_PAD_TOKEN_ID)
@@ -175,9 +175,7 @@ class DuplexTaggerModel(NLPModel):
             texts.append([prefix] + sent)
 
         # Apply the model
-        encodings = self._tokenizer(
-            texts, is_split_into_words=True, padding=True, truncation=True, return_tensors='pt'
-        )
+        encodings = self.tokenizer(texts, is_split_into_words=True, padding=True, truncation=True, return_tensors='pt')
 
         inputs = encodings
         encodings_reduced = None
@@ -186,7 +184,7 @@ class DuplexTaggerModel(NLPModel):
         # if an input symbol is missing in the tokenizer's vocabulary (such as emoji or a Chinese character), it could be skipped
         len_texts = [len(x) for x in texts]
         len_ids = [
-            len(self._tokenizer.convert_ids_to_tokens(x, skip_special_tokens=True)) for x in encodings['input_ids']
+            len(self.tokenizer.convert_ids_to_tokens(x, skip_special_tokens=True)) for x in encodings['input_ids']
         ]
         idx_valid = [i for i, (t, enc) in enumerate(zip(len_texts, len_ids)) if enc >= t]
 
@@ -346,7 +344,7 @@ class DuplexTaggerModel(NLPModel):
         tagger_data_augmentation = cfg.get('tagger_data_augmentation', False)
         dataset = TextNormalizationTaggerDataset(
             input_file=input_file,
-            tokenizer=self._tokenizer,
+            tokenizer=self.tokenizer,
             tokenizer_name=self.transformer_name,
             mode=self.mode,
             tagger_data_augmentation=tagger_data_augmentation,
@@ -355,7 +353,7 @@ class DuplexTaggerModel(NLPModel):
             use_cache=cfg.get('use_cache', False),
             max_insts=cfg.get('max_insts', -1),
         )
-        data_collator = DataCollatorForTokenClassification(self._tokenizer)
+        data_collator = DataCollatorForTokenClassification(self.tokenizer)
         dl = torch.utils.data.DataLoader(
             dataset=dataset, batch_size=cfg.batch_size, shuffle=cfg.shuffle, collate_fn=data_collator
         )

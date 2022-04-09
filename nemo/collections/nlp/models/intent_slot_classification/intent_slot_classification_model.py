@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ntpath
 import os
+import pathlib
 from typing import Dict, List, Optional
 
 import torch
@@ -99,8 +99,8 @@ class IntentSlotClassificationModel(NLPModel):
                 {'intent_labels_file': 'intent_labels.csv', 'slot_labels_file': 'slot_labels.csv'}
             )
 
-        slot_labels_file = os.path.join(data_dir, ntpath.basename(cfg.class_labels.slot_labels_file))
-        intent_labels_file = os.path.join(data_dir, ntpath.basename(cfg.class_labels.intent_labels_file))
+        slot_labels_file = os.path.join(data_dir, pathlib.Path(cfg.class_labels.slot_labels_file).name)
+        intent_labels_file = os.path.join(data_dir, pathlib.Path(cfg.class_labels.intent_labels_file).name)
         self._save_label_ids(data_desc.slots_label_ids, slot_labels_file)
         self._save_label_ids(data_desc.intents_label_ids, intent_labels_file)
 

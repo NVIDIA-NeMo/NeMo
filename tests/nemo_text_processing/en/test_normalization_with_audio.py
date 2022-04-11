@@ -21,7 +21,7 @@ from ..utils import CACHE_DIR, PYNINI_AVAILABLE, get_test_cases_multiple
 
 class TestNormalizeWithAudio:
     normalizer_with_audio_en = (
-        NormalizerWithAudio(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
+        NormalizerWithAudio(input_case='cased', lang='en', lm=False, cache_dir=CACHE_DIR, overwrite_cache=False)
         if PYNINI_AVAILABLE and CACHE_DIR
         else None
     )
@@ -34,7 +34,7 @@ class TestNormalizeWithAudio:
     @pytest.mark.unit
     def test_norm(self, test_input, expected):
         if self.normalizer_with_audio_en:
-            pred = self.normalizer_with_audio_en.normalize(test_input, n_tagged=100, punct_post_process=True)
+            pred = self.normalizer_with_audio_en.normalize(test_input, n_tagged=200, punct_post_process=True)
             assert len(set(pred).intersection(set(expected))) == len(
                 expected
             ), f'missing: {set(expected).difference(set(pred))}'

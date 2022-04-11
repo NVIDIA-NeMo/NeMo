@@ -22,12 +22,13 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     GraphFst,
     insert_space,
 )
-from nemo_text_processing.text_normalization.en.taggers.date import get_hundreds_graph
+from nemo_text_processing.text_normalization.en.taggers.date import get_four_digit_year_graph
 from nemo_text_processing.text_normalization.en.utils import get_abs_path
 
 try:
     import pynini
     from pynini.lib import pynutil
+    from pynini.examples import plurals
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
@@ -44,9 +45,11 @@ class CardinalFst(GraphFst):
             for False multiple transduction are generated (used for audio-based normalization)
     """
 
-    def __init__(self, deterministic: bool = True):
+    def __init__(self, deterministic: bool = True, lm: bool = False):
         super().__init__(name="cardinal", kind="classify", deterministic=deterministic)
-        # TODO repalce to have "oh" as a default for "0"
+
+        self.lm = lm
+        # TODO replace to have "oh" as a default for "0"
         graph = pynini.Far(get_abs_path("data/numbers/cardinal_number_name.far")).get_fst()
         self.graph_hundred_component_at_least_one_none_zero_digit = (
             pynini.closure(NEMO_DIGIT, 2, 3) | pynini.difference(NEMO_DIGIT, pynini.accep("0"))
@@ -85,25 +88,17 @@ class CardinalFst(GraphFst):
                 1,
             )
 
-            self.range_graph = pynutil.insert("from ") + self.graph + pynini.cross("-", " to ") + self.graph
-            self.range_graph |= self.graph + (pynini.cross("x", " by ") | pynini.cross(" x ", " by ")) + self.graph
-            self.range_graph |= (
-                pynutil.insert("from ") + get_hundreds_graph() + pynini.cross("-", " to ") + get_hundreds_graph()
-            )
-            self.range_graph = self.range_graph.optimize()
-
         serial_graph = self.get_serial_graph()
         optional_minus_graph = pynini.closure(pynutil.insert("negative: ") + pynini.cross("-", "\"true\" "), 0, 1)
 
         if deterministic:
             long_numbers = pynini.compose(NEMO_DIGIT ** (5, ...), self.single_digits_graph).optimize()
-            final_graph = self.graph | serial_graph | pynutil.add_weight(long_numbers, -0.001)
+            final_graph = plurals._priority_union(long_numbers, self.graph, NEMO_SIGMA).optimize() | serial_graph
             cardinal_with_leading_zeros = pynini.compose(
                 pynini.accep("0") + pynini.closure(NEMO_DIGIT), self.single_digits_graph
             )
             final_graph |= cardinal_with_leading_zeros
         else:
-
             leading_zeros = pynini.compose(pynini.closure(pynini.accep("0"), 1), self.single_digits_graph)
             cardinal_with_leading_zeros = (
                 leading_zeros + pynutil.insert(" ") + pynini.compose(pynini.closure(NEMO_DIGIT), self.graph)
@@ -113,16 +108,14 @@ class CardinalFst(GraphFst):
             final_graph = (
                 self.graph
                 | serial_graph
-                | self.range_graph
-                | pynutil.add_weight(self.single_digits_graph, 0.001)
-                | pynutil.add_weight(get_hundreds_graph(), 0.001)
-                | pynutil.add_weight(single_digits_graph_with_commas, 0.001)
+                | pynutil.add_weight(self.single_digits_graph, 0.0001)
+                | get_four_digit_year_graph()  # allows e.g. 4567 be pronouced as forty five sixty seven
+                | pynutil.add_weight(single_digits_graph_with_commas, 0.0001)
                 | cardinal_with_leading_zeros
             )
 
         final_graph = optional_minus_graph + pynutil.insert("integer: \"") + final_graph + pynutil.insert("\"")
         final_graph = self.add_tokens(final_graph)
-
         self.fst = final_graph.optimize()
 
     def get_serial_graph(self):
@@ -134,8 +127,11 @@ class CardinalFst(GraphFst):
         """
         num_graph = self.single_digits_graph
 
-        if not self.deterministic:
-            num_graph |= self.graph
+        if not self.deterministic and not self.lm:
+            # also allow double digits to be pronounced as integer in serial number
+            num_graph |= pynutil.add_weight(
+                NEMO_DIGIT ** 2 @ self.graph_hundred_component_at_least_one_none_zero_digit, weight=0.0001
+            )
 
         # add space between letter and digit
         graph_with_space = pynini.compose(
@@ -180,4 +176,24 @@ class CardinalFst(GraphFst):
         serial_graph |= (
             num_graph + delimiter + num_graph + delimiter + num_graph + pynini.closure(delimiter + num_graph)
         )
-        return pynutil.add_weight(serial_graph, 2)
+
+        # exclude ordinal numbers from serial options
+        endings = ["rd", "th", "st", "nd"]
+        endings += [x.upper() for x in endings]
+        serial_graph = pynini.compose(
+            pynini.difference(NEMO_SIGMA, pynini.closure(NEMO_DIGIT, 1) + pynini.union(*endings)), serial_graph
+        ).optimize()
+
+        serial_graph = pynutil.add_weight(serial_graph, 0.0001)
+        serial_graph |= (
+            pynini.closure(NEMO_NOT_SPACE, 1)
+            + (pynini.cross("^2", " squared") | pynini.cross("^3", " cubed")).optimize()
+        )
+
+        # at least one serial graph with alpha numeric value and optional additional serial/num/alpha values
+        serial_graph = (
+            pynini.closure((serial_graph | num_graph | alphas) + delimiter)
+            + serial_graph
+            + pynini.closure(delimiter + (serial_graph | num_graph | alphas))
+        )
+        return serial_graph.optimize()

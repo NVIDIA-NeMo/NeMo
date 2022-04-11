@@ -44,8 +44,6 @@ class AbbreviationFst(GraphFst):
         graph = NEMO_UPPER + dot + pynini.closure(insert_space + NEMO_UPPER + dot, 1)
         # A.B.C. -> A.B.C.
         graph |= NEMO_UPPER + dot + pynini.closure(NEMO_UPPER + dot, 1)
-        # ABC -> ABC
-        graph |= NEMO_UPPER + pynini.closure(NEMO_UPPER, 1)
         # ABC -> A B C
         graph |= NEMO_UPPER + pynini.closure(insert_space + NEMO_UPPER, 1)
 

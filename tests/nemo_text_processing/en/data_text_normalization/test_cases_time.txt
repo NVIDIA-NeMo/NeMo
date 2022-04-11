@@ -16,5 +16,5 @@
 1:01:01~one hour one minute and one second
 14:10:30~fourteen hours ten minutes and thirty seconds
 11:20AM,2:40PM and 10:10PM.~eleven twenty A M , two forty P M and ten ten P M .
-2pm-5pm~two p m - five p m
+2pm-5pm~two p m to five p m
 5pm~five p m

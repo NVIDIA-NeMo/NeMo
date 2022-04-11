@@ -99,6 +99,7 @@ class NormalizerWithAudio(Normalizer):
         cache_dir: str = None,
         overwrite_cache: bool = False,
         whitelist: str = None,
+        lm: bool = False,
     ):
 
         super().__init__(
@@ -108,7 +109,9 @@ class NormalizerWithAudio(Normalizer):
             cache_dir=cache_dir,
             overwrite_cache=overwrite_cache,
             whitelist=whitelist,
+            lm=lm,
         )
+        self.lm = lm
 
     def normalize(self, text: str, n_tagged: int, punct_post_process: bool = True, verbose: bool = False,) -> str:
         """
@@ -129,9 +132,8 @@ class NormalizerWithAudio(Normalizer):
             len(text.split()) < 500
         ), "Your input is too long. Please split up the input into sentences, or strings with fewer than 500 words"
         original_text = text
+        text = pre_process(text)  # to handle []
 
-        if self.lang == "en":
-            text = pre_process(text)
         text = text.strip()
         if not text:
             if verbose:
@@ -139,22 +141,36 @@ class NormalizerWithAudio(Normalizer):
             return text
         text = pynini.escape(text)
 
-        if n_tagged == -1:
+        if self.lm:
+            if self.lang not in ["en"]:
+                raise ValueError(f"{self.lang} is not supported in LM mode")
+
             if self.lang == "en":
                 try:
-                    tagged_texts = rewrite.rewrites(text, self.tagger.fst_no_digits)
+                    lattice = rewrite.rewrite_lattice(text, self.tagger.fst_no_digits)
                 except pynini.lib.rewrite.Error:
+                    lattice = rewrite.rewrite_lattice(text, self.tagger.fst)
+                lattice = rewrite.lattice_to_nshortest(lattice, n_tagged)
+                tagged_texts = [(x[1], float(x[2])) for x in lattice.paths().items()]
+                tagged_texts.sort(key=lambda x: x[1])
+                tagged_texts, weights = list(zip(*tagged_texts))
+        else:
+            if n_tagged == -1:
+                if self.lang == "en":
+                    try:
+                        tagged_texts = rewrite.rewrites(text, self.tagger.fst_no_digits)
+                    except pynini.lib.rewrite.Error:
+                        tagged_texts = rewrite.rewrites(text, self.tagger.fst)
+                else:
                     tagged_texts = rewrite.rewrites(text, self.tagger.fst)
             else:
-                tagged_texts = rewrite.rewrites(text, self.tagger.fst)
-        else:
-            if self.lang == "en":
-                try:
-                    tagged_texts = rewrite.top_rewrites(text, self.tagger.fst_no_digits, nshortest=n_tagged)
-                except pynini.lib.rewrite.Error:
+                if self.lang == "en":
+                    try:
+                        tagged_texts = rewrite.top_rewrites(text, self.tagger.fst_no_digits, nshortest=n_tagged)
+                    except pynini.lib.rewrite.Error:
+                        tagged_texts = rewrite.top_rewrites(text, self.tagger.fst, nshortest=n_tagged)
+                else:
                     tagged_texts = rewrite.top_rewrites(text, self.tagger.fst, nshortest=n_tagged)
-            else:
-                tagged_texts = rewrite.top_rewrites(text, self.tagger.fst, nshortest=n_tagged)
 
         # non-deterministic Eng normalization uses tagger composed with verbalizer, no permutation in between
         if self.lang == "en":
@@ -174,6 +190,9 @@ class NormalizerWithAudio(Normalizer):
                 normalized_texts = [
                     post_process_punct(input=original_text, normalized_text=t) for t in normalized_texts
                 ]
+
+        if self.lm:
+            return normalized_texts, weights
 
         normalized_texts = set(normalized_texts)
         return normalized_texts
@@ -316,6 +335,9 @@ def parse_args():
         type=str,
     )
     parser.add_argument("--n_jobs", default=-2, type=int, help="The maximum number of concurrently running jobs")
+    parser.add_argument(
+        "--lm", action="store_true", help="Set to True for WFST+LM. Only available for English right now."
+    )
     parser.add_argument("--batch_size", default=200, type=int, help="Number of examples for each process")
     return parser.parse_args()
 
@@ -415,6 +437,7 @@ if __name__ == "__main__":
             cache_dir=args.cache_dir,
             overwrite_cache=args.overwrite_cache,
             whitelist=args.whitelist,
+            lm=args.lm,
         )
 
         if os.path.exists(args.text):

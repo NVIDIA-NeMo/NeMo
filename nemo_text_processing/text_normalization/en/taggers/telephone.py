@@ -16,9 +16,11 @@
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_ALPHA,
     NEMO_DIGIT,
+    NEMO_SIGMA,
     GraphFst,
     delete_space,
     insert_space,
+    plurals,
 )
 from nemo_text_processing.text_normalization.en.utils import get_abs_path
 
@@ -60,13 +62,12 @@ class TelephoneFst(GraphFst):
             + digit
             + pynutil.insert("\"")
         )
-        optional_country_code = pynini.closure(
-            country_code + pynini.closure(pynutil.delete("-"), 0, 1) + delete_space + insert_space, 0, 1
-        )
+        country_code = country_code + pynini.closure(pynutil.delete("-"), 0, 1) + delete_space + insert_space
 
-        area_part_common = pynutil.add_weight(pynini.cross("800", "eight hundred"), -1.1)
         area_part_default = pynini.closure(digit + insert_space, 2, 2) + digit
-        area_part = area_part_default | area_part_common
+        area_part = pynini.cross("800", "eight hundred") | pynini.compose(
+            pynini.difference(NEMO_SIGMA, "800"), area_part_default
+        )
 
         area_part = (
             (area_part + pynutil.delete("-"))
@@ -86,9 +87,11 @@ class TelephoneFst(GraphFst):
         extension = (
             pynutil.insert("extension: \"") + pynini.closure(digit + insert_space, 0, 3) + digit + pynutil.insert("\"")
         )
-        optional_extension = pynini.closure(insert_space + extension, 0, 1)
+        extension = pynini.closure(insert_space + extension, 0, 1)
 
-        graph = optional_country_code + number_part + optional_extension
+        graph = plurals._priority_union(country_code + number_part, number_part, NEMO_SIGMA).optimize()
+        graph = plurals._priority_union(country_code + number_part + extension, graph, NEMO_SIGMA).optimize()
+        graph = plurals._priority_union(number_part + extension, graph, NEMO_SIGMA).optimize()
 
         # ip
         digit_to_str_graph = pynini.compose(

@@ -3,6 +3,7 @@
 3 2/4~three and two quarters
 1/4~one quarter
 1/4th~one quarter
+2/4th~two quarters
 1/4TH~one quarter
 1/3RD~one third
 31/32~thirty one thirty seconds

@@ -75,7 +75,9 @@ zwei us dollar zwanzig cent
 zwei dollar zwanzig
 zwei dollar zwanzig cent
 ~25.]
-25.]
+25 . ]
+25. ]
+fünf und zwanzigster ]
 ~Francis I--test
 Francis I--test
 ~librivox.com

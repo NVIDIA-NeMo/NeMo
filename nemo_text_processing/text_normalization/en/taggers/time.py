@@ -21,7 +21,11 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     delete_space,
     insert_space,
 )
-from nemo_text_processing.text_normalization.en.utils import get_abs_path
+from nemo_text_processing.text_normalization.en.utils import (
+    augment_labels_with_punct_at_end,
+    get_abs_path,
+    load_labels,
+)
 
 try:
     import pynini
@@ -52,7 +56,10 @@ class TimeFst(GraphFst):
 
     def __init__(self, cardinal: GraphFst, deterministic: bool = True):
         super().__init__(name="time", kind="classify", deterministic=deterministic)
-        suffix_graph = pynini.string_file(get_abs_path("data/time_suffix.tsv"))
+        suffix_labels = load_labels(get_abs_path("data/time_suffix.tsv"))
+        suffix_labels.extend(augment_labels_with_punct_at_end(suffix_labels))
+        suffix_graph = pynini.string_map(suffix_labels)
+
         time_zone_graph = pynini.string_file(get_abs_path("data/time_zone.tsv"))
 
         # only used for < 1000 thousand -> 0 weight

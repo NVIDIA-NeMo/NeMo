@@ -1,8 +1,10 @@
-f	fahrenheit
-°f	fahrenheit
-℉	fahrenheit
-°c	celsius
-℃	celsius
+f	degree Fahrenheit
+°f	degree Fahrenheit
+℉	degree Fahrenheit
+°F	degree Fahrenheit
+°c	degree Celsius
+°C	degree Celsius
+℃	degree Celsius
 km	kilometer
 m	meter
 cm	centimeter
@@ -17,6 +19,7 @@ ft	foot
 %	percent
 hz	hertz
 kw	kilowatt
+kW	kilowatt
 hp	horsepower
 mg	milligram
 kg	kilogram
@@ -37,7 +40,6 @@ kwh	kilo watt hour
 m³	cubic meter
 m3	cubic meter
 mph	mile per hour
-tw	tera watt
 mv	milli volt
 mw	megawatt
 μm	micrometer
@@ -107,7 +109,11 @@ mm²	square millimeter
 mm2	square millimeter
 cm²	square centimeter
 cm2	square centimeter
+cm³	cubic centimeter
+cm3	cubic centimeter
 sq mi	square mile
+mi²	square mile
+mi2	square mile
 sq ft	square foot
 kpa	kilopascal
 cd	candela

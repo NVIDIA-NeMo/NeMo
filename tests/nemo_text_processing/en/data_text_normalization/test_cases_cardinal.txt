@@ -7,23 +7,23 @@
 13000~one three zero zero zero
 123,123,000~one hundred twenty three million one hundred twenty three thousand
 123,000,012~one hundred twenty three million twelve
-t-0t25d12-f~t - zero t two five d one two - f
+t-0t25d12-f~t-zero t two five d one two-f
 133-ABC~one hundred thirty three- ABC
 B2A23C~B two A two three C
 25d08A~two five d zero eight A
 C24~C two four
 W2s~W two s
 1-413-te-b-1-5~one-four one three-te-b-one-five
-b-c-1-5-b-s-b~b - c-one-five-b-s-b
+b-c-1-5-b-s-b~b-c-one-five-b-s-b
 MIG-25/235212-asdg~MIG-two five/two three five two one two-asdg
 1/f-4s~one/f-four s
-1/f~one per fahrenheit
+1/f~one per degree Fahrenheit
 4s~four seconds
 7-eleven~seven- eleven
 1234567890123124~one two three four five six seven eight nine zero one two three one two four
-978-0~nine hundred seventy eight - zero
+978-0~nine hundred seventy eight to zero
 2x~two x
 11:30EST~eleven : three zero EST
 004~zero zero four
 31/31/100~three one/three one/one zero zero
-1998/2/30~february thirtieth nineteen ninety eight
+1-8090~one - eight thousand ninety

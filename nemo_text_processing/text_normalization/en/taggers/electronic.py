@@ -14,11 +14,18 @@
 # limitations under the License.
 
 
-from nemo_text_processing.text_normalization.en.graph_utils import NEMO_ALPHA, NEMO_DIGIT, GraphFst, get_abs_path
+from nemo_text_processing.text_normalization.en.graph_utils import (
+    NEMO_ALPHA,
+    NEMO_DIGIT,
+    NEMO_SIGMA,
+    GraphFst,
+    get_abs_path,
+)
 
 try:
     import pynini
     from pynini.lib import pynutil
+    from pynini.examples import plurals
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
@@ -53,25 +60,32 @@ class ElectronicFst(GraphFst):
 
         username = pynutil.insert("username: \"") + accepted_symbols + pynutil.insert("\"") + pynini.cross('@', ' ')
         domain_graph = accepted_symbols + pynini.accep('.') + accepted_symbols
-        domain_graph = pynutil.insert("domain: \"") + domain_graph + pynutil.insert("\"")
-        domain_common_graph = (
-            pynutil.insert("domain: \"")
-            + accepted_symbols
-            + pynini.union(*accepted_common_domains)
-            + pynutil.insert("\"")
-        )
 
         protocol_start = pynini.accep("https://") | pynini.accep("http://")
         protocol_symbols = pynini.closure(
-            (NEMO_ALPHA | pynutil.add_weight(graph_symbols | pynini.cross(":", "colon"), -0.1)) + pynutil.insert(" ")
+            plurals._priority_union(graph_symbols | pynini.cross(":", "colon"), NEMO_ALPHA, NEMO_SIGMA)
+            + pynutil.insert(" ")
         )
         protocol_end = pynini.accep("www.")
         protocol = protocol_start | protocol_end | (protocol_start + protocol_end)
+
+        domain_graph = (
+            pynutil.insert("domain: \"")
+            + pynini.difference(domain_graph, protocol + NEMO_SIGMA)
+            + pynutil.insert("\"")
+        )
+        domain_common_graph = (
+            pynutil.insert("domain: \"")
+            + pynini.difference(accepted_symbols + pynini.union(*accepted_common_domains), protocol + NEMO_SIGMA)
+            + pynutil.insert("\"")
+        )
         protocol = pynini.compose(protocol, protocol_symbols)
+
         protocol = pynutil.insert("protocol: \"") + protocol + pynutil.insert("\"")
         graph = username + domain_graph
         graph |= domain_common_graph
         graph |= protocol + pynutil.insert(" ") + domain_graph
 
         final_graph = self.add_tokens(graph)
+
         self.fst = final_graph.optimize()

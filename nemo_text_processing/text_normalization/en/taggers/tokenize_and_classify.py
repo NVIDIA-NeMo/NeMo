@@ -32,11 +32,15 @@ from nemo_text_processing.text_normalization.en.taggers.measure import MeasureFs
 from nemo_text_processing.text_normalization.en.taggers.money import MoneyFst
 from nemo_text_processing.text_normalization.en.taggers.ordinal import OrdinalFst
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
+from nemo_text_processing.text_normalization.en.taggers.range import RangeFst as RangeFst
 from nemo_text_processing.text_normalization.en.taggers.roman import RomanFst
 from nemo_text_processing.text_normalization.en.taggers.telephone import TelephoneFst
 from nemo_text_processing.text_normalization.en.taggers.time import TimeFst
 from nemo_text_processing.text_normalization.en.taggers.whitelist import WhiteListFst
 from nemo_text_processing.text_normalization.en.taggers.word import WordFst
+from nemo_text_processing.text_normalization.en.verbalizers.date import DateFst as vDateFst
+from nemo_text_processing.text_normalization.en.verbalizers.ordinal import OrdinalFst as vOrdinalFst
+from nemo_text_processing.text_normalization.en.verbalizers.time import TimeFst as vTimeFst
 
 from nemo.utils import logging
 
@@ -110,6 +114,15 @@ class ClassifyFst(GraphFst):
             ).fst
             punct_graph = PunctuationFst(deterministic=deterministic).fst
 
+            v_time_graph = vTimeFst(deterministic=deterministic).fst
+            v_ordinal_graph = vOrdinalFst(deterministic=deterministic)
+            v_date_graph = vDateFst(ordinal=v_ordinal_graph, deterministic=deterministic).fst
+            time_final = pynini.compose(time_graph, v_time_graph)
+            date_final = pynini.compose(date_graph, v_date_graph)
+            range_graph = RangeFst(
+                time=time_final, date=date_final, cardinal=cardinal, deterministic=deterministic
+            ).fst
+
             classify = (
                 pynutil.add_weight(whitelist_graph, 1.01)
                 | pynutil.add_weight(time_graph, 1.1)
@@ -122,14 +135,13 @@ class ClassifyFst(GraphFst):
                 | pynutil.add_weight(telephone_graph, 1.1)
                 | pynutil.add_weight(electonic_graph, 1.1)
                 | pynutil.add_weight(fraction_graph, 1.1)
-                | pynutil.add_weight(word_graph, 100)
+                | pynutil.add_weight(range_graph, 1.1)
             )
 
-            if not deterministic:
-                roman_graph = RomanFst(deterministic=deterministic).fst
-                # the weight matches the word_graph weight for "I" cases in long sentences with multiple semiotic tokens
-                classify |= pynutil.add_weight(roman_graph, 100)
+            # roman_graph = RomanFst(deterministic=deterministic).fst
+            # classify |= pynutil.add_weight(roman_graph, 1.1)
 
+            if not deterministic:
                 abbreviation_graph = AbbreviationFst(deterministic=deterministic).fst
                 classify |= pynutil.add_weight(abbreviation_graph, 100)
 
@@ -139,6 +151,8 @@ class ClassifyFst(GraphFst):
                 | (pynutil.insert(" ") + punct),
                 1,
             )
+
+            classify |= pynutil.add_weight(word_graph, 100)
             token = pynutil.insert("tokens { ") + classify + pynutil.insert(" }")
             token_plus_punct = (
                 pynini.closure(punct + pynutil.insert(" ")) + token + pynini.closure(pynutil.insert(" ") + punct)

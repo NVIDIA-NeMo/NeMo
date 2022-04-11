@@ -5,12 +5,12 @@ single quote. '4~single quote. 'four
 company's results,' said he:~company's results,' said he:
 test -~test -
 -5 test -~minus five test -
-abbreviation USA.~abbreviation u s a.
-abbreviation U.S.A.~abbreviation u s a
-abbreviation. U.S.A..~abbreviation. u s a.
+abbreviation USA.~abbreviation USA.
+abbreviation U.S.A.~abbreviation USA
+abbreviation. U.S.A..~abbreviation. USA.
 1-4=5~one minus four equals five
 &hi;&hi;~&hi;&hi;
-abbreviation USA,~abbreviation u s a,
+abbreviation USA,~abbreviation USA,
 23rd july, 1998~the twenty third of july, nineteen ninety eight
 April 29th’s meeting~april twenty ninth’s meeting
 ?,~?,

@@ -1,19 +1,20 @@
-a.bc@gmail.com~a dot b c at g mail dot com
+a.bc@gmail.com~a dot b c at G mail dot com
 a@hotmail.de~a at hotmail dot de
 a@hotmail.fr~a at hotmail dot fr
 a@hotmail.it~a at hotmail dot it
 a@aol.it~a at a o l dot it
 a@msn.it~a at m s n dot it
 cdf@abc.edu~c d f at a b c dot e d u
-abc@gmail.abc~a b c at g mail dot a b c
+abc@gmail.abc~a b c at G mail dot a b c
 abc@abc.com~a b c at a b c dot com
 asdf123@abc.com~a s d f one two three at a b c dot com
 a1b2@abc.com~a one b two at a b c dot com
-ab3.sdd.3@gmail.com~a b three dot s d d dot three at g mail dot com
-email is abc1@gmail.com~email is a b c one at g mail dot com
-test .b@gmail.com~test . b at g mail dot com
+ab3.sdd.3@gmail.com~a b three dot s d d dot three at G mail dot com
+email is abc1@gmail.com~email is a b c one at G mail dot com
+test .b@gmail.com~test . b at G mail dot com
 abs@nvidia.com~a b s at nvidia dot com
 email is a-1.b3_c&-d@gma4i-l.com test~email is a dash one dot b three underscore c ampersand dash d at g m a four i dash l dot com test
 nvidia.com~nvidia dot com
 test.com~t e s t dot com
 http://www.ourdailynews.com.sm~h t t p colon slash slash w w w dot o u r d a i l y n e w s dot com dot s m
+sdf@gmail.com.sm~s d f at G mail dot com dot s m

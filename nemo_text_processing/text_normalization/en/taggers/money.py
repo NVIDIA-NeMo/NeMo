@@ -187,7 +187,7 @@ class MoneyFst(GraphFst):
                 ).optimize()
 
         # weight for SH
-        final_graph |= pynutil.add_weight(decimal_graph_with_minor, -0.001)
+        final_graph |= pynutil.add_weight(decimal_graph_with_minor, -0.0001)
 
         if not deterministic:
             final_graph |= integer_graph_reordered | decimal_default_reordered

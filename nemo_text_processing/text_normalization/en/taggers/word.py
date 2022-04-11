@@ -43,7 +43,10 @@ class WordFst(GraphFst):
 
         if not deterministic:
             self.graph = pynini.closure(
-                pynini.difference(self.graph, pynini.union("$", "€", "₩", "£", "¥") + pynini.closure(NEMO_DIGIT, 1)), 1
+                pynini.difference(
+                    self.graph, pynini.union("$", "€", "₩", "£", "¥", "#", "$", "%") + pynini.closure(NEMO_DIGIT, 1)
+                ),
+                1,
             )
 
         self.fst = (pynutil.insert("name: \"") + self.graph + pynutil.insert("\"")).optimize()

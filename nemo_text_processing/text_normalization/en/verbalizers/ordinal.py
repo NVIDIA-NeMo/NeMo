@@ -49,13 +49,10 @@ class OrdinalFst(GraphFst):
             + pynini.closure(NEMO_NOT_QUOTE, 1)
             + pynutil.delete("\"")
         )
-        convert_rest = pynutil.insert("th", weight=0.01)
+        convert_rest = pynutil.insert("th")
 
         suffix = pynini.cdrewrite(
-            graph_digit | graph_teens | pynutil.add_weight(pynini.cross("ty", "tieth"), weight=0.001) | convert_rest,
-            "",
-            "[EOS]",
-            NEMO_SIGMA,
+            graph_digit | graph_teens | pynini.cross("ty", "tieth") | convert_rest, "", "[EOS]", NEMO_SIGMA,
         ).optimize()
         self.graph = pynini.compose(graph, suffix)
         self.suffix = suffix

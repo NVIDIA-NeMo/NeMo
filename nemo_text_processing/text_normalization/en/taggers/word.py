@@ -13,12 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, NEMO_NOT_SPACE, GraphFst
+from nemo_text_processing.text_normalization.en.graph_utils import (
+    NEMO_ALPHA,
+    NEMO_DIGIT,
+    NEMO_NOT_SPACE,
+    NEMO_SIGMA,
+    GraphFst,
+    convert_space,
+)
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 
 try:
     import pynini
     from pynini.lib import pynutil
+    from pynini.examples import plurals
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
@@ -49,4 +57,13 @@ class WordFst(GraphFst):
                 1,
             )
 
+        # leave phones of format [HH AH0 L OW1] untouched
+        phoneme_unit = pynini.closure(NEMO_ALPHA, 1) + pynini.closure(NEMO_DIGIT)
+        phoneme = (
+            pynini.accep(pynini.escape("["))
+            + pynini.closure(phoneme_unit + pynini.accep(" "))
+            + phoneme_unit
+            + pynini.accep(pynini.escape("]"))
+        )
+        self.graph = plurals._priority_union(convert_space(phoneme), self.graph, NEMO_SIGMA)
         self.fst = (pynutil.insert("name: \"") + self.graph + pynutil.insert("\"")).optimize()

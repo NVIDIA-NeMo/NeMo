@@ -33,3 +33,10 @@ there -0.4kg~there minus zero point four kilograms
 there- -0.4kg~there - minus zero point four kilograms
 ÀÁÂÃ check §- and ƛ, also ɧ~ÀÁÂÃ check section - and ƛ , also ɧ
 $ and 5% or %~dollar and five percent or percent sign
+ 1~one
+1~one
+1, ~one ,
+1!!!!~one ! ! ! !
+(1)Hello~( one ) Hello
+!1~! one
+1!hello~one ! hello

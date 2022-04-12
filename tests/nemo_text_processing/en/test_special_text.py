@@ -20,20 +20,15 @@ from parameterized import parameterized
 from ..utils import CACHE_DIR, PYNINI_AVAILABLE, parse_test_case_file
 
 
-class TestBoundary:
+class TestSpecialText:
 
     normalizer_en = (
         Normalizer(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
         if PYNINI_AVAILABLE
         else None
     )
-    normalizer_with_audio_en = (
-        NormalizerWithAudio(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE and CACHE_DIR
-        else None
-    )
 
-    @parameterized.expand(parse_test_case_file('en/data_text_normalization/test_cases_boundary.txt'))
+    @parameterized.expand(parse_test_case_file('en/data_text_normalization/test_cases_special_text.txt'))
     @pytest.mark.skipif(
         not PYNINI_AVAILABLE, reason="`pynini` not installed, please install via nemo_text_processing/setup.sh"
     )
@@ -42,9 +37,3 @@ class TestBoundary:
     def test_norm(self, test_input, expected):
         pred = self.normalizer_en.normalize(test_input, verbose=False)
         assert pred == expected
-
-        if self.normalizer_with_audio_en:
-            pred_non_deterministic = self.normalizer_with_audio_en.normalize(
-                test_input, n_tagged=30, punct_post_process=False
-            )
-            assert expected in pred_non_deterministic

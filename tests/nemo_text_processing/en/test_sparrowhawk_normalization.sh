@@ -21,8 +21,8 @@ runtest () {
   done < "$input"
 }
 
-testTNBoundary() {
-  input=$PROJECT_DIR/en/data_text_normalization/test_cases_boundary.txt
+testTNSpecialText() {
+  input=$PROJECT_DIR/en/data_text_normalization/test_cases_special_text.txt
   runtest $input
 }
 

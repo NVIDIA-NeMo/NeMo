@@ -74,7 +74,7 @@ are located in the remaining directories in an ``audio`` subdirectory.
 
    .. code-block:: bash
 
-     cd <nemo_root>/scripts
+     cd <nemo_root>/scripts/dataset_processing
      python fisher_audio_to_wav.py \
        --data_root=<fisher_root> --dest_root=<conversion_target_dir>
 

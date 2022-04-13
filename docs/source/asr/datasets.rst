@@ -235,7 +235,7 @@ Conversion to Tarred Datasets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 You can easily convert your existing NeMo-compatible ASR datasets using the
-`conversion script here <https://github.com/NVIDIA/NeMo/blob/v1.0.2/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
+`conversion script here <https://github.com/NVIDIA/NeMo/blob/main/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
 
 .. code::
 

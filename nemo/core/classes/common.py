@@ -262,7 +262,7 @@ class Typing(ABC):
             mandatory_out_types_list = list(metadata.mandatory_types.items())
 
             # First convert all outputs to list/tuple format to check correct number of outputs
-            if type(out_objects) in (list, tuple):
+            if isinstance(out_objects, (list, tuple)):
                 out_container = out_objects  # can be any rank nested structure
             else:
                 out_container = [out_objects]

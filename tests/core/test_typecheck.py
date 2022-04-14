@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import List, NamedTuple
+
 import pytest
 import torch
 
@@ -165,6 +167,32 @@ class TestNeuralTypeCheckSystem:
         assert result_z.neural_type.compare(NeuralType(('B',), ElementType())) == NeuralTypeComparisonResult.SAME
 
     @pytest.mark.unit
+    def test_multiple_output_types_only_namedtuple(self):
+        class NamedTupleOutputType(NamedTuple):
+            y: torch.Tensor
+            z: torch.Tensor
+
+        class MultipleOutputTypesWithNamedTuple(Typing):
+            @property
+            def output_types(self):
+                return {"y": NeuralType(('B',), ElementType()), "z": NeuralType(('B',), ElementType())}
+
+            @typecheck()
+            def __call__(self, x):
+                y = x + 1
+                z = x + 2
+                return NamedTupleOutputType(y=y, z=z)
+
+        obj = MultipleOutputTypesWithNamedTuple()
+        result = obj(x=torch.zeros(10))
+
+        assert result.y.sum() == torch.tensor(10.0)
+        assert result.y.neural_type.compare(NeuralType(('B',), ElementType())) == NeuralTypeComparisonResult.SAME
+
+        assert result.z.sum() == torch.tensor(20.0)
+        assert result.z.neural_type.compare(NeuralType(('B',), ElementType())) == NeuralTypeComparisonResult.SAME
+
+    @pytest.mark.unit
     def test_multiple_mixed_output_types_only(self):
         class MultipleMixedOutputTypes(Typing):
             @property
@@ -176,6 +204,35 @@ class TestNeuralTypeCheckSystem:
                 y = x + 1
                 z = x + 2
                 return y, [z, z]
+
+        obj = MultipleMixedOutputTypes()
+        result_y, result_z = obj(x=torch.zeros(10))
+
+        assert result_y.sum() == torch.tensor(10.0)
+        assert result_y.neural_type.compare(NeuralType(('B',), ElementType())) == NeuralTypeComparisonResult.SAME
+
+        assert result_z[0].sum() == torch.tensor(20.0)
+        assert result_z[0].neural_type.compare(NeuralType(('B',), ElementType())) == NeuralTypeComparisonResult.SAME
+
+        assert result_z[1].sum() == torch.tensor(20.0)
+        assert result_z[1].neural_type.compare(NeuralType(('B',), ElementType())) == NeuralTypeComparisonResult.SAME
+
+    @pytest.mark.unit
+    def test_multiple_mixed_output_types_only_namedtuple(self):
+        class NamedTupleOutputType(NamedTuple):
+            y: torch.Tensor
+            zs: List[torch.Tensor]
+
+        class MultipleMixedOutputTypes(Typing):
+            @property
+            def output_types(self):
+                return {"y": NeuralType(('B',), ElementType()), "zs": [NeuralType(('B',), ElementType())]}
+
+            @typecheck()
+            def __call__(self, x):
+                y = x + 1
+                z = x + 2
+                return NamedTupleOutputType(y=y, zs=[z, z])
 
         obj = MultipleMixedOutputTypes()
         result_y, result_z = obj(x=torch.zeros(10))
@@ -206,6 +263,28 @@ class TestNeuralTypeCheckSystem:
         obj = MultipleMixedOutputTypes()
         with pytest.raises(TypeError):
             result_y, result_z = obj(x=torch.zeros(10))
+
+    @pytest.mark.unit
+    def test_multiple_mixed_output_types_only_namedtuple_mismatched(self):
+        class NamedTupleOutputType(NamedTuple):
+            ys: List[torch.Tensor]
+            z: torch.Tensor
+
+        class MultipleMixedOutputTypes(Typing):
+            @property
+            def output_types(self):
+                return {"ys": NeuralType(('B',), ElementType()), "z": [NeuralType(('B',), ElementType())]}
+
+            @typecheck()
+            def __call__(self, x):
+                # Use list of y, single z, contrary to signature
+                y = x + 1
+                z = x + 2
+                return NamedTupleOutputType(ys=[y, y], z=z)
+
+        obj = MultipleMixedOutputTypes()
+        with pytest.raises(TypeError):
+            _ = obj(x=torch.zeros(10))
 
     @pytest.mark.unit
     def test_incorrect_inheritance(self):

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, GraphFst
 
 try:
@@ -39,11 +40,29 @@ class OrdinalFst(GraphFst):
         super().__init__(name="ordinal", kind="classify", deterministic=deterministic)
 
         cardinal_graph = cardinal.graph
-        endings = ["rd", "th", "st", "nd"]
-        endings += [x.upper() for x in endings]
-        self.graph = (
-            (pynini.closure(NEMO_DIGIT | pynini.accep(",")) + pynutil.delete(pynini.union(*endings))) @ cardinal_graph
-        ).optimize()
+        cardinal_format = pynini.closure(NEMO_DIGIT | pynini.accep(","))
+        st_format = (
+            pynini.closure(cardinal_format + (NEMO_DIGIT - "1"), 0, 1)
+            + pynini.accep("1")
+            + pynutil.delete(pynini.union("st", "ST"))
+        )
+        nd_format = (
+            pynini.closure(cardinal_format + (NEMO_DIGIT - "1"), 0, 1)
+            + pynini.accep("2")
+            + pynutil.delete(pynini.union("nd", "ND"))
+        )
+        rd_format = (
+            pynini.closure(cardinal_format + (NEMO_DIGIT - "1"), 0, 1)
+            + pynini.accep("3")
+            + pynutil.delete(pynini.union("rd", "RD"))
+        )
+        th_format = pynini.closure(
+            (NEMO_DIGIT - "1" - "2" - "3")
+            | (cardinal_format + "1" + NEMO_DIGIT)
+            | (cardinal_format + (NEMO_DIGIT - "1") + (NEMO_DIGIT - "1" - "2" - "3")),
+            1,
+        ) + pynutil.delete(pynini.union("th", "TH"))
+        self.graph = (st_format | nd_format | rd_format | th_format) @ cardinal_graph
         final_graph = pynutil.insert("integer: \"") + self.graph + pynutil.insert("\"")
         final_graph = self.add_tokens(final_graph)
         self.fst = final_graph.optimize()

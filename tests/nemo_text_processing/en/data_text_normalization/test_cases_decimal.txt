@@ -7,3 +7,7 @@
 .1 trillion~point one trillion
 -0.1~minus zero point one
 0.004~zero point zero zero four
+0.1M~zero point one million
+0.1 M~zero point one million
+0.1 B~zero point one billion
+0.1 K~zero point one thousand

@@ -36,8 +36,10 @@ class DecimalFst(GraphFst):
 
     def __init__(self, cardinal, deterministic: bool = True):
         super().__init__(name="decimal", kind="verbalize", deterministic=deterministic)
-
-        self.optional_sign = pynini.closure(pynini.cross("negative: \"true\"", "minus ") + delete_space, 0, 1)
+        self.optional_sign = pynini.cross("negative: \"true\"", "minus ")
+        if not deterministic:
+            self.optional_sign |= pynini.cross("negative: \"true\"", "negative ")
+        self.optional_sign = pynini.closure(self.optional_sign + delete_space, 0, 1)
         self.integer = pynutil.delete("integer_part:") + cardinal.integer
         self.optional_integer = pynini.closure(self.integer + delete_space + insert_space, 0, 1)
         self.fractional_default = (

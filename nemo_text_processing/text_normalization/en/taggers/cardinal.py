@@ -23,6 +23,7 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     insert_space,
 )
 from nemo_text_processing.text_normalization.en.taggers.date import get_four_digit_year_graph
+from nemo_text_processing.text_normalization.en.taggers.ordinal import OrdinalFst
 from nemo_text_processing.text_normalization.en.utils import get_abs_path
 
 try:
@@ -54,10 +55,6 @@ class CardinalFst(GraphFst):
         self.graph_hundred_component_at_least_one_none_zero_digit = (
             pynini.closure(NEMO_DIGIT, 2, 3) | pynini.difference(NEMO_DIGIT, pynini.accep("0"))
         ) @ graph
-        self.graph = (
-            pynini.closure(NEMO_DIGIT, 1, 3)
-            + pynini.closure(pynini.closure(pynutil.delete(","), 0, 1) + NEMO_DIGIT + NEMO_DIGIT + NEMO_DIGIT)
-        ) @ graph
 
         graph_digit = pynini.string_file(get_abs_path("data/numbers/digit.tsv"))
         graph_zero = pynini.string_file(get_abs_path("data/numbers/zero.tsv"))
@@ -88,9 +85,14 @@ class CardinalFst(GraphFst):
                 1,
             )
 
-        serial_graph = self.get_serial_graph()
         optional_minus_graph = pynini.closure(pynutil.insert("negative: ") + pynini.cross("-", "\"true\" "), 0, 1)
 
+        self.graph = (
+            pynini.closure(NEMO_DIGIT, 1, 3)
+            + (pynini.closure(pynutil.delete(",") + NEMO_DIGIT ** 3) | pynini.closure(NEMO_DIGIT ** 3))
+        ) @ graph
+
+        serial_graph = self.get_serial_graph()
         if deterministic:
             long_numbers = pynini.compose(NEMO_DIGIT ** (5, ...), self.single_digits_graph).optimize()
             final_graph = plurals._priority_union(long_numbers, self.graph, NEMO_SIGMA).optimize() | serial_graph
@@ -178,10 +180,9 @@ class CardinalFst(GraphFst):
         )
 
         # exclude ordinal numbers from serial options
-        endings = ["rd", "th", "st", "nd"]
-        endings += [x.upper() for x in endings]
+        ordinal = OrdinalFst(cardinal=self, deterministic=True)
         serial_graph = pynini.compose(
-            pynini.difference(NEMO_SIGMA, pynini.closure(NEMO_DIGIT, 1) + pynini.union(*endings)), serial_graph
+            pynini.difference(NEMO_SIGMA, pynini.project(ordinal.graph, "input")), serial_graph
         ).optimize()
 
         serial_graph = pynutil.add_weight(serial_graph, 0.0001)

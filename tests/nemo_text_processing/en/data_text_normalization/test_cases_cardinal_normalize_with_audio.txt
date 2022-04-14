@@ -3,6 +3,18 @@ one twenty three dollars
 one two three dollars
 one hundred twenty three dollars
 one hundred and twenty three dollars
+~-1
+minus one
+negative one
+~12000
+one two zero zero zero
+twelve thousand
+~12,000
+twelve thousand
+~9000,000
+nine thousand , zero zero zero
+~12,000
+twelve thousand
 ~$123.2
 one twenty three dollars and twenty cents
 one two three dollars twenty cents

@@ -7,7 +7,7 @@ sample_rate: 16000
 # functionality
 gen_overlap_seq: True # whether to generate predictions with overlapping input segments and smoothing filter
 gen_seg_table: True # whether to converting frame level prediction to speech/no-speech segment in start and end times format
-write_to_manifest: True # whether to writing above segments to a single manfiest json file.
+write_to_manifest: True # whether to writing above segments to a single manifest json file.
 
 prepare_manifest:
     auto_split: True # whether to automatically split manifest entry by split_duration to avoid potential CUDA out of memory issue.
@@ -31,11 +31,11 @@ vad:
         min_duration_off: 0.2 # threshold for short speech segment deletion
         filter_speech_first: True 
           
-prepared_manfiest_vad_input: null # if not specify, it will automatcially generated be "manifest_vad_input.json"
+prepared_manifest_vad_input: null # if not specify, it will automatically generated be "manifest_vad_input.json"
 frame_out_dir: "vad_frame"
-smoothing_out_dir: null # if not specify, it will automatcially generated be frame_out_dir + "/overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
+smoothing_out_dir: null # if not specify, it will automatically generated be frame_out_dir + "/overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
 table_out_dir: null # if not specify, it will automatically be frame_out_dir + "/table_output_tmp_" + key and value in postprocessing params
-out_manifest_filepath: null # if not specifym it will autautomatically be "vad_out.json"
+out_manifest_filepath: null # if not specify it will automatically be "vad_out.json"
 
 # json manifest line example
 # {"audio_filepath": "/path/to/audio_file", "offset": 0, "duration": null, "label": "infer", "text": "-"}

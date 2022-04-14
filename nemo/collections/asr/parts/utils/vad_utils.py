@@ -13,10 +13,12 @@
 # limitations under the License.
 import glob
 import json
+import math
+import multiprocessing
 import os
 import shutil
 from itertools import repeat
-from multiprocessing import Pool
+from typing import Dict, Tuple
 
 import IPython.display as ipd
 import librosa
@@ -46,13 +48,13 @@ This file contains all the utility functions required for voice activity detecti
 """
 
 
-def prepare_manifest(config):
+def prepare_manifest(config: dict) -> str:
     """
     Perform VAD on long audio snippet might cause CUDA out of memory issue. 
     Automatically split manifest entry by split_duration to avoid the potential memory issue.
     """
-    if 'prepared_manfiest_vad_input' in config and config['prepared_manfiest_vad_input']:
-        manifest_vad_input = config['prepared_manfiest_vad_input']
+    if 'prepared_manifest_vad_input' in config and config['prepared_manifest_vad_input']:
+        manifest_vad_input = config['prepared_manifest_vad_input']
     else:
         manifest_vad_input = "manifest_vad_input.json"
 
@@ -69,7 +71,7 @@ def prepare_manifest(config):
             "The input for manifest preparation would either be a string of the filepath to manifest or a list of {'audio_filepath': i, 'offset': 0, 'duration': null} "
         )
 
-    p = Pool(processes=config['num_workers'])
+    p = multiprocessing.Pool(processes=config['num_workers'])
     args_func = {
         'label': 'infer',
         'split_duration': config['split_duration'],
@@ -92,15 +94,16 @@ def prepare_manifest(config):
     return manifest_vad_input
 
 
-def write_vad_infer_manifest(file, args_func):
+def write_vad_infer_manifest(file: dict, args_func: dict) -> list:
     """
     Used by prepare_manifest.
-    Given a list of files, write them to manifest for dataloader with restrictions.
+    Given a list of files, split them with maximum split_duration and write them to the manifest.
     Args:
-        files (json) : file to be processed
-        label (str): label for audio snippet.
-        split_duration (float): max duration of each audio clip (each line in json)
-        window_length_in_sec (float) : length of window for generating the frame. Used for taking care of joint. 
+        files (dict) : file to be processed
+        args_func:
+            label (str): label for audio snippet.y
+            split_duration (float): max duration of each audio clip (each line in json)
+            window_length_in_sec (float) : length of window for generating the frame. Used for taking care of joint. 
     Returns:
         res (list) : list of generated metadata line of json for file
     """
@@ -109,8 +112,8 @@ def write_vad_infer_manifest(file, args_func):
     split_duration = args_func['split_duration']
     window_length_in_sec = args_func['window_length_in_sec']
     filepath = file['audio_filepath']
-    in_duration = file['duration']
-    in_offset = file['offset']
+    in_duration = file.get('duration', None)
+    in_offset = file.get('offset', 0)
 
     try:
         sr = 16000
@@ -165,10 +168,10 @@ def write_vad_infer_manifest(file, args_func):
     return res
 
 
-def get_vad_stream_status(data):
+def get_vad_stream_status(data: list) -> list:
     """
     Generate a list of status for each snippet in manifest. A snippet should be in single, start, next or end status. 
-    Used for concatenate to full audio file.
+    Used for concatenating to full audio file.
     Args:
         data (list): list of filepath of audio snippet
     Returns:
@@ -195,12 +198,32 @@ def get_vad_stream_status(data):
     return status
 
 
-def generate_overlap_vad_seq(
-    frame_pred_dir, smoothing_method, overlap, window_length_in_sec, shift_length_in_sec, num_workers, out_dir=None
-):
+def load_tensor_from_file(filepath: str) -> Tuple[torch.Tensor, str]:
     """
-    Gnerate predictions with overlapping input windows/segments. Then a smoothing filter is applied to decide the label for a frame spanned by multiple windows. 
+    Load torch.Tensor and the name from file
+    """
+    frame = []
+    with open(filepath, "r", encoding='utf-8') as f:
+        for line in f.readlines():
+            frame.append(float(line))
+
+    name = filepath.split("/")[-1].rsplit(".", 1)[0]
+    return torch.tensor(frame), name
+
+
+def generate_overlap_vad_seq(
+    frame_pred_dir: str,
+    smoothing_method: str,
+    overlap: float,
+    window_length_in_sec: float,
+    shift_length_in_sec: float,
+    num_workers: int,
+    out_dir: str = None,
+) -> str:
+    """
+    Generate predictions with overlapping input windows/segments. Then a smoothing filter is applied to decide the label for a frame spanned by multiple windows. 
     Two common smoothing filters are supported: majority vote (median) and average (mean).
+    This function uses multiprocessing to speed up. 
     Args:
         frame_pred_dir (str): Directory of frame prediction file to be processed.
         smoothing_method (str): median or mean smoothing filter.
@@ -210,10 +233,10 @@ def generate_overlap_vad_seq(
         out_dir (str): directory of generated predictions.
         num_workers(float): number of process for multiprocessing
     Returns:
-        overlap_out_dir(str): directory of generate predictions.
+        overlap_out_dir(str): directory of the generated predictions.
     """
 
-    p = Pool(processes=num_workers)
+    p = multiprocessing.Pool(processes=num_workers)
     frame_filepathlist = glob.glob(frame_pred_dir + "/*.frame")
     if out_dir:
         overlap_out_dir = out_dir
@@ -224,12 +247,13 @@ def generate_overlap_vad_seq(
         os.mkdir(overlap_out_dir)
 
     per_args = {
-        "out_dir": overlap_out_dir,
-        "smoothing_method": smoothing_method,
         "overlap": overlap,
         "window_length_in_sec": window_length_in_sec,
         "shift_length_in_sec": shift_length_in_sec,
+        "out_dir": overlap_out_dir,
+        "smoothing_method": smoothing_method,
     }
+
     p.starmap(generate_overlap_vad_seq_per_file, zip(frame_filepathlist, repeat(per_args)))
     p.close()
     p.join()
@@ -237,86 +261,393 @@ def generate_overlap_vad_seq(
     return overlap_out_dir
 
 
-def generate_overlap_vad_seq_per_file(frame_filepath, per_args):
+@torch.jit.script
+def generate_overlap_vad_seq_per_tensor(
+    frame: torch.Tensor, per_args: Dict[str, float], smoothing_method: str
+) -> torch.Tensor:
     """
     Use generated frame prediction (generated by shifting window of shift_length_in_sec (10ms)) to generate prediction with overlapping input window/segments
-    See discription in generate_overlap_vad_seq.
+    See description in generate_overlap_vad_seq.
+    Use this for single instance pipeline. 
     """
-    try:
-        smoothing_method = per_args['smoothing_method']
-        overlap = per_args['overlap']
-        window_length_in_sec = per_args['window_length_in_sec']
-        shift_length_in_sec = per_args['shift_length_in_sec']
-        out_dir = per_args['out_dir']
+    # This function will be refactor for vectorization but this is okay for now
 
-        frame = np.loadtxt(frame_filepath)
-        name = os.path.basename(frame_filepath).split(".frame")[0] + "." + smoothing_method
-        overlap_filepath = os.path.join(out_dir, name)
+    overlap = per_args['overlap']
+    window_length_in_sec = per_args['window_length_in_sec']
+    shift_length_in_sec = per_args['shift_length_in_sec']
+    frame_len = per_args.get('frame_len', 0.01)
 
-        shift = int(shift_length_in_sec / 0.01)  # number of units of shift
-        seg = int((window_length_in_sec / 0.01 + 1))  # number of units of each window/segment
+    shift = int(shift_length_in_sec / frame_len)  # number of units of shift
+    seg = int((window_length_in_sec / frame_len + 1))  # number of units of each window/segment
 
-        jump_on_target = int(seg * (1 - overlap))  # jump on target generated sequence
-        jump_on_frame = int(jump_on_target / shift)  # jump on input frame sequence
+    jump_on_target = int(seg * (1 - overlap))  # jump on target generated sequence
+    jump_on_frame = int(jump_on_target / shift)  # jump on input frame sequence
 
-        if jump_on_frame < 1:
-            raise ValueError(
-                f"Note we jump over frame sequence to generate overlapping input segments. \n \
-            Your input makes jump_on_fram={jump_on_frame} < 1 which is invalid because it cannot jump and will stuck.\n \
-            Please try different window_length_in_sec, shift_length_in_sec and overlap choices. \n \
-            jump_on_target = int(seg * (1 - overlap)) \n \
-            jump_on_frame  = int(jump_on_frame/shift) "
+    if jump_on_frame < 1:
+        raise ValueError(
+            f"Note we jump over frame sequence to generate overlapping input segments. \n \
+        Your input makes jump_on_frame={jump_on_frame} < 1 which is invalid because it cannot jump and will stuck.\n \
+        Please try different window_length_in_sec, shift_length_in_sec and overlap choices. \n \
+        jump_on_target = int(seg * (1 - overlap)) \n \
+        jump_on_frame  = int(jump_on_frame/shift) "
+        )
+
+    target_len = int(len(frame) * shift)
+
+    if smoothing_method == 'mean':
+        preds = torch.zeros(target_len)
+        pred_count = torch.zeros(target_len)
+
+        for i, og_pred in enumerate(frame):
+            if i % jump_on_frame != 0:
+                continue
+            start = i * shift
+            end = start + seg
+            preds[start:end] = preds[start:end] + og_pred
+            pred_count[start:end] = pred_count[start:end] + 1
+
+        preds = preds / pred_count
+        last_non_zero_pred = preds[pred_count != 0][-1]
+        preds[pred_count == 0] = last_non_zero_pred
+
+    elif smoothing_method == 'median':
+        preds = [torch.empty(0) for _ in range(target_len)]
+        for i, og_pred in enumerate(frame):
+            if i % jump_on_frame != 0:
+                continue
+
+            start = i * shift
+            end = start + seg
+            for j in range(start, end):
+                if j <= target_len - 1:
+                    preds[j] = torch.cat((preds[j], og_pred.unsqueeze(0)), 0)
+
+        preds = torch.stack([torch.nanquantile(l, q=0.5) for l in preds])
+        nan_idx = torch.isnan(preds)
+        last_non_nan_pred = preds[~nan_idx][-1]
+        preds[nan_idx] = last_non_nan_pred
+
+    else:
+        raise ValueError("smoothing_method should be either mean or median")
+
+    return preds
+
+
+def generate_overlap_vad_seq_per_file(frame_filepath: str, per_args: dict) -> str:
+    """
+    A wrapper for generate_overlap_vad_seq_per_tensor.
+    """
+
+    out_dir = per_args['out_dir']
+    smoothing_method = per_args['smoothing_method']
+    frame, name = load_tensor_from_file(frame_filepath)
+
+    per_args_float: Dict[str, float] = {}
+    for i in per_args:
+        if type(per_args[i]) == float or type(per_args[i]) == int:
+            per_args_float[i] = per_args[i]
+
+    preds = generate_overlap_vad_seq_per_tensor(frame, per_args_float, smoothing_method)
+
+    overlap_filepath = os.path.join(out_dir, name + "." + smoothing_method)
+    with open(overlap_filepath, "w", encoding='utf-8') as f:
+        for pred in preds:
+            f.write(f"{pred:.4f}\n")
+
+    return overlap_filepath
+
+
+@torch.jit.script
+def merge_overlap_segment(segments: torch.Tensor) -> torch.Tensor:
+    """
+    Merged the given overlapped segments.
+    For example:
+    torch.Tensor([[0, 1.5], [1, 3.5]]) -> torch.Tensor([0, 3.5])
+    """
+    if (
+        segments.shape == torch.Size([0])
+        or segments.shape == torch.Size([0, 2])
+        or segments.shape == torch.Size([1, 2])
+    ):
+        return segments
+
+    segments = segments[segments[:, 0].sort()[1]]
+    merge_boundary = segments[:-1, 1] >= segments[1:, 0]
+    head_padded = torch.nn.functional.pad(merge_boundary, [1, 0], mode='constant', value=0.0)
+    head = segments[~head_padded, 0]
+    tail_padded = torch.nn.functional.pad(merge_boundary, [0, 1], mode='constant', value=0.0)
+    tail = segments[~tail_padded, 1]
+    merged = torch.stack((head, tail), dim=1)
+    return merged
+
+
+@torch.jit.script
+def filter_short_segments(segments: torch.Tensor, threshold: float) -> torch.Tensor:
+    """
+    Remove segments which duration is smaller than a threshold.
+    For example,
+    torch.Tensor([[0, 1.5], [1, 3.5], [4, 7]]) and threshold = 2.0
+    -> 
+    torch.Tensor([[1, 3.5], [4, 7]])
+    """
+    return segments[segments[:, 1] - segments[:, 0] >= threshold]
+
+
+def percentile(data: torch.Tensor, perc: int) -> float:
+    """
+    Calculate percentile given data
+    """
+    size = len(data)
+    return float(sorted(data)[int(math.ceil((size * perc) / 100)) - 1])
+
+
+def cal_vad_onset_offset(
+    scale: str, onset: float, offset: float, sequence: torch.Tensor = None
+) -> Tuple[float, float]:
+    """
+    Calculate onset and offset threshold given different scale.
+    """
+    if scale == "absolute":
+        mini = 0
+        maxi = 1
+    elif scale == "relative":
+        mini = min(sequence)
+        maxi = max(sequence)
+    elif scale == "percentile":
+        mini = percentile(sequence, 1)
+        maxi = percentile(sequence, 99)
+
+    onset = mini + onset * (maxi - mini)
+    offset = mini + offset * (maxi - mini)
+    return float(onset), float(offset)
+
+
+@torch.jit.script
+def binarization(sequence: torch.Tensor, per_args: Dict[str, float]) -> torch.Tensor:
+    """
+    Binarize predictions to speech and non-speech
+
+    Reference
+    Paper: Gregory Gelly and Jean-Luc Gauvain. "Minimum Word Error Training of RNN-based Voice Activity Detection", InterSpeech 2015. 
+    Implementation: https://github.com/pyannote/pyannote-audio/blob/master/pyannote/audio/utils/signal.py 
+
+    Args:
+        sequence (torch.Tensor) : A tensor of frame level predictions.
+        per_args:
+            onset (float): onset threshold for detecting the beginning and end of a speech 
+            offset (float): offset threshold for detecting the end of a speech. 
+            pad_onset (float): adding durations before each speech segment
+            pad_offset (float): adding durations after each speech segment;
+            shift_length_in_sec (float): amount of shift of window for generating the frame.
+    
+    Returns:
+        speech_segments(torch.Tensor): A tensor of speech segment in torch.Tensor([[start1, end1], [start2, end2]]) format. 
+    """
+    shift_length_in_sec = per_args.get('shift_length_in_sec', 0.01)
+
+    onset = per_args.get('onset', 0.5)
+    offset = per_args.get('offset', 0.5)
+    pad_onset = per_args.get('pad_onset', 0.0)
+    pad_offset = per_args.get('pad_offset', 0.0)
+
+    speech = False
+    start = 0.0
+    i = 0
+
+    speech_segments = torch.empty(0)
+
+    for i in range(1, len(sequence)):
+        # Current frame is speech
+        if speech:
+            # Switch from speech to non-speech
+            if sequence[i] < offset:
+                if i * shift_length_in_sec + pad_offset > max(0, start - pad_onset):
+                    new_seg = torch.tensor(
+                        [max(0, start - pad_onset), i * shift_length_in_sec + pad_offset]
+                    ).unsqueeze(0)
+                    speech_segments = torch.cat((speech_segments, new_seg), 0)
+
+                start = i * shift_length_in_sec
+                speech = False
+
+        # Current frame is non-speech
+        else:
+            # Switch from non-speech to speech
+            if sequence[i] > onset:
+                start = i * shift_length_in_sec
+                speech = True
+
+    # if it's speech at the end, add final segment
+    if speech:
+        new_seg = torch.tensor([max(0, start - pad_onset), i * shift_length_in_sec + pad_offset]).unsqueeze(0)
+        speech_segments = torch.cat((speech_segments, new_seg), 0)
+
+    # Merge the overlapped speech segments due to padding
+    speech_segments = merge_overlap_segment(speech_segments)  # not sorted
+    return speech_segments
+
+
+@torch.jit.script
+def remove_segments(original_segments: torch.Tensor, to_be_removed_segments: torch.Tensor) -> torch.Tensor:
+    """
+    Remove speech segments list in to_be_removed_segments from original_segments.
+    For example, 
+    remove torch.Tensor([[start2, end2],[start4, end4]]) from torch.Tensor([[start1, end1],[start2, end2],[start3, end3], [start4, end4]]),
+    -> 
+    torch.Tensor([[start1, end1],[start3, end3]])
+    """
+    for y in to_be_removed_segments:
+        original_segments = original_segments[original_segments.eq(y).all(dim=1).logical_not()]
+    return original_segments
+
+
+@torch.jit.script
+def get_gap_segments(segments: torch.Tensor) -> torch.Tensor:
+    """
+    Get the gap segments. 
+    For example,
+    torch.Tensor([[start1, end1], [start2, end2], [start3, end3]]) -> torch.Tensor([[end1, start2], [end2, start3]])
+    """
+    segments = segments[segments[:, 0].sort()[1]]
+    return torch.column_stack((segments[:-1, 1], segments[1:, 0]))
+
+
+@torch.jit.script
+def filtering(speech_segments: torch.Tensor, per_args: Dict[str, float]) -> torch.Tensor:
+
+    """
+    Filter out short non_speech and speech segments.
+
+    Reference
+    Paper: Gregory Gelly and Jean-Luc Gauvain. "Minimum Word Error Training of RNN-based Voice Activity Detection", InterSpeech 2015. 
+    Implementation: https://github.com/pyannote/pyannote-audio/blob/master/pyannote/audio/utils/signal.py 
+    Args:
+        speech_segments (torch.Tensor):  A tensor of speech segment in torch.Tensor([[start1, end1], [start2, end2]]) format. 
+        per_args:
+            min_duration_on (float): threshold for small non_speech deletion
+            min_duration_off (float): threshold for short speech segment deletion
+            filter_speech_first (float): Whether to perform short speech segment deletion first. Use 1.0 to represent True. 
+
+    Returns:
+        speech_segments(torch.Tensor): A tensor of filtered speech segment in torch.Tensor([[start1, end1], [start2, end2]]) format. 
+    """
+    if speech_segments.shape == torch.Size([0]):
+        return speech_segments
+
+    min_duration_on = per_args.get('min_duration_on', 0.0)
+    min_duration_off = per_args.get('min_duration_off', 0.0)
+    filter_speech_first = per_args.get('filter_speech_first', 1.0)
+
+    if filter_speech_first == 1.0:
+        # Filter out the shorter speech segments
+        if min_duration_on > 0.0:
+            speech_segments = filter_short_segments(speech_segments, min_duration_on)
+        # Filter out the shorter non-speech segments and return to be as speech segments
+        if min_duration_off > 0.0:
+            # Find non-speech segments
+            non_speech_segments = get_gap_segments(speech_segments)
+            # Find shorter non-speech segments
+            short_non_speech_segments = remove_segments(
+                non_speech_segments, filter_short_segments(non_speech_segments, min_duration_off)
+            )
+            # Return shorter non-speech segments to be as speech segments
+            speech_segments = torch.cat((speech_segments, short_non_speech_segments), 0)
+
+            # Merge the overlapped speech segments
+            speech_segments = merge_overlap_segment(speech_segments)
+    else:
+        if min_duration_off > 0.0:
+            # Find non-speech segments
+            non_speech_segments = get_gap_segments(speech_segments)
+            # Find shorter non-speech segments
+            short_non_speech_segments = remove_segments(
+                non_speech_segments, filter_short_segments(non_speech_segments, min_duration_off)
             )
 
-        target_len = int(len(frame) * shift)
+            speech_segments = torch.cat((speech_segments, short_non_speech_segments), 0)
 
-        if smoothing_method == 'mean':
-            preds = np.zeros(target_len)
-            pred_count = np.zeros(target_len)
+            # Merge the overlapped speech segments
+            speech_segments = merge_overlap_segment(speech_segments)
+        if min_duration_on > 0.0:
+            speech_segments = filter_short_segments(speech_segments, min_duration_on)
 
-            for i, og_pred in enumerate(frame):
-                if i % jump_on_frame != 0:
-                    continue
-                start = i * shift
-                end = start + seg
-                preds[start:end] = preds[start:end] + og_pred
-                pred_count[start:end] = pred_count[start:end] + 1
+    return speech_segments
 
-            preds = preds / pred_count
-            last_non_zero_pred = preds[pred_count != 0][-1]
-            preds[pred_count == 0] = last_non_zero_pred
 
-        elif smoothing_method == 'median':
-            preds = [[] for _ in range(target_len)]
-            for i, og_pred in enumerate(frame):
-                if i % jump_on_frame != 0:
-                    continue
+def prepare_gen_segment_table(sequence: torch.Tensor, per_args: dict) -> Tuple[str, dict]:
+    """
+    Preparing for generating segment table. 
+    """
+    out_dir = per_args.get('out_dir', None)
 
-                start = i * shift
-                end = start + seg
-                for j in range(start, end):
-                    if j <= target_len - 1:
-                        preds[j].append(og_pred)
+    # calculate onset offset based on scale selection
+    per_args['onset'], per_args['offset'] = cal_vad_onset_offset(
+        per_args.get('scale', 'absolute'), per_args['onset'], per_args['offset'], sequence
+    )
 
-            preds = np.array([np.median(l) for l in preds])
-            nan_idx = np.isnan(preds)
-            last_non_nan_pred = preds[~nan_idx][-1]
-            preds[nan_idx] = last_non_nan_pred
-
+    # cast 'filter_speech_first' for torch.jit.script
+    if 'filter_speech_first' in per_args:
+        if per_args['filter_speech_first']:
+            per_args['filter_speech_first'] = 1.0
         else:
-            raise ValueError("smoothing_method should be either mean or median")
+            per_args['filter_speech_first'] = 0.0
 
-        round_final = np.round(preds, 4)
-        np.savetxt(overlap_filepath, round_final, delimiter='\n')
-        return overlap_filepath
+    per_args_float: Dict[str, float] = {}
+    for i in per_args:
+        if type(per_args[i]) == float or type(per_args[i]) == int:
+            per_args_float[i] = per_args[i]
 
-    except Exception as e:
-        raise (e)
+    return out_dir, per_args_float
+
+
+@torch.jit.script
+def generate_vad_segment_table_per_tensor(sequence: torch.Tensor, per_args: Dict[str, float]) -> torch.Tensor:
+    """
+    See description in generate_overlap_vad_seq.
+    Use this for single instance pipeline. 
+    """
+
+    shift_length_in_sec = per_args['shift_length_in_sec']
+    speech_segments = binarization(sequence, per_args)
+    speech_segments = filtering(speech_segments, per_args)
+
+    if speech_segments.shape == torch.Size([0]):
+        return speech_segments
+
+    speech_segments, _ = torch.sort(speech_segments, 0)
+
+    dur = speech_segments[:, 1:2] - speech_segments[:, 0:1] + shift_length_in_sec
+    speech_segments = torch.column_stack((speech_segments, dur))
+
+    return speech_segments
+
+
+def generate_vad_segment_table_per_file(pred_filepath: str, per_args: dict) -> str:
+    """
+    A wrapper for generate_vad_segment_table_per_tensor
+    """
+    sequence, name = load_tensor_from_file(pred_filepath)
+    out_dir, per_args_float = prepare_gen_segment_table(sequence, per_args)
+
+    preds = generate_vad_segment_table_per_tensor(sequence, per_args_float)
+    save_name = name + ".txt"
+    save_path = os.path.join(out_dir, save_name)
+
+    if preds.shape == torch.Size([0]):
+        with open(save_path, "w", encoding='utf-8') as fp:
+            fp.write(f"0 0 speech\n")
+
+    else:
+        with open(save_path, "w", encoding='utf-8') as fp:
+            for i in preds:
+                fp.write(f"{i[0]:.4f} {i[2]:.4f} speech\n")
+
+    return save_path
 
 
 def generate_vad_segment_table(
-    vad_pred_dir, postprocessing_params, shift_length_in_sec, num_workers, out_dir=None, threshold=None
-):
+    vad_pred_dir: str, postprocessing_params: dict, shift_length_in_sec: float, num_workers: int, out_dir: str = None,
+) -> str:
     """
     Convert frame level prediction to speech segment in start and end times format.
     And save to csv file  in rttm-like format
@@ -329,10 +660,10 @@ def generate_vad_segment_table(
         out_dir (str): output dir of generated table/csv file.
         num_workers(float): number of process for multiprocessing
     Returns:
-        table_out_dir(str): directory of generate table.
+        table_out_dir(str): directory of the generated table.
     """
 
-    p = Pool(processes=num_workers)
+    p = multiprocessing.Pool(processes=num_workers)
     suffixes = ("frame", "mean", "median")
     vad_pred_filepath_list = [os.path.join(vad_pred_dir, x) for x in os.listdir(vad_pred_dir) if x.endswith(suffixes)]
 
@@ -348,8 +679,10 @@ def generate_vad_segment_table(
     if not os.path.exists(table_out_dir):
         os.mkdir(table_out_dir)
 
-    per_args = {"shift_length_in_sec": shift_length_in_sec, "out_dir": table_out_dir}
-
+    per_args = {
+        "shift_length_in_sec": shift_length_in_sec,
+        "out_dir": table_out_dir,
+    }
     per_args = {**per_args, **postprocessing_params}
 
     p.starmap(generate_vad_segment_table_per_file, zip(vad_pred_filepath_list, repeat(per_args)))
@@ -359,213 +692,20 @@ def generate_vad_segment_table(
     return table_out_dir
 
 
-def generate_vad_segment_table_per_file(pred_filepath, per_args):
+def vad_construct_pyannote_object_per_file(
+    vad_table_filepath: str, groundtruth_RTTM_file: str
+) -> Tuple[Annotation, Annotation]:
     """
-    See discription in generate_overlap_vad_seq.
-    """
-    shift_length_in_sec = per_args['shift_length_in_sec']
-    out_dir = per_args['out_dir']
-
-    name = pred_filepath.split("/")[-1].rsplit(".", 1)[0]
-    sequence = np.loadtxt(pred_filepath)
-
-    speech_segments = binarization(sequence, per_args)
-    speech_segments = filtering(speech_segments, per_args)
-
-    seg_speech_table = pd.DataFrame(speech_segments, columns=['start', 'end'])
-    seg_speech_table = seg_speech_table.sort_values('start', ascending=True)
-    seg_speech_table['dur'] = seg_speech_table['end'] - seg_speech_table['start'] + shift_length_in_sec
-    seg_speech_table['vad'] = 'speech'
-
-    save_name = name + ".txt"
-    save_path = os.path.join(out_dir, save_name)
-    seg_speech_table.to_csv(save_path, columns=['start', 'dur', 'vad'], sep='\t', index=False, header=False)
-    return save_path
-
-
-def binarization(sequence, per_args):
-    """
-    Binarize predictions to speech and non-speech
-
-    Reference
-    Paper: Gregory Gelly and Jean-Luc Gauvain. "Minimum Word Error Training of RNN-based Voice Activity Detection", InterSpeech 2015. 
-    Implementation: https://github.com/pyannote/pyannote-audio/blob/master/pyannote/audio/utils/signal.py 
-
-    Args:
-        sequence (list) : A list of frame level predictions.
-        per_args:
-            onset (float): onset threshold for detecting the beginning and end of a speech 
-            offset (float): offset threshold for detecting the end of a speech. 
-            pad_onset (float): adding durations before each speech segment
-            pad_offset (float): adding durations after each speech segment;
-            shift_length_in_sec (float): amount of shift of window for generating the frame.
-    
-    Returns:
-        speech_segments(set): Set of speech segment in (start, end) format. 
-    """
-    shift_length_in_sec = per_args.get('shift_length_in_sec', 0.01)
-
-    onset = per_args.get('onset', 0.5)
-    offset = per_args.get('offset', 0.5)
-    pad_onset = per_args.get('pad_onset', 0)
-    pad_offset = per_args.get('pad_offset', 0)
-
-    onset, offset = cal_vad_onset_offset(per_args.get('scale', 'absolute'), onset, offset, sequence)
-
-    speech = False
-    speech_segments = set()  # {(start1, end1), (start2, end2)}
-    for i in range(1, len(sequence)):
-        # Current frame is speech
-        if speech:
-            # Switch from speech to non-speech
-            if sequence[i] < offset:
-                if i * shift_length_in_sec + pad_offset > max(0, start - pad_onset):
-                    speech_segments.add((max(0, start - pad_onset), i * shift_length_in_sec + pad_offset))
-                start = i * shift_length_in_sec
-                speech = False
-
-        # Current frame is non-speech
-        else:
-            # Switch from non-speech to speech
-            if sequence[i] > onset:
-                start = i * shift_length_in_sec
-                speech = True
-
-    # if it's speech at the end, add final segment
-    if speech:
-        speech_segments.add((max(0, start - pad_onset), i * shift_length_in_sec + pad_offset))
-
-    # Merge the overlapped speech segments due to padding
-    speech_segments = merge_overlap_segment(speech_segments)  # not sorted
-
-    return speech_segments
-
-
-def filtering(speech_segments, per_args):
-    """
-    Filter out short non_speech and speech segments.
-
-    Reference
-    Paper: Gregory Gelly and Jean-Luc Gauvain. "Minimum Word Error Training of RNN-based Voice Activity Detection", InterSpeech 2015. 
-    Implementation: https://github.com/pyannote/pyannote-audio/blob/master/pyannote/audio/utils/signal.py 
-    Args:
-        speech_segments (set): A set of speech segment in (start, end) format.  {(start1, end1), (start2, end2)}
-        per_args:
-            min_duration_on (float): threshold for small non_speech deletion
-            min_duration_off (float): threshold for short speech segment deletion
-            filter_speech_first (boolean): Whether to perform short speech segment deletion first.
-
-    Returns:
-        speech_segments(set): Filtered set of speech segment in (start, end) format.  {(start1, end1), (start2, end2)}
-    """
-    min_duration_on = per_args.get('min_duration_on', 0.0)
-    min_duration_off = per_args.get('min_duration_off', 0.0)
-    filter_speech_first = per_args.get('filter_speech_first', True)
-
-    if filter_speech_first:
-        # Filter out the shorter speech segments
-        if min_duration_on > 0.0:
-            speech_segments = filter_short_segments(speech_segments, min_duration_on)
-        # Filter out the shorter non-speech segments and return to be as speech segments
-        if min_duration_off > 0.0:
-            # Find non-speech segments
-            non_speech_segments = get_gap_segments(speech_segments)
-            # Find shorter non-speech segments
-            short_non_speech_segments = non_speech_segments - filter_short_segments(
-                non_speech_segments, min_duration_off
-            )
-            # Return shorter non-speech segments to be as speech segments
-            speech_segments.update(short_non_speech_segments)
-            # Merge the overlapped speech segments
-            speech_segments = merge_overlap_segment(speech_segments)
-    else:
-        if min_duration_off > 0.0:
-            # Find non-speech segments
-            non_speech_segments = get_gap_segments(speech_segments)
-            # Find shorter non-speech segments
-            short_non_speech_segments = non_speech_segments - filter_short_segments(
-                non_speech_segments, min_duration_off
-            )
-            # Return shorter non-speech segments to be as speech segments
-            speech_segments.update(short_non_speech_segments)
-            # Merge the overlapped speech segments
-            speech_segments = merge_overlap_segment(speech_segments)
-        if min_duration_on > 0.0:
-            speech_segments = filter_short_segments(speech_segments, min_duration_on)
-    return speech_segments
-
-
-def filter_short_segments(segments, threshold):
-    """
-    Remove segments which duration is smaller than a threshold.
-    """
-    res = set()
-    for seg in segments:
-        if seg[1] - seg[0] >= threshold:
-            res.add(seg)
-    return res
-
-
-def get_gap_segments(segments):
-    """
-    Get the gap segments. {(start1, end1), (start2, end2), (start3, end3)} -> {(end1, start2), (end2, start3)}
-    """
-    segments = [list(i) for i in segments]
-    segments.sort(key=lambda x: x[0])
-    gap_segments = set()
-    for i in range(len(segments) - 1):
-        gap_segments.add((segments[i][1], segments[i + 1][0]))
-    return gap_segments
-
-
-def merge_overlap_segment(segments):
-    """
-    Merged the overlapped segemtns {(0, 1.5), (1, 3.5), } -> {(0, 3.5), }
-    """
-    segments = [list(i) for i in segments]
-    segments.sort(key=lambda x: x[0])
-    merged = []
-    for segment in segments:
-        if not merged or merged[-1][1] < segment[0]:
-            merged.append(segment)
-        else:
-            merged[-1][1] = max(merged[-1][1], segment[1])
-
-    merged_set = set([tuple(t) for t in merged])
-    return merged_set
-
-
-def cal_vad_onset_offset(scale, onset, offset, sequence=None):
-    """
-    Calculate onset and offset threshold given different scale.
-    """
-    if scale == "absolute":
-        mini = 0
-        maxi = 1
-    elif scale == "relative":
-        mini = np.nanmin(sequence)
-        maxi = np.nanmax(sequence)
-    elif scale == "percentile":
-        mini = np.nanpercentile(sequence, 1)
-        maxi = np.nanpercentile(sequence, 99)
-
-    onset = mini + onset * (maxi - mini)
-    offset = mini + offset * (maxi - mini)
-    return onset, offset
-
-
-def vad_construct_pyannote_object_per_file(vad_table_filepath, groundtruth_RTTM_file):
-    """
-    Construct pyannote object for evaluation.
+    Construct a Pyannote object for evaluation.
     Args:
         vad_table_filepath(str) : path of vad rttm-like table.
         groundtruth_RTTM_file(str): path of groundtruth rttm file.
     Returns:
         reference(pyannote.Annotation): groundtruth
-        hypothesise(pyannote.Annotation): prediction
+        hypothesis(pyannote.Annotation): prediction
     """
 
-    pred = pd.read_csv(vad_table_filepath, sep="\t", header=None)
+    pred = pd.read_csv(vad_table_filepath, sep=" ", header=None)
     label = pd.read_csv(groundtruth_RTTM_file, sep=" ", delimiter=None, header=None)
     label = label.rename(columns={3: "start", 4: "dur", 7: "speaker"})
 
@@ -577,11 +717,11 @@ def vad_construct_pyannote_object_per_file(vad_table_filepath, groundtruth_RTTM_
     # construct hypothsis
     hypothesis = Annotation()
     for index, row in pred.iterrows():
-        hypothesis[Segment(row[0], row[0] + row[1])] = 'Speech'
+        hypothesis[Segment(float(row[0]), float(row[0]) + float(row[1]))] = 'Speech'
     return reference, hypothesis
 
 
-def get_parameter_grid(params):
+def get_parameter_grid(params: dict) -> list:
     """
     Get the parameter grid given a dictionary of parameters.
     """
@@ -600,18 +740,24 @@ def get_parameter_grid(params):
 
 
 def vad_tune_threshold_on_dev(
-    params, vad_pred, groundtruth_RTTM, result_file="res", vad_pred_method="frame", focus_metric="DetER"
-):
+    params: dict,
+    vad_pred: str,
+    groundtruth_RTTM: str,
+    result_file: str = "res",
+    vad_pred_method: str = "frame",
+    focus_metric: str = "DetER",
+    shift_length_in_sec: float = 0.01,
+    num_workers: int = 20,
+) -> Tuple[dict, dict]:
     """
     Tune thresholds on dev set. Return best thresholds which gives the lowest detection error rate (DetER) in thresholds.
     Args:
-        params (dict): dictionary of parameter to be tuned on.
+        params (dict): dictionary of parameters to be tuned on.
         vad_pred_method (str): suffix of prediction file. Use to locate file. Should be either in "frame", "mean" or "median".
-        vad_pred_dir (str): directory of vad predictions or a file contains the paths of them
-        groundtruth_RTTM_dir (str): directory of groundtruch rttm files or a file contains the paths of them.
+        groundtruth_RTTM_dir (str): directory of ground-truth rttm files or a file contains the paths of them.
         focus_metric (str): metrics we care most when tuning threshold. Should be either in "DetER", "FA", "MISS"
     Returns:
-        best_threhsold (float): threshold that gives lowest DetER.
+        best_threshold (float): threshold that gives lowest DetER.
     """
     min_score = 100
     all_perf = {}
@@ -625,48 +771,62 @@ def vad_tune_threshold_on_dev(
     params_grid = get_parameter_grid(params)
 
     for param in params_grid:
-        # perform binarization, filtering accoring to param and write to rttm-like table
-        vad_table_dir = generate_vad_segment_table(vad_pred, param, shift_length_in_sec=0.01, num_workers=20)
+        for i in param:
+            if type(param[i]) == np.float64 or type(param[i]) == np.int64:
+                param[i] = float(param[i])
+        try:
+            # Generate speech segments by performing binarization on the VAD prediction according to param.
+            # Filter speech segments according to param and write the result to rttm-like table.
+            vad_table_dir = generate_vad_segment_table(
+                vad_pred, param, shift_length_in_sec=shift_length_in_sec, num_workers=num_workers
+            )
+            # add reference and hypothesis to metrics
+            for filename in paired_filenames:
+                groundtruth_RTTM_file = groundtruth_RTTM_dict[filename]
+                vad_table_filepath = os.path.join(vad_table_dir, filename + ".txt")
+                reference, hypothesis = vad_construct_pyannote_object_per_file(
+                    vad_table_filepath, groundtruth_RTTM_file
+                )
+                metric(reference, hypothesis)  # accumulation
 
-        # add reference and hypothesis to metrics
-        for filename in paired_filenames:
-            groundtruth_RTTM_file = groundtruth_RTTM_dict[filename]
-            vad_table_filepath = os.path.join(vad_table_dir, filename + ".txt")
-            reference, hypothesis = vad_construct_pyannote_object_per_file(vad_table_filepath, groundtruth_RTTM_file)
-            metric(reference, hypothesis)  # accumulation
+            # delete tmp table files
+            shutil.rmtree(vad_table_dir, ignore_errors=True)
 
-        # delete tmp table files
-        shutil.rmtree(vad_table_dir, ignore_errors=True)
+            report = metric.report(display=False)
+            DetER = report.iloc[[-1]][('detection error rate', '%')].item()
+            FA = report.iloc[[-1]][('false alarm', '%')].item()
+            MISS = report.iloc[[-1]][('miss', '%')].item()
 
-        report = metric.report(display=False)
-        DetER = report.iloc[[-1]][('detection error rate', '%')].item()
-        FA = report.iloc[[-1]][('false alarm', '%')].item()
-        MISS = report.iloc[[-1]][('miss', '%')].item()
+            assert (
+                focus_metric == "DetER" or focus_metric == "FA" or focus_metric == "MISS"
+            ), "Metric we care most should be only in 'DetER', 'FA' or 'MISS'!"
+            all_perf[str(param)] = {'DetER (%)': DetER, 'FA (%)': FA, 'MISS (%)': MISS}
+            logging.info(f"parameter {param}, {all_perf[str(param)] }")
 
-        assert (
-            focus_metric == "DetER" or focus_metric == "FA" or focus_metric == "MISS"
-        ), "Metric we care most should be only in 'DetER', 'FA'or 'MISS'!"
-        all_perf[str(param)] = {'DetER (%)': DetER, 'FA (%)': FA, 'MISS (%)': MISS}
-        logging.info(f"parameter {param}, {all_perf[str(param)] }")
+            score = all_perf[str(param)][focus_metric + ' (%)']
 
-        score = all_perf[str(param)][focus_metric + ' (%)']
+            del report
+            metric.reset()  # reset internal accumulator
 
-        del report
-        metric.reset()  # reset internal accumulator
+            # save results for analysis
+            with open(result_file + ".txt", "a", encoding='utf-8') as fp:
+                fp.write(f"{param}, {all_perf[str(param)] }\n")
 
-        # save results for analysis
-        with open(result_file + ".txt", "a", encoding='utf-8') as fp:
-            fp.write(f"{param}, {all_perf[str(param)] }\n")
+            if score < min_score:
+                best_threshold = param
+                optimal_scores = all_perf[str(param)]
+                min_score = score
+            print("Current best", best_threshold, optimal_scores)
 
-        if score < min_score:
-            best_threhsold = param
-            optimal_scores = all_perf[str(param)]
-            min_score = score
+        except RuntimeError as e:
+            print(f"Pass {param}, with error {e}")
+        except pd.errors.EmptyDataError as e1:
+            print(f"Pass {param}, with error {e1}")
 
-    return best_threhsold, optimal_scores
+    return best_threshold, optimal_scores
 
 
-def check_if_param_valid(params):
+def check_if_param_valid(params: dict) -> bool:
     """
     Check if the parameters are valid.
     """
@@ -682,7 +842,7 @@ def check_if_param_valid(params):
             for j in params[i]:
                 if not j >= 0:
                     raise ValueError(
-                        "Invalid inputs! All float parameters excpet pad_onset and pad_offset should be larger than 0!"
+                        "Invalid inputs! All float parameters except pad_onset and pad_offset should be larger than 0!"
                     )
 
     if not (all(i <= 1 for i in params['onset']) and all(i <= 1 for i in params['offset'])):
@@ -691,7 +851,7 @@ def check_if_param_valid(params):
     return True
 
 
-def pred_rttm_map(vad_pred, groundtruth_RTTM, vad_pred_method="frame"):
+def pred_rttm_map(vad_pred: str, groundtruth_RTTM: str, vad_pred_method: str = "frame") -> Tuple[set, dict, dict]:
     """
     Find paired files in vad_pred and groundtruth_RTTM
     """
@@ -717,7 +877,7 @@ def pred_rttm_map(vad_pred, groundtruth_RTTM, vad_pred_method="frame"):
         vad_pred_files = glob.glob(os.path.join(vad_pred, "*." + vad_pred_method))
     else:
         raise ValueError(
-            "vad_pred should either be a directory contains vad pred files or a file contains paths to them!"
+            "vad_pred should either be a directory containing vad pred files or a file contains paths to them!"
         )
     for f in vad_pred_files:
         filename = os.path.basename(f).rsplit(".", 1)[0]
@@ -728,14 +888,14 @@ def pred_rttm_map(vad_pred, groundtruth_RTTM, vad_pred_method="frame"):
 
 
 def plot(
-    path2audio_file,
-    path2_vad_pred,
-    path2ground_truth_label=None,
-    offset=0,
-    duration=None,
-    threshold=None,
-    per_args=None,
-):
+    path2audio_file: str,
+    path2_vad_pred: str,
+    path2ground_truth_label: str = None,
+    offset: float = 0,
+    duration: float = None,
+    threshold: float = None,
+    per_args: dict = None,
+) -> ipd.Audio:
     """
     Plot VAD outputs for demonstration in tutorial
     Args:
@@ -743,6 +903,7 @@ def plot(
         path2_vad_pred (str): path to vad prediction file,
         path2ground_truth_label(str): path to groundtruth label file.
         threshold (float): threshold for prediction score (from 0 to 1).
+        per_args(dict): a dict that stores the thresholds for postprocessing.
     """
     plt.figure(figsize=[20, 2])
     FRAME_LEN = 0.01
@@ -751,10 +912,10 @@ def plot(
     dur = librosa.get_duration(y=audio, sr=sample_rate)
 
     time = np.arange(offset, offset + dur, FRAME_LEN)
-    frame = np.loadtxt(path2_vad_pred)
-    frame = frame[int(offset / FRAME_LEN) : int((offset + dur) / FRAME_LEN)]
+    frame, _ = load_tensor_from_file(path2_vad_pred)
+    frame_snippet = frame[int(offset / FRAME_LEN) : int((offset + dur) / FRAME_LEN)]
 
-    len_pred = len(frame)
+    len_pred = len(frame_snippet)
     ax1 = plt.subplot()
     ax1.plot(np.arange(audio.size) / sample_rate, audio, 'gray')
     ax1.set_xlim([0, int(dur) + 1])
@@ -763,25 +924,27 @@ def plot(
     ax1.set_ylim([-1, 1])
     ax2 = ax1.twinx()
 
-    prob = frame
     if threshold and per_args:
         raise ValueError("threshold and per_args cannot be used at same time!")
     if not threshold and not per_args:
         raise ValueError("One and only one of threshold and per_args must have been used!")
 
     if threshold:
-        pred = np.where(prob >= threshold, 1, 0)
+        pred_snippet = np.where(frame_snippet >= threshold, 1, 0)
     if per_args:
-        speech_segments = binarization(prob, per_args)
-        speech_segments = filtering(speech_segments, per_args)
-        pred = gen_pred_from_speech_segments(speech_segments, prob)
+        _, per_args_float = prepare_gen_segment_table(
+            frame, per_args
+        )  # take whole frame here for calculating onset and offset
+        speech_segments = generate_vad_segment_table_per_tensor(frame, per_args_float)
+        pred = gen_pred_from_speech_segments(speech_segments, frame)
+        pred_snippet = pred[int(offset / FRAME_LEN) : int((offset + dur) / FRAME_LEN)]
 
     if path2ground_truth_label:
         label = extract_labels(path2ground_truth_label, time)
         ax2.plot(np.arange(len_pred) * FRAME_LEN, label, 'r', label='label')
 
-    ax2.plot(np.arange(len_pred) * FRAME_LEN, pred, 'b', label='pred')
-    ax2.plot(np.arange(len_pred) * FRAME_LEN, prob, 'g--', label='speech prob')
+    ax2.plot(np.arange(len_pred) * FRAME_LEN, pred_snippet, 'b', label='pred')
+    ax2.plot(np.arange(len_pred) * FRAME_LEN, frame_snippet, 'g--', label='speech prob')
     ax2.tick_params(axis='y', labelcolor='r')
     ax2.legend(loc='lower right', shadow=True)
     ax2.set_ylabel('Preds and Probas')
@@ -789,7 +952,9 @@ def plot(
     return ipd.Audio(audio, rate=16000)
 
 
-def gen_pred_from_speech_segments(speech_segments, prob, shift_length_in_sec=0.01):
+def gen_pred_from_speech_segments(
+    speech_segments: torch.Tensor, prob: float, shift_length_in_sec: float = 0.01
+) -> np.array:
     """
     Generate prediction arrays like 000111000... from speech segments {[0,1][2,4]} 
     """
@@ -804,11 +969,11 @@ def gen_pred_from_speech_segments(speech_segments, prob, shift_length_in_sec=0.0
     return pred
 
 
-def extract_labels(path2ground_truth_label, time):
+def extract_labels(path2ground_truth_label: str, time: list) -> list:
     """
-    Extract groundtruth label for given time period.
+    Extract ground-truth label for given time period.
     path2ground_truth_label (str): path of groundtruth label file 
-    time (list) : a list of array represent time period.
+    time (list) : a list of array representing time period.
     """
 
     data = pd.read_csv(path2ground_truth_label, sep=" ", delimiter=None, header=None)
@@ -823,7 +988,9 @@ def extract_labels(path2ground_truth_label, time):
     return labels
 
 
-def generate_vad_frame_pred(vad_model, window_length_in_sec, shift_length_in_sec, manifest_vad_input, out_dir):
+def generate_vad_frame_pred(
+    vad_model, window_length_in_sec: float, shift_length_in_sec: float, manifest_vad_input: str, out_dir: str
+) -> str:
     """
     Generate VAD frame level prediction and write to out_dir
     """
@@ -868,7 +1035,7 @@ def generate_vad_frame_pred(vad_model, window_length_in_sec, shift_length_in_sec
     return out_dir
 
 
-def init_vad_model(model_path):
+def init_vad_model(model_path: str):
     """
     Initiate VAD model with model path
     """
@@ -958,13 +1125,13 @@ def stitch_segmented_asr_output(
         return stitched_output_manifest
 
 
-def contruct_manfiest_eval(
+def construct_manifest_eval(
     input_manifest: str, stitched_output_manifest: str, aligned_vad_asr_output_manifest: str = "vad_asr_out.json"
 ) -> str:
 
     """
     Generate aligned manifest for evaluation.
-    Because some pure noise samples might not appears in stitched_output_manifest.
+    Because some pure noise samples might not appear in stitched_output_manifest.
     """
     stitched_output = dict()
     for line in open(stitched_output_manifest, 'r', encoding='utf-8'):

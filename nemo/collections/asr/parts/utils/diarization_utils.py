@@ -538,7 +538,11 @@ class ASR_DIAR_OFFLINE(object):
             total_riva_dict[uniq_id] = riva_dict
             prev_speaker = speaker
 
+        # note that we need to add the very last sentence.
+        sentence['text'] = sentence['text'].strip()
+        sentences.append(sentence)
         gecko_dict['monologues'].append({'speaker': {'name': None, 'id': speaker}, 'terms': terms_list})
+
         riva_dict['transcription'] = ' '.join(word_seq_list)
         self.write_and_log(uniq_id, riva_dict, audacity_label_words, gecko_dict, sentences)
         return total_riva_dict

@@ -54,7 +54,7 @@ def main(cfg):
     if not cfg.dataset:
         raise ValueError("You must input the path of json file of evaluation data")
 
-    # each line of dataset should be have different audio_filepath and unique name to simplfiy edge cases or conditions
+    # each line of dataset should be have different audio_filepath and unique name to simplify edge cases or conditions
     key_meta_map = {}
     with open(cfg.dataset, 'r') as manifest:
         for line in manifest.readlines():
@@ -74,7 +74,7 @@ def main(cfg):
             'window_length_in_sec': cfg.vad.parameters.window_length_in_sec,
             'split_duration': cfg.prepare_manifest.split_duration,
             'num_workers': cfg.num_workers,
-            'prepared_manfiest_vad_input': cfg.prepared_manfiest_vad_input,
+            'prepared_manifest_vad_input': cfg.prepared_manifest_vad_input,
         }
         manifest_vad_input = prepare_manifest(config)
     else:

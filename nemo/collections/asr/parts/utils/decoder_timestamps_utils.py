@@ -590,11 +590,6 @@ class ASR_TIMESTAMPS:
         preprocessor = nemo_asr.models.EncDecCTCModelBPE.from_config_dict(cfg.preprocessor)
         preprocessor.to(asr_model.device)
 
-        if cfg.preprocessor.normalize != "per_feature":
-            logging.error(
-                "Only EncDecCTCModelBPE models trained with per_feature normalization are supported currently"
-            )
-
         # Disable config overwriting
         OmegaConf.set_struct(cfg.preprocessor, True)
 
@@ -670,7 +665,7 @@ class ASR_TIMESTAMPS:
                     hyp_words, word_ts = self.run_pyctcdecode(log_prob, onset_delay_in_sec=onset_delay_in_sec)
                 else:
                     logits_len = torch.from_numpy(np.array([len(greedy_predictions_list)]))
-                    greedy_predictions_list = greedy_predictions_list[onset_delay:-mid_delay]
+                    greedy_predictions_list = greedy_predictions_list[onset_delay:]
                     greedy_predictions = torch.from_numpy(np.array(greedy_predictions_list)).unsqueeze(0)
                     text, char_ts, word_ts = werbpe_ts.ctc_decoder_predictions_tensor_with_ts(
                         self.model_stride_in_secs, greedy_predictions, predictions_len=logits_len

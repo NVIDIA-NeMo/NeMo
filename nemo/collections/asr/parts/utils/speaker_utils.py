@@ -178,7 +178,9 @@ def get_embs_and_timestamps(multiscale_embeddings_and_timestamps, multiscale_arg
     for scale_idx in sorted(multiscale_args_dict['scale_dict'].keys()):
         embeddings, time_stamps = multiscale_embeddings_and_timestamps[scale_idx]
         for uniq_id in embeddings.keys():
-            embs_and_timestamps[uniq_id]['multiscale_weights'] = multiscale_args_dict['multiscale_weights']
+            embs_and_timestamps[uniq_id]['multiscale_weights'] = (
+                torch.tensor(multiscale_args_dict['multiscale_weights']).unsqueeze(0).half()
+            )
             assert len(embeddings[uniq_id]) == len(time_stamps[uniq_id])
             embs_and_timestamps[uniq_id]['scale_dict'][scale_idx] = {
                 'embeddings': embeddings[uniq_id],
@@ -359,7 +361,6 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         for idx, label in enumerate(cluster_labels):
             tag = 'speaker_' + str(label)
             lines[idx] += tag
-
         a = get_contiguous_stamps(lines)
         labels = merge_stamps(a)
         if out_rttm_dir:

@@ -79,7 +79,7 @@ class DecimalFst(GraphFst):
     def __init__(self, cardinal: GraphFst, deterministic: bool):
         super().__init__(name="decimal", kind="classify", deterministic=deterministic)
 
-        cardinal_graph = cardinal.graph
+        cardinal_graph = cardinal.graph_with_and
         cardinal_graph_hundred_component_at_least_one_none_zero_digit = (
             cardinal.graph_hundred_component_at_least_one_none_zero_digit
         )

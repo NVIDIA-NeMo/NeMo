@@ -1,14 +1,14 @@
-cst	c s t
-c.s.t	c s t
-cet	c e t
-c.e.t	c e t
-pst	p s t
-p.s.t	p s t
-est	e s t
-e.s.t	e s t
-pt	p t
-p.t	p t
-et	e t
-e.t	e t
-gmt	g m t
-g.m.t	g m t
+cst	CST
+c.s.t	CST
+cet	CET
+c.e.t	CET
+pst	PST
+p.s.t	PST
+est	EST
+e.s.t	EST
+pt	PT
+p.t	PT
+et	ET
+e.t	ET
+gmt	GMT
+g.m.t	GMT

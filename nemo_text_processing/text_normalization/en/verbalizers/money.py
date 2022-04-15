@@ -52,18 +52,7 @@ class MoneyFst(GraphFst):
                 pynutil.delete("fractional_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
             )
 
-            integer_part = (
-                pynutil.delete("integer_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
-            )
-
-            if not deterministic:
-                integer_part |= (
-                    pynutil.delete("integer_part: \"")
-                    + pynini.closure(NEMO_NOT_QUOTE, 1)
-                    + pynini.cross("hundred ", "hundred and ")
-                    + pynini.closure(NEMO_NOT_QUOTE, 1)
-                    + pynutil.delete("\"")
-                )
+            integer_part = decimal.integer
 
             optional_add_and = pynini.closure(pynutil.insert("and "), 0, 1)
 

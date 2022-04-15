@@ -1,12 +1,11 @@
 Ph.D.	PHD
 Hon.	honorable
-&	and
 Mt.	Mount
 Maj.	Major
 Rev.	Reverend
-#	hash
-@	at
-§	section
+w/o	without
+a/c number	account number
+c/o	care of
 Gov.	governor
 vs.	versus
 vs	versus
@@ -23,6 +22,9 @@ World War II	World War two
 etc.	etcetera.
 SnO2	tin four oxide
 dept	department
+HVAC	H-vac
+SPDR	spider
+ZIP	zip
 κ	kappa
 ω	omega
 α	alpha
@@ -74,18 +76,24 @@ dept	department
 Ψ	psi
 ζ	zeta
 Ζ	zeta
-_	underscore
-%	percent sign
-*	asterisk
-+	plus
-/	slash
-=	equal sign
-^	circumflex
-|	vertical bar
-~	tilde
 ltd	limited
 int'l	international
-$	dollar
+A. D	AD
+A.D	AD
+a. d	AD
+a.d	AD
+a. d.	AD
+a.d.	AD
+B. C	BC
+B.C	BC
+b. c	BC
+b.c	BC
+A. D.	AD
+A.D.	AD
+B. C.	BC
+B.C.	BC
+b. c.	BC
+b.c.	BC
 A. A.	a a
 A.A.	AA
 A&A	A and A
@@ -110,6 +118,7 @@ Abz	ABZ
 A&C	A and C
 A. C.	AC
 A.C.	AC
+A/C	AC
 acac	ACAC
 Acad	ACAD
 ACC&S	ACC and S
@@ -1462,6 +1471,7 @@ fx	FX
 Fyb	FYB
 F.Y.	FY
 Fyn	FYN
+fyi	FYI
 fyr	FYR
 Fyw	FYW
 F.Z.	FZ
@@ -3144,6 +3154,7 @@ T.A.	TA
 T&A	T and A
 TBCs	TBC's
 TBMs	TBM's
+tbh	TBH
 T. B.	TB
 T.B.	TB
 TCiAP	TCIAP

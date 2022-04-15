@@ -237,7 +237,6 @@ def pre_process(text: str) -> str:
 
     # remove extra space
     text = re.sub(r' +', ' ', text)
-    text = re.sub(r'(^|\s)(&|#|@)(\w)', r'\1\2 \3', text)
     return text
 
 

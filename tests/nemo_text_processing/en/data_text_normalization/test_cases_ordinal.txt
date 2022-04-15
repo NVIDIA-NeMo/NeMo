@@ -15,14 +15,14 @@
 4th~fourth
 4rd~four rd
 11th~eleventh
-11st~one one st
+11st~eleven st
 20th~twentieth
 12th~twelfth
 13th~thirteenth
-12nd~one two nd
-13rd~one three rd
+12nd~twelve nd
+13rd~thirteen rd
 21st~twenty first
-21th~two one th
+21th~twenty one th
 121st~one hundred twenty first
 111th~one hundred eleventh
-111st~one one one st
+111st~one hundred eleven st

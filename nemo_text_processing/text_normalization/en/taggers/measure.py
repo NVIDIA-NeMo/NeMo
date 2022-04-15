@@ -59,7 +59,7 @@ class MeasureFst(GraphFst):
 
     def __init__(self, cardinal: GraphFst, decimal: GraphFst, fraction: GraphFst, deterministic: bool = True):
         super().__init__(name="measure", kind="classify", deterministic=deterministic)
-        cardinal_graph = cardinal.graph | self.get_range(cardinal.graph)
+        cardinal_graph = cardinal.graph_with_and | self.get_range(cardinal.graph_with_and)
 
         graph_unit = pynini.string_file(get_abs_path("data/measurements.tsv"))
         graph_unit |= pynini.compose(
@@ -151,25 +151,6 @@ class MeasureFst(GraphFst):
             + pynutil.insert("\" preserve_order: true")
         )
 
-        cardinal_dash_alpha = (
-            pynutil.insert("cardinal { integer: \"")
-            + cardinal_graph
-            + pynini.accep('-')
-            + pynutil.insert("\" } units: \"")
-            + pynini.closure(NEMO_ALPHA, 1)
-            + pynutil.insert("\"")
-        )
-
-        alpha_dash_cardinal = (
-            pynutil.insert("units: \"")
-            + pynini.closure(NEMO_ALPHA, 1)
-            + pynini.accep('-')
-            + pynutil.insert("\"")
-            + pynutil.insert(" cardinal { integer: \"")
-            + cardinal_graph
-            + pynutil.insert("\" } preserve_order: true")
-        )
-
         decimal_dash_alpha = (
             pynutil.insert("decimal { ")
             + decimal.final_graph_wo_negative
@@ -231,8 +212,6 @@ class MeasureFst(GraphFst):
             subgraph_decimal
             | subgraph_cardinal
             | unit_graph
-            | cardinal_dash_alpha
-            | alpha_dash_cardinal
             | decimal_dash_alpha
             | decimal_times
             | alpha_dash_decimal

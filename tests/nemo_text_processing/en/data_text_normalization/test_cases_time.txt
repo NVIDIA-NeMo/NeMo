@@ -1,20 +1,20 @@
 01:00~one o'clock
-01:00 am~one a m
-01:00 a.m.~one a m
-01:00 a.m~one a m
-1 a.m.~one a m
+01:00 am~one AM
+01:00 a.m.~one AM
+01:00 a.m~one AM
+1 a.m.~one AM
 23:00~twenty three o'clock
-1:00 a.m.~one a m
-1:00a.m.~one a m
-1.59 p.m.~one fifty nine p m
-01:59 p.m.~one fifty nine p m
-1:59 p.m.~one fifty nine p m
-1:59 p.m. est~one fifty nine p m e s t
-1:59 p.m.est~one fifty nine p m e s t
-1:59 p.m. e.s.t~one fifty nine p m e s t
-10:00:00 p.m. e.s.t~ten hours zero minutes and zero seconds p m e s t
+1:00 a.m.~one AM
+1:00a.m.~one AM
+1.59 p.m.~one fifty nine PM
+01:59 p.m.~one fifty nine PM
+1:59 p.m.~one fifty nine PM
+1:59 p.m. est~one fifty nine PM EST
+1:59 p.m.est~one fifty nine PM EST
+1:59 p.m. e.s.t~one fifty nine PM EST
+10:00:00 p.m. e.s.t~ten hours zero minutes and zero seconds PM EST
 1:01:01~one hour one minute and one second
 14:10:30~fourteen hours ten minutes and thirty seconds
-11:20AM,2:40PM and 10:10PM.~eleven twenty A M , two forty P M and ten ten P M .
-2pm-5pm~two p m to five p m
-5pm~five p m
+11:20AM,2:40PM and 10:10PM.~eleven twenty AM , two forty PM and ten ten PM .
+2pm-5pm~two PM to five PM
+5pm~five PM

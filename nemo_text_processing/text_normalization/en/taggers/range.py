@@ -50,7 +50,7 @@ class RangeFst(GraphFst):
         year_to_year_graph = date_year + delete_space + pynini.cross("-", " to ") + delete_space + date_year
         self.graph |= year_to_year_graph
 
-        cardinal = cardinal.graph
+        cardinal = cardinal.graph_with_and
         # cardinal ----
         # excluding 4-digit cardinal
         up_to_three_or_five_digits = (NEMO_DIGIT ** (1, 3)) | (NEMO_DIGIT ** (5, ...))

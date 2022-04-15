@@ -37,6 +37,7 @@ from nemo_text_processing.text_normalization.en.taggers.ordinal import OrdinalFs
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 from nemo_text_processing.text_normalization.en.taggers.range import RangeFst as RangeFst
 from nemo_text_processing.text_normalization.en.taggers.roman import RomanFst
+from nemo_text_processing.text_normalization.en.taggers.serial import SerialFst
 from nemo_text_processing.text_normalization.en.taggers.telephone import TelephoneFst
 from nemo_text_processing.text_normalization.en.taggers.time import TimeFst
 from nemo_text_processing.text_normalization.en.taggers.whitelist import WhiteListFst
@@ -130,6 +131,7 @@ class ClassifyFst(GraphFst):
             whitelist = WhiteListFst(input_case=input_case, deterministic=False, input_file=whitelist)
             whitelist_graph = whitelist.graph
             punct_graph = PunctuationFst(deterministic=True).graph
+            serial_graph = SerialFst(cardinal=cardinal, ordinal=ordinal, deterministic=deterministic, lm=True).fst
 
             # VERBALIZERS
             cardinal = vCardinal(deterministic=True)
@@ -168,6 +170,9 @@ class ClassifyFst(GraphFst):
                 | pynutil.add_weight(pynini.compose(money_graph, v_money_graph), sem_w)
                 | pynutil.add_weight(cardinal_or_date_final, sem_w)
                 | pynutil.add_weight(whitelist_graph, sem_w)
+                | pynutil.add_weight(
+                    pynini.compose(serial_graph, v_cardinal_graph), 1.1001
+                )  # should be higher than the rest of the classes
             ).optimize()
 
             roman_graph = RomanFst(deterministic=deterministic, lm=True).fst

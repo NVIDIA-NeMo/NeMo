@@ -27,28 +27,28 @@ $.506~point five zero six dollars
 $18~eighteen dollars
 $18925000~eighteen million nine hundred twenty five thousand dollars
 $18,925,000~eighteen million nine hundred twenty five thousand dollars
-$18854~eighteen thousand eight hundred fifty four dollars
-$18801~eighteen thousand eight hundred one dollars
-$18875~eighteen thousand eight hundred seventy five dollars
-$18081~eighteen thousand eighty one dollars
-$18052~eighteen thousand fifty two dollars
-$18542~eighteen thousand five hundred forty two dollars
-$18519~eighteen thousand five hundred nineteen dollars
-$18570~eighteen thousand five hundred seventy dollars
-$18578~eighteen thousand five hundred seventy eight dollars
-$18516~eighteen thousand five hundred sixteen dollars
-$18482~eighteen thousand four hundred eighty two dollars
-$18478~eighteen thousand four hundred seventy eight dollars
-$18468~eighteen thousand four hundred sixty eight dollars
-$18903~eighteen thousand nine hundred three dollars
-$18929~eighteen thousand nine hundred twenty nine dollars
-$18095~eighteen thousand ninety five dollars
-$18117~eighteen thousand one hundred seventeen dollars
-$18128~eighteen thousand one hundred twenty eight dollars
-$18125~eighteen thousand one hundred twenty five dollars
-$18124~eighteen thousand one hundred twenty four dollars
-$18129~eighteen thousand one hundred twenty nine dollars
+$18854~eighteen thousand eight hundred and fifty four dollars
+$18801~eighteen thousand eight hundred and one dollars
+$18875~eighteen thousand eight hundred and seventy five dollars
+$18081~eighteen thousand and eighty one dollars
+$18052~eighteen thousand and fifty two dollars
+$18542~eighteen thousand five hundred and forty two dollars
+$18519~eighteen thousand five hundred and nineteen dollars
+$18570~eighteen thousand five hundred and seventy dollars
+$18578~eighteen thousand five hundred and seventy eight dollars
+$18516~eighteen thousand five hundred and sixteen dollars
+$18482~eighteen thousand four hundred and eighty two dollars
+$18478~eighteen thousand four hundred and seventy eight dollars
+$18468~eighteen thousand four hundred and sixty eight dollars
+$18903~eighteen thousand nine hundred and three dollars
+$18929~eighteen thousand nine hundred and twenty nine dollars
+$18095~eighteen thousand and ninety five dollars
+$18117~eighteen thousand one hundred and seventeen dollars
+$18128~eighteen thousand one hundred and twenty eight dollars
+$18125~eighteen thousand one hundred and twenty five dollars
+$18124~eighteen thousand one hundred and twenty four dollars
+$18129~eighteen thousand one hundred and twenty nine dollars
 £18000~eighteen thousand pounds
 $50.00-$100.00~fifty dollars - one hundred dollars
-$1,925.21~one thousand nine hundred twenty five dollars twenty one cents
-$1,234.123~one thousand two hundred thirty four point one two three dollars
+$1,925.21~one thousand nine hundred and twenty five dollars twenty one cents
+$1,234.123~one thousand two hundred and thirty four point one two three dollars

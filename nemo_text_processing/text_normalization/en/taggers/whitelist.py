@@ -71,6 +71,7 @@ class WhiteListFst(GraphFst):
             return graph
 
         graph = _get_whitelist_graph(input_case, get_abs_path("data/whitelist_tts.tsv"))
+        graph |= _get_whitelist_graph(input_case, get_abs_path("data/whitelist_symbols.tsv"))
 
         if deterministic:
             names = get_names()

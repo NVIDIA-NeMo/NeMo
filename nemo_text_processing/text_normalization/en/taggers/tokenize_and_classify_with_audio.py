@@ -37,6 +37,7 @@ from nemo_text_processing.text_normalization.en.taggers.ordinal import OrdinalFs
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 from nemo_text_processing.text_normalization.en.taggers.range import RangeFst as RangeFst
 from nemo_text_processing.text_normalization.en.taggers.roman import RomanFst
+from nemo_text_processing.text_normalization.en.taggers.serial import SerialFst
 from nemo_text_processing.text_normalization.en.taggers.telephone import TelephoneFst
 from nemo_text_processing.text_normalization.en.taggers.time import TimeFst
 from nemo_text_processing.text_normalization.en.taggers.whitelist import WhiteListFst
@@ -110,6 +111,7 @@ class ClassifyFst(GraphFst):
             cardinal_graph = cardinal.fst
 
             ordinal = OrdinalFst(cardinal=cardinal, deterministic=deterministic)
+            deterministic_ordinal = OrdinalFst(cardinal=cardinal, deterministic=True)
             ordinal_graph = ordinal.fst
 
             decimal = DecimalFst(cardinal=cardinal, deterministic=deterministic)
@@ -128,6 +130,7 @@ class ClassifyFst(GraphFst):
             whitelist = WhiteListFst(input_case=input_case, deterministic=deterministic, input_file=whitelist)
             whitelist_graph = whitelist.graph
             punct_graph = PunctuationFst(deterministic=deterministic).graph
+            serial_graph = SerialFst(cardinal=cardinal, ordinal=deterministic_ordinal, deterministic=deterministic).fst
 
             # VERBALIZERS
             cardinal = vCardinal(deterministic=deterministic)
@@ -174,6 +177,9 @@ class ClassifyFst(GraphFst):
                 | pynutil.add_weight(word_graph, word_w)
                 | pynutil.add_weight(pynini.compose(date_graph, v_date_graph), sem_w - 0.01)
                 | pynutil.add_weight(pynini.compose(range_graph, v_word_graph), sem_w)
+                | pynutil.add_weight(
+                    pynini.compose(serial_graph, v_word_graph), 1.1001
+                )  # should be higher than the rest of the classes
             ).optimize()
 
             if not deterministic:

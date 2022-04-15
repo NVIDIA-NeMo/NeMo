@@ -34,6 +34,7 @@ from nemo_text_processing.text_normalization.en.taggers.ordinal import OrdinalFs
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 from nemo_text_processing.text_normalization.en.taggers.range import RangeFst as RangeFst
 from nemo_text_processing.text_normalization.en.taggers.roman import RomanFst
+from nemo_text_processing.text_normalization.en.taggers.serial import SerialFst
 from nemo_text_processing.text_normalization.en.taggers.telephone import TelephoneFst
 from nemo_text_processing.text_normalization.en.taggers.time import TimeFst
 from nemo_text_processing.text_normalization.en.taggers.whitelist import WhiteListFst
@@ -113,6 +114,7 @@ class ClassifyFst(GraphFst):
                 input_case=input_case, deterministic=deterministic, input_file=whitelist
             ).fst
             punct_graph = PunctuationFst(deterministic=deterministic).fst
+            serial_graph = SerialFst(cardinal=cardinal, ordinal=ordinal, deterministic=deterministic).fst
 
             v_time_graph = vTimeFst(deterministic=deterministic).fst
             v_ordinal_graph = vOrdinalFst(deterministic=deterministic)
@@ -136,6 +138,7 @@ class ClassifyFst(GraphFst):
                 | pynutil.add_weight(electonic_graph, 1.1)
                 | pynutil.add_weight(fraction_graph, 1.1)
                 | pynutil.add_weight(range_graph, 1.1)
+                | pynutil.add_weight(serial_graph, 1.1001)  # should be higher than the rest of the classes
             )
 
             # roman_graph = RomanFst(deterministic=deterministic).fst

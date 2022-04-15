@@ -58,7 +58,7 @@ class MoneyFst(GraphFst):
 
     def __init__(self, cardinal: GraphFst, decimal: GraphFst, deterministic: bool = True):
         super().__init__(name="money", kind="classify", deterministic=deterministic)
-        cardinal_graph = cardinal.graph
+        cardinal_graph = cardinal.graph_with_and
         graph_decimal_final = decimal.final_graph_wo_negative
 
         maj_singular_labels = load_labels(get_abs_path("data/currency/currency.tsv"))

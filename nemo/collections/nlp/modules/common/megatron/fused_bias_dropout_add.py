@@ -24,6 +24,15 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 
+def dropout_add(x, bias, residual, prob, training):
+    # type: (Tensor, None, Tensor, float, bool) -> Tensor
+    if bias is not None:
+        raise ValueError(f"bias is expected to be None when using the bias_dropout function.")
+    out = torch.nn.functional.dropout(x, p=prob, training=training)
+    out = residual + out
+    return out
+
+
 def bias_dropout_add(x, bias, residual, prob, training):
     # type: (Tensor, Tensor, Tensor, float, bool) -> Tensor
     out = torch.nn.functional.dropout(x + bias, p=prob, training=training)

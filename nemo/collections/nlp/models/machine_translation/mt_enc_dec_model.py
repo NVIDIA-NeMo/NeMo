@@ -866,9 +866,9 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         if encoder_tokenizer_library == 'byte-level':
             source_processor = ByteLevelProcessor()
         elif (source_lang == 'en' and target_lang == 'ja') or (source_lang == 'ja' and target_lang == 'en'):
-            self.source_processor = EnJaProcessor(source_lang)
+            source_processor = EnJaProcessor(source_lang)
         elif source_lang == 'ja-mecab':
-            self.source_processor = JaMecabProcessor()
+            source_processor = JaMecabProcessor()
         elif source_lang == 'zh':
             source_processor = ChineseProcessor()
         elif source_lang == 'hi':
@@ -881,9 +881,9 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         if decoder_tokenizer_library == 'byte-level':
             target_processor = ByteLevelProcessor()
         elif (source_lang == 'en' and target_lang == 'ja') or (source_lang == 'ja' and target_lang == 'en'):
-            self.target_processor = EnJaProcessor(target_lang)
+            target_processor = EnJaProcessor(target_lang)
         elif target_lang == 'ja-mecab':
-            self.target_processor = JaMecabProcessor()
+            target_processor = JaMecabProcessor()
         elif target_lang == 'zh':
             target_processor = ChineseProcessor()
         elif target_lang == 'hi':
@@ -974,7 +974,6 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
 
         return src, src_mask
 
-    # TODO: We should drop source/target_lang arguments in favor of using self.src/tgt_language
     @torch.no_grad()
     def translate(
         self,
@@ -989,8 +988,10 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         Should be regular text, this method performs its own tokenization/de-tokenization
         Args:
             text: list of strings to translate
-            source_lang: if not None, corresponding MosesTokenizer and MosesPunctNormalizer will be run
-            target_lang: if not None, corresponding MosesDecokenizer will be run
+            source_lang: if not "ignore", corresponding MosesTokenizer and MosesPunctNormalizer will be run
+            target_lang: if not "ignore", corresponding MosesDecokenizer will be run
+            return_beam_scores: if True, returns a list of translations and their corresponding beam scores.
+            log_timing: if True, prints timing information.
         Returns:
             list of translated strings
         """
@@ -1047,6 +1048,38 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
                 return_val = (return_val, timing)
 
         return return_val
+
+    def itn_translate_tn(
+        self,
+        text: List[str],
+        source_lang: str = None,
+        target_lang: str = None,
+        return_beam_scores: bool = False,
+        log_timing: bool = False,
+        inverse_normalizer=None,
+        normalizer=None,
+    ) -> List[str]:
+        """
+        Calls the translate() method with the option of running ITN (inverse text-normalization) on the input adn TN (text-normalization) on the output.
+        Pipeline : ITN -> translate -> TN
+        NOTE: ITN and TN objects must be initialized with the right languages.
+        Args:
+            text: list of strings to translate
+            source_lang: if not "ignore", corresponding MosesTokenizer and MosesPunctNormalizer will be run
+            target_lang: if not "ignore", corresponding MosesDecokenizer will be run
+            return_beam_scores: if True, returns a list of translations and their corresponding beam scores.
+            log_timing: if True, prints timing information.
+            inverse_normalizer: instance of nemo_text_processing.inverse_text_normalization.inverse_normalize.InverseNormalizer
+            normalizer: instance of nemo_text_processing.text_normalization.normalize.Normalizer
+        Returns:
+            list of translated strings
+        """
+        if inverse_normalizer is not None:
+            text = [inverse_normalizer.normalize(example) for example in text]
+        translations = self.translate(text, source_lang, target_lang, return_beam_scores, log_timing)
+        if normalizer is not None:
+            translations = [normalizer.normalize(example) for example in translations]
+        return translations
 
     def export(self, output: str, input_example=None, **kwargs):
         encoder_exp, encoder_descr = self.encoder.export(

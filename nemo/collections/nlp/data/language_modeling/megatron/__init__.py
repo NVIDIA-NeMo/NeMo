@@ -14,6 +14,6 @@
 
 from nemo.collections.nlp.data.language_modeling.megatron.bert_dataset import BertDataset
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_dataset import GPTDataset
-from nemo.collections.nlp.data.language_modeling.megatron.gpt_prompt_tuning_dataset import GPTPromptTuningDataset
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_prompt_learning_dataset import GPTPromptLearningDataset
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import IndexedDataset, MMapIndexedDataset
 from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import T5Dataset

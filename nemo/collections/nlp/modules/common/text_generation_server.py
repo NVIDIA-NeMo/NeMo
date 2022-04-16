@@ -30,6 +30,7 @@ API_ALLOWED_KEYS = set(
     [
         'all_probs',
         'sentences',
+        "task_ids",
         "tokens_to_generate",
         "temperature",
         "add_BOS",
@@ -60,8 +61,20 @@ class MegatronGenerate(Resource):
                 logging.error(f"The request key {key} is not allowed")
 
         sentences = request.get_json()["sentences"]
-        if len(sentences) > 128:
+        if isinstance(sentences, tuple):  # Input can be text or tensor
+            if len(sentences[0]) != len(sentences[1]) or sentences[0] > 128:
+                return "Maximum number of sentences is 128", 400
+        elif len(sentences) > 128:
             return "Maximum number of sentences is 128", 400
+
+        task_ids = None  # Used for ptuned/prompt tuned models only
+        if "task_ids" in request.get_json():
+            task_ids = request.get_json()["task_ids"]
+            if not isinstance(sentences, tuple):
+                return "Input at 'sentences' must by a tuple of two tensors like:\
+                    (context_tokens_tensor, context_length_tensor) if task ids are given"
+            if len(task_ids) != len(sentences[0]):
+                return "Each sentence must have a corresponding task id for p-tuned/prompt-tuned models"
 
         tokens_to_generate = 64  # Choosing hopefully sane default.  Full sequence is slow
         if "tokens_to_generate" in request.get_json():
@@ -134,6 +147,7 @@ class MegatronGenerate(Resource):
             output = generate(
                 self.model,
                 sentences,
+                task_ids,
                 tokens_to_generate,
                 all_probs,
                 temperature,

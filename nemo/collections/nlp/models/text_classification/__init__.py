@@ -13,12 +13,3 @@
 # limitations under the License.
 
 from nemo.collections.nlp.models.text_classification.text_classification_model import TextClassificationModel
-
-try:
-    from nemo.collections.nlp.models.text_classification.ptune_text_classification_model import (
-        PTuneTextClassificationModel,
-    )
-
-    HAVE_APEX = True
-except (ImportError, ModuleNotFoundError, NameError):
-    HAVE_APEX = False

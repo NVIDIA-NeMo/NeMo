@@ -27,7 +27,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
 )
-from nemo.collections.nlp.modules.common.prompt_encoder import PromptEncoder
+from nemo.collections.nlp.modules.common.t5_prompt_encoder import PromptEncoder
 from nemo.utils import logging
 
 try:
@@ -48,6 +48,8 @@ class MegatronT5PTuneModel(MegatronBaseModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
+
+        raise Exception("Please use the NeMo r1.8.0 branch for T5 PTuning.")
 
         self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
         # TODO: Fix this once apex patches FusedScaledMaskedSoftmax.

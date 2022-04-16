@@ -18,6 +18,7 @@ trainer:
   logger: False # logger provided by exp_manager
   precision: 16 # 16 or 32
 
+virtual_prompt_model: False # Whether the model is a MegatronGPTPromptLearningModel model
 tensor_model_parallel_size: 1
 pipeline_model_parallel_size: 1
 model_file: null  # GPT nemo file path

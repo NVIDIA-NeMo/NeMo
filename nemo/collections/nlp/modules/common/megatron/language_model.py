@@ -13,11 +13,7 @@
 # limitations under the License.
 
 """Transformer based language model."""
-import math
-
 import torch
-import torch.nn as nn
-import torch.nn.init as init
 
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.transformer import ParallelTransformer
@@ -72,9 +68,6 @@ def get_language_model(
     persist_layer_norm=False,
     openai_gelu=False,
     onnx_safe=False,
-    use_soft_prompts=False,
-    num_prompt_tokens=10,
-    existing_prompt_tags=None,
     megatron_legacy=False,
 ):
     """Build language model and return along with the key to save."""
@@ -122,9 +115,6 @@ def get_language_model(
         persist_layer_norm=persist_layer_norm,
         openai_gelu=openai_gelu,
         onnx_safe=onnx_safe,
-        use_soft_prompts=use_soft_prompts,
-        num_prompt_tokens=num_prompt_tokens,
-        existing_prompt_tags=existing_prompt_tags,
         megatron_legacy=megatron_legacy,
     )
     # key used for checkpoints.
@@ -239,15 +229,10 @@ class Embedding(MegatronModule):
         # Initialize the token-type embeddings.
         self.init_method(self.tokentype_embeddings.weight)
 
-    def forward(self, input_ids, position_ids, token_type_ids=None, separate_embeddings=False):
+    def forward(self, input_ids, position_ids, token_type_ids=None):
         # Embeddings.
         words_embeddings = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
-
-        # Want word embeddings and position embeddings before addition for soft prompt initalization
-        if separate_embeddings:
-            return words_embeddings, position_embeddings
-
         embeddings = words_embeddings + position_embeddings
         if token_type_ids is not None:
             assert self.tokentype_embeddings is not None
@@ -319,221 +304,6 @@ class Embedding(MegatronModule):
                 )
 
 
-class PromptEmbedding(MegatronModule):
-    """Prompt embeddings
-
-    Arugments:
-        init_from_prompt_text: Whether to intialize prompt embeddings
-                               from from certain lm embeddings
-                               corresponding to a prompt string
-        hidden_size: hidden size should match lm embedding size
-        num_prompt_tokens: length of prompt initalized from torch init method
-        position_embedding_weights: embedding vectors for positions 0 through 
-                                    num_prompt_tokens
-        word_embedding_weights: token embedding vectors for text init option
-        init_method: pytorch init method
-        embedding_weights: token embeddings from prompt text
-        prompt_embedding_dropout_prob: dropout probablity
-    """
-
-    def __init__(
-        self,
-        init_from_prompt_text,
-        hidden_size,
-        num_prompt_tokens,
-        position_embedding_weights=None,
-        word_embedding_weights=None,
-        init_method=init.xavier_normal_,
-        prompt_embedding_dropout_prob=0.1,
-    ):
-        super().__init__()
-
-        self.hidden_size = hidden_size
-        self.num_prompt_tokens = num_prompt_tokens
-
-        # Randomly init token and position embeddings
-        self.prompt_embeddings = torch.nn.Embedding(self.num_prompt_tokens, self.hidden_size)
-        self.position_embeddings = torch.nn.Embedding(self.num_prompt_tokens, self.hidden_size)
-        init_method(self.prompt_embeddings.weight)
-        init_method(self.position_embeddings.weight)
-
-        # Set embedding weights to be embeddings from prompt tokens
-        if init_from_prompt_text:
-            self.prompt_embeddings.weight = nn.Parameter(word_embedding_weights)
-        if position_embedding_weights != None:
-            self.position_embeddings.weight = nn.Parameter(position_embedding_weights)
-
-        # Set keys for loading and saving weights
-        self._prompt_embeddings_key = 'prompt_embeddings'
-        self._position_embeddings_key = 'position_embeddings'
-
-        # Set ids needed for forward pass and broadcast them
-        # ids = {'ids': torch.arange(self.num_prompt_tokens, dtype=torch.int64)}
-        # ids_b = tensor_parallel.broadcast_data(['ids'], ids, torch.int64)
-        # self.ids = ids_b['ids'].long()
-        self.ids = torch.arange(self.num_prompt_tokens, dtype=torch.int64)
-
-        self.embedding_dropout = torch.nn.Dropout(prompt_embedding_dropout_prob)
-
-    def forward(self, token_type_ids=None):
-        # Embeddings.
-        device = next(self.prompt_embeddings.parameters()).device
-        prompt_embeddings = self.prompt_embeddings(self.ids.to(device))
-        position_embeddings = self.position_embeddings(self.ids.to(device))
-        embeddings = prompt_embeddings + position_embeddings
-
-        # Dropout.
-        embeddings = self.embedding_dropout(embeddings)
-
-        return embeddings
-
-    # These save and load methods don't actually seem to be called during training or when restoring the model
-    # But I've added them because the other transformer submodules have them
-    def state_dict_for_save_checkpoint(self, destination=None, prefix='', keep_vars=False):
-        """For easy load."""
-        state_dict_ = {}
-        state_dict_[self._prompt_embeddings_key] = self.prompt_embeddings.state_dict(destination, prefix, keep_vars)
-        state_dict_[self._position_embeddings_key] = self.position_embeddings.state_dict(
-            destination, prefix, keep_vars
-        )
-
-        return state_dict_
-
-    def load_state_dict(self, state_dict, strict=True):
-        """Customized load."""
-
-        # Word embedding.
-        if self._prompt_embeddings_key in state_dict:
-            state_dict_ = state_dict[self._word_embeddings_key]
-        else:
-            # for backward compatibility.
-            state_dict_ = {}
-            for key in state_dict.keys():
-                if 'prompt_embeddings' in key:
-                    state_dict_[key.split('prompt_embeddings.')[1]] = state_dict[key]
-        self.prompt_embeddings.load_state_dict(state_dict_, strict=strict)
-
-        # Position embedding.
-        if self._position_embeddings_key in state_dict:
-            state_dict_ = state_dict[self._position_embeddings_key]
-        else:
-            # for backward compatibility.
-            state_dict_ = {}
-            for key in state_dict.keys():
-                if 'position_embeddings' in key:
-                    state_dict_[key.split('position_embeddings.')[1]] = state_dict[key]
-        self.position_embeddings.load_state_dict(state_dict_, strict=strict)
-
-
-class PromptTable(torch.nn.Module):
-    def __init__(
-        self, existing_prompt_tags, num_prompt_tokens, hidden_size,
-    ):
-        super().__init__()
-
-        self.num_prompt_tokens = num_prompt_tokens
-        self.hidden_size = hidden_size
-        self.prompt_table = torch.nn.ModuleDict()
-        self.prompt_id_to_tag = {}
-
-        if existing_prompt_tags:
-            for tag, prompt_id in existing_prompt_tags:
-                self.prompt_id_to_tag[prompt_id] = tag
-                self.prompt_table[tag] = PromptEmbedding(
-                    init_from_prompt_text=False,
-                    hidden_size=self.hidden_size,
-                    num_prompt_tokens=self.num_prompt_tokens,
-                )
-
-    def forward(self, prompt_id):
-        prompt_id = prompt_id.item()
-        prompt_tag = self.prompt_id_to_tag[prompt_id]
-        return self.prompt_table[prompt_tag]()
-
-    def remove_prompt(self, prompt_tag):
-        if prompt_tag not in prompt_table:
-            return
-
-        # find the prompt_id assocaited with the tag to delete
-        prompt_id = None
-        for key, value in prompt_id_to_tag.items():
-            if value == prompt_tag:
-                prompt_id = key
-                break
-
-        del self.prompt_id_to_tag[prompt_id]
-        del self.prompt_table[prompt_tag]
-
-    def init_prompt_from_random(self, prompt_tag, prompt_id, embeddings):
-        """Add new soft prompt to be tuned.
-           Intialize prompt weights using pytorch init method
-
-        """
-        # Initalize prompt embeddings from a pytorch random init method
-        prompt_embeddings = PromptEmbedding(
-            init_from_prompt_text=False, hidden_size=self.hidden_size, num_prompt_tokens=self.num_prompt_tokens,
-        )
-
-        self.prompt_table[prompt_tag] = prompt_embeddings
-        self.prompt_id_to_tag[prompt_id] = prompt_tag
-
-    def init_prompt_from_text(self, prompt_tag, prompt_id, init_token_ids, embeddings):
-        """Add new soft prompt to be tuned.
-           Intialize prompt weights from existing embeddings from specific vocab tokens.
-
-        """
-        # Trim or iterate until num_text_tokens matches num_prompt_tokens
-        num_text_tokens = len(init_token_ids)
-        num_prompt_tokens = self.num_prompt_tokens
-
-        if num_text_tokens > num_prompt_tokens:
-            init_token_ids = init_token_ids[:num_prompt_tokens]
-        elif num_text_tokens < num_prompt_tokens:
-            num_reps = math.ceil(num_prompt_tokens / num_text_tokens)
-            init_token_ids = init_token_ids * num_reps
-
-        # Set dictionary item keys and datatypes for broadcasting
-        keys = ['text']
-        datatype = torch.int64
-
-        # Broadcast int ids across gpus for tensor parallel
-        init_token_ids = init_token_ids[:num_prompt_tokens]
-        init_token_ids = {'text': torch.tensor(init_token_ids, dtype=torch.int64)}
-        init_token_ids_b = tensor_parallel.broadcast_data(keys, init_token_ids, datatype)
-        init_token_ids = init_token_ids_b['text'].long()
-        init_position_ids = torch.arange(self.num_prompt_tokens, dtype=torch.long, device=init_token_ids.device)
-
-        # Use a copy of token embedding weights to initalize the prompt embeddings
-        word_embeddings, position_embeddings = embeddings(init_token_ids, init_position_ids, separate_embeddings=True)
-
-        word_embeddings = word_embeddings.detach().clone()
-        position_embeddings = position_embeddings.detach().clone()
-
-        prompt_embeddings = PromptEmbedding(
-            init_from_prompt_text=True,
-            hidden_size=self.hidden_size,
-            num_prompt_tokens=self.num_prompt_tokens,
-            word_embedding_weights=word_embeddings,
-            position_embedding_weights=position_embeddings,
-        )
-
-        self.prompt_table[prompt_tag] = prompt_embeddings
-        self.prompt_id_to_tag[prompt_id] = prompt_tag
-
-    def load_state_dict(self, state_dict_, strict):
-        for prompt_tag in self.prompt_table:
-            self.prompt_table[prompt_tag].load_state_dict(state_dict_[prompt_tag], strict=strict)
-
-    def state_dict_for_save_checkpoint(self, destination=None, prefix='', keep_vars=False):
-        prompt_state_dict_ = {}
-        for prompt_tag in self.prompt_table:
-            prompt_state_dict_[prompt_tag] = self.prompt_table[prompt_tag].state_dict_for_save_checkpoint(
-                destination, prefix, keep_vars
-            )
-
-        return prompt_state_dict_
-
-
 class TransformerLanguageModel(MegatronModule):
     """Transformer language model.
 
@@ -578,9 +348,6 @@ class TransformerLanguageModel(MegatronModule):
         persist_layer_norm=False,
         openai_gelu=False,
         onnx_safe=False,
-        use_soft_prompts=False,
-        num_prompt_tokens=100,
-        existing_prompt_tags=None,
         megatron_legacy=False,
     ):
         super(TransformerLanguageModel, self).__init__()
@@ -599,9 +366,6 @@ class TransformerLanguageModel(MegatronModule):
         self.add_pooler = add_pooler
         self.hidden_dropout = hidden_dropout
         self.output_layer_init_method = output_layer_init_method
-        self.use_soft_prompts = use_soft_prompts
-        self.existing_prompt_tags = existing_prompt_tags
-        self.num_prompt_tokens = num_prompt_tokens
 
         if kv_channels is None:
 
@@ -622,15 +386,6 @@ class TransformerLanguageModel(MegatronModule):
                 embedding_dropout_prob=self.hidden_dropout,
             )
             self._embedding_key = 'embedding'
-
-        # Soft Prompts
-        if self.use_soft_prompts:
-            self.prompt_table = PromptTable(
-                existing_prompt_tags=self.existing_prompt_tags,
-                num_prompt_tokens=self.num_prompt_tokens,
-                hidden_size=self.hidden_size,
-            )
-            self._prompt_table_key = 'prompt_table'
 
         # Transformer.
         self.encoder = ParallelTransformer(
@@ -712,7 +467,6 @@ class TransformerLanguageModel(MegatronModule):
         enc_input_ids,
         enc_position_ids,
         enc_attn_mask,
-        prompt_ids=None,
         dec_input_ids=None,
         dec_position_ids=None,
         dec_attn_mask=None,
@@ -729,15 +483,7 @@ class TransformerLanguageModel(MegatronModule):
     ):
         # Embeddings.
         if self.pre_process and encoder_input is None:
-            embedding_output = self.embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
-
-            # Soft prompts
-            if self.use_soft_prompts and prompt_ids != None:
-                prompt_embeddings = [self.prompt_table(prompt_id) for prompt_id in prompt_ids]
-                prompt_embeddings = torch.stack(prompt_embeddings)
-                encoder_input = torch.cat((prompt_embeddings, embedding_output), dim=1)
-            else:
-                encoder_input = embedding_output
+            encoder_input = self.embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
         else:
             pass
 
@@ -795,11 +541,6 @@ class TransformerLanguageModel(MegatronModule):
                 destination, prefix, keep_vars
             )
 
-        if self.use_soft_prompts:
-            state_dict_[self._prompt_table_key] = self.prompt_table.state_dict_for_save_checkpoint(
-                destination, prefix, keep_vars
-            )
-
         state_dict_[self._encoder_key] = self.encoder.state_dict_for_save_checkpoint(destination, prefix, keep_vars)
         if self.post_process:
             if self.add_pooler:
@@ -827,13 +568,6 @@ class TransformerLanguageModel(MegatronModule):
                     if '_embeddings' in key:
                         state_dict_[key] = state_dict[key]
             self.embedding.load_state_dict(state_dict_, strict=strict)
-
-        # Prompt Table
-        if self.use_soft_prompts:
-            if self._prompt_table_key in state_dict:
-                state_dict_ = state_dict[self._prompt_table_key]
-
-                self.prompt_table.load_state_dict(state_dict_, strict=strict)
 
         # Encoder.
         if self._encoder_key in state_dict:
@@ -869,27 +603,3 @@ class TransformerLanguageModel(MegatronModule):
         if self.add_decoder:
             assert 'decoder' in state_dict, 'could not find data for pooler in the checkpoint'
             self.decoder.load_state_dict(state_dict[self._decoder_key], strict=strict)
-
-    def _init_prompt_from_random(self, prompt_tag, prompt_id):
-        """Add new soft prompt to be tuned.
-           Intialize prompt weights using pytorch init method
-
-        """
-        if self.pre_process:
-            if not hasattr(self, 'prompt_table'):
-                raise AttributeError('Please set "use_soft_prompts" in the config to True')
-
-            self.prompt_table.init_prompt_from_random(prompt_tag, prompt_id, embeddings=self.embedding)
-
-    def _init_prompt_from_text(self, prompt_tag, prompt_id, init_token_ids):
-        """Add new soft prompt to be tuned.
-           Intialize prompt weights from existing embeddings from specific vocab tokens.
-
-        """
-        if self.pre_process:
-            if not hasattr(self, 'prompt_table'):
-                raise AttributeError('Please set "use_soft_prompts" in the config to True')
-
-            self.prompt_table.init_prompt_from_text(
-                prompt_tag, prompt_id, init_token_ids, embeddings=self.embedding,
-            )

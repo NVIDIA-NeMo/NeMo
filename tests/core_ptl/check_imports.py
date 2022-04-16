@@ -185,7 +185,9 @@ def test_domain_nlp(args):
     )
     all_passed = (
         _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_ptune_gpt_model']
+            nemo_nlp,
+            domain=args.domain,
+            subdomains=['models', 'language_modeling', 'megatron_gpt_prompt_learning_model'],
         )
         and all_passed
     )

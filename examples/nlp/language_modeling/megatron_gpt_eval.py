@@ -20,6 +20,9 @@ from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
+from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model import (
+    MegatronGPTPromptLearningModel,
+)
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
 from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
@@ -131,6 +134,46 @@ Usage:
 
         sentences = request_data(data)
         ```
+
+    f. run greedy inference from a p-tuned/prompt-tuned model's nemo file:
+        python megatron_gpt_eval.py \
+            virtual_prompt_model=True \
+            model_file=PATH_TO_MODEL \
+            inference.greedy=True \
+            inference.add_BOS=True \
+            trainer.devices=1 \
+            trainer.num_nodes=1 \
+            tensor_model_parallel_size=1 \
+            pipeline_model_parallel_size=1 \
+            prompts=[prompt1,prompt2]
+
+        prompts in this case should be a list of dictionary examples similar to the ones used during prompt learning. They 
+        should have keys that match the fields specified in the prompt template. Fields can be dropped from the prompt dict 
+        and their corresponding section of the prompt template will be automatically removed. 
+
+        For example, say the prompt template during p-tuning/prompt-tuning looked like:
+
+        '<|VIRTUAL_PROMPT_0|> Context: {context} Question: {question} Answer: {answer}'
+
+        but you don't want to include the answer field during inference. Just don't 
+        include the answer field in the prompt dict like below:
+
+        prompts=[
+                    {"taskname": "squad", "context": "some paragraph", "question": "question related to paragraph"},
+                    {"taskname": "squad", "context": "another paragraph", "question": "a different question related to paragraph"},
+                ]
+
+        And the dataset class will automatically format your input to have the form:
+
+        [
+            '<|VIRTUAL_PROMPT_0|> Context: some paragraph Question: question related to paragraph Answer: ',
+            '<|VIRTUAL_PROMPT_0|> Context: another paragraph Question: a different question related to paragraph Answer: '
+        ]
+
+        Instead of prompt dicts, you can also pass in a list of string paths to .json files on which you want to run inference.
+
+        Similarly for all other senarios, just add virtual_prompt_model=True if you're using a 
+        p-tuned/prompt-tuned model. 
 """
 
 if not torch.cuda.is_available():
@@ -159,7 +202,12 @@ def main(cfg) -> None:
         == cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size
     ), "devices * num_nodes should equal tensor_model_parallel_size * pipeline_model_parallel_size"
 
-    if cfg.model_file:
+    # Load prompt tuned model, model_file must be provided in config
+    if cfg.get('virtual_prompt_model', False):
+        model = MegatronGPTPromptLearningModel.restore_from(cfg.model_file, trainer=trainer)
+
+    # Or load regular GPT model
+    elif cfg.model_file:
         model = MegatronGPTModel.restore_from(restore_path=cfg.model_file, trainer=trainer)
     elif cfg.checkpoint_dir:
         app_state = AppState()
@@ -183,7 +231,7 @@ def main(cfg) -> None:
 
     model.freeze()
 
-    # has to turn off activations_checkpoint_method for inference
+    # Has to turn off activations_checkpoint_method for inference
     try:
         model.model.language_model.encoder.activations_checkpoint_method = None
     except AttributeError:
@@ -205,7 +253,7 @@ def main(cfg) -> None:
         "compute_logprob": cfg.inference.compute_logprob,
     }
 
-    # first method of running text generation, call model.generate method
+    # First method of running text generation, call model.generate method
     response = model.generate(
         inputs=OmegaConf.to_container(cfg.prompts), length_params=length_params, sampling_params=sampling_params
     )
@@ -214,9 +262,13 @@ def main(cfg) -> None:
     print(response)
     print("***************************")
 
-    # second method of running text generation, call trainer.predict
+    # Second method of running text generation, call trainer.predict
+    collate_fn = None
+    if cfg.get('virtual_prompt_model', False):
+        collate_fn = lambda x: list(x)
+
     ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
-    request_dl = DataLoader(dataset=ds, batch_size=2)
+    request_dl = DataLoader(dataset=ds, collate_fn=collate_fn, batch_size=2)
 
     config = OmegaConf.to_container(cfg.inference)
     model.set_inference_config(config)
@@ -226,7 +278,7 @@ def main(cfg) -> None:
     print(response)
     print("***************************")
 
-    # third method of running text generation, use inference server
+    # Third method of running text generation, use inference server
     if cfg.server:
         if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
             server = MegatronServer(model.cuda())

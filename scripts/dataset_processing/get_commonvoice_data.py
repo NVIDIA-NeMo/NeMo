@@ -88,9 +88,12 @@ def create_manifest(data: List[tuple], output_name: str, manifest_path: str):
 
     with output_file.open(mode='w') as f:
         for wav_path, duration, text in tqdm(data, total=len(data)):
-            f.write(
-                json.dumps({'audio_filepath': os.path.abspath(wav_path), "duration": duration, 'text': text}) + '\n'
-            )
+            if wav_path != '':
+                # skip invalid input files that could not be converted
+                f.write(
+                    json.dumps({'audio_filepath': os.path.abspath(wav_path), "duration": duration, 'text': text})
+                    + '\n'
+                )
 
 
 def process_files(csv_file, data_root, num_workers):
@@ -110,6 +113,10 @@ def process_files(csv_file, data_root, num_workers):
         file_name = os.path.splitext(os.path.basename(file_path))[0]
         text = text.lower().strip()
         audio_path = os.path.join(audio_clips_path, file_path)
+        if os.path.getsize(audio_path) == 0:
+            logging.warning(f'Skipping empty audio file {audio_path}')
+            return '', '', ''
+
         output_wav_path = os.path.join(wav_dir, file_name + '.wav')
 
         if not os.path.exists(output_wav_path):
@@ -125,7 +132,13 @@ def process_files(csv_file, data_root, num_workers):
     with open(csv_file) as csvfile:
         reader = csv.DictReader(csvfile, delimiter='\t')
         next(reader, None)  # skip the headers
-        data = [(row['path'], row['sentence']) for row in reader]
+        data = []
+        for row in reader:
+            file_name = row['path']
+            # add the mp3 extension if the tsv entry does not have it
+            if not file_name.endswith('.mp3'):
+                file_name += '.mp3'
+            data.append((file_name, row['sentence']))
         with ThreadPool(num_workers) as pool:
             data = list(tqdm(pool.imap(process, data), total=len(data)))
     return data
@@ -145,13 +158,17 @@ def main():
     else:
         logging.info("Could not find Common Voice, Downloading corpus...")
 
+        # some dataset versions are packaged in different named files, so forcing
+        output_archive_filename = args.language + '.tar.gz'
+        output_archive_filename = os.path.join(data_root, output_archive_filename)
+
         commands = [
             'wget',
             '--user-agent',
             '"Mozilla/5.0 (Windows NT 10.0; WOW64) '
             'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"',
-            '-P',
-            data_root,
+            '-O',
+            output_archive_filename,
             f'{COMMON_VOICE_URL}',
         ]
         commands = " ".join(commands)
@@ -169,6 +186,15 @@ def main():
             os.remove(target_file)
 
     folder_path = os.path.join(target_unpacked_dir, args.version + f'/{args.language}/')
+    if not os.path.isdir(folder_path):
+        # try without language
+        folder_path = os.path.join(target_unpacked_dir, args.version)
+        if not os.path.isdir(folder_path):
+            # try without version
+            folder_path = target_unpacked_dir
+            if not os.path.isdir(folder_path):
+                logging.error(f'unable to locate unpacked files in {folder_path}')
+                sys.exit()
 
     for csv_file in args.files_to_process:
         data = process_files(

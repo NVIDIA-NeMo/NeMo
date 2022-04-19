@@ -320,13 +320,12 @@ def getKneighborsConnections(affinity_mat: torch.Tensor, p_value: int):
     """
     Binarize top-p values for each row from the given affinity matrix.
     """
-    binarized_affinity_mat = torch.zeros_like(affinity_mat)
+    binarized_affinity_mat = torch.zeros_like(affinity_mat).int()
     for i in range(affinity_mat.shape[0]):
         line = affinity_mat[i, :]
         sorted_idx = torch.argsort(line, descending=True)
         indices = sorted_idx[:p_value]
-        binarized_affinity_mat[indices, i] = 1
-
+        binarized_affinity_mat[indices, i] = torch.ones(indices.shape[0]).to(affinity_mat.device).int()
     return binarized_affinity_mat
 
 
@@ -490,6 +489,7 @@ def getLamdaGaplist(lambdas: torch.Tensor):
     return lambdas[1:] - lambdas[:-1]
 
 
+@torch.jit.script
 def addAnchorEmb(emb: torch.Tensor, anchor_sample_n: int, anchor_spk_n: int, sigma: float):
     """
     Add randomly generated synthetic embeddings to make eigen analysis more stable.
@@ -632,7 +632,7 @@ class SpectralClustering:
         self,
         n_clusters: int = 8,
         random_state: int = 0,
-        random_trial: int = 1,
+        n_random_trials: int = 1,
         cuda: bool = False,
         device: torch.device = torch.device('cpu'),
     ):
@@ -646,7 +646,7 @@ class SpectralClustering:
             random_state (int):
                 Random seed that determines a random state of k-means initialization.
 
-            random_trial (int):
+            n_random_trials (int):
                 Number of trials with different random seeds for k-means initialization.
                 k-means++ algorithm is executed for multiple times then the final result
                 is obtained by taking a majority vote.
@@ -660,7 +660,7 @@ class SpectralClustering:
         """
         self.n_clusters = n_clusters
         self.random_state = random_state
-        self.random_trial = max(random_trial, 1)
+        self.n_random_trials = max(n_random_trials, 1)
         self.cuda = cuda
         self.device = device
 
@@ -684,9 +684,9 @@ class SpectralClustering:
     def clusterSpectralEmbeddings(self, affinity, cuda: bool = False, device: torch.device = torch.device('cpu')):
         """
         Perform k-means clustering on spectral embeddings. To alleviate the effect of randomness,
-        k-means clustering is performed for (self.random_trial) times then the final labels are obtained
-        by taking a majority vote. If speed is the major concern, self.random_trial should be set to 1.
-        random_trial=30 is recommended to see an improved result.
+        k-means clustering is performed for (self.n_random_trials) times then the final labels are obtained
+        by taking a majority vote. If speed is the major concern, self.n_random_trials should be set to 1.
+        n_random_trials=30 is recommended to see an improved result.
 
         Args:
             affinity (torch.tensor):
@@ -703,7 +703,7 @@ class SpectralClustering:
         """
         spectral_emb = self.getSpectralEmbeddings(affinity, n_spks=self.n_clusters, cuda=cuda)
         labels_set = []
-        for random_state_seed in range(self.random_state, self.random_state + self.random_trial):
+        for random_state_seed in range(self.random_state, self.random_state + self.n_random_trials):
             _labels = kmeans_torch(
                 X=spectral_emb, num_clusters=self.n_clusters, random_state=random_state_seed, device=device
             )

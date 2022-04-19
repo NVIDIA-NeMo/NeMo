@@ -116,6 +116,9 @@ class ExpManagerConfig:
     # logs timing of train/val/test steps
     log_step_timing: Optional[bool] = True
     step_timing_kwargs: Optional[StepTimingParams] = StepTimingParams()
+    # Configures creation of log files for different ranks
+    log_local_rank_0_only: Optional[bool] = False
+    log_global_rank_0_only: Optional[bool] = False
 
 
 class TimingCallback(Callback):
@@ -216,7 +219,10 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
                 Defaults to True.
             - files_to_copy (list): A list of files to copy to the experiment logging directory. Defaults to None which
                 copies no files.
-
+            - log_local_rank_0_only (bool): Whether to only create log files for local rank 0. Defaults to False.
+                Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
+            - log_global_rank_0_only (bool): Whether to only create log files for global rank 0. Defaults to False.
+                Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
     returns:
         log_dir (Path): The final logging directory where logging files are saved. Usually the concatenation of
             exp_dir, name, and version.
@@ -281,17 +287,25 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     logging.info(f'Experiments will be logged at {log_dir}')
     trainer._default_root_dir = log_dir
 
+    if cfg.log_local_rank_0_only is True and cfg.log_global_rank_0_only is True:
+        raise ValueError(
+            f"Cannot set both log_local_rank_0_only and log_global_rank_0_only to True. Please set either one or neither."
+        )
+
+    # This is set if the env var NEMO_TESTING is set to True.
+    nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
+
     # Handle logging to file
-    if get_envbool(NEMO_ENV_VARNAME_TESTING, False) or world_size <= 32:
-        # If NEMO_TESTING is set (debug mode) or if less than 32 ranks save all log files
+    # Logs local rank 0 only
+    if local_rank == 0 and cfg.log_local_rank_0_only is True and nemo_testing is False:
         log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         logging.add_file_handler(log_file)
-    elif world_size <= 256 and local_rank == 0:
-        # If less than 256 ranks, try to save 1 log file per "machine"
+    # Logs only on global rank 0
+    elif global_rank == 0 and cfg.log_global_rank_0_only is True and not nemo_testing is False:
         log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         logging.add_file_handler(log_file)
-    elif global_rank == 0:
-        # If running more than 256 ranks, only save 1 log file
+    # Logs on all ranks.
+    else:
         log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         logging.add_file_handler(log_file)
 

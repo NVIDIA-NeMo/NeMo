@@ -127,7 +127,7 @@ def get_tokenizer(
         return RegExTokenizer().load_tokenizer(tokenizer_model)
 
     logging.info(
-        f"Getting HuggingFace AutoTokenizer with pretrained_model_name: {tokenizer_name}, vocab_file: {vocab_file}, "
+        f"Getting HuggingFace AutoTokenizer with pretrained_model_name: {tokenizer_name}, vocab_file: {vocab_file}, merges_files: {merges_file}, "
         f"special_tokens_dict: {special_tokens_dict}, and use_fast: {use_fast}"
     )
     return AutoTokenizer(
@@ -169,7 +169,9 @@ def get_nmt_tokenizer(
     else:
         special_tokens_dict = special_tokens
 
-    if (library != 'byte-level') and (model_name is None and not os.path.isfile(tokenizer_model)):
+    if (library != 'byte-level') and (
+        model_name is None and (tokenizer_model is None or not os.path.isfile(tokenizer_model))
+    ):
         raise ValueError("No Tokenizer path provided or file does not exist!")
 
     if library == 'yttm':
@@ -199,7 +201,7 @@ def get_nmt_tokenizer(
         if model_name in megatron_tokenizer_model_map:
             model_name = megatron_tokenizer_model_map[model_name]
         logging.info(
-            f'Getting Megatron tokenizer for pretrained model name: {model_name} and custom vocab file: {vocab_file}'
+            f'Getting Megatron tokenizer for pretrained model name: {model_name}, custom vocab file: {vocab_file}, and merges file: {merges_file}'
         )
         return get_tokenizer(tokenizer_name=model_name, vocab_file=vocab_file, merges_file=merges_file)
     elif library == 'tabular':

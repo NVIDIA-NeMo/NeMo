@@ -63,6 +63,10 @@ class MegatronT5PTuneModel(MegatronBaseModel):
         with open_dict(t5_cfg):
             t5_cfg.masked_softmax_fusion = False
             t5_cfg.megatron_amp_O2 = self.megatron_amp_o2
+            # TODO, need to fix this later
+            # hack to make the _GLOBAL_NUM_MICROBATCHES_CALCULATOR initialize
+            t5_cfg.micro_batch_size = 4
+            t5_cfg.global_batch_size = 4
 
         self.model = MegatronT5Model.restore_from(
             self.register_artifact('language_model.nemo_file', cfg.language_model.get('nemo_file', None)),
@@ -212,7 +216,7 @@ class MegatronT5PTuneModel(MegatronBaseModel):
                     enc_input=encoder_input,
                 )
 
-        tokens_loss = output['tokens_loss']
+        tokens_loss = output
 
         loss = self.model.loss_func(loss_mask, tokens_loss)
         self.log('train_loss', loss)
@@ -245,7 +249,7 @@ class MegatronT5PTuneModel(MegatronBaseModel):
             tokens_enc=tokens_enc,
             enc_mask=enc_mask,
             num_tokens_to_generate=self.decoder_seq_length,
-            enc_input=encoder_input,
+            encoder_input=encoder_input,
         )
 
         return {'loss': loss, 'predicted_token_ids': predicted_token_ids, 'labels': labels}

@@ -57,7 +57,7 @@ model:
       num_workers: 0
       pin_memory: True
       max_seq_length: 512
-      drop_last: True
+      drop_last: False
 
     validation_ds:
       task_name: 'xnli'
@@ -68,7 +68,7 @@ model:
       num_workers: 0
       pin_memory: True
       max_seq_length: 512
-      drop_last: True
+      drop_last: False
 
     test_ds:
       task_name: 'xnli'
@@ -79,7 +79,7 @@ model:
       num_workers: 0
       pin_memory: True
       max_seq_length: 512
-      drop_last: True
+      drop_last: False
 
   optim:
     name: fused_adam

@@ -64,7 +64,7 @@ class SaveRestoreConnector:
         else:
             return
 
-    def restore_from(
+    def load_config_and_state_dict(
         self,
         calling_cls,
         restore_path: str,
@@ -146,20 +146,67 @@ class SaveRestoreConnector:
                 if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
                     model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
                 state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location)
-
-                if conf.get('megatron_amp_O2', False):
-                    new_state_dict = {}
-                    for key in state_dict.keys():
-                        new_key = key.replace('model.', 'model.module.', 1)
-                        new_state_dict[new_key] = state_dict[key]
-                    state_dict = new_state_dict
-                instance.load_state_dict(state_dict, strict=strict)
-
-                logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
-                instance._set_model_restore_state(is_being_restored=False)
             finally:
                 os.chdir(cwd)
 
+        return (conf, instance, state_dict)
+
+    def modify_state_dict(self, conf, state_dict):
+        if conf.get('megatron_amp_O2', False):
+            new_state_dict = {}
+            for key in state_dict.keys():
+                new_key = key.replace('model.', 'model.module.', 1)
+                new_state_dict[new_key] = state_dict[key]
+            state_dict = new_state_dict
+        return state_dict
+
+    def load_instance_with_state_dict(self, instance, state_dict, strict):
+        instance.load_state_dict(state_dict, strict=strict)
+        instance._set_model_restore_state(is_being_restored=False)
+
+    def restore_from(
+        self,
+        calling_cls,
+        restore_path: str,
+        override_config_path: Optional[Union[OmegaConf, str]] = None,
+        map_location: Optional[torch.device] = None,
+        strict: bool = True,
+        return_config: bool = False,
+        trainer: Trainer = None,
+    ):
+        """
+        Restores model instance (weights and configuration) into .nemo file
+
+        Args:
+            restore_path: path to .nemo file from which model should be instantiated
+            override_config_path: path to a yaml config that will override the internal
+                config file or an OmegaConf / DictConfig object representing the model config.
+            map_location: Optional torch.device() to map the instantiated model to a device.
+                By default (None), it will select a GPU if available, falling back to CPU otherwise.
+            strict: Passed to load_state_dict. By default True
+            return_config: If set to true, will return just the underlying config of the restored
+                model as an OmegaConf DictConfig object without instantiating the model.
+
+        Example:
+            ```
+            model = nemo.collections.asr.models.EncDecCTCModel.restore_from('asr.nemo')
+            assert isinstance(model, nemo.collections.asr.models.EncDecCTCModel)
+            ```
+
+        Returns:
+            An instance of type cls or its underlying config (if return_config is set).
+        """
+        # Get path where the command is executed - the artifacts will be "retrieved" there
+        # (original .nemo behavior)
+        loaded_params = self.load_config_and_state_dict(
+            calling_cls, restore_path, override_config_path, map_location, strict, return_config, trainer,
+        )
+        if not isinstance(loaded_params, tuple):
+            return loaded_params
+        conf, instance, state_dict = loaded_params
+        state_dict = self.modify_state_dict(conf, state_dict)
+        self.load_instance_with_state_dict(instance, state_dict, strict)
+        logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
         return instance
 
     def extract_state_dict_from(self, restore_path: str, save_dir: str, split_by_module: bool = False):

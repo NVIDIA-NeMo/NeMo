@@ -85,7 +85,7 @@ class TextClassificationModel(NLPModel, Exportable):
         if isinstance(hidden_states, tuple):
             hidden_states = hidden_states[0]
         logits = self.classifier(hidden_states=hidden_states)
-        return logits
+        return logits.float()
 
     def training_step(self, batch, batch_idx):
         """

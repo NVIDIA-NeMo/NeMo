@@ -43,7 +43,7 @@ class FastSpeech2Config:
     validation_ds: Optional[Dict[Any, Any]] = None
 
 
-@deprecated(version="1.8", explanation="FastSpeech2Model will be removed. Please, use FastPitchModel instead.")
+@deprecated(version="1.9", explanation="FastSpeech2Model will be removed. Please, use FastPitchModel instead.")
 class FastSpeech2Model(SpectrogramGenerator):
     """FastSpeech 2 model used to convert from text (phonemes) to mel-spectrograms."""
 

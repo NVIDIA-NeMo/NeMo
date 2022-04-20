@@ -64,7 +64,7 @@ class QAModel(NLPModel):
         if isinstance(hidden_states, tuple):
             hidden_states = hidden_states[0]
         logits = self.classifier(hidden_states=hidden_states)
-        return logits
+        return logits.float()
 
     def training_step(self, batch, batch_idx):
         input_ids, input_type_ids, input_mask, unique_ids, start_positions, end_positions = batch

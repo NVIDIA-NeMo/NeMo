@@ -124,9 +124,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         self.tokenizer = get_nmt_tokenizer(
             library=self._cfg.tokenizer.library,
             model_name=self._cfg.tokenizer.type,
-            tokenizer_model=self.register_artifact("tokenizer_model", self._cfg.tokenizer.model),
-            vocab_file=self.register_artifact("vocab_file", self._cfg.tokenizer.vocab_file),
-            merges_file=self.register_artifact("merges_file", self._cfg.tokenizer.merge_file),
+            tokenizer_model=self.register_artifact("tokenizer.model", self._cfg.tokenizer.model),
+            vocab_file=self.register_artifact("tokenizer.vocab_file", self._cfg.tokenizer.vocab_file),
+            merges_file=self.register_artifact("tokenizer.merge_file", self._cfg.tokenizer.merge_file),
             legacy=True if self._cfg.tokenizer.library == 'sentencepiece' else False,
         )
 
@@ -433,7 +433,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
     def get_forward_output_only_func(self):
         def fwd_output_only_func(batch, model):
             batch = [x.cuda(non_blocking=True) for x in batch]
-            encoder_input_ids, decoder_input_ids, encoder_attn_mask, decoder_attn_mask = batch
+            if len(batch) == 4:
+                encoder_input_ids, decoder_input_ids, encoder_attn_mask, decoder_attn_mask = batch
+                enc_input = None
+            elif len(batch) == 5:
+                encoder_input_ids, decoder_input_ids, encoder_attn_mask, decoder_attn_mask, enc_input = batch
+            else:
+                raise ValueError("wrong number of items in the batch")
             output = model(
                 encoder_input_ids,  # enc_input_ids
                 encoder_attn_mask,  # enc_attn_mask
@@ -441,7 +447,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 decoder_attn_mask,  # dec_attn_mask
                 None,  # token_type_ids
                 None,  # labels
-                None,  # enc_hidden_states
+                enc_input,  # enc_hidden_states
             )
 
             def id_func(output_tensor):
@@ -743,9 +749,10 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         logging.info(f"response: {response}")
         return response
 
-    def decode(self, tokens_enc, enc_mask, num_tokens_to_generate):
+    def decode(self, tokens_enc, enc_mask, num_tokens_to_generate, encoder_input=None):
         app_state = AppState()
         global_batch_per_gpu = tokens_enc.size(0)
+
         num_micro_batches_before_decode = get_num_microbatches()
         # Reconfigure microbatch calculator here to set num microbatches to 1 while decoding since its not clear how to decode with "grad acc".
         # TODO: reconfigure back to how things were before decode?
@@ -768,7 +775,10 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             decoder_seq_length = predicted_tokens_dec.size(1)
             dec_mask = predicted_tokens_dec != self.tokenizer.pad_id
 
-            batch_for_pipeline = [tokens_enc, predicted_tokens_dec, enc_mask, dec_mask]
+            if encoder_input is not None:
+                batch_for_pipeline = [tokens_enc, predicted_tokens_dec, enc_mask, dec_mask, encoder_input]
+            else:
+                batch_for_pipeline = [tokens_enc, predicted_tokens_dec, enc_mask, dec_mask]
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
                 output_tensor = forward_backward_pipelining_without_interleaving(
                     forward_step_func=self.get_forward_output_only_func(),

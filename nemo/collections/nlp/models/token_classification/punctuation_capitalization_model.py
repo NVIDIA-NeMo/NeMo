@@ -158,7 +158,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
 
         punct_logits = self.punct_classifier(hidden_states=hidden_states)
         capit_logits = self.capit_classifier(hidden_states=hidden_states)
-        return punct_logits, capit_logits
+        return punct_logits.float(), capit_logits.float()
 
     def _make_step(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         punct_logits, capit_logits = self(

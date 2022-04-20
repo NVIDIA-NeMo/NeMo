@@ -73,14 +73,19 @@ def main(cfg) -> None:
     OmegaConf.set_struct(t5_cfg, True)
     with open_dict(t5_cfg):
         t5_cfg.masked_softmax_fusion = False
-        t5_cfg.data = cfg.data
+        t5_cfg.precision = cfg.trainer.precision
+        # Overwrite data configs
+        t5_cfg.data = cfg.model.data
+        # XNLI has eval languages in the yaml config.
+        if hasattr(cfg.model, 'eval_languages'):
+            t5_cfg.eval_languages = cfg.model.eval_languages
 
     model = MegatronT5GLUEModel.restore_from(
         restore_path=cfg.model.restore_from_path, trainer=trainer, override_config_path=t5_cfg
     )
     model.freeze()
     trainer.validate(model)
-    if hasattr(cfg.data, 'test_ds'):
+    if hasattr(cfg.model.data, 'test_ds'):
         trainer.test(model)
 
 

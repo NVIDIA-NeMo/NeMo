@@ -60,8 +60,8 @@ class MTDataPreproc:
         self.global_rank = 0
         self.world_size = 1
         if trainer is not None:
-            self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
-            self.world_size = trainer.num_nodes * trainer.num_gpus
+            self.global_rank = (trainer.node_rank * trainer.num_devices) + trainer.local_rank
+            self.world_size = trainer.num_nodes * trainer.num_devices
 
         if hasattr(cfg, 'train_ds'):
             supported_tokenizers = ['yttm', 'huggingface', 'sentencepiece', 'megatron', 'byte-level']

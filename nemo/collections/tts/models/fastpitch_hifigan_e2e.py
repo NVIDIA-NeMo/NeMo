@@ -55,7 +55,7 @@ class FastPitchHifiGanE2EConfig:
     pitch_predictor: Dict[Any, Any] = MISSING
 
 
-@deprecated(version="1.8", explanation="FastPitchHifiGanE2EModel will be removed.")
+@deprecated(version="1.9", explanation="FastPitchHifiGanE2EModel will be removed.")
 class FastPitchHifiGanE2EModel(TextToWaveform):
     """An end-to-end speech synthesis model based on FastPitch and HiFiGan that converts strings to audio without using
     the intermediate mel spectrogram representation.
@@ -177,7 +177,7 @@ class FastPitchHifiGanE2EModel(TextToWaveform):
         disc_params = chain(self.multiscaledisc.parameters(), self.multiperioddisc.parameters())
         opt1 = torch.optim.AdamW(disc_params, lr=self._cfg.lr)
         opt2 = torch.optim.AdamW(gen_params, lr=self._cfg.lr)
-        num_procs = self._trainer.num_gpus * self._trainer.num_nodes
+        num_procs = self._trainer.num_devices * self._trainer.num_nodes
         num_samples = len(self._train_dl.dataset)
         batch_size = self._train_dl.batch_size
         iter_per_epoch = np.ceil(num_samples / (num_procs * batch_size))

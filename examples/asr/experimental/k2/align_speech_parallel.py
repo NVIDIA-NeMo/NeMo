@@ -157,7 +157,7 @@ def main(cfg: ParallelAlignmentConfig):
 
     os.makedirs(cfg.output_path, exist_ok=True)
     # trainer.global_rank is not valid before predict() is called. Need this hack to find the correct global_rank.
-    global_rank = trainer.node_rank * trainer.num_gpus + int(os.environ.get("LOCAL_RANK", 0))
+    global_rank = trainer.node_rank * trainer.num_devices + int(os.environ.get("LOCAL_RANK", 0))
     output_file = os.path.join(cfg.output_path, f"predictions_{global_rank}.json")
     output_ctm_dir = os.path.join(cfg.output_path, "ctm")
     predictor_writer = ASRCTMPredictionWriter(

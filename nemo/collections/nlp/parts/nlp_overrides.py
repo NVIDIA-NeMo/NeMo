@@ -127,7 +127,7 @@ class NLPDDPPlugin(DDPPlugin):
 
         Args:
             global_rank (int): the global process index.
-            world_size (int): the total number of GPUs, num_nodes * num_gpus
+            world_size (int): the total number of GPUs, num_nodes * num_devices
             is_slurm_managing_tasks (bool, optional): is the cluster managed by SLURM.
         """
         app_state = AppState()
@@ -303,6 +303,17 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         else:
             return super().save_to(model, save_path)
 
+    def modify_state_dict(self, conf, state_dict):
+        if conf.get('megatron_legacy', False):
+            new_state_dict = {}
+            for key in state_dict.keys():
+                new_key = key.replace('bert_model.language_model', 'bert_model.model.language_model')
+                new_key = new_key.replace('transformer', 'encoder')
+                new_key = new_key.replace('.attention.', '.self_attention.')
+                new_state_dict[new_key] = state_dict[key]
+            state_dict = new_state_dict
+        return state_dict
+
     def restore_from(
         self,
         calling_cls,
@@ -337,75 +348,15 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         """
         # Get path where the command is executed - the artifacts will be "retrieved" there
         # (original .nemo behavior)
-        cwd = os.getcwd()
-
-        if map_location is None:
-            if torch.cuda.is_available():
-                map_location = torch.device('cuda')
-            else:
-                map_location = torch.device('cpu')
-
-        app_state = AppState()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                self._unpack_nemo_file(path2file=restore_path, out_folder=tmpdir)
-                os.chdir(tmpdir)
-                if override_config_path is None:
-                    config_yaml = os.path.join(tmpdir, self.model_config_yaml)
-                else:
-                    # can be str path or OmegaConf / DictConfig object
-                    config_yaml = override_config_path
-                if not isinstance(config_yaml, (OmegaConf, DictConfig)):
-                    conf = OmegaConf.load(config_yaml)
-                else:
-                    conf = config_yaml
-                    if override_config_path is not None:
-                        # Resolve the override config
-                        conf = OmegaConf.to_container(conf, resolve=True)
-                        conf = OmegaConf.create(conf)
-                # If override is top level config, extract just `model` from it
-                if 'model' in conf:
-                    conf = conf.model
-
-                if return_config:
-                    instance = conf
-                    return instance
-                else:
-                    if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
-                        model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
-                    else:
-                        model_weights = os.path.join(tmpdir, self.model_weights_ckpt)
-                OmegaConf.set_struct(conf, True)
-                os.chdir(cwd)
-                # get the class
-                calling_cls._set_model_restore_state(is_being_restored=True, folder=tmpdir)
-                instance = calling_cls.from_config_dict(config=conf, trainer=trainer)
-                instance = instance.to(map_location)
-                # add load_state_dict override
-                if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
-                    model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
-                state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location)
-                if conf.get('megatron_legacy', False):
-                    new_state_dict = {}
-                    for key in state_dict.keys():
-                        new_key = key.replace('bert_model.language_model', 'bert_model.model.language_model')
-                        new_key = new_key.replace('transformer', 'encoder')
-                        new_key = new_key.replace('.attention.', '.self_attention.')
-                        new_state_dict[new_key] = state_dict[key]
-                    state_dict = new_state_dict
-                if conf.get('megatron_amp_O2', False):
-                    new_state_dict = {}
-                    for key in state_dict.keys():
-                        new_key = key.replace('model.', 'model.module.', 1)
-                        new_state_dict[new_key] = state_dict[key]
-                    state_dict = new_state_dict
-                instance.load_state_dict(state_dict, strict=strict)
-
-                logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
-                instance._set_model_restore_state(is_being_restored=False)
-            finally:
-                os.chdir(cwd)
-
+        loaded_params = super().load_config_and_state_dict(
+            calling_cls, restore_path, override_config_path, map_location, strict, return_config, trainer,
+        )
+        if not isinstance(loaded_params, tuple):
+            return loaded_params
+        conf, instance, state_dict = loaded_params
+        state_dict = self.modify_state_dict(conf, state_dict)
+        super().load_instance_with_state_dict(instance, state_dict, strict)
+        logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
         return instance
 
 

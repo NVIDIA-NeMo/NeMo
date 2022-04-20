@@ -92,16 +92,16 @@ def get_batch_size(train_dataloader):
 
 def get_num_workers(trainer):
     if trainer.accelerator is None:
-        return trainer.num_gpus or 1
+        return trainer.num_devices or 1
     elif trainer.accelerator == "ddp_cpu":
-        return trainer.num_processes * trainer.num_nodes
+        return trainer.num_devices * trainer.num_nodes
     elif trainer.accelerator == "ddp":
-        return trainer.num_gpus * trainer.num_nodes
+        return trainer.num_devices * trainer.num_nodes
     else:
         logging.warning(
             f"The lightning trainer received accelerator: {trainer.accelerator}. We " "recommend to use 'ddp' instead."
         )
-        return trainer.num_gpus * trainer.num_nodes
+        return trainer.num_devices * trainer.num_nodes
 
 
 def binarize_attention(attn, in_len, out_len):

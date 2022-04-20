@@ -354,11 +354,11 @@ class NLPModel(ModelPT, Exportable):
             else:
                 model = cls._load_model_state(checkpoint, strict=strict, cfg=cfg, **kwargs)
                 # cfg = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY].cfg
-            if cfg.tokenizer.model is not None:
-                model.register_artifact("tokenizer.tokenizer_model", cfg.tokenizer.model)
-            if cfg.tokenizer.vocab_file is not None:
+            if cfg.tokenizer.get("tokenizer_model") is not None:
+                model.register_artifact("tokenizer.tokenizer_model", cfg.tokenizer.tokenizer_model)
+            if cfg.tokenizer.get("vocab_file") is not None:
                 model.register_artifact("tokenizer.vocab_file", cfg.tokenizer.vocab_file)
-            if cfg.tokenizer.merge_file is not None:
+            if cfg.tokenizer.get("merge_file") is not None:
                 model.register_artifact("tokenizer.merge_file", cfg.tokenizer.merge_file)
 
             checkpoint = model

@@ -22,11 +22,12 @@ from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import (
 )
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
-from nemo.utils import AppState, logging
+from nemo.utils import AppState, app_state, logging
 
 try:
     from apex.transformer import parallel_state
     from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -162,16 +163,55 @@ class MegatronT5GLUEModel(MegatronT5Model):
         )
         return super().on_validation_epoch_start()
 
-    def on_validation_epoch_end(self):
+    def on_test_epoch_start(self):
         app_state = AppState()
         _reconfigure_microbatch_calculator(
             rank=app_state.global_rank,
             rampup_batch_size=None,
-            global_batch_size=self.cfg.data.train_ds.global_batch_size,
-            micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
+            global_batch_size=self.cfg.data.test_ds.global_batch_size,
+            micro_batch_size=self.cfg.data.test_ds.micro_batch_size,
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
+        return super().on_test_epoch_start()
+
+    def on_validation_epoch_end(self):
+        app_state = AppState()
+        if hasattr(self, "_train_ds"):
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=self.cfg.data.train_ds.global_batch_size,
+                micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
+        # When running `trainer.validate()`, the training dataset is not available.
+        else:
+            logging.warning('No training data found, reconfiguring microbatches based on validation batch sizes.')
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=self.cfg.data.validation_ds.global_batch_size,
+                micro_batch_size=self.cfg.data.validation_ds.micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
+
         return super().on_validation_epoch_end()
+
+    def training_step(self, batch, batch_idx):
+        micro_batch_size = batch[0]['text_enc'].size(0)
+        # This should happen only on the last batch of the dataset.
+        if micro_batch_size != self.cfg.data.train_ds.micro_batch_size:
+            app_state = AppState()
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=micro_batch_size
+                * parallel_state.get_data_parallel_world_size()
+                * get_num_microbatches(),
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
+        return super().training_step(batch, batch_idx)
 
     def inference_step(self, batch, batch_idx):
         batch_has_lang_information = len(batch[0]) == 7
@@ -184,6 +224,20 @@ class MegatronT5GLUEModel(MegatronT5Model):
         else:
             processed_batch = batch
 
+        micro_batch_size = processed_batch[0]['text_enc'].size(0)
+
+        # This should happen only on the last batch of the dataset.
+        if micro_batch_size != self.cfg.data.validation_ds.micro_batch_size:
+            app_state = AppState()
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=micro_batch_size
+                * parallel_state.get_data_parallel_world_size()
+                * get_num_microbatches(),
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
         # Call parent validation step to get the loss.
         loss = super().validation_step(processed_batch, batch_idx)
 
@@ -281,7 +335,11 @@ class MegatronT5GLUEModel(MegatronT5Model):
         # But now, it is implicit in the apex fwd/bwd functions and so we need to check for this somewhere.
         # The consequence of not doing this is that training loop will never run validation.
         # NOTE: Prog bar is also broken as a result of this.
-        if self.trainer.val_check_interval > (sampler.num_samples // global_batch_size) and check_validation_interval:
+        global_batch_size_per_data_parallel_rank = global_batch_size // parallel_state.get_data_parallel_world_size()
+        if (
+            self.trainer.val_check_interval > (sampler.num_samples // global_batch_size_per_data_parallel_rank)
+            and check_validation_interval
+        ):
             raise ValueError(
                 f"trainer.val_check_interval {self.trainer.val_check_interval} is > number of global batches {sampler.num_samples // global_batch_size}"
             )
@@ -357,12 +415,12 @@ class MegatronT5GLUEModel(MegatronT5Model):
             self._validation_ds = self._build_dataset(self.cfg.data.validation_ds)
             logging.info(f'Length of val dataset: {len(self._validation_ds)}')
 
-        if stage != 'validation':
+        if stage != 'validate':
             if hasattr(self.cfg.data, 'test_ds'):
                 self._test_ds = self._build_dataset(self.cfg.data.test_ds)
                 logging.info(f'Length of test dataset: {len(self._test_ds)}')
 
-        if stage == 'validation' or stage == 'test':
+        if stage == 'validate' or stage == 'test':
             return
         self._train_ds = self._build_dataset(self.cfg.data.train_ds)
         logging.info(f'Length of train dataset: {len(self._train_ds)}')

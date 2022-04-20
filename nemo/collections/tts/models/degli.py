@@ -98,7 +98,7 @@ def reconstruct_wave(*args: ndarray, kwargs_istft, n_sample=-1) -> ndarray:
     return wave
 
 
-@deprecated(version="1.8", explanation="DegliModel will be removed.")
+@deprecated(version="1.9", explanation="DegliModel will be removed.")
 class DegliModel(LinVocoder):
     """Deep Griffin Lim model used to convert between spectrograms and audio"""
 

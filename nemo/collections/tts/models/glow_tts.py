@@ -46,7 +46,7 @@ class GlowTTSConfig:
     test_ds: Optional[Dict[Any, Any]] = None
 
 
-@deprecated(version="1.8", explanation="GlowTTSModel will be removed. Use FastPitchModel instead.")
+@deprecated(version="1.9", explanation="GlowTTSModel will be removed. Use FastPitchModel instead.")
 class GlowTTSModel(SpectrogramGenerator):
     """
     GlowTTS model used to generate spectrograms from text
@@ -280,3 +280,17 @@ class GlowTTSModel(SpectrogramGenerator):
         )
         list_of_models.append(model)
         return list_of_models
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Stopgap measure to keep old checkpoints working before full model deprecation.
+
+        This override fiddles with the state_dict in order to keep functionality from old checkpoints after the
+        switch from torch_stft. It will be removed when this model is deprecated.
+        """
+        if 'preprocessor.featurizer.stft.forward_basis' in state_dict:
+            logging.warning("Loading old checkpoint, defaulting to hann window.")
+            window_dim = state_dict['preprocessor.featurizer.stft.forward_basis'].shape[-1]
+            state_dict['preprocessor.featurizer.window'] = torch.hann_window(window_dim)
+            del state_dict['preprocessor.featurizer.stft.forward_basis']
+            del state_dict['preprocessor.featurizer.stft.inverse_basis']
+        super().load_state_dict(state_dict, strict=strict)

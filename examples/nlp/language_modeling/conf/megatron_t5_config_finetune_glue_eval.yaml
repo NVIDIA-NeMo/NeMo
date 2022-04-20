@@ -4,13 +4,10 @@ trainer:
   devices: 1
   num_nodes: 1
   accelerator: gpu
-  strategy: ddp
   precision: 16
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   replace_sampler_ddp: False
-  log_every_n_steps: 10
-
 
 exp_manager:
   explicit_log_dir: null
@@ -19,17 +16,18 @@ exp_manager:
   create_checkpoint_callback: False
 
 model:
-  restore_from_finetuned_path: ??? # Path to a finetuned T5 .nemo file
-  tensor_model_parallel_size: 1
+  restore_from_path: ??? # Path to a finetuned T5 .nemo file
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   megatron_amp_O2: False # Enable O2 optimization for megatron amp
 
   data:
     validation_ds:
       task_name: 'mnli'
-      file_path: ??? # Path to the TSV file for MNLI dev ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
-      batch_size: 32
+      file_path: ??? # Path to the TSV file for MNLI train ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
+      global_batch_size: 1
+      micro_batch_size: 1
       shuffle: False
-      num_workers: 4
+      num_workers: 0
       pin_memory: True
       max_seq_length: 512
+      drop_last: False

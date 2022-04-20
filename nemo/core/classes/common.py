@@ -26,10 +26,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import hydra
+import pytorch_lightning as pl
 import wrapt
 from omegaconf import DictConfig, OmegaConf
 
 import nemo
+from nemo.core.config import TrainerConfig
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.neural_types import NeuralType, NeuralTypeComparisonResult
 from nemo.utils import logging, model_utils
@@ -456,6 +458,17 @@ class Serialization(ABC):
                         imported_cls = cls
                     accepts_trainer = Serialization._inspect_signature_for_trainer(imported_cls)
                     if accepts_trainer:
+                        if trainer is None:
+                            # Create a dummy PL trainer object
+                            cfg_trainer = TrainerConfig(
+                                gpus=1,
+                                accelerator="ddp",
+                                num_nodes=1,
+                                # Need to set the following two to False as ExpManager will take care of them differently.
+                                logger=False,
+                                checkpoint_callback=False,
+                            )
+                            trainer = pl.Trainer(cfg_trainer)
                         instance = imported_cls(cfg=config, trainer=trainer)
                     else:
                         instance = imported_cls(cfg=config)
@@ -530,7 +543,6 @@ class FileIO(ABC):
         return_config: bool = False,
         trainer: Optional['Trainer'] = None,
         save_restore_connector: SaveRestoreConnector = None,
-        megatron_legacy: Optional[bool] = False,
     ):
         """Restores module/model with weights"""
         raise NotImplementedError()

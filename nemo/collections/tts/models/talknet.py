@@ -30,8 +30,10 @@ from nemo.core import Exportable
 from nemo.core.classes import ModelPT, PretrainedModelInfo, typecheck
 from nemo.core.neural_types import MelSpectrogramType, NeuralType
 from nemo.core.neural_types.elements import LengthsType, MelSpectrogramType, RegressionValuesType, TokenIndex
+from nemo.utils.decorators import deprecated
 
 
+@deprecated(version="1.9", explanation="TalkNetDursModel will be removed. Please, use MixerTTSModel instead.")
 class TalkNetDursModel(ModelPT):
     """TalkNet's durations prediction pipeline."""
 
@@ -132,6 +134,7 @@ class TalkNetDursModel(ModelPT):
         return list_of_models
 
 
+@deprecated(version="1.9", explanation="TalkNetPitchModel will be removed. Please, use MixerTTSModel instead.")
 class TalkNetPitchModel(ModelPT):
     """TalkNet's pitch prediction pipeline."""
 
@@ -244,6 +247,7 @@ class TalkNetPitchModel(ModelPT):
         return list_of_models
 
 
+@deprecated(version="1.9", explanation="TalkNetSpectModel will be removed. Please, use MixerTTSModel instead.")
 class TalkNetSpectModel(SpectrogramGenerator, Exportable):
     """TalkNet's mel spectrogram prediction pipeline."""
 

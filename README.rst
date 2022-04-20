@@ -123,6 +123,26 @@ FAQ can be found on NeMo's `Discussions board <https://github.com/NVIDIA/NeMo/di
 Installation
 ------------
 
+Conda
+~~~~~
+
+We recommend installing NeMo in a fresh Conda environment.
+
+.. code-block:: bash
+
+    conda create --name nemo python==3.8
+    conda activate nemo
+
+Install PyTorch using their `configurator <https://pytorch.org/get-started/locally/>`_. 
+
+.. code-block:: bash
+
+    conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
+
+.. note::
+
+  The command used to install PyTorch may depend on your system.
+
 Pip
 ~~~
 Use this installation mode if you want the latest released version.

@@ -56,7 +56,7 @@ model:
       num_workers: 0
       pin_memory: True
       max_seq_length: 512
-      drop_last: True
+      drop_last: False
 
     validation_ds:
       task_name: 'mnli'
@@ -67,7 +67,7 @@ model:
       num_workers: 0
       pin_memory: True
       max_seq_length: 512
-      drop_last: True # TODO: Figure out if there is a way to avoid dropping last.
+      drop_last: False # TODO: Figure out if there is a way to avoid dropping last.
 
   optim:
     name: fused_adam

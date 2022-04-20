@@ -48,7 +48,7 @@ def gen_filter(k):
     return K
 
 
-@deprecated(version="1.8", explanation="EDMel2SpecModel will be removed.")
+@deprecated(version="1.9", explanation="EDMel2SpecModel will be removed.")
 class EDMel2SpecModel(MelToSpec):
     """
         A model that convert mel spectrograms to linear spectrograms, using an encoder- decoder like model

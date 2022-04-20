@@ -46,7 +46,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel):
         # Global_rank and local_rank is set by LightningModule in Lightning 1.2.0
         self.world_size = 1
         if trainer is not None:
-            self.world_size = trainer.num_nodes * trainer.num_gpus
+            self.world_size = trainer.num_nodes * trainer.num_devices
 
         # Convert config to a DictConfig
         cfg = model_utils.convert_model_config_to_dict_config(cfg)

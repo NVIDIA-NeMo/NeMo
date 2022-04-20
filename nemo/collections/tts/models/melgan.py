@@ -29,7 +29,7 @@ from nemo.utils import logging
 from nemo.utils.decorators import deprecated
 
 
-@deprecated(version="1.8", explanation="MelGanModel will be removed. Use HifiGanModel instead.")
+@deprecated(version="1.9", explanation="MelGanModel will be removed. Use HifiGanModel instead.")
 class MelGanModel(Vocoder):
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         """NeMo Model that implement Full-band MelGAN as described in https://arxiv.org/abs/2005.05106
@@ -53,7 +53,7 @@ class MelGanModel(Vocoder):
     def configure_optimizers(self):
         opt1 = torch.optim.Adam(self.discriminator.parameters(), lr=1e-3, eps=1e-07, amsgrad=True)
         opt2 = torch.optim.Adam(self.generator.parameters(), lr=1e-3, eps=1e-07, amsgrad=True)
-        num_procs = self._trainer.num_gpus * self._trainer.num_nodes
+        num_procs = self._trainer.num_devices * self._trainer.num_nodes
         num_samples = len(self._train_dl.dataset)
         batch_size = self._train_dl.batch_size
         iter_per_epoch = np.ceil(num_samples / (num_procs * batch_size))

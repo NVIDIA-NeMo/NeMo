@@ -158,7 +158,8 @@ class FastPitchModule(NeuralModule):
         else:
             self.speaker_emb = None
 
-        self.max_token_duration = max_token_duration
+        self.register_buffer('max_token_duration', torch.tensor(max_token_duration))
+        self.register_buffer('min_token_duration', torch.tensor(0.0))
 
         self.pitch_emb = torch.nn.Conv1d(
             1,
@@ -170,6 +171,7 @@ class FastPitchModule(NeuralModule):
         # Store values precomputed from training data for convenience
         self.register_buffer('pitch_mean', torch.zeros(1))
         self.register_buffer('pitch_std', torch.zeros(1))
+        self.register_buffer('zero_emb', torch.zeros(1))
 
         self.proj = torch.nn.Linear(self.decoder.d_model, n_mel_channels, bias=True)
 
@@ -223,7 +225,7 @@ class FastPitchModule(NeuralModule):
 
         # Calculate speaker embedding
         if self.speaker_emb is None or speaker is None:
-            spk_emb = 0
+            spk_emb = self.zero_emb
         else:
             spk_emb = self.speaker_emb(speaker).unsqueeze(1)
 
@@ -288,7 +290,9 @@ class FastPitchModule(NeuralModule):
 
         # Predict duration and pitch
         log_durs_predicted = self.duration_predictor(enc_out, enc_mask)
-        durs_predicted = torch.clamp(torch.exp(log_durs_predicted) - 1, 0, self.max_token_duration)
+        durs_predicted = torch.clamp(
+            torch.exp(log_durs_predicted) - 1.0, self.min_token_duration, self.max_token_duration
+        )
         pitch_predicted = self.pitch_predictor(enc_out, enc_mask) + pitch
         pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
         enc_out = enc_out + pitch_emb.transpose(1, 2)

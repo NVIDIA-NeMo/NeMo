@@ -230,7 +230,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     # Add rank information to logger
     # Note: trainer.global_rank and trainer.is_global_zero are not set until trainer.fit, so have to hack around it
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    global_rank = trainer.node_rank * trainer.num_gpus + local_rank
+    global_rank = trainer.node_rank * trainer.num_devices + local_rank
     logging.rank = global_rank
     world_size = trainer.world_size
 
@@ -383,7 +383,7 @@ def error_checks(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictC
             "You are running multi-node training without SLURM handling the processes."
             " Please note that this is not tested in NeMo and could result in errors."
         )
-    if trainer.num_gpus > 1 and not isinstance(trainer.strategy, DDPStrategy):
+    if trainer.num_devices > 1 and not isinstance(trainer.strategy, DDPStrategy):
         logging.error(
             "You are running multi-gpu without ddp.Please note that this is not tested in NeMo and could result in "
             "errors."

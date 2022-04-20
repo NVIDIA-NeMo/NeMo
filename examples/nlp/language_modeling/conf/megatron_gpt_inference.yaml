@@ -16,7 +16,7 @@ trainer:
   num_nodes: 1
   accelerator: gpu
   logger: False # logger provided by exp_manager
-  precision: 16 # 16 or 32
+  precision: 16 # 16, 32, or bf16
 
 virtual_prompt_model: False # Whether the model is a MegatronGPTPromptLearningModel model
 tensor_model_parallel_size: 1
@@ -25,7 +25,9 @@ model_file: null  # GPT nemo file path
 checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
 checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
 hparams_file: null # model configuration file, only used for PTL checkpoint loading
-prompts: ['', ''] # prompts for GPT inference
+prompts: # prompts for GPT inference
+  - "Q: How are you?"
+  - "Q: How big is the universe?"
 server: False  # whether launch the inference server
 port: 5555 # the port number for the inference server
  

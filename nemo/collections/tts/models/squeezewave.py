@@ -46,7 +46,7 @@ class SqueezeWaveConfig:
     validation_ds: Optional[Dict[Any, Any]] = None
 
 
-@deprecated(version="1.8", explanation="SqueezeWaveModel will be removed. Use WaveGlowModel or HifiGanModel instead.")
+@deprecated(version="1.9", explanation="SqueezeWaveModel will be removed. Use WaveGlowModel or HifiGanModel instead.")
 class SqueezeWaveModel(GlowVocoder):
     """ SqueezeWave model that generates audio conditioned on mel-spectrogram
     """
@@ -227,3 +227,17 @@ class SqueezeWaveModel(GlowVocoder):
         )
         list_of_models.append(model)
         return list_of_models
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Stopgap measure to keep old checkpoints working before full model deprecation.
+
+        This override fiddles with the state_dict in order to keep functionality from old checkpoints after the
+        switch from torch_stft. It will be removed when this model is deprecated.
+        """
+        if 'audio_to_melspec_precessor.stft.forward_basis' in state_dict:
+            logging.warning("Loading old checkpoint, defaulting to hann window.")
+            window_dim = state_dict['audio_to_melspec_precessor.stft.forward_basis'].shape[-1]
+            state_dict['audio_to_melspec_precessor.window'] = torch.hann_window(window_dim)
+            del state_dict['audio_to_melspec_precessor.stft.forward_basis']
+            del state_dict['audio_to_melspec_precessor.stft.inverse_basis']
+        super().load_state_dict(state_dict, strict=strict)

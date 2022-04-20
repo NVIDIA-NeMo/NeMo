@@ -42,7 +42,6 @@ class TrainerConfig:
     gradient_clip_val: float = 0
     process_position: int = 0
     num_nodes: int = 1
-    num_processes: int = 1
     gpus: Optional[Any] = None
     auto_select_gpus: bool = False
     tpu_cores: Optional[Any] = None

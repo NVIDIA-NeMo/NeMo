@@ -43,15 +43,15 @@ from nemo.core.config import TrainerConfig
 def get_args(argv):
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description=f"Convert NLP models pretrained with Megatron Bert on NeMo < 1.5.0 to current version ",
+        description=f"Update NLP models trained on previous versions to current version ",
     )
     parser.add_argument("source", help="Source .nemo file")
     parser.add_argument("out", help="Location to write result to")
+    parser.add_argument("--megatron-legacy", help="If the source model is megatron-bert trained on NeMo < 1.5")
     parser.add_argument(
         "--megatron-checkpoint",
         type=str,
         help="Path of the MegatronBert nemo checkpoint converted from MegatronLM using megatron_lm_ckpt_to_nemo.py file (Not NLP model checkpoint)",
-        required=True,
     )
     parser.add_argument("--verbose", default=None, help="Verbose level for logging, numeric")
     args = parser.parse_args(argv)
@@ -77,7 +77,7 @@ def nemo_convert(argv):
     logging.basicConfig(level=loglevel, format='%(asctime)s [%(levelname)s] %(message)s')
     logging.info("Logging level set to {}".format(loglevel))
 
-    """Convert a .nemo saved model trained on NeMo < 1.5.0 into a nemo fie with current version."""
+    """Convert a .nemo saved model trained on previous versions of nemo into a nemo fie with current version."""
     nemo_in = args.source
     out = args.out
 
@@ -95,19 +95,28 @@ def nemo_convert(argv):
     logging.info("Restoring NeMo model from '{}'".format(nemo_in))
     try:
         # If the megatron based NLP model was trained on NeMo < 1.5, then we need to update the lm_checkpoint on the model config
-        connector = NLPSaveRestoreConnector()
-        model_cfg = ModelPT.restore_from(
-            restore_path=nemo_in, save_restore_connector=connector, trainer=trainer, return_config=True
-        )
-        OmegaConf.set_struct(model_cfg, True)
-        with open_dict(model_cfg):
-            model_cfg.language_model.lm_checkpoint = args.megatron_checkpoint
-            model_cfg['megatron_legacy'] = True
-            model_cfg['masked_softmax_fusion'] = False
-            model_cfg['bias_gelu_fusion'] = False
-        model = ModelPT.restore_from(
-            restore_path=nemo_in, save_restore_connector=connector, trainer=trainer, override_config_path=model_cfg,
-        )
+        if args.megatron_legacy:
+            if args.megatron_checkpoint:
+                connector = NLPSaveRestoreConnector()
+                model_cfg = ModelPT.restore_from(
+                    restore_path=nemo_in, save_restore_connector=connector, trainer=trainer, return_config=True
+                )
+                OmegaConf.set_struct(model_cfg, True)
+                with open_dict(model_cfg):
+                    model_cfg.language_model.lm_checkpoint = args.megatron_checkpoint
+                    model_cfg['megatron_legacy'] = True
+                    model_cfg['masked_softmax_fusion'] = False
+                    model_cfg['bias_gelu_fusion'] = False
+                model = ModelPT.restore_from(
+                    restore_path=nemo_in,
+                    save_restore_connector=connector,
+                    trainer=trainer,
+                    override_config_path=model_cfg,
+                )
+            else:
+                logging.error("Megatron Checkpoint must be provided if Megatron legacy is chosen")
+        else:
+            model = ModelPT.restore_from(restore_path=nemo_in, trainer=trainer)
         logging.info("Model {} restored from '{}'".format(model.cfg.target, nemo_in))
 
         # Save the model

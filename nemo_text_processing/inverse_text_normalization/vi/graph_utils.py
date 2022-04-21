@@ -32,9 +32,9 @@ try:
     NEMO_ALPHA = pynini.union(NEMO_LOWER, NEMO_UPPER).optimize()
     NEMO_ALNUM = pynini.union(NEMO_DIGIT, NEMO_ALPHA).optimize()
     NEMO_HEX = pynini.union(*string.hexdigits).optimize()
-    NEMO_NON_BREAKING_SPACE = u"\u00A0"
+    NEMO_NON_BREAKING_SPACE = "\u00A0"
     NEMO_SPACE = " "
-    NEMO_WHITE_SPACE = pynini.union(" ", "\t", "\n", "\r", u"\u00A0").optimize()
+    NEMO_WHITE_SPACE = pynini.union(" ", "\t", "\n", "\r", "\u00A0").optimize()
     NEMO_NOT_SPACE = pynini.difference(NEMO_CHAR, NEMO_WHITE_SPACE).optimize()
     NEMO_NOT_QUOTE = pynini.difference(NEMO_CHAR, r'"').optimize()
 
@@ -65,7 +65,7 @@ except (ModuleNotFoundError, ImportError):
     NEMO_ALPHA = None
     NEMO_ALNUM = None
     NEMO_HEX = None
-    NEMO_NON_BREAKING_SPACE = u"\u00A0"
+    NEMO_NON_BREAKING_SPACE = "\u00A0"
     NEMO_SPACE = " "
     NEMO_WHITE_SPACE = None
     NEMO_NOT_SPACE = None
@@ -101,10 +101,10 @@ def generator_main(file_name: str, graphs: Dict[str, pynini.FstLike]):
     for rule, graph in graphs.items():
         exporter[rule] = graph.optimize()
     exporter.close()
-    print(f'Created {file_name}')
+    print(f"Created {file_name}")
 
 
-def convert_space(fst) -> 'pynini.FstLike':
+def convert_space(fst) -> "pynini.FstLike":
     """
     Converts space to nonbreaking space.
     Used only in tagger grammars for transducing token values within quotes, e.g. name: "hello kitty"
@@ -135,7 +135,7 @@ class GraphFst:
         self._fst = None
         self.deterministic = deterministic
 
-        self.far_path = Path(os.path.dirname(__file__) + '/grammars/' + kind + '/' + name + '.far')
+        self.far_path = Path(os.path.dirname(__file__) + "/grammars/" + kind + "/" + name + ".far")
         if self.far_exist():
             self._fst = Far(self.far_path, mode="r", arc_type="standard", far_type="default").get_fst()
 
@@ -146,14 +146,14 @@ class GraphFst:
         return self.far_path.exists()
 
     @property
-    def fst(self) -> 'pynini.FstLike':
+    def fst(self) -> "pynini.FstLike":
         return self._fst
 
     @fst.setter
     def fst(self, fst):
         self._fst = fst
 
-    def add_tokens(self, fst) -> 'pynini.FstLike':
+    def add_tokens(self, fst) -> "pynini.FstLike":
         """
         Wraps class name around to given fst
 
@@ -165,7 +165,7 @@ class GraphFst:
         """
         return pynutil.insert(f"{self.name} {{ ") + fst + pynutil.insert(" }")
 
-    def delete_tokens(self, fst) -> 'pynini.FstLike':
+    def delete_tokens(self, fst) -> "pynini.FstLike":
         """
         Deletes class name wrap around output of given fst
 
@@ -184,4 +184,4 @@ class GraphFst:
             + delete_space
             + pynutil.delete("}")
         )
-        return res @ pynini.cdrewrite(pynini.cross(u"\u00A0", " "), "", "", NEMO_SIGMA)
+        return res @ pynini.cdrewrite(pynini.cross("\u00A0", " "), "", "", NEMO_SIGMA)

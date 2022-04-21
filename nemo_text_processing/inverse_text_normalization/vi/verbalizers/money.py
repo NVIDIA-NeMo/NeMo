@@ -39,9 +39,9 @@ class MoneyFst(GraphFst):
         unit = (
             pynutil.delete("currency:")
             + delete_space
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
             + pynini.closure(NEMO_CHAR - " ", 1)
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
         )
         graph = decimal.numbers + delete_space + unit
         delete_tokens = self.delete_tokens(graph)

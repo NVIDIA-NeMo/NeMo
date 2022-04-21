@@ -45,6 +45,7 @@ kg	kilo gram
 kg	ki lô gram
 kg	kilo gam
 kg	ki lô gam
+kg	kí lô
 kg	kí
 ghz	giga hẹc
 ghz	giga héc
@@ -60,11 +61,11 @@ mhz	mê ga hẹc
 mhz	mê ga héc
 v	vôn
 h	giờ
+phút	phút
 s	giây
 nm	nanomet
 nm	nano mét
 nm	na nô mét
-p	phút
 mA	milli ampe
 mA	mi li ampe
 mA	mi li am pe
@@ -94,12 +95,16 @@ mw	mê ga goát
 μm	micromet
 μm	micro mét
 μm	muy crô mét
-μm	muy cờ rô mset
-"	inch
+μm	mi crô mét
+μm	muy cờ rô mét
+μm	mi cờ rô mét
+inch	inch
 tb	terabyte
 tb	tera byte
 tb	te ra byte
+tb	te ra bai
 tb	tê ra byte
+tb	tê ra bai
 g	gram
 g	gam
 ω	ohm
@@ -118,14 +123,21 @@ pg	peta gam
 pg	pê ta gam
 gb	gigabyte
 gb	giga byte
+gb	giga bai
 gb	gi ga byte
+gb	gi ga bai
 mb	megabyte
 mb	mega byte
+mb	mega bai
 mb	me ga byte
+mb	me ga bai
 mb	mê ga byte
+mb	mê ga bai
 kb	kilobyte
 kb	kilo byte
+kb	kilo bai
 kb	ki lô byte
+kb	ki lô bai
 kbps	kilobit trên giây
 mbps	megabit trên giây
 kv	kilovolt
@@ -164,7 +176,9 @@ cm²	xen ti mét vuông
 pb	peta byte
 pb	petabyte
 pb	pê ta byte
-kcal	kilo calo
+kcal	kilocalories
+kcal	kilocalo
+kcal	ki lô calo
 l	lít
 ml	millilit
 ml	mili lít

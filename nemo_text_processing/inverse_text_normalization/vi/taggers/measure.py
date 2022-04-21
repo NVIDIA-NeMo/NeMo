@@ -54,7 +54,7 @@ class MeasureFst(GraphFst):
         graph_unit_singular = pynini.invert(graph_unit)  # singular -> abbr
 
         optional_graph_negative = pynini.closure(
-            pynutil.insert("negative: ") + pynini.cross(pynini.union("âm", "trừ"), "\"true\"") + delete_extra_space,
+            pynutil.insert("negative: ") + pynini.cross(pynini.union("âm", "trừ"), '"true"') + delete_extra_space,
             0,
             1,
         )
@@ -63,9 +63,9 @@ class MeasureFst(GraphFst):
         unit_misc = pynutil.insert("/") + pynutil.delete("trên") + delete_space + convert_space(graph_unit_singular)
 
         unit_singular = (
-            pynutil.insert("units: \"")
+            pynutil.insert('units: "')
             + (unit_singular | unit_misc | pynutil.add_weight(unit_singular + delete_space + unit_misc, 0.01))
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
         )
 
         subgraph_decimal = (
@@ -80,26 +80,26 @@ class MeasureFst(GraphFst):
         subgraph_cardinal = (
             pynutil.insert("cardinal { ")
             + optional_graph_negative
-            + pynutil.insert("integer: \"")
+            + pynutil.insert('integer: "')
             + cardinal_graph
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
             + pynutil.insert(" }")
             + delete_extra_space
             + unit_singular
         )
         fraction_graph = (
             delete_extra_space
-            + pynutil.insert("fractional_part: \"")
+            + pynutil.insert('fractional_part: "')
             + (graph_digit | graph_half | graph_one | graph_four)
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
         )
 
         subgraph_cardinal |= (
             pynutil.insert("cardinal { ")
             + optional_graph_negative
-            + pynutil.insert("integer: \"")
+            + pynutil.insert('integer: "')
             + cardinal_graph
-            + pynutil.insert("\" }")
+            + pynutil.insert('" }')
             + delete_extra_space
             + unit_singular
             + fraction_graph

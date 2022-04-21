@@ -52,24 +52,24 @@ class MoneyFst(GraphFst):
         unit = pynini.string_file(get_abs_path("data/currency.tsv"))
         unit_singular = pynini.invert(unit)
 
-        graph_unit_singular = pynutil.insert("currency: \"") + convert_space(unit_singular) + pynutil.insert("\"")
+        graph_unit_singular = pynutil.insert('currency: "') + convert_space(unit_singular) + pynutil.insert('"')
 
         add_leading_zero_to_double_digit = (NEMO_DIGIT + NEMO_DIGIT) | (pynutil.insert("0") + NEMO_DIGIT)
 
         # twelve dollars fifty, only after integer
         optional_cents_suffix = pynini.closure(
             delete_extra_space
-            + pynutil.insert("fractional_part: \"")
+            + pynutil.insert('fractional_part: "')
             + (pynutil.add_weight(cardinal_graph @ add_leading_zero_to_double_digit, -0.7) | graph_half)
-            + pynutil.insert("\""),
+            + pynutil.insert('"'),
             0,
             1,
         )
 
         graph_integer = (
-            pynutil.insert("integer_part: \"")
+            pynutil.insert('integer_part: "')
             + cardinal_graph
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
             + delete_extra_space
             + graph_unit_singular
             + optional_cents_suffix

@@ -57,15 +57,15 @@ class TimeFst(GraphFst):
         optional_minute = pynini.closure(delete_space + minute, 0, 1)
         second = pynini.cross("giây", "")
 
-        final_graph_hour = pynutil.insert("hours: \"") + graph_hours + pynutil.insert("\"") + delete_space + oclock
+        final_graph_hour = pynutil.insert('hours: "') + graph_hours + pynutil.insert('"') + delete_space + oclock
         graph_minute = graph_minutes + optional_minute
-        graph_second = graph_minute + delete_space + second
+        graph_second = graph_minutes + delete_space + second
         final_time_zone_optional = pynini.closure(
             delete_space
             + insert_space
-            + pynutil.insert("zone: \"")
+            + pynutil.insert('zone: "')
             + convert_space(time_zone_graph)
-            + pynutil.insert("\""),
+            + pynutil.insert('"'),
             0,
             1,
         )
@@ -73,39 +73,53 @@ class TimeFst(GraphFst):
         graph_hm = (
             final_graph_hour
             + delete_extra_space
-            + pynutil.insert("minutes: \"")
+            + pynutil.insert('minutes: "')
             + (graph_minute | graph_half)
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
         )
 
-        graph_hms = graph_hm + delete_extra_space + pynutil.insert("seconds: \"") + graph_second + pynutil.insert("\"")
+        graph_hms = (
+            final_graph_hour
+            + delete_extra_space
+            + pynutil.insert('minutes: "')
+            + graph_minutes
+            + delete_space
+            + minute
+            + pynutil.insert('"')
+            + delete_extra_space
+            + pynutil.insert('seconds: "')
+            + graph_second
+            + pynutil.insert('"')
+        )
 
         graph_ms = (
-            pynutil.insert("minutes: \"")
-            + graph_minute
-            + pynutil.insert("\"")
+            pynutil.insert('minutes: "')
+            + graph_minutes
+            + delete_space
+            + minute
+            + pynutil.insert('"')
             + delete_extra_space
-            + pynutil.insert("seconds: \"")
+            + pynutil.insert('seconds: "')
             + (graph_second | graph_half)
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
         )
 
         graph_hours_to_component = graph_hours @ graph_hours_to
         graph_minutes_to_component = graph_minutes @ graph_minutes_to
 
         graph_time_to = (
-            pynutil.insert("hours: \"")
+            pynutil.insert('hours: "')
             + graph_hours_to_component
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
             + delete_space
             + oclock
             + delete_space
             + pynutil.delete("kém")
             + delete_extra_space
-            + pynutil.insert("minutes: \"")
+            + pynutil.insert('minutes: "')
             + graph_minutes_to_component
+            + pynutil.insert('"')
             + optional_minute
-            + pynutil.insert("\"")
         )
 
         final_graph = (final_graph_hour | graph_hm | graph_hms) + final_time_zone_optional

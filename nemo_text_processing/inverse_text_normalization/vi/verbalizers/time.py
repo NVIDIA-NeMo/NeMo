@@ -35,8 +35,8 @@ class TimeFst(GraphFst):
     Finite state transducer for verbalizing time, e.g.
         time { hours: "3" } -> 3h
         time { hours: "12" minutes: "30" } -> 12:30
-        time { hours: "1" minutes: "12" second: "22"} -> 01:12:22
-        time { minutes: "36" second: "45"} -> 36:45s
+        time { hours: "1" minutes: "12" second: "22"} -> 1:12:22
+        time { minutes: "36" second: "45"} -> 36p45s
         time { hours: "2" zone: "gmt" } -> 2h gmt
     """
 
@@ -46,36 +46,36 @@ class TimeFst(GraphFst):
         hour = (
             pynutil.delete("hours:")
             + delete_space
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
             + pynini.closure(NEMO_DIGIT, 1)
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
         )
         minute = (
             pynutil.delete("minutes:")
             + delete_space
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
             + pynini.closure(NEMO_DIGIT, 1)
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
         )
         second = (
             pynutil.delete("seconds:")
             + delete_space
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
             + pynini.closure(NEMO_DIGIT, 1)
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
         )
         zone = (
             delete_space
             + insert_space
             + pynutil.delete("zone:")
             + delete_space
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
             + pynini.closure(NEMO_CHAR - " ", 1)
-            + pynutil.delete("\"")
+            + pynutil.delete('"')
         )
         optional_zone = pynini.closure(zone, 0, 1)
         optional_second = pynini.closure(
-            delete_space + pynutil.insert(":") + (second @ add_leading_zero_to_double_digit), 0, 1
+            delete_space + pynutil.insert(":") + (second @ add_leading_zero_to_double_digit), 0, 1,
         )
 
         graph_h = hour + pynutil.insert("h")
@@ -83,9 +83,9 @@ class TimeFst(GraphFst):
             hour + delete_space + pynutil.insert(":") + (minute @ add_leading_zero_to_double_digit) + optional_second
         )
         graph_ms = (
-            (minute @ add_leading_zero_to_double_digit)
+            minute
             + delete_space
-            + pynutil.insert(":")
+            + pynutil.insert("p")
             + (second @ add_leading_zero_to_double_digit)
             + pynutil.insert("s")
         )

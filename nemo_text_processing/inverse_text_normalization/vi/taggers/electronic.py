@@ -46,10 +46,10 @@ class ElectronicFst(GraphFst):
         accepted_username = alpha_num | symbols
         process_dot = pynini.cross("chấm", ".")
         username = (
-            pynutil.insert("username: \"")
+            pynutil.insert('username: "')
             + alpha_num
             + pynini.closure(delete_extra_space + accepted_username)
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
         )
         single_alphanum = pynini.closure(alpha_num + delete_extra_space) + alpha_num
         server = single_alphanum | pynini.string_file(get_abs_path("data/electronic/server_name.tsv"))
@@ -60,7 +60,7 @@ class ElectronicFst(GraphFst):
             + delete_extra_space
             + domain
         )
-        domain_graph = pynutil.insert("domain: \"") + server + delete_extra_space + multi_domain + pynutil.insert("\"")
+        domain_graph = pynutil.insert('domain: "') + server + delete_extra_space + multi_domain + pynutil.insert('"')
         graph = (
             username
             + delete_extra_space
@@ -91,7 +91,7 @@ class ElectronicFst(GraphFst):
             + pynini.closure(delete_extra_space + accepted_username, 1)
             + pynini.closure(ending, 1, 2)
         )
-        protocol = pynutil.insert("protocol: \"") + protocol + pynutil.insert("\"")
+        protocol = pynutil.insert('protocol: "') + protocol + pynutil.insert('"')
         graph |= protocol
         ########
 

@@ -54,10 +54,9 @@ def _get_ties_graph():
     graph_ten = pynini.cross("mươi", "")
     optional_ten = pynini.closure(delete_space + graph_ten, 0, 1)
 
-    graph = (
-        ties_graph
-        + optional_ten
-        + ((delete_space + (graph_digit | graph_one | graph_four | graph_five)) | pynutil.insert("0"))
+    graph = pynini.union(
+        ties_graph + optional_ten + delete_space + (graph_digit | graph_one | graph_four | graph_five),
+        ties_graph + delete_space + graph_ten + pynutil.insert("0"),
     )
     return graph
 
@@ -68,14 +67,23 @@ def _get_year_graph():
     """
 
     def _get_digits_graph():
-        zero = pynini.cross((pynini.accep("linh") | pynini.accep("lẻ")), "0")
+        zero = pynini.cross((pynini.union("linh", "lẻ")), "0")
         four = pynini.cross("tư", "4")
-        graph = pynini.union(zero + delete_space + (graph_digit | four), graph_zero + delete_space + graph_digit)
+        graph = pynini.union(zero + delete_space + (graph_digit | four), graph_zero + delete_space + graph_digit,)
         graph.optimize()
         return graph
 
-    def _get_thousands_graph():
-        graph_ties = _get_ties_graph()
+    def _get_hundreds_graph(graph_ties, graph_digits):
+        graph = (
+            graph_digit
+            + delete_space
+            + pynutil.delete("trăm")
+            + delete_space
+            + (graph_teen | graph_ties | graph_digits)
+        )
+        return graph
+
+    def _get_thousands_graph(graph_ties, graph_digits):
         graph_hundred_component = (
             (graph_digit | graph_zero) + delete_space + pynutil.delete("trăm")
         ) | pynutil.insert("0")
@@ -92,16 +100,18 @@ def _get_year_graph():
 
     graph_ties = _get_ties_graph()
     graph_digits = _get_digits_graph()
-    graph_thousands = _get_thousands_graph()
+    graph_hundreds = _get_hundreds_graph(graph_ties, graph_digits)
+    graph_thousands = _get_thousands_graph(graph_ties, graph_digits)
     year_graph = (
-        # 20 19, 40 12, 2012, 2 0 0 5, 2 0 17 - assuming no limit on the year
+        # 20 19, 40 12, 2012, 2 0 0 5, 2 0 17, 938 - assuming no limit on the year
         graph_digit
         + delete_space
         + (graph_digit | graph_zero)
         + delete_space
         + (graph_teen | graph_ties | graph_digits)
         | graph_thousands
-        | (graph_ties + pynutil.insert("0") + delete_space + (graph_ties | graph_digits | graph_teen))
+        | graph_hundreds
+        | (graph_digit + pynutil.insert("0") + delete_space + (graph_ties | graph_digits | graph_teen))
     )
     year_graph.optimize()
     return year_graph
@@ -127,41 +137,32 @@ class DateFst(GraphFst):
         year_graph = pynutil.add_weight(year_graph, YEAR_WEIGHT)
         month_graph = _get_month_graph()
 
-        month_graph = pynutil.insert("month: \"") + month_graph + pynutil.insert("\"")
+        month_graph = pynutil.insert('month: "') + month_graph + pynutil.insert('"')
+        month_exception = pynini.project(pynini.cross("năm", "5"), "input")
+        month_graph_exception = (pynini.project(month_graph, "input") - month_exception.arcsort()) @ month_graph
 
-        day_graph = pynutil.insert("day: \"") + cardinal_graph + pynutil.insert("\"")
-        optional_day = pynini.closure(pynutil.delete(pynini.union("ngày", "mùng") + delete_space), 0, 1)
+        day_graph = pynutil.insert('day: "') + cardinal_graph + pynutil.insert('"')
+        # day_suffix = pynini.union("ngày", "mùng")
+        # optional_day = pynini.closure(day_suffix + delete_space, 0, 1)
+
+        graph_month = pynutil.delete("tháng") + delete_space + month_graph_exception
         graph_year = (
             delete_extra_space
             + pynutil.delete("năm")
             + delete_extra_space
-            + pynutil.insert("year: \"")
+            + pynutil.insert('year: "')
             + pynutil.add_weight(year_graph, -YEAR_WEIGHT)
-            + pynutil.insert("\"")
+            + pynutil.insert('"')
         )
         optional_graph_year = pynini.closure(graph_year, 0, 1)
-        graph_mdy = (
-            pynutil.delete("tháng")
-            + delete_space
-            + month_graph
-            + (
-                (delete_space + pynutil.delete("ngày") + delete_extra_space + day_graph + optional_graph_year)
-                | optional_graph_year
-            )
-        )
+        graph_my = pynutil.delete("tháng") + delete_space + month_graph + graph_year
         graph_dmy = (
-            optional_day
-            + day_graph
-            + delete_space
-            + pynutil.delete("tháng")
-            + delete_extra_space
-            + month_graph
-            + optional_graph_year
+            day_graph + delete_space + pynutil.delete("tháng") + delete_extra_space + month_graph + optional_graph_year
         )
         graph_year = (
-            pynutil.delete("năm") + delete_extra_space + pynutil.insert("year: \"") + year_graph + pynutil.insert("\"")
+            pynutil.delete("năm") + delete_extra_space + pynutil.insert('year: "') + year_graph + pynutil.insert('"')
         )
 
-        final_graph = pynini.union((graph_dmy | graph_year) + pynutil.insert(" preserve_order: true"), graph_mdy)
+        final_graph = (graph_dmy | graph_my | graph_month | graph_year) + pynutil.insert(" preserve_order: true")
         final_graph = self.add_tokens(final_graph)
         self.fst = final_graph.optimize()

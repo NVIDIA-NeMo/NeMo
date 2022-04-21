@@ -51,7 +51,7 @@ class TelephoneFst(GraphFst):
         super().__init__(name="telephone", kind="classify", deterministic=deterministic)
 
         add_separator = pynutil.insert(", ")  # between components
-        digit = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv"))).optimize() | pynini.cross(
+        digit = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/digit.tsv"))).optimize() | pynini.cross(
             "0", "o"
         )
 

@@ -70,8 +70,8 @@ class WhiteListFst(GraphFst):
             graph = pynini.string_map(whitelist)
             return graph
 
-        graph = _get_whitelist_graph(input_case, get_abs_path("data/whitelist_tts.tsv"))
-        graph |= _get_whitelist_graph(input_case, get_abs_path("data/whitelist_symbols.tsv"))
+        graph = _get_whitelist_graph(input_case, get_abs_path("data/whitelist/tts.tsv"))
+        graph |= _get_whitelist_graph(input_case, get_abs_path("data/whitelist/symbol.tsv"))
 
         if deterministic:
             names = get_names()
@@ -83,7 +83,7 @@ class WhiteListFst(GraphFst):
             )
         else:
             graph |= _get_whitelist_graph(
-                input_case, get_abs_path("data/whitelist_alternatives.tsv"), keep_punct_add_end=True
+                input_case, get_abs_path("data/whitelist/alternatives.tsv"), keep_punct_add_end=True
             )
 
         for x in [".", ". "]:
@@ -94,10 +94,12 @@ class WhiteListFst(GraphFst):
             )
 
         if not deterministic:
-            multiple_forms_whitelist_graph = get_formats(get_abs_path("data/whitelist_alternatives_all_format.tsv"))
+            multiple_forms_whitelist_graph = get_formats(get_abs_path("data/whitelist/alternatives_all_format.tsv"))
             graph |= multiple_forms_whitelist_graph
 
-            graph_unit = pynini.string_file(get_abs_path("data/measurements.tsv"))
+            graph_unit = pynini.string_file(get_abs_path("data/measure/unit.tsv")) | pynini.string_file(
+                get_abs_path("data/measure/unit_alternatives.tsv")
+            )
             graph_unit_plural = graph_unit @ SINGULAR_TO_PLURAL
             units_graph = pynini.compose(NEMO_CHAR ** (3, ...), convert_space(graph_unit | graph_unit_plural))
             graph |= units_graph
@@ -105,7 +107,7 @@ class WhiteListFst(GraphFst):
         # convert to states only if comma is present before the abbreviation to avoid converting all caps words,
         # e.g. "IN", "OH", "OK"
         # TODO or only exclude above?
-        states = load_labels(get_abs_path("data/address/states.tsv"))
+        states = load_labels(get_abs_path("data/address/state.tsv"))
         additional_options = []
         for x, y in states:
             if input_case == "lower_cased":

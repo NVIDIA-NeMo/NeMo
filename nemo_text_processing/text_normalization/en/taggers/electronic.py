@@ -53,10 +53,10 @@ class ElectronicFst(GraphFst):
                     accepted_symbols.append(pynini.accep(symbol))
             return accepted_symbols
 
-        accepted_symbols = get_input_symbols(get_abs_path("data/electronic/symbols.tsv"))
+        accepted_symbols = get_input_symbols(get_abs_path("data/electronic/symbol.tsv"))
         accepted_common_domains = get_input_symbols(get_abs_path("data/electronic/domain.tsv"))
         accepted_symbols = NEMO_ALPHA + pynini.closure(NEMO_ALPHA | NEMO_DIGIT | pynini.union(*accepted_symbols))
-        graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbols.tsv")).optimize()
+        graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbol.tsv")).optimize()
 
         username = pynutil.insert("username: \"") + accepted_symbols + pynutil.insert("\"") + pynini.cross('@', ' ')
         domain_graph = accepted_symbols + pynini.accep('.') + accepted_symbols

@@ -35,10 +35,10 @@ try:
     from pynini.lib import pynutil
     from pynini.examples import plurals
 
-    graph_teen = pynini.invert(pynini.string_file(get_abs_path("data/numbers/teen.tsv"))).optimize()
-    graph_digit = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv"))).optimize()
-    ties_graph = pynini.invert(pynini.string_file(get_abs_path("data/numbers/ties.tsv"))).optimize()
-    year_suffix = load_labels(get_abs_path("data/year_suffix.tsv"))
+    graph_teen = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/teen.tsv"))).optimize()
+    graph_digit = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/digit.tsv"))).optimize()
+    ties_graph = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/ty.tsv"))).optimize()
+    year_suffix = load_labels(get_abs_path("data/date/year_suffix.tsv"))
     year_suffix.extend(augment_labels_with_punct_at_end(year_suffix))
     year_suffix = pynini.string_map(year_suffix).optimize()
 
@@ -175,14 +175,14 @@ class DateFst(GraphFst):
         super().__init__(name="date", kind="classify", deterministic=deterministic)
 
         # january
-        month_graph = pynini.string_file(get_abs_path("data/months/names.tsv")).optimize()
+        month_graph = pynini.string_file(get_abs_path("data/date/month_name.tsv")).optimize()
         # January, JANUARY
         month_graph |= pynini.compose(TO_LOWER + pynini.closure(NEMO_CHAR), month_graph) | pynini.compose(
             TO_LOWER ** (2, ...), month_graph
         )
 
         # jan
-        month_abbr_graph = pynini.string_file(get_abs_path("data/months/abbr.tsv")).optimize()
+        month_abbr_graph = pynini.string_file(get_abs_path("data/date/month_abbr.tsv")).optimize()
         # jan, Jan, JAN
         month_abbr_graph = (
             month_abbr_graph
@@ -191,7 +191,7 @@ class DateFst(GraphFst):
         ) + pynini.closure(pynutil.delete("."), 0, 1)
         month_graph |= month_abbr_graph.optimize()
 
-        month_numbers_labels = pynini.string_file(get_abs_path("data/months/numbers.tsv")).optimize()
+        month_numbers_labels = pynini.string_file(get_abs_path("data/date/month_number.tsv")).optimize()
         cardinal_graph = cardinal.graph_hundred_component_at_least_one_none_zero_digit
 
         year_graph = _get_year_graph(cardinal_graph=cardinal_graph, deterministic=deterministic)
@@ -317,8 +317,8 @@ class DateFst(GraphFst):
             mdy_to_dmy_graph = None
             md_to_dm_graph = None
 
-            for month in [x[0] for x in load_labels(get_abs_path("data/months/names.tsv"))]:
-                for day in [x[0] for x in load_labels(get_abs_path("data/months/days.tsv"))]:
+            for month in [x[0] for x in load_labels(get_abs_path("data/date/month_name.tsv"))]:
+                for day in [x[0] for x in load_labels(get_abs_path("data/date/day.tsv"))]:
                     ymd_to_mdy_curr = (
                         pynutil.insert("month: \"" + month + "\" day: \"" + day + "\" ")
                         + pynini.accep('year:')

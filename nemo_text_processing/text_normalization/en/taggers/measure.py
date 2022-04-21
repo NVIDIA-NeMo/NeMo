@@ -25,6 +25,7 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     GraphFst,
     convert_space,
     delete_space,
+    delete_zero_or_one_space,
     insert_space,
 )
 from nemo_text_processing.text_normalization.en.taggers.ordinal import OrdinalFst as OrdinalTagger
@@ -61,33 +62,25 @@ class MeasureFst(GraphFst):
         super().__init__(name="measure", kind="classify", deterministic=deterministic)
         cardinal_graph = cardinal.graph_with_and | self.get_range(cardinal.graph_with_and)
 
-        graph_unit = pynini.string_file(get_abs_path("data/measurements.tsv"))
+        graph_unit = pynini.string_file(get_abs_path("data/measure/unit.tsv"))
+        if not deterministic:
+            graph_unit |= pynini.string_file(get_abs_path("data/measure/unit_alternatives.tsv"))
+
         graph_unit |= pynini.compose(
             pynini.closure(TO_LOWER, 1) + (NEMO_ALPHA | TO_LOWER) + pynini.closure(NEMO_ALPHA | TO_LOWER), graph_unit
         ).optimize()
 
-        graph_unit_no_degrees = pynini.compose(
-            graph_unit, pynini.difference(NEMO_SIGMA, pynini.union("degree Celsius", "degree Fahrenheit"))
-        ).optimize()
-
-        graph_unit_plural = convert_space(graph_unit_no_degrees @ SINGULAR_TO_PLURAL)
-        graph_unit_plural |= pynini.compose(
-            pynini.compose(graph_unit, pynini.accep("degree Celsius")),
-            pynini.cross("degree Celsius", "degrees Celsius"),
-        ).optimize()
-        graph_unit_plural |= pynini.compose(
-            pynini.compose(graph_unit, pynini.accep("degree Fahrenheit")),
-            pynini.cross("degree Fahrenheit", "degrees Fahrenheit"),
-        ).optimize()
-        graph_unit_plural = graph_unit_plural.optimize()
+        graph_unit_plural = convert_space(graph_unit @ SINGULAR_TO_PLURAL)
         graph_unit = convert_space(graph_unit)
 
         optional_graph_negative = pynini.closure(pynutil.insert("negative: ") + pynini.cross("-", "\"true\" "), 0, 1)
 
-        graph_unit2 = pynini.cross("/", "per") + delete_space + pynutil.insert(NEMO_NON_BREAKING_SPACE) + graph_unit
+        graph_unit2 = (
+            pynini.cross("/", "per") + delete_zero_or_one_space + pynutil.insert(NEMO_NON_BREAKING_SPACE) + graph_unit
+        )
 
         optional_graph_unit2 = pynini.closure(
-            delete_space + pynutil.insert(NEMO_NON_BREAKING_SPACE) + graph_unit2, 0, 1,
+            delete_zero_or_one_space + pynutil.insert(NEMO_NON_BREAKING_SPACE) + graph_unit2, 0, 1,
         )
 
         unit_plural = (
@@ -145,7 +138,7 @@ class MeasureFst(GraphFst):
         unit_graph = (
             pynutil.insert("cardinal { integer: \"-\" } units: \"")
             + pynini.cross(pynini.union("/", "per"), "per")
-            + delete_space
+            + delete_zero_or_one_space
             + pynutil.insert(NEMO_NON_BREAKING_SPACE)
             + graph_unit
             + pynutil.insert("\" preserve_order: true")
@@ -189,7 +182,7 @@ class MeasureFst(GraphFst):
             + pynutil.insert("\" } preserve_order: true")
         )
 
-        math_operations = pynini.string_file(get_abs_path("data/math_operations.tsv"))
+        math_operations = pynini.string_file(get_abs_path("data/measure/math_operation.tsv"))
         delimiter = pynini.accep(" ") | pynutil.insert(" ")
 
         math = (
@@ -273,7 +266,7 @@ class MeasureFst(GraphFst):
         ) + pynini.closure(pynutil.delete("."), 0, 1)
 
         direction = pynini.closure(pynini.accep(NEMO_SPACE) + direction, 0, 1)
-        address_words = get_formats(get_abs_path("data/address/address_words.tsv"))
+        address_words = get_formats(get_abs_path("data/address/address_word.tsv"))
         address_words = (
             pynini.accep(NEMO_SPACE)
             + (pynini.closure(ordinal_num, 0, 1) | NEMO_UPPER + pynini.closure(NEMO_ALPHA, 1))
@@ -285,7 +278,7 @@ class MeasureFst(GraphFst):
         city = pynini.closure(NEMO_ALPHA | pynini.accep(NEMO_SPACE), 1)
         city = pynini.closure(pynini.accep(",") + pynini.accep(NEMO_SPACE) + city, 0, 1)
 
-        states = load_labels(get_abs_path("data/address/states.tsv"))
+        states = load_labels(get_abs_path("data/address/state.tsv"))
 
         additional_options = []
         for x, y in states:

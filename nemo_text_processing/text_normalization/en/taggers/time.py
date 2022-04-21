@@ -56,11 +56,11 @@ class TimeFst(GraphFst):
 
     def __init__(self, cardinal: GraphFst, deterministic: bool = True):
         super().__init__(name="time", kind="classify", deterministic=deterministic)
-        suffix_labels = load_labels(get_abs_path("data/time_suffix.tsv"))
+        suffix_labels = load_labels(get_abs_path("data/time/suffix.tsv"))
         suffix_labels.extend(augment_labels_with_punct_at_end(suffix_labels))
         suffix_graph = pynini.string_map(suffix_labels)
 
-        time_zone_graph = pynini.string_file(get_abs_path("data/time_zone.tsv"))
+        time_zone_graph = pynini.string_file(get_abs_path("data/time/zone.tsv"))
 
         # only used for < 1000 thousand -> 0 weight
         cardinal = cardinal.graph

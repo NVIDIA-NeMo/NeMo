@@ -55,7 +55,7 @@ class RomanFst(GraphFst):
         ).optimize()
 
         # single symbol roman numerals with preceding key words are converted to cardinal form
-        key_words = pynini.string_map(load_labels(get_abs_path("data/roman/key_words.tsv"))).optimize()
+        key_words = pynini.string_map(load_labels(get_abs_path("data/roman/key_word.tsv"))).optimize()
         graph |= (
             pynutil.insert("key_cardinal: \"") + key_words + pynutil.insert("\"") + pynini.accep(" ") + default_graph
         ).optimize()

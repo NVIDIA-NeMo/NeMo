@@ -28,9 +28,9 @@ try:
     import pynini
     from pynini.lib import pynutil
 
-    min_singular = pynini.string_file(get_abs_path("data/currency/currency_minor_singular.tsv"))
-    min_plural = pynini.string_file(get_abs_path("data/currency/currency_minor_plural.tsv"))
-    maj_singular = pynini.string_file((get_abs_path("data/currency/currency.tsv")))
+    min_singular = pynini.string_file(get_abs_path("data/money/currency_minor_singular.tsv"))
+    min_plural = pynini.string_file(get_abs_path("data/money/currency_minor_plural.tsv"))
+    maj_singular = pynini.string_file((get_abs_path("data/money/currency_major.tsv")))
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
@@ -61,7 +61,7 @@ class MoneyFst(GraphFst):
         cardinal_graph = cardinal.graph_with_and
         graph_decimal_final = decimal.final_graph_wo_negative
 
-        maj_singular_labels = load_labels(get_abs_path("data/currency/currency.tsv"))
+        maj_singular_labels = load_labels(get_abs_path("data/money/currency_major.tsv"))
         maj_unit_plural = convert_space(maj_singular @ SINGULAR_TO_PLURAL)
         maj_unit_singular = convert_space(maj_singular)
 

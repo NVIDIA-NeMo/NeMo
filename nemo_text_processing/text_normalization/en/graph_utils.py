@@ -47,6 +47,7 @@ try:
     NEMO_SIGMA = pynini.closure(NEMO_CHAR)
 
     delete_space = pynutil.delete(pynini.closure(NEMO_WHITE_SPACE))
+    delete_zero_or_one_space = pynutil.delete(pynini.closure(NEMO_WHITE_SPACE, 0, 1))
     insert_space = pynutil.insert(" ")
     delete_extra_space = pynini.cross(pynini.closure(NEMO_WHITE_SPACE, 1), " ")
     delete_preserve_order = pynini.closure(

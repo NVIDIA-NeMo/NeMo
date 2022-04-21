@@ -44,14 +44,14 @@ class ElectronicFst(GraphFst):
 
     def __init__(self, deterministic: bool = True):
         super().__init__(name="electronic", kind="verbalize", deterministic=deterministic)
-        graph_digit_no_zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv"))).optimize()
+        graph_digit_no_zero = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/digit.tsv"))).optimize()
         graph_zero = pynini.cross("0", "zero")
 
         if not deterministic:
             graph_zero |= pynini.cross("0", "o") | pynini.cross("0", "oh")
 
         graph_digit = graph_digit_no_zero | graph_zero
-        graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbols.tsv")).optimize()
+        graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbol.tsv")).optimize()
         chars = pynini.difference(NEMO_NOT_QUOTE, pynini.project(graph_symbols, "input"))
         user_name = (
             pynutil.delete("username:")
@@ -67,7 +67,7 @@ class ElectronicFst(GraphFst):
             + pynutil.delete("\"")
         )
 
-        server_common = pynini.string_file(get_abs_path("data/electronic/server_name.tsv"))
+        server_common = pynini.string_file(get_abs_path("data/electronic/server.tsv"))
         domain_common = pynini.string_file(get_abs_path("data/electronic/domain.tsv"))
 
         default_chars_symbols = (

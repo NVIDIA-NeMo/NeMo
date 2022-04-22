@@ -43,14 +43,12 @@ import soundfile as sf
 from nemo.utils import logging
 
 # TODO @blisc: Perhaps refactor instead of import guarding
-HAVE_KALDI_PYDUB = True
+HAVE_PYDUB = True
 try:
-    from kaldiio.matio import read_kaldi
-    from kaldiio.utils import open_like_kaldi
     from pydub import AudioSegment as Audio
     from pydub.exceptions import CouldntDecodeError
 except ModuleNotFoundError:
-    HAVE_KALDI_PYDUB = False
+    HAVE_PYDUB = False
 
 
 available_formats = sf.available_formats()
@@ -156,18 +154,8 @@ class AudioSegment(object):
                     f"Loading {audio_file} via SoundFile raised RuntimeError: `{e}`. "
                     f"NeMo will fallback to loading via pydub."
                 )
-        elif HAVE_KALDI_PYDUB and isinstance(audio_file, str) and audio_file.strip()[-1] == "|":
-            f = open_like_kaldi(audio_file, "rb")
-            sample_rate, samples = read_kaldi(f)
-            if offset > 0:
-                samples = samples[int(offset * sample_rate) :]
-            if duration > 0:
-                samples = samples[: int(duration * sample_rate)]
-            if not int_values:
-                abs_max_value = np.abs(samples).max()
-                samples = np.array(samples, dtype=np.float) / abs_max_value
 
-        if HAVE_KALDI_PYDUB and samples is None:
+        if HAVE_PYDUB and samples is None:
             try:
                 samples = Audio.from_file(audio_file)
                 sample_rate = samples.frame_rate
@@ -183,7 +171,7 @@ class AudioSegment(object):
                 logging.error(f"Loading {audio_file} via pydub raised CouldntDecodeError: `{err}`.")
 
         if samples is None:
-            libs = "soundfile, kaldiio, and pydub" if HAVE_KALDI_PYDUB else "soundfile"
+            libs = "soundfile, and pydub" if HAVE_PYDUB else "soundfile"
             raise Exception(f"Your audio file {audio_file} could not be decoded. We tried using {libs}.")
 
         return cls(samples, sample_rate, target_sr=target_sr, trim=trim, orig_sr=orig_sr)

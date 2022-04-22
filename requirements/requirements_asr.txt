@@ -1,7 +1,6 @@
 braceexpand
 editdistance
 inflect
-kaldi-io
 librosa
 marshmallow
 packaging

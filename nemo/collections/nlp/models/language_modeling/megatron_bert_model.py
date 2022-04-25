@@ -408,7 +408,7 @@ class MegatronBertModel(NLPModel):
         for vocab in ['cased', 'uncased']:
             result.append(
                 PretrainedModelInfo(
-                    pretrained_model_name=f"megatron-bert-345m-{vocab}",
+                    pretrained_model_name=f"megatron_bert_345m_{vocab}",
                     location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/megatron_bert_345m_{vocab}/versions/1/files/megatron_bert_345m_{vocab}.nemo",
                     description=f"345M parameter BERT Megatron model with {vocab} vocab.",
                 )

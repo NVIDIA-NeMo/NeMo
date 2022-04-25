@@ -503,7 +503,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         list_of_models = []
         model = PretrainedModelInfo(
             pretrained_model_name="tts_en_fastpitch",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/1.4.0/files/tts_en_fastpitch_align.nemo",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/1.8.1/files/tts_en_fastpitch_align.nemo",
             description="This model is trained on LJSpeech sampled at 22050Hz with and can be used to generate female English voices with an American accent.",
             class_=cls,
         )

@@ -28,19 +28,14 @@
 
 import argparse
 import logging
-import os
 import sys
-import tempfile
-import traceback
-import warnings
-from dataclasses import dataclass
-from typing import Optional
 
 import torch
-from omegaconf import OmegaConf, open_dict
+from pytorch_lightning import Trainer
 
 from nemo.core import ModelPT
 from nemo.core.classes import Exportable, typecheck
+from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.utils.export_utils import forward_method, parse_input_example, verify_runtime
 
 try:
@@ -90,11 +85,22 @@ def nemo_export(argv):
     nemo_in = args.source
     out = args.out
 
+    # Create a PL trainer object which is required for restoring Megatron models
+    cfg_trainer = TrainerConfig(
+        gpus=1,
+        accelerator="ddp",
+        num_nodes=1,
+        # Need to set the following two to False as ExpManager will take care of them differently.
+        logger=False,
+        checkpoint_callback=False,
+    )
+    trainer = Trainer(cfg_trainer)
+
     logging.info("Restoring NeMo model from '{}'".format(nemo_in))
     try:
         with torch.inference_mode():
             # Restore instance from .nemo file using generic model restore_from
-            model = ModelPT.restore_from(restore_path=nemo_in)
+            model = ModelPT.restore_from(restore_path=nemo_in, trainer=trainer)
     except Exception as e:
         logging.error(
             "Failed to restore model from NeMo file : {}. Please make sure you have the latest NeMo package installed with [all] dependencies.".format(

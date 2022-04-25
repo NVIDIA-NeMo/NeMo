@@ -11,3 +11,4 @@ numba
 wget
 frozendict
 unidecode
+huggingface_hub

@@ -1,6 +1,6 @@
 latexcodec
 sphinx>=3.0
-sphinx_rtd_theme
+sphinx-book-theme
 sphinxcontrib-bibtex
 wrapt
 numpy

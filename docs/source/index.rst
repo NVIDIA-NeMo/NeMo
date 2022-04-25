@@ -17,7 +17,10 @@ NVIDIA NeMo User Guide
    :name: core
 
    core/core
+   core/exp_manager
+   core/neural_types
    core/export
+   core/api
 
 
 .. toctree::

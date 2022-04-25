@@ -105,6 +105,7 @@ the end-to-end pipeline.
    * - HiFiGAN
      - :class:`Vocoder<nemo.collections.tts.models.base.Vocoder>`
      - https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_hifigan
+     - GAN-based Vocoder
    * - UnivNet
      - :class:`Vocoder<nemo.collections.tts.models.base.Vocoder>`
      - https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_lj_univnet

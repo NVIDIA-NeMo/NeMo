@@ -796,7 +796,9 @@ class BertPunctuationCapitalizationDataset(Dataset):
             sequences are short, then a batch will contain more samples. Before packing into batches, samples are
             sorted by number of tokens they contain. Sorting allows to reduce number of pad tokens in a batch
             significantly. Regular PyTorch data loader shuffling will only permute batches with changing their content.
-            Proper shuffling is achieved via calling method :meth:`repack_batches_with_shuffle` every epoch.
+            Proper shuffling is achieved via calling method :meth:`repack_batches_with_shuffle` every epoch. If
+            parameter ``number_of_batches_is_multiple_of`` is greater than 1, some batches may be split into smaller
+            pieces.
         pad_label (:obj:`str`, `optional`, defaults to :obj:`'O'`): pad value to use for labels. It's also the neutral
             label both for punctuation and capitalization.
         punct_label_ids (:obj:`Dict[str, int]`, `optional`): dict to map punctuation labels to label ids. For dev set,
@@ -839,12 +841,20 @@ class BertPunctuationCapitalizationDataset(Dataset):
             other useful information.
         n_jobs (:obj:`int`, `optional`, defaults to :obj:`0`): number of workers used for tokenization, encoding
             labels, creating "first token in word" mask, and clipping. If ``n_jobs <= 0`` data preparation is performed
-            without multiprocessing. By default ``n_jobs`` is equal to the number of CPUs.
+            without multiprocessing. By default ``n_jobs`` is ``0``.
 
             .. warning::
                 There can be deadlocking problems with some tokenizers (e.g. SentencePiece, HuggingFace AlBERT)
                 if ``n_jobs > 0``.
-
+        number_of_batches_is_multiple_of (:obj:`int`, `optional`, defaults to :obj:`1`): number of batches in the
+            dataset is made divisible by ``number_of_batches_is_multiple_of``. If ``number_of_batches_is_multiple_of``
+            is greater than 1, then several batches are split in parts until number of batches
+            is divisible by ``number_of_batches_is_multiple_of``. If there is no enough queries in the dataset to
+            create enough batches, then a warning is printed. This parameter is useful for dev and validation datasets
+            if multiple GPUs are used. The problem is that if number of batches is not evenly divisible by number of
+            GPUs, then some queries may be processed several times and metrics will be distorted.
+        batch_shuffling_random_seed (:obj:`int`, defaults to :obj:`int`): a random seed used for batches repacking and
+            shuffling.
         tokenization_progress_queue (:obj:`multiprocessing.Queue`, `optional`): a queue for reporting tokenization
             progress. Useful for creation of tarred dataset
         batch_mark_up_progress_queue (:obj:`multiprocessing.Queue`, `optional`): a queue for reporting progress in
@@ -888,6 +898,8 @@ class BertPunctuationCapitalizationDataset(Dataset):
         add_masks_and_segment_ids_to_batch: bool = True,
         verbose: bool = True,
         n_jobs: Optional[int] = 0,
+        number_of_batches_is_multiple_of: int = 1,
+        batch_shuffling_random_seed: int = 42,
         tokenization_progress_queue: Optional[mp.Queue] = None,
         batch_mark_up_progress_queue: Optional[mp.Queue] = None,
         batch_building_progress_queue: Optional[mp.Queue] = None,
@@ -906,6 +918,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
             capit_label_vocab_file,
             num_samples,
             use_cache,
+            number_of_batches_is_multiple_of,
         )
         if punct_label_vocab_file is not None:
             punct_label_vocab_file = Path(punct_label_vocab_file).expanduser()
@@ -913,9 +926,9 @@ class BertPunctuationCapitalizationDataset(Dataset):
         if capit_label_vocab_file is not None:
             capit_label_vocab_file = Path(capit_label_vocab_file).expanduser()
             capit_label_ids = load_label_ids(capit_label_vocab_file)
-        text_file, labels_file = Path(text_file).expanduser(), Path(labels_file).expanduser()
+        self.text_file, self.labels_file = Path(text_file).expanduser(), Path(labels_file).expanduser()
         if label_info_save_dir is None:
-            self.label_info_save_dir = text_file.parent
+            self.label_info_save_dir = self.text_file.parent
         else:
             self.label_info_save_dir = Path(label_info_save_dir).expanduser()
 
@@ -930,22 +943,22 @@ class BertPunctuationCapitalizationDataset(Dataset):
         self.batch_building_progress_queue = batch_building_progress_queue
 
         master_device = is_global_rank_zero()
-        self.features_pkl = self._get_path_to_pkl_features(text_file, cache_dir, max_seq_length, num_samples)
+        self.features_pkl = self._get_path_to_pkl_features(self.text_file, cache_dir, max_seq_length, num_samples)
         features = None
         if master_device and not (self.features_pkl.is_file() and use_cache):
             if verbose:
-                logging.info(f'Processing {text_file}')
-            res = self._read_dataset(text_file, labels_file, num_samples)
+                logging.info(f'Processing {self.text_file}')
+            res = self._read_dataset(self.text_file, self.labels_file, num_samples)
             text_lines, punct_label_lines, capit_label_lines, punct_unique_labels, capit_unique_labels = res
             if punct_label_ids:
                 self._check_label_ids_vs_unique_labels(
-                    punct_label_ids, punct_unique_labels, 'punct', 'punctuation', labels_file
+                    punct_label_ids, punct_unique_labels, 'punct', 'punctuation', self.labels_file
                 )
             else:
                 punct_label_ids = create_label_ids(punct_unique_labels, self.pad_label)
             if capit_label_ids:
                 self._check_label_ids_vs_unique_labels(
-                    capit_label_ids, capit_unique_labels, 'capit', 'capitalzation', labels_file
+                    capit_label_ids, capit_unique_labels, 'capit', 'capitalzation', self.labels_file
                 )
             else:
                 capit_label_ids = create_label_ids(capit_unique_labels, self.pad_label)
@@ -986,6 +999,8 @@ class BertPunctuationCapitalizationDataset(Dataset):
 
         self.input_ids, self.subtokens_mask, self.punct_labels, self.capit_labels = features
         self.punct_label_ids, self.capit_label_ids = punct_label_ids, capit_label_ids
+        self.number_of_batches_is_multiple_of = number_of_batches_is_multiple_of
+        self.batch_shuffling_random_state = np.random.RandomState(batch_shuffling_random_seed)
         self.batches = self._pack_into_batches(
             self.input_ids, self.subtokens_mask, self.punct_labels, self.capit_labels
         )
@@ -1021,6 +1036,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
         capit_label_vocab_file: Union[str, os.PathLike],
         num_samples: int,
         use_cache: bool,
+        number_of_batches_is_multiple_of: int,
     ) -> None:
         if torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1 and not use_cache:
             raise ValueError(
@@ -1076,6 +1092,11 @@ class BertPunctuationCapitalizationDataset(Dataset):
             raise ValueError(
                 f"Parameter `num_samples` has to be positive or negative whereas `num_samples={num_samples}`. "
                 f"Negative `num_samples` is for using all samples in a dataset."
+            )
+        if number_of_batches_is_multiple_of < 1 or not isinstance(number_of_batches_is_multiple_of, int):
+            raise ValueError(
+                f"Parameter `number_of_batches_is_multiple_of` has to be positive integer whereas "
+                f"{number_of_batches_is_multiple_of} is given."
             )
 
     def _check_label_ids_loaded_from_pkl(
@@ -1170,6 +1191,96 @@ class BertPunctuationCapitalizationDataset(Dataset):
         text_lines, punct_labels_lines, capit_labels_lines = zip(*dataset)
         return text_lines, punct_labels_lines, capit_labels_lines, punct_unique_labels, capit_unique_labels
 
+    @staticmethod
+    def calc_batch_seq_length(queries: List[np.ndarray], length_is_multiple_of: int) -> int:
+        return ceil(max([len(elem) for elem in queries]) / length_is_multiple_of) * length_is_multiple_of
+
+    def _adjust_number_of_batches(
+        self,
+        input_ids: List[np.ndarray],
+        batch_beginnings: List[int],
+        batch_sizes: List[int],
+        batch_seq_lengths: List[int],
+    ) -> Tuple[List[int], List[int], List[int]]:
+        """
+        If length of ``batch_sizes`` list is not divisible by ``self.number_of_batches_is_multiple_of``, then
+        one or several batches are split into parts until number of batches is divisible by
+        ``self.number_of_batches_is_multiple_of``.
+
+        The method selects a batch and tries to slice smaller batches with 8 elements each from the batch. If
+        the batch cannot be sliced any further and there are still not enough batches, then the next batch from dataset
+        is selected.
+
+        If slicing batches of size 8 is not enough, then batches of size 1 are created.
+
+        If dataset is too small to create enough batches, then a warning is shown.
+
+        Args:
+            input_ids: tokenized queries of the dataset. `input_ids` are expected to be sorted by length in ascending
+                order.
+            batch_beginnings: indices of first elements of batches created inside :meth:`_mark_up_batches` method.
+                Expected to be sorted in ascending order.
+            batch_sizes: sizes of batches created inside :meth:`_mark_up_batches` method.
+            batch_seq_lengths: lengths of elements in batch after padding created inside :meth:`_mark_up_batches`
+                method.
+
+        Returns:
+            batch_beginnings: a list of indices in ``input_ids`` of first samples of every batch
+            batch_sizes: a list of numbers of samples in batches
+            batch_seq_lengths: a list of sequence lengths after padding for every batch
+        """
+        batch_beginnings, batch_sizes = batch_beginnings.copy(), batch_sizes.copy()
+        batch_seq_lengths = batch_seq_lengths.copy()
+        num_missing_batches = (
+            self.number_of_batches_is_multiple_of - len(batch_sizes) % self.number_of_batches_is_multiple_of
+        )
+        if num_missing_batches == 0:
+            return batch_beginnings, batch_sizes, batch_seq_lengths
+        if sum(batch_sizes) - len(batch_sizes) < num_missing_batches:
+            logging.warning(
+                f"Unable to achieve number of batches multiple of {self.number_of_batches_is_multiple_of} because "
+                f"dataset in files '{self.text_file}' and '{self.labels_file}' contains not enough queries "
+                f"({sum(batch_sizes)}) or queries in the dataset are too long. Dataset will have "
+                f"{len(batch_sizes)} batches instead. For validation or test dataset if multiple GPUs are used "
+                f"this will lead to distorted metrics because some batches will be processed several times. "
+                f"To fix this problem you may try to tweak (increase) parameter `tokens_in_batch`, though result is "
+                f"not guaranteed."
+            )
+            return batch_beginnings, batch_sizes, batch_seq_lengths
+        num_cut = 0
+        for ss in [8, 1]:  # ss - split_size
+            old_num_batches = len(batch_sizes)
+            # Starting from the last batch because its size is likely to be not multiple of 8. Thus number of
+            # batches which size is not multiple of 8 can be reduced by 1.
+            original_batch_index = old_num_batches - 1
+            while original_batch_index >= 0 and num_cut < num_missing_batches:
+                bs, bb = batch_sizes[original_batch_index], batch_beginnings[original_batch_index]
+                rb = 0  # an index of sliced first element of sliced batch in original batch (relative beginning)
+                if rb < bs - ss:
+                    while rb < bs - ss and num_cut < num_missing_batches:
+                        batch_sizes.append(ss)
+                        batch_beginnings.append(bb + rb)
+                        batch_seq_lengths.append(
+                            self.calc_batch_seq_length(input_ids[bb + rb : bb + rb + ss], length_is_multiple_of=8)
+                        )
+                        rb += ss
+                        num_cut += 1
+                    assert len(input_ids[bb + rb : bb + bs]) > 0
+                    batch_sizes[original_batch_index] = bs - rb
+                    batch_beginnings[original_batch_index] = bb + rb
+                    batch_seq_lengths[original_batch_index] = self.calc_batch_seq_length(
+                        input_ids[bb + rb : bb + bs], length_is_multiple_of=8
+                    )
+                original_batch_index -= 1
+            # Keeping order of batches.
+            batch_beginnings, batch_sizes, batch_seq_lengths = map(
+                list, zip(*sorted(zip(batch_beginnings, batch_sizes, batch_seq_lengths), key=lambda x: x[0]))
+            )
+        assert len(batch_beginnings) % self.number_of_batches_is_multiple_of == 0
+        assert len(batch_sizes) % self.number_of_batches_is_multiple_of == 0
+        assert len(batch_seq_lengths) % self.number_of_batches_is_multiple_of == 0
+        return batch_beginnings, batch_sizes, batch_seq_lengths
+
     def _mark_up_batches(self, input_ids: List[np.ndarray]) -> Tuple[List[int], List[int], List[int]]:
         """
         Computes indices of first samples in batch, batch sizes, seq lengths for batches. ``input_ids`` has to be
@@ -1208,9 +1319,10 @@ class BertPunctuationCapitalizationDataset(Dataset):
                     if i > start:
                         batch_size = i - start
                         logging.warning(
-                            f"Could not create batch with multiple of 8 size. Probably there is a too long sequence in "
-                            f"the dataset. current_max_length={current_max_length}. Batch size will be reduced to "
-                            f"{batch_size}. tokens_in_batch={self.tokens_in_batch}. The batch includes sequences from "
+                            f"Could not create batch with multiple of 8 size. Probably, there is a too long sequence "
+                            f"in the dataset or parameter `tokens_in_batch` is too small. Current length of sequences "
+                            f"in batch is {current_max_length}. Batch size will be reduced to {batch_size}. "
+                            f"tokens_in_batch={self.tokens_in_batch}. The batch includes sequences from "
                             f"{start} to {i - 1}."
                         )
                     else:
@@ -1221,24 +1333,28 @@ class BertPunctuationCapitalizationDataset(Dataset):
                         start = i
                         current_max_length = ceil(len(inp) / 8) * 8
                         continue
-                seq_length = ceil(max([len(inp) for inp in input_ids[start : start + batch_size]]) / 8) * 8
+                seq_length = self.calc_batch_seq_length(input_ids[start : start + batch_size], length_is_multiple_of=8)
                 batch_beginnings.append(start)
                 batch_sizes.append(batch_size)
                 batch_seq_lengths.append(seq_length)
                 start += batch_size
-                current_max_length = ceil(max([len(inp) for inp in input_ids[start : i + 1]]) / 8) * 8
+                current_max_length = self.calc_batch_seq_length(input_ids[start : i + 1], length_is_multiple_of=8)
             if self.batch_mark_up_progress_queue is not None:
                 progress_made += 1
                 if progress_made >= BATCH_MARK_UP_PROGRESS_REPORT_PERIOD:
                     self.batch_mark_up_progress_queue.put(progress_made)
                     progress_made = 0
         if start < len(input_ids):
-            seq_length = ceil(max([len(inp) for inp in input_ids[start:]]) / 8) * 8
+            seq_length = self.calc_batch_seq_length(input_ids[start:], length_is_multiple_of=8)
             batch_beginnings.append(start)
             batch_sizes.append(len(input_ids) - start)
             batch_seq_lengths.append(seq_length)
             if self.batch_mark_up_progress_queue is not None:
                 self.batch_mark_up_progress_queue.put(progress_made)
+        if len(batch_beginnings) % self.number_of_batches_is_multiple_of:
+            batch_beginnings, batch_sizes, batch_seq_lengths = self._adjust_number_of_batches(
+                input_ids, batch_beginnings, batch_sizes, batch_seq_lengths
+            )
         assert sum(batch_sizes) == len(input_ids)
         for i in range(len(batch_beginnings) - 1):
             assert batch_beginnings[i] + batch_sizes[i] == batch_beginnings[i + 1]
@@ -1290,7 +1406,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
             The values of a batch dictionary are numpy arrays of identical shape.
         """
         zipped = list(zip(input_ids, subtokens_mask, punct_labels, capit_labels))
-        random.shuffle(zipped)
+        self.batch_shuffling_random_state.shuffle(zipped)
         input_ids, subtokens_mask, punct_labels, capit_labels = zip(*sorted(zipped, key=lambda x: x[0].shape[0]))
         batch_beginnings, batch_sizes, batch_seq_lengths = self._mark_up_batches(input_ids)
         batches = []
@@ -1339,7 +1455,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
                     progress_made = 0
         if self.batch_building_progress_queue is not None:
             self.batch_building_progress_queue.put(progress_made)
-        random.shuffle(batches)
+        self.batch_shuffling_random_state.shuffle(batches)
         return batches
 
     def repack_batches_with_shuffle(self) -> None:

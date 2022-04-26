@@ -79,7 +79,6 @@ model:
   p_tuning: # P-tuning specific params
     dropout: 0.0
     num_layers: 2
-    save_tuned_prompts_to_prompt_table: True
 
   data:
     train_ds: [data/squad_train.jsonl,]

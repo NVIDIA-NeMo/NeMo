@@ -459,7 +459,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
 
     def on_train_end(self):
         # Save p-tuned prompts to prompt table for inference or future task training
-        if self.virtual_prompt_style == "p-tuning" and self.cfg.p_tuning.save_tuned_prompts_to_prompt_table:
+        if self.virtual_prompt_style == "p-tuning":
             self.add_ptuned_prompts_to_prompt_table()
             logging.info(f"All p-tuned prompts where moved to the prompt table.")
 

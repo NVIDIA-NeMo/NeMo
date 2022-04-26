@@ -447,7 +447,7 @@ def generate(
             )
         if task_ids is None:
             # Make a dummy tensor of -1s that won't be used during generation
-            task_ids = torch.neg(torch.ones(context_tokens_tensor.size(0)))
+            task_ids = torch.neg(torch.ones(context_tokens_tensor.size(0), dtype=torch.int64))
             task_ids = task_ids.to(device=context_tokens_tensor.get_device())
 
         send_generate_info(

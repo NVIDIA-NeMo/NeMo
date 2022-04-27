@@ -161,10 +161,10 @@ class RNNEncoder(NeuralModule, Exportable):
 
         audio_signal = torch.transpose(audio_signal, 1, 2)
 
-        if isinstance(self.pre_encode, ConvSubsampling) or isinstance(self.pre_encode, StackingSubsampling):
-            audio_signal, length = self.pre_encode(audio_signal, length)
-        else:
+        if isinstance(self.pre_encode, nn.Linear):
             audio_signal = self.pre_encode(audio_signal)
+        else:
+            audio_signal, length = self.pre_encode(audio_signal, length)
 
         for lth, layer in enumerate(self.layers):
             audio_signal = layer(audio_signal)

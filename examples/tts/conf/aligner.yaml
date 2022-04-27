@@ -21,7 +21,7 @@ window: hann
 
 phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.01"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-030921"
-whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist_lj_speech.tsv"
+whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 
 model:
   symbols_embedding_dim: 384

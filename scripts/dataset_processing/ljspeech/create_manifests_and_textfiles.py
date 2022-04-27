@@ -69,10 +69,10 @@ def main():
 
         if whitelist_path is None:
             wget.download(
-                "https://raw.githubusercontent.com/NVIDIA/NeMo/main/nemo_text_processing/text_normalization/en/data/whitelist_lj_speech.tsv",
+                "https://raw.githubusercontent.com/NVIDIA/NeMo/main/nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv",
                 out=ljspeech_dir,
             )
-            whitelist_path = os.path.join(ljspeech_dir, "whitelist_lj_speech.tsv")
+            whitelist_path = os.path.join(ljspeech_dir, "lj_speech.tsv")
 
         text_normalizer = Normalizer(
             lang="en",

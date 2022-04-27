@@ -64,6 +64,9 @@ def get_task_templates():
         "prompt_template_fields": ['text', 'answer'],
         "total_virtual_tokens": 5,
         "virtual_token_splits": [5],
+        "truncate_field": None,
+        "answer_only_loss": True,
+        "answer_field": "answer",
         "task_id_num": 0,
     }
     task_templates['task name B'] = {
@@ -71,6 +74,9 @@ def get_task_templates():
         "prompt_template_fields": ['question', 'answer'],
         "total_virtual_tokens": 10,
         "virtual_token_splits": [7, 3],
+        "truncate_field": None,
+        "answer_only_loss": False,
+        "answer_field": None,
         "task_id_num": 1,
     }
     return task_templates

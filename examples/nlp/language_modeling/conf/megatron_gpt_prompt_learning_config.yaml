@@ -59,10 +59,13 @@ model:
     total_virtual_tokens: 80 # Sum of tokens in virtual_token_splits must add to this number. Can differ between new and existing tasks, but must match across all new tasks being tuned at the same time.
     virtual_token_splits: [60, 20] # number of virtual tokens to be inserted at each VIRTUAL PROMPT location, must add to total_virtual_tokens
     truncate_field: 'passage' # The {field} in the prompt template whose text will be truncated if the input is too long, if null, inputs that are too long will just be skipped.
+    answer_only_loss: True 
+    answer_field: 'answer'
 
   - taskname: 'intent_and_slot'
     prompt_template: '<|VIRTUAL_PROMPT_0|> intent options: {intent_options} <|VIRTUAL_PROMPT_1|> slot options: {slot_options} <|VIRTUAL_PROMPT_2|> {utterance} \nintent: {intent} \nslot: {slot}' 
-    total_virtual_tokens: 80 
+    total_virtual_tokens: 80
+    answer_only_loss: False 
     virtual_token_splits: [34, 33, 13]
     truncate_field: null
 
@@ -71,6 +74,8 @@ model:
     total_virtual_tokens: 100 
     virtual_token_splits: [100]
     truncate_field: null
+    answer_only_loss: True
+    answer_field: 'answer'
 
   prompt_tuning: # Prompt tunin specific params
     new_prompt_init_methods: ['text'] # List of 'text' or 'random', should correspond to tasks listed in new tasks

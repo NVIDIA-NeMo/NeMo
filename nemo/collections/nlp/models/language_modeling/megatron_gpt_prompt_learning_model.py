@@ -152,6 +152,8 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self.task_templates[task.taskname] = {
                 "prompt_template": task.prompt_template,
                 "prompt_template_fields": re.findall("\{(.*?)\}", task.prompt_template),
+                "answer_only_loss": task.get("answer_only_loss", False),
+                "answer_field": task.get("answer_field", None),
                 "truncate_field": task.truncate_field,
                 "total_virtual_tokens": task.total_virtual_tokens,
                 "virtual_token_splits": task.virtual_token_splits,
@@ -496,6 +498,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self._train_ds, self._train_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.train_ds,
                 batch_size=self.cfg.batch_size,
+                for_train=True,
                 drop_last=True,
                 shuffle=True,
                 num_workers=self.cfg.data.num_workers,
@@ -507,6 +510,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self._validation_ds, self._validation_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.validation_ds,
                 batch_size=self.cfg.batch_size,
+                for_train=True,
                 drop_last=True,
                 shuffle=False,
                 num_workers=self.cfg.data.num_workers,
@@ -518,13 +522,16 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self._test_ds, self._test_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.test_ds,
                 batch_size=self.cfg.batch_size,
+                for_train=False,
                 drop_last=False,
                 shuffle=False,
                 num_workers=self.cfg.data.num_workers,
                 pin_memory=True,
             )
 
-    def build_virtual_prompt_dataset(self, dataset_paths, batch_size, drop_last, shuffle, num_workers, pin_memory):
+    def build_virtual_prompt_dataset(
+        self, dataset_paths, batch_size, for_train, drop_last, shuffle, num_workers, pin_memory
+    ):
         dataset = GPTPromptLearningDataset(
             datasets=dataset_paths,
             tokenizer=self.tokenizer,
@@ -536,6 +543,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=self.cfg.data.get('add_bos', False),
             add_eos=self.cfg.data.get('add_eos', True),
+            for_train=for_train,
         )
 
         dataloader = torch.utils.data.DataLoader(
@@ -587,6 +595,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=sampling_params["add_BOS"],
             add_eos=False,
+            for_train=False,
         )
         task_ids, processed_inputs = dataset.get_all_examples(tokens_to_generate=length_params['max_length'])
         self.model.model.parallel_output = False

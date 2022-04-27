@@ -41,6 +41,7 @@ class GPTPromptLearningDataset(Dataset):
         min_seq_length: int = 1,
         add_bos: bool = False,
         add_eos: bool = True,
+        for_train: bool = True,
     ):
         self.tokenizer = tokenizer
         self.virtual_prompt_source = virtual_prompt_source
@@ -52,6 +53,7 @@ class GPTPromptLearningDataset(Dataset):
         self.min_seq_length = min_seq_length
         self.add_bos = add_bos
         self.add_eos = add_eos
+        self.for_train = for_train
         self.examples = []
 
         assert self.min_seq_length <= max_seq_length, "Min sequence length should be less than or equal to max"
@@ -97,10 +99,21 @@ class GPTPromptLearningDataset(Dataset):
             prompt_template_fields = self.task_templates[taskname]["prompt_template_fields"]
             total_virtual_tokens = self.task_templates[taskname]["total_virtual_tokens"]
             virtual_token_splits = self.task_templates[taskname]["virtual_token_splits"]
+            truncation_field = self.task_templates[taskname]['truncate_field']
+            answer_only_loss = self.task_templates[taskname]["answer_only_loss"]
+            answer_field = self.task_templates[taskname]["answer_field"]
+
             input_example = prompt_template
 
             self._input_sanity_checks(
-                total_virtual_tokens, virtual_token_splits, prompt_template, prompt_template_fields, doc
+                total_virtual_tokens,
+                virtual_token_splits,
+                prompt_template,
+                prompt_template_fields,
+                truncation_field,
+                answer_only_loss,
+                answer_field,
+                doc,
             )
 
             # Format the input example according to the template
@@ -116,7 +129,7 @@ class GPTPromptLearningDataset(Dataset):
 
             # Try to truncate input text to fit into the max sequence length
             if len(input_ids) > self.max_seq_length:
-                input_ids = self._truncate_input(input_ids, taskname, doc)
+                input_ids = self._truncate_input(truncation_field, input_ids, taskname, doc)
 
             # Skip example if the final length doesn't fit length requirements even after truncation
             if self.min_seq_length <= len(input_ids) <= self.max_seq_length:
@@ -126,15 +139,27 @@ class GPTPromptLearningDataset(Dataset):
                 elif self.virtual_prompt_source == "prompt-table":
                     taskname_id = self.task_templates[taskname]["task_id_num"]
 
-                self.examples.append((taskname_id, input_ids))
+                # Find answer field indices if training and answer_only_loss is True
+                answer_start_idx = None
+                if answer_only_loss and self.for_train:
+                    answer_start_idx = self._find_answer_start(taskname, input_ids, answer_field, doc)
 
+                self.examples.append((taskname_id, input_ids, answer_start_idx))
             else:
                 skipped += 1
 
         logging.info(f'Skipped {skipped} sentences, sequence length too short or too long even after truncation')
 
     def _input_sanity_checks(
-        self, total_virtual_tokens, virtual_token_splits, prompt_template, prompt_template_fields, doc
+        self,
+        total_virtual_tokens,
+        virtual_token_splits,
+        prompt_template,
+        prompt_template_fields,
+        truncation_field,
+        answer_only_loss,
+        answer_field,
+        doc,
     ):
         # Sanity check amount of virtual token
         assert total_virtual_tokens > 0, "There should be at least one virtual prompt token"
@@ -157,6 +182,19 @@ class GPTPromptLearningDataset(Dataset):
         assert (
             len(keys_not_in_template) == 0
         ), f"Examples in your dataset contain the fields: {keys_not_in_template} that are not in the task template."
+
+        # Check that answer field checks if answer_only_loss was set to True
+        if answer_only_loss and self.for_train:
+            assert answer_field is not None, "If answer_only_loss=True, an answer_field must be given"
+            assert (
+                answer_field in doc.keys()
+            ), f"answer_only_loss=True but the given answer_field '{answer_field}' is not in data json"
+            assert truncation_field != answer_field, "Answer field and truncation field should not match"
+
+            answer_placeholder = "{" + answer_field + "}"
+            answer_placeholder_len = len(answer_placeholder)
+            placeholder_start = len(prompt_template) - answer_placeholder_len
+            assert prompt_template[placeholder_start:] == answer_placeholder, "Answer field must be at prompt end"
 
     def _insert_text_in_template(self, input_example, prompt_template_fields, doc):
         """ Format the input example according to the template """
@@ -185,9 +223,8 @@ class GPTPromptLearningDataset(Dataset):
 
         return input_example
 
-    def _truncate_input(self, input_ids, taskname, doc):
+    def _truncate_input(self, truncation_field, input_ids, taskname, doc):
         """ Try to truncate input text to fit into the max sequence length """
-        truncation_field = self.task_templates[taskname]['truncate_field']
         logging.info(
             f"Input greater than max sequence length. Attempting to truncate: '{truncation_field}' in task: '{taskname}'"
         )
@@ -196,12 +233,7 @@ class GPTPromptLearningDataset(Dataset):
         if truncation_field is not None and truncation_field in doc.keys():
             truncation_length = len(input_ids) - self.max_seq_length
             field_text = doc[truncation_field]
-
-            # Add leading space to text if there is a space before it in the template
-            prompt_template = self.task_templates[taskname]["prompt_template"]
-            field_text_start = prompt_template.find("{" + truncation_field + "}")
-            if field_text_start != 0 and prompt_template[field_text_start - 1] == " ":
-                field_text = " " + field_text
+            field_text = self._add_leading_space(taskname, truncation_field, field_text)
 
             # Truncate field text
             field_text_ids = self.tokenizer.text_to_ids(field_text)
@@ -213,6 +245,31 @@ class GPTPromptLearningDataset(Dataset):
 
         return input_ids
 
+    def _find_answer_start(self, taskname, input_ids, answer_field, doc):
+        """ Find the token ids corresponding to the answer start, for loss masking purposes.
+            Assumes the answer is always at the end of the prompt.
+        """
+        answer_text = doc[answer_field]
+        answer_text = self._add_leading_space(taskname, answer_field, answer_text)
+        answer_text_ids = self.tokenizer.text_to_ids(answer_text)
+        num_answer_text_ids = len(answer_text_ids)
+
+        if self.add_eos:
+            num_answer_text_ids += 1
+
+        answer_start_idx = len(input_ids) - num_answer_text_ids
+
+        return answer_start_idx
+
+    def _add_leading_space(self, taskname, field_name, field_text):
+        """ Add leading space to text if there is a space before it in the template """
+        prompt_template = self.task_templates[taskname]["prompt_template"]
+        field_text_start = prompt_template.find("{" + field_name + "}")
+        if field_text_start != 0 and prompt_template[field_text_start - 1] == " ":
+            field_text = " " + field_text
+
+        return field_text
+
     def __len__(self):
         return len(self.examples)
 
@@ -222,7 +279,7 @@ class GPTPromptLearningDataset(Dataset):
     def collate_fn(self, batch):
         """ Prepares input_ids, labels, loss mask, attention_mask, and position ids for global batch """
         # Get max sequence length of batch
-        taskname_ids, input_ids = zip(*batch)
+        taskname_ids, input_ids, answer_starts = zip(*batch)
 
         # Pad taskname_ids to be the same length for the prompt encoder
         if self.virtual_prompt_source == "prompt-encoder":
@@ -235,7 +292,7 @@ class GPTPromptLearningDataset(Dataset):
             taskname_ids = torch.tensor(taskname_ids)
 
         batch_max = max(len(ids) for ids in input_ids)
-        input_ids, loss_mask = self.pad_batch_and_build_loss_mask(input_ids, batch_max)
+        input_ids, loss_mask = self.pad_batch_and_build_loss_mask(input_ids, batch_max, answer_starts)
 
         # Should be a label for every token in batch, label is the next token
         labels = input_ids[:, 1:].contiguous()
@@ -257,12 +314,16 @@ class GPTPromptLearningDataset(Dataset):
 
         return input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids
 
-    def pad_batch_and_build_loss_mask(self, input_ids, batch_max):
+    def pad_batch_and_build_loss_mask(self, input_ids, batch_max, answer_starts):
         """ Pad input_ids in batch to max batch length while building loss mask """
         batch_loss_masks = []
-        for ids in input_ids:
-            # Loss mask where virtual tokens are 0.0 and all other tokens are 1.0
-            loss_mask = [float(token_id not in self.pseudo_token_ids) for token_id in ids]
+        for ids, answer_start_idx in zip(input_ids, answer_starts):
+            if answer_start_idx is not None:
+                # Loss mask where answer tokens are 1.0 and all other tokens are 0.0
+                loss_mask = [float(idx >= answer_start_idx) for idx in range(len(ids))]
+            else:
+                # Loss mask where virtual tokens are 0.0 and all other tokens are 1.0
+                loss_mask = [float(token_id not in self.pseudo_token_ids) for token_id in ids]
 
             # Pad to max length
             input_length = len(ids)
@@ -283,12 +344,13 @@ class GPTPromptLearningDataset(Dataset):
         """
         Used for loading inference data. 
         """
-        task_id_nums, input_ids = zip(*self.examples)
+        task_id_nums, input_ids, answer_starts = zip(*self.examples)
         input_lengths = torch.cuda.LongTensor([len(inputs) for inputs in input_ids])
         task_id_nums = torch.cuda.LongTensor(task_id_nums)
         batch_max = input_lengths.max().item()
+        batch_max += tokens_to_generate
 
-        input_ids, _ = self.pad_batch_and_build_loss_mask(input_ids, batch_max + tokens_to_generate)
+        input_ids, _ = self.pad_batch_and_build_loss_mask(input_ids, batch_max, answer_starts)
         input_ids = input_ids.cuda()
         input_ids = torch.cuda.LongTensor(input_ids)
 

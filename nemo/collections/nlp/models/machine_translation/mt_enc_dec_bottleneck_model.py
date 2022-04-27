@@ -112,9 +112,9 @@ class MTBottleneckModel(MTEncDecModel):
         """
         pass
 
-    def eval_epoch_end(self, outputs, mode):
+    def eval_epoch_end(self, outputs, mode, global_rank):
         # call parent for logging
-        super().eval_epoch_end(outputs, mode)
+        super().eval_epoch_end(outputs, mode, global_rank)
 
         # if user specifies one validation dataloader, then PTL reverts to giving a list of dictionary instead of a list of list of dictionary
         if isinstance(outputs[0], dict):

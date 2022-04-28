@@ -14,6 +14,7 @@ NeMo's NLP collection supports provides the following task-specific models:
    text_classification
    bert_pretraining
    language_modeling
+   prompt_learning
    question_answering
    sgd_qa
    glue_benchmark

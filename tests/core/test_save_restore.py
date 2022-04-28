@@ -32,6 +32,24 @@ def classpath(cls):
     return f'{cls.__module__}.{cls.__name__}'
 
 
+def get_dir_size(path='.'):
+    total = 0
+    with os.scandir(path) as it:
+        for entry in it:
+            if entry.is_file():
+                total += entry.stat().st_size
+            elif entry.is_dir():
+                total += get_dir_size(entry.path)
+    return total
+
+
+def get_size(path='.'):
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    elif os.path.isdir(path):
+        return get_dir_size(path)
+
+
 def getattr2(object, attr):
     if not '.' in attr:
         return getattr(object, attr)
@@ -523,3 +541,67 @@ class TestSaveRestore:
         with pytest.raises(ValueError, match="Creating model config node is forbidden"):
             model = MockModel(cfg=cfg.model, trainer=None)  # type: MockModel
             model = model.to('cpu')
+
+    @pytest.mark.unit
+    def test_restore_from_save_restore_connector_extracted_dir(self):
+        class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
+            def save_to(self, model, save_path: str):
+                save_path = save_path.replace(".nemo", "_XYZ.nemo")
+                super().save_to(model, save_path)
+
+        class MockModelV2(MockModel):
+            pass
+
+        with tempfile.TemporaryDirectory() as extracted_tempdir:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Update config
+                cfg = _mock_model_config()
+
+                # Create model
+                save_path = os.path.join(tmpdir, 'save_custom.nemo')
+                model_with_custom_connector = MockModel(cfg=cfg.model, trainer=None)
+                model_with_custom_connector._save_restore_connector = MySaveRestoreConnector()
+                model_with_custom_connector.save_to(save_path)
+
+                nemo_filepath = os.path.join(tmpdir, 'save_custom_XYZ.nemo')
+                assert os.path.exists(nemo_filepath)
+
+                # extract the contents to this dir apriori
+                # simulate by extracting now before calling restore_from
+                connector = MySaveRestoreConnector()
+                MySaveRestoreConnector._unpack_nemo_file(nemo_filepath, extracted_tempdir)
+                assert get_size(extracted_tempdir) > 0
+
+            # delete the old directory and preserve only the new extracted directory (escape scope of old dir)
+
+            # next, set the model's extracted directory path
+            connector.model_extracted_dir = extracted_tempdir
+
+            # note, we pass in the "old" nemo_filepath, stored somewhere other than the extracted directory
+            # this nemo_filepath is no longer valid, and has been deleted.
+            restored_model = MockModelV2.restore_from(nemo_filepath, save_restore_connector=connector)
+        assert type(restored_model) == MockModelV2
+        assert type(restored_model._save_restore_connector) == MySaveRestoreConnector
+
+        # assert models have correct restoration information and paths
+        appstate = AppState()
+        original_metadata = appstate.get_model_metadata_from_guid(model_with_custom_connector.model_guid)
+        assert original_metadata.restoration_path is None
+
+        restored_metadata = appstate.get_model_metadata_from_guid(restored_model.model_guid)
+        assert restored_metadata.restoration_path is not None
+
+        # assert that the restore path was the path of the pre-extracted directory
+        # irrespective of whether an old `nemo_filepath` (which doesnt exist anymore) was passed to restore_from.
+        assert extracted_tempdir in restored_metadata.restoration_path
+        assert extracted_tempdir not in nemo_filepath
+        assert not os.path.exists(nemo_filepath)
+
+        # test for parameter equality
+        model_with_custom_connector = model_with_custom_connector.to('cpu')
+        restored_model = restored_model.to('cpu')
+
+        original_state_dict = model_with_custom_connector.state_dict()
+        restored_state_dict = restored_model.state_dict()
+        for orig, restored in zip(original_state_dict.keys(), restored_state_dict.keys()):
+            assert (original_state_dict[orig] - restored_state_dict[restored]).abs().mean() < 1e-6

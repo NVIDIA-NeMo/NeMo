@@ -1,5 +1,4 @@
 # Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
-# Copyright 2015 and onwards Google, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,9 +34,9 @@ try:
     from pynini.lib import pynutil
     from pynini.examples import plurals
 
-    graph_teen = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/teen.tsv"))).optimize()
-    graph_digit = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/digit.tsv"))).optimize()
-    ties_graph = pynini.invert(pynini.string_file(get_abs_path("data/cardinal/ty.tsv"))).optimize()
+    graph_teen = pynini.invert(pynini.string_file(get_abs_path("data/number/teen.tsv"))).optimize()
+    graph_digit = pynini.invert(pynini.string_file(get_abs_path("data/number/digit.tsv"))).optimize()
+    ties_graph = pynini.invert(pynini.string_file(get_abs_path("data/number/ty.tsv"))).optimize()
     year_suffix = load_labels(get_abs_path("data/date/year_suffix.tsv"))
     year_suffix.extend(augment_labels_with_punct_at_end(year_suffix))
     year_suffix = pynini.string_map(year_suffix).optimize()

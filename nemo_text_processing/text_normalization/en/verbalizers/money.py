@@ -1,5 +1,4 @@
 # Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
-# Copyright 2015 and onwards Google, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,39 +42,37 @@ class MoneyFst(GraphFst):
 
     def __init__(self, decimal: GraphFst, deterministic: bool = True):
         super().__init__(name="money", kind="verbalize", deterministic=deterministic)
-        if deterministic or True:
-            keep_space = pynini.accep(" ")
-            maj = pynutil.delete("currency_maj: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
-            min = pynutil.delete("currency_min: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
+        keep_space = pynini.accep(" ")
+        maj = pynutil.delete("currency_maj: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
+        min = pynutil.delete("currency_min: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
 
-            fractional_part = (
-                pynutil.delete("fractional_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
-            )
+        fractional_part = (
+            pynutil.delete("fractional_part: \"") + pynini.closure(NEMO_NOT_QUOTE, 1) + pynutil.delete("\"")
+        )
 
-            integer_part = decimal.integer
+        integer_part = decimal.integer
 
-            optional_add_and = pynini.closure(pynutil.insert("and "), 0, 1)
+        #  *** currency_maj
+        graph_integer = integer_part + keep_space + maj
 
-            #  *** currency_maj
-            graph_integer = integer_part + keep_space + maj
+        #  *** currency_maj + (***) | ((and) *** current_min)
+        fractional = fractional_part + delete_extra_space + min
 
-            #  *** currency_maj + (***) | ((and) *** current_min)
-            fractional = optional_add_and + fractional_part + delete_extra_space + min
+        if not deterministic:
+            fractional |= pynutil.insert("and ") + fractional
 
-            graph_integer_with_minor = (
-                integer_part + keep_space + maj + keep_space + fractional + delete_preserve_order
-            )
+        graph_integer_with_minor = integer_part + keep_space + maj + keep_space + fractional + delete_preserve_order
 
-            # *** point *** currency_maj
-            graph_decimal = decimal.numbers + keep_space + maj
+        # *** point *** currency_maj
+        graph_decimal = decimal.numbers + keep_space + maj
 
-            # *** current_min
-            graph_minor = fractional_part + delete_extra_space + min + delete_preserve_order
+        # *** current_min
+        graph_minor = fractional_part + delete_extra_space + min + delete_preserve_order
 
-            graph = graph_integer | graph_integer_with_minor | graph_decimal | graph_minor
+        graph = graph_integer | graph_integer_with_minor | graph_decimal | graph_minor
 
-            if not deterministic:
-                graph |= graph_integer + delete_preserve_order
+        if not deterministic:
+            graph |= graph_integer + delete_preserve_order
 
         delete_tokens = self.delete_tokens(graph)
         self.fst = delete_tokens.optimize()

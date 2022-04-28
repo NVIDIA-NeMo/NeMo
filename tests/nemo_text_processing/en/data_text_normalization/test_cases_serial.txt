@@ -27,3 +27,6 @@ test$~test dollar
 covid-19~covid-nineteen
 55-millimeters long~fifty five-millimeters long
 a 4-kilogram bag~a four-kilogram bag
+100-car~one hundred-car
+123/261788/2021~one hundred twenty three/two six one seven eight eight/two thousand twenty one
+2*8~two asterisk eight

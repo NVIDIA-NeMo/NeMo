@@ -1,5 +1,4 @@
 # Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
-# Copyright 2015 and onwards Google, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,12 +19,12 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_SIGMA,
     GraphFst,
     get_abs_path,
+    insert_space,
 )
 
 try:
     import pynini
     from pynini.lib import pynutil
-    from pynini.examples import plurals
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
@@ -45,45 +44,48 @@ class ElectronicFst(GraphFst):
     def __init__(self, deterministic: bool = True):
         super().__init__(name="electronic", kind="classify", deterministic=deterministic)
 
-        def get_input_symbols(f):
-            accepted_symbols = []
-            with open(f, 'r', encoding='utf-8') as f:
-                for line in f:
-                    symbol, _ = line.split('\t')
-                    accepted_symbols.append(pynini.accep(symbol))
-            return accepted_symbols
-
-        accepted_symbols = get_input_symbols(get_abs_path("data/electronic/symbol.tsv"))
-        accepted_common_domains = get_input_symbols(get_abs_path("data/electronic/domain.tsv"))
-        accepted_symbols = NEMO_ALPHA + pynini.closure(NEMO_ALPHA | NEMO_DIGIT | pynini.union(*accepted_symbols))
+        accepted_symbols = pynini.project(pynini.string_file(get_abs_path("data/electronic/symbol.tsv")), "input")
+        accepted_common_domains = pynini.project(
+            pynini.string_file(get_abs_path("data/electronic/domain.tsv")), "input"
+        )
+        all_accepted_symbols = NEMO_ALPHA + pynini.closure(NEMO_ALPHA | NEMO_DIGIT | accepted_symbols)
         graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbol.tsv")).optimize()
 
-        username = pynutil.insert("username: \"") + accepted_symbols + pynutil.insert("\"") + pynini.cross('@', ' ')
-        domain_graph = accepted_symbols + pynini.accep('.') + accepted_symbols
-
-        protocol_start = pynini.accep("https://") | pynini.accep("http://")
-        protocol_symbols = pynini.closure(
-            plurals._priority_union(graph_symbols | pynini.cross(":", "colon"), NEMO_ALPHA, NEMO_SIGMA)
-            + pynutil.insert(" ")
+        username = (
+            pynutil.insert("username: \"") + all_accepted_symbols + pynutil.insert("\"") + pynini.cross('@', ' ')
         )
-        protocol_end = pynini.accep("www.")
-        protocol = protocol_start | protocol_end | (protocol_start + protocol_end)
+        domain_graph = all_accepted_symbols + pynini.accep('.') + all_accepted_symbols
+        protocol_symbols = pynini.closure((graph_symbols | pynini.cross(":", "semicolon")) + pynutil.insert(" "))
+        protocol_start = (pynini.cross("https", "HTTPS ") | pynini.cross("http", "HTTP ")) + (
+            pynini.accep("://") @ protocol_symbols
+        )
+        protocol_file_start = pynini.accep("file") + insert_space + (pynini.accep(":///") @ protocol_symbols)
+
+        protocol_end = pynini.cross("www", "WWW ") + pynini.accep(".") @ protocol_symbols
+        protocol = protocol_file_start | protocol_start | protocol_end | (protocol_start + protocol_end)
 
         domain_graph = (
             pynutil.insert("domain: \"")
-            + pynini.difference(domain_graph, protocol + NEMO_SIGMA)
+            + pynini.difference(domain_graph, pynini.project(protocol, "input") + NEMO_SIGMA)
             + pynutil.insert("\"")
         )
         domain_common_graph = (
             pynutil.insert("domain: \"")
-            + pynini.difference(accepted_symbols + pynini.union(*accepted_common_domains), protocol + NEMO_SIGMA)
+            + pynini.difference(
+                all_accepted_symbols
+                + accepted_common_domains
+                + pynini.closure(accepted_symbols + pynini.closure(NEMO_ALPHA | NEMO_DIGIT | accepted_symbols), 0, 1),
+                pynini.project(protocol, "input") + NEMO_SIGMA,
+            )
             + pynutil.insert("\"")
         )
-        protocol = pynini.compose(protocol, protocol_symbols)
 
         protocol = pynutil.insert("protocol: \"") + protocol + pynutil.insert("\"")
+        # email
         graph = username + domain_graph
+        # abc.com, abc.com/123-sm
         graph |= domain_common_graph
+        # www.abc.com/sdafsdf, or https://www.abc.com/asdfad or www.abc.abc/asdfad
         graph |= protocol + pynutil.insert(" ") + domain_graph
 
         final_graph = self.add_tokens(graph)

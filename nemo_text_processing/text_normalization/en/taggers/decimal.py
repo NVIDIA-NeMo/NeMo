@@ -1,5 +1,4 @@
 # Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
-# Copyright 2015 and onwards Google, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,20 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo_text_processing.text_normalization.en.graph_utils import NEMO_SIGMA, GraphFst
+from nemo_text_processing.text_normalization.en.graph_utils import NEMO_SIGMA, TO_UPPER, GraphFst, get_abs_path
 
 try:
     import pynini
     from pynini.lib import pynutil
 
     delete_space = pynutil.delete(" ")
+    quantities = pynini.string_file(get_abs_path("data/number/thousand.tsv"))
+    quantities_abbr = pynini.string_file(get_abs_path("data/number/quantity_abbr.tsv"))
+    quantities_abbr |= TO_UPPER @ quantities_abbr
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
     PYNINI_AVAILABLE = False
 
 
-def get_quantity(decimal: 'pynini.FstLike', cardinal_up_to_hundred: 'pynini.FstLike') -> 'pynini.FstLike':
+def get_quantity(
+    decimal: 'pynini.FstLike', cardinal_up_to_hundred: 'pynini.FstLike', include_abbr: bool
+) -> 'pynini.FstLike':
     """
     Returns FST that transforms either a cardinal or decimal followed by a quantity into a numeral,
     e.g. 1 million -> integer_part: "one" quantity: "million"
@@ -36,32 +40,27 @@ def get_quantity(decimal: 'pynini.FstLike', cardinal_up_to_hundred: 'pynini.FstL
         decimal: decimal FST
         cardinal_up_to_hundred: cardinal FST
     """
-    numbers = cardinal_up_to_hundred
-    suffix = pynini.union(
-        "million",
-        "billion",
-        "trillion",
-        "quadrillion",
-        "quintillion",
-        "sextillion",
-        pynini.cross("M", "million"),
-        pynini.cross("K", "thousand"),
-        pynini.cross("B", "billion"),
-    )
+    quantity_wo_thousand = pynini.project(quantities, "input") - pynini.union("k", "K", "thousand")
+    if include_abbr:
+        quantity_wo_thousand |= pynini.project(quantities_abbr, "input") - pynini.union("k", "K", "thousand")
     res = (
         pynutil.insert("integer_part: \"")
-        + numbers
+        + cardinal_up_to_hundred
         + pynutil.insert("\"")
         + pynini.closure(pynutil.delete(" "), 0, 1)
         + pynutil.insert("quantity: \"")
-        + suffix
+        + (quantity_wo_thousand @ (quantities | quantities_abbr))
         + pynutil.insert("\"")
     )
+    if include_abbr:
+        quantity = quantities | quantities_abbr
+    else:
+        quantity = quantities
     res |= (
         decimal
         + pynini.closure(pynutil.delete(" "), 0, 1)
         + pynutil.insert("quantity: \"")
-        + (suffix | "thousand")
+        + quantity
         + pynutil.insert("\"")
     )
     return res
@@ -101,9 +100,14 @@ class DecimalFst(GraphFst):
             + self.graph_fractional
         )
 
-        self.final_graph_wo_negative = final_graph_wo_sign | get_quantity(
-            final_graph_wo_sign, cardinal_graph_hundred_component_at_least_one_none_zero_digit
+        quantity_w_abbr = get_quantity(
+            final_graph_wo_sign, cardinal_graph_hundred_component_at_least_one_none_zero_digit, include_abbr=True
         )
+        quantity_wo_abbr = get_quantity(
+            final_graph_wo_sign, cardinal_graph_hundred_component_at_least_one_none_zero_digit, include_abbr=False
+        )
+        self.final_graph_wo_negative_w_abbr = final_graph_wo_sign | quantity_w_abbr
+        self.final_graph_wo_negative = final_graph_wo_sign | quantity_wo_abbr
 
         # reduce options for non_deterministic and allow either "oh" or "zero", but not combination
         if not deterministic:

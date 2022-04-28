@@ -73,7 +73,6 @@ class Normalizer:
             raise ImportError(get_installation_msg())
 
         if lang == 'en' and deterministic:
-
             from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify import ClassifyFst
             from nemo_text_processing.text_normalization.en.verbalizers.verbalize_final import VerbalizeFinalFst
         elif lang == 'en' and not deterministic:

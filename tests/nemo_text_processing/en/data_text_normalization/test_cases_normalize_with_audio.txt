@@ -149,3 +149,13 @@ twelve"
 ~Sam I
 Sam first
 Sam the first
+~2*8
+two times eight
+two asterisk eight
+~2-8
+two minus eight
+two to eight
+~2:8
+two to eight
+~2/8
+two divided by eight

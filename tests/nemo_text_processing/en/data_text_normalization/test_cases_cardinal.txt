@@ -14,5 +14,5 @@
 123,000012~one hundred and twenty three , zero zero zero zero one two
 1,000,000~one million
 1234567890123124~one two three four five six seven eight nine zero one two three one two four
-978-0~nine hundred and seventy eight to zero
+978-0~nine hundred and seventy eight - zero
 004~zero zero four

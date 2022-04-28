@@ -167,6 +167,16 @@ class SaveRestoreConnector:
         return (conf, instance, state_dict)
 
     def modify_state_dict(self, conf, state_dict):
+        """
+        Utility method that allows to modify the state dict before loading parameters into a model.
+
+        Args:
+            conf: A model level OmegaConf object.
+            state_dict: The state dict restored from the checkpoint.
+
+        Returns:
+            A potentially modified state dict.
+        """
         if conf.get('megatron_amp_O2', False):
             new_state_dict = {}
             for key in state_dict.keys():
@@ -176,6 +186,14 @@ class SaveRestoreConnector:
         return state_dict
 
     def load_instance_with_state_dict(self, instance, state_dict, strict):
+        """
+        Utility method that loads a model instance with the (potentially modified) state dict.
+
+        Args:
+            instance: ModelPT subclass instance.
+            state_dict: The state dict (which may have been modified)
+            strict: Bool, whether to perform strict checks when loading the state dict.
+        """
         instance.load_state_dict(state_dict, strict=strict)
         instance._set_model_restore_state(is_being_restored=False)
 
@@ -201,6 +219,7 @@ class SaveRestoreConnector:
             strict: Passed to load_state_dict. By default True
             return_config: If set to true, will return just the underlying config of the restored
                 model as an OmegaConf DictConfig object without instantiating the model.
+            trainer: An optional Trainer object, passed to the model constructor.
 
         Example:
             ```

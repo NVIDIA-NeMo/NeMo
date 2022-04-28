@@ -157,6 +157,7 @@ class Typing(ABC):
     def _validate_input_types(self, input_types=None, ignore_collections=False, **kwargs):
         """
         This function does a few things.
+
         1) It ensures that len(self.input_types <non-optional>) <= len(kwargs) <= len(self.input_types).
         2) For each (keyword name, keyword value) passed as input to the wrapped function:
             - Check if the keyword name exists in the list of valid self.input_types names.
@@ -240,14 +241,15 @@ class Typing(ABC):
     def _attach_and_validate_output_types(self, out_objects, ignore_collections=False, output_types=None):
         """
         This function does a few things.
+
         1) It ensures that len(out_object) == len(self.output_types).
         2) If the output is a tensor (or list/tuple of list/tuple ... of tensors), it
             attaches a neural_type to it. For objects without the neural_type attribute,
             such as python objects (dictionaries and lists, primitive data types, structs),
             no neural_type is attached.
 
-            Note: tensor.neural_type is only checked during _validate_input_types which is
-            called prior to forward().
+        Note: tensor.neural_type is only checked during _validate_input_types which is
+        called prior to forward().
 
         Args:
             output_types: Either the `output_types` defined at class level, or the local function
@@ -347,7 +349,17 @@ class Typing(ABC):
                 for ind, res in enumerate(out_objects):
                     self.__attach_neural_type(res, metadata, depth=0, name=out_types_list[ind][0])
 
-    def __check_neural_type(self, obj, metadata, depth, name=None):
+    def __check_neural_type(self, obj, metadata: TypecheckMetadata, depth: int, name: str = None):
+        """
+        Recursively tests whether the obj satisfies the semantic neural type assertion.
+        Can include shape checks if shape information is provided.
+
+        Args:
+            obj: Any python object that can be assigned a value.
+            metadata: TypecheckMetadata object.
+            depth: Current depth of recursion.
+            name: Optional name used of the source obj, used when an error occurs.
+        """
         if isinstance(obj, tuple) or isinstance(obj, list):
             for elem in obj:
                 self.__check_neural_type(elem, metadata, depth + 1, name=name)
@@ -386,7 +398,16 @@ class Typing(ABC):
                     f"Input shape found : {value_shape}"
                 )
 
-    def __attach_neural_type(self, obj, metadata, depth, name=None):
+    def __attach_neural_type(self, obj, metadata: TypecheckMetadata, depth: int, name: str = None):
+        """
+        Recursively attach neural types to a given object - as long as it can be assigned some value.
+
+        Args:
+            obj: Any python object that can be assigned a value.
+            metadata: TypecheckMetadata object.
+            depth: Current depth of recursion.
+            name: Optional name used of the source obj, used when an error occurs.
+        """
         if isinstance(obj, tuple) or isinstance(obj, list):
             for elem in obj:
                 self.__attach_neural_type(elem, metadata, depth=depth + 1, name=name)
@@ -519,7 +540,13 @@ class Serialization(ABC):
 
 class FileIO(ABC):
     def save_to(self, save_path: str):
-        """Saves module/model with weights"""
+        """
+        Standardized method to save a tarfile containing the checkpoint, config, and any additional artifacts.
+        Implemented via :meth:`nemo.core.connectors.save_restore_connector.SaveRestoreConnector.save_to`.
+
+        Args:
+            save_path: str, path to where the file should be saved.
+        """
         raise NotImplementedError()
 
     @classmethod
@@ -533,7 +560,22 @@ class FileIO(ABC):
         trainer: Optional['Trainer'] = None,
         save_restore_connector: SaveRestoreConnector = None,
     ):
-        """Restores module/model with weights"""
+        """
+        Restores model instance (weights and configuration) from a .nemo file
+
+        Args:
+            restore_path: path to .nemo file from which model should be instantiated
+            override_config_path: path to a yaml config that will override the internal
+                config file or an OmegaConf / DictConfig object representing the model config.
+            map_location: Optional torch.device() to map the instantiated model to a device.
+                By default (None), it will select a GPU if available, falling back to CPU otherwise.
+            strict: Passed to load_state_dict. By default True
+            return_config: If set to true, will return just the underlying config of the restored
+                model as an OmegaConf DictConfig object without instantiating the model.
+            trainer: An optional Trainer object, passed to the model constructor.
+            save_restore_connector: An optional SaveRestoreConnector object that defines the implementation
+                of the restore_from() method.
+        """
         raise NotImplementedError()
 
     @classmethod
@@ -793,6 +835,42 @@ class Model(Typing, Serialization, FileIO):
 
 
 class typecheck:
+    """
+    A decorator which performs input-output neural type checks, and attaches
+    neural types to the output of the function that it wraps.
+
+    Requires that the class inherit from :class:`~nemo.core.Typing` in order to perform
+    type checking, and will raise an error if that is not the case.
+
+    # Usage (Class level type support)
+
+    .. code-block:: python
+
+        @typecheck()
+        def fn(self, arg1, arg2, ...):
+            ...
+
+    # Usage (Function level type support)
+
+    .. code-block:: python
+
+        @typecheck(input_types=..., output_types=...)
+        def fn(self, arg1, arg2, ...):
+            ...
+
+    Points to be noted:
+
+    1) The brackets () in `@typecheck()` are necessary.
+
+        You will encounter a TypeError: __init__() takes 1 positional argument but X
+        were given without those brackets.
+
+    2) The function can take any number of positional arguments during definition.
+
+        When you call this function, all arguments must be passed using kwargs only.
+
+    """
+
     class TypeState(Enum):
         """
         Placeholder to denote the default value of type information provided.
@@ -808,34 +886,6 @@ class typecheck:
         output_types: Union[TypeState, Dict[str, NeuralType]] = TypeState.UNINITIALIZED,
         ignore_collections: bool = False,
     ):
-        """
-        A decorator which performs input-output neural type checks, and attaches
-        neural types to the output of the function that it wraps.
-
-        Requires that the class inherit from `nemo.core.Typing` in order to perform
-        type checking, and will raise an error if that is not the case.
-
-        # Usage (Class level type support)
-        @typecheck()
-        def fn(self, arg1, arg2, ...):
-            ...
-
-        # Usage (Function level type support)
-        @typecheck(input_types=..., output_types=...)
-        def fn(self, arg1, arg2, ...):
-            ...
-
-        Points to be noted:
-        1) The brackets () in `@typecheck()` are necessary.
-
-            You will encounter a TypeError: __init__() takes 1 positional argument but X
-            were given without those brackets.
-
-        2) The function can take any number of positional arguments during definition.
-
-            When you call this function, all arguments must be passed using kwargs only.
-
-        """
         self.input_types = input_types
         self.output_types = output_types
 
@@ -853,6 +903,19 @@ class typecheck:
 
     @wrapt.decorator(enabled=is_typecheck_enabled)
     def __call__(self, wrapped, instance: Typing, args, kwargs):
+        """
+        Wrapper method that can be used on any function of a class that implements :class:`~nemo.core.Typing`.
+        By default, it will utilize the `input_types` and `output_types` properties of the class inheriting Typing.
+
+        Local function level overrides can be provided by supplying dictionaries as arguments to the decorator.
+
+        Args:
+            input_types: Union[TypeState, Dict[str, NeuralType]]. By default, uses the global `input_types`.
+            output_types: Union[TypeState, Dict[str, NeuralType]]. By default, uses the global `output_types`.
+            ignore_collections: Bool. Determines if container types should be asserted for depth checks, or
+                if depth checks are skipped entirely.
+
+        """
         if instance is None:
             raise RuntimeError("Only classes which inherit nemo.core.Typing can use this decorator !")
 
@@ -905,12 +968,21 @@ class typecheck:
 
     @staticmethod
     def set_typecheck_enabled(enabled: bool = True):
+        """
+        Global method to enable/disable typechecking.
+
+        Args:
+            enabled: bool, when True will enable typechecking.
+        """
         global _TYPECHECK_ENABLED
         _TYPECHECK_ENABLED = enabled
 
     @staticmethod
     @contextmanager
     def disable_checks():
+        """
+        Context manager that temporarily disables type checking within its context.
+        """
         typecheck.set_typecheck_enabled(enabled=False)
         try:
             yield

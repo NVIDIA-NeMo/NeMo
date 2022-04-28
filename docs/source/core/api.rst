@@ -20,6 +20,52 @@ Base Neural Module class
     :members:
     :member-order: bysource
 
+Base Mixin classes
+------------------
+
+.. autoclass:: nemo.core.Typing
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+    :private-members:
+    :exclude-members: _abc_impl
+    :noindex:
+
+-----
+
+.. autoclass:: nemo.core.Serialization
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+    :noindex:
+
+-----
+
+.. autoclass:: nemo.core.FileIO
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+    :noindex:
+
+
+Base Connector classes
+----------------------
+
+.. autoclass:: nemo.core.connectors.save_restore_connector.SaveRestoreConnector
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+Neural Type checking
+--------------------
+
+.. autoclass:: nemo.core.classes.common.typecheck
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+    .. automethod:: __call__
+
 Neural Type classes
 -------------------
 
@@ -28,15 +74,21 @@ Neural Type classes
     :members:
     :member-order: bysource
 
+-----
+
 .. autoclass:: nemo.core.neural_types.axes.AxisType
     :show-inheritance:
     :members:
     :member-order: bysource
 
+-----
+
 .. autoclass:: nemo.core.neural_types.elements.ElementType
     :show-inheritance:
     :members:
     :member-order: bysource
+
+-----
 
 .. autoclass:: nemo.core.neural_types.comparison.NeuralTypeComparisonResult
     :show-inheritance:

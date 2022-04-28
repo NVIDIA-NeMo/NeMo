@@ -800,7 +800,8 @@ def update_player(idx, data):
             buf.seek(0)
             encoded = base64.b64encode(buf.read())
         return 'data:audio/wav;base64,{}'.format(encoded.decode())
-    except Exception:
+    except Exception as ex:
+        app.logger.error(f'ERROR in audio player: {ex}')
         return ''
 
 

@@ -30,6 +30,7 @@ try:
         set_tensor_model_parallel_rank,
         set_tensor_model_parallel_world_size,
     )
+    from apex.transformer.microbatches import ConstantNumMicroBatches
     from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
     from apex.transformer.utils import ensure_divisibility
 
@@ -84,13 +85,25 @@ def initialize_model_parallel_for_nemo(
 
     if global_batch_size and micro_batch_size is not None:
         # TODO: add rampup_batch_size here when we have it implemented
-        setup_microbatch_calculator(
-            rank=global_rank,
-            global_batch_size=global_batch_size,
-            micro_batch_size=micro_batch_size,
-            data_parallel_size=app_state.data_parallel_size,
-            rampup_batch_size=None,
-        )
+        from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+
+        if _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None:
+            setup_microbatch_calculator(
+                rank=global_rank,
+                global_batch_size=global_batch_size,
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=app_state.data_parallel_size,
+                rampup_batch_size=None,
+            )
+        else:
+            if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatches):
+                assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.current_global_batch_size == global_batch_size
+                assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.micro_batch_size == micro_batch_size
+                assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.num_micro_batches == global_batch_size // (
+                    micro_batch_size * app_state.data_parallel_size
+                )
+            else:
+                raise Exception("Microbatch calculator already initialized.")
 
     app_state._is_megatron_initialized = True
 

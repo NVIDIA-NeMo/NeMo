@@ -18,6 +18,7 @@ from typing import List
 
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
 from nemo.collections.asr.parts.utils import asr_module_utils
 from nemo.collections.common import tokenizers
 from nemo.utils import logging
@@ -362,7 +363,7 @@ class ASRBPEMixin(ABC):
                     self.artifacts.pop(akey)
 
 
-class ASRModuleMixin(ABC):
+class ASRModuleMixin(ASRAdapterModelMixin):
     """
     ASRModuleMixin is a mixin class added to ASR models in order to add methods that are specific
     to a particular instantiation of a module inside of an ASRModel.

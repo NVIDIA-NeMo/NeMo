@@ -247,7 +247,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
         decoder_training_state = self.decoder.training
         joint_training_state = self.joint.training
 
-        with torch.no_grad():
+        with torch.inference_mode():
             # Apply optional preprocessing
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
 
@@ -428,7 +428,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         decoder_training_state = self.decoder.training
         joint_training_state = self.joint.training
 
-        with torch.no_grad():
+        with torch.inference_mode():
             # Apply optional preprocessing
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
             logitlen = encoded_lengths

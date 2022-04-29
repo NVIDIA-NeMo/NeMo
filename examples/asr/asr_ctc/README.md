@@ -20,8 +20,9 @@ graph TD
     B --> D[ExpManager]
     C --> E[Model]
     B --> |Init| E[Model]
-    E --> |Constructor| F(Change Vocabulary)
-    F --> G(Setup Train + Validation + Test Data loaders)
+    E --> |Constructor| F1(Change Vocabulary)
+    F1 --> F2(Setup Adapters if available)
+    F2 --> G(Setup Train + Validation + Test Data loaders)
     G --> H(Setup Optimization)
     H --> I[Maybe init from pretrained]
     I --> J["trainer.fit(model)"]

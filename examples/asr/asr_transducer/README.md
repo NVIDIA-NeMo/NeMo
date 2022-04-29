@@ -20,8 +20,9 @@ graph TD
     B --> D[ExpManager]
     C --> E[Model]
     B --> |Init| E[Model]
-    E --> |Constructor| F(Change Vocabulary)
-    F --> G(Setup Train + Validation + Test Data loaders)
+    E --> |Constructor| F1(Change Vocabulary)
+    F1 --> F2(Setup Adapters if available)
+    F2 --> G(Setup Train + Validation + Test Data loaders)
     G --> H1(Setup Optimization)
     H1 --> H2(Change Transducer Decoding Strategy)
     H2 --> I[Maybe init from pretrained]

@@ -22,7 +22,8 @@ from torch import Tensor
 from torch.nn.init import _calculate_correct_fan
 from torch.nn.modules.utils import _single
 
-from nemo.collections.asr.parts.utils.activations import Swish
+from nemo.collections.common.parts.utils import activation_registry
+from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 from nemo.utils import logging
 
 try:
@@ -35,14 +36,7 @@ try:
 except ImportError:
     PYTORCH_QUANTIZATION_AVAILABLE = False
 
-jasper_activations = {
-    "hardtanh": nn.Hardtanh,
-    "relu": nn.ReLU,
-    "selu": nn.SELU,
-    "swish": Swish,
-    "silu": nn.SiLU,
-    "gelu": nn.GELU,
-}
+jasper_activations = activation_registry
 
 
 def tds_uniform_(tensor, mode='fan_in'):
@@ -563,7 +557,7 @@ class SqueezeExcite(nn.Module):
         self.context_window = context_window
 
 
-class JasperBlock(nn.Module):
+class JasperBlock(nn.Module, AdapterModuleMixin):
     """
     Constructs a single "Jasper" block. With modified parameters, also constructs other blocks for models
     such as `QuartzNet` and `Citrinet`.
@@ -723,6 +717,8 @@ class JasperBlock(nn.Module):
         else:
             padding_val = get_asymtric_padding(kernel_size[0], stride[0], dilation[0], future_context)
 
+        self.inplanes = inplanes
+        self.planes = planes
         self.conv_mask = conv_mask
         self.separable = separable
         self.residual_mode = residual_mode
@@ -1031,6 +1027,21 @@ class JasperBlock(nn.Module):
 
         # compute the output
         out = self.mout(out)
+
+        # Support ASR Adapters
+        if self.is_adapter_available():
+            # Check for all available and enabled adapters
+            adapter_names = self.get_enabled_adapters()
+
+            if len(adapter_names) > 0:
+                out = out.transpose(1, 2)  # (B, T, C)
+
+                # Call the adapters
+                for adapter_name in adapter_names:
+                    out = out + self.adapter_layer[adapter_name](out)
+
+                out = out.transpose(1, 2)  # (B, C, T)
+
         if self.res is not None and self.dense_residual:
             return xs + [out], lens
 

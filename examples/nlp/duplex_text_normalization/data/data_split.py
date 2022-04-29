@@ -42,7 +42,7 @@ TEST_SIZE_EN = 100002
 TEST_SIZE_RUS = 100007
 
 
-def read_google_data(data_file: str, lang: str, split: str):
+def read_google_data(data_file: str, lang: str, split: str, add_test_full=False):
     """
     The function can be used to read the raw data files of the Google Text Normalization
     dataset (which can be downloaded from https://www.kaggle.com/google-nlu/text-normalization)
@@ -51,6 +51,7 @@ def read_google_data(data_file: str, lang: str, split: str):
         data_file: Path to the data file. Should be of the form output-xxxxx-of-00100
         lang: Selected language.
         split: data split
+        add_test_full: do not truncate test data i.e. take the whole test file not #num of lines
     Return:
         data: list of examples
     """
@@ -59,7 +60,7 @@ def read_google_data(data_file: str, lang: str, split: str):
     with open(data_file, 'r', encoding='utf-8') as f:
         for linectx, line in tqdm(enumerate(f)):
             es = line.strip().split('\t')
-            if split == "test":
+            if split == "test" and not add_test_full:
                 # For the results reported in the paper "RNN Approaches to Text Normalization: A Challenge":
                 # + For English, the first 100,002 lines of output-00099-of-00100 are used for the test set
                 # + For Russian, the first 100,007 lines of output-00099-of-00100 are used for the test set
@@ -91,6 +92,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '--lang', type=str, default=constants.ENGLISH, choices=constants.SUPPORTED_LANGS, help='Language'
     )
+    parser.add_argument(
+        '--add_test_full',
+        action='store_true',
+        help='If True, additional folder test_full will be created without truncation of files',
+    )
     args = parser.parse_args()
 
     # Create the output dir (if not exist)
@@ -99,6 +105,8 @@ if __name__ == '__main__':
         mkdir(args.output_dir + '/train')
         mkdir(args.output_dir + '/dev')
         mkdir(args.output_dir + '/test')
+        if args.add_test_full:
+            mkdir(args.output_dir + '/test_full')
 
     for fn in sorted(listdir(args.data_dir))[::-1]:
         fp = join(args.data_dir, fn)
@@ -128,3 +136,17 @@ if __name__ == '__main__':
             output_f.write('<eos>\t<eos>\n')
 
         print(f'{cur_split}_sentences: {len(data)}')
+
+        # additionally generate full test files if needed
+        if cur_split == "test" and args.add_test_full:
+            data = read_google_data(data_file=fp, lang=args.lang, split=cur_split, add_test_full=True)
+            # write out
+            output_file = join(args.output_dir, 'test_full', f'{fn}.tsv')
+            output_f = open(output_file, 'w', encoding='utf-8')
+            for inst in data:
+                cur_classes, cur_tokens, cur_outputs = inst
+                for c, t, o in zip(cur_classes, cur_tokens, cur_outputs):
+                    output_f.write(f'{c}\t{t}\t{o}\n')
+                output_f.write('<eos>\t<eos>\n')
+
+            print(f'{cur_split}_sentences: {len(data)}')

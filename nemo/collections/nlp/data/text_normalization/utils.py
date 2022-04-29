@@ -56,7 +56,7 @@ def convert_superscript(written: str):
 def convert_fraction(written: str):
     """
     converts fraction to standard form, e.g "½" -> "1/2", "1 ½" -> "1 1/2"
-    
+
     Args:
         written: written form
     Returns:

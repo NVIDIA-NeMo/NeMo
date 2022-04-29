@@ -57,7 +57,7 @@ model:
       num_workers: 0
       pin_memory: True
       max_seq_length: 512
-      drop_last: False
+      drop_last: True
 
     validation_ds:
       task_name: 'xnli'

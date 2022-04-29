@@ -2793,7 +2793,7 @@ pipeline {
         // TODO(Oktai15): update it in 1.8.0 version
         stage('T5 GLUE RTE') {
           steps {
-            sh "python examples/nlp/language_modeling/megatron_t5_glue.py \
+            sh "python examples/nlp/language_modeling/megatron_t5_seq2seq_finetune.py \
             trainer.devices=1 \
             trainer.accelerator=gpu \
             trainer.log_every_n_steps=1 \
@@ -2821,7 +2821,7 @@ pipeline {
         }
         stage('T5 GLUE XNLI') {
           steps {
-            sh "python examples/nlp/language_modeling/megatron_t5_glue.py \
+            sh "python examples/nlp/language_modeling/megatron_t5_seq2seq_finetune.py \
             -cn megatron_t5_config_finetune_glue_xnli \
             trainer.devices=1 \
             trainer.accelerator=gpu \

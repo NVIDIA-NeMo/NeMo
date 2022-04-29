@@ -1,4 +1,4 @@
-name: megatron_t5_glue
+name: megatron_t5_finetuning
 
 trainer:
   devices: 2
@@ -8,7 +8,7 @@ trainer:
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   replace_sampler_ddp: False
-  max_epochs: 3
+  max_epochs: 10
   max_steps: null # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 300
@@ -18,7 +18,7 @@ trainer:
 exp_manager:
   explicit_log_dir: null
   exp_dir: null
-  name: megatron_t5_glue
+  name: megatron_t5_finetune
   create_wandb_logger: False
   wandb_logger_kwargs:
     project: null
@@ -31,7 +31,7 @@ exp_manager:
     save_top_k: 10
     mode: max
     always_save_nemo: False # TODO: add support
-    filename: 'megatron_t5--{validation_acc:.3f}-{step}'
+    filename: 'megatron_t5_finetune--{validation_acc:.3f}-{step}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
 
@@ -48,25 +48,31 @@ model:
 
   data:
     train_ds:
-      task_name: 'mnli'
-      file_path: ??? # Path to the TSV file for MNLI train ex: '/raid/Data/GLUE/MNLI/train.tsv'
+      src_file_name: ??? # Path to the txt file corresponding to the source data.
+      tgt_file_name: ??? # Path to the txt file corresponding to the target data.
       global_batch_size: 128
       micro_batch_size: 64
       shuffle: True
       num_workers: 0
       pin_memory: True
-      max_seq_length: 512
+      max_src_seq_length: 512
+      max_tgt_seq_length: 128
       drop_last: True
+      concat_sampling_technique: temperature # When providing a list of datasets, this arg defines the sampling strategy. Options: ['temperature', 'random']
+      concat_sampling_temperature: 5 # When providing a list of datasets, this arg defines the sampling temperature when strategy='temperature'
+      concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
 
     validation_ds:
-      task_name: 'mnli'
-      file_path: ??? # Path to the TSV file for MNLI train ex: '/raid/Data/GLUE/MNLI/dev_matched.tsv'
+      src_file_name: ??? # Path to the txt file corresponding to the source data.
+      tgt_file_name: ??? # Path to the txt file corresponding to the target data.
+      names: null # If src/tgt file names are ListConfigs, the corresponding label is used to log metrics.
       global_batch_size: 128
       micro_batch_size: 64
       shuffle: False
       num_workers: 0
       pin_memory: True
-      max_seq_length: 512
+      max_src_seq_length: 512
+      max_tgt_seq_length: 128
       drop_last: False # TODO: Figure out if there is a way to avoid dropping last.
 
   optim:

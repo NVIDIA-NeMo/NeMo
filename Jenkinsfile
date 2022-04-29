@@ -724,7 +724,7 @@ pipeline {
         }
       }
     }
-    stage('L2: SGD-GEN') {
+    stage('L2: Dialogue Classification') {
       when {
         anyOf {
           branch 'main'
@@ -733,10 +733,10 @@ pipeline {
       }
       failFast true
       parallel {
-        stage('SGD-GEN') {
+        stage('Dialogue: Intent and slot classification using GPT') {
           steps {
-            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue_state_tracking_generative && \
-            python sgd_gen.py \
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
             model.dataset.data_dir=/home/TestData/nlp/sgd_small \
             model.language_model.lm_checkpoint=/home/TestData/nlp/gpt2/pytorch_model.bin\
             model.tokenizer.vocab_file=/home/TestData/nlp/gpt2/vocab.json\
@@ -760,10 +760,10 @@ pipeline {
             rm -rf sgd_gen_outputs'
           }
         }
-        stage('SGD-GEN Backward compatible with SGDQA') {
+        stage('Intent and slot classification using SGDQA') {
           steps {
-            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue_state_tracking_generative && \
-            python sgd_gen.py \
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
             model.dataset.data_dir=/home/TestData/nlp/sgd_small \
             model.dataset.dialogues_example_dir=sgd_gen_bert_outputs \
             model.dataset.task_name=debug_sample \
@@ -772,9 +772,10 @@ pipeline {
             model.train_ds.batch_size=2 \
             model.validation_ds.batch_size=2 \
             model.test_ds.batch_size=2 \
+            model.dataset.num_tasks=6 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[1] \
+            trainer.devices=[0] \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=bert-base-cased \
             trainer.accelerator=gpu \
@@ -782,10 +783,10 @@ pipeline {
             rm -rf sgd_gen_bert_outputs'
           }
         }
-        stage('SGD-GEN Backward compatible with IntentSlotClassificationModel') {
+        stage('Intent and slot classification using IntentSlotClassificationModel') {
           steps {
-            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue_state_tracking_generative && \
-            python sgd_gen.py \
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
             model.dataset.data_dir=/home/TestData/nlp/processed_assistant \
             model.dataset.dialogues_example_dir=sgd_gen_bert_intent_classification_outputs \
             model.dataset.task=assistant \
@@ -802,6 +803,190 @@ pipeline {
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf sgd_gen_bert_intent_classification_outputs && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('Intent classification using ZeroShotIntentModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/drive_thru_revised \
+            model.original_nemo_checkpoint=/home/TestData/nlp/drive_thru_revised/zeroshotintent_en_bert_base_uncased.nemo \
+            model.dataset.dialogues_example_dir=sgd_gen_zero_shot_intent_classification_outputs \
+            model.dataset.task=zero_shot \
+            model.dataset.prompt_template="This example is" \
+            trainer.max_steps=1 \
+            trainer.max_epochs=1 \
+            model.train_ds.batch_size=2 \
+            model.validation_ds.batch_size=2 \
+            model.test_ds.batch_size=2 \
+            model.nemo_path=null \
+            trainer.val_check_interval=0.0 \
+            trainer.devices=[1] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=bert-base-uncased \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf sgd_gen_zero_shot_intent_classification_outputs && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('Design Intent classification using ZeroShotIntentModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/design_dataset \
+            model.original_nemo_checkpoint=/home/TestData/nlp/drive_thru_revised/zeroshotintent_en_bert_base_uncased.nemo \
+            model.dataset.dialogues_example_dir=design_zero_shot_intent_classification_outputs \
+            model.dataset.task=design \
+            model.dataset.prompt_template="This example is related to" \
+            model.library=megatron \
+            trainer.max_steps=1 \
+            trainer.max_epochs=1 \
+            model.train_ds.batch_size=2 \
+            model.validation_ds.batch_size=2 \
+            model.test_ds.batch_size=2 \
+            model.nemo_path=null \
+            trainer.val_check_interval=0.0 \
+            trainer.devices=[1] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=bert-base-uncased \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf design_zero_shot_intent_classification_outputs && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('Design Intent classification using ZeroShotIntentModel BART Classifier') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/design_dataset \
+            model.original_nemo_checkpoint=/home/TestData/nlp/drive_thru_revised/zeroshotintent_en_bert_base_uncased.nemo \
+            model.dataset.dialogues_example_dir=design_zero_shot_intent_classification_bart_outputs \
+            model.dataset.task=design \
+            model.dataset.prompt_template="This example is related to" \
+            model.library=huggingface \
+            trainer.devices=[1] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=bert-base-uncased \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf design_zero_shot_intent_classification_bart_outputs && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('Design Intent classification using DialogueNearestNeighbourModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/design_dataset \
+            model.dataset.dialogues_example_dir=design_dialogue_nearest_neighbour_classification_outputs \
+            model.dataset.task=design \
+            model.dataset.prompt_template="" \
+            model.library=huggingface \
+            trainer.devices=[0] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=sentence-transformers/all-MiniLM-L6-v2 \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf design_dialogue_nearest_neighbour_classification_outputs && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+      }
+    }
+    stage('L2: Dialogue Generation') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        stage('Dialogue: Answer Extender using DialogueS2SGenerationModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/ms-marco-qa \
+            model.dataset.dialogues_example_dir=answer_extender_s2s \
+            model.dataset.task=ms_marco \
+            model.library=huggingface \
+            model.dataset.debug_mode=True \
+            trainer.max_steps=1 \
+            trainer.max_epochs=1 \
+            model.train_ds.batch_size=2 \
+            model.validation_ds.batch_size=2 \
+            model.test_ds.batch_size=2 \
+            model.nemo_path=null \
+            trainer.val_check_interval=0.0 \
+            trainer.devices=[1] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=facebook/bart-large \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf answer_extender_s2s'
+          }
+        }
+        stage('Dialogue: SGD Based Answer Extender using DialogueS2SGenerationModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/sgd_small \
+            model.dataset.dialogues_example_dir=sgd_answer_extender_s2s \
+            model.dataset.task_name=debug_sample \
+            model.dataset.task=sgd_generation \
+            model.dataset.input_field=utterance+system_actions \
+            model.dataset.output_field=system_utterance \
+            model.dataset.use_cache=false \
+            model.dataset.system_utterance=next_turn \
+            model.dataset.debug_mode=True \
+            model.dataset.prompt_template=slots_values \
+            model.library=huggingface \
+            trainer.max_steps=1 \
+            trainer.max_epochs=1 \
+            model.train_ds.batch_size=2 \
+            model.validation_ds.batch_size=2 \
+            model.test_ds.batch_size=2 \
+            model.nemo_path=null \
+            trainer.val_check_interval=0.0 \
+            trainer.devices=[0] \
+            model.language_model.pretrained_model_name=facebook/bart-large \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf sgd_answer_extender_s2s'
+          }
+        }
+      }
+    }
+    stage('L2: Dialogue Generation Part 2') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        stage('Dialogue: Answer Extender using DialogueGPTGenerationModel') {
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/dialogue && \
+            python dialogue.py \
+            do_training=False \
+            model.dataset.data_dir=/home/TestData/nlp/ms-marco-qa \
+            model.dataset.dialogues_example_dir=answer_extender \
+            model.library=huggingface \
+            model.dataset.task=ms_marco \
+            model.dataset.debug_mode=True \
+            trainer.val_check_interval=0.0 \
+            trainer.devices=[0] \
+            model.dataset.use_cache=false \
+            model.language_model.pretrained_model_name=gpt2 \
+            trainer.accelerator=gpu \
+            exp_manager=null  && \
+            rm -rf answer_extender'
           }
         }
       }

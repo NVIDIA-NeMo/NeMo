@@ -88,7 +88,9 @@ VOCAB_FILE_NAME = {
     'BertTokenizer': "vocab.txt",
     'DistilBertTokenizer': "vocab.txt",
     'CamembertTokenizer': "sentencepiece.bpe.model",
-    "GPT2Tokenizer": "vocab.json",
+    'GPT2Tokenizer': "vocab.json",
+    'T5Tokenizer': "spiece.model",
+    "BartTokenizer": "vocab.json",
 }
 
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp.models.dialogue_state_tracking_sgdqa.sgdqa_model import SGDQAModel
+
 from nemo.collections.nlp.models.duplex_text_normalization import (
     DuplexDecoderModel,
     DuplexTaggerModel,

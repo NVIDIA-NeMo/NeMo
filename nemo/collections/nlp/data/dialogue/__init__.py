@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp.metrics.classification_report import ClassificationReport, MultiLabelClassificationReport
-from nemo.collections.nlp.metrics.dialogue_metrics import DialogueClassificationMetrics
-from nemo.collections.nlp.metrics.sequence_perplexity import SequencePerplexity
+from nemo.collections.nlp.data.dialogue.data_processor.sgd_data_processor import DialogueSGDDataProcessor
+from nemo.collections.nlp.data.dialogue.dataset import (
+    DialogueBERTDataset,
+    DialogueGPTClassificationDataset,
+    DialogueSGDBERTDataset,
+    DialogueZeroShotIntentDataset,
+)
+from nemo.collections.nlp.data.dialogue.sgd.schema import Schema

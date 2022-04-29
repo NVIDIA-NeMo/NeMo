@@ -71,9 +71,11 @@ model:
   masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
   bias_dropout_add_fusion: True # Use a kernel that fuses the bias addition, dropout and residual connection addition.
   bias: True # Whether to use bias terms in all weight matrices.
-  encoder_arch: 'transformer'
-  decoder_arch: 'transformer'
-  activation: 'gelu'
+  normalization: 'layernorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
+  encoder_arch: 'transformer' # Options ['transformer', 'normformer']
+  decoder_arch: 'transformer' # Options ['transformer', 'normformer']
+  activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu']
+  headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
 
   tokenizer:
     library: 'megatron'

@@ -14,7 +14,6 @@
 
 import torch
 
-from nemo.collections.nlp.modules.common.megatron.fused_bias_dropout_add import bias_dropout_add_fused_inference
 from nemo.collections.nlp.modules.common.megatron.language_model import Embedding
 from nemo.collections.nlp.modules.common.megatron.megatron_decoders import get_decoder_model
 from nemo.collections.nlp.modules.common.megatron.megatron_encoder_decoder import (
@@ -106,8 +105,11 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         activation='gelu',
         onnx_safe=False,
         bias=True,
+        normalization='layernorm',
+        transformer_block_type='pre_ln',
         hidden_steps=-1,
         hidden_blocks=1,
+        headscale=False,
         add_encoder=True,
         add_decoder=True,
     ):
@@ -120,6 +122,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         self.precision = precision
         self.add_encoder = add_encoder
         self.add_decoder = add_decoder
+        self.normalization = normalization
 
         if kv_channels is None:
             assert (
@@ -173,6 +176,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 hidden_blocks=hidden_blocks,
                 activation=activation,
                 bias=bias,
+                normalization=normalization,
+                transformer_block_type=transformer_block_type,
+                headscale=headscale,
                 parent_model_type=ModelType.encoder_and_decoder,
             )
 
@@ -231,6 +237,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 hidden_blocks=hidden_blocks,
                 activation=activation,
                 bias=bias,
+                normalization=normalization,
+                transformer_block_type=transformer_block_type,
+                headscale=headscale,
                 parent_model_type=ModelType.encoder_and_decoder,
             )
 

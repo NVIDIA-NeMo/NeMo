@@ -13,18 +13,9 @@
 # limitations under the License.
 
 """Transformer based language model."""
-import math
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.init as init
-
 from nemo.collections.nlp.modules.common.megatron.megatron_transformer_decoder import MegatronTransformerDecoderModule
-from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import (
     ApexGuardDefaults,
-    get_linear_layer,
     init_method_normal,
     scaled_init_method_normal,
 )
@@ -75,6 +66,9 @@ def get_decoder_model(
     activation="gelu",
     onnx_safe=False,
     bias=True,
+    normalization="layernorm",
+    headscale=False,
+    transformer_block_type="pre_ln",
     hidden_steps=-1,
     hidden_blocks=1,
     parent_model_type=ModelType.encoder_or_decoder,
@@ -123,6 +117,9 @@ def get_decoder_model(
             onnx_safe=onnx_safe,
             activation=activation,
             bias=bias,
+            normalization=normalization,
+            transformer_block_type=transformer_block_type,
+            headscale=headscale,
             parent_model_type=parent_model_type,
         )
     else:

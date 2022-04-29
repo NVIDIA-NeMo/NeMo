@@ -32,7 +32,7 @@ class TrainerConfig:
         Picked just few params of the PTL trainer for now. This needs to be discussed.
     ..note:
         For the details on the function/meanings of the arguments, please refer to:
-        https://pytorch-lightning.readthedocs.io/en/latest/trainer.html#
+        https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html
     """
 
     logger: Any = True

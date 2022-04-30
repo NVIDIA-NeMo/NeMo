@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from torch import nn as nn
 
 from nemo.collections.common.parts.utils import activation_registry
+from nemo.core.classes.mixins import adapter_mixin_strategies
 
 
 class LinearAdapter(nn.Module):
@@ -60,6 +61,10 @@ class LinearAdapter(nn.Module):
                 nn.LayerNorm(in_features),
             )
 
+        # set default adapter strategy
+        self.adapter_strategy = adapter_mixin_strategies.ResidualAddAdapterStrategy()
+
+        # reset parameters
         self.reset_parameters()
 
     def reset_parameters(self):

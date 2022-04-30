@@ -1037,8 +1037,7 @@ class JasperBlock(nn.Module, AdapterModuleMixin):
                 out = out.transpose(1, 2)  # (B, T, C)
 
                 # Call the adapters
-                for adapter_name in adapter_names:
-                    out = out + self.adapter_layer[adapter_name](out)
+                out = self.forward_enabled_adapters(out)
 
                 out = out.transpose(1, 2)  # (B, C, T)
 

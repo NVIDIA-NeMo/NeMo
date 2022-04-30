@@ -16,6 +16,7 @@ import pytest
 import torch
 
 from nemo.core import NeuralModule
+from nemo.core.classes.mixins import adapter_mixin_strategies
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
 
@@ -34,8 +35,7 @@ class DefaultModel(NeuralModule, AdapterModuleMixin):
             # For testing purposes, cache the adapter names
             self._adapter_names = self.get_enabled_adapters()
             # call forward over model adapters, summing them up
-            for name in self.get_enabled_adapters():
-                x = x + self.adapter_layer[name](x)
+            x = self.forward_enabled_adapters(x)
 
         out = x
         return out
@@ -167,3 +167,39 @@ class TestAdapterMixin:
                 assert module.track_running_stats is False
 
         assert original_params > adapter_params
+
+    @pytest.mark.unit
+    def test_forward_linear_no_strategy(self):
+        torch.random.manual_seed(0)
+        x = torch.randn(2, 50)
+
+        model = DefaultModel()
+        model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
+
+        # delete the strategy
+        adapter_module = model.adapter_layer[model.get_enabled_adapters()[0]]
+        del adapter_module.adapter_strategy
+
+        with pytest.raises(AttributeError):
+            _ = model(x)
+
+    @pytest.mark.unit
+    def test_forward_linear_replaced_strategy(self):
+        class MultiplyAdapterStrategy(adapter_mixin_strategies.AbstractAdapterStrategy):
+            def forward(self, input: torch.Tensor, adapter: torch.nn.Module, *, module: AdapterModuleMixin):
+                out = adapter(input)
+                return input * out
+
+        torch.random.manual_seed(0)
+        x = torch.randn(2, 50)
+
+        model = DefaultModel()
+        model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
+
+        # modify the strategy
+        adapter_module = model.adapter_layer[model.get_enabled_adapters()[0]]
+        adapter_module.adapter_strategy = MultiplyAdapterStrategy()
+
+        out = model(x)
+        # result of adapter is zero tensor, output multiplied by adapter result should be zero
+        assert (out > 0.0).any() == torch.tensor(False)

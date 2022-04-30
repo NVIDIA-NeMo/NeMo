@@ -299,6 +299,41 @@ class AdapterModuleMixin(ABC):
         for name in adapter_names:
             logging.info(f"Unfrozen adapter : {name}")
 
+    def forward_enabled_adapters(self, input: 'torch.Tensor'):
+        """
+        Forward's all active adapters one by one with the provided input, and chaining the outputs of each
+        adapter layer to the next.
+
+        Utilizes the implicit merge strategy of each adapter when computing the adapter's output, and
+        how that output will be merged back with the original input.
+
+        Args:
+            input: The output tensor of the calling module is the input to the first adapter, whose output
+                is then chained to the next adapter until all adapters are consumed.
+
+        Returns:
+            The result tensor, after all active adapters have finished their forward passes.
+        """
+        enabled_adapters = self.get_enabled_adapters()
+        for adapter_name in enabled_adapters:
+            adapter_module = self.adapter_layer[adapter_name]
+
+            if hasattr(adapter_module, 'adapter_strategy'):
+                strategy = (
+                    adapter_module.adapter_strategy
+                )  # type: 'nemo.core.classes.mixins.adapter_mixin_strategies.AbstractAdapterStrategy'
+            else:
+                raise AttributeError(
+                    f"Adapter module `{adapter_name}` does not set the value `adapter_strategy` ! "
+                    f"Please set the value of the adapter's strategy with the class "
+                    f"{adapter_module.__class__.__module}.{adapter_module.__class__.__name__}."
+                )
+
+            # (input: torch.Tensor, adapter: torch.nn.Module, *, module: 'AdapterModuleMixin')
+            input = strategy(input, adapter_module, module=self)
+
+        return input
+
 
 class AdapterModelPTMixin(AdapterModuleMixin):
     """ Adapter Mixin that can augment a ModelPT subclass with Adapter support.

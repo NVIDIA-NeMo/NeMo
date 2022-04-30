@@ -228,12 +228,14 @@ class TestASRAdapterMixin:
 
         assert original_params > adapter_params
 
-    # @pytest.mark.with_downloads()
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_constructor_pretrained(self):
         # Check to/from config_dict:
         cfg = ASRModel.from_pretrained('stt_en_citrinet_256', map_location='cpu', return_config=True)
-        cfg.encoder._target_ = cfg.encoder._target_ + 'Adapter'  # convension to load Adapter supported model.
+        adapter_metadata = get_registered_adapter(cfg.encoder._target_)
+        if adapter_metadata is not None:
+            cfg.encoder._target_ = adapter_metadata.adapter_class_path
         model = ASRModel.from_pretrained('stt_en_citrinet_256', override_config_path=cfg)
 
         assert isinstance(model, AdapterModuleMixin)

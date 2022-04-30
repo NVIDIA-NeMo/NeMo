@@ -122,8 +122,8 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin):
         x = self.norm_out(residual)
 
         if self.is_adapter_available():
-            for adapter_name in self.get_enabled_adapters():
-                x = x + self.adapter_layer[adapter_name](x)
+            # Call the adapters
+            x = self.forward_enabled_adapters(x)
 
         return x
 

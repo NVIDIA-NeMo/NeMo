@@ -19,8 +19,7 @@ ${PIP} uninstall -y nemo_cv
 
 ${PIP} install -U setuptools
 
-# TODO: check if we need this for 22.03
-if [ "${NVIDIA_PYTORCH_VERSION}" = "22.01" ] || [ "${NVIDIA_PYTORCH_VERSION}" = "22.02" ] || [ "${NVIDIA_PYTORCH_VERSION}" = "22.03" ]
+if [ ! -z "${NVIDIA_PYTORCH_VERSION}" ]
 
 then
   echo 'Installing NeMo in NVIDIA PyTorch container:' ${NVIDIA_PYTORCH_VERSION} 'so will not install numba'

@@ -19,6 +19,7 @@ This script can be used to construct a vocabulary of multiple references
 from argparse import ArgumentParser
 from collections import Counter
 from os import listdir
+
 from nemo.collections.nlp.data.text_normalization_as_tagging.utils import spoken_preprocessing
 
 parser = ArgumentParser(description="Get reference vocabulary from corpus (it will be used in testing)")

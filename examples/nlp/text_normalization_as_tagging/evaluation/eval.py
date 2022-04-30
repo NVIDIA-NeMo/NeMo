@@ -51,7 +51,6 @@ from argparse import ArgumentParser
 
 from nemo.collections.asr.metrics.wer import word_error_rate
 
-
 parser = ArgumentParser(description="Compare inference output with multi-reference")
 parser.add_argument("--inference_file", type=str, required=True, help="Path to inference file")
 parser.add_argument(

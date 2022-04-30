@@ -38,7 +38,6 @@ The script generates:
 """
 import glob
 import os
-
 from argparse import ArgumentParser
 from collections import Counter
 

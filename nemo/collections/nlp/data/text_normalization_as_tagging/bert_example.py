@@ -19,7 +19,6 @@ This file contains code artifacts adapted from the original implementation:
 https://github.com/google-research/lasertagger/blob/master/bert_example.py
 """
 import logging
-
 from collections import OrderedDict
 from os import path
 from typing import Dict, List, Optional, Tuple, Union

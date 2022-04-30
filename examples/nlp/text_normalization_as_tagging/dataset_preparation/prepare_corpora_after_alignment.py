@@ -25,6 +25,7 @@ from collections import Counter
 from typing import Dict, Optional, TextIO, Tuple
 
 from examples.nlp.text_normalization_as_tagging.dataset_preparation.utils import get_src_and_dst_for_alignment
+
 from nemo.utils import logging
 
 parser = ArgumentParser(description="Produce data for the ThutmoseTaggerModel")

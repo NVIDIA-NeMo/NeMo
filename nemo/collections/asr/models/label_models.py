@@ -14,6 +14,7 @@
 
 import copy
 import itertools
+from math import ceil
 from typing import Dict, List, Optional, Union
 
 import librosa
@@ -121,7 +122,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
                 manifests_files=manifest_filepath,
                 min_duration=data_layer_config.get("min_duration", None),
                 max_duration=data_layer_config.get("max_duration", None),
-                index_by_file_id=False,
+                index_by_file_id=True,
             )
             labels.update(collection.uniq_labels)
         labels = list(sorted(labels))
@@ -194,6 +195,23 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         if 'shuffle' not in train_data_layer_config:
             train_data_layer_config['shuffle'] = True
         self._train_dl = self.__setup_dataloader_from_config(config=train_data_layer_config)
+        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
+        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
+        # So we set the number of steps manually (to the correct number) to fix this.
+        if 'is_tarred' in train_data_layer_config and train_data_layer_config['is_tarred']:
+            # We also need to check if limit_train_batches is already set.
+            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
+            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
+            if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
+                self._trainer.limit_train_batches = int(
+                    self._trainer.limit_train_batches
+                    * ceil((len(self._train_dl.dataset) / self.world_size) / train_data_layer_config['batch_size'])
+                )
+            elif self._trainer is None:
+                logging.warning(
+                    "Model Trainer was not set before constructing the dataset, incorrect number of "
+                    "training batches will be used. Please set the trainer and rebuild the dataset."
+                )
 
     def setup_validation_data(self, val_data_layer_config: Optional[Union[DictConfig, Dict]]):
         val_data_layer_config['labels'] = self.labels

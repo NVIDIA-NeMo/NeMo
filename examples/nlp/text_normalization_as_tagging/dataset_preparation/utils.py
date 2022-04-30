@@ -18,7 +18,6 @@ from typing import Tuple
 
 from nemo.collections.nlp.data.text_normalization_as_tagging.utils import split_text_by_isalpha, spoken_preprocessing
 
-
 """Utility functions for Thutmose Tagger data preparation."""
 
 

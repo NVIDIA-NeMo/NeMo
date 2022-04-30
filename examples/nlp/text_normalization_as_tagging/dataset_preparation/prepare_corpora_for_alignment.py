@@ -46,6 +46,7 @@ from collections import Counter
 from os import listdir, mkdir
 from os.path import isdir, join
 from shutil import rmtree
+
 from examples.nlp.text_normalization_as_tagging.dataset_preparation.utils import get_src_and_dst_for_alignment
 
 parser = ArgumentParser(description='Split corpus to subcorpora for giza alignment')

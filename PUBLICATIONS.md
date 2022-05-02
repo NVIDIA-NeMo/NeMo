@@ -111,6 +111,12 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
   
 </details>
 
+<details>
+  <summary>2020</summary>
+  
+  * [A Fast and Robust BERT-based Dialogue State Tracker for Schema-Guided Dialogue Dataset](https://arxiv.org/abs/2008.12335)
+  
+</details>
 --------
 
 
@@ -130,10 +136,16 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 --------
 
 # (Inverse) Text Normalization
+<details>
+  <summary>2022</summary>
+  
+  * [Shallow Fusion of Weighted Finite-State Transducer and Language Model for Text Normalization](https://arxiv.org/abs/2203.15917)
+
+</details>
 
 <details>
   <summary>2021</summary>
-  
+
   * [NeMo Inverse Text Normalization: From Development to Production](https://www.isca-speech.org/archive/pdfs/interspeech_2021/zhang21ga_interspeech.pdf)
   * [A Unified Transformer-based Framework for Duplex Text Normalization](https://arxiv.org/pdf/2108.09889.pdf )
   

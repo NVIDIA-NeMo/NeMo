@@ -175,7 +175,49 @@ class ENCharParser(CharParser):
         return text
 
 
-NAME_TO_PARSER = frozendict.frozendict({'base': CharParser, 'en': ENCharParser})
+class RUCharParser(CharParser):
+    """Incorporates russian-specific parsing logic."""
+
+    PUNCTUATION_TO_REPLACE = frozendict.frozendict({'+': 'плюс', 'ё': 'е'})
+
+    def __init__(self, *args, **kwargs):
+        """Creates cyrillic-specific mapping char parser.
+        This class overrides normalizing implementation.
+        Args:
+            *args: Positional args to pass to `CharParser` constructor.
+            **kwargs: Key-value args to pass to `CharParser` constructor.
+        """
+
+        super().__init__(*args, **kwargs)
+
+        self._table = self.__make_trans_table()
+
+    def __make_trans_table(self):
+        punctuation = string.punctuation
+
+        for char in self.PUNCTUATION_TO_REPLACE:
+            punctuation = punctuation.replace(char, '')
+
+        for label in self._labels:
+            punctuation = punctuation.replace(label, '')
+
+        table = str.maketrans(punctuation, ' ' * len(punctuation))
+
+        return table
+
+    def _normalize(self, text: str) -> Optional[str]:
+        # noinspection PyBroadException
+        try:
+            text = cleaners.clean_text(
+                string=text, table=self._table, punctuation_to_replace=self.PUNCTUATION_TO_REPLACE,
+            )
+        except Exception:
+            return None
+
+        return text
+
+
+NAME_TO_PARSER = frozendict.frozendict({'base': CharParser, 'en': ENCharParser, 'ru': RUCharParser})
 
 
 def make_parser(labels: Optional[List[str]] = None, name: str = 'base', **kwargs,) -> CharParser:

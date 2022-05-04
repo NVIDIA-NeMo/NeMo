@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.core.classes.mixins.access_mixins import AccessMixin, set_access_cfg
 from nemo.core.classes.mixins.adapter_mixin_strategies import ResidualAddAdapterStrategy
 from nemo.core.classes.mixins.adapter_mixins import (
     AdapterModelPTMixin,

@@ -607,21 +607,6 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
 
-    def load_state_dict(self, state_dict, strict=True):
-        """Stopgap measure to keep old checkpoints working before full model deprecation.
-
-        This override fiddles with the state_dict in order to keep functionality from old checkpoints after the
-        switch from torch_stft. It will be removed when the TalkNet Aligner model is deprecated.
-        """
-        # TODO: Remove this function once TalkNet Aligner is deprecated in 1.9.0
-        if 'preprocessor.featurizer.stft.forward_basis' in state_dict:
-            logging.warning("Loading old checkpoint, defaulting to hann window.")
-            window_dim = state_dict['preprocessor.featurizer.stft.forward_basis'].shape[-1]
-            state_dict['preprocessor.featurizer.window'] = torch.hann_window(window_dim)
-            del state_dict['preprocessor.featurizer.stft.forward_basis']
-            del state_dict['preprocessor.featurizer.stft.inverse_basis']
-        super().load_state_dict(state_dict, strict=strict)
-
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """

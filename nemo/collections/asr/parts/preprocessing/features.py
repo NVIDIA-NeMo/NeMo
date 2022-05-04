@@ -36,13 +36,8 @@ import math
 import random
 
 import librosa
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from librosa.util import tiny
-from torch.autograd import Variable
-from torch_stft import STFT
 
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
@@ -143,56 +138,6 @@ class FeaturizerFactory(object):
         return WaveformFeaturizer.from_config(input_cfg, perturbation_configs=perturbation_configs)
 
 
-# Create helper class to patch forward func for use with AMP
-class STFTPatch(STFT):
-    def forward(self, input_data):
-        return super().transform(input_data)[0]
-
-
-# Create helper class for STFT that yields num_frames = num_samples // hop_length
-class STFTExactPad(STFTPatch):
-    """adapted from Prem Seetharaman's https://github.com/pseeth/pytorch-stft"""
-
-    def __init__(self, *params, **kw_params):
-        super().__init__(*params, **kw_params)
-        self.pad_amount = (self.filter_length - self.hop_length) // 2
-
-    def inverse(self, magnitude, phase):
-        recombine_magnitude_phase = torch.cat([magnitude * torch.cos(phase), magnitude * torch.sin(phase)], dim=1)
-
-        inverse_transform = F.conv_transpose1d(
-            recombine_magnitude_phase,
-            Variable(self.inverse_basis, requires_grad=False),
-            stride=self.hop_length,
-            padding=0,
-        )
-
-        if self.window is not None:
-            window_sum = librosa.filters.window_sumsquare(
-                window=self.window,
-                n_frames=magnitude.size(-1),
-                hop_length=self.hop_length,
-                win_length=self.win_length,
-                n_fft=self.filter_length,
-                dtype=np.float32,
-            )
-            # remove modulation effects
-            approx_nonzero_indices = torch.from_numpy(np.where(window_sum > tiny(window_sum))[0])
-            window_sum = torch.autograd.Variable(torch.from_numpy(window_sum), requires_grad=False).to(
-                magnitude.device
-            )
-            inverse_transform[..., approx_nonzero_indices] /= window_sum[approx_nonzero_indices]
-
-            # scale by hop ratio
-            inverse_transform *= self.filter_length / self.hop_length
-
-        inverse_transform = inverse_transform[..., self.pad_amount :]
-        inverse_transform = inverse_transform[..., : -self.pad_amount :]
-        inverse_transform = inverse_transform.squeeze(1)
-
-        return inverse_transform
-
-
 class FilterbankFeatures(nn.Module):
     """Featurizer that converts wavs to Mel Spectrograms.
     See AudioToMelSpectrogramPreprocessor for args.
@@ -224,9 +169,8 @@ class FilterbankFeatures(nn.Module):
         rng=None,
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
-        # Deprecated arguments; kept for config compatibility
-        stft_exact_pad=False,  # TODO: Remove this in 1.1.0
-        stft_conv=False,  # TODO: Remove this in 1.1.0
+        stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
+        stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
         super().__init__()
         if stft_conv or stft_exact_pad:
@@ -235,10 +179,7 @@ class FilterbankFeatures(nn.Module):
                 "for FilterbankFeatures and AudioToMelSpectrogramPreprocessor. Please set exact_pad to True "
                 "as needed."
             )
-            stft_conv = False
-            stft_exact_pad = False
-
-        if (exact_pad or stft_exact_pad) and n_window_stride % 2 == 1:
+        if exact_pad and n_window_stride % 2 == 1:
             raise NotImplementedError(
                 f"{self} received exact_pad == True, but hop_size was odd. If audio_length % hop_size == 0. Then the "
                 "returned spectrogram would not be of length audio_length // hop_size. Please use an even hop_size."
@@ -262,39 +203,28 @@ class FilterbankFeatures(nn.Module):
         self.hop_length = n_window_stride
         self.n_fft = n_fft or 2 ** math.ceil(math.log2(self.win_length))
         self.stft_pad_amount = (self.n_fft - self.hop_length) // 2 if exact_pad else None
-        self.stft_exact_pad = stft_exact_pad
-        self.stft_conv = stft_conv
 
-        if stft_conv:
-            logging.info("STFT using conv")
-            if stft_exact_pad:
-                logging.info("STFT using exact pad")
-                self.stft = STFTExactPad(self.n_fft, self.hop_length, self.win_length, window)
-            else:
-                self.stft = STFTPatch(self.n_fft, self.hop_length, self.win_length, window)
-        else:
-            logging.info("STFT using torch")
-            if exact_pad:
-                logging.info("STFT using exact pad")
-            torch_windows = {
-                'hann': torch.hann_window,
-                'hamming': torch.hamming_window,
-                'blackman': torch.blackman_window,
-                'bartlett': torch.bartlett_window,
-                'none': None,
-            }
-            window_fn = torch_windows.get(window, None)
-            window_tensor = window_fn(self.win_length, periodic=False) if window_fn else None
-            self.register_buffer("window", window_tensor)
-            self.stft = lambda x: torch.stft(
-                x,
-                n_fft=self.n_fft,
-                hop_length=self.hop_length,
-                win_length=self.win_length,
-                center=False if exact_pad else True,
-                window=self.window.to(dtype=torch.float),
-                return_complex=False,
-            )
+        if exact_pad:
+            logging.info("STFT using exact pad")
+        torch_windows = {
+            'hann': torch.hann_window,
+            'hamming': torch.hamming_window,
+            'blackman': torch.blackman_window,
+            'bartlett': torch.bartlett_window,
+            'none': None,
+        }
+        window_fn = torch_windows.get(window, None)
+        window_tensor = window_fn(self.win_length, periodic=False) if window_fn else None
+        self.register_buffer("window", window_tensor)
+        self.stft = lambda x: torch.stft(
+            x,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            center=False if exact_pad else True,
+            window=self.window.to(dtype=torch.float),
+            return_complex=False,
+        )
 
         self.normalize = normalize
         self.log = log
@@ -367,11 +297,8 @@ class FilterbankFeatures(nn.Module):
             return self.log_zero_guard_value
 
     def get_seq_len(self, seq_len):
-        if isinstance(self.stft, STFT):
-            pad_amount = self.stft.pad_amount * 2
-        else:
-            # Assuming that center is True is stft_pad_amount = 0
-            pad_amount = self.stft_pad_amount * 2 if self.stft_pad_amount is not None else self.n_fft // 2 * 2
+        # Assuming that center is True is stft_pad_amount = 0
+        pad_amount = self.stft_pad_amount * 2 if self.stft_pad_amount is not None else self.n_fft // 2 * 2
         seq_len = torch.floor((seq_len + pad_amount - self.n_fft) / self.hop_length) + 1
         return seq_len.to(dtype=torch.long)
 
@@ -400,12 +327,11 @@ class FilterbankFeatures(nn.Module):
             x = self.stft(x)
 
         # torch returns real, imag; so convert to magnitude
-        if not self.stft_conv:
-            # guard is needed for sqrt if grads are passed through
-            guard = 0 if not self.use_grads else CONSTANT
-            if x.dtype in [torch.cfloat, torch.cdouble]:
-                x = torch.view_as_real(x)
-            x = torch.sqrt(x.pow(2).sum(-1) + guard)
+        # guard is needed for sqrt if grads are passed through
+        guard = 0 if not self.use_grads else CONSTANT
+        if x.dtype in [torch.cfloat, torch.cdouble]:
+            x = torch.view_as_real(x)
+        x = torch.sqrt(x.pow(2).sum(-1) + guard)
 
         if self.training and self.nb_augmentation_prob > 0.0:
             for idx in range(x.shape[0]):

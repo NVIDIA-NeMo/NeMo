@@ -20,7 +20,6 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning.loggers.wandb import WandbLogger
 
-from nemo.collections.tts.data.datalayers import MelAudioDataset
 from nemo.collections.tts.helpers.helpers import get_batch_size, get_num_workers, plot_spectrogram_to_numpy
 from nemo.collections.tts.losses.hifigan_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss
 from nemo.collections.tts.models.base import Vocoder
@@ -67,11 +66,7 @@ class HifiGanModel(Vocoder, Exportable):
 
         self.input_as_mel = False
         if self._train_dl:
-            # TODO(Oktai15): remove it in 1.8.0 version
-            if isinstance(self._train_dl.dataset, MelAudioDataset):
-                self.input_as_mel = True
-            elif isinstance(self._train_dl.dataset, VocoderDataset):
-                self.input_as_mel = self._train_dl.dataset.load_precomputed_mel
+            self.input_as_mel = self._train_dl.dataset.load_precomputed_mel
 
         self.automatic_optimization = False
 

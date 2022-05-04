@@ -15,7 +15,6 @@ from abc import ABC, abstractmethod
 from contextlib import ExitStack, contextmanager
 
 import torch
-from torch_stft import STFT
 
 from nemo.collections.tts.helpers.helpers import OperationMode
 from nemo.collections.tts.models import *  # Avoid circular imports
@@ -23,7 +22,6 @@ from nemo.core.classes import ModelPT
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.utils import logging
 
 
 class SpectrogramGenerator(ModelPT, ABC):
@@ -131,42 +129,35 @@ class GlowVocoder(Vocoder):
 
     def check_children_attributes(self):
         if self.stft is None:
-            if isinstance(self.audio_to_melspec_precessor.stft, STFT):
-                logging.warning(
-                    "torch_stft is deprecated. Please change your model to use torch.stft and torch.istft instead."
-                )
-                self.stft = self.audio_to_melspec_precessor.stft.transform
-                self.istft = self.audio_to_melspec_precessor.stft.inverse
-            else:
-                try:
-                    n_fft = self.audio_to_melspec_precessor.n_fft
-                    hop_length = self.audio_to_melspec_precessor.hop_length
-                    win_length = self.audio_to_melspec_precessor.win_length
-                    window = self.audio_to_melspec_precessor.window.to(self.device)
-                except AttributeError as e:
-                    raise AttributeError(
-                        f"{self} could not find a valid audio_to_melspec_precessor. GlowVocoder requires child class "
-                        "to have audio_to_melspec_precessor defined to obtain stft parameters. "
-                        "audio_to_melspec_precessor requires n_fft, hop_length, win_length, window, and nfilt to be "
-                        "defined."
-                    ) from e
+            try:
+                n_fft = self.audio_to_melspec_precessor.n_fft
+                hop_length = self.audio_to_melspec_precessor.hop_length
+                win_length = self.audio_to_melspec_precessor.win_length
+                window = self.audio_to_melspec_precessor.window.to(self.device)
+            except AttributeError as e:
+                raise AttributeError(
+                    f"{self} could not find a valid audio_to_melspec_precessor. GlowVocoder requires child class "
+                    "to have audio_to_melspec_precessor defined to obtain stft parameters. "
+                    "audio_to_melspec_precessor requires n_fft, hop_length, win_length, window, and nfilt to be "
+                    "defined."
+                ) from e
 
-                def yet_another_patch(audio, n_fft, hop_length, win_length, window):
-                    spec = torch.stft(audio, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=window)
-                    if spec.dtype in [torch.cfloat, torch.cdouble]:
-                        spec = torch.view_as_real(spec)
-                    return torch.sqrt(spec.pow(2).sum(-1)), torch.atan2(spec[..., -1], spec[..., 0])
+            def yet_another_patch(audio, n_fft, hop_length, win_length, window):
+                spec = torch.stft(audio, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=window)
+                if spec.dtype in [torch.cfloat, torch.cdouble]:
+                    spec = torch.view_as_real(spec)
+                return torch.sqrt(spec.pow(2).sum(-1)), torch.atan2(spec[..., -1], spec[..., 0])
 
-                self.stft = lambda x: yet_another_patch(
-                    x, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=window,
-                )
-                self.istft = lambda x, y: torch.istft(
-                    torch.complex(x * torch.cos(y), x * torch.sin(y)),
-                    n_fft=n_fft,
-                    hop_length=hop_length,
-                    win_length=win_length,
-                    window=window,
-                )
+            self.stft = lambda x: yet_another_patch(
+                x, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=window,
+            )
+            self.istft = lambda x, y: torch.istft(
+                torch.complex(x * torch.cos(y), x * torch.sin(y)),
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                window=window,
+            )
 
         if self.n_mel is None:
             try:

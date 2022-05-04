@@ -68,6 +68,7 @@ class TokenizerConfig:
     coverage: Optional[float] = 0.999
     training_sample_size: Optional[int] = None
     r2l: Optional[bool] = False
+    sentencepiece_legacy: Optional[bool] = False
 
 
 def get_tokenizer(

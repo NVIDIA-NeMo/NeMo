@@ -44,7 +44,10 @@ model:
   src_language: 'en'
   tgt_language: 'de'
   max_generation_delta: 20 # Maximum decoder sequence length is encoder sequence length + this parameter.
-  micro_batch_size: 0 # This is just here to keep compute_consumed_samples() happy.
+  pretrained_model_path: null # Path to a pretrained model 
+  pretrained_model_type: T5
+  global_batch_size: 32 # This is just here to keep compute_consumed_samples() happy.
+  micro_batch_size: 32 # This is just here to keep compute_consumed_samples() happy.
 
   # Megatron params
   tensor_model_parallel_size: 1
@@ -68,6 +71,7 @@ model:
   activation: 'gelu'
   masked_softmax_fusion: False # This needs to be False to avoid an issue with the fused softmax kernel with variable sequence lengths.
   bias_gelu_fusion: True
+  resume_from_checkpoint: null
 
   train_ds:
     src_file_name: null
@@ -141,6 +145,7 @@ model:
     special_tokens: null
     training_sample_size: null # valid for sentencepiece tokenizer
     r2l: false
+    sentencepiece_legacy: True
 
   decoder_tokenizer:
     library: yttm
@@ -151,3 +156,4 @@ model:
     special_tokens: null
     training_sample_size: null # valid for sentencepiece tokenizer
     r2l: false
+    sentencepiece_legacy: True

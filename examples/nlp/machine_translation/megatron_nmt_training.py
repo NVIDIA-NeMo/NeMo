@@ -22,8 +22,16 @@ from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionP
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.data.machine_translation.preproc_mt_data import MTDataPreproc
+from nemo.collections.nlp.models.language_modeling.megatron_bart_model import MegatronBARTModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.machine_translation.megatron_nmt_model import MegatronNMTModel
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler, MegatronHalfPrecisionPlugin, NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import (
+    GradScaler,
+    MegatronHalfPrecisionPlugin,
+    NLPDDPPlugin,
+    NLPSaveRestoreConnector,
+    PipelineMixedPrecisionPlugin,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import StatelessTimer, exp_manager
@@ -37,9 +45,7 @@ def main(cfg) -> None:
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
     plugins = [
         NLPDDPPlugin(
-            no_ddp_communication_hook=(
-                megatron_amp_o2 and cfg.trainer.precision == 'bf16'
-            ),  # Only bf16 uses fp32_grad_accum.
+            no_ddp_communication_hook=True,
             gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
             find_unused_parameters=False,
         )
@@ -55,7 +61,7 @@ def main(cfg) -> None:
         if megatron_amp_o2:
             plugins.append(MegatronHalfPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
         else:
-            plugins.append(NativeMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+            plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
 
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
@@ -70,7 +76,10 @@ def main(cfg) -> None:
     exp_manager(trainer, cfg.exp_manager)
 
     # update resume from checkpoint found by exp_manager
-    resume_from_checkpoint = trainer._checkpoint_connector.resume_from_checkpoint_fit_path
+    if cfg.model.resume_from_checkpoint is not None:
+        resume_from_checkpoint = cfg.model.resume_from_checkpoint
+    else:
+        resume_from_checkpoint = trainer._checkpoint_connector.resume_from_checkpoint_fit_path
     logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
 
     trainer._checkpoint_connector = CheckpointConnector(trainer, resume_from_checkpoint=resume_from_checkpoint)
@@ -83,7 +92,73 @@ def main(cfg) -> None:
     with open_dict(cfg):
         cfg.model.precision = cfg.trainer.precision
 
-    model = MegatronNMTModel(cfg.model, trainer)
+    if hasattr(cfg.model, 'pretrained_model_path') and cfg.model.pretrained_model_path is not None:
+        if not hasattr(cfg.model, 'pretrained_model_type'):
+            raise ValueError(f"Pretrained model type must be in [T5, BART].")
+
+        assert cfg.model.pretrained_model_type in ['T5', 'BART']
+        if cfg.model.pretrained_model_type == 'T5':
+            pretrained_cfg = MegatronT5Model.restore_from(
+                cfg.model.pretrained_model_path, trainer=trainer, return_config=True
+            )
+        else:
+            pretrained_cfg = MegatronBARTModel.restore_from(
+                cfg.model.pretrained_model_path, trainer=trainer, return_config=True
+            )
+        OmegaConf.set_struct(pretrained_cfg, True)
+        with open_dict(pretrained_cfg):
+            pretrained_cfg.masked_softmax_fusion = False
+            # Set source and target language/multilingual
+            pretrained_cfg.src_language = cfg.model.src_language
+            pretrained_cfg.tgt_language = cfg.model.tgt_language
+            pretrained_cfg.multilingual = cfg.model.multilingual
+            pretrained_cfg.shared_tokenizer = True
+
+            # Max generation delta
+            pretrained_cfg.max_generation_delta = cfg.model.max_generation_delta
+
+            # Set label smoothing
+            pretrained_cfg.label_smoothing = cfg.model.label_smoothing
+
+            # Set tokenizer paths:
+            pretrained_cfg.encoder_tokenizer = pretrained_cfg.tokenizer
+            pretrained_cfg.decoder_tokenizer = pretrained_cfg.tokenizer
+
+            # Pre-trained models should use the legacy sentencepiece tokenizer ex: mT5
+            pretrained_cfg.encoder_tokenizer.sentencepiece_legacy = True
+            pretrained_cfg.decoder_tokenizer.sentencepiece_legacy = True
+
+            # Override dropout
+            pretrained_cfg.hidden_dropout = cfg.model.hidden_dropout
+            pretrained_cfg.attention_dropout = cfg.model.attention_dropout
+
+            # Override precision
+            pretrained_cfg.precision = cfg.model.precision  # Set above from trainer.precision
+
+            # Override data and global/micro batch size.
+            pretrained_cfg.train_ds = cfg.model.train_ds
+            pretrained_cfg.validation_ds = cfg.model.validation_ds
+            pretrained_cfg.test_ds = cfg.model.test_ds
+
+            pretrained_cfg.micro_batch_size = cfg.model.micro_batch_size
+            pretrained_cfg.global_batch_size = cfg.model.global_batch_size
+
+            # Class target for the new class being restored.
+            pretrained_cfg.target = (
+                "nemo.collections.nlp.models.machine_translation.megatron_nmt_model.MegatronNMTModel"
+            )
+
+            # Optimizer overrides.
+            pretrained_cfg.optim = cfg.model.optim
+
+        model = MegatronNMTModel.restore_from(
+            cfg.model.pretrained_model_path,
+            trainer=trainer,
+            override_config_path=pretrained_cfg,
+            save_restore_connector=NLPSaveRestoreConnector(),
+        )
+    else:
+        model = MegatronNMTModel(cfg.model, trainer)
     if cfg.do_training:
         trainer.fit(model)
 

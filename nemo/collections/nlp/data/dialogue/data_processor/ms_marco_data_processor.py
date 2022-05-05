@@ -15,7 +15,6 @@
 
 import json
 import os
-import random
 from ast import literal_eval
 
 from nemo.collections.nlp.data.dialogue.data_processor.data_processor import DialogueDataProcessor
@@ -70,21 +69,11 @@ class DialogueMSMarcoDataProcessor(DialogueDataProcessor):
         raw_examples = self.open_json("{}_v2.1.json".format(dataset_split_print[dataset_split]))
 
         n_samples = len(raw_examples['answers'])
-        if dataset_split in ["train", "dev"]:
-            n_dev = int(n_samples * (self.cfg.dev_proportion / 100))
-            dev_idxs = random.sample(list(range(n_samples)), n_dev)
-            if dataset_split == "dev":
-                idxs = dev_idxs
-            else:
-                dev_idxs_set = set(dev_idxs)
-                train_idxs = [idx for idx in list(range(n_samples)) if idx not in dev_idxs_set]
-                idxs = train_idxs
 
-        elif dataset_split == "test":
-            idxs = list(range(n_samples))
+        idxs = DialogueDataProcessor.get_relevant_idxs(dataset_split, n_samples, self.cfg.dev_proportion)
 
         if self.cfg.debug_mode:
-            idxs = idxs[:1000]
+            idxs = idxs[:100]
 
         for i in idxs:
             utterance = raw_examples['query'][str(i)]

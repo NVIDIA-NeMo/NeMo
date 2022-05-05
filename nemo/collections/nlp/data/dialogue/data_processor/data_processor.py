@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import random
+
 from nemo.collections.nlp.data.data_utils.data_preprocessing import DataProcessor
 
 __all__ = ['DialogueDataProcessor']
@@ -50,3 +53,34 @@ class DialogueDataProcessor(DataProcessor):
     def get_test_examples(self):
         """Gets a collection of `InputExample`s for the test set."""
         raise NotImplementedError()
+
+    @staticmethod
+    def get_relevant_idxs(dataset_split, n_samples, dev_proportion):
+        """
+        Obtain indexes for each dataset_split, when train and dev sets are not in separate files
+        
+        Args: 
+            dataset_split: train, dev or test
+            n_samples: total number of samples
+            dev_proportion: value from 1 to 99 that represent proportion of data in dev set
+        Returns:
+            idxs: indices for relevant samples
+        """
+
+        if dataset_split in ["train", "dev"]:
+            n_dev = int(n_samples * (dev_proportion / 100))
+            dev_idxs = random.sample(list(range(n_samples)), n_dev)
+            if dataset_split == "dev":
+                idxs = dev_idxs
+            else:
+                dev_idxs_set = set(dev_idxs)
+                train_idxs = [idx for idx in list(range(n_samples)) if idx not in dev_idxs_set]
+                idxs = train_idxs
+
+        elif dataset_split == "test":
+            idxs = list(range(n_samples))
+
+        else:
+            raise ValueError("please select dataset split from train, dev and test")
+
+        return idxs

@@ -122,12 +122,12 @@ class DialogueClassificationMetrics(object):
     def split_label_and_slots(fields, with_slots=False):
         """
         Split target into label and slots when doing joint label (i.e. intent) classificaiton and slot filling
-        For instance, split "reserve_restaurant\nslots: time_of_day(7pm) number_of_people(3)" into 
+
+        For instance, split "reserve_restaurant\nslots: time_of_day(7pm), number_of_people(3)" into 
         label = "reserve_restaurant" and slots = ["time_of_day(7pm)", "number_of_people(3)"]
         Args:
             fields: list of strings 
         """
-        # self.cfg.dataset.target_template == "with_slots":
         labels = []
         slots_list = []
         for field in fields:
@@ -137,7 +137,7 @@ class DialogueClassificationMetrics(object):
                 if len(combo) == 2:
                     label, slots = combo
                 elif len(combo) == 1:
-                    slots = combo
+                    slots = combo[0]
                     label = 'none'
                 if isinstance(slots, str):
                     # temporary patch for purnendu model output

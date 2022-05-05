@@ -15,7 +15,6 @@
 
 import copy
 import random
-import re
 from collections import defaultdict
 
 import torch
@@ -71,18 +70,17 @@ class DialogueGPTClassificationDataset(DialogueDataset):
         self.lm_features = self.get_lm_samples()
 
     def transform(self, label):
-        if self.cfg.task == "sgd":
-            label = self.convert_camelcase_to_lower(label)
-        elif self.cfg.task == "assistant" and self.cfg.prompt_template != "prompt_tuning":
+        """
+        Normalize labels by replacing underscore with space
+
+        Args:
+            label: str
+        Returns:
+            normalized_label: str
+        """
+        if self.cfg.task == "assistant" and self.cfg.prompt_template != "prompt_tuning":
             label = label.replace('_', ' ')
         return label
-
-    def convert_camelcase_to_lower(self, label):
-        if label.lower() == "none":
-            return "none"
-        label = label.split("_")[0]
-        tokens = re.findall('[A-Z][^A-Z]*', label)
-        return ' '.join([token.lower() for token in tokens])
 
     def __len__(self):
         return len(self.features)
@@ -120,7 +118,16 @@ class DialogueGPTClassificationDataset(DialogueDataset):
         attn_masks = torch.squeeze(encodings_dict['attention_mask'])
         return encodings_dict, input_ids, attn_masks
 
-    def linearize_slots(self, slots):
+    @staticmethod
+    def linearize_slots(slots):
+        """
+        Serialize slots into a linear text
+
+        Args:
+            slots: dict with each slot_name as key and possible slot values as value
+        Returns:
+            linear_slots: text based representation of slot names and values
+        """
         if not slots:
             return "None"
         return ", ".join(
@@ -139,9 +146,9 @@ class DialogueGPTClassificationDataset(DialogueDataset):
         elif self.cfg.target_template == "default":
             return target
         elif self.cfg.target_template == "with_slots" and slots is not None and self.cfg.field == "intent":
-            return target + '\nslots: ' + self.linearize_slots(slots)
+            return target + '\nslots: ' + DialogueGPTClassificationDataset.linearize_slots(slots)
         elif self.cfg.target_template == "with_slots" and slots is not None and self.cfg.field == "slots":
-            return self.linearize_slots(slots)
+            return DialogueGPTClassificationDataset.linearize_slots(slots)
         else:
             raise ValueError("Please choose a target format from {default, with_description, with_slots}")
 

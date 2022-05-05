@@ -125,7 +125,9 @@ An example script on how to train the model can be found here: `NeMo/examples/nl
 
 The following is an example of the command for training the model:
 
-Code for training a model with three public datasets (from above) are available in the Jupyter/Colab notebook `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/dialogue.ipynb>`__)
+
+Code for training a model with three public datasets (from above) are available in the Jupyter/Colab notebook `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/nlp/Dialogue.ipynb>`__)
+
 
 .. code::
 

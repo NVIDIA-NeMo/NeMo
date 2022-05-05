@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import os
-import random
 
 import pandas as pd
 
@@ -73,18 +72,7 @@ class DialogueMellonQADataProcessor(DialogueDataProcessor):
         ]
 
         n_samples = len(raw_examples)
-        if dataset_split in ["train", "dev"]:
-            n_dev = int(n_samples * (self.cfg.dev_proportion / 100))
-            dev_idxs = random.sample(list(range(n_samples)), n_dev)
-            if dataset_split == "dev":
-                idxs = dev_idxs
-            else:
-                dev_idxs_set = set(dev_idxs)
-                train_idxs = [idx for idx in list(range(n_samples)) if idx not in dev_idxs_set]
-                idxs = train_idxs
-
-        elif dataset_split == "test":
-            idxs = list(range(n_samples))
+        idxs = DialogueDataProcessor.get_relevant_idxs(dataset_split, n_samples, self.cfg.dev_proportion)
 
         for i in idxs:
             utterance = str(raw_examples[i]['Question'])

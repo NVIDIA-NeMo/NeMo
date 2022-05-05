@@ -67,7 +67,9 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
             lines = [i.strip() for i in f.readlines()]
         return lines
 
-    def get_continuous_slots(self, slot_ids):
+    @staticmethod
+    def get_continuous_slots(slot_ids, empty_slot_id, bio_slot_ids_to_unified_slot_ids):
+
         """
         Extract continuous spans of slot_ids
 
@@ -86,7 +88,9 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
         position_stack = []
         for i in range(len(slot_ids)):
             slot_id = slot_ids[i]
-            slot_id = self.bio_slot_ids_to_unified_slot_ids[slot_id]
+
+            slot_id = bio_slot_ids_to_unified_slot_ids[slot_id]
+
             if not slot_id_stack or slot_id != slot_id_stack[-1]:
                 slot_id_stack.append(slot_id)
                 position_stack.append([])
@@ -95,7 +99,7 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
         slot_id_to_start_and_exclusive_end = {
             slot_id_stack[i]: [position_stack[i][0], position_stack[i][-1] + 1]
             for i in range(len(position_stack))
-            if slot_id_stack[i] != self.empty_slot_id
+            if slot_id_stack[i] != empty_slot_id
         }
 
         return slot_id_to_start_and_exclusive_end
@@ -157,7 +161,10 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
             slot_ids = raw_examples_slots[i].split()
             utterance_tokens = utterance.split()
             intent = self.intents[int(intent_id)]
-            slot_id_to_start_and_exclusive_end = self.get_continuous_slots(slot_ids)
+            slot_id_to_start_and_exclusive_end = DialogueAssistantDataProcessor.get_continuous_slots(
+                slot_ids, self.empty_slot_id, self.bio_slot_ids_to_unified_slot_ids
+            )
+
             slot_to_start_and_exclusive_end = {
                 self.slots[int(slot_id)]: position for slot_id, position in slot_id_to_start_and_exclusive_end.items()
             }

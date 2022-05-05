@@ -30,6 +30,7 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 11) `Offline_ASR_with_VAD_for_CTC_models`: In this tutorial, we will demonstrate how to use offline VAD to extract speech segments and transcribe the speech segments with CTC models. This will help to exclude some non_speech utterances and could save computation resources by removing unnecessary input to the ASR system.
 
+12) `Multilang_ASR`: We will learn how to work with existing checkpoints of multilingual ASR models and how to train new ones. It is possible to create a multilingual version of any ASR model that uses tokenizers. This notebook shows how to create a multilingual version of the small monolingual Conformer Transducer model.
 ----------------
 
 # Streaming / Buffered Automatic Speech Recognition

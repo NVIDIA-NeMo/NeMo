@@ -40,3 +40,5 @@ $ and 5% or %~dollar and five percent or percent sign
 (1)Hello~( one ) Hello
 !1~! one
 1!hello~one ! hello
+love him while we may,~love him while we may ,
+mar~mar

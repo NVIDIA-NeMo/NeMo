@@ -13,12 +13,7 @@
 # limitations under the License.
 
 
-from nemo_text_processing.text_normalization.en.graph_utils import (
-    NEMO_DIGIT,
-    GraphFst,
-    convert_space,
-    delete_extra_space,
-)
+from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, GraphFst, convert_space
 
 try:
     import pynini
@@ -50,7 +45,7 @@ class RangeFst(GraphFst):
         delete_space = pynini.closure(pynutil.delete(" "), 0, 1)
         cardinal = cardinal.graph_with_and
 
-        approx = pynini.cross("~", "approximately") + delete_extra_space
+        approx = pynini.cross("~", "approximately")
 
         # TIME
         time_graph = time + delete_space + pynini.cross("-", " to ") + delete_space + time

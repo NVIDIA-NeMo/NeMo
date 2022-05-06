@@ -16,7 +16,12 @@ from argparse import ArgumentParser
 from time import perf_counter
 from typing import List
 
-from nemo_text_processing.text_normalization.data_loader_utils import check_installation, get_installation_msg
+from nemo_text_processing.text_normalization.data_loader_utils import (
+    check_installation,
+    get_installation_msg,
+    load_file,
+    write_file,
+)
 from nemo_text_processing.text_normalization.normalize import Normalizer
 from nemo_text_processing.text_normalization.token_parser import TokenParser
 
@@ -102,7 +107,10 @@ class InverseNormalizer(Normalizer):
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("input_string", help="input string", type=str)
+    input = parser.add_mutually_exclusive_group()
+    input.add_argument("--text", dest="input_string", help="input string", type=str)
+    input.add_argument("--input_file", dest="input_file", help="input file path", type=str)
+    parser.add_argument('--output_file', dest="output_file", help="output file path", type=str)
     parser.add_argument(
         "--language", help="language", choices=['en', 'de', 'es', 'ru', 'fr', 'vi'], default="en", type=str
     )
@@ -124,6 +132,17 @@ if __name__ == "__main__":
         lang=args.language, cache_dir=args.cache_dir, overwrite_cache=args.overwrite_cache
     )
     print(f'Time to generate graph: {round(perf_counter() - start_time, 2)} sec')
-    start_time = perf_counter()
-    print(inverse_normalizer.inverse_normalize(args.input_string, verbose=args.verbose))
-    print(f'Execution time: {round(perf_counter() - start_time, 2)} sec')
+
+    if args.input_string:
+        print(inverse_normalizer.inverse_normalize(args.input_string, verbose=args.verbose))
+    elif args.input_file:
+        print("Loading data: " + args.input_file)
+        data = load_file(args.input_file)
+
+        print("- Data: " + str(len(data)) + " sentences")
+        prediction = inverse_normalizer.inverse_normalize_list(data, verbose=args.verbose)
+        if args.output_file:
+            write_file(args.output_file, prediction)
+            print(f"- Denormalized. Writing out to {args.output_file}")
+        else:
+            print(prediction)

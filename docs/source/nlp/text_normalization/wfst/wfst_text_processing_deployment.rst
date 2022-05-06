@@ -1,81 +1,93 @@
 .. _wfst_deployment:
 
-NeMo Text Processing Deployment
-===============================
+Deploy to Production with C++ backend
+=====================================
 
-NeMo provides a tool for deployment of :doc:`NeMo Inverse Text Normalization (ITN) <wfst_inverse_text_normalization>` and :doc:`NeMo Text Normalization (TN) <wfst_text_normalization>` for production :cite:`textprocessing-deployment-zhang2021nemo`.
-It uses `Sparrowhawk <https://github.com/google/sparrowhawk>`_ :cite:`textprocessing-deployment-sparrowhawk` -- an open-source version of Google Kestrel :cite:`textprocessing-deployment-ebden2015kestrel`.
-The scripts for deployment could be found at `NeMo/tools/text_processing_deployment <https://github.com/NVIDIA/NeMo/tree/main/tools/text_processing_deployment>`_.
+NeMo provides tools to deploy :doc:`TN and ITN <wfst_text_normalization>` for production :cite:`textprocessing-deployment-zhang2021nemo`.
+It uses `Sparrowhawk <https://github.com/google/sparrowhawk>`_ :cite:`textprocessing-deployment-sparrowhawk` -- an open-source C++ framework by Google.
+The grammars written with NeMo can be exported into an `OpenFST <https://www.openfst.org/>`_ Archive File (FAR) and dropped into Sparrowhawk.
+
+    .. image:: images/deployment_pipeline.png
+        :align: center
+        :alt: Deployment pipeline
+        :scale: 50%
+
 
 Requirements
 ------------
 
-:doc:`nemo_text_processing <intro>` package
+* :doc:`nemo_text_processing <wfst_text_normalization>` package
+* `Docker <https://www.docker.com/>`_
+* `NeMo source code <https://github.com/NVIDIA/NeMo>`_
 
 
-Usage
------
+.. _wfst_deployment_quick_start:
+Quick Start
+-----------
 
-Starts docker container with production backend with plugged in grammars. This is entry point script.
+Examples how to run: 
+
+.. code-block:: bash
+
+    # export English TN grammars and return prompt inside docker container  
+    cd NeMo/tools/text_processing_deployment
+    bash export_grammars.sh --GRAMMARS=tn_grammars --LANGUAGE=en --INPUT_CASE=cased
+
+    # export English ITN grammars and return prompt inside docker container  
+    cd NeMo/tools/text_processing_deployment
+    bash export_grammars.sh --GRAMMARS=itn_grammars --LANGUAGE=en
+
 
 Arguments:
-^^^^^^^^^
-* ``GRAMMARS`` - ``tn_grammars`` or ``itn_grammars`` to export either TN or ITN grammars from :doc:`WFST ITN <wfst_inverse_text_normalization>` or :doc:`WFST TN <wfst_text_normalization>`.
-* ``LANGUAGE`` - `en` for English
-* ``INPUT_CASE`` - ``cased`` or ``lower_cased`` (lower_cased is supported only in TN grammars).
-* ``MODE`` - choose ``test`` to run test on the grammars inside the container.
+^^^^^^^^^^
+* ``GRAMMARS`` - ``tn_grammars`` or ``itn_grammars`` to export either TN or ITN grammars.
+* ``LANGUAGE`` - `en` for English. Click :doc:`here <wfst_text_normalization>` for full list of languages.
+* ``INPUT_CASE`` - ``cased`` or ``lower_cased`` (ITN has no differentiation between these two, only used for TN).
+* ``MODE`` - By default ``export`` which returns prompt inside the docker. If ``--MODE=test`` runs NeMo pytests inside container.
+* ``OVERWRITE_CACHE`` - Whether to re-export grammars or load from cache. By default ``True``. 
+* ``FORCE_REBUILD`` - Whether to rebuild docker image in cased of updated dependencies. By default ``False``.
 
-For example:
+Detailed pipeline
+-----------------
 
+`export_grammars.sh` runs the following steps in sequence:
 
-.. code-block:: bash
-
-    # to export ITN grammars
-    cd NeMo/tools/text_processing_deployment
-    bash export_grammar.sh --GRAMMARS=itn_grammars --LANGUAGE=en
-
-    # to export and test TN grammars
-    bash export_grammar.sh --GRAMMARS=itn_grammars --INPUT_CASE=cased --MODE=test --LANGUAGE=en
-
-This script runs the following steps in sequence:
-
-Exports grammar `ClassifyFst` and `VerbalizeFst` from :doc:`nemo_text_processing <intro>` to `OUTPUT_DIR/classify/tokenize_and_classify.far` and `OUTPUT_DIR/verbalize/verbalize.far` respectively.
+Go to script folder:
 
 .. code-block:: bash
 
     cd NeMo/tools/text_processing_deployment
-    python pynini_export.py <--output_dir OUTPUT_DIR> <--grammars GRAMMARS> <--input_case INPUT_CASE> <--language LANGUAGE>
 
-Builds C++ production backend docker
+1. Grammars written in Python are exported to `OpenFST <https://www.openfst.org/>`_ archive files (FAR). Specifically, grammars `ClassifyFst` and `VerbalizeFst` from :doc:`nemo_text_processing <wfst_inverse_text_normalization>` are exported and saved to `./LANGUAGE/classify/tokenize_and_classify.far` and `./LANGUAGE/verbalize/verbalize.far` respectively.
 
 .. code-block:: bash
 
-    cd NeMo/tools/text_processing_deployment
+    python pynini_export.py <--output_dir .> <--grammars GRAMMARS> <--input_case INPUT_CASE> <--language LANGUAGE>
+
+.. warning::
+
+    TN and ITN grammars are saved to the same file by default.
+
+2. Docker image is built with dependencies, including `Thrax <https://www.openfst.org/twiki/bin/view/GRM/Thrax>`_ and `Sparrowhawk <https://github.com/google/sparrowhawk>`_.
+
+.. code-block:: bash
+
     bash docker/build.sh
 
-
-Plugs in grammars into production backend by mounting grammar directory `classify/` and `verbalize/` with sparrowhawk grammar directory inside docker. Returns docker prompt
+3. Plugs in grammars into production backend by mounting grammar directory `LANGUAGE/classify/` and `LANGUAGE/verbalize/` inside docker. Returns docker prompt.
 
 .. code-block:: bash
 
-    cd NeMo/tools/text_processing_deployment
-    # to launch container with the exported grammars
+    # launch container with the exported grammars
     bash docker/launch.sh
 
-    # to launch container with the exported grammars and run tests on TN grammars
-    bash docker/launch.sh test_tn_grammars
-
-    # to launch container with the exported grammars and run tests on ITN grammars
-    bash docker/launch.sh test_itn_grammars
-
-
-Runs TN or ITN in docker container:
+4. Runs system in docker container.
 
 .. code-block:: bash
 
-    echo "two dollars fifty" | ../../src/bin/normalizer_main --config=sparrowhawk_configuration.ascii_proto
+    echo "ITN result: two dollars fifty. TN result: $2.50" | ../../src/bin/normalizer_main --config=sparrowhawk_configuration.ascii_proto
 
-This returns $2.50 for ITN.
+This returns "ITN result: $2.50. TN result: two dollars fifty cents"
 
 References
 ----------

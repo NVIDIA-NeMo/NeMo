@@ -39,7 +39,7 @@ def inject_dataloader_value_from_model_config(model_cfg: dict, dataloader_cfg: D
     """
     if key not in model_cfg:
         logging.info(
-            f"Model level config does not container `{key}`, please explicitly provide `{key}` to the dataloaders."
+            f"Model level config does not contain `{key}`, please explicitly provide `{key}` to the dataloaders."
         )
         return
 

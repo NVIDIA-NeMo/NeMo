@@ -638,16 +638,16 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 )
 
     def _extract_label_vocab_files_from_config(self) -> Tuple[Optional[Path], Optional[Path]]:
-        if self._cfg.common_dataset_parameters.label_vocab_dir is None:
-            if self._is_model_being_restored():
-                punct_label_vocab_file = self._cfg.class_labels.punct_labels_file
-                capit_label_vocab_file = self._cfg.class_labels.capit_labels_file
-            else:
-                punct_label_vocab_file, capit_label_vocab_file = None, None
+        if self._is_model_being_restored():
+            punct_label_vocab_file = self._cfg.class_labels.punct_labels_file
+            capit_label_vocab_file = self._cfg.class_labels.capit_labels_file
         else:
-            label_vocab_dir = Path(self._cfg.common_dataset_parameters.label_vocab_dir).expanduser()
-            punct_label_vocab_file = label_vocab_dir / self._cfg.class_labels.punct_labels_file
-            capit_label_vocab_file = label_vocab_dir / self._cfg.class_labels.capit_labels_file
+            if self._cfg.common_dataset_parameters.label_vocab_dir is None:
+                punct_label_vocab_file, capit_label_vocab_file = None, None
+            else:
+                label_vocab_dir = Path(self._cfg.common_dataset_parameters.label_vocab_dir).expanduser()
+                punct_label_vocab_file = label_vocab_dir / self._cfg.class_labels.punct_labels_file
+                capit_label_vocab_file = label_vocab_dir / self._cfg.class_labels.capit_labels_file
         return punct_label_vocab_file, capit_label_vocab_file
 
     def _set_label_ids(self) -> None:

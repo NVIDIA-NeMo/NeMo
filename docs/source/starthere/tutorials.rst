@@ -53,6 +53,9 @@ To run a tutorial:
      - ASR with Transducers
      - `ASR with Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_with_Transducers.ipynb>`_
    * - ASR
+     - ASR with Adapters
+     - `ASR with Adapters <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/asr_adapters/ASR_with_Adapters.ipynb>`_
+   * - ASR
      - Speech Commands
      - `Speech Commands <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Speech_Commands.ipynb>`_
    * - ASR

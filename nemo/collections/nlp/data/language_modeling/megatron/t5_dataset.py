@@ -25,10 +25,10 @@ from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import (
     create_masked_lm_predictions,
     get_samples_mapping,
 )
-from nemo.collections.nlp.data.language_modeling.megatron.megatron_dataset import MegatronDataset
+from nemo.core import Dataset
 
 
-class T5Dataset(MegatronDataset):
+class T5Dataset(Dataset):
     def __init__(
         self,
         cfg,
@@ -51,7 +51,7 @@ class T5Dataset(MegatronDataset):
         whole_word_masking=True,
         favor_long_ngrams=False,
     ):
-        super().__init__(cfg, trainer=trainer)
+        super().__init__()
 
         # Params to store.
         self.name = name

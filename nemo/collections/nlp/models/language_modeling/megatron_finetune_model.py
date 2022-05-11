@@ -454,7 +454,8 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             dataset = SequenceToSequenceDataset(
                 src_file_name=src,
                 tgt_file_name=tgt,
-                tokenizer=self.tokenizer,
+                src_tokenizer=self.tokenizer,
+                tgt_tokenizer=self.tokenizer,
                 max_src_seq_length=data_cfg.max_src_seq_length,
                 max_tgt_seq_length=data_cfg.max_tgt_seq_length,
             )
@@ -507,7 +508,8 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             dataset = SequenceToSequenceDataset(
                 src_file_name=src,
                 tgt_file_name=tgt,
-                tokenizer=self.tokenizer,
+                src_tokenizer=self.tokenizer,
+                tgt_tokenizer=self.tokenizer,
                 max_src_seq_length=data_cfg.max_src_seq_length,
                 max_tgt_seq_length=data_cfg.max_tgt_seq_length,
             )

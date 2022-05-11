@@ -26,7 +26,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils imp
 )
 from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import make_dataset as make_indexed_dataset
-from nemo.collections.nlp.data.language_modeling.megatron.megatron_dataset import MegatronDataset
+from nemo.core import Dataset
 from nemo.utils import logging
 
 try:
@@ -182,7 +182,7 @@ def get_indexed_dataset_(data_prefix, data_impl, skip_warmup):
     return indexed_dataset
 
 
-class GPTDataset(MegatronDataset):
+class GPTDataset(Dataset):
     def __init__(
         self, cfg, trainer, tokenizer, name, data_prefix, documents, indexed_dataset, num_samples, seq_length, seed,
     ):
@@ -191,7 +191,7 @@ class GPTDataset(MegatronDataset):
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
-        super().__init__(cfg, trainer=trainer)
+        super().__init__()
         self.name = name
         self.indexed_dataset = indexed_dataset
 

@@ -17,8 +17,11 @@ import os
 import torch
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+from nemo.collections.nlp.data.language_modeling.text_memmap_dataset import TextMemMapDataset
 from nemo.core.classes import Dataset
 from nemo.utils import logging
+
+__all__ = ['SequenceToSequenceDataset', 'TextMemmapSequenceToSequenceDataset']
 
 
 class SequenceToSequenceDataset(Dataset):
@@ -28,13 +31,16 @@ class SequenceToSequenceDataset(Dataset):
         self,
         src_file_name: str,
         tgt_file_name: str,
-        tokenizer: TokenizerSpec,
+        src_tokenizer: TokenizerSpec,
+        tgt_tokenizer: TokenizerSpec,
         max_src_seq_length: int,
         max_tgt_seq_length: int,
     ):
+        super().__init__()
         self.src_file_name = src_file_name
         self.tgt_file_name = tgt_file_name
-        self.tokenizer = tokenizer
+        self.src_tokenizer = src_tokenizer
+        self.tgt_tokenizer = tgt_tokenizer
         self.max_src_seq_length = max_src_seq_length
         self.max_tgt_seq_length = max_tgt_seq_length
         if not os.path.exists(self.src_file_name):
@@ -61,8 +67,16 @@ class SequenceToSequenceDataset(Dataset):
             for i, (src, tgt) in enumerate(zip(f_src, f_tgt)):
                 if i % 10000 == 0 and i != 0:
                     logging.info(f"Read {i} lines from {self.src_file_name} & {self.tgt_file_name}")
-                src = [self.tokenizer.bos_id] + self.tokenizer.text_to_ids(src.strip()) + [self.tokenizer.eos_id]
-                tgt = [self.tokenizer.bos_id] + self.tokenizer.text_to_ids(tgt.strip()) + [self.tokenizer.eos_id]
+                src = (
+                    [self.src_tokenizer.bos_id]
+                    + self.src_tokenizer.text_to_ids(src.strip())
+                    + [self.src_tokenizer.eos_id]
+                )
+                tgt = (
+                    [self.tgt_tokenizer.bos_id]
+                    + self.tgt_tokenizer.text_to_ids(tgt.strip())
+                    + [self.tgt_tokenizer.eos_id]
+                )
                 if len(src) <= self.max_src_seq_length and len(tgt) < self.max_tgt_seq_length:
                     self.examples.append({'src': src, 'tgt': tgt})
 
@@ -76,8 +90,8 @@ class SequenceToSequenceDataset(Dataset):
         max_label_length = max([len(item) for item in labels]) if labels else 0
 
         loss_mask = [([1] * (len(item))) + ([0] * (max_label_length - len(item))) for item in labels]
-        enc_query = [item + [self.tokenizer.pad_id] * (max_enc_query_length - len(item)) for item in enc_query]
-        dec_input = [item + [self.tokenizer.pad_id] * (max_dec_input_length - len(item)) for item in dec_input]
+        enc_query = [item + [self.src_tokenizer.pad_id] * (max_enc_query_length - len(item)) for item in enc_query]
+        dec_input = [item + [self.tgt_tokenizer.pad_id] * (max_dec_input_length - len(item)) for item in dec_input]
         labels = [item + [self.tokenizer.pad_id] * (max_label_length - len(item)) for item in labels]
 
         enc_query = torch.LongTensor(enc_query)
@@ -85,8 +99,8 @@ class SequenceToSequenceDataset(Dataset):
         labels = torch.LongTensor(labels)
         loss_mask = torch.LongTensor(loss_mask)
 
-        enc_mask = (enc_query != self.tokenizer.pad_id).long()
-        dec_mask = (dec_input != self.tokenizer.pad_id).long()
+        enc_mask = (enc_query != self.src_tokenizer.pad_id).long()
+        dec_mask = (dec_input != self.tgt_tokenizer.pad_id).long()
 
         return {
             'text_enc': enc_query,
@@ -96,3 +110,42 @@ class SequenceToSequenceDataset(Dataset):
             'enc_mask': enc_mask,
             'dec_mask': dec_mask,
         }
+
+
+class TextMemmapSequenceToSequenceDataset(SequenceToSequenceDataset):
+    """Sequence to Sequence Dataset in memory."""
+
+    def __init__(
+        self,
+        src_file_name: str,
+        tgt_file_name: str,
+        src_tokenizer: TokenizerSpec,
+        tgt_tokenizer: TokenizerSpec,
+        max_src_seq_length: int,
+        max_tgt_seq_length: int,
+    ):
+        super().__init__(
+            src_file_name=src_file_name,
+            tgt_file_name=tgt_file_name,
+            src_tokenizer=src_tokenizer,
+            tgt_tokenizer=tgt_tokenizer,
+            max_src_seq_length=max_src_seq_length,
+            max_tgt_seq_length=max_tgt_seq_length,
+        )
+
+    def __len__(self):
+        return len(self.src_dataset)
+
+    def __getitem__(self, idx):
+        src = [self.src_tokenizer.bos_id] + self.src_dataset[idx] + [self.src_tokenizer.eos_id]
+        tgt = self.tgt_dataset[idx]
+
+        text_enc = src
+        text_dec = [self.tgt_tokenizer.bos_id] + tgt
+        labels = tgt + [self.tgt_tokenizer.eos_id]
+        return {'text_enc': text_enc, 'text_dec': text_dec, 'labels': labels}
+
+    def _get_examples(self):
+        self.src_dataset = TextMemMapDataset(dataset_paths=[self.src_file_name], tokenizer=self.src_tokenizer)
+        self.tgt_dataset = TextMemMapDataset(dataset_paths=[self.tgt_file_name], tokenizer=self.tgt_tokenizer)
+        assert len(self.src_dataset) == len(self.tgt_dataset), "src and tgt has different number of lines"

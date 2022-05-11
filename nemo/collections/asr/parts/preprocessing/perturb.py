@@ -684,6 +684,43 @@ class TranscodePerturbation(Perturbation):
         return
 
 
+class RandomSegmentPerturbation(Perturbation):
+    """
+    Returns a random segment from input of duration "duration_sec". 
+    If duration_sec > input audio length, pad_to_duration determines the outcome.
+    
+    RandomSegmentPerturbation is intended for self-supervised learning.
+    Not for supervised, as extracting corresponding text is not facilitated.
+
+
+    Args:
+        duration_sec (float): duration of the segment to be extracted
+        pad_to_duration (bool): zero pad if length of input audio < duration_sec
+        rng: Random number generator
+    """
+
+    def __init__(self, duration_sec=32.0, pad_to_duration=False, rng=None):
+        if duration_sec <= 0:
+            raise ValueError("duration_sec should be > 0")
+
+        self._duration_sec = duration_sec
+        self._pad_to_duration = pad_to_duration
+        self._rng = random.Random() if rng is None else rng
+
+    def perturb(self, data):
+        if self._duration_sec > data.duration:
+            if not self._pad_to_duration:
+                raise ValueError(f"audio length < {self._duration_sec} sec and pad_to_duration is set to False")
+            start_time = 0.0
+            pad_size = self._duration_sec * data.sample_rate - data.num_samples
+            data.pad(pad_size=pad_size)
+        else:
+            start_time = self._rng.uniform(0.0, data.duration - self._duration_sec)
+
+        end_time = start_time + self._duration_sec
+        data.subsegment(start_time=start_time, end_time=end_time)
+
+
 perturbation_types = {
     "speed": SpeedPerturbation,
     "time_stretch": TimeStretchPerturbation,
@@ -694,6 +731,7 @@ perturbation_types = {
     "white_noise": WhiteNoisePerturbation,
     "rir_noise_aug": RirAndNoisePerturbation,
     "transcode_aug": TranscodePerturbation,
+    "random_segment": RandomSegmentPerturbation,
 }
 
 

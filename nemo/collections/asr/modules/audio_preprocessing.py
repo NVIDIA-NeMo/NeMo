@@ -520,13 +520,15 @@ class MaskedPatchAugmentation(NeuralModule):
         Optionally also performs frequency masking in the same way as SpecAugment.
         Args:
             patch_size (int): up to how many time steps does one patch consist of.
-            Defaults to 48.
-            mask_patches (int): how many patches should be masked in each sample.
-            Defaults to 10.
+                Defaults to 48.
+            mask_patches (float): how many patches should be masked in each sample.
+                if >= 1., interpreted as number of patches (after converting to int)
+                if <1.,   interpreted as fraction of total tokens to be masked 
+                Defaults to 10.
             freq_masks (int): how many frequency segments should be cut.
-            Defaults to 0.
+                Defaults to 0.
             freq_width (int): maximum number of frequencies to be cut in a segment.
-            Defaults to 0.
+                Defaults to 0.
     """
 
     @property
@@ -545,11 +547,17 @@ class MaskedPatchAugmentation(NeuralModule):
         return {"augmented_spec": NeuralType(('B', 'D', 'T'), SpectrogramType())}
 
     def __init__(
-        self, patch_size: int = 48, mask_patches: int = 10, freq_masks: int = 0, freq_width: int = 0,
+        self, patch_size: int = 48, mask_patches: float = 10.0, freq_masks: int = 0, freq_width: int = 0,
     ):
         super().__init__()
         self.patch_size = patch_size
-        self.mask_patches = mask_patches
+        if mask_patches >= 1:
+            self.mask_patches = int(mask_patches)
+        elif mask_patches >= 0:
+            self._mask_fraction = mask_patches
+            self.mask_patches = None
+        else:
+            raise ValueError('mask_patches cannot be negative')
 
         if freq_masks > 0:
             self.spec_augment = SpecAugment(freq_masks=freq_masks, time_masks=0, freq_width=freq_width, time_width=0,)
@@ -561,8 +569,14 @@ class MaskedPatchAugmentation(NeuralModule):
         augmented_spec = input_spec
 
         min_len = torch.min(length)
-        mask_patches = self.mask_patches
-        if min_len < self.patch_size * self.mask_patches:
+
+        if self.mask_patches is None:
+            # masking specified as fraction
+            mask_patches = int(min_len * self._mask_fraction // self.patch_size)
+        else:
+            mask_patches = self.mask_patches
+
+        if min_len < self.patch_size * mask_patches:
             mask_patches = min_len // self.patch_size
 
         for idx in range(input_spec.shape[0]):

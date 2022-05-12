@@ -150,7 +150,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
     # get audio filenames
     if cfg.audio_dir is not None:
-        filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"*.{cfg.audio_type}")))
+        filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True))
     else:
         # get filenames from manifest
         filepaths = []

@@ -21,6 +21,7 @@ trainer:
 virtual_prompt_model: False # Whether the model is a MegatronGPTPromptLearningModel model
 tensor_model_parallel_size: 1
 pipeline_model_parallel_size: 1
+pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
 model_file: null  # GPT nemo file path
 checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
 checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading

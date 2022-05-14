@@ -2590,7 +2590,24 @@ pipeline {
             trainer.precision=16"
       }
     }
-  
+    stage('L2: Megatron GPT Eval PP2') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps {
+        sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
+            model_file=/home/TestData/nlp/megatron_gpt/PP2/gpt_pp2_tp1.nemo \
+            server=False \
+            tensor_model_parallel_size=1 \
+            pipeline_model_parallel_size=2 \
+            trainer.devices=2 \
+            trainer.num_nodes=1"
+      }
+    }
     stage('L2: Megatron GPT Prompt Learning and Inference') {
       when {
 	anyOf {

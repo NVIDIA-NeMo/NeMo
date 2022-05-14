@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import re
 from typing import Any, Dict, Optional
 
@@ -26,7 +25,6 @@ from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_sampler
     MegatronPretrainingRandomBatchSampler,
 )
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
-from nemo.collections.nlp.modules.common.megatron.clip_grads import clip_grad_norm_fp32
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.token_level_encoder_decoder import (
     MegatronTokenLevelEncoderDecoderModule,
@@ -36,7 +34,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     get_params_for_weight_decay_optimization,
 )
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
@@ -73,15 +70,14 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer=trainer)
+        if cfg.get('pipeline_model_parallel_size', 1) > 1:
+            if cfg.get('pipeline_model_parallel_split_rank', 0) <= 0:
+                raise ValueError(
+                    f"pipeline_model_parallel_split_rank must be > 0 when using pipeline_model_parallel_size > 1"
+                )
 
         # Make sure trainer.accumulate_grad_batches is 1.
         self._validate_trainer()
-
-        # build tokenizer (defaults to nemo supported tokenizers)
-        self._build_tokenizer()
-
-        # manipulate vocabulary (e.g., pad vocabulary for better efficiency)
-        self._build_vocab()
 
         # TODO: Not sure how to use lists of modules with PTL.
         # This means we can only use pipeline parallelism without the interleaved schedule.
@@ -91,7 +87,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             model_type=ModelType.encoder_and_decoder,
         )[0]
 
-        self.setup_optimizer_param_groups()
+        # We don't need to call it explicitly? Since it is a pytorch lightning hook function
+        # self.setup_optimizer_param_groups()
 
         self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
 
@@ -114,32 +111,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         self.enc_dec_model.model_type = ModelType.encoder_and_decoder
 
-    def _build_tokenizer(self):
-        """
-        Default tokenizer is based on available nemo tokenizers.
-        Override this method to use an external tokenizer.
-        All tokenizers are expected to provide compatible interface.
-        Override default Encoder-decoder tokenizer to use legacy=True for sentencepiece.
-        """
-        self.tokenizer = get_nmt_tokenizer(
-            library=self._cfg.tokenizer.library,
-            model_name=self._cfg.tokenizer.type,
-            tokenizer_model=self.register_artifact("tokenizer.model", self._cfg.tokenizer.model),
-            vocab_file=self.register_artifact("tokenizer.vocab_file", self._cfg.tokenizer.vocab_file),
-            merges_file=self.register_artifact("tokenizer.merge_file", self._cfg.tokenizer.merge_file),
-            legacy=True if self._cfg.tokenizer.library == 'sentencepiece' else False,
-        )
-
-    def _build_vocab(self):
-        """
-        Manipulate vocabulary (e.g., pad vocabulary for increased performance)/
-        """
-        # TODO: add config to allow to disable it?
-        self.padded_vocab_size = self._vocab_size_with_padding(
-            orig_vocab_size=self.tokenizer.vocab_size,
-            make_vocab_size_divisible_by=self._cfg.get('make_vocab_size_divisible_by', 128),
-            tensor_model_parallel_size=self._cfg.get('tensor_model_parallel_size', 1),
-        )
+    def setup_optimizer_param_groups(self):
+        """ModelPT override. Optimizer will get self._optimizer_param_groups"""
+        self._optimizer_param_groups = get_params_for_weight_decay_optimization([self.enc_dec_model])
 
     def model_provider_func(self, pre_process, post_process, add_encoder, add_decoder):
         # TODO: create get_encoder_decoder_model()here for different losses (e..g, nll, vae, mim)
@@ -211,10 +185,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         )
 
         return output_tensor
-
-    def setup_optimizer_param_groups(self):
-        """ModelPT override. Optimizer will get self._optimizer_param_groups"""
-        self._optimizer_param_groups = get_params_for_weight_decay_optimization([self.enc_dec_model])
 
     def training_step(self, batch, batch_idx):
         """
@@ -774,13 +744,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         else:
             return [self._optimizer], [self._scheduler]
 
-    def get_parameters(self):
-        params = []
-        for param_group in self._optimizer_param_groups:
-            for param in param_group['params']:
-                params.append(param)
-        return params
-
     def compute_consumed_samples(self, steps_since_resume=0):
         app_state = AppState()
         consumed_samples = (
@@ -788,28 +751,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             + steps_since_resume * app_state.data_parallel_size * self.cfg.micro_batch_size * get_num_microbatches()
         )
         return int(consumed_samples)
-
-    def configure_gradient_clipping(self, *args, **kwargs):
-        """PTL hook to configure gradients.
-           We use gradient clipping implementation from megatron-lm.
-        """
-        clip_val = self.trainer.gradient_clip_val
-        if clip_val is None:
-            return
-
-        clip_val = float(clip_val)
-        if clip_val <= 0:
-            return
-
-        if self.megatron_amp_o2:
-            # grep fp32 master parameters for gradient clipping
-            parameters = self._optimizer.get_parameters()
-        else:
-            parameters = self.get_parameters()
-
-        grad_norm = clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val)
-
-        self.log('grad_norm', grad_norm, rank_zero_only=True)
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
         request = batch
@@ -972,46 +913,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         response['completion']['tokens'] = list(zip(predicted_tokens_ids, predicted_tokens_dec, log_probs))
         self.unfreeze()
         return response
-
-    def _vocab_size_with_padding(self, orig_vocab_size, make_vocab_size_divisible_by, tensor_model_parallel_size):
-        """Pad vocab size so it is divisible by model parallel size and
-        still having GPU friendly size."""
-
-        after = orig_vocab_size
-        multiple = make_vocab_size_divisible_by * tensor_model_parallel_size
-        while (after % multiple) != 0:
-            after += 1
-        logging.info(
-            f'Padded vocab_size: {after}, original vocab_size: {orig_vocab_size}, dummy tokens: {after - orig_vocab_size}.'
-        )
-        return after
-
-    def _enable_nvidia_optimizations(self):
-        "These optimizations are present in NVIDIA NGC PyTorch Containers"
-
-        # Version check
-        nvidia_torch_version = os.getenv('NVIDIA_PYTORCH_VERSION', None)
-        if nvidia_torch_version is not None:
-            NVIDIA_TORCH_MAJOR = int(nvidia_torch_version.split('.')[0])
-            NVIDIA_TORCH_MINOR = int(nvidia_torch_version.split('.')[1])
-
-            # Apex Persistent layer norm is supported from Nvidia PyTorch container v21.11
-            if NVIDIA_TORCH_MAJOR < 21 or (NVIDIA_TORCH_MAJOR == 21 and NVIDIA_TORCH_MINOR < 11):
-                self._cfg.persist_layer_norm = False
-
-            if NVIDIA_TORCH_MAJOR >= 21 or (NVIDIA_TORCH_MAJOR == 21 and NVIDIA_TORCH_MINOR >= 11):
-                # NVFUSER
-                torch._C._jit_set_profiling_executor(True)
-                torch._C._jit_set_profiling_mode(True)
-                torch._C._jit_override_can_fuse_on_cpu(False)
-                torch._C._jit_override_can_fuse_on_gpu(False)
-                torch._C._jit_set_texpr_fuser_enabled(False)
-                torch._C._jit_set_nvfuser_enabled(True)
-                torch._C._debug_set_autodiff_subgraph_inlining(False)
-
-        else:
-            # Not a Nvidia container. Dependency check is on users
-            pass
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
         """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device

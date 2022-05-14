@@ -1440,7 +1440,7 @@ class ParallelTransformer(MegatronModule):
             encoder_output = encoder_output.transpose(0, 1).contiguous()
         elif retrieved_emb is not None:
             assert len(retrieved_emb.shape) == 5
-            # this is retrival decoder, need special transpose
+            # this is retrieval decoder, need special transpose
             encoder_output = rearrange(retrieved_emb, 'b k r n d -> k r n b d').contiguous()
 
         if self.activations_checkpoint_method is not None:

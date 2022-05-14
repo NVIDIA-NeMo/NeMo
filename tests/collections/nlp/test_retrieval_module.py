@@ -16,7 +16,6 @@
 import pytest
 import torch
 from einops import rearrange
-from pytorch_lightning.plugins.environments.torchelastic_environment import TorchElasticEnvironment
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
@@ -46,18 +45,14 @@ except (ImportError, ModuleNotFoundError):
 
 
 @pytest.mark.run_only_on('GPU')
+@pytest.mark.skipif(not HAVE_APEX, reason="apex is not installed")
 class TestRetrievalModule:
     @classmethod
     def setup_class(cls):
         if not torch.cuda.is_available():
             return
         GPUS = 1
-        # os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
-        # os.environ["LOCAL_RANK"] = '0'
-        # os.environ["RANK"] = '0'
-        # os.environ["WORLD_SIZE"] = '1'
         plugins = [NLPDDPPlugin()]
-        # plugins.append(TorchElasticEnvironment())
         TP_SIZE = GPUS
         PP_SIZE = 1
         MB_SIZE = 4
@@ -150,9 +145,11 @@ class TestRetrievalModule:
         out, bias = cross_attn(
             hidden_emb, enc_dec_attn_mask_3d, encoder_output=retrieved_emb, rotary_pos_emb=cross_attn_pos_emb
         )
+        assert out.shape == torch.Size([input_length, batch, dim])
+        assert bias.shape == torch.Size([dim])
 
     @pytest.mark.unit
-    def test_retrival_encoder(self):
+    def test_retrieval_encoder(self):
 
         init_method_std = 0.02
 
@@ -171,10 +168,10 @@ class TestRetrievalModule:
         hidden_mask = (hidden != pad_id).cuda()
 
         hidden_emb = torch.rand(batch, input_length, dim).cuda().half()  # (batch, seq, dim)
-        retrieved = torch.randint(0, vocab_size, (batch, chunks, neighbors, 2 * chunks)).cuda()
+        retrieved = torch.randint(0, vocab_size, (batch, chunks, neighbors, 2 * text_chunk_size)).cuda()
         pad_id = vocab_size - 1
         context_mask = (retrieved != pad_id).cuda()
-        retrieved_emb = torch.rand(batch, chunks, neighbors, 2 * chunks, dim).cuda().half()
+        retrieved_emb = torch.rand(batch, chunks, neighbors, 2 * text_chunk_size, dim).cuda().half()
 
         layer_type = [LayerType.encoder, LayerType.retrieval_encoder, LayerType.encoder, LayerType.retrieval_encoder]
         num_layers = len(layer_type)
@@ -197,9 +194,10 @@ class TestRetrievalModule:
             .half()
         )
         out = encoder(retrieved_emb, context_mask, context_attn_mask=hidden_mask, encoder_output=hidden_emb)
+        assert out.shape == torch.Size([batch, chunks, neighbors, 2 * text_chunk_size, dim])
 
     @pytest.mark.unit
-    def test_retrival_decoder(self):
+    def test_retrieval_decoder(self):
 
         init_method_std = 0.02
 
@@ -221,13 +219,13 @@ class TestRetrievalModule:
         hidden_emb = torch.rand(batch, input_length, dim).cuda().half()  # (batch, seq, dim)
 
         # context_chunk_size = 128
-        retrieved = torch.randint(0, vocab_size, (batch, chunks, neighbors, 2 * chunks)).cuda()
+        retrieved = torch.randint(0, vocab_size, (batch, chunks, neighbors, 2 * text_chunk_size)).cuda()
         # retrieved tokens - (batch, num chunks, num retrieved neighbors, retrieved chunk with continuation)
 
         # context attention mask [b, np, sq, sk]
         pad_id = vocab_size - 1
         context_mask = (retrieved != pad_id).cuda()
-        retrieved_emb = torch.rand(batch, chunks, neighbors, 2 * chunks, dim).cuda().half()
+        retrieved_emb = torch.rand(batch, chunks, neighbors, 2 * text_chunk_size, dim).cuda().half()
         # retrieved tokens - (batch, num chunks, num retrieved neighbors, retrieved chunk with continuation, hidden)
 
         layer_type = [LayerType.encoder, LayerType.retrieval_decoder, LayerType.encoder, LayerType.retrieval_decoder]
@@ -251,6 +249,7 @@ class TestRetrievalModule:
             .half()
         )
         out = decoder(hidden_emb, hidden_mask, retrieved_attn_mask=context_mask, retrieved_emb=retrieved_emb)
+        assert out.shape == torch.Size([batch, input_length, dim])
 
     @pytest.mark.unit
     def test_encoder_decoder_module(self):
@@ -274,11 +273,15 @@ class TestRetrievalModule:
         labels = all_tokens[:, 1:]
 
         hidden_mask = (hidden != pad_id).cuda()
-        retrieved = torch.randint(0, vocab_size, (batch, chunks, neighbors, 2 * chunks)).cuda()
+        retrieved = torch.randint(0, vocab_size, (batch, chunks, neighbors, 2 * text_chunk_size)).cuda()
 
         pad_id = vocab_size - 1
         context_mask = (retrieved != pad_id).cuda()
-        retrieved_emb = torch.rand(batch, chunks, neighbors, 2 * chunks, dim).cuda().half()
+
+        class FakeTokenizer:
+            eos_id = vocab_size - 2
+
+        tokenizer = FakeTokenizer()
 
         encoder_decoder = (
             MegatronRetrievalTokenLevelEncoderDecoderModule(
@@ -294,11 +297,71 @@ class TestRetrievalModule:
                 enc_cross_attention=enc_cross_attention,
                 dec_cross_attention=dec_cross_attention,
                 add_position_embedding=False,
+                tokenizer=tokenizer,
             )
             .cuda()
             .half()
         )
 
         out = encoder_decoder(
-            hidden, hidden_mask, retrieved_emb=retrieved_emb, retrieved_attn_mask=context_mask, labels=labels
+            hidden, hidden_mask, retrieved_ids=retrieved, retrieved_attn_mask=context_mask, labels=labels
         )
+        assert out.shape == torch.Size([batch, input_length])
+
+        # verify the attention mask matrix is correct
+
+        all_tokens = torch.tensor([[1, 2, vocab_size - 2, 3, vocab_size - 1, vocab_size - 2, 3, 4, 5]]).cuda()
+
+        encoder_decoder = (
+            MegatronRetrievalTokenLevelEncoderDecoderModule(
+                vocab_size=vocab_size,
+                hidden_size=dim,
+                max_position_embeddings=8,
+                num_attention_heads=num_attention_heads,
+                ffn_hidden_size=dim * 4,
+                precision=16,
+                chunk_size=4,
+                enc_num_layers=enc_num_layers,
+                dec_num_layers=dec_num_layers,
+                enc_cross_attention=enc_cross_attention,
+                dec_cross_attention=dec_cross_attention,
+                add_position_embedding=False,
+                tokenizer=tokenizer,
+            )
+            .cuda()
+            .half()
+        )
+
+        hidden = all_tokens[:, :-1]
+        labels = all_tokens[:, 1:]
+
+        hidden_mask = (hidden != pad_id).cuda()
+        retrieved = torch.randint(0, vocab_size, (1, 2, neighbors, 8)).cuda()
+
+        pad_id = vocab_size - 1
+        context_mask = (retrieved != pad_id).cuda()
+
+        out = encoder_decoder(
+            hidden, hidden_mask, retrieved_ids=retrieved, retrieved_attn_mask=context_mask, labels=labels
+        )
+
+        mask3d = encoder_decoder.pre_decoder._calculate_dec_att_mask(
+            hidden_mask, torch.where(hidden == vocab_size - 2)
+        )
+        expected = torch.tensor(
+            [
+                [
+                    [
+                        [False, True, True, True, True, True, True, True],
+                        [False, False, True, True, True, True, True, True],
+                        [False, False, False, True, True, True, True, True],
+                        [True, True, True, False, True, True, True, True],
+                        [True, True, True, True, True, True, True, True],
+                        [True, True, True, False, True, False, True, True],
+                        [True, True, True, True, True, True, False, True],
+                        [True, True, True, True, True, True, False, False],
+                    ]
+                ]
+            ]
+        ).cuda()
+        assert (mask3d == expected).all()

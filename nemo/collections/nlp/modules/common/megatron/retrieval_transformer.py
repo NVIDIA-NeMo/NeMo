@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Retrival Transformer."""
+"""Retrieval Transformer."""
 
 from einops import rearrange, repeat
 
@@ -139,8 +139,8 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         layer_past=None,
         get_key_value=False,
     ):
-        # expected enc_input shape [batch, num_chunks, num_neighbors, retrival_seq_len, dim]
-        # expected enc_attn_mask shape [batch, num_chunks, num_neighbors, retrival_seq_len]
+        # expected enc_input shape [batch, num_chunks, num_neighbors, retrieval_seq_len, dim]
+        # expected enc_attn_mask shape [batch, num_chunks, num_neighbors, retrieval_seq_len]
         # expected encoder_output shape [batch, seq_len, dim]
         b, k, r, rn, dim = enc_input.shape
 
@@ -303,6 +303,28 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         """ See megatron.model.transformer.set_input_tensor()"""
         self.model.set_input_tensor(input_tensor)
 
+    def _calculate_dec_att_mask(self, dec_attn_mask, eod_positions):
+        # # convert to Megatron mask
+        dec_attn_mask_3d = build_attention_mask_3d(
+            source_mask=dec_attn_mask, target_mask=dec_attn_mask, attn_mask_type=self.model_attn_mask_type,
+        )
+        if eod_positions is not None:
+            # to mask out the token ids [id, id,  eod, id, pad, eod, id, id]
+            # so attention is not across eod, mask should be:
+            # [false, true,  true, true,  true, true,  true,  true]
+            # [false, false, true, true,  true, true,  true,  true]
+            # [false, false, false,true,  true, true,  true,  true]
+            # [true,  true,  true, false, true, true,  true,  true]
+            # [true,  true,  true, true,  true, true,  true,  true]
+            # [true,  true,  true, false, true, false, true,  true]
+            # [true,  true,  true, true,  true, true,  false, true]
+            # [true,  true,  true, true,  true, true,  false, false]
+            for batch, eod_pos in zip(*eod_positions):
+                eod_plus_one = eod_pos.item() + 1
+                dec_attn_mask_3d[batch][eod_plus_one:, :eod_plus_one] = True
+        dec_attn_mask_3d = dec_attn_mask_3d[:, None, :, :]
+        return dec_attn_mask_3d
+
     def forward(
         self,
         dec_input,
@@ -311,6 +333,7 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         retrieved_emb=None,
         layer_past=None,
         get_key_value=False,
+        eod_positions=None,  # this is a tuple of eod positions returned from tensor.where(tensor == eod_id)
     ):
         # expected dec_input shape [batch, seq_len, dim]
         # expected dec_attn_mask shape [batch, seq_len]
@@ -328,19 +351,15 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
                 k == num_seq_chunks
             ), f'sequence requires {num_seq_chunks} retrieved chunks, but only {k} passed in'  # need to add extra chunk size, since it will be shifted
         self_attn_emb = self.rotary_pos_emb(n)
-        cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1)
 
         if retrieved_emb is not None:
+            cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1)
             cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=0)
             attn_pos_emb = (self_attn_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
         else:
-            attn_pos_emb = (self_attn_emb, cross_attn_q_pos_emb, None)
+            attn_pos_emb = (self_attn_emb, None, None)
 
-        # # convert to Megatron mask
-        dec_attn_mask_3d = build_attention_mask_3d(
-            source_mask=dec_attn_mask, target_mask=dec_attn_mask, attn_mask_type=self.model_attn_mask_type,
-        )
-        dec_attn_mask_3d = dec_attn_mask_3d[:, None, :, :]
+        dec_attn_mask_3d = self._calculate_dec_att_mask(dec_attn_mask, eod_positions)
 
         if retrieved_emb is not None:
             dec_attn_mask = rearrange(dec_attn_mask, 'b (k n) -> (b k) n', k=k)

@@ -86,6 +86,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         enc_cross_attention=[3],  # layer numbers for cross attention
         dec_cross_attention=[3, 5],  # layer numbers for chunked cross attention
         add_position_embedding=False,
+        tokenizer=None,  # tokenizer
     ):
         super(MegatronRetrievalTokenLevelEncoderDecoderModule, self).__init__()
 
@@ -96,6 +97,9 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         self.precision = precision
         self.add_encoder = add_encoder
         self.add_decoder = add_decoder
+        self.add_abs_position_embedding = add_position_embedding  # whether use absolute position embedding
+        self.tokenizer = tokenizer
+        self.eod_id = tokenizer.eos_id
 
         if kv_channels is None:
             assert (
@@ -262,7 +266,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         self,
         input_ids,
         input_attn_mask,
-        retrieved_emb,
+        retrieved_ids,
         retrieved_attn_mask,
         token_type_ids=None,
         labels=None,
@@ -271,16 +275,31 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         """
         Return value is per token / per dimension (i.e., non collapsed loss value)
         """
+        eod_positions = None
+        if input_ids is not None and self.eod_id is not None:
+            eod_positions = torch.where(input_ids == self.eod_id)
+
         if input_emb is None:
             if self.pre_process and self.add_encoder:
                 # encoder embeddings
-                input_position_ids = build_position_ids(input_ids)
+                if self.add_abs_position_embedding:
+                    input_position_ids = build_position_ids(input_ids)
+                else:
+                    input_position_ids = None
                 input_emb = self.encoder_embedding(input_ids, input_position_ids, token_type_ids=token_type_ids)
             else:
                 input_emb = None
 
+        if self.add_abs_position_embedding:
+            seq_length = retrieved_ids.size(-1)
+            retrieved_position_ids = torch.arange(seq_length, dtype=torch.long, device=retrieved_ids.device)
+            retrieved_position_ids = retrieved_position_ids.unsqueeze(0).expand_as(retrieved_ids).clone()
+        else:
+            retrieved_position_ids = None
+        retrieved_emb = self.encoder_embedding(retrieved_ids, retrieved_position_ids)
+
         if self.add_decoder:
-            hidden = self.pre_decoder(input_emb, input_attn_mask)
+            hidden = self.pre_decoder(input_emb, input_attn_mask, eod_positions=eod_positions)
 
         if self.add_encoder:
             retrieved_emb = self.encoder(
@@ -289,7 +308,11 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
 
         if self.add_decoder:
             dec_output = self.post_decoder(
-                hidden, input_attn_mask, retrieved_attn_mask=retrieved_attn_mask, retrieved_emb=retrieved_emb
+                hidden,
+                input_attn_mask,
+                retrieved_attn_mask=retrieved_attn_mask,
+                retrieved_emb=retrieved_emb,
+                eod_positions=eod_positions,
             )
             token_logits = self.tokens_head(dec_output, self.word_embeddings_weight())
 

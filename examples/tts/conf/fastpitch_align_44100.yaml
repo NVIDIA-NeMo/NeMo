@@ -24,7 +24,7 @@ n_window_size: 2048
 n_window_stride: 512
 n_fft: 2048
 lowfreq: 0
-highfreq: 8000
+highfreq: null
 window: hann
 
 phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.01"
@@ -244,4 +244,4 @@ exp_manager:
     monitor: v_loss
   resume_if_exists: false
   resume_ignore_no_checkpoint: false
-  
+

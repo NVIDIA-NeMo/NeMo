@@ -53,6 +53,11 @@ a:visited
     color: #218219;
 }
 
+.container-xl {
+	margin-right: unset;
+	margin-left: unset;
+}
+
 
 /* ----------------------------------------------TABLES--------------------------------------- */
 
@@ -206,9 +211,49 @@ thead td
 	margin-top: 50px;
 }
 
-
 /* Logo */
 .navbar-brand-box {
     background-color: #ffffff;
 }
 
+/* ---------------------------------------------- Media Queries --------------------------------------- */
+@media (min-width: 1200px) {
+	.container-xl {
+		max-width: 100%;
+	}
+}
+
+@media (min-width: 1400px) {
+	body {
+		font-size: 18px;
+	}
+	
+	#site-navigation nav ul.nav {
+		font-size: 18px;
+	}
+
+	#site-navigation nav.bd-links p {
+		font-size: 18px;
+	}
+
+	#site-navigation {
+		width: 350px;
+	}
+
+	.toc-h2 {
+		font-size: 18px;
+	}
+	
+	.toc-h3 {
+		font-size: 1rem;
+	}
+
+	.header-article .bd-toc {
+		font-size: 18px;
+	}
+
+	#main-content > div {
+		margin-left: 10%;
+		margin-right: 10%;
+	}
+}

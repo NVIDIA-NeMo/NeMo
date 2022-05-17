@@ -110,7 +110,7 @@ class NLPDDPPlugin(DDPPlugin):
                 process_group=parallel_state.get_data_parallel_group(),
                 **self._ddp_kwargs,
             )
-            self._register_ddp_hooks()
+
             if self.no_ddp_communication_hook:
                 # When using custom gradient accumulation and allreduce, disable
                 # DDP communication hook that works on the gradient bucket.
@@ -582,13 +582,7 @@ class MegatronHalfPrecisionPlugin(NativeMixedPrecisionPlugin):
 
         if self.scaler is None:
             assert optimizer.fp32_grad_accumulation, "BF16 uses FP32 grad accumulation"
-            if optimizer.async_master_grads_allreudce:
-                # Execute the last step with asynchronous master gradients all-reduce
-                with optimizer.grad_sync():
-                    _ = closure()
-            else:
-                _ = closure()
-
+            _ = closure()
             self._after_closure(model, optimizer, optimizer_idx)
             return optimizer.step(**kwargs)
 

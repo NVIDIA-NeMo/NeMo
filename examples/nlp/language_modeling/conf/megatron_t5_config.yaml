@@ -52,6 +52,7 @@ model:
   post_process: True # add pooler
 
   megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
+  grad_allreduce_chunk_size_mb: 125
 
   seq_length: 512
   max_position_embeddings: ${.seq_length}

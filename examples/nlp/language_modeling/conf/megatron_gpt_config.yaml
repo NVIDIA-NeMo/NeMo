@@ -64,7 +64,6 @@ model:
   pre_process: True # add embedding
   post_process: True # add pooler
   persist_layer_norm: True # Use of persistent fused layer norm kernel.
-  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
 
   tokenizer:
     library: 'megatron'
@@ -82,13 +81,15 @@ model:
   fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
 
   # Megatron O2-style half-precision
-  megatron_amp_O2: False # Enable O2-level automatic mixed precision using master parameters
+  megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
+  grad_allreduce_chunk_size_mb: 125
 
   # miscellaneous
   seed: 1234
   use_cpu_initialization: False # Init weights on the CPU (slow for large models)
   onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
+  gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
 
   activations_checkpoint_method: null # 'uniform', 'block'
   activations_checkpoint_num_layers: 1 

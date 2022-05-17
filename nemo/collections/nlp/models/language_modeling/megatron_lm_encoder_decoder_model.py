@@ -216,6 +216,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
             )
         else:
+            # no pipeline parallelism so we reduce grads asynchronously
+            if self.megatron_amp_o2:
+                custom_sync_context_handler = self._optimizer.no_sync
+            else:
+                # TODO: enable async grad all reduce for O1/autocast mixed precision training
+                custom_sync_context_handler = None
             losses_reduced_per_micro_batch = forward_backward_no_pipelining(
                 forward_step_func=self.get_forward_output_and_loss_func(),
                 batch=batch_for_pipeline,
@@ -225,6 +231,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 decoder_sequence_length=decoder_seq_length,
                 dtype=self.autocast_dtype,
                 grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
+                custom_sync_context_handler=custom_sync_context_handler,
             )
 
         # only the last stages of the pipeline return losses
@@ -236,18 +243,25 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         else:
             loss_mean = torch.tensor(0.0).cuda()
 
-        # TODO: if we're not using pipeline, then we should do async allreduce (better perf)
-        # in order to do this with O2, we need the async handler to be added to apex fwd/bwd function
         if self.megatron_amp_o2:
-            # main grads are stored in the MainParamsOptimizer wrapper
-            self._optimizer.allreduce_main_grads()  # @sangkug we think this is fine
-
-            self.allreduce_word_and_position_embeddings()
+            # when using pipeline parallelism grads must be reduced after the pipeline (not asynchronously)
+            if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+                # main grads are stored in the MainParamsOptimizer wrapper
+                self._optimizer.allreduce_main_grads()
         else:
-
+            # async grad allreduce is not currently implemented for O1/autocasting mixed precision training
+            # so we allreduce gradients after the pipeline
             self.allreduce_gradients()  # @sangkug we think this is causing memory to blow up (hurts perf)
 
+        if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+            # when using pipeline parallelism, we need keep the word and position embeddings in sync
             self.allreduce_word_and_position_embeddings()
+
+        # while async grad allreduce is enabled, bprop will keep moving forward without waiting for
+        # the finish of async grad AR works. Hence, to guarantee the correctness of grads reduction,
+        # we cannot start weight update until all async grad AR works are done.
+        if self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) == 1:
+            torch.cuda.synchronize()
 
         ## logging
         # we can only log on one rank if it is rank zero so we broadcast from last rank
@@ -270,6 +284,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             prog_bar=True,
             rank_zero_only=True,
         )
+
         return loss_mean
 
     def on_train_batch_end(self, outputs, batch, batch_idx: int, unused: Optional[int] = 0) -> None:
@@ -720,17 +735,20 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 # TODO: contiguous grad bucket for fp16 is also planned to be supported
                 contiguous_grad_bucket = False
 
-            # TODO: this should be true when not using pipeline parallelism
-            # we will support that for bf16 when we have async handler from apex
-            # and we will support it for fp16 when we have it implemented in the O2 recipe
-            async_grad_allreduce = False
+            # if using tensor parallel only, we can use async grad all-reduce
+            if self.cfg.get('pipeline_model_parallel_size', 1) == 1:
+                async_grad_allreduce = True
+            else:
+                async_grad_allreduce = False
 
             self._optimizer = MainParamsOptimizerWrapper(
                 self._optimizer,
                 fp32_grad_accum=fp32_grad_accum,
                 contiguous_grad_bucket=contiguous_grad_bucket,
                 async_grad_allreduce=async_grad_allreduce,
+                grad_allreduce_chunk_size_mb=self.cfg.get('grad_allreduce_chunk_size_mb', 125),
             )
+
             assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
             if hasattr(self._cfg.optim, 'sched'):
                 sched_config = self._cfg.optim.sched

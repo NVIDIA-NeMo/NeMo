@@ -37,9 +37,10 @@ def main(cfg) -> None:
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
+
     plugins = [
         NLPDDPPlugin(
-            no_ddp_communication_hook=True,
+            no_ddp_communication_hook=True,  # we don't use DDP for async grad allreduce
             gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
             find_unused_parameters=False,
         )

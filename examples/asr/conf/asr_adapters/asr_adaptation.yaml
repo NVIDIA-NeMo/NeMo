@@ -58,12 +58,23 @@ model:
   nemo_model: null  # path to a ASR model file (.nemo)
 
   adapter:
+    # Config of the adapter training/eval script.
     adapter_name: ???  # Name of the adapter, used by the script
+    adapter_module_name: null  # Name of the preprocessing module, if required. Defaults to None, equivalent to ''.
+    adapter_state_dict_name: "adapters.pt"  # If the individual adapters must be saved, a file name can be provided here. null disables this.
+
+    # Config of the adapter module itself
     _target_: nemo.collections.common.parts.adapter_modules.LinearAdapter
     in_features: ???  # User must provide the output dimension of the layers of the model, which is the input dimension of this adapter.
     dim: 32  # The hidden dimension of the adapter, as chosen by user, but small values are preferred to reduce param count.
     activation: swish
     norm_position: 'post'  # Can be `pre` or `post`
+    dropout: 0.0  # float, dropout for the adapter
+
+    # Adapter strategy config
+    adapter_strategy:
+      _target_: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
+      stochastic_depth: 0.0  # float, setting to > 0 will enable stochastic depth for each adapter block.
 
     # Optional global config available to all adapters at a global level.
     # A global config is shared across every layer of the adapters, defining global properties rather
@@ -72,6 +83,14 @@ model:
     # and further global operations that can decide dynamically how to support the requested adapter.
     global_cfg:
       encoder_adapter: True  # ASR adapter key, determines whether to add encoder adapter modules
+
+  # Overrides the model's internal spec augment configuration
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 0
+    time_masks: 0
+    freq_width: 27
+    time_width: 0.05
 
   train_ds:
     # train dataset + dataloader config
@@ -113,19 +132,20 @@ model:
 
   optim:
     # optimizer arguments
-    # name will be merged with model config
-    # betas will be merged with model config
-    lr: 0.01  # LR depends on the scheduler used by the base model. Noam prefers 0.5, Cosine Annealing prefers 0.02
+    name: adamw
+    betas: [0.9, 0.98]
+    lr: 0.001  # LR depends on the scheduler used by the base model. Noam prefers 0.5, Cosine Annealing prefers 0.02
     weight_decay: 0  # During adaptation, since training run is short, WD is not required. Can be set if needed.
 
     # scheduler setup
     sched:
-      # name will be merged with model config
-      # d_model will be merged with model config
+      name: CosineAnnealing
+
       # scheduler config override
-      # min_lr will be merged with model config
-      warmup_steps: 1000  # Warmup steps should be set, and smaller than the trainer.max_steps set below.
+      warmup_steps: 100  # Warmup steps should be set, and smaller than the trainer.max_steps set below.
       warmup_ratio: null
+      min_lr: 1e-5
+      last_epoch: -1
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs

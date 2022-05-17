@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import math
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -708,10 +708,10 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
             raise ValueError("currently only 'same' padding is supported")
 
         kernel_size_factor = float(kernel_size_factor)
-        if type(kernel_size) in (list, tuple):
+        if isinstance(kernel_size, Iterable):
             kernel_size = [compute_new_kernel_size(k, kernel_size_factor) for k in kernel_size]
         else:
-            kernel_size = compute_new_kernel_size(kernel_size, kernel_size_factor)
+            kernel_size = [compute_new_kernel_size(kernel_size, kernel_size_factor)]
 
         if future_context < 0:
             padding_val = get_same_padding(kernel_size[0], stride[0], dilation[0])

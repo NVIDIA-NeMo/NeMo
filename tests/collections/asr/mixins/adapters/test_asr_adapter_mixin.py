@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,25 +105,12 @@ class TestASRAdapterMixin:
         assert new_num_params > original_num_params
 
     @pytest.mark.unit
-    def test_linear_adapter_config(self):
-        IGNORED_ARGS = ['_target_']
+    def test_asr_model_constructor_encoder_module(self, model):
+        original_num_params = model.num_weights
 
-        result = config_utils.assert_dataclass_signature_match(
-            adapter_modules.LinearAdapter, adapter_modules.LinearAdapterConfig, ignore_args=IGNORED_ARGS
-        )
-
-        signatures_match, cls_subset, dataclass_subset = result
-
-        assert signatures_match
-        assert cls_subset is None
-        assert dataclass_subset is None
-
-    @pytest.mark.unit
-    def test_adapter_registry_via_adapter_class(self, model):
-        # The encoder is already an adapter compatible class
-        metadata = get_registered_adapter(model.encoder.__class__)
-        assert metadata is not None
-        assert metadata.adapter_class == model.encoder.__class__
+        model.add_adapter(name='encoder:adapter_0', cfg=get_adapter_cfg())
+        new_num_params = model.num_weights
+        assert new_num_params > original_num_params
 
     @pytest.mark.unit
     def test_asr_multiple_adapter(self, model):
@@ -153,7 +140,8 @@ class TestASRAdapterMixin:
         assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
 
     @pytest.mark.unit
-    def test_asr_forward_linear_post(self, model):
+    @pytest.mark.parametrize('name', ['adapter_0', 'encoder:adapter_0'])
+    def test_asr_forward_linear_post(self, model, name):
         model.eval()
         torch.random.manual_seed(0)
         input_signal = torch.randn(2, 512)
@@ -161,13 +149,15 @@ class TestASRAdapterMixin:
 
         origial_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
-        model.add_adapter(name='adapter_0', cfg=get_adapter_cfg(norm_pos='post'))
+        model.add_adapter(name=name, cfg=get_adapter_cfg(norm_pos='post'))
         new_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
         assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
 
     @pytest.mark.unit
-    def test_asr_multi_adapter_forward(self, model):
+    @pytest.mark.parametrize('name1', ['adapter_0', 'encoder:adapter_0'])
+    @pytest.mark.parametrize('name2', ['adapter_1', 'encoder:adapter_1'])
+    def test_asr_multi_adapter_forward(self, model, name1, name2):
         model.eval()
         torch.random.manual_seed(0)
         input_signal = torch.randn(2, 512)
@@ -175,15 +165,19 @@ class TestASRAdapterMixin:
 
         origial_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
-        model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
-        model.add_adapter(name='adapter_1', cfg=get_adapter_cfg())
+        model.add_adapter(name=name1, cfg=get_adapter_cfg())
+        model.add_adapter(name=name2, cfg=get_adapter_cfg())
         new_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
-        assert model.get_enabled_adapters() == ['adapter_0', 'adapter_1']
+        resolved_name1 = model.resolve_adapter_module_name_(name1)[-1]
+        resolved_name2 = model.resolve_adapter_module_name_(name2)[-1]
+        assert model.get_enabled_adapters() == [resolved_name1, resolved_name2]
         assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
 
     @pytest.mark.unit
-    def test_asr_multi_adapter_partial_forward(self, model):
+    @pytest.mark.parametrize('name1', ['adapter_0', 'encoder:adapter_0'])
+    @pytest.mark.parametrize('name2', ['adapter_1', 'encoder:adapter_1'])
+    def test_asr_multi_adapter_partial_forward(self, model, name1, name2):
         model.eval()
         torch.random.manual_seed(0)
         input_signal = torch.randn(2, 512)
@@ -191,22 +185,24 @@ class TestASRAdapterMixin:
 
         origial_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
-        model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
-        model.add_adapter(name='adapter_1', cfg=get_adapter_cfg())
+        model.add_adapter(name=name1, cfg=get_adapter_cfg())
+        model.add_adapter(name=name2, cfg=get_adapter_cfg())
 
-        model.set_enabled_adapters(name='adapter_0', enabled=False)
+        model.set_enabled_adapters(name=name1, enabled=False)
         new_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
-        assert model.get_enabled_adapters() == ['adapter_1']
+        resolved_name2 = model.resolve_adapter_module_name_(name2)[-1]
+        assert model.get_enabled_adapters() == [resolved_name2]
         assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
 
     @pytest.mark.unit
-    def test_asr_forward_unfrozen_adapters(self, model):
+    @pytest.mark.parametrize('name', ['adapter_0', 'encoder:adapter_0'])
+    def test_asr_forward_unfrozen_adapters(self, model, name):
         model.eval()
         original_num_params = model.num_weights
 
         dim = 10
-        model.add_adapter(name='adapter_0', cfg=get_adapter_cfg(dim=dim))
+        model.add_adapter(name=name, cfg=get_adapter_cfg(dim=dim))
         model.freeze()
         model.unfreeze_enabled_adapters()
 

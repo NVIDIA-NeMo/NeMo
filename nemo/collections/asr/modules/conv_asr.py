@@ -881,7 +881,7 @@ class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):
             in_planes = cfg['in_features']
 
             if in_planes != block.planes:
-                logging.info(f"Updating Adapter input dim from {in_planes} to {block.planes}")
+                logging.info(f"Updating ConvASR Encoder Adapter input dim from {in_planes} to {block.planes}")
                 in_planes = block.planes
 
             cfg['in_features'] = in_planes

@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@ import pytest
 import torch
 
 from nemo.core import NeuralModule
-from nemo.core.classes.mixins import adapter_mixin_strategies
+from nemo.core.classes.mixins import adapter_mixin_strategies, adapter_mixins
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
 
-class DefaultModel(NeuralModule, AdapterModuleMixin):
+class DefaultModule(NeuralModule):
     def __init__(self):
         super().__init__()
 
@@ -30,13 +30,6 @@ class DefaultModel(NeuralModule, AdapterModuleMixin):
     def forward(self, x):
         x = self.fc(x)
         x = self.bn(x)
-
-        if self.is_adapter_available():
-            # For testing purposes, cache the adapter names
-            self._adapter_names = self.get_enabled_adapters()
-            # call forward over model adapters, summing them up
-            x = self.forward_enabled_adapters(x)
-
         out = x
         return out
 
@@ -46,6 +39,19 @@ class DefaultModel(NeuralModule, AdapterModuleMixin):
             if p.requires_grad:
                 num += p.numel()
         return num
+
+
+class DefaultModuleAdapter(DefaultModule, AdapterModuleMixin):
+    def forward(self, x):
+        x = super(DefaultModuleAdapter, self).forward(x)
+
+        if self.is_adapter_available():
+            # For testing purposes, cache the adapter names
+            self._adapter_names = self.get_enabled_adapters()
+            # call forward over model adapters, summing them up
+            x = self.forward_enabled_adapters(x)
+
+        return x
 
 
 def get_adapter_cfg(in_features=50, dim=100, norm_pos='pre'):
@@ -58,10 +64,40 @@ def get_adapter_cfg(in_features=50, dim=100, norm_pos='pre'):
     return cfg
 
 
+def get_classpath(cls):
+    return f'{cls.__module__}.{cls.__name__}'
+
+
+if adapter_mixins.get_registered_adapter(DefaultModule) is None:
+    adapter_mixins.register_adapter(DefaultModule, DefaultModuleAdapter)
+
+
 class TestAdapterMixin:
     @pytest.mark.unit
+    def test_module_registered_adapter_by_class_path(self):
+        classpath = get_classpath(DefaultModule)
+        adapter_meta = adapter_mixins.get_registered_adapter(classpath)
+        assert adapter_meta is not None
+        assert adapter_meta.base_class == DefaultModule
+        assert adapter_meta.adapter_class == DefaultModuleAdapter
+
+    @pytest.mark.unit
+    def test_module_registered_adapter_by_class(self):
+        adapter_meta = adapter_mixins.get_registered_adapter(DefaultModule)
+        assert adapter_meta is not None
+        assert adapter_meta.base_class == DefaultModule
+        assert adapter_meta.adapter_class == DefaultModuleAdapter
+
+    @pytest.mark.unit
+    def test_module_registered_adapter_by_adapter_class(self):
+        adapter_meta = adapter_mixins.get_registered_adapter(DefaultModuleAdapter)
+        assert adapter_meta is not None
+        assert adapter_meta.base_class == DefaultModule
+        assert adapter_meta.adapter_class == DefaultModuleAdapter
+
+    @pytest.mark.unit
     def test_single_adapter(self):
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         original_num_params = model.num_params()
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
@@ -70,7 +106,7 @@ class TestAdapterMixin:
 
     @pytest.mark.unit
     def test_multiple_adapter(self):
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         original_num_params = model.num_params()
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
@@ -87,7 +123,7 @@ class TestAdapterMixin:
         torch.random.manual_seed(0)
         x = torch.randn(2, 50)
 
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         origial_output = model(x)
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
@@ -100,7 +136,7 @@ class TestAdapterMixin:
         torch.random.manual_seed(0)
         x = torch.randn(2, 50)
 
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         origial_output = model(x)
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg(norm_pos='post'))
@@ -113,7 +149,7 @@ class TestAdapterMixin:
         torch.random.manual_seed(0)
         x = torch.randn(2, 50)
 
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         origial_output = model(x)
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
@@ -128,7 +164,7 @@ class TestAdapterMixin:
         torch.random.manual_seed(0)
         x = torch.randn(2, 50)
 
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         origial_output = model(x)
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
@@ -142,7 +178,7 @@ class TestAdapterMixin:
 
     @pytest.mark.unit
     def test_forward_unfrozen_adapters(self):
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         original_num_params = model.num_params()
 
         dim = 10
@@ -173,7 +209,7 @@ class TestAdapterMixin:
         torch.random.manual_seed(0)
         x = torch.randn(2, 50)
 
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
 
         # delete the strategy
@@ -193,7 +229,7 @@ class TestAdapterMixin:
         torch.random.manual_seed(0)
         x = torch.randn(2, 50)
 
-        model = DefaultModel()
+        model = DefaultModuleAdapter()
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
 
         # modify the strategy

@@ -58,6 +58,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/results.ht
 
 """
 
+import os
 from dataclasses import is_dataclass
 
 import pytorch_lightning as pl
@@ -117,10 +118,10 @@ def main(cfg):
     if cfg.model.pretrained_model is None and cfg.model.nemo_model is None:
         raise ValueError("Either set `cfg.model.nemo_model` or `cfg.model.pretrained_model`")
     if cfg.model.pretrained_model is not None and cfg.model.nemo_model is not None:
-        raise ValueError("Cannot set `cfg.model.nemo_model` and `cfg.model.pretrained_model`. Select one only.")
+        raise ValueError("Cannot set both `cfg.model.nemo_model` and `cfg.model.pretrained_model`. Select one only.")
 
     trainer = pl.Trainer(**cfg.trainer)
-    exp_manager(trainer, cfg.get("exp_manager", None))
+    exp_log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
 
     if cfg.model.pretrained_model is not None:
         model_cfg = ASRModel.from_pretrained(cfg.model.pretrained_model, return_config=True)
@@ -141,13 +142,25 @@ def main(cfg):
     model.setup_multiple_validation_data(cfg.model.validation_ds)
 
     # Setup optimizer
-    cfg.model.optim = update_model_cfg(model.cfg.optim, cfg.model.optim)
     model.setup_optimization(cfg.model.optim)
+
+    # Setup spec augmentation
+    if 'spec_augment' in cfg.model:
+        model.spec_augmentation = model.from_config_dict(cfg.model.spec_augment)
+    else:
+        model.spec_augmentation = None
+        del model.cfg.spec_augment
 
     # Setup adapters
     with open_dict(cfg.model.adapter):
         # Extract the name of the adapter (must be give for training)
         adapter_name = cfg.model.adapter.pop("adapter_name")
+        adapter_module_name = cfg.model.adapter.pop("adapter_module_name", None)
+        adapter_state_dict_name = cfg.model.adapter.pop("adapter_state_dict_name", None)
+
+        # augment adapter name with module name, if not provided by user
+        if adapter_module_name is not None and ':' not in adapter_name:
+            adapter_name = f'{adapter_module_name}:{adapter_name}'
 
         # Extract the global adapter config, if provided
         adapter_global_cfg = cfg.model.adapter.pop(model.adapter_global_cfg_key, None)
@@ -168,8 +181,22 @@ def main(cfg):
     # Then, Unfreeze just the adapter weights that were enabled above (no part of encoder/decoder/joint/etc)
     model.unfreeze_enabled_adapters()
 
+    # Update model config prior to training
+    model.cfg = model.cfg
+
     # Finally, train model
     trainer.fit(model)
+
+    # Save the adapter state dict
+    if adapter_state_dict_name is not None:
+        state_path = exp_log_dir if exp_log_dir is not None else os.getcwd()
+        ckpt_path = os.path.join(state_path, "checkpoints")
+        if os.path.exists(ckpt_path):
+            state_path = ckpt_path
+        state_path = os.path.join(state_path, adapter_state_dict_name)
+
+        # Save the adapter modules in a seperate file
+        model.save_adapters(str(state_path))
 
 
 if __name__ == '__main__':

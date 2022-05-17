@@ -12,15 +12,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
+from typing import Optional
 
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 from torch import nn as nn
 
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import adapter_mixin_strategies
 
 
-class LinearAdapter(nn.Module):
+class AbstractAdapterModule(nn.Module):
+    """
+    Base class of Adapter Modules, providing common functionality to all Adapter Modules.
+    """
+
+    def setup_adapter_strategy(self, adapter_strategy: Optional[adapter_mixin_strategies.AbstractAdapterStrategy]):
+        """
+        Setup adapter strategy of this class, enabling dynamic change in the way the adapter output is
+        merged with the input.
+
+        When called successfully, will assign the variable `adapter_strategy` to the module.
+
+        Args:
+            adapter_strategy: Can be a None or an implementation of AbstractAdapterStrategy.
+        """
+        # set default adapter strategy
+        if adapter_strategy is None:
+            adapter_strategy = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+
+        if is_dataclass(adapter_strategy):
+            adapter_strategy = OmegaConf.structured(adapter_strategy)
+            OmegaConf.set_struct(adapter_strategy, False)
+
+        # The config must have the `_target_` field pointing to the actual adapter strategy class
+        # which will load that strategy dynamically to this module.
+        if isinstance(adapter_strategy, dict) or OmegaConf.is_config(adapter_strategy):
+            self.adapter_strategy = instantiate(adapter_strategy)
+        elif isinstance(adapter_strategy, adapter_mixin_strategies.AbstractAdapterStrategy):
+            self.adapter_strategy = adapter_strategy
+        else:
+            raise AttributeError(f'`adapter_strategy` provided is invalid : {adapter_strategy}')
+
+
+class LinearAdapter(AbstractAdapterModule):
     """
     Simple Linear Feedforward Adapter module with LayerNorm and singe hidden layer with activation function.
     Note: The adapter explicitly initializes its final layer with all zeros in order to avoid affecting the
@@ -34,7 +70,15 @@ class LinearAdapter(nn.Module):
             will occur in the first layer or the last layer. Certain architectures may prefer one over the other.
     """
 
-    def __init__(self, in_features, dim, activation: str = 'swish', norm_position="post"):
+    def __init__(
+        self,
+        in_features: int,
+        dim: int,
+        activation: str = 'swish',
+        norm_position: str = "post",
+        dropout: float = 0.0,
+        adapter_strategy: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig = None,
+    ):
         super().__init__()
 
         activation = activation_registry[activation]()
@@ -61,8 +105,13 @@ class LinearAdapter(nn.Module):
                 nn.LayerNorm(in_features),
             )
 
-        # set default adapter strategy
-        self.adapter_strategy = adapter_mixin_strategies.ResidualAddAdapterStrategy()
+        if dropout > 0.0:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = None
+
+        # Setup adapter strategy
+        self.setup_adapter_strategy(adapter_strategy)
 
         # reset parameters
         self.reset_parameters()
@@ -77,7 +126,13 @@ class LinearAdapter(nn.Module):
             self.module[-1].bias.data *= 0
 
     def forward(self, x):
-        return self.module(x)
+        x = self.module(x)
+
+        # Add dropout if available
+        if self.dropout is not None:
+            x = self.dropout(x)
+
+        return x
 
 
 @dataclass
@@ -86,4 +141,6 @@ class LinearAdapterConfig:
     dim: int
     activation: str = 'swish'
     norm_position: str = 'post'
+    dropout: float = 0.0
+    adapter_strategy: Optional[dict] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
     _target_: str = "{0}.{1}".format(LinearAdapter.__module__, LinearAdapter.__name__)

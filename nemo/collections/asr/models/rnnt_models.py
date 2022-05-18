@@ -939,5 +939,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         Returns:
             List of available pre-trained models.
         """
-        result = []
-        return result
+        results = []
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="stt_zh_conformer_transducer_large",
+            description="For details about this model, please visit https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_zh_conformer_transducer_large",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_zh_conformer_transducer_large/versions/1.8.0/files/stt_zh_conformer_transducer_large.nemo",
+        )
+        results.append(model)
+
+        return results

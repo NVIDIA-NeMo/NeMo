@@ -2,6 +2,6 @@ pytorch-lightning>=1.6.1
 torchmetrics>=0.4.1rc0
 transformers>=4.0.1
 webdataset>=0.1.48,<=0.1.62
-omegaconf>=2.1.0,<2.2.1
+omegaconf>=2.1.2,<2.2
 hydra-core>=1.1.0
 pyyaml<6  # Pinned until omegaconf works with pyyaml>=6

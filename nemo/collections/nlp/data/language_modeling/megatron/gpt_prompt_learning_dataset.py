@@ -208,6 +208,7 @@ class GPTPromptLearningDataset(Dataset):
             # just remove that field from the template, leaving the space blank
             else:
                 input_example = input_example.replace('{' + field + '}', "")
+                input_example = input_example.strip()
 
         return input_example
 

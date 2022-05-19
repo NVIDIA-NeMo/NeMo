@@ -20,7 +20,6 @@ from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_prompt_learning_dataset import GPTPromptLearningDataset
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
@@ -558,12 +557,18 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             for_train=for_train,
         )
 
+        rank = parallel_state.get_data_parallel_rank()
+        world_size = parallel_state.get_data_parallel_world_size()
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=world_size, rank=rank, shuffle=shuffle
+        )
+
         dataloader = torch.utils.data.DataLoader(
             dataset,
             collate_fn=dataset.collate_fn,
+            sampler=sampler,
             batch_size=batch_size,
             drop_last=drop_last,
-            shuffle=shuffle,
             num_workers=num_workers,
             pin_memory=pin_memory,
         )

@@ -28,7 +28,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
-__all__ = ['PromptTable', 'VirtualPromptSource', 'VirtualPromptStyle']
+__all__ = ['PromptTable', 'VirtualPromptSource', 'VirtualPromptStyle', 'VirtualPromptPlaceholderToken']
 
 
 class VirtualPromptStyle(enum.Enum):
@@ -40,6 +40,11 @@ class VirtualPromptStyle(enum.Enum):
 class VirtualPromptSource(enum.Enum):
     PROMPT_TABLE = 'prompt_table'
     PROMPT_ENCODER = 'prompt_encoder'
+
+
+class VirtualPromptPlaceholderToken(enum.Enum):
+    BASE = '<prompt_'
+    END = '>'
 
 
 class PromptTable(NeuralModule, Exportable):

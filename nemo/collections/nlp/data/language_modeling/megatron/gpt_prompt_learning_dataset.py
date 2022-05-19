@@ -212,7 +212,7 @@ class GPTPromptLearningDataset(Dataset):
         return input_example
 
     def _insert_virtual_token_placeholders(self, input_example, virtual_token_splits):
-        """ Insert the correct number of pseudo tokens at the <|virtual_PROMPT_n|> markers """
+        """ Insert the correct number of pseudo tokens at the <|VIRTUAL_PROMPT_n|> markers """
         total_inserted_tokens = 0
 
         for idx in range(len(virtual_token_splits)):

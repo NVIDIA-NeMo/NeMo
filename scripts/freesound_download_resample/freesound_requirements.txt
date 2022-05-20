@@ -1,4 +1,4 @@
-git+git://github.com/MTG/freesound-python.git
+git+https://github.com/MTG/freesound-python.git
 requests
 requests_oauthlib
 joblib

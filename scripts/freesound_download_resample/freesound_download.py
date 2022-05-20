@@ -33,10 +33,10 @@ except ModuleNotFoundError as e:
     )
 
 
-""" 
+"""
 Instructions
 1. We will need some requirements including freesound, requests, requests_oauthlib, joblib, librosa and sox. If they are not installed, please run `pip install -r freesound_requirements.txt`
-2. Create an API key for freesound.org at  https://freesound.org/help/developers/ 
+2. Create an API key for freesound.org at  https://freesound.org/help/developers/
 3. Create a python file called `freesound_private_apikey.py` and add lined `api_key = <your Freesound api key>` and `client_id = <your Freesound client id>`
 4. Authorize by run `python freesound_download.py --authorize` and visit website, and paste response code
 5. Feel free to change any arguments in download_resample_freesound.sh such as max_samples and max_filesize
@@ -304,7 +304,12 @@ def get_resource_with_auto_refresh(session, download_url):
 
 def download_song(basepath, id, name, download_url):
     # Cleanup name
+    name = name.encode('ascii', 'replace').decode()
+    name = name.replace("?", "-")
     name = name.replace(":", "-")
+    name = name.replace("(", "-")
+    name = name.replace(")", "-")
+    name = name.replace("'", "")
     name = name.replace(",", "-")
     name = name.replace("/", "-")
     name = name.replace("\\", "-")
@@ -315,7 +320,7 @@ def download_song(basepath, id, name, download_url):
     name = name[:-4] + '.wav'
 
     # Add file id to filename
-    name = f"id_{id} " + name
+    name = f"id_{id}" + "_" + name
 
     fp = os.path.join(basepath, name)
 
@@ -417,7 +422,7 @@ def get_songs_by_category(
         min_filesize_in_mb: minimum filesize of the song in MB
         max_filesize_in_mb: maximum filesize of the song in MB
         n_jobs: number of jobs for parallel processing
-        
+
     Returns:
 
     """

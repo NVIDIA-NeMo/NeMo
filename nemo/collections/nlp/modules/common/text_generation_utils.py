@@ -649,7 +649,7 @@ def sample_sequence_batch(
             # Only prompt learning models will have a prompt table, and require task ids
             if isinstance(model, MegatronGPTPromptLearningModel):
                 batch = [tokens2use, attention_mask_repeat, positions2use, task_ids, setkey_value_array, len_array]
-                tensor_shape = [tokens2use.shape[1], micro_batch_size, model.model.cfg.hidden_size]
+                tensor_shape = [tokens2use.shape[1], micro_batch_size, model.frozen_model.cfg.hidden_size]
             else:
                 batch = [tokens2use, attention_mask_repeat, positions2use, setkey_value_array, len_array]
                 tensor_shape = [tokens2use.shape[1], micro_batch_size, model.cfg.hidden_size]

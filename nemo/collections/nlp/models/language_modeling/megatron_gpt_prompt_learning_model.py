@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import re
+import tempfile
 from typing import Any, Dict, List, Optional, Union
 
 import torch
+from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
@@ -80,20 +83,26 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         self.cfg = cfg
 
         # Load pretrained GPT model and tokenizer
-        self.model = MegatronGPTModel.restore_from(
-            self.register_artifact('language_model_path', cfg.get('language_model_path', None)),
-            trainer=trainer,
-            save_restore_connector=NLPSaveRestoreConnector(),
-        )
+        if cfg.get('language_model_path', None):
+            self.frozen_model = MegatronGPTModel.restore_from(
+                cfg.get('language_model_path'), trainer=trainer, save_restore_connector=NLPSaveRestoreConnector(),
+            )
+
+        elif cfg.get('language_model_config_path', None):
+            frozen_model_config = OmegaConf.load(
+                self.register_artifact('language_model_config_path', cfg.get('language_model_config_path'))
+            )
+            self.frozen_model = MegatronGPTModel(frozen_model_config, trainer=trainer)
+
+        else:
+            raise ValueError("Neither a valid GPT .nemo path nor a valid gpt config path was given.")
 
         # Freeze all GPT model weights for prompt-tuning/p-tuning
-        if not cfg.lm_finetune:
-            self.model.freeze()
-
-        self.tokenizer = self.model.tokenizer
-        self.float_type = self.model.model.language_model.encoder.layers[0].dtype
-        self.hidden_size = self.model.cfg.hidden_size
-        self.word_embeddings = self.model.model.language_model.embedding.word_embeddings
+        self.frozen_model.freeze()
+        self.tokenizer = self.frozen_model.tokenizer
+        self.float_type = self.frozen_model.model.language_model.encoder.layers[0].dtype
+        self.hidden_size = self.frozen_model.cfg.hidden_size
+        self.word_embeddings = self.frozen_model.model.language_model.embedding.word_embeddings
         self.existing_tasks = list(self.cfg.get('existing_tasks', []))
         self.new_tasks = list(self.cfg.get('new_tasks', []))
 
@@ -294,12 +303,12 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         else:
             input_embeds = self.embed_input_train(input_ids, taskname_ids)
 
-        position_embeddings = self.model.model.language_model.embedding.position_embeddings(position_ids)
+        position_embeddings = self.frozen_model.model.language_model.embedding.position_embeddings(position_ids)
         encoder_input = input_embeds + position_embeddings
 
         # Call forward on GPT model with preprocessed embeddings
         if self.float_type == torch.float32:
-            output = self.model.model(
+            output = self.frozen_model.model(
                 input_ids=None,
                 position_ids=None,
                 encoder_input=encoder_input,
@@ -310,7 +319,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             )
         else:
             with torch.autocast(device_type="cuda", dtype=self.float_type):
-                output = self.model.model(
+                output = self.frozen_model.model(
                     input_ids=None,
                     position_ids=None,
                     encoder_input=encoder_input,
@@ -422,7 +431,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids = batch
         output = self.forward(input_ids, position_ids, attention_mask, taskname_ids, labels, inference=False)
         output_tensor, encoder_hidden_states = output
-        loss = self.model.loss_func(loss_mask, output_tensor)
+        loss = self.frozen_model.loss_func(loss_mask, output_tensor)
         self.log('train_loss', loss)
 
         # Reduced loss for logging.
@@ -447,8 +456,8 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
 
         with torch.no_grad():
             output = self.forward(input_ids, position_ids, attention_mask, taskname_ids, labels, inference=False)
-            output_tensor, encoder_hidden_states = output
-            loss = self.model.loss_func(loss_mask, output_tensor)
+            output_tensor, _ = output
+            loss = self.frozen_model.loss_func(loss_mask, output_tensor)
             self.log('val_loss', loss)
 
             return loss
@@ -482,8 +491,25 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self.cfg.new_tasks = []
             self.cfg.virtual_prompt_style = VirtualPromptStyle.INFERENCE.value
 
-        # Save the best nemo model
-        self.save_to(save_path=self.cfg.nemo_path)
+            # No longer need gpt model's .nemo file.
+            self.cfg.language_model_path = None
+
+        # Take artifacts from frozen GPT model and save them to this model's .nemo file instead
+        self.artifacts = self.frozen_model.artifacts
+
+        # GPT model weights are saved in this model's model_weights.ckpt and gpt config
+        # saved as artifact with name frozen_model_config.yaml.
+        # tmpdir = tempfile.mkdtemp()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            frozen_model_config_yaml = os.path.join(tmpdir, "frozen_model_config.yaml")
+            self.frozen_model.to_config_file(path2yaml_file=frozen_model_config_yaml)
+            self.cfg.language_model_config_path = self.register_artifact(
+                "language_model_config_path", frozen_model_config_yaml
+            )
+
+            # Save the best nemo model
+            self.save_to(save_path=self.cfg.nemo_path)
+
         logging.info(f"The final model was saved to {self.cfg.nemo_path}")
 
     def setup(self, stage=None):
@@ -550,7 +576,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             task_templates=self.task_templates,
             pseudo_tokens=self.pseudo_tokens,
             pad_token_id=self.pad_token_id,
-            max_seq_length=self.cfg.data.get('max_seq_length', self.model.cfg.max_position_embeddings),
+            max_seq_length=self.cfg.data.get('max_seq_length', self.frozen_model.cfg.max_position_embeddings),
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=self.cfg.data.get('add_bos', False),
             add_eos=self.cfg.data.get('add_eos', True),
@@ -609,14 +635,14 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             task_templates=self.task_templates,
             pseudo_tokens=self.pseudo_tokens,
             pad_token_id=self.pad_token_id,
-            max_seq_length=self.cfg.data.get('max_seq_length', self.model.cfg.max_position_embeddings),
+            max_seq_length=self.cfg.data.get('max_seq_length', self.frozen_model.cfg.max_position_embeddings),
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=sampling_params["add_BOS"],
             add_eos=False,
             for_train=False,
         )
         task_ids, processed_inputs = dataset.get_all_examples(tokens_to_generate=length_params['max_length'])
-        self.model.model.parallel_output = False
+        self.frozen_model.model.parallel_output = False
 
         # Call same generate code as in MegatronGPT
         return megatron_gpt_generate(

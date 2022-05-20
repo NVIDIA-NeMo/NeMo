@@ -135,7 +135,7 @@ def __process_data(data_folder: str, data_set: str):
 
     """
     fullpath = os.path.abspath(data_folder)
-    scp = glob(fullpath + "/**/*.wav", recursive=True)
+    filelist = glob(fullpath + "/**/*.wav", recursive=True)
     out = os.path.join(fullpath, data_set + "_all.json")
     utt2spk = os.path.join(fullpath, "utt2spk")
     utt2spk_file = open(utt2spk, "w")
@@ -152,7 +152,7 @@ def __process_data(data_folder: str, data_set: str):
     speakers = []
     lines = []
     with open(out, "w") as outfile:
-        for line in tqdm(scp):
+        for line in tqdm(filelist):
             line = line.strip()
             y, sr = l.load(line, sr=None)
             if sr != 16000:

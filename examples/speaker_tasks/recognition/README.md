@@ -48,8 +48,8 @@ We first generate manifest file to get embeddings. The embeddings are then used 
 
 ```bash
 # create list of files from voxceleb1 test folder (40 speaker test set)
-find <path/to/voxceleb1_test/directory/> -iname '*.wav' > voxceleb1_test_files.scp
-python <NeMo_root>/scripts/speaker_tasks/scp_to_manifest.py --scp voxceleb1_test_files.scp --id -3 --out voxceleb1_test_manifest.json 
+find <path/to/voxceleb1_test/directory/> -iname '*.wav' > voxceleb1_test_files.txt
+python <NeMo_root>/scripts/speaker_tasks/filelist_to_manifest.py --filelist voxceleb1_test_files.txt --id -3 --out voxceleb1_test_manifest.json 
 ```
 ### Embedding Extraction 
 Now using the manifest file created, we can extract embeddings to `data` folder using:
@@ -92,14 +92,14 @@ ffmpeg -v 8 -i </path/to/m4a/file> -f wav -acodec pcm_s16le <path/to/wav/file>
 
 Generate a list file that contains paths to all the dev audio files from voxceleb1 and voxceleb2 using find command as shown below:
 ```bash 
-find <path/to/voxceleb1/dev/folder/> -iname '*.wav' > voxceleb1_dev.scp
-find <path/to/voxceleb2/dev/folder/> -iname '*.wav' > voxceleb2_dev.scp
-cat voxceleb1_dev.scp voxceleb2_dev.scp > voxceleb12.scp
+find <path/to/voxceleb1/dev/folder/> -iname '*.wav' > voxceleb1_dev.txt
+find <path/to/voxceleb2/dev/folder/> -iname '*.wav' > voxceleb2_dev.txt
+cat voxceleb1_dev.txt voxceleb2_dev.txt > voxceleb12.txt
 ``` 
 
-This list file is now used to generate training and validation manifest files using a script provided in `<NeMo_root>/scripts/speaker_tasks/`. This script has optional arguments to split the whole manifest file in to train and dev and also chunk audio files to smaller chunks for robust training (for testing, we don't need this). 
+This list file is now used to generate training and validation manifest files using a script provided in `<NeMo_root>/scripts/speaker_tasks/`. This script has optional arguments to split the whole manifest file in to train and dev and also chunk audio files to smaller segments for robust training (for testing, we don't need this). 
 
 ```bash
-python <NeMo_root>/scripts/speaker_tasks/scp_to_manifest.py --scp voxceleb12.scp --id -3 --out voxceleb12_manifest.json --split --create_chunks
+python <NeMo_root>/scripts/speaker_tasks/filelist_to_manifest.py --filelist voxceleb12.txt --id -3 --out voxceleb12_manifest.json --split --create_segments
 ```
 This creates `train.json, dev.json` in the current working directory.

@@ -3023,7 +3023,7 @@ pipeline {
             model.data.train_ds.task_name=rte \
             model.data.train_ds.global_batch_size=4 \
             model.data.train_ds.micro_batch_size=2 \
-            model.data.validation_ds.global_batch_size=4 \
+            model.data.validation_ds.global_batch_size=2 \
             model.data.validation_ds.micro_batch_size=2 \
             model.data.train_ds.file_path=/home/TestData/nlp/megatron_t5/data/train_ci.tsv \
             model.data.validation_ds.task_name=rte \
@@ -3051,9 +3051,9 @@ pipeline {
             model.pipeline_model_parallel_split_rank=0 \
             model.data.train_ds.global_batch_size=4 \
             model.data.train_ds.micro_batch_size=2 \
-            model.data.validation_ds.global_batch_size=4 \
+            model.data.validation_ds.global_batch_size=2 \
             model.data.validation_ds.micro_batch_size=2 \
-            model.data.test_ds.global_batch_size=4 \
+            model.data.test_ds.global_batch_size=2 \
             model.data.test_ds.micro_batch_size=2 \
             model.data.train_ds.task_name=rte \
             model.data.train_ds.file_path=/home/TestData/nlp/megatron_t5/data/train_ci.tsv \
@@ -3075,7 +3075,6 @@ pipeline {
         }
       }
       parallel {
-        // TODO(Oktai15): update it in 1.8.0 version
         stage('Tacotron 2') {
           steps {
             sh 'python examples/tts/tacotron2.py \
@@ -3085,13 +3084,18 @@ pipeline {
             trainer.accelerator="gpu" \
             +trainer.limit_train_batches=1 +trainer.limit_val_batches=1 trainer.max_epochs=1 \
             trainer.strategy=null \
-            model.train_ds.dataloader_params.batch_size=4 \
-            model.validation_ds.dataloader_params.batch_size=4 \
             model.decoder.decoder_rnn_dim=256 \
             model.decoder.attention_rnn_dim=1024 \
             model.decoder.prenet_dim=128 \
             model.postnet.postnet_n_convolutions=3 \
-            ~trainer.check_val_every_n_epoch'
+            model.train_ds.dataloader_params.batch_size=4 \
+            model.train_ds.dataloader_params.num_workers=1 \
+            model.validation_ds.dataloader_params.batch_size=4 \
+            model.validation_ds.dataloader_params.num_workers=1 \
+            ~model.text_normalizer \
+            ~model.text_normalizer_call_kwargs \
+            ~trainer.check_val_every_n_epoch \
+            '
           }
         }
         stage('WaveGlow') {

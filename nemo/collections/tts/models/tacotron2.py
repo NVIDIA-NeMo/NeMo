@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -19,11 +20,15 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import MISSING, DictConfig, OmegaConf, open_dict
 from omegaconf.errors import ConfigAttributeError
-from pytorch_lightning.loggers import LoggerCollection, TensorBoardLogger
+from pytorch_lightning.loggers import LoggerCollection, TensorBoardLogger, WandbLogger
 from torch import nn
 
 from nemo.collections.common.parts.preprocessing import parsers
-from nemo.collections.tts.helpers.helpers import get_mask_from_lengths, tacotron2_log_to_tb_func
+from nemo.collections.tts.helpers.helpers import (
+    get_mask_from_lengths,
+    tacotron2_log_to_tb_func,
+    tacotron2_log_to_wandb_func,
+)
 from nemo.collections.tts.losses.tacotron2loss import Tacotron2Loss
 from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -36,7 +41,7 @@ from nemo.core.neural_types.elements import (
     SequenceToSequenceAlignmentType,
 )
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.utils import logging
+from nemo.utils import logging, model_utils
 
 
 @dataclass
@@ -60,8 +65,28 @@ class Tacotron2Model(SpectrogramGenerator):
     """Tacotron 2 Model that is used to generate mel spectrograms from text"""
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
-        if isinstance(cfg, dict):
-            cfg = OmegaConf.create(cfg)
+        # Convert to Hydra 1.0 compatible DictConfig
+        cfg = model_utils.convert_model_config_to_dict_config(cfg)
+        cfg = model_utils.maybe_update_config_version(cfg)
+
+        # setup normalizer
+        self.normalizer = None
+        self.text_normalizer_call = None
+        self.text_normalizer_call_kwargs = {}
+        self._setup_normalizer(cfg)
+
+        # setup tokenizer
+        self.tokenizer = None
+        if hasattr(cfg, 'text_tokenizer'):
+            self._setup_tokenizer(cfg)
+
+            self.num_tokens = len(self.tokenizer.tokens)
+            self.tokenizer_pad = self.tokenizer.pad
+            self.tokenizer_unk = self.tokenizer.oov
+            # assert self.tokenizer is not None
+        else:
+            self.num_tokens = len(cfg.labels) + 3
+
         super().__init__(cfg=cfg, trainer=trainer)
 
         schema = OmegaConf.structured(Tacotron2Config)
@@ -73,17 +98,17 @@ class Tacotron2Model(SpectrogramGenerator):
         # Ensure passed cfg is compliant with schema
         try:
             OmegaConf.merge(cfg, schema)
-            self.pad_value = self._cfg.preprocessor.pad_value
+            self.pad_value = cfg.preprocessor.pad_value
         except ConfigAttributeError:
-            self.pad_value = self._cfg.preprocessor.params.pad_value
+            self.pad_value = cfg.preprocessor.params.pad_value
             logging.warning(
                 "Your config is using an old NeMo yaml configuration. Please ensure that the yaml matches the "
                 "current version in the main branch for future compatibility."
             )
 
         self._parser = None
-        self.audio_to_melspec_precessor = instantiate(self._cfg.preprocessor)
-        self.text_embedding = nn.Embedding(len(cfg.labels) + 3, 512)
+        self.audio_to_melspec_precessor = instantiate(cfg.preprocessor)
+        self.text_embedding = nn.Embedding(self.num_tokens, 512)
         self.encoder = instantiate(self._cfg.encoder)
         self.decoder = instantiate(self._cfg.decoder)
         self.postnet = instantiate(self._cfg.postnet)
@@ -94,46 +119,45 @@ class Tacotron2Model(SpectrogramGenerator):
     def parser(self):
         if self._parser is not None:
             return self._parser
-        if self._validation_dl is not None:
-            return self._validation_dl.dataset.manifest_processor.parser
-        if self._test_dl is not None:
-            return self._test_dl.dataset.manifest_processor.parser
-        if self._train_dl is not None:
-            return self._train_dl.dataset.manifest_processor.parser
 
-        # Else construct a parser
-        # Try to get params from validation, test, and then train
-        params = {}
-        try:
-            params = self._cfg.validation_ds.dataset
-        except ConfigAttributeError:
-            pass
-        if params == {}:
-            try:
-                params = self._cfg.test_ds.dataset
-            except ConfigAttributeError:
-                pass
-        if params == {}:
-            try:
-                params = self._cfg.train_ds.dataset
-            except ConfigAttributeError:
-                pass
+        ds_class_name = self._cfg.train_ds.dataset._target_.split(".")[-1]
+        if ds_class_name == "TTSDataset":
+            self._parser = None
+        elif hasattr(self._cfg, "labels"):
+            self._parser = parsers.make_parser(
+                labels=self._cfg.labels,
+                name='en',
+                unk_id=-1,
+                blank_id=-1,
+                do_normalize=True,
+                abbreviation_version="fastpitch",
+                make_table=False,
+            )
+        elif ds_class_name == "AudioToCharWithPriorAndPitchDataset":
+            self.parser = self.vocab.encode
+        else:
+            raise ValueError("Wanted to setup parser, but model does not have necessary paramaters")
 
-        name = params.get('parser', None) or 'en'
-        unk_id = params.get('unk_index', None) or -1
-        blank_id = params.get('blank_index', None) or -1
-        do_normalize = params.get('normalize', True)
-        self._parser = parsers.make_parser(
-            labels=self._cfg.labels, name=name, unk_id=unk_id, blank_id=blank_id, do_normalize=do_normalize,
-        )
         return self._parser
 
-    def parse(self, str_input: str) -> torch.tensor:
-        tokens = self.parser(str_input)
-        # Parser doesn't add bos and eos ids, so maunally add it
-        tokens = [len(self._cfg.labels)] + tokens + [len(self._cfg.labels) + 1]
-        tokens_tensor = torch.tensor(tokens).unsqueeze_(0).to(self.device)
+    def parse(self, text: str, normalize=True) -> torch.Tensor:
+        if self.training:
+            logging.warning("parse() is meant to be called in eval mode.")
+        if normalize and self.text_normalizer_call is not None:
+            text = self.text_normalizer_call(text, **self.text_normalizer_call_kwargs)
 
+        eval_phon_mode = contextlib.nullcontext()
+        if hasattr(self.tokenizer, "set_phone_prob"):
+            eval_phon_mode = self.tokenizer.set_phone_prob(prob=1.0)
+
+        with eval_phon_mode:
+            if self.tokenizer is not None:
+                tokens = self.tokenizer.encode(text)
+            else:
+                tokens = self.parser(text)
+                # Old parser doesn't add bos and eos ids, so maunally add it
+                tokens = [len(self._cfg.labels)] + tokens + [len(self._cfg.labels) + 1]
+        tokens_tensor = torch.tensor(tokens).unsqueeze_(0).to(self.device)
         return tokens_tensor
 
     @property
@@ -259,17 +283,55 @@ class Tacotron2Model(SpectrogramGenerator):
 
     def validation_epoch_end(self, outputs):
         if self.logger is not None and self.logger.experiment is not None:
-            tb_logger = self.logger.experiment
+            logger = self.logger.experiment
             if isinstance(self.logger, LoggerCollection):
                 for logger in self.logger:
                     if isinstance(logger, TensorBoardLogger):
-                        tb_logger = logger.experiment
+                        logger = logger.experiment
                         break
-            tacotron2_log_to_tb_func(
-                tb_logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
-            )
+            if isinstance(logger, TensorBoardLogger):
+                tacotron2_log_to_tb_func(
+                    logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
+                )
+            elif isinstance(logger, WandbLogger):
+                tacotron2_log_to_wandb_func(
+                    logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
+                )
         avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()  # This reduces across batches, not workers!
         self.log('val_loss', avg_loss)
+
+    def _setup_normalizer(self, cfg):
+        if "text_normalizer" in cfg:
+            normalizer_kwargs = {}
+
+            if "whitelist" in cfg.text_normalizer:
+                normalizer_kwargs["whitelist"] = self.register_artifact(
+                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
+                )
+
+            self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
+            self.text_normalizer_call = self.normalizer.normalize
+            if "text_normalizer_call_kwargs" in cfg:
+                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
+
+    def _setup_tokenizer(self, cfg):
+        text_tokenizer_kwargs = {}
+        if "g2p" in cfg.text_tokenizer and cfg.text_tokenizer.g2p is not None:
+            g2p_kwargs = {}
+
+            if "phoneme_dict" in cfg.text_tokenizer.g2p:
+                g2p_kwargs["phoneme_dict"] = self.register_artifact(
+                    'text_tokenizer.g2p.phoneme_dict', cfg.text_tokenizer.g2p.phoneme_dict,
+                )
+
+            if "heteronyms" in cfg.text_tokenizer.g2p:
+                g2p_kwargs["heteronyms"] = self.register_artifact(
+                    'text_tokenizer.g2p.heteronyms', cfg.text_tokenizer.g2p.heteronyms,
+                )
+
+            text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
+
+        self.tokenizer = instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
 
     def __setup_dataloader_from_config(self, cfg, shuffle_should_be: bool = True, name: str = "train"):
         if "dataset" not in cfg or not isinstance(cfg.dataset, DictConfig):
@@ -289,11 +351,13 @@ class Tacotron2Model(SpectrogramGenerator):
         elif not shuffle_should_be and cfg.dataloader_params.shuffle:
             logging.error(f"The {name} dataloader for {self} has shuffle set to True!!!")
 
-        labels = self._cfg.labels
-
         dataset = instantiate(
-            cfg.dataset, labels=labels, bos_id=len(labels), eos_id=len(labels) + 1, pad_id=len(labels) + 2
+            cfg.dataset,
+            text_normalizer=self.normalizer,
+            text_normalizer_call_kwargs=self.text_normalizer_call_kwargs,
+            text_tokenizer=self.tokenizer,
         )
+
         return torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
 
     def setup_training_data(self, cfg):

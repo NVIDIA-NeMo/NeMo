@@ -14,11 +14,11 @@ Diarization inference is based on Hydra configurations which are fulfilled by ``
 
   {"audio_filepath": "/path/to/abcd.wav", "offset": 0, "duration": null, "label": "infer", "text": "-", "num_speakers": null, "rttm_filepath": "/path/to/rttm/abcd.rttm", "uem_filepath": "/path/to/uem/abcd.uem"}
 
-In each line of the input manifest file, ``audio_filepath`` item is mandatory while the rest of the items are optional and can be passed for desired diarization setting. We refer to this file as a manifest file. This manifest file can be created by using the script in ``<NeMo_git_root>/scripts/speaker_tasks/pathsfiles_to_manifest.py``. The following example shows how to run ``pathsfiles_to_manifest.py`` by providing path list files.
+In each line of the input manifest file, ``audio_filepath`` item is mandatory while the rest of the items are optional and can be passed for desired diarization setting. We refer to this file as a manifest file. This manifest file can be created by using the script in ``<NeMo_git_root>/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py``. The following example shows how to run ``pathfiles_to_diarize_manifest.py`` by providing path list files.
 
 .. code-block:: bash
    
-    python pathsfiles_to_manifest.py --paths2audio_files /path/to/audio_file_path_list.txt \
+    python pathfiles_to_diarize_manifest.py --paths2audio_files /path/to/audio_file_path_list.txt \
                                      --paths2txt_files /path/to/transcript_file_path_list.txt \
                                      --paths2rttm_files /path/to/rttm_file_path_list.txt \
                                      --paths2uem_files /path/to/uem_file_path_list.txt \
@@ -40,7 +40,7 @@ The ``--paths2audio_files`` and ``--manifest_filepath`` are required arguments. 
   /path/to/abcd02.rttm
    
 
-The path list files containing the absolute paths to these WAV, RTTM, TXT, CTM and UEM files should be provided as in the above example. ``pathsfiles_to_manifest.py`` script will match each file using the unique filename (e.g. ``abcd``). Finally, the absolute path of the created manifest file should be provided through Hydra configuration as shown below:
+The path list files containing the absolute paths to these WAV, RTTM, TXT, CTM and UEM files should be provided as in the above example. ``pathsfiles_to_diarize_manifest.py`` script will match each file using the unique filename (e.g. ``abcd``). Finally, the absolute path of the created manifest file should be provided through Hydra configuration as shown below:
 
 .. code-block:: yaml
    
@@ -127,7 +127,7 @@ To evaluate the performance on AMI Meeting Corpus, the following instructions ca
   - Download AMI Meeting Corpus from `AMI website <https://groups.inf.ed.ac.uk/ami/corpus/>`_. Choose ``Headset mix`` which has a mono wav file for each session.
   - Download the test set (whitelist) from `Pyannotate AMI test set whitelist <https://raw.githubusercontent.com/pyannote/pyannote-audio/master/tutorials/data_preparation/AMI/MixHeadset.test.lst>`_.
   - The merged RTTM file for AMI test set can be downloaded from `Pyannotate AMI test set RTTM file <https://raw.githubusercontent.com/pyannote/pyannote-audio/master/tutorials/data_preparation/AMI/MixHeadset.test.rttm>`_. Note that this file should be split into individual rttm files. Download split rttm files for AMI test set from `AMI test set split RTTM files <https://raw.githubusercontent.com/tango4j/diarization_annotation/main/AMI_corpus/test/split_rttms.tar.gz>`_.
-  - Generate an input manifest file using ``<NeMo_git_root>/scripts/speaker_tasks/pathsfiles_to_manifest.py``
+  - Generate an input manifest file using ``<NeMo_git_root>/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py``
 
 
 CallHome American English Speech (CHAES), LDC97S42
@@ -154,5 +154,5 @@ To evaluate the performance on AMI Meeting Corpus, the following instructions ca
   - Download CHAES Meeting Corpus at LDC website `LDC97S42 <https://catalog.ldc.upenn.edu/LDC97S42>`_ (CHAES is not publicly available).
   - Download the CH109 filename list (whitelist) from `CH109 whitelist <https://raw.githubusercontent.com/tango4j/diarization_annotation/main/CH109/ch109_whitelist.txt>`_.
   - Download RTTM files for CH109 set from `CH109 RTTM files <https://raw.githubusercontent.com/tango4j/diarization_annotation/main/CH109/split_rttms.tar.gz>`_.
-  - Generate an input manifest file using ``<NeMo_git_root>/scripts/speaker_tasks/pathsfiles_to_manifest.py``
+  - Generate an input manifest file using ``<NeMo_git_root>/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py``
 

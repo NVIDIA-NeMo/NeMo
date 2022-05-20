@@ -108,7 +108,12 @@ from nemo.utils.exp_manager import exp_manager
 @hydra_runner(config_path="conf", config_name="text_classification_config")
 def main(cfg: DictConfig) -> None:
     logging.info(f'\nConfig Params:\n{OmegaConf.to_yaml(cfg)}')
-    trainer = pl.Trainer(plugins=[NLPDDPPlugin()], **cfg.trainer)
+    try:
+        plugin = NLPDDPPlugin()
+    except (ImportError, ModuleNotFoundError):
+        plugin = None
+
+    trainer = pl.Trainer(plugins=plugin, **cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     if not cfg.model.train_ds.file_path:

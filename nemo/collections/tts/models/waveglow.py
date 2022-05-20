@@ -88,9 +88,7 @@ class WaveGlowModel(GlowVocoder, Exportable):
     ) -> torch.Tensor:
         with self.nemo_infer():
             self.waveglow.remove_weightnorm()
-            audio = self.waveglow(
-                spec=spec.to(self.waveglow.upsample.weight.dtype), run_inverse=True, audio=None, sigma=sigma
-            )
+            audio = self.waveglow(spec=spec.to(self.waveglow.upsample.weight.dtype), sigma=sigma)
             if denoise:
                 audio = self.denoise(audio=audio, strength=denoiser_strength)
 

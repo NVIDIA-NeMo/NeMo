@@ -207,9 +207,10 @@ class EditingTask(object):
                 output_tokens.append(frag.replace(" ", "").replace("_", ""))
             else:
                 output_tokens.append(frag.strip().replace("_", ""))
-
+        output_str = " ".join(output_tokens)
+        output_str = re.sub(r" +", " ", output_str)
         return (
-            " ".join(output_tokens),
+            output_str,
             " ".join(self.source_tokens),
             " ".join(out_tags_without_swap),
             output_tags_with_swap_str,

@@ -27,7 +27,7 @@ During inference, we perform frame-level prediction by two approaches:
 This script will also help you perform postprocessing and generate speech segments if needed
 
 Usage:
-python vad_infer.py --config-path="../conf/VAD" --config-name="vad_inference_postprocessing.yaml" dataset=<Path of json file of evaluation data. Audio files should have unique names>
+python vad_infer.py --config-path="../conf/vad" --config-name="vad_inference_postprocessing.yaml" dataset=<Path of json file of evaluation data. Audio files should have unique names>
 
 """
 import json
@@ -49,7 +49,7 @@ from nemo.utils import logging
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-@hydra_runner(config_path="../conf/VAD", config_name="vad_inference_postprocessing.yaml")
+@hydra_runner(config_path="../conf/vad", config_name="vad_inference_postprocessing.yaml")
 def main(cfg):
     if not cfg.dataset:
         raise ValueError("You must input the path of json file of evaluation data")

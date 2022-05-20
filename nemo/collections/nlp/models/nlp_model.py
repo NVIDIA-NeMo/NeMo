@@ -119,9 +119,6 @@ class NLPModel(ModelPT, Exportable):
             # Required to pull up the config for MegatronBert models
             self.pretrained_model_name = cfg.language_model.pretrained_model_name
 
-            # register encoder config
-            self.register_bert_model()
-
             if (
                 cfg.tokenizer is not None
                 and cfg.tokenizer.get("tokenizer_name", "") is not None
@@ -133,6 +130,8 @@ class NLPModel(ModelPT, Exportable):
 
         if cfg.get('language_model') and not no_lm_init:
             self.bert_model = bert_model
+            # register encoder config
+            self.register_bert_model()
 
     def register_artifact(
         self, config_path: str, src: str, verify_src_exists: bool = False,

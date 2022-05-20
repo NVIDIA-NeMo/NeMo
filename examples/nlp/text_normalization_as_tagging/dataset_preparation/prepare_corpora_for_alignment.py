@@ -47,7 +47,7 @@ from os import listdir, mkdir
 from os.path import isdir, join
 from shutil import rmtree
 
-from examples.nlp.text_normalization_as_tagging.dataset_preparation.utils import get_src_and_dst_for_alignment
+from nemo.collections.nlp.data.text_normalization_as_tagging.utils import get_src_and_dst_for_alignment
 
 parser = ArgumentParser(description='Split corpus to subcorpora for giza alignment')
 parser.add_argument('--data_dir', type=str, required=True, help='Path to folder with data')

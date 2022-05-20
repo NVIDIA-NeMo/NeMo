@@ -56,6 +56,12 @@ from pystoi import stoi
 
 from nemo.utils import logging
 
+HAVE_WANDB = True
+try:
+    import wandb
+except ModuleNotFoundError:
+    HAVE_WANDB = False
+
 try:
     from pytorch_lightning.utilities import rank_zero_only
 except ModuleNotFoundError:
@@ -284,6 +290,7 @@ def tacotron2_log_to_tb_func(
             step,
             dataformats="HWC",
         )
+
         if add_audio:
             filterbank = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmax=fmax)
             log_mel = mel_postnet[0].data.cpu().numpy().T
@@ -297,6 +304,67 @@ def tacotron2_log_to_tb_func(
             magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
             audio = griffin_lim(magnitude.T ** griffin_lim_power)
             swriter.add_audio(f"audio/{tag}_target", audio / max(np.abs(audio)), step, sample_rate=sr)
+
+
+def tacotron2_log_to_wandb_func(
+    swriter,
+    tensors,
+    step,
+    tag="train",
+    log_images=False,
+    log_images_freq=1,
+    add_audio=True,
+    griffin_lim_mag_scale=1024,
+    griffin_lim_power=1.2,
+    sr=22050,
+    n_fft=1024,
+    n_mels=80,
+    fmax=8000,
+):
+    _, spec_target, mel_postnet, gate, gate_target, alignments = tensors
+    if not HAVE_WANDB:
+        return
+    if log_images and step % log_images_freq == 0:
+        alignments = []
+        specs = []
+        gates = []
+        alignments += [
+            wandb.Image(plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T), caption=f"{tag}_alignment",)
+        ]
+        alignments += [
+            wandb.Image(plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()), caption=f"{tag}_mel_target",),
+            wandb.Image(plot_spectrogram_to_numpy(mel_postnet[0].data.cpu().numpy()), caption=f"{tag}_mel_predicted",),
+        ]
+        gates += [
+            wandb.Image(
+                plot_gate_outputs_to_numpy(
+                    gate_target[0].data.cpu().numpy(), torch.sigmoid(gate[0]).data.cpu().numpy(),
+                ),
+                caption=f"{tag}_gate",
+            )
+        ]
+
+        swriter.log({"specs": specs, "alignments": alignments, "gates": gates})
+
+        if add_audio:
+            audios = []
+            filterbank = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmax=fmax)
+            log_mel = mel_postnet[0].data.cpu().numpy().T
+            mel = np.exp(log_mel)
+            magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
+            audio_pred = griffin_lim(magnitude.T ** griffin_lim_power)
+
+            log_mel = spec_target[0].data.cpu().numpy().T
+            mel = np.exp(log_mel)
+            magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
+            audio_true = griffin_lim(magnitude.T ** griffin_lim_power)
+
+            audios += [
+                wandb.Audio(audio_true / max(np.abs(audio_true)), caption=f"{tag}_wav_target", sample_rate=sr,),
+                wandb.Audio(audio_pred / max(np.abs(audio_pred)), caption=f"{tag}_wav_predicted", sample_rate=sr,),
+            ]
+
+            swriter.log({"audios": audios})
 
 
 def plot_alignment_to_numpy(alignment, info=None):

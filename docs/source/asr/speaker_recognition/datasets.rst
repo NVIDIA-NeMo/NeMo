@@ -24,35 +24,35 @@ After download and conversion, your `data` folder should contain directories wit
 All-other Datasets
 ------------------
 
-These methods can be applied to any dataset to get similar training manifest files.
+These methods can be applied to any dataset to get similar training or inference manifest files.
 
-First we prepare scp file(s) containing absolute paths to all the wav files required for each of the train, dev, and test set. This can be easily prepared by using ``find`` bash command as follows:
+`filelist_to_manifest.py` script in `$<NeMo_root>/scripts/speaker_tasks/` folder generates manifest file from a text file containing paths to audio files. 
+
+sample `filelist.txt` file contents:
 
 .. code-block:: bash 
 
-    !find {data_dir}/{train_dir}  -iname "*.wav" > data/train_all.scp
-    !head -n 3 data/train_all.scp
+    /data/datasets/voxceleb/data/dev/aac_wav/id00179/Q3G6nMr1ji0/00086.wav
+    /data/datasets/voxceleb/data/dev/aac_wav/id00806/VjpQLxHQQe4/00302.wav
+    /data/datasets/voxceleb/data/dev/aac_wav/id01510/k2tzXQXvNPU/00132.wav
 
+This list file is used to generate manifest file. This script has optional arguments to split the whole manifest file in to train and dev and also segment audio files to smaller segments for robust training (for testing, we don't need to create segments for each utterance).
 
-Based on the created scp file, we use `scp_to_manifest.py` script to convert it to a manifest file. This script takes three optional arguments:
+sample usage:
 
-* id: This value is used to assign speaker label to each audio file. This is the field number separated by `/` from the audio file path. For example if all audio file paths follow the convention of path/to/speaker_folder/unique_speaker_label/file_name.wav, by picking `id=3 or id=-2` script picks unique_speaker_label as label for that utterance.
-* split: Optional argument to split the manifest in to train and dev json files
-* create_chunks: Optional argument to randomly spit each audio file in to chunks of 1.5 sec, 2 sec and 3 sec for robust training of speaker embedding extractor model.
-
-
-After the download and conversion, your data folder should contain directories with manifest files as:
+.. code-block:: bash 
     
-* `data/<path>/train.json`
-* `data/<path>/dev.json`
-* `data/<path>/train_all.json`
-    
-Each line in the manifest file describes a training sample - audio_filepath contains the path to the wav file, duration it's duration in seconds, and label is the speaker class label:
+    python filelist_to_manifest.py --filelist=filelist.txt --id=-3 --out=speaker_manifest.json 
 
+This would create a manifest containing file contents as shown below:
 .. code-block:: json
     
-    {"audio_filepath": "<absolute path to dataset>/audio_file.wav", "duration": 3.9, "label": "speaker_id"}
+    {"audio_filepath": "/data/datasets/voxceleb/data/dev/aac_wav/id00179/Q3G6nMr1ji0/00086.wav", "offset": 0, "duration": 4.16, "label": "id00179"}
+    {"audio_filepath": "/data/datasets/voxceleb/data/dev/aac_wav/id00806/VjpQLxHQQe4/00302.wav", "offset": 0, "duration": 12.288, "label": "id00806"}
+    {"audio_filepath": "/data/datasets/voxceleb/data/dev/aac_wav/id01510/k2tzXQXvNPU/00132.wav", "offset": 0, "duration": 4.608, "label": "id01510"}
 
+For other optional arguments like splitting manifest file to train and dev and for creating segements from each utterance refer to the arguments 
+described in the script.
 
 Tarred Datasets
 ---------------

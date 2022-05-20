@@ -107,6 +107,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         self.task = None
         self._accuracy = TopKClassificationAccuracy(top_k=[1])
         self.labels = None
+        if hasattr(self._cfg, 'spec_augment') and self._cfg.spec_augment is not None:
+            self.spec_augmentation = EncDecSpeakerLabelModel.from_config_dict(self._cfg.spec_augment)
+        else:
+            self.spec_augmentation = None
 
     @staticmethod
     def extract_labels(data_layer_config):
@@ -247,7 +251,6 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             "embs": NeuralType(('B', 'D'), AcousticEncodedRepresentation()),
         }
 
-    @typecheck()
     def forward_for_export(self, processed_signal, processed_signal_len):
         encoded, length = self.encoder(audio_signal=processed_signal, length=processed_signal_len)
         logits, embs = self.decoder(encoder_output=encoded, length=length)
@@ -258,6 +261,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         processed_signal, processed_signal_len = self.preprocessor(
             input_signal=input_signal, length=input_signal_length,
         )
+
+        if self.spec_augmentation is not None and self.training:
+            processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_len)
+
         encoded, length = self.encoder(audio_signal=processed_signal, length=processed_signal_len)
         logits, embs = self.decoder(encoder_output=encoded, length=length)
         return logits, embs

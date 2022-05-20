@@ -50,7 +50,7 @@ def get_dict_from_wavlist(pathlist):
     path_dict = od()
     pathlist = sorted(pathlist)
     for line_path in pathlist:
-        uniq_id = os.path.basename(line_path).split('.')[0]
+        uniq_id = os.path.splitext(os.path.basename(line_path))[0]
         path_dict[uniq_id] = line_path
     return path_dict
 
@@ -58,7 +58,7 @@ def get_dict_from_wavlist(pathlist):
 def get_dict_from_list(data_pathlist, uniqids):
     path_dict = {}
     for line_path in data_pathlist:
-        uniq_id = os.path.basename(line_path).split('.')[0]
+        uniq_id = os.path.splitext(os.path.basename(line_path))[0]
         if uniq_id in uniqids:
             path_dict[uniq_id] = line_path
         else:

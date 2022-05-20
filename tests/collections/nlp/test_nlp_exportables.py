@@ -99,7 +99,6 @@ class TestExportableClassifiers:
             assert onnx_model.graph.output[0].name == 'intent_logits'
             assert onnx_model.graph.output[1].name == 'slot_logits'
 
-    @pytest.mark.pleasefixme
     @pytest.mark.with_downloads()
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
@@ -130,7 +129,6 @@ class TestExportableClassifiers:
             assert onnx_model.graph.output[0].name == 'punct_logits'
             assert onnx_model.graph.output[1].name == 'capit_logits'
 
-    @pytest.mark.pleasefixme
     @pytest.mark.with_downloads()
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

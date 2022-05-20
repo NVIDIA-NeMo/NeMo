@@ -520,6 +520,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             "text": NeuralType(('B', 'T_text'), TokenIndex()),
             "pitch": NeuralType(('B', 'T_text'), RegressionValuesType()),
             "pace": NeuralType(('B', 'T_text'), optional=True),
+            "volume": NeuralType(('B', 'T_text')),
             "speaker": NeuralType(('B'), Index()),
         }
         self._output_types = {
@@ -528,6 +529,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             "durs_predicted": NeuralType(('B', 'T_text'), TokenDurationType()),
             "log_durs_predicted": NeuralType(('B', 'T_text'), TokenLogDurationType()),
             "pitch_predicted": NeuralType(('B', 'T_text'), RegressionValuesType()),
+            "volume_aligned": NeuralType(('B', 'T_spec'), RegressionValuesType()),
         }
 
     def _export_teardown(self):
@@ -562,8 +564,9 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         )
         pitch = torch.randn(sz, device=par.device, dtype=torch.float32) * 0.5
         pace = torch.clamp((torch.randn(sz, device=par.device, dtype=torch.float32) + 1) * 0.1, min=0.01)
+        volume = torch.clamp((torch.randn(sz, device=par.device, dtype=torch.float32) + 1) * 0.1, min=0.01)
 
-        inputs = {'text': inp, 'pitch': pitch, 'pace': pace}
+        inputs = {'text': inp, 'pitch': pitch, 'pace': pace, 'volume': volume}
 
         if self.fastpitch.speaker_emb is not None:
             inputs['speaker'] = torch.randint(
@@ -572,5 +575,5 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
 
         return (inputs,)
 
-    def forward_for_export(self, text, pitch, pace, speaker=None):
-        return self.fastpitch.infer(text=text, pitch=pitch, pace=pace, speaker=speaker)
+    def forward_for_export(self, text, pitch, pace, volume, speaker=None):
+        return self.fastpitch.infer(text=text, pitch=pitch, pace=pace, volume=volume, speaker=speaker)

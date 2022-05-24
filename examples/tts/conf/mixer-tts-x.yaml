@@ -208,9 +208,9 @@ model:
     padding: 1
 
   optim:
-    name: lamb
+    name: adamw
     lr: 1e-1
-    betas: [0.9, 0.98]
+    betas: [0.9, 0.999]
     weight_decay: 1e-6
 
     sched:

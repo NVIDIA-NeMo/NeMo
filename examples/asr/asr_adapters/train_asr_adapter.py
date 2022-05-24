@@ -21,8 +21,10 @@ python train_asr_adapter.py \
     model.pretrained_model=null \
     model.nemo_model=null \
     model.adapter.adapter_name=<Unique adapter name> \
+    model.adapter.adapter_module_name=<null, or str module. Type: encoder, decoder, joint, or multiple with + between them> \
     model.adapter.in_features=<dimension of the layer outputs of the model> \
     model.adapter.dim=32 \
+    model.adapter.dropout=0.0 \
     model.train_ds.manifest_filepath=<Path to manifest> \
     model.train_ds.batch_size=16 \
     model.validation_ds.manifest_filepath=<Path to manifest> \
@@ -71,8 +73,12 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 
-def update_encoder_config_to_support_adapter(model_cfg):
+def update_model_config_to_support_adapter(model_cfg, current_cfg):
     with open_dict(model_cfg):
+        # Override prediction logging in config
+        model_cfg.log_prediction = current_cfg.model.get('log_prediction', False)
+
+        # Update encoder adapter compatible config
         adapter_metadata = adapter_mixins.get_registered_adapter(model_cfg.encoder._target_)
         if adapter_metadata is not None:
             model_cfg.encoder._target_ = adapter_metadata.adapter_class_path
@@ -125,12 +131,12 @@ def main(cfg):
 
     if cfg.model.pretrained_model is not None:
         model_cfg = ASRModel.from_pretrained(cfg.model.pretrained_model, return_config=True)
-        update_encoder_config_to_support_adapter(model_cfg)
+        update_model_config_to_support_adapter(model_cfg, cfg)
         model = ASRModel.from_pretrained(cfg.model.pretrained_model, override_config_path=model_cfg, trainer=trainer)
 
     else:
         model_cfg = ASRModel.restore_from(cfg.model.nemo_model, return_config=True)
-        update_encoder_config_to_support_adapter(model_cfg)
+        update_model_config_to_support_adapter(model_cfg, cfg)
         model = ASRModel.restore_from(cfg.model.nemo_model, override_config_path=model_cfg, trainer=trainer)
 
     # Setup model for finetuning (train and validation only)

@@ -29,12 +29,14 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
-from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.asr.parts.utils import adapter_utils, rnnt_utils
 from nemo.collections.common.parts import rnn
-from nemo.core.classes import typecheck
+from nemo.core.classes import adapter_mixins, typecheck
 from nemo.core.classes.exportable import Exportable
+from nemo.core.classes.mixins import AdapterModuleMixin
 from nemo.core.neural_types import (
     AcousticEncodedRepresentation,
     ElementType,
@@ -48,7 +50,7 @@ from nemo.core.neural_types import (
 from nemo.utils import logging
 
 
-class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
+class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMixin):
     """A Recurrent Neural Network Transducer Decoder / Prediction Network (RNN-T Prediction Network).
     An RNN-T Decoder/Prediction network, comprised of a stateful LSTM model.
 
@@ -280,6 +282,11 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         g = g.transpose(0, 1)  # (B, U + 1, H)
 
         del y, start, state
+
+        # Adapter module forward step
+        if self.is_adapter_available():
+            g = self.forward_enabled_adapters(g)
+
         return g, hid
 
     def _predict_modules(
@@ -609,8 +616,19 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         return old_states
 
+    # Adapter method overrides
+    def add_adapter(self, name: str, cfg: DictConfig):
+        # Update the config with correct input dim
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        # Add the adapter
+        super().add_adapter(name=name, cfg=cfg)
 
-class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.pred_hidden)
+        return cfg
+
+
+class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin):
     """A Recurrent Neural Network Transducer Joint Network (RNN-T Joint Network).
     An RNN-T Joint network, comprised of a feedforward model.
 
@@ -740,10 +758,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
         self._num_classes = num_classes + 1  # add 1 for blank symbol
 
         if experimental_fuse_loss_wer is not None:
-            # TODO: Deprecate in 1.6
-            logging.warning(
-                "`experimental_fuse_loss_wer` will be deprecated in NeMo 1.6. Please use `fuse_loss_wer` instead."
-            )
             # Override fuse_loss_wer from deprecated argument
             fuse_loss_wer = experimental_fuse_loss_wer
 
@@ -990,6 +1004,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
 
         del f, g
 
+        # Forward adapter modules on joint hidden
+        if self.is_adapter_available():
+            inp = self.forward_enabled_adapters(inp)
+
         res = self.joint_net(inp)  # [B, T, U, V + 1]
 
         del inp
@@ -1040,6 +1058,17 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
             + [torch.nn.Linear(joint_n_hidden, num_classes)]
         )
         return pred, enc, torch.nn.Sequential(*layers)
+
+    # Adapter method overrides
+    def add_adapter(self, name: str, cfg: DictConfig):
+        # Update the config with correct input dim
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        # Add the adapter
+        super().add_adapter(name=name, cfg=cfg)
+
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.joint_hidden)
+        return cfg
 
     @property
     def num_classes_with_blank(self):
@@ -1127,3 +1156,9 @@ class RNNTDecoderJoint(torch.nn.Module, Exportable):
         state_h, state_c = decoder_outputs[2][0], decoder_outputs[2][1]
         joint_output = self.joint(encoder_outputs, decoder_output)
         return (joint_output, decoder_length, state_h, state_c)
+
+
+# Add the adapter compatible modules to the registry
+for cls in [RNNTDecoder, RNNTJoint]:
+    if adapter_mixins.get_registered_adapter(cls) is None:
+        adapter_mixins.register_adapter(cls, cls)  # base class is adapter compatible itself

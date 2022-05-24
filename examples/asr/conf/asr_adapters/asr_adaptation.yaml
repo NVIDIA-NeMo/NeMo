@@ -57,10 +57,12 @@ model:
   pretrained_model: null  # name of a pretrained model
   nemo_model: null  # path to a ASR model file (.nemo)
 
+  log_prediction: false # enables logging sample predictions in the output during training
+
   adapter:
     # Config of the adapter training/eval script.
     adapter_name: ???  # Name of the adapter, used by the script
-    adapter_module_name: null  # Name of the preprocessing module, if required. Defaults to None, equivalent to ''.
+    adapter_module_name: null  # Name of the adapter module. Combine multiple modules with '+' between module names.
     adapter_state_dict_name: "adapters.pt"  # If the individual adapters must be saved, a file name can be provided here. null disables this.
 
     # Config of the adapter module itself
@@ -82,7 +84,9 @@ model:
     # This can be useful in order to select *which type of adapter* is added, *what adapters to enable*,
     # and further global operations that can decide dynamically how to support the requested adapter.
     global_cfg:
-      encoder_adapter: True  # ASR adapter key, determines whether to add encoder adapter modules
+      check_encoder_adapter: True  # ASR adapter key, determines whether to check if encoder adapter modules is supported
+      check_decoder_adapter: True  # ASR adapter key, determines whether to check if decoder adapter modules is supported
+      check_joint_adapter: True  # ASR adapter key, determines whether to check if joint adapter modules is supported
 
   # Overrides the model's internal spec augment configuration
   spec_augment:

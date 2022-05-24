@@ -23,6 +23,7 @@ from omegaconf import DictConfig, OmegaConf
 from nemo.core import ModelPT, NeuralModule
 from nemo.core.classes.mixins import adapter_mixin_strategies, adapter_mixins
 from nemo.core.classes.mixins.adapter_mixins import AdapterModelPTMixin, AdapterModuleMixin
+from nemo.utils import logging, logging_mode
 
 
 class DefaultModule(NeuralModule):
@@ -100,10 +101,12 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
         # forward the method call to the individual modules
         # If module name is empty, it is a global adapter, otherwise it is a local adapter
         if (module_name == '' and global_config.get('encoder_adapter', True)) or (module_name == 'encoder'):
-            self.encoder.add_adapter(name, cfg)
+            if hasattr(self, 'encoder'):
+                self.encoder.add_adapter(name, cfg)
 
         if (module_name == '' and global_config.get('decoder_adapter', False)) or (module_name == 'decoder'):
-            self.decoder.add_adapter(name, cfg)
+            if hasattr(self, 'decoder'):
+                self.decoder.add_adapter(name, cfg)
 
     def set_enabled_adapters(self, name=None, enabled: bool = True):
         # check if valid model with some adapter support
@@ -120,22 +123,22 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
 
         # Forward the method call to the individual modules
         if name is None or global_config.get('encoder_adapter', True) or module_name in ('', 'encoder'):
-            if self.encoder.is_adapter_available():
+            if hasattr(self, 'encoder') and self.encoder.is_adapter_available():
                 self.encoder.set_enabled_adapters(name, enabled)
 
         if name is None or global_config.get('decoder_adapter', False) or module_name == 'decoder':
-            if self.decoder.is_adapter_available():
+            if hasattr(self, 'decoder') and self.decoder.is_adapter_available():
                 self.decoder.set_enabled_adapters(name, enabled)
 
     def get_enabled_adapters(self) -> list:
         enabled_adapters = super().get_enabled_adapters()
 
         # Forward the method call to the individual modules
-        if isinstance(self.encoder, AdapterModuleMixin):
+        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
             encoder_adapters = self.encoder.get_enabled_adapters()
             enabled_adapters.extend(encoder_adapters)
 
-        if isinstance(self.decoder, AdapterModuleMixin):
+        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
             decoder_adapters = self.decoder.get_enabled_adapters()
             enabled_adapters.extend(decoder_adapters)
 
@@ -164,18 +167,18 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
         decoder_adapter = global_cfg.get('decoder_adapter', False)
 
         if encoder_adapter and not hasattr(self, 'encoder'):
-            raise ValueError("Encoder not available")
+            logging.warning("Encoder not available", mode=logging_mode.ONCE)
         elif encoder_adapter and not isinstance(self.encoder, AdapterModuleMixin):
-            raise ValueError("Encoder does not support adapters !")
+            logging.warning("Encoder does not support adapters !", mode=logging_mode.ONCE)
 
         if decoder_adapter and not hasattr(self, 'decoder'):
-            raise ValueError("Decoder is not available")
+            logging.warning("Decoder is not available", mode=logging_mode.ONCE)
         elif decoder_adapter and not isinstance(self.decoder, AdapterModuleMixin):
-            raise ValueError("Decoder does not support adapters !")
+            logging.warning("Decoder does not support adapters !", mode=logging_mode.ONCE)
 
     def resolve_adapter_module_name_(self, name: str) -> (str, str):
         # resolve name and module
-        valid_module_names = ['', 'encoder', 'decoder']
+        valid_module_names = self.adapter_module_names
         module_name, adapter_name = super().resolve_adapter_module_name_(name)
 
         if module_name not in valid_module_names:
@@ -188,6 +191,11 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
         if 'adapters' in self.cfg and self.adapter_global_cfg_key in self.cfg.adapters:
             global_config = self.adapter_cfg[self.adapter_global_cfg_key]
         return global_config
+
+    @property
+    def adapter_module_names(self) -> list:
+        valid_adapter_modules = ['', 'encoder', 'decoder']
+        return valid_adapter_modules
 
 
 class DefaultAdapterModel(ModelPT, DefaultModelAdapterMixin):
@@ -269,15 +277,29 @@ if adapter_mixins.get_registered_adapter(DefaultModule) is None:
 
 class TestAdapterModelMixin:
     @pytest.mark.unit
-    def test_base_model_no_support_for_adapters(self):
+    def test_base_model_no_support_for_adapters(self, caplog):
+        logging._logger.propagate = True
+        original_verbosity = logging.get_verbosity()
+        logging.set_verbosity(logging.WARNING)
+        caplog.set_level(logging.WARNING)
+
         cfg = get_model_config(in_features=50, update_adapter_cfg=False)
         model = DefaultAdapterModel(cfg)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(AttributeError):
             model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
 
-        with pytest.raises(ValueError):
-            model.get_enabled_adapters()
+        # check that warning message indicates that it module is not available
+        assert """Encoder does not support adapters !""" in caplog.text
+
+        caplog.clear()
+        model.get_enabled_adapters()
+
+        # check that there is not warning message, since it should log only once.
+        assert """Encoder does not support adapters !""" not in caplog.text
+
+        logging._logger.propagate = False
+        logging.set_verbosity(original_verbosity)
 
     @pytest.mark.unit
     def test_single_adapter(self):

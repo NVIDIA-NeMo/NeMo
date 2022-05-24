@@ -321,7 +321,7 @@ class AdapterModuleMixin(ABC):
                         continue
 
                     # Check if adapter is enabled or not
-                    if self.adapter_cfg[name]['enabled']:
+                    if self.adapter_cfg[name]['enabled'] and name in module.adapter_layer:
                         # Recursively set training mode of submodules
                         module.adapter_layer[name].train()
 
@@ -330,12 +330,12 @@ class AdapterModuleMixin(ABC):
                             param.requires_grad_(True)
 
                         # unfreeze batch norm if any in the adapter submodules
-                        for mname, module in module.adapter_layer[name].named_modules():
-                            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-                                module.track_running_stats = (
+                        for mname, module_ in module.adapter_layer[name].named_modules():
+                            if isinstance(module_, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                                module_.track_running_stats = (
                                     True  # prevent running stats from updated during finetuning
                                 )
-                                logging.info(f"Unfroze adapter module {mname}: {module}")
+                                logging.info(f"Unfroze adapter module {mname}: {module_}")
 
                         adapter_names.add(name)
 
@@ -834,3 +834,17 @@ class AdapterModelPTMixin(AdapterModuleMixin):
         for module in self.modules():  # access PT subclass method via inheritance
             if isinstance(module, AdapterModuleMixin):
                 module.adapter_cfg = cfg
+
+    @property
+    def adapter_module_names(self) -> List[str]:
+        """
+        List of valid adapter modules that are supported by the model.
+
+        **Note**: Subclasses should override this property and return a list of str names, of all the modules
+            that they support, which will enable users to determine where to place the adapter modules.
+
+        Returns:
+            A list of str, one for each of the adapter modules that are supported. By default, the subclass
+            should support the "global adapter" ('').
+        """
+        return ['']

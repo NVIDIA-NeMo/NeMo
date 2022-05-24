@@ -19,7 +19,7 @@ import torch
 import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import MISSING, ListConfig, OmegaConf
+from omegaconf import MISSING, DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.asr.parts.submodules.jasper import (
     JasperBlock,
@@ -35,6 +35,7 @@ from nemo.collections.asr.parts.submodules.tdnn_attention import (
     TDNNModule,
     TDNNSEModule,
 )
+from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import adapter_mixins
@@ -396,7 +397,7 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
         return s_input[-1], length
 
 
-class ConvASRDecoder(NeuralModule, Exportable):
+class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin):
     """Simple ASR Decoder for use with CTC-based models such as JasperNet and QuartzNet
 
      Based on these papers:
@@ -442,6 +443,12 @@ class ConvASRDecoder(NeuralModule, Exportable):
 
     @typecheck()
     def forward(self, encoder_output):
+        # Adapter module forward step
+        if self.is_adapter_available():
+            encoder_output = encoder_output.transpose(1, 2)  # [B, T, C]
+            encoder_output = self.forward_enabled_adapters(encoder_output)
+            encoder_output = encoder_output.transpose(1, 2)  # [B, C, T]
+
         return torch.nn.functional.log_softmax(self.decoder_layers(encoder_output).transpose(1, 2), dim=-1)
 
     def input_example(self, max_batch=1, max_dim=256):
@@ -462,6 +469,17 @@ class ConvASRDecoder(NeuralModule, Exportable):
         if m_count > 0:
             logging.warning(f"Turned off {m_count} masked convolutions")
         Exportable._prepare_for_export(self, **kwargs)
+
+    # Adapter method overrides
+    def add_adapter(self, name: str, cfg: DictConfig):
+        # Update the config with correct input dim
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        # Add the adapter
+        super().add_adapter(name=name, cfg=cfg)
+
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self._feat_in)
+        return cfg
 
     @property
     def vocabulary(self):
@@ -877,20 +895,8 @@ class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):
         return names
 
     def _update_adapter_cfg_input_dim(self, block: JasperBlock, cfg):
-        if 'in_features' in cfg:
-            in_planes = cfg['in_features']
-
-            if in_planes != block.planes:
-                logging.info(f"Updating ConvASR Encoder Adapter input dim from {in_planes} to {block.planes}")
-                in_planes = block.planes
-
-            cfg['in_features'] = in_planes
-            return cfg
-        else:
-            raise ValueError(
-                f"Failed to infer the input dimension of the Adapter cfg. Provided config : \n"
-                f"{OmegaConf.to_yaml(cfg)}"
-            )
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=block.planes)
+        return cfg
 
 
 @dataclass

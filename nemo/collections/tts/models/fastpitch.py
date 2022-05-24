@@ -551,7 +551,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
     def output_types(self):
         return self._output_types
 
-    def input_example(self, max_batch=1, max_dim=256):
+    def input_example(self, max_batch=1, max_dim=44):
         """
         Generates input examples for tracing etc.
         Returns:

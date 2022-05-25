@@ -159,6 +159,34 @@ class TestASRModulesBasicTests:
         assert dataclass_subset is None
 
     @pytest.mark.unit
+    def test_MaskedPatchAugmentation(self):
+        # Make sure constructor works
+        audio_length = 128
+        instance1 = modules.MaskedPatchAugmentation(patch_size=16, mask_patches=0.5, freq_masks=2, freq_width=10)
+        assert isinstance(instance1, modules.MaskedPatchAugmentation)
+
+        # Make sure forward doesn't throw with expected input
+        instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
+        input_signal = torch.randn(size=(4, 512))
+        length = torch.randint(low=161, high=500, size=[4])
+        res0 = instance0(input_signal=input_signal, length=length)
+        res = instance1(input_spec=res0[0], length=length)
+
+        assert res.shape == res0[0].shape
+
+    @pytest.mark.unit
+    def test_MaskedPatchAugmentation_config(self):
+        # Test that dataclass matches signature of module
+        result = config_utils.assert_dataclass_signature_match(
+            modules.MaskedPatchAugmentation, modules.audio_preprocessing.MaskedPatchAugmentationConfig,
+        )
+        signatures_match, cls_subset, dataclass_subset = result
+
+        assert signatures_match
+        assert cls_subset is None
+        assert dataclass_subset is None
+
+    @pytest.mark.unit
     def test_RNNTDecoder(self):
         vocab = list(range(10))
         vocab = [str(x) for x in vocab]

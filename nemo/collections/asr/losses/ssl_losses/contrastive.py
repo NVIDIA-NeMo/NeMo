@@ -1,5 +1,4 @@
-# ! /usr/bin/python
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +17,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nemo.core import Loss, typecheck
-from nemo.core.neural_types import LossType, NeuralType, SpectrogramType, VoidType
+from nemo.core.neural_types import LengthsType, LossType, NeuralType, SpectrogramType, VoidType
 
 __all__ = ["ContrastiveLoss"]
 
@@ -32,6 +31,7 @@ class ContrastiveLoss(Loss):
             "spectrograms": NeuralType(("B", "D", "T"), SpectrogramType()),
             "spec_masks": NeuralType(("B", "D", "T"), SpectrogramType()),
             "decoder_outputs": NeuralType(("B", "T", "D"), VoidType()),
+            "decoder_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
     @property
@@ -41,6 +41,10 @@ class ContrastiveLoss(Loss):
             NeuralType(None)
         """
         return {"loss": NeuralType(elements_type=LossType())}
+
+    @property
+    def needs_labels(self):
+        return False
 
     def __init__(
         self,
@@ -62,6 +66,9 @@ class ContrastiveLoss(Loss):
         quantizer_temp_min: float = 0.5,
         quantizer_temp_decay: float = 0.999995,
         mask_threshold: float = 0.8,
+        store_ids: bool = True,
+        reduce_ids: bool = False,
+        multiplier: float = 16.0,
     ):
         """
         Loss function representing the contrastive task of identifying the true latent speech representation of
@@ -86,6 +93,9 @@ class ContrastiveLoss(Loss):
             quantizer_temp_min: Minimum temperature in quantizer.
             quantizer_temp_decay: Decay rate of quantizer temperature per global step.
             mask_threshold: Float threshold for determining if a time step of the spectrogram is masked based on percent of masked channels.
+            store_ids: Bool that determines if the quantizer ids will be stored to be potentially used by other losses.
+            reduce_ids: Bool that determines if we convert any sequence of consecutive equivalent ids to a single occurence of that id.
+            multiplier: Float multipler on final loss
         """
 
         super().__init__()
@@ -114,6 +124,10 @@ class ContrastiveLoss(Loss):
         self.sample_from_codebook = sample_from_codebook
         self.group_loss = group_loss
         self.mask_threshold = mask_threshold
+        self.multiplier = multiplier
+
+        self.store_ids = store_ids
+        self.reduce_ids = reduce_ids
 
         if not self.quantized_targets:
             self.target_proj = nn.Linear(in_dim * combine_time_steps, proj_dim)
@@ -132,7 +146,7 @@ class ContrastiveLoss(Loss):
         return negs, neg_idxs
 
     @typecheck()
-    def forward(self, spectrograms, spec_masks, decoder_outputs):
+    def forward(self, spectrograms, spec_masks, decoder_outputs, decoder_lengths=None):
         spec_in = spectrograms.transpose(-2, -1)
         masks = spec_masks.transpose(-2, -1)
         targets = spec_in
@@ -142,7 +156,26 @@ class ContrastiveLoss(Loss):
         masks = masks.reshape(targets.shape[0], targets.shape[1], -1)
 
         if self.quantized_targets:
-            targets, prob_ppl_loss, cur_codebook_temp = self.quantizer(targets)
+            if self.store_ids:
+                # store ids for use by other losses
+                targets, prob_ppl_loss, cur_codebook_temp, self.target_ids = self.quantizer(targets, return_ids=True)
+
+                if self.reduce_ids:
+                    # reduce consecutive equivalent ids to a single occurence
+                    _, indices = torch.unique_consecutive(self.target_ids, return_inverse=True)
+                    indices -= indices.min(dim=1, keepdims=True)[0]
+                    reduced_ids = torch.zeros_like(self.target_ids)
+                    reduced_ids = reduced_ids.scatter_(1, indices, self.target_ids)
+                    reduced_lens = indices.max(dim=-1)[0] + 1
+
+                    self.target_ids = reduced_ids.narrow(1, 0, reduced_lens.max())
+                    self.target_lengths = reduced_lens
+
+                else:
+                    self.target_lengths = None
+
+            else:
+                targets, prob_ppl_loss, cur_codebook_temp = self.quantizer(targets)
         else:
             targets = self.target_proj(targets)
 
@@ -213,7 +246,7 @@ class ContrastiveLoss(Loss):
                 negatives, _ = self.sample_negatives(targets_masked_only, targets_masked_only.size(0))  # T'xC  # T'
                 # NxT'xC
 
-        # Calculate similarity between logits and all targets
+        # Calculate similarity between outputs and all targets
         similarity_scores = self._calculate_similarity(out_masked_only, negatives, targets_masked_only)
         # (1+N)xT'
         # cosine similarity of outs with targets + N negatives
@@ -237,6 +270,9 @@ class ContrastiveLoss(Loss):
 
         if not isinstance(loss, torch.Tensor):
             loss = torch.Tensor([0]).to(device=decoder_outputs.device)
+
+        batch_size = spectrograms.shape[0]
+        loss *= self.multiplier / batch_size
 
         return loss
 

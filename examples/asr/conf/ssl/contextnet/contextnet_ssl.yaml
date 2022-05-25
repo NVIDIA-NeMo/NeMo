@@ -79,7 +79,7 @@ model:
     freq_masks: 3
     freq_width: 20
     patch_size: 48
-    mask_patches: 10
+    mask_patches: 0.5
 
   encoder:
     _target_: nemo.collections.asr.modules.ConvASREncoder
@@ -370,76 +370,93 @@ model:
         se_context_size: ${model.model_defaults.se_context_size}
         kernel_size_factor: ${model.model_defaults.kernel_size_factor}
 
-  decoder:
-    _target_: nemo.collections.asr.modules.ConvASRDecoderReconstruction
-    feat_in: ${model.model_defaults.enc_hidden}
-    feat_hidden: 128
-    feat_out: ${model.model_defaults.decoder_out_channels}
-    stride_layers: 1
-    #if loss.combine_time_steps is less than the encoder stride, then a corresponding amount of stride_layers needs to
-    #be added to the decoder (here stride is 8 and combine_time_steps is 4, so 1 stride layer is added)
-    non_stride_layers: 0
+  loss_list:
+    contrastive:
+      decoder:
+        _target_: nemo.collections.asr.modules.ConvASRDecoderReconstruction
+        feat_in: ${model.model_defaults.enc_hidden}
+        feat_hidden: 128
+        feat_out: ${model.model_defaults.decoder_out_channels}
+        stride_layers: 0
+        #if loss.combine_time_steps is less than the encoder stride, then a corresponding amount of stride_layers needs to
+        #be added to the decoder (here stride and combine_time_steps are both 4)
+        non_stride_layers: 0
+      loss:
+        _target_: nemo.collections.asr.losses.ContrastiveLoss
+        in_dim: ${model.preprocessor.features}
+        proj_dim: ${model.model_defaults.decoder_out_channels}
+        combine_time_steps: 8 #how many spectrogram time steps are used for one target/representation for contrastive task
+        quantized_targets: true #should quantizer or linear layer be used
+        # (quantizer is required to extract pseudo-labels for other losses)
+        codebook_size: 300
+        num_negatives: 40
+        sample_from_same_utterance_only: true #should negatives be sampled only from the same utterance
+        sample_from_non_masked: false #should negatives be sampled from non-masked steps
 
-  loss:
-    _target_: nemo.collections.asr.losses.ContrastiveLoss
-    in_dim: *n_mels
-    proj_dim: ${model.model_defaults.decoder_out_channels}
-    combine_time_steps: 4 #how many spectrogram time steps are used for one target/representation for contrastive task
-    quantized_targets: false #should quantizer or linear layer be used
-    sample_from_same_utterance_only: true #should negatives be sampled only from the same utterance
-    sample_from_non_masked: false #should negatives be sampled from non-masked steps
+    mlm:
+      decoder:
+        _target_: nemo.collections.asr.modules.ConvASRDecoder
+        feat_in: ${model.model_defaults.enc_hidden}
+        num_classes: 90000
+      loss:
+        _target_: nemo.collections.asr.losses.MLMLoss
+        combine_time_steps: 8
+      targets_from_loss: "contrastive"
+      loss_alpha: 1000.
 
   optim:
-    name: novograd
-    lr: 0.05
-
+    name: adamw
+    lr: 5.0
     # optimizer arguments
-    betas: [0.9, 0.0]
-    weight_decay: 0.001
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
 
     # scheduler setup
     sched:
-      name: CosineAnnealing
-
+      name: NoamAnnealing
+      d_model: ${model.model_defaults.enc_hidden}
       # scheduler config override
-      warmup_steps: 5000
+      warmup_steps: 25000
       warmup_ratio: null
       min_lr: 1e-6
-      last_epoch: -1
 
 trainer:
-  devices: 1 # number of gpus
-  max_epochs: 100
+  devices: -1 # number of GPUs, -1 would use all available GPUs
+  num_nodes: 1
+  max_epochs: 1000
   max_steps: null # computed at runtime if not set
-  num_nodes: 1  # Should be set via SLURM variable `SLURM_JOB_NUM_NODES`
-  accelerator: gpu
+  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  accelerator: auto
   strategy: ddp
   accumulate_grad_batches: 1
-  enable_checkpointing: False  # Provided by exp_manager
-  logger: false  # Provided by exp_manager
-  log_every_n_steps: 100  # Interval of logging.
-  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
-  check_val_every_n_epoch: 1
-  precision: 32
-  gradient_clip_val: 1.0  # Gradient norm clip value
+  gradient_clip_val: 1.0
+  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  log_every_n_steps: 10  # Interval of logging.
+  progress_bar_refresh_rate: 10
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
   sync_batchnorm: true
-  benchmark: false
-
+  enable_checkpointing: False # Provided by exp_manager
+  logger: false  # Provided by exp_manager
 
 exp_manager:
   exp_dir: null
-  name: *name
+  name: ${name}
   create_tensorboard_logger: true
   create_checkpoint_callback: true
   checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
     monitor: "val_loss"
     mode: "min"
-    save_top_k: 1
-    always_save_nemo: true
+    save_top_k: 5
+
+  # you need to set these two to True to continue the training
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false
+
+  # You may use this section to create a W&B logger
   create_wandb_logger: false
   wandb_logger_kwargs:
     name: null
     project: null
-    entity: null
-  resume_if_exists: false
-  resume_ignore_no_checkpoint: false

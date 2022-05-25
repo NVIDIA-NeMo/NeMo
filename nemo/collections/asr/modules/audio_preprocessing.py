@@ -735,3 +735,12 @@ class SpectrogramAugmentationConfig:
 class CropOrPadSpectrogramAugmentationConfig:
     audio_length: int
     _target_: str = "nemo.collections.asr.modules.CropOrPadSpectrogramAugmentation"
+
+
+@dataclass
+class MaskedPatchAugmentationConfig:
+    patch_size: int = 48
+    mask_patches: float = 10.0
+    freq_masks: int = 0
+    freq_width: int = 0
+    _target_: str = "nemo.collections.asr.modules.MaskedPatchAugmentation"

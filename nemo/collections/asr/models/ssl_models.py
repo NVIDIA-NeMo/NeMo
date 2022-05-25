@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from math import ceil
 from typing import Dict, Optional, Union
 
 import torch
-from omegaconf import DictConfig, open_dict
+import torch.nn as nn
+from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 
 from nemo.collections.asr.data import audio_to_text_dataset
@@ -23,8 +25,15 @@ from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.classes.mixins import AccessMixin
-from nemo.core.neural_types import AudioSignal, LengthsType, NeuralType, SpectrogramType, VoidType
+from nemo.core.classes.mixins import AccessMixin, set_access_cfg
+from nemo.core.neural_types import (
+    AcousticEncodedRepresentation,
+    AudioSignal,
+    LabelsType,
+    LengthsType,
+    NeuralType,
+    SpectrogramType,
+)
 from nemo.utils import logging
 
 __all__ = ['SpeechEncDecSelfSupervisedModel']
@@ -48,22 +57,45 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
         # Global_rank and local_rank is set by LightningModule in Lightning 1.2.0
         self.world_size = 1
         if trainer is not None:
-            self.world_size = trainer.num_nodes * trainer.num_devices
+            self.world_size = trainer.world_size
 
         super().__init__(cfg=cfg, trainer=trainer)
         self.preprocessor = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.preprocessor)
         self.encoder = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.encoder)
 
-        with open_dict(self._cfg):
-            if "feat_in" not in self._cfg.decoder or (
-                not self._cfg.decoder.feat_in and hasattr(self.encoder, '_feat_out')
-            ):
-                self._cfg.decoder.feat_in = self.encoder._feat_out
-            if "feat_in" not in self._cfg.decoder or not self._cfg.decoder.feat_in:
-                raise ValueError("param feat_in of the decoder's config is not set!")
+        self.decoder_losses = None
 
-        self.decoder_ssl = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.decoder)
-        self.loss = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.loss)
+        if "loss_list" in self._cfg:
+
+            self.decoder_losses = {}
+            self.loss_alphas = {}
+            self.start_step = {}
+            self.output_from_layer = {}
+            self.transpose_encoded = {}
+            self.targets_from_loss = {}
+            # need to be separate for moduledict
+
+            for decoder_loss_name, decoder_loss_cfg in self._cfg.loss_list.items():
+                new_decoder_loss = {
+                    'decoder': SpeechEncDecSelfSupervisedModel.from_config_dict(decoder_loss_cfg.decoder),
+                    'loss': SpeechEncDecSelfSupervisedModel.from_config_dict(decoder_loss_cfg.loss),
+                }
+                new_decoder_loss = nn.ModuleDict(new_decoder_loss)
+                self.decoder_losses[decoder_loss_name] = new_decoder_loss
+                self.loss_alphas[decoder_loss_name] = decoder_loss_cfg.get("loss_alpha", 1.0)
+                self.output_from_layer[decoder_loss_name] = decoder_loss_cfg.get("output_from_layer", None)
+                self.targets_from_loss[decoder_loss_name] = decoder_loss_cfg.get("targets_from_loss", None)
+                self.start_step[decoder_loss_name] = decoder_loss_cfg.get("start_step", 0)
+                self.transpose_encoded[decoder_loss_name] = decoder_loss_cfg.get("transpose_encoded", False)
+
+                if self.output_from_layer[decoder_loss_name] is not None:
+                    self.set_access_enabled(access_enabled=True)
+
+            self.decoder_losses = nn.ModuleDict(self.decoder_losses)
+
+        else:
+            self.decoder_ssl = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.decoder)
+            self.loss = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.loss)
 
         self.spec_augmentation = SpeechEncDecSelfSupervisedModel.from_config_dict(self._cfg.spec_augment)
 
@@ -85,6 +117,8 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
         if "access" in self._cfg:
             set_access_cfg(self._cfg.access)
+
+        self.apply_masking = True
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if 'augmentor' in config:
@@ -222,6 +256,8 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "targets": NeuralType(('B', 'T'), LabelsType(), optional=True),
+            "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
     @property
@@ -229,12 +265,13 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
         return {
             "spectrograms": NeuralType(('B', 'D', 'T'), SpectrogramType()),
             "spec_masks": NeuralType(('B', 'D', 'T'), SpectrogramType()),
-            "outputs": NeuralType(('B', 'T', 'D'), VoidType()),
+            "encoded": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            "encoded_len": NeuralType(tuple('B'), LengthsType()),
         }
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None,
     ):
         """
         Forward pass of the model.
@@ -251,11 +288,15 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
                 processed audio sequences.
 
         Returns:
-            A tuple of 3 elements -
+            A tuple of 4 elements -
             1) Processed spectrograms of shape [B, D, T].
             2) Masks applied to spectrograms of shape [B, D, T].
-            3) Decoder outputs of shape [B, T, D].
+            3) The encoded features tensor of shape [B, D, T].
+            2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
         """
+        # reset module registry from AccessMixin
+        self.reset_registry()
+
         has_input_signal = input_signal is not None and input_signal_length is not None
         has_processed_signal = processed_signal is not None and processed_signal_length is not None
         if (has_input_signal ^ has_processed_signal) == False:
@@ -278,7 +319,8 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
         if self.dropout_features_q:
             spectrograms = self.dropout_features_q(spectrograms)
 
-        processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
+        if self.apply_masking:
+            processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
         masked_spectrograms = processed_signal.detach()
         spec_masks = torch.logical_and(masked_spectrograms < 1e-5, masked_spectrograms > -1e-5).float()
@@ -286,30 +328,152 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             spec_masks[idx, :, proc_len:] = 0.0
 
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
-        outputs = self.decoder_ssl(encoder_output=encoded)
 
-        return spectrograms, spec_masks, outputs
+        return spectrograms, spec_masks, encoded, encoded_len
+
+    def decoder_loss_step(self, spectrograms, spec_masks, encoded, encoded_len, targets=None, target_lengths=None):
+        """
+        Forward pass through all decoders and calculate corresponding losses.
+        Args:
+            spectrograms: Processed spectrograms of shape [B, D, T].
+            spec_masks: Masks applied to spectrograms of shape [B, D, T].
+            encoded: The encoded features tensor of shape [B, D, T].
+            encoded_len: The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
+            targets: Optional target labels of shape [B, T]
+            target_lengths: Optional target label lengths of shape [B]
+
+        Returns:
+            A tuple of 2 elements -
+            1) Total sum of losses weighted by corresponding loss_alphas
+            2) Dictionary of unweighted losses
+        """
+        loss_val_dict = {}
+
+        if self.decoder_losses is None:
+            if hasattr(self.decoder_ssl, "needs_labels") and self.decoder_ssl.needs_labels:
+                outputs = self.decoder_ssl(encoder_output=encoded, targets=targets, target_lengths=target_lengths)
+            else:
+                outputs = self.decoder_ssl(encoder_output=encoded)
+            if (
+                self.training
+                and hasattr(self.loss, "set_num_updates")
+                and hasattr(self, "trainer")
+                and self.trainer is not None
+            ):
+                # this is necessary for things such as temperature decay for quantizer in contrastive loss
+                self.loss.set_num_updates(self.trainer.global_step)
+            if self.loss.needs_labels:
+                loss_value = self.loss(
+                    spec_masks=spec_masks,
+                    decoder_outputs=outputs,
+                    targets=targets,
+                    decoder_lengths=encoded_len,
+                    target_lengths=target_lengths,
+                )
+            else:
+                loss_value = self.loss(spectrograms=spectrograms, spec_masks=spec_masks, decoder_outputs=outputs)
+        else:
+
+            loss_value = encoded.new_zeros(1)
+            outputs = {}
+            registry = self.get_module_registry(self.encoder)
+
+            for dec_loss_name, dec_loss in self.decoder_losses.items():
+                # loop through decoders and corresponding losses
+                if (
+                    hasattr(self, "trainer")
+                    and self.trainer is not None
+                    and self.start_step[dec_loss_name] > self.trainer.global_step
+                ):
+                    # if trainer is defined and global_step is below specified start_step for this decoder-loss, skip
+                    continue
+
+                if self.output_from_layer[dec_loss_name] is None:
+                    dec_input = encoded
+                else:
+                    # extract output from specified layer using AccessMixin registry
+                    dec_input = registry[self.output_from_layer[dec_loss_name]][-1]
+                if self.transpose_encoded[dec_loss_name]:
+                    dec_input = dec_input.transpose(-2, -1)
+
+                if self.targets_from_loss[dec_loss_name] is not None:
+                    # extract targets from specified loss
+                    target_loss = self.targets_from_loss[dec_loss_name]
+                    targets = self.decoder_losses[target_loss]['loss'].target_ids
+                    target_lengths = self.decoder_losses[target_loss]['loss'].target_lengths
+                    if target_lengths is None:
+                        target_lengths = encoded_len
+
+                if hasattr(dec_loss['decoder'], "needs_labels") and dec_loss['decoder'].needs_labels:
+                    # if we are using a decoder which needs labels, provide them
+                    outputs[dec_loss_name] = dec_loss['decoder'](
+                        encoder_output=dec_input, targets=targets, target_lengths=target_lengths
+                    )
+                else:
+                    outputs[dec_loss_name] = dec_loss['decoder'](encoder_output=dec_input)
+
+                current_loss = dec_loss['loss']
+                if (
+                    self.training
+                    and hasattr(current_loss, "set_num_updates")
+                    and hasattr(self, "trainer")
+                    and self.trainer is not None
+                ):
+                    # this is necessary for things such as temperature decay for quantizer in contrastive loss
+                    current_loss.set_num_updates(self.trainer.global_step)
+                if current_loss.needs_labels:
+                    # if we are using a loss which needs labels, provide them
+                    current_loss_value = current_loss(
+                        spec_masks=spec_masks,
+                        decoder_outputs=outputs[dec_loss_name],
+                        targets=targets,
+                        decoder_lengths=encoded_len,
+                        target_lengths=target_lengths,
+                    )
+                else:
+                    current_loss_value = current_loss(
+                        spectrograms=spectrograms,
+                        spec_masks=spec_masks,
+                        decoder_outputs=outputs[dec_loss_name],
+                        decoder_lengths=encoded_len,
+                    )
+                loss_value = loss_value + current_loss_value * self.loss_alphas[dec_loss_name]
+                loss_val_dict[dec_loss_name] = current_loss_value
+
+        return loss_value, loss_val_dict
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
-        signal, signal_len, transcript, transcript_len = batch
-        spectrograms, spec_masks, outputs = self.forward(input_signal=signal, input_signal_length=signal_len)
+        signal, signal_len, targets, target_lengths = batch
+        spectrograms, spec_masks, encoded, encoded_len = self.forward(
+            input_signal=signal, input_signal_length=signal_len,
+        )
 
-        self.loss.set_num_updates(self.trainer.global_step)
-        loss_value = self.loss(spectrograms=spectrograms, spec_masks=spec_masks, decoder_outputs=outputs)
+        loss_value, loss_val_dict = self.decoder_loss_step(
+            spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths
+        )
+
+        tensorboard_logs = {'learning_rate': self._optimizer.param_groups[0]['lr']}
+
+        for loss_name, loss_val in loss_val_dict.items():
+            tensorboard_logs['train_' + loss_name] = loss_val
+
         if self.feat_pen:
             loss_value += self.feat_pen
 
-        tensorboard_logs = {'train_loss': loss_value, 'learning_rate': self._optimizer.param_groups[0]['lr']}
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len = batch
-        spectrograms, spec_masks, outputs = self.forward(input_signal=signal, input_signal_length=signal_len)
+        signal, signal_len, targets, target_lengths = batch
+        spectrograms, spec_masks, encoded, encoded_len = self.forward(
+            input_signal=signal, input_signal_length=signal_len,
+        )
 
-        loss_value = self.loss(spectrograms=spectrograms, spec_masks=spec_masks, decoder_outputs=outputs)
+        loss_value, _ = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
+
         if self.feat_pen:
             loss_value += self.feat_pen
+
         return {
             'val_loss': loss_value,
         }

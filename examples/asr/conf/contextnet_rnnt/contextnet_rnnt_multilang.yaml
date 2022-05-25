@@ -24,7 +24,7 @@
 name: &name "ContextNet-8x-Stride-RNNT-mla"
 
 model:
-  sample_rate: &sample_rate 16000
+  sample_rate: 16000
   compute_eval_loss: false  # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
 
   train_ds:
@@ -493,7 +493,7 @@ trainer:
   precision: 32  # RNNT requires a lot of memory, so precision 16 is very important. Use very small batch size for precision 32.
   gradient_clip_val: 1.0  # Gradient norm clip value
   sync_batchnorm: true
-  benchmark: false
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 
 exp_manager:

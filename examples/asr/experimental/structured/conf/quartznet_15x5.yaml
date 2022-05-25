@@ -231,6 +231,7 @@ trainer:
   accumulate_grad_batches: 1
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 exp_manager:
   name: *name

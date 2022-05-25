@@ -466,7 +466,7 @@ trainer:
   check_val_every_n_epoch: 1
   precision: 32
   sync_batchnorm: false
-  benchmark: false
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 exp_manager:
   exp_dir: null

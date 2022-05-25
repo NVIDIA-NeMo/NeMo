@@ -179,6 +179,7 @@ trainer:
   logger: False  # Provided by exp_manager
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 exp_manager:
   exp_dir: null
@@ -189,10 +190,3 @@ exp_manager:
   wandb_logger_kwargs:
     name: null
     project: null
-
-hydra:
-  run:
-    dir: .
-  job_logging:
-    root:
-      handlers: null

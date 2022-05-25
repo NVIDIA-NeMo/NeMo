@@ -1031,11 +1031,11 @@ class TestAdapterModelMixin:
 
             # restore adapter to new model (without any decoder adapter)
             new_model = DefaultAdapterModel(cfg)
+            # load adapter with partial name only - just adapter_0 - should work
+            new_model.load_adapters(outer_adapter_path, name='adapter_0')
 
-            # load adapter with partial name only - just adapter_0 - should fail
-            with pytest.raises(KeyError):
-                new_model.load_adapters(outer_adapter_path, name='adapter_0')
-
+            # restore adapter to new model (without any decoder adapter)
+            new_model = DefaultAdapterModel(cfg)
             # properly load with correct key
             new_model.load_adapters(outer_adapter_path, name='decoder:adapter_0')
 

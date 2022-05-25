@@ -773,9 +773,26 @@ class AdapterModelPTMixin(AdapterModuleMixin):
 
         # For all module:adapter names (note, for global modules, we ignore the module: part)
         for module_adapter_name in name:
+            # Extract current config as copy
+            internal_adapter_cfg = None
+            if hasattr(self, 'adapter_cfg') and self.adapter_cfg is not None:
+                internal_adapter_cfg = self.adapter_cfg
+
+            # Override internal adapter config with restoration config
+            self.adapter_cfg = config
+
             # Resolve the adapter name and extract the adapter's config from the checkpoint.
             module_name, adapter_name = self.resolve_adapter_module_name_(module_adapter_name)
             adapter_cfg = config[adapter_name]
+
+            # Recreate the module:adapter_name
+            if module_name is '':
+                module_adapter_name = adapter_name
+            else:
+                module_adapter_name = f'{module_name}:{adapter_name}'
+
+            # Reset internal adapter config
+            self.adapter_cfg = internal_adapter_cfg
 
             # Skip the global config key
             if adapter_name == self.adapter_global_cfg_key:

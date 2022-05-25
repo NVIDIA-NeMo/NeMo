@@ -169,6 +169,7 @@ trainer:
   gradient_clip_val: 1.0
   log_every_n_steps: 200
   check_val_every_n_epoch: 25
+  benchmark: false
 
 exp_manager:
   exp_dir: null

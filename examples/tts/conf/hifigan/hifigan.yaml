@@ -80,6 +80,7 @@ trainer:
   logger: false # Provided by exp_manager
   log_every_n_steps: 100
   check_val_every_n_epoch: 10
+  benchmark: false
 
 exp_manager:
   exp_dir: null

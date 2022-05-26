@@ -61,3 +61,5 @@ $18129~eighteen thousand one hundred and twenty nine dollars
 $50.00-$100.00~fifty dollars - one hundred dollars
 $1,925.21~one thousand nine hundred and twenty five dollars twenty one cents
 $1,234.123~one thousand two hundred and thirty four point one two three dollars
+US $76.3 trillion~US seventy six point three trillion dollars
+US$76.3 trillion~seventy six point three trillion us dollars

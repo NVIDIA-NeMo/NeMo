@@ -23,6 +23,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 CACHE_DIR = None
+RUN_AUDIO_BASED_TESTS = False
 
 
 def set_cache_dir(path: str = None):
@@ -31,6 +32,14 @@ def set_cache_dir(path: str = None):
     """
     global CACHE_DIR
     CACHE_DIR = path
+
+
+def set_audio_based_tests(run_audio_based: bool = False):
+    """
+    Sets audio-based test mode for TN/ITN unittests. Default is False, e.g. audio-based tests will be skipped.
+    """
+    global RUN_AUDIO_BASED_TESTS
+    RUN_AUDIO_BASED_TESTS = run_audio_based
 
 
 def parse_test_case_file(file_name: str):

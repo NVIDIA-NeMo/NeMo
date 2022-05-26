@@ -72,6 +72,8 @@ try:
     PLURAL_TO_SINGULAR = pynini.invert(graph_plural)
     TO_LOWER = pynini.union(*[pynini.cross(x, y) for x, y in zip(string.ascii_uppercase, string.ascii_lowercase)])
     TO_UPPER = pynini.invert(TO_LOWER)
+    MIN_NEG_WEIGHT = -0.0001
+    MIN_POS_WEIGHT = 0.0001
 
     PYNINI_AVAILABLE = True
 except (ModuleNotFoundError, ImportError):
@@ -113,6 +115,8 @@ except (ModuleNotFoundError, ImportError):
     PLURAL_TO_SINGULAR = None
     TO_LOWER = None
     TO_UPPER = None
+    MIN_NEG_WEIGHT = None
+    MIN_POS_WEIGHT = None
 
     PYNINI_AVAILABLE = False
 

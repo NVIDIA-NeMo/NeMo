@@ -195,6 +195,7 @@ class MeasureFst(GraphFst):
             + delimiter
             + (cardinal_graph | NEMO_ALPHA)
         )
+
         math = (
             pynutil.insert("units: \"math\" cardinal { integer: \"")
             + math

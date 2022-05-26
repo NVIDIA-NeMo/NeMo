@@ -11,7 +11,6 @@
 123000~one two three zero zero zero
 123,123,000~one hundred twenty three million one hundred twenty three thousand
 123,000,012~one hundred twenty three million twelve
-123,000012~one hundred and twenty three , zero zero zero zero one two
 1,000,000~one million
 1234567890123124~one two three four five six seven eight nine zero one two three one two four
 978-0~nine hundred and seventy eight - zero

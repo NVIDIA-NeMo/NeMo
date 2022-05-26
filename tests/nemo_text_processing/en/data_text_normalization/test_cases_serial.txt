@@ -12,7 +12,6 @@ MIG-25/235212-asdg~MIG-twenty five/two three five two one two-asdg
 4s~four S
 7-eleven~seven-eleven
 2x~two x
-11:30EST~eleven : thirty EST
 31/31/100~thirty one/thirty one/one hundred
 1-8090~one - eight thousand and ninety
 f++~f plus plus

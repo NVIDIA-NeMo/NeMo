@@ -48,7 +48,7 @@ def get_quantity(
         + cardinal_up_to_hundred
         + pynutil.insert("\"")
         + pynini.closure(pynutil.delete(" "), 0, 1)
-        + pynutil.insert("quantity: \"")
+        + pynutil.insert(" quantity: \"")
         + (quantity_wo_thousand @ (quantities | quantities_abbr))
         + pynutil.insert("\"")
     )

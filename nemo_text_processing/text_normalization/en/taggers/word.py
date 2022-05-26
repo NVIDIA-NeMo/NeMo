@@ -20,7 +20,6 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     GraphFst,
     convert_space,
 )
-from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 
 try:
     import pynini
@@ -45,16 +44,8 @@ class WordFst(GraphFst):
     def __init__(self, deterministic: bool = True):
         super().__init__(name="word", kind="classify", deterministic=deterministic)
 
-        punct = PunctuationFst().graph
-        self.graph = pynini.closure(pynini.difference(NEMO_NOT_SPACE, punct.project("input")), 1)
-
-        if not deterministic:
-            self.graph = pynini.closure(
-                pynini.difference(
-                    self.graph, pynini.union("$", "€", "₩", "£", "¥", "#", "$", "%") + pynini.closure(NEMO_DIGIT, 1)
-                ),
-                1,
-            )
+        symbols_to_exclude = (pynini.union("$", "€", "₩", "£", "¥", "#", "%") | NEMO_DIGIT).optimize()
+        graph = pynini.closure(pynini.difference(NEMO_NOT_SPACE, symbols_to_exclude), 1)
 
         # leave phones of format [HH AH0 L OW1] untouched
         phoneme_unit = pynini.closure(NEMO_ALPHA, 1) + pynini.closure(NEMO_DIGIT)
@@ -64,5 +55,15 @@ class WordFst(GraphFst):
             + phoneme_unit
             + pynini.accep(pynini.escape("]"))
         )
-        self.graph = plurals._priority_union(convert_space(phoneme), self.graph, NEMO_SIGMA)
+
+        if not deterministic:
+            phoneme = (
+                pynini.accep(pynini.escape("["))
+                + pynini.closure(pynini.accep(" "), 0, 1)
+                + pynini.closure(phoneme_unit + pynini.accep(" "))
+                + phoneme_unit
+                + pynini.closure(pynini.accep(" "), 0, 1)
+                + pynini.accep(pynini.escape("]"))
+            )
+        self.graph = plurals._priority_union(convert_space(phoneme), graph, NEMO_SIGMA)
         self.fst = (pynutil.insert("name: \"") + self.graph + pynutil.insert("\"")).optimize()

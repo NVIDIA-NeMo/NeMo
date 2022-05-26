@@ -11,7 +11,6 @@ asdf123@abc.com~asdf one two three at abc dot com
 a1b2@abc.com~a one b two at abc dot com
 ab3.sdd.3@gmail.com~ab three dot sdd dot three at gmail dot com
 email is abc1@gmail.com~email is abc one at gmail dot com
-test .b@gmail.com~test . b at gmail dot com
 abs@nvidia.com~abs at nvidia dot com
 email is a-1.b3_c&-d@gma4i-l.com test~email is a dash one dot b three underscore c ampersand dash d at gma four i dash l dot com test
 nvidia.com~nvidia dot com
@@ -24,7 +23,6 @@ sdf@gmail.com.sm~sdf at gmail dot com dot SM
 sdf@gmail.com/123-sm~sdf at gmail dot com slash one two three dash SM
 sdf@gmail.abc/123-sm~sdf at gmail dot ABC slash one two three dash SM
 ourdailynews.com/123-sm~ourdailynews dot com slash one two three dash SM
-ourdailynews.abc~ourdailynews . abc
-ourdailynews.abc/123-sm~ourdailynews . abc/one hundred twenty three-sm
+ourdailynews.abc~ourdailynews.abc
 file:///c/code/NeMo/docs/build/html/processing/intro.html~file semicolon slash slash slash c slash code slash NeMo slash docs slash build slash html slash processing slash intro dot HTML
 file:///photos/image.jpg~file semicolon slash slash slash photos slash image dot jpeg

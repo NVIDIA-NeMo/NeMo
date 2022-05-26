@@ -30,6 +30,7 @@ from tqdm import tqdm
 from nemo.collections.asr.parts.utils.nmesc_clustering import COSclustering
 from nemo.utils import logging
 
+
 """
 This file contains all the utility functions required for speaker embeddings part in diarization scripts
 """

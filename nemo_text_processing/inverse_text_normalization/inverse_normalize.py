@@ -78,6 +78,7 @@ class InverseNormalizer(Normalizer):
         self.tagger = ClassifyFst(cache_dir=cache_dir, overwrite_cache=overwrite_cache)
         self.verbalizer = VerbalizeFinalFst()
         self.parser = TokenParser()
+        self.lang = lang
 
     def inverse_normalize_list(self, texts: List[str], verbose=False) -> List[str]:
         """

@@ -196,7 +196,7 @@ def remove_puncts(input_str):
     return input_str.translate(str.maketrans('', '', string.punctuation))
 
 
-def post_process_punct(input: str, normalized_text: str):
+def post_process_punct(input: str, normalized_text: str, add_unicode_punct: bool = False):
     """
     Post-processing of the normalized output to match input in terms of spaces around punctuation marks.
     After NN normalization, Moses detokenization puts a space after
@@ -210,12 +210,25 @@ def post_process_punct(input: str, normalized_text: str):
     Args:
         input: input text (original input to the NN, before normalization or tokenization)
         normalized_text: output text (output of the TN NN model)
+        add_unicode_punct: set to True to handle unicode punctuation marks as well as default string.punctuation (increases post processing time)
     """
+    # in the post-processing WFST graph "``" are repalced with '"" quotes (otherwise single quotes "`" won't be handled correctly)
+    # this function fixes spaces around them based on input sequence, so here we're making the same double quote replacement
+    # to make sure these new double quotes work with this function
+    if "``" in input and "``" not in normalized_text:
+        input = input.replace("``", '"')
     input = [x for x in input]
     normalized_text = [x for x in normalized_text]
-    punct_default = [x for x in string.punctuation]
-    punct_unicode = [chr(i) for i in range(sys.maxunicode) if category(chr(i)).startswith("P")]
-    punct_marks = set(punct_default + punct_unicode)
+    punct_marks = [x for x in string.punctuation if x in input]
+
+    if add_unicode_punct:
+        punct_unicode = [
+            chr(i)
+            for i in range(sys.maxunicode)
+            if category(chr(i)).startswith("P") and chr(i) not in punct_default and chr(i) in input
+        ]
+        punct_marks = punct_marks.extend(punct_unicode)
+
     for punct in punct_marks:
         try:
             equal = True
@@ -238,7 +251,6 @@ def post_process_punct(input: str, normalized_text: str):
                 if not equal and not _is_valid(idx_out, idx_in, normalized_text, input):
                     idx_in += 1
                     continue
-
                 if idx_in > 0 and idx_out > 0:
                     if normalized_text[idx_out - 1] == " " and input[idx_in - 1] != " ":
                         normalized_text[idx_out - 1] = ""

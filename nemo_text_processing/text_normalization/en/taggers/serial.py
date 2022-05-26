@@ -86,6 +86,9 @@ class SerialFst(GraphFst):
 
         # serial graph with delimiter
         delimiter = pynini.accep("-") | pynini.accep("/") | pynini.accep(" ")
+        if not deterministic:
+            delimiter |= pynini.cross("-", " dash ") | pynini.cross("/", " slash")
+
         alphas = pynini.closure(NEMO_ALPHA, 1)
         letter_num = alphas + delimiter + num_graph
         num_letter = pynini.closure(num_graph + delimiter, 1) + alphas

@@ -18,8 +18,10 @@ import re
 from argparse import ArgumentParser
 from collections import OrderedDict
 from math import factorial
+from time import perf_counter
 from typing import Dict, List, Union
 
+from joblib import Parallel, delayed
 from nemo_text_processing.text_normalization.data_loader_utils import (
     get_installation_msg,
     load_file,
@@ -31,6 +33,7 @@ from tqdm import tqdm
 
 try:
     import pynini
+    from pynini.lib.rewrite import top_rewrite
 
     PYNINI_AVAILABLE = True
 
@@ -60,6 +63,8 @@ class Normalizer:
         cache_dir: path to a dir with .far grammar file. Set to None to avoid using cache.
         overwrite_cache: set to True to overwrite .far files
         whitelist: path to a file with whitelist replacements
+        post_process: WFST-based post processing, e.g. to remove extra spaces added during TN.
+            Note: punct_post_process flag in normalize() supports all languages.
     """
 
     def __init__(
@@ -71,23 +76,32 @@ class Normalizer:
         overwrite_cache: bool = False,
         whitelist: str = None,
         lm: bool = False,
+        post_process: bool = True,
     ):
         assert input_case in ["lower_cased", "cased"]
 
         if not PYNINI_AVAILABLE:
             raise ImportError(get_installation_msg())
 
-        if lang == 'en' and deterministic:
-            from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify import ClassifyFst
+        self.post_processor = None
+
+        if lang == "en":
             from nemo_text_processing.text_normalization.en.verbalizers.verbalize_final import VerbalizeFinalFst
-        elif lang == 'en' and not deterministic:
-            if lm:
-                from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify_lm import ClassifyFst
+            from nemo_text_processing.text_normalization.en.verbalizers.post_processing import PostProcessingFst
+
+            if post_process:
+                self.post_processor = PostProcessingFst(cache_dir=cache_dir, overwrite_cache=overwrite_cache)
+
+            if deterministic:
+                from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify import ClassifyFst
             else:
-                from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify_with_audio import (
-                    ClassifyFst,
-                )
-            from nemo_text_processing.text_normalization.en.verbalizers.verbalize_final import VerbalizeFinalFst
+                if lm:
+                    from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify_lm import ClassifyFst
+                else:
+                    from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify_with_audio import (
+                        ClassifyFst,
+                    )
+
         elif lang == 'ru':
             # Ru TN only support non-deterministic cases and produces multiple normalization options
             # use normalize_with_audio.py
@@ -106,7 +120,11 @@ class Normalizer:
             overwrite_cache=overwrite_cache,
             whitelist=whitelist,
         )
-        self.verbalizer = VerbalizeFinalFst(deterministic=deterministic)
+
+        self.verbalizer = VerbalizeFinalFst(
+            deterministic=deterministic, cache_dir=cache_dir, overwrite_cache=overwrite_cache
+        )
+
         self.parser = TokenParser()
         self.lang = lang
 
@@ -114,31 +132,63 @@ class Normalizer:
             self.processor = MosesProcessor(lang_id=lang)
         else:
             self.processor = None
-            print("NeMo NLP is not available. Moses de-tokenization will be skipped.")
+            print("NeMo NLP is not available. Punctuation post-processing will be skipped")
 
     def normalize_list(
-        self, texts: List[str], verbose=False, punct_pre_process: bool = False, punct_post_process: bool = False
-    ) -> List[str]:
+        self,
+        texts: List[str],
+        verbose: bool = False,
+        punct_pre_process: bool = False,
+        punct_post_process: bool = False,
+        batch_size: int = 1,
+        n_jobs: int = 1,
+    ):
         """
         NeMo text normalizer
 
         Args:
             texts: list of input strings
             verbose: whether to print intermediate meta information
+            punct_pre_process: whether to do punctuation pre processing
+            punct_post_process: whether to do punctuation post processing
+            n_jobs: the maximum number of concurrently running jobs. If -1 all CPUs are used. If 1 is given,
+                no parallel computing code is used at all, which is useful for debugging. For n_jobs below -1,
+                (n_cpus + 1 + n_jobs) are used. Thus for n_jobs = -2, all CPUs but one are used.
+            batch_size: Number of examples for each process
 
         Returns converted list input strings
         """
-        res = []
-        for input in tqdm(texts):
-            try:
-                text = self.normalize(
-                    input, verbose=verbose, punct_pre_process=punct_pre_process, punct_post_process=punct_post_process
-                )
-            except:
-                print(input)
-                raise Exception
-            res.append(text)
-        return res
+
+        # to save intermediate results to a file
+        batch = min(len(texts), batch_size)
+
+        try:
+            normalized_texts = Parallel(n_jobs=n_jobs)(
+                delayed(self.__process_batch)(texts[i : i + batch], verbose, punct_pre_process, punct_post_process)
+                for i in range(0, len(texts), batch)
+            )
+        except BaseException as e:
+            raise e
+
+        normalized_texts = list(itertools.chain(*normalized_texts))
+        return normalized_texts
+
+    def __process_batch(self, batch, verbose, punct_pre_process, punct_post_process):
+        """
+        Normalizes batch of text sequences
+        Args:
+            batch: list of texts
+            verbose: whether to print intermediate meta information
+            punct_pre_process: whether to do punctuation pre processing
+            punct_post_process: whether to do punctuation post processing
+        """
+        normalized_lines = [
+            self.normalize(
+                text, verbose=verbose, punct_pre_process=punct_pre_process, punct_post_process=punct_post_process
+            )
+            for text in tqdm(batch)
+        ]
+        return normalized_lines
 
     def _estimate_number_of_permutations_in_nested_dict(
         self, token_group: Dict[str, Union[OrderedDict, str, bool]]
@@ -256,6 +306,10 @@ class Normalizer:
                 raise ValueError(f"No permutations were generated from tokens {s}")
             output += ' ' + self.select_verbalizer(verbalizer_lattice)
         output = SPACE_DUP.sub(' ', output[1:])
+
+        if self.lang == "en" and hasattr(self, 'post_processor'):
+            output = self.post_process(output)
+
         if punct_post_process:
             # do post-processing based on Moses detokenizer
             if self.processor:
@@ -263,6 +317,7 @@ class Normalizer:
                 output = post_process_punct(input=original_text, normalized_text=output)
             else:
                 print("NEMO_NLP collection is not available: skipping punctuation post_processing")
+
         return output
 
     def _permute(self, d: OrderedDict) -> List[str]:
@@ -371,7 +426,27 @@ class Normalizer:
         Returns: shortest path
         """
         output = pynini.shortestpath(lattice, nshortest=1, unique=True).string()
+        # lattice = output @ self.verbalizer.punct_graph
+        # output = pynini.shortestpath(lattice, nshortest=1, unique=True).string()
         return output
+
+    def post_process(self, normalized_text: 'pynini.FstLike') -> str:
+        """
+        Runs post processing graph on normalized text
+
+        Args:
+            normalized_text: normalized text
+
+        Returns: shortest path
+        """
+        normalized_text = normalized_text.strip()
+        if not normalized_text:
+            return normalized_text
+        normalized_text = pynini.escape(normalized_text)
+
+        if self.post_processor is not None:
+            normalized_text = top_rewrite(normalized_text, self.post_processor.fst)
+        return normalized_text
 
 
 def parse_args():
@@ -386,7 +461,9 @@ def parse_args():
     )
     parser.add_argument("--verbose", help="print info for debugging", action='store_true')
     parser.add_argument(
-        "--punct_post_process", help="set to True to enable punctuation post processing", action="store_true"
+        "--punct_post_process",
+        help="set to True to enable punctuation post processing to match input.",
+        action="store_true",
     )
     parser.add_argument(
         "--punct_pre_process", help="set to True to enable punctuation pre processing", action="store_true"
@@ -403,8 +480,13 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    start_time = perf_counter()
+
     args = parse_args()
     whitelist = os.path.abspath(args.whitelist) if args.whitelist else None
+
+    if not args.input_string and not args.input_file:
+        raise ValueError("Either `--text` or `--input_file` required")
 
     normalizer = Normalizer(
         input_case=args.input_case,
@@ -438,3 +520,5 @@ if __name__ == "__main__":
             print(f"- Normalized. Writing out to {args.output_file}")
         else:
             print(normalizer_prediction)
+
+    print(f"Execution time: {perf_counter() - start_time:.02f} sec")

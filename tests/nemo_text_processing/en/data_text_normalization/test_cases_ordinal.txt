@@ -4,7 +4,6 @@
 1000th~one thousandth
 1,000th~one thousandth
 1000000th~one millionth
-9000,000th~nine thousand , zero zero zero th
 9,000,000th~nine millionth
 1st~first
 1th~one th

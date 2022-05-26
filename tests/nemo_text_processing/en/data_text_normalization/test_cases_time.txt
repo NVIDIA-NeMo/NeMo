@@ -15,7 +15,5 @@
 10:00:00 p.m. e.s.t~ten hours zero minutes and zero seconds PM EST
 1:01:01~one hour one minute and one second
 14:10:30~fourteen hours ten minutes and thirty seconds
-11:20AM,2:40PM and 10:10PM.~eleven twenty AM , two forty PM and ten ten PM .
 2pm-5pm~two PM to five PM
 5pm~five PM
-11:30...~eleven thirty . . .

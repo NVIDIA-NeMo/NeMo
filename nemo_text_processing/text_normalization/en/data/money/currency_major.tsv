@@ -1,5 +1,7 @@
 $	dollar
 $	us dollar
+US$	us dollar
+฿	Thai Baht
 £	pound
 €	euro
 ₩	won
@@ -32,3 +34,6 @@ cad	canadian dollar
 ssp	south sudanese pound
 scr	seychelles rupee
 mvr	maldivian rufiyaa
+DH	dirham
+Dh	dirham
+Dhs.	dirham

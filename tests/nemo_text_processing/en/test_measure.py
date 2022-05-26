@@ -19,7 +19,7 @@ from nemo_text_processing.text_normalization.normalize import Normalizer
 from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
 from parameterized import parameterized
 
-from ..utils import CACHE_DIR, PYNINI_AVAILABLE, parse_test_case_file
+from ..utils import CACHE_DIR, PYNINI_AVAILABLE, RUN_AUDIO_BASED_TESTS, parse_test_case_file
 
 
 class TestMeasure:
@@ -42,7 +42,7 @@ class TestMeasure:
     )
     normalizer_with_audio_en = (
         NormalizerWithAudio(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE and CACHE_DIR
+        if PYNINI_AVAILABLE and RUN_AUDIO_BASED_TESTS
         else None
     )
 

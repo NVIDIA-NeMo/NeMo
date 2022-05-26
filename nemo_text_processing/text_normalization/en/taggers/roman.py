@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from nemo_text_processing.text_normalization.en.graph_utils import NEMO_ALPHA, GraphFst
+from nemo_text_processing.text_normalization.en.graph_utils import NEMO_ALPHA, NEMO_SIGMA, GraphFst
 from nemo_text_processing.text_normalization.en.utils import get_abs_path, load_labels
 
 try:
@@ -41,9 +41,11 @@ class RomanFst(GraphFst):
         roman_dict = load_labels(get_abs_path("data/roman/roman_to_spoken.tsv"))
         default_graph = pynini.string_map(roman_dict).optimize()
         default_graph = pynutil.insert("integer: \"") + default_graph + pynutil.insert("\"")
-        graph_teens = pynini.string_map([x[0] for x in roman_dict[:19]]).optimize()
+        ordinal_limit = 19
 
-        # up to five digit roman numerals with a preceding name are converted to ordinal form
+        graph_teens = pynini.string_map([x[0] for x in roman_dict[:ordinal_limit]]).optimize()
+
+        # roman numerals up to ordinal_limit with a preceding name are converted to ordinal form
         names = get_names()
         graph = (
             pynutil.insert("key_the_ordinal: \"")
@@ -53,8 +55,14 @@ class RomanFst(GraphFst):
             + graph_teens @ default_graph
         ).optimize()
 
-        # single symbol roman numerals with preceding key words are converted to cardinal form
-        key_words = pynini.string_map(load_labels(get_abs_path("data/roman/key_word.tsv"))).optimize()
+        # single symbol roman numerals with preceding key words (multiple formats) are converted to cardinal form
+        key_words = []
+        for k_word in load_labels(get_abs_path("data/roman/key_word.tsv")):
+            key_words.append(k_word)
+            key_words.append([k_word[0][0].upper() + k_word[0][1:]])
+            key_words.append([k_word[0].upper()])
+
+        key_words = pynini.string_map(key_words).optimize()
         graph |= (
             pynutil.insert("key_cardinal: \"") + key_words + pynutil.insert("\"") + pynini.accep(" ") + default_graph
         ).optimize()
@@ -71,12 +79,13 @@ class RomanFst(GraphFst):
         elif not lm:
             # two or more digit roman numerals
             roman_to_cardinal = pynini.compose(
-                pynini.closure(NEMO_ALPHA, 2),
+                pynini.difference(NEMO_SIGMA, "I"),
                 (
-                    pynutil.insert("default_cardinal: \"default\" ")
-                    + (pynini.string_map([x[0] for x in roman_dict[:50]]).optimize()) @ default_graph
+                    pynutil.insert("default_cardinal: \"default\" integer: \"")
+                    + pynini.string_map(roman_dict).optimize()
+                    + pynutil.insert("\"")
                 ),
-            )
+            ).optimize()
 
         # convert three digit roman or up with suffix to ordinal
         roman_to_ordinal = pynini.compose(
@@ -85,14 +94,6 @@ class RomanFst(GraphFst):
         )
 
         graph |= roman_to_cardinal | roman_to_ordinal
-
-        # # add a higher weight when roman number consists of a single symbol
-        # graph = pynini.compose(pynini.closure(NEMO_CHAR, 2), graph) | pynutil.add_weight(
-        #     pynini.compose(NEMO_CHAR, graph), 101
-        # )
-        # graph = graph.optimize() + pynini.closure(pynutil.delete("."), 0, 1)
-
-        # graph = pynutil.insert("integer: \"") + graph + pynutil.insert("\"")
         graph = self.add_tokens(graph)
 
         self.fst = graph.optimize()

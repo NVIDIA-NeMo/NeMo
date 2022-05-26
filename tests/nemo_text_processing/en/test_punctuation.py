@@ -22,13 +22,8 @@ from ..utils import CACHE_DIR, PYNINI_AVAILABLE, parse_test_case_file
 
 class TestPunctuation:
     normalizer_en = (
-        Normalizer(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
+        Normalizer(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False, post_process=True,)
         if PYNINI_AVAILABLE
-        else None
-    )
-    normalizer_with_audio_en = (
-        NormalizerWithAudio(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE and CACHE_DIR
         else None
     )
 
@@ -40,11 +35,15 @@ class TestPunctuation:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_norm(self, test_input, expected):
-        pred = self.normalizer_en.normalize(test_input, verbose=True, punct_post_process=True)
-        assert pred == expected, f"input: {test_input}"
+        pred = self.normalizer_en.normalize(test_input, verbose=True, punct_post_process=False)
+        assert pred == expected, f"input: {test_input} != {expected}"
 
-        if self.normalizer_with_audio_en:
-            pred_non_deterministic = self.normalizer_with_audio_en.normalize(
-                test_input, n_tagged=30, punct_post_process=True
-            )
-            assert expected in pred_non_deterministic, f"input: {test_input}"
+    @parameterized.expand(parse_test_case_file('en/data_text_normalization/test_cases_punctuation_match_input.txt'))
+    @pytest.mark.skipif(
+        not PYNINI_AVAILABLE, reason="`pynini` not installed, please install via nemo_text_processing/setup.sh"
+    )
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_norm_python_punct_post_process(self, test_input, expected):
+        pred = self.normalizer_en.normalize(test_input, verbose=True, punct_post_process=True)
+        assert pred == expected, f"input: {test_input} != {expected}"

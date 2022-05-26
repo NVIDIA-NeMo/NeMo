@@ -68,6 +68,7 @@ class RangeFst(GraphFst):
         range_graph = cardinal + pynini.closure(pynini.cross("+", " plus ") + cardinal, 1)
         range_graph |= cardinal + pynini.closure(pynini.cross(" + ", " plus ") + cardinal, 1)
         range_graph |= approx + cardinal
+        range_graph |= cardinal + (pynini.cross("...", " ... ") | pynini.accep(" ... ")) + cardinal
 
         if not deterministic or lm:
             # cardinal ----

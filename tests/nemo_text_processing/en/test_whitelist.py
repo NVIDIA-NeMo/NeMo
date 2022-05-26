@@ -19,7 +19,7 @@ from nemo_text_processing.text_normalization.normalize import Normalizer
 from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
 from parameterized import parameterized
 
-from ..utils import CACHE_DIR, PYNINI_AVAILABLE, parse_test_case_file
+from ..utils import CACHE_DIR, PYNINI_AVAILABLE, RUN_AUDIO_BASED_TESTS, parse_test_case_file
 
 
 class TestWhitelist:
@@ -42,7 +42,7 @@ class TestWhitelist:
     )
     normalizer_with_audio_en = (
         NormalizerWithAudio(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE and CACHE_DIR
+        if PYNINI_AVAILABLE and RUN_AUDIO_BASED_TESTS
         else None
     )
 
@@ -63,7 +63,7 @@ class TestWhitelist:
             assert expected in pred_non_deterministic
 
     normalizer_uppercased = Normalizer(input_case='cased', lang='en') if PYNINI_AVAILABLE else None
-    cases_uppercased = {"Dr. Evil": "doctor Evil", "dr. Evil": "dr . Evil", "no. 4": "no . four"}
+    cases_uppercased = {"Dr. Evil": "doctor Evil", "dr. Evil": "dr. Evil", "no. 4": "no. four"}
 
     @parameterized.expand(cases_uppercased.items())
     @pytest.mark.skipif(

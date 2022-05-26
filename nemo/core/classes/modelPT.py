@@ -1301,7 +1301,6 @@ class ModelPT(LightningModule, Model):
             Changes to this config are not reflected in the state of the model.
             Please create a new model using an updated config to properly update the model.
         """
-        self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
         return self._cfg
 
     @cfg.setter

@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nemo.core import Loss, typecheck
-from nemo.core.neural_types import LengthsType, LossType, NeuralType, SpectrogramType, VoidType
+from nemo.core.neural_types import AcousticEncodedRepresentation, LengthsType, LossType, NeuralType, SpectrogramType
 
 __all__ = ["ContrastiveLoss"]
 
@@ -30,7 +30,7 @@ class ContrastiveLoss(Loss):
         return {
             "spectrograms": NeuralType(("B", "D", "T"), SpectrogramType()),
             "spec_masks": NeuralType(("B", "D", "T"), SpectrogramType()),
-            "decoder_outputs": NeuralType(("B", "T", "D"), VoidType()),
+            "decoder_outputs": NeuralType(("B", "T", "D"), AcousticEncodedRepresentation()),
             "decoder_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 

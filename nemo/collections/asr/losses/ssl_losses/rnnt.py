@@ -16,7 +16,6 @@ from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.core import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType, SpectrogramType
 
-
 __all__ = ["RNNTLossForSSL"]
 
 

@@ -523,7 +523,7 @@ class MaskedPatchAugmentation(NeuralModule):
                 Defaults to 48.
             mask_patches (float): how many patches should be masked in each sample.
                 if >= 1., interpreted as number of patches (after converting to int)
-                if <1.,   interpreted as fraction of total tokens to be masked 
+                if <1.,   interpreted as fraction of total tokens to be masked (number of patches is rounded up)
                 Defaults to 10.
             freq_masks (int): how many frequency segments should be cut.
                 Defaults to 0.
@@ -572,7 +572,8 @@ class MaskedPatchAugmentation(NeuralModule):
 
         if self.mask_patches is None:
             # masking specified as fraction
-            mask_patches = int(min_len * self._mask_fraction // self.patch_size)
+            len_fraction = int(min_len * self._mask_fraction)
+            mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
         else:
             mask_patches = self.mask_patches
 

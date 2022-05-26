@@ -500,19 +500,23 @@ class ConvASRDecoderReconstruction(NeuralModule, Exportable):
 
     @property
     def output_types(self):
-        return OrderedDict({"spec_recon": NeuralType(('B', 'T', 'D'), SpectrogramType())})
+        if self.apply_softmax:
+            return OrderedDict({"out": NeuralType(('B', 'T', 'D'), LogprobsType())})
+        else:
+            return OrderedDict({"out": NeuralType(('B', 'T', 'D'), AcousticEncodedRepresentation())})
 
     def __init__(
         self,
         feat_in,
         feat_out,
         feat_hidden,
-        stride_layers,
+        stride_layers=0,
         non_stride_layers=0,
         kernel_size=11,
         init_mode="xavier_uniform",
         activation="relu",
         stride_transpose=True,
+        apply_softmax=False,
     ):
         super().__init__()
 
@@ -574,12 +578,16 @@ class ConvASRDecoderReconstruction(NeuralModule, Exportable):
         self.decoder_layers.append(nn.Conv1d(self.feat_hidden, self.feat_out, kernel_size=1, bias=True))
 
         self.decoder_layers = nn.Sequential(*self.decoder_layers)
+        self.apply_softmax = apply_softmax
 
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
     @typecheck()
     def forward(self, encoder_output):
-        return self.decoder_layers(encoder_output).transpose(-2, -1)
+        out = self.decoder_layers(encoder_output).transpose(-2, -1)
+        if self.apply_softmax:
+            out = torch.nn.functional.log_softmax(out, dim=-1)
+        return out
 
     def input_example(self, max_batch=1, max_dim=256):
         """

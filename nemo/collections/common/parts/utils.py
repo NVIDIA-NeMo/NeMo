@@ -21,6 +21,7 @@ import torch.nn as nn
 __all__ = ['if_exist', '_compute_softmax']
 
 activation_registry = {
+    "identity": nn.Identity,
     "hardtanh": nn.Hardtanh,
     "relu": nn.ReLU,
     "selu": nn.SELU,

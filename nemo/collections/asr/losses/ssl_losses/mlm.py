@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nemo.core import Loss, typecheck
-from nemo.core.neural_types import LabelsType, LengthsType, LossType, NeuralType, SpectrogramType, VoidType
+from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType, SpectrogramType
 
 __all__ = ["MLMLoss"]
 
@@ -29,7 +29,7 @@ class MLMLoss(Loss):
         """
         return {
             "spec_masks": NeuralType(("B", "D", "T"), SpectrogramType()),
-            "decoder_outputs": NeuralType(("B", "T", "D"), VoidType()),
+            "decoder_outputs": NeuralType(("B", "T", "D"), LogprobsType()),
             "targets": NeuralType(('B', 'T'), LabelsType()),
             "decoder_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
             "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),

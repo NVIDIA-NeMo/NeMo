@@ -408,31 +408,43 @@ model:
         _target_: nemo.collections.asr.modules.ConvASRDecoderReconstruction
         feat_in: ${model.model_defaults.enc_final}
         feat_hidden: 128
+        # features in hidden layer of decoder
         feat_out: ${model.model_defaults.decoder_out_channels}
-        stride_layers: 0
-        #if loss.combine_time_steps is less than the encoder stride, then a corresponding amount of stride_layers needs to
-        #be added to the decoder (here stride and combine_time_steps are both 4)
+        stride_layers: 1
+        # if loss.combine_time_steps is different than the encoder stride,
+        # then a corresponding amount of stride_layers needs to
+        # be added to the decoder (here stride is 8 and combine_time_steps is 4)
         non_stride_layers: 0
+        stride_transpose: true
+        apply_softmax: false
       loss:
         _target_: nemo.collections.asr.losses.ContrastiveLoss
         in_dim: ${model.preprocessor.features}
         proj_dim: ${model.model_defaults.decoder_out_channels}
-        combine_time_steps: 8 #how many spectrogram time steps are used for one target/representation for contrastive task
+        combine_time_steps: 4 #how many spectrogram time steps are used for one target/representation for contrastive task
         quantized_targets: true #should quantizer or linear layer be used
         # (quantizer is required to extract pseudo-labels for other losses)
-        codebook_size: 300
-        num_negatives: 40
+        codebook_size: 300 # number of vectors in the quantization codebook per group
+        num_groups: 2 # number of groups in the quantizer codebook
+        num_negatives: 100 # number of sampled negatives for each target
         sample_from_same_utterance_only: true #should negatives be sampled only from the same utterance
         sample_from_non_masked: false #should negatives be sampled from non-masked steps
 
     mlm:
       decoder:
-        _target_: nemo.collections.asr.modules.ConvASRDecoder
+        _target_: nemo.collections.asr.modules.ConvASRDecoderReconstruction
         feat_in: ${model.model_defaults.enc_final}
-        num_classes: 90000
+        feat_hidden: 128
+        # features in hidden layer of decoder
+        feat_out: 90000
+        # this should be equal to codebook_size^groups in the contrastive loss to match the targets
+        stride_layers: 1
+        stride_transpose: true
+        activation: "identity"
+        apply_softmax: true
       loss:
         _target_: nemo.collections.asr.losses.MLMLoss
-        combine_time_steps: 8
+        combine_time_steps: 4
       targets_from_loss: "contrastive"
       loss_alpha: 1000.
 

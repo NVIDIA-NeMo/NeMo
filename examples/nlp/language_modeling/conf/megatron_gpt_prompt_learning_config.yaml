@@ -40,7 +40,6 @@ exp_manager:
 model:
   seed: 1234
   nemo_path: ${name}.nemo # .nemo filename and path to where the model and associated artifacts should be saved
-  lm_finetune: False # whether fine tune the language model
   virtual_prompt_style: 'p-tuning' # one of 'prompt-tuning', 'p-tuning', or 'inference'
   encoder_seq_length: 2048 
   tensor_model_parallel_size: 1 # intra-layer model parallelism

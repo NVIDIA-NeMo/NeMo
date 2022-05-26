@@ -2583,7 +2583,7 @@ pipeline {
       failFast true
       steps{
         sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-            model_file=/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo \
+            gpt_model_file=/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo \
             prompts=['How to fix GPU memory? A:'] \
             tensor_model_parallel_size=1 \
             inference.tokens_to_generate=32 \
@@ -2600,7 +2600,7 @@ pipeline {
       failFast true
       steps {
         sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-            model_file=/home/TestData/nlp/megatron_gpt/PP2/gpt_pp2_tp1.nemo \
+            gpt_model_file=/home/TestData/nlp/megatron_gpt/PP2/gpt_pp2_tp1.nemo \
             server=False \
             tensor_model_parallel_size=1 \
             pipeline_model_parallel_size=2 \
@@ -2617,7 +2617,6 @@ pipeline {
       }
       failFast true
       steps {
-        sh "python tests/collections/nlp/test_prompt_learning.py"
         sh "echo 'TESTING P-TUNING TRAINING -------'"
         sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
             --config-name=megatron_gpt_prompt_learning_config \
@@ -2634,8 +2633,8 @@ pipeline {
 
         sh "echo 'TESTING P-TUNING INFERENCE --------'"
         sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-            virtual_prompt_model=True \
-            model_file='/home/TestData/nlp/prompt_learning/p_tuning_test.nemo' \
+            virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/p_tuning_test.nemo' \
+            gpt_model_file='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
             inference.greedy=True \
             inference.add_BOS=True \
             trainer.devices=1 \
@@ -2663,8 +2662,8 @@ pipeline {
 
         sh "echo TESTING PROMPT-TUNING INFERENCE --------"
         sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-            virtual_prompt_model=True \
-            model_file='/home/TestData/nlp/prompt_learning/prompt_tuning_test.nemo' \
+            virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/prompt_tuning_test.nemo' \
+            gpt_model_file='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
             inference.greedy=True \
             inference.add_BOS=True \
             trainer.devices=1 \
@@ -2703,7 +2702,7 @@ pipeline {
     //     --gpus_per_node=2 \
     //     --tensor_model_parallel_size=2"
     //     sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-    //     --model_file=examples/nlp/language_modeling/small_gpt.nemo \
+    //     --gpt_model_file=examples/nlp/language_modeling/small_gpt.nemo \
     //     --tokens_to_generate=32 \
     //     --tensor_model_parallel_size=2 \
     //     --prompt='This is a test.'"

@@ -145,9 +145,6 @@ Prompt Learning Specific Config Values
    * - **model.nemo_path**
      - string
      - Path to where you want to save your model after prompt tuning/p-tuning, must end in `.nemo`
-   * - **model.lm_finetune**
-     - bool
-     - whether fine tune all the GPT language model weights
    * - **model.virtual_prompt_style**
      - string
      - one of 'prompt-tuning', 'p-tuning', or 'inference'
@@ -338,17 +335,19 @@ The inference file can contain a mix of prompts from all the tasks the model has
 .. code::
 
     python megatron_gpt_eval.py \
-            virtual_prompt_model=True \
-            model_file=PATH_TO_MODEL \
+            virtual_prompt_model_file=PATH_TO_NEMO_PROMPT_LEARNING_MODEL_FILE \
+            model_file=PATH_TO_FROZEN_GPT_MODEL_FILE \
             inference.greedy=True \
-            inference.add_BOS=True \
+            inference.add_BOS=False \
             trainer.devices=1 \
             trainer.num_nodes=1 \
             tensor_model_parallel_size=1 \
             pipeline_model_parallel_size=1 \
             prompts=[prompt1,prompt2]
             
-Prompts in this case should be a list of dictionary examples like the ones used during prompt learning. They should have keys that match the fields specified in the prompt template. Fields can be dropped from the prompt dict and their corresponding section of the prompt template will be automatically removed.
+``virtual_prompt_model_file`` should be a path to a .nemo file saved after p-tuning/prompt tuning and ``model_file`` is still the path to the gpt model's .nemo file.   
+
+prompts in this case should be a list of .json or .jsonl files containing json objects similar to the ones used during prompt learning. They should have keys that match the fields specified in the prompt template. Fields can be dropped from the prompt dict and their corresponding section of the prompt template will be automatically removed. 
 
 For example, say the prompt template during p-tuning/prompt-tuning looked like:
 
@@ -360,10 +359,9 @@ but you don't want to include the answer field during inference. Just don't incl
 
 .. code::
 
-  prompts = [
-              {"taskname": "squad", "context": "some paragraph", "question": "question related to paragraph"},
-              {"taskname": "squad", "context": "another paragraph", "question": "a different question related to paragraph"},
-            ]
+  {"taskname": "squad", "context": "some paragraph", "question": "question related to paragraph"}
+  {"taskname": "squad", "context": "another paragraph", "question": "a different question related to paragraph"}
+
         
 And the dataset class will automatically format your input to have the form:
 
@@ -374,7 +372,7 @@ And the dataset class will automatically format your input to have the form:
       '<|VIRTUAL_PROMPT_0|> Context: another paragraph Question: a different question related to paragraph Answer: '
   ]
         
-Instead of prompt dicts, you can also pass in a list of string paths to .json files on which you want to run inference. Similarly for all other scenarios, just add virtual_prompt_model=True if you're using a p-tuned/prompt-tuned model.
+Generally prompt learning inference is just like running inference with a GPT model. The only difference is you need to add ``virtual_prompt_model_file=PATH_TO_NEMO_PROMPT_LEARNING_MODEL_FILE`` to your command if you're using a p-tuned/prompt-tuned model. 
 
 Example prompt learning script: `NeMo/examples/nlp/language_modeling/megatron_gpt_prompt_learning.py.py <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/language_modeling/megatron_gpt_prompt_learning.py>`__.
 

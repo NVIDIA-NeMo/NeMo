@@ -12,13 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import re
-import tempfile
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
@@ -88,15 +86,6 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
                 cfg.get('language_model_path'), trainer=trainer, save_restore_connector=NLPSaveRestoreConnector(),
             )
 
-        elif cfg.get('language_model_config_path', None):
-            frozen_model_config = OmegaConf.load(
-                self.register_artifact('language_model_config_path', cfg.get('language_model_config_path'))
-            )
-            self.frozen_model = MegatronGPTModel(frozen_model_config, trainer=trainer)
-
-        else:
-            raise ValueError("Neither a valid GPT .nemo path nor a valid gpt config path was given.")
-
         # Freeze all GPT model weights for prompt-tuning/p-tuning
         self.frozen_model.freeze()
         self.tokenizer = self.frozen_model.tokenizer
@@ -116,6 +105,8 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             task_id_num_to_name=self.task_id_num_to_name,
             hidden_size=self.hidden_size,
         )
+        self._prompt_table_key = VirtualPromptSource.PROMPT_TABLE.value
+        self._prompt_encoder_key = VirtualPromptSource.PROMPT_ENCODER.value
 
         # Prepare pseudo token ids for virtual/virtual prompt tokens
         self.pseudo_tokens = get_pseudo_tokens(self.max_virtual_tokens)
@@ -280,6 +271,42 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             tasks[taskname] = self.task_templates[taskname].copy()
 
         return tasks
+
+    def state_dict(self):
+        """
+        Custom state dict that only contains prompt table and prompt encoder parameters. 
+        No frozen model parameters are stored in the state dict. Prompt encoder parameters 
+        are only in state dict for intermediate checkpoints saved during training. Final
+        nemo checkpoints at the end of training will contain prompt table parameters only. 
+        """
+        state_dict_ = {}
+        state_dict_[self._prompt_table_key] = self.prompt_table.state_dict()
+
+        if self.virtual_prompt_source == VirtualPromptSource.PROMPT_ENCODER:
+            state_dict_[self._prompt_encoder_key] = self.prompt_encoder.state_dict()
+
+        return state_dict_
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        """
+        Custom load state dict method that only loads prompt table and prompt encoder
+        parameters. Matching load method for this class' custom state dict method. 
+        """
+        if self._prompt_table_key in state_dict:
+            state_dict_ = state_dict[self._prompt_table_key]
+        else:
+            # Handle loading state dict before weight saving change for backward compatibility.
+            state_dict_ = OrderedDict()
+            for key in state_dict.keys():
+                if key.startswith(self._prompt_table_key):
+                    key_substring = ".".join(key.split(".")[1:])
+                    state_dict_[key_substring] = state_dict[key]
+
+        self.prompt_table.load_state_dict(state_dict_, strict)
+
+        if self._prompt_encoder_key in state_dict and self.virtual_prompt_source == VirtualPromptSource.PROMPT_ENCODER:
+            state_dict_ = state_dict[self._prompt_encoder_key]
+            self.prompt_encoder.load_state_dict(state_dict_, strict)
 
     def forward(
         self,
@@ -491,25 +518,8 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self.cfg.new_tasks = []
             self.cfg.virtual_prompt_style = VirtualPromptStyle.INFERENCE.value
 
-            # No longer need gpt model's .nemo file.
-            self.cfg.language_model_path = None
-
-        # Take artifacts from frozen GPT model and save them to this model's .nemo file instead
-        self.artifacts = self.frozen_model.artifacts
-
-        # GPT model weights are saved in this model's model_weights.ckpt and gpt config
-        # saved as artifact with name frozen_model_config.yaml.
-        # tmpdir = tempfile.mkdtemp()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            frozen_model_config_yaml = os.path.join(tmpdir, "frozen_model_config.yaml")
-            self.frozen_model.to_config_file(path2yaml_file=frozen_model_config_yaml)
-            self.cfg.language_model_config_path = self.register_artifact(
-                "language_model_config_path", frozen_model_config_yaml
-            )
-
-            # Save the best nemo model
-            self.save_to(save_path=self.cfg.nemo_path)
-
+        # Save the best nemo model
+        self.save_to(save_path=self.cfg.nemo_path)
         logging.info(f"The final model was saved to {self.cfg.nemo_path}")
 
     def setup(self, stage=None):

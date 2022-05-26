@@ -18,11 +18,11 @@ trainer:
   logger: False # logger provided by exp_manager
   precision: 16 # 16, 32, or bf16
 
-virtual_prompt_model: False # Whether the model is a MegatronGPTPromptLearningModel model
 tensor_model_parallel_size: 1
 pipeline_model_parallel_size: 1
 pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
-model_file: null  # GPT nemo file path
+gpt_model_file: null  # GPT nemo file path
+virtual_prompt_model_file: null # path to a MegatronGPTPromptLearningModel model if you want to use soft prompts
 checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
 checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
 hparams_file: null # model configuration file, only used for PTL checkpoint loading

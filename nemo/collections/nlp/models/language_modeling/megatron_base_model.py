@@ -47,7 +47,7 @@ class MegatronBaseModel(NLPModel):
        Otherwise, it uses the parameters calculated in the `setup_optimizer_param_groups` method.
     """
 
-    def __init__(self, cfg: DictConfig, trainer: Trainer, no_lm_init=False):
+    def __init__(self, cfg: DictConfig, trainer: Trainer, no_lm_init=True):
         # FIXME: switch to self._cfg
         if not HAVE_APEX:
             raise ImportError(

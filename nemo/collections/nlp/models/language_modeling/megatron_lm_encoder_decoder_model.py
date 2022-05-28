@@ -138,6 +138,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             use_cpu_initialization=self.cfg.get('use_cpu_initialization', False),
             hidden_dropout=self.cfg.get('hidden_dropout', 0.1),
             attention_dropout=self.cfg.get('attention_dropout', 0.1),
+            position_embedding_type=self.cfg.get('position_embedding_type', 'learned_absolute'),
+            relative_attention_num_buckets=self.cfg.get('relative_attention_num_buckets', 32),
+            relative_attention_max_distance=self.cfg.get('relative_attention_max_distance', 128),
             precision=self.cfg.get('precision', 16),
             fp32_residual_connection=self.cfg.get('fp32_residual_connection', False),
             activations_checkpoint_method=self.cfg.get('activations_checkpoint_method', None),
@@ -388,12 +391,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                     and parallel_state.get_pipeline_model_parallel_world_size() > 1
                     and parallel_state.get_pipeline_model_parallel_split_rank() is not None
                 ):
-                    position_embeddings_weight = self.enc_dec_model.position_embeddings_weight()
-                    if self.megatron_amp_o2:
-                        grad = position_embeddings_weight.main_grad
-                    else:
-                        grad = position_embeddings_weight.grad
-                    torch.distributed.all_reduce(grad, group=parallel_state.get_position_embedding_group())
+                    if self.enc_dec_model.position_embedding_type != 'relative':
+                        position_embeddings_weight = self.enc_dec_model.position_embeddings_weight()
+                        if self.megatron_amp_o2:
+                            grad = position_embeddings_weight.main_grad
+                        else:
+                            grad = position_embeddings_weight.grad
+                        torch.distributed.all_reduce(grad, group=parallel_state.get_position_embedding_group())
 
     def get_forward_output_and_loss_func(self):
         def fwd_output_and_loss_func(batch, model):
@@ -699,7 +703,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # when using pipeline model parallel the final stage need to initialize word embeddings
         if parallel_state.get_pipeline_model_parallel_world_size() > 1:
             self.enc_dec_model.sync_initial_word_embeddings()
-            self.enc_dec_model.sync_initial_position_embeddings()
+            if self.enc_dec_model.position_embedding_type != 'relative':
+                self.enc_dec_model.sync_initial_position_embeddings()
 
     def setup_training_data(self, cfg):
         if hasattr(self, '_train_ds'):

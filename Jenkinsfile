@@ -2778,6 +2778,7 @@ pipeline {
         model.activations_checkpoint_method='block' \
         model.activations_checkpoint_num_layers=1 \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document,.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document] \
+        model.position_embedding_type=relative \
         model.data.index_mapping_dir=examples/nlp/language_modeling/t5_index_mappings"
         sh "python examples/nlp/language_modeling/megatron_t5_pretraining.py \
         trainer.devices=2 \
@@ -2801,6 +2802,7 @@ pipeline {
         model.activations_checkpoint_method='block' \
         model.activations_checkpoint_num_layers=1 \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document,.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document] \
+        model.position_embedding_type=relative \
         model.data.index_mapping_dir=examples/nlp/language_modeling/t5_index_mappings"
         sh "rm -rf examples/nlp/language_modeling/t5_pretrain_results"
         sh "rm -rf examples/nlp/language_modeling/t5_index_mappings"

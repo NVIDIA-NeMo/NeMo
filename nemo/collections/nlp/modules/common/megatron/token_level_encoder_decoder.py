@@ -92,6 +92,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         use_cpu_initialization=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
+        position_embedding_type='learned_absolute',
+        relative_attention_num_buckets=32,
+        relative_attention_max_distance=128,
         precision=16,
         fp32_residual_connection=False,
         activations_checkpoint_method=None,
@@ -123,6 +126,16 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         self.add_encoder = add_encoder
         self.add_decoder = add_decoder
         self.normalization = normalization
+        self.position_embedding_type = position_embedding_type
+        self.relative_attention_num_buckets = relative_attention_num_buckets
+        self.relative_attention_max_distance = relative_attention_max_distance
+
+        if self.position_embedding_type == 'learned_absolute':
+            add_position_embedding = True
+        elif self.position_embedding_type == 'relative':
+            add_position_embedding = False
+        else:
+            raise ValueError('Unknown position embeeding type. Options: ' '[learned_absolute | relative]')
 
         if kv_channels is None:
             assert (
@@ -141,6 +154,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     num_tokentypes=num_tokentypes,
                     use_cpu_initialization=use_cpu_initialization,
                     embedding_dropout_prob=hidden_dropout,
+                    add_position_embedding=add_position_embedding,
                 )
                 self._encoder_embedding_key = "encoder_embedding"
 
@@ -161,6 +175,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 use_cpu_initialization=use_cpu_initialization,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
+                position_embedding_type=position_embedding_type,
+                relative_attention_num_buckets=relative_attention_num_buckets,
+                relative_attention_max_distance=relative_attention_max_distance,
                 precision=precision,
                 fp32_residual_connection=fp32_residual_connection,
                 activations_checkpoint_method=activations_checkpoint_method,
@@ -200,6 +217,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                         num_tokentypes=num_tokentypes,
                         use_cpu_initialization=use_cpu_initialization,
                         embedding_dropout_prob=hidden_dropout,
+                        add_position_embedding=add_position_embedding,
                     )
                     self.decoder_embedding.zero_parameters()
 
@@ -222,6 +240,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 use_cpu_initialization=use_cpu_initialization,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
+                position_embedding_type=position_embedding_type,
+                relative_attention_num_buckets=relative_attention_num_buckets,
+                relative_attention_max_distance=relative_attention_max_distance,
                 precision=precision,
                 fp32_residual_connection=fp32_residual_connection,
                 activations_checkpoint_method=activations_checkpoint_method,

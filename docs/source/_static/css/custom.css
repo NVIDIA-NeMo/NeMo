@@ -248,6 +248,10 @@ thead td
 		font-size: 1rem;
 	}
 
+	.toc-h4 {
+		font-size: 0.85rem;
+	}
+
 	.header-article .bd-toc {
 		font-size: 18px;
 	}

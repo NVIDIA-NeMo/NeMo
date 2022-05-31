@@ -41,6 +41,7 @@ import contextlib
 import json
 import os
 import pickle
+from pathlib import Path
 
 import editdistance
 import kenlm_utils
@@ -230,12 +231,16 @@ def main():
         )
 
     target_transcripts = []
+    manifest_dir = Path(args.input_manifest).parent
     with open(args.input_manifest, 'r') as manifest_file:
         audio_file_paths = []
         for line in tqdm(manifest_file, desc=f"Reading Manifest {args.input_manifest} ...", ncols=120):
             data = json.loads(line)
+            audio_file = Path(data['audio_filepath'])
+            if not audio_file.is_file() and not audio_file.is_absolute():
+                audio_file = manifest_dir / audio_file
             target_transcripts.append(data['text'])
-            audio_file_paths.append(data['audio_filepath'])
+            audio_file_paths.append(str(audio_file.absolute()))
 
     if args.probs_cache_file and os.path.exists(args.probs_cache_file):
         logging.info(f"Found a pickle file of probabilities at '{args.probs_cache_file}'.")

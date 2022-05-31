@@ -14,6 +14,7 @@
 
 import json
 from os.path import expanduser
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 
@@ -87,7 +88,20 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
         raise ValueError(
             f"Manifest file {manifest_file} has invalid json line structure: {line} without proper audio file key."
         )
-    item['audio_file'] = expanduser(item['audio_file'])
+
+    # If the audio path is relative, and not using tarred dataset,
+    # attach the parent directory of manifest to the audio path.
+    # Assume "audio_file" starts with a dir, such as "wavs/xxxxx.wav".
+    # If using a tarred dataset, the "audio_path" is like "_home_data_tarred_wavs_xxxx.wav",
+    # so we will just ignore it.
+    manifest_dir = Path(manifest_file).parent
+    audio_file = Path(item['audio_file'])
+    if not audio_file.is_file() and not audio_file.is_absolute() and audio_file.parent != Path("."):
+        # assume the wavs/ dir and manifest are under the same parent dir
+        audio_file = manifest_dir / audio_file
+        item['audio_file'] = str(audio_file.absolute())
+    else:
+        item['audio_file'] = expanduser(item['audio_file'])
 
     # Duration.
     if 'duration' not in item:

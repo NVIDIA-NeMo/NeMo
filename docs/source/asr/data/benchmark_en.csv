@@ -16,6 +16,7 @@ stt_en_contextnet_1024,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models
 stt_en_conformer_ctc_small,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_small"
 stt_en_conformer_ctc_medium,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_medium"
 stt_en_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_large"
+stt_en_conformer_ctc_xlarge,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_xlarge"
 stt_en_conformer_ctc_small_ls,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_small_ls"
 stt_en_conformer_ctc_medium_ls,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_medium_ls"
 stt_en_conformer_ctc_large_ls,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_large_ls"
@@ -23,3 +24,5 @@ stt_en_conformer_transducer_large_ls,EncDecRNNTBPEModel,"https://ngc.nvidia.com/
 stt_en_conformer_transducer_small,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_small"
 stt_en_conformer_transducer_medium,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_medium"
 stt_en_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_large"
+stt_en_conformer_transducer_xlarge,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_xlarge"
+stt_en_conformer_transducer_xxlarge,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_xxlarge"

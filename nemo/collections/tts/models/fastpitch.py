@@ -463,7 +463,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
                     cfg.dataloader_params.shuffle = True
             elif not cfg.dataloader_params.shuffle:
                 logging.error(f"The {name} dataloader for {self} has shuffle set to False!!!")
-        elif not shuffle_should_be and cfg.dataloader_params.shuffle:
+        elif cfg.dataloader_params.shuffle:
             logging.error(f"The {name} dataloader for {self} has shuffle set to True!!!")
 
         if cfg.dataset._target_ == "nemo.collections.tts.torch.data.TTSDataset":

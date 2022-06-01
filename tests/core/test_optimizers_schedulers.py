@@ -848,7 +848,7 @@ class TestOptimizersSchedulers:
         train(
             5,
             accumulate_grad_batches=1,
-            limit_train_batches=0.17382691901706027,
+            limit_train_batches=0.5,
             devices=4,
             batch_size=97,
             dataset_len=498,
@@ -857,7 +857,7 @@ class TestOptimizersSchedulers:
         train(
             5,
             accumulate_grad_batches=8,
-            limit_train_batches=0.1663306588594945,
+            limit_train_batches=0.5,
             devices=4,
             batch_size=54,
             dataset_len=629,
@@ -866,7 +866,7 @@ class TestOptimizersSchedulers:
         train(
             5,
             accumulate_grad_batches=1,
-            limit_train_batches=0.2121376533631948,
+            limit_train_batches=0.5,
             devices=1,
             batch_size=68,
             dataset_len=488,
@@ -877,7 +877,7 @@ class TestOptimizersSchedulers:
             accumulate_grad_batches = random.randint(1, 10)
 
             limit_train_batches_int = random.randint(1, 10)
-            limit_train_batches_float = random.uniform(0, 1)
+            limit_train_batches_float = random.uniform(0.5, 1)
             limit_train_batches = random.choice([limit_train_batches_int, limit_train_batches_float])
             max_epochs = random.randint(4, 20)
             devices = random.randint(1, 5)

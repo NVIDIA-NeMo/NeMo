@@ -50,6 +50,9 @@ class AccessMixin(ABC):
         if not hasattr(self, '_registry'):
             self._registry = []
 
+        if len(self._registry) > 0:
+            self._registry.clear()
+
         self._registry.append(tensor)
 
     @classmethod

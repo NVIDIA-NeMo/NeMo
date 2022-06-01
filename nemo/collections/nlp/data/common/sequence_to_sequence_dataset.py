@@ -92,7 +92,7 @@ class SequenceToSequenceDataset(Dataset):
         loss_mask = [([1] * (len(item))) + ([0] * (max_label_length - len(item))) for item in labels]
         enc_query = [item + [self.src_tokenizer.pad_id] * (max_enc_query_length - len(item)) for item in enc_query]
         dec_input = [item + [self.tgt_tokenizer.pad_id] * (max_dec_input_length - len(item)) for item in dec_input]
-        labels = [item + [self.tokenizer.pad_id] * (max_label_length - len(item)) for item in labels]
+        labels = [item + [self.tgt_tokenizer.pad_id] * (max_label_length - len(item)) for item in labels]
 
         enc_query = torch.LongTensor(enc_query)
         dec_input = torch.LongTensor(dec_input)

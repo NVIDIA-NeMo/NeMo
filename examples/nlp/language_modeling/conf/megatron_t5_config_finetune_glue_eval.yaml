@@ -31,3 +31,5 @@ model:
       pin_memory: True
       max_seq_length: 512
       drop_last: False
+      write_predictions_to_file: False
+      prediction_file_path_prefix: null # Prefix of the file to write predictions to.

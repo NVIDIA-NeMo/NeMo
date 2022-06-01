@@ -46,3 +46,4 @@ if __name__ == '__main__':
         end_time = time()
         print(f"Time to complete {iterations} synchronous requests: {end_time-start_time}")
         print(result)
+        print(result.translations[0].translation)

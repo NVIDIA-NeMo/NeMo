@@ -672,7 +672,7 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         multilingual,
         multilingual_ids,
     ):
-        if cfg.get("use_tarred_dataset", False):
+        if cfg.get("use_tarred_dataset", False) or cfg.get("dataset_type", "") == "tarred":
             if cfg.get("metadata_file") is None:
                 raise FileNotFoundError("Trying to use tarred data set but could not find metadata path in config.")
             metadata_file_list = cfg.get('metadata_file')
@@ -801,7 +801,13 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
-            sampler=None if (cfg.get("use_tarred_dataset", False) or isinstance(dataset, ConcatDataset)) else sampler,
+            sampler=None
+            if (
+                cfg.get("use_tarred_dataset", False)
+                or cfg.get("dataset_type", "") == "tarred"
+                or isinstance(dataset, ConcatDataset)
+            )
+            else sampler,
             num_workers=cfg.get("num_workers", 2),
             pin_memory=cfg.get("pin_memory", False),
             drop_last=cfg.get("drop_last", False),
@@ -995,10 +1001,21 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
 
         return inputs, best_translations
 
-    def prepare_inference_batch(self, text, prepend_ids=[], target=False):
+    @classmethod
+    def prepare_inference_batch(
+        cls,
+        text,
+        prepend_ids=[],
+        target=False,
+        source_processor=None,
+        target_processor=None,
+        encoder_tokenizer=None,
+        decoder_tokenizer=None,
+        device=None,
+    ):
         inputs = []
-        processor = self.source_processor if not target else self.target_processor
-        tokenizer = self.encoder_tokenizer if not target else self.decoder_tokenizer
+        processor = source_processor if not target else target_processor
+        tokenizer = encoder_tokenizer if not target else decoder_tokenizer
         for txt in text:
             if processor is not None:
                 txt = processor.normalize(txt)
@@ -1011,8 +1028,8 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         for i, txt in enumerate(inputs):
             src_ids_[i][: len(txt)] = txt
 
-        src_mask = torch.FloatTensor((src_ids_ != tokenizer.pad_id)).to(self.device)
-        src = torch.LongTensor(src_ids_).to(self.device)
+        src_mask = torch.FloatTensor((src_ids_ != tokenizer.pad_id)).to(device)
+        src = torch.LongTensor(src_ids_).to(device)
 
         return src, src_mask
 
@@ -1066,7 +1083,16 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
 
         try:
             self.eval()
-            src, src_mask = self.prepare_inference_batch(text, prepend_ids)
+            src, src_mask = MTEncDecModel.prepare_inference_batch(
+                text=text,
+                prepend_ids=prepend_ids,
+                target=False,
+                source_processor=self.source_processor,
+                target_processor=self.target_processor,
+                encoder_tokenizer=self.encoder_tokenizer,
+                decoder_tokenizer=self.decoder_tokenizer,
+                device=self.device,
+            )
             if return_beam_scores:
                 _, all_translations, scores, best_translations = self.batch_translate(
                     src, src_mask, return_beam_scores=True, cache=cache,
@@ -1081,7 +1107,16 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         if log_timing:
             timing = timer.export()
             timing["mean_src_length"] = src_mask.sum().cpu().item() / src_mask.shape[0]
-            tgt, tgt_mask = self.prepare_inference_batch(best_translations, prepend_ids, target=True)
+            tgt, tgt_mask = self.prepare_inference_batch(
+                text=best_translations,
+                prepend_ids=prepend_ids,
+                target=True,
+                source_processor=self.source_processor,
+                target_processor=self.target_processor,
+                encoder_tokenizer=self.encoder_tokenizer,
+                decoder_tokenizer=self.decoder_tokenizer,
+                device=self.device,
+            )
             timing["mean_tgt_length"] = tgt_mask.sum().cpu().item() / tgt_mask.shape[0]
 
             if type(return_val) is tuple:

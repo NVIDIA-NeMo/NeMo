@@ -18,7 +18,6 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelSummary
 from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.plugins.environments.torchelastic_environment import TorchElasticEnvironment
-from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.data.machine_translation.preproc_mt_data import MTDataPreproc
@@ -133,15 +132,21 @@ def main(cfg) -> None:
             pretrained_cfg.attention_dropout = cfg.model.attention_dropout
 
             # Override precision
-            pretrained_cfg.precision = cfg.model.precision  # Set above from trainer.precision
+            pretrained_cfg.precision = trainer.precision  # Set above from trainer.precision
+
+            # Override micro/global batch
+            pretrained_cfg.micro_batch_size = cfg.model.micro_batch_size
+            pretrained_cfg.global_batch_size = cfg.model.global_batch_size
+
+            # O2 AMP
+            pretrained_cfg.megatron_amp_O2 = cfg.model.get('megatron_amp_O2', False)
 
             # Override data and global/micro batch size.
             pretrained_cfg.train_ds = cfg.model.train_ds
+            pretrained_cfg.train_ds.micro_batch_size = cfg.model.micro_batch_size
+            pretrained_cfg.train_ds.global_batch_size = cfg.model.global_batch_size
             pretrained_cfg.validation_ds = cfg.model.validation_ds
             pretrained_cfg.test_ds = cfg.model.test_ds
-
-            pretrained_cfg.micro_batch_size = cfg.model.micro_batch_size
-            pretrained_cfg.global_batch_size = cfg.model.global_batch_size
 
             # Class target for the new class being restored.
             pretrained_cfg.target = (

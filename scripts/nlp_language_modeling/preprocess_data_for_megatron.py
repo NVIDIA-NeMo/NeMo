@@ -85,10 +85,25 @@ class Encoder(object):
             Encoder.splitter = IdentitySplitter()
 
     def encode(self, json_line):
-        data = json.loads(json_line)
-        ids = {}
-        for key in self.args.json_keys:
-            text = data[key]
+        if not self.args.text_file:
+            data = json.loads(json_line)
+            ids = {}
+            for key in self.args.json_keys:
+                text = data[key]
+                if self.args.apply_ftfy:
+                    text = ftfy.fix_text(text)
+                doc_ids = []
+                for sentence in Encoder.splitter.tokenize(text):
+                    sentence_ids = Encoder.tokenizer.text_to_ids(sentence)
+                    if len(sentence_ids) > 0:
+                        doc_ids.append(sentence_ids)
+                if len(doc_ids) > 0 and self.args.append_eod:
+                    doc_ids[-1].append(Encoder.tokenizer.eos_id)
+                ids[key] = doc_ids
+        else:
+            data = json_line
+            ids = {}
+            text = data.strip()
             if self.args.apply_ftfy:
                 text = ftfy.fix_text(text)
             doc_ids = []
@@ -98,7 +113,7 @@ class Encoder(object):
                     doc_ids.append(sentence_ids)
             if len(doc_ids) > 0 and self.args.append_eod:
                 doc_ids[-1].append(Encoder.tokenizer.eos_id)
-            ids[key] = doc_ids
+            ids['text'] = doc_ids
         return ids, len(json_line)
 
 
@@ -116,7 +131,7 @@ def get_args():
     )
     group.add_argument('--split-sentences', action='store_true', help='Split documents into sentences.')
     group.add_argument('--keep-newlines', action='store_true', help='Keep newlines between sentences when splitting.')
-
+    group.add_argument('--text_file', action='store_true', help='Use text file instead of json.')
     group = parser.add_argument_group(title='tokenizer')
     group.add_argument(
         '--tokenizer-library',

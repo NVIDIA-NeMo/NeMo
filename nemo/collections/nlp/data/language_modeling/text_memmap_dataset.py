@@ -106,7 +106,7 @@ class TextMemMapDataset(Dataset):
             i = midx[file_idx - 1] + 1  # ignore newline
             j = midx[file_idx]
 
-        text = mdata[i:j].tobytes().decode("ascii")
+        text = mdata[i:j].tobytes().decode("utf-8")
 
         # parse raw text (e.g., tokenize)
         data = self._build_data_from_text(text)

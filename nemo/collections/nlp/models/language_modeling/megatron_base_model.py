@@ -82,7 +82,9 @@ class MegatronBaseModel(NLPModel):
 
         self.grad_clip_pl_default = False  # use pytorch default for gradient clipping. Default False
 
-        if hasattr(self._cfg, "tokenizer"):
+        if hasattr(self._cfg, "tokenizer") or (
+            hasattr(self._cfg, "encoder_tokenizer") and hasattr(self._cfg, "decoder_tokenizer")
+        ):
             # build tokenizer (defaults to nemo supported tokenizers)
             self._build_tokenizer()
 

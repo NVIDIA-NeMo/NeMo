@@ -90,7 +90,8 @@ class T5RequestDataset(Dataset):
 
     def mask_prompt(self, sample):
         if '<mask>' not in sample:
-            raise ValueError(f"Did not find any <mask> tokens in prompt {sample}.")
+            if '<extra_id_s>' not in sample:
+                raise ValueError(f"Did not find any <mask> or <extra_id_s> tokens in prompt {sample}.")
 
         sample = sample.split()
         sentinel_idx = 0

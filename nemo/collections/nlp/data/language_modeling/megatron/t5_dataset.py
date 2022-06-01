@@ -179,7 +179,6 @@ class T5Dataset(Dataset):
 
         # Truncate to `target_sequence_length`.
         max_num_tokens = target_seq_length
-        truncated = len(tokens) > max_num_tokens
         tokens = tokens[:max_num_tokens]
 
         # Masking.
@@ -225,7 +224,6 @@ class T5Dataset(Dataset):
             'text_dec': tokens_dec_in,
             'labels': labels,
             'loss_mask': loss_mask,
-            'truncated': int(truncated),
             'enc_mask': enc_mask,
             'dec_mask': dec_mask,
         }

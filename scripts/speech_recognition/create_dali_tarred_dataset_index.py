@@ -66,7 +66,7 @@ def process_index_path(tar_paths, index_dir):
 
 
 def build_index(tarpath, indexfile):
-    with IndexCreator(tarpath, indexfile, verbose=False) as index:
+    with IndexCreator(tarpath, indexfile) as index:
         index.create_index()
 
 

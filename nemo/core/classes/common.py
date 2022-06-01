@@ -823,6 +823,8 @@ class Model(Typing, Serialization, FileIO):
         path = hf_hub_download(
             repo_id=model_name,
             filename=resolved_model_filename,
+            library_name="nemo",
+            library_version=nemo.__version__,
             force_download=refresh_cache,
             use_auth_token=is_token_available,
         )

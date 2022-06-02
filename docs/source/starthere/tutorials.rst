@@ -31,6 +31,9 @@ To run a tutorial:
    * - General
      - Exploring NeMo Model Construction
      - `NeMo Models <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/01_NeMo_Models.ipynb>`_
+   * - General
+     - Exploring NeMo Adapters
+     - `NeMo Adapters <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/02_NeMo_Adapters.ipynb>`_
    * - ASR
      - ASR with NeMo
      - `ASR with NeMo <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_with_NeMo.ipynb>`_

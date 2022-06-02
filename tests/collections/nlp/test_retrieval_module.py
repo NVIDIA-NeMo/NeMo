@@ -132,7 +132,7 @@ class TestRetrievalModule:
             ParallelChunkedCrossAttention(
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
-                layer_number=0,
+                layer_number=1,
                 num_attention_heads=num_attention_heads,
                 hidden_size=dim,
                 precision=16,

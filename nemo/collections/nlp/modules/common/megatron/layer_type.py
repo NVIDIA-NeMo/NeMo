@@ -19,5 +19,11 @@ import enum
 class LayerType(enum.Enum):
     encoder = 1
     decoder = 2
-    retrieval_encoder = 3
-    retrieval_decoder = 4
+    retrieval_encoder = (
+        3  # retrieval model encoder, it uses cross attention to be conditioned on the pre decoder output
+    )
+    retrieval_decoder = (
+        4  # retrieval model decoder, it uses chunked cross attention to be conditioned on the retrieved information
+    )
+    decoder_pre_mlp = 5  # decoder that skips the computation after the self-attention
+    retrieval_decoder_after_self_attn = 6  # retrieval decoder that skips the self-attention

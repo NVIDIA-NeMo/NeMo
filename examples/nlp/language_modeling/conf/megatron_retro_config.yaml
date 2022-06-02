@@ -13,8 +13,8 @@ trainer:
   max_steps: 100000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 100
-  limit_val_batches: 50
-  limit_test_batches: 500
+  limit_val_batches: null
+  limit_test_batches: null
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
 
@@ -64,6 +64,9 @@ model:
   masked_softmax_fusion: True
   activation: 'gelu'
   bias: True
+  normalization: 'layernorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
+  headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
+  transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
 
   # retro architecture
   chunk_size: 64   # the chunk size used to retrive
@@ -111,26 +114,21 @@ model:
     #   - /raid/data/pile/my-gpt3_00_text_document
     #   - .5
     #   - /raid/data/pile/my-gpt3_01_text_document
-    data_prefix: ???
+    data_prefix: ???  # list of training datasets
+    knn_index: ???  # list of KNN map index files
+    retrieval_prefix: ???   # a singe path to retrieval data
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
-    data_impl: mmap
+    data_impl: retmmap   # for retro model, this is the only allowed type
     splits_string: 900,50,50
-    seq_length: ${model.encoder_seq_length}
+    seq_length: ${model.encoder_seq_length}  # must be multiple of the chunk_size in your dataset
     skip_warmup: True
     num_workers: 0
     dataloader_type: single # cyclic
-    reset_position_ids: False # Reset position ids after end-of-document token
-    reset_attention_mask: False # Reset attention mask after end-of-document token
-    eod_mask_loss: False # Mask loss for the end of document tokens
-    masked_lm_prob: 0.15 # Probability of replacing a token with mask.
-    short_seq_prob: 0.1 # Probability of producing a short sequence.
     neighbors: 2  # number of retrieved neighbors
-    mock: True   # whether use mock dataset
-    mock_data_size: 10000 # the mock dataset size
   
   optim:
     name: fused_adam
-    lr: 2e-4
+    lr: 1e-4
     weight_decay: 0.01 
     betas: 
     - 0.9
@@ -139,4 +137,4 @@ model:
       name: CosineAnnealing
       warmup_steps: 500
       constant_steps: 50000
-      min_lr: 2e-5
+      min_lr: 1e-5

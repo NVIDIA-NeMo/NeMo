@@ -14,6 +14,8 @@
 
 """Retrieval Transformer."""
 
+import torch
+import torch.nn.functional as F
 from einops import rearrange, repeat
 
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
@@ -66,8 +68,11 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         onnx_safe=False,
         activation='gelu',
         bias=True,
+        normalization='layernorm',
+        transformer_block_type='pre_ln',
         parent_model_type=ModelType.encoder_or_decoder,
         chunk_size=64,
+        layer_number_offset=0,  # this is use only for attention norm_factor scaling
     ):
         super(MegatronRetrievalTransformerEncoderModule, self).__init__()
 
@@ -118,8 +123,11 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
             onnx_safe=onnx_safe,
             activation=activation,
             bias=bias,
+            normalization=normalization,
+            transformer_block_type=transformer_block_type,
             model_type=parent_model_type,
             chunk_size=chunk_size,
+            layer_number_offset=layer_number_offset,
         )
         rot_dim = hidden_size // num_attention_heads if kv_channels is None else kv_channels
         self.rotary_pos_emb = RotaryEmbedding(rot_dim)
@@ -130,6 +138,9 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         """ See megatron.model.transformer.set_input_tensor()"""
         self.model.set_input_tensor(input_tensor)
 
+    def _allocate_memory(self, *shape, dtype):
+        return torch.empty(*shape, dtype=dtype, device=torch.cuda.current_device())
+
     def forward(
         self,
         enc_input,
@@ -138,28 +149,103 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         encoder_output=None,
         layer_past=None,
         get_key_value=False,
+        set_inference_key_value_memory=False,  # when doing inference, set this to true to allocate all the cached matrix. later set false to do incremental inference
+        inference_max_sequence_len=None,
+        neighbors=2,
     ):
         # expected enc_input shape [batch, num_chunks, num_neighbors, retrieval_seq_len, dim]
         # expected enc_attn_mask shape [batch, num_chunks, num_neighbors, retrieval_seq_len]
         # expected encoder_output shape [batch, seq_len, dim]
-        b, k, r, rn, dim = enc_input.shape
 
         # batch, seq_len, dim
-        _, n, _ = encoder_output.shape
+        b, n, dim = encoder_output.shape
 
-        num_seq_chunks = n // self.chunk_size
-        assert k == num_seq_chunks, f'sequence requires {num_seq_chunks} retrieved chunks, but only {k} passed in'
+        if set_inference_key_value_memory:
+            # run once to setup the cache
+            chunk_start = 0
+            num_seq_chunks = n // self.chunk_size
+            num_chunks = inference_max_sequence_len // self.chunk_size
+            self.cache_output = self._allocate_memory(
+                b, num_chunks, neighbors, self.chunk_size * 2, dim, dtype=encoder_output.dtype
+            )
+            self.seq_pos_in_chunk = n
+            self.current_chunk = n // self.chunk_size
+            self.encoder_output = self._allocate_memory(b, self.chunk_size, dim, dtype=encoder_output.dtype)
+            self.context_attn_mask = self._allocate_memory(b, self.chunk_size, dtype=context_attn_mask.dtype)
+            self.context_attn_mask
+            chunk_beg = self.chunk_size * num_seq_chunks
+            chunk_end = self.chunk_size * num_seq_chunks + self.seq_pos_in_chunk % self.chunk_size
+            # store the remainders
+            self.encoder_output[:, : self.seq_pos_in_chunk % self.chunk_size, :] = encoder_output[
+                :, chunk_beg:chunk_end, :
+            ]
+            self.context_attn_mask[:, : self.seq_pos_in_chunk % self.chunk_size] = context_attn_mask[
+                :, chunk_beg:chunk_end
+            ]
+        elif inference_max_sequence_len is not None:
+            # second time of running
+            # only support one token at a time
+            assert n == 1
+            self.seq_pos_in_chunk += n
+            self.current_chunk = self.seq_pos_in_chunk // self.chunk_size
+            # if exceed the chunk size
+            pos_beg = (self.seq_pos_in_chunk - 1) % self.chunk_size
+            # if self.seq_pos_in_chunk - 1 >= self.chunk_size:
+            #     self.current_chunk += 1
+            #     self.seq_pos_in_chunk -= self.chunk_size
+            chunk_start = self.current_chunk - 1
+            self.encoder_output[:, pos_beg : pos_beg + 1, :] = encoder_output
+            self.context_attn_mask[:, pos_beg : pos_beg + 1] = context_attn_mask[
+                :, self.seq_pos_in_chunk - 1 : self.seq_pos_in_chunk
+            ]
+            encoder_output = self.encoder_output[:, : pos_beg + 1, :]
+            context_attn_mask = self.context_attn_mask[:, : pos_beg + 1]
+            num_seq_chunks = 1
+            if not self.seq_pos_in_chunk % self.chunk_size == 0:
+                # still accumulate the encoder_output
+                # return the cached results
+                if self.current_chunk == 0:
+                    return None
+                return self.cache_output[:, : self.current_chunk]
+            if enc_input is not None:
+                # only need one chunk for the later calculation
+                enc_input = enc_input[:, self.current_chunk - 1 : self.current_chunk]
+                enc_attn_mask = enc_attn_mask[:, self.current_chunk - 1 : self.current_chunk]
+
+        if enc_input is None:
+            return None
+
+        _, k, r, rn, _ = enc_input.shape
+
+        assert r == neighbors
+        if inference_max_sequence_len is None:
+            num_seq_chunks = n // self.chunk_size
+            assert k == num_seq_chunks, f'sequence requires {num_seq_chunks} retrieved chunks, but only {k} passed in'
+        else:
+            pass
 
         seq_index = num_seq_chunks * self.chunk_size
 
         retrieved = rearrange(enc_input, 'b k r n d -> (b k r) n d')
         enc_attn_mask = rearrange(enc_attn_mask, 'b k r n -> (b k r) n')
-        embed_as_context = repeat(encoder_output[:, :seq_index], 'b (k n) d -> (b k r) n d', n=self.chunk_size, r=r)
-        context_attn_mask = repeat(context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=self.chunk_size, r=r)
+        # embed_as_context = repeat(encoder_output[:, :seq_index], 'b (k n) d -> (b k r) n d', n=self.chunk_size, r=r)
+        # context_attn_mask = repeat(context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=self.chunk_size, r=r)
 
-        # need to add extra chunk size, since it will be shifted
         cross_attn_q_pos_emb = self.rotary_pos_emb(rn, offset=0)
-        cross_attn_k_pos_emb = self.rotary_pos_emb(self.chunk_size)
+
+        if inference_max_sequence_len is not None and not set_inference_key_value_memory:
+            cross_attn_k_pos_emb = self.rotary_pos_emb(n % self.chunk_size, offset=pos_beg)
+            embed_as_context = repeat(encoder_output[:, :seq_index], 'b (k n) d -> (b k r) n d', n=pos_beg + 1, r=r)
+            context_attn_mask = repeat(context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=pos_beg + 1, r=r)
+        else:
+            embed_as_context = repeat(
+                encoder_output[:, :seq_index], 'b (k n) d -> (b k r) n d', n=self.chunk_size, r=r
+            )
+            context_attn_mask = repeat(
+                context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=self.chunk_size, r=r
+            )
+            cross_attn_k_pos_emb = self.rotary_pos_emb(self.chunk_size, offset=0)
+
         attn_pos_emb = (cross_attn_q_pos_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
 
         # # convert to Megatron mask
@@ -185,6 +271,12 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         )
         # revert back to original retrieved shape
         enc_output = rearrange(enc_output, '(b k r) n d -> b k r n d', b=b, k=k)
+
+        if inference_max_sequence_len is not None:
+            # update encoded for current chunk
+            self.cache_output[:, chunk_start : self.current_chunk, :, :, :] = enc_output
+            # read all encodings
+            enc_output = self.cache_output[:, : self.current_chunk]
         return enc_output
 
     def state_dict_for_save_checkpoint(self, destination=None, prefix='', keep_vars=False):
@@ -239,8 +331,11 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         onnx_safe=False,
         activation='gelu',
         bias=True,
+        normalization='layernorm',
+        transformer_block_type='pre_ln',
         parent_model_type=ModelType.encoder_or_decoder,
         chunk_size=64,
+        layer_number_offset=0,  # this is use only for attention norm_factor scaling
     ):
         super(MegatronRetrievalTransformerDecoderModule, self).__init__()
 
@@ -291,8 +386,11 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
             onnx_safe=onnx_safe,
             activation=activation,
             bias=bias,
+            normalization=normalization,
+            transformer_block_type=transformer_block_type,
             model_type=parent_model_type,
             chunk_size=chunk_size,
+            layer_number_offset=layer_number_offset,
         )
         rot_dim = hidden_size // num_attention_heads if kv_channels is None else kv_channels
         self.rotary_pos_emb = RotaryEmbedding(rot_dim)
@@ -334,6 +432,8 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         layer_past=None,
         get_key_value=False,
         eod_positions=None,  # this is a tuple of eod positions returned from tensor.where(tensor == eod_id)
+        set_inference_key_value_memory=False,
+        inference_max_sequence_len=None,
     ):
         # expected dec_input shape [batch, seq_len, dim]
         # expected dec_attn_mask shape [batch, seq_len]
@@ -341,19 +441,35 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         # expected retrieved_attn_mask shape [batch, num_chunks, num_neighbors, retrival_seq_len]
 
         # batch, seq_len, dim
-        _, n, _ = dec_input.shape
+        if isinstance(dec_input, tuple):
+            n, _, _ = dec_input[1].shape
+        else:
+            _, n, _ = dec_input.shape
 
-        num_seq_chunks = n // self.chunk_size
+        if set_inference_key_value_memory == True:
+            # seq_index = (n // chunk_size) * chunk_size
+            self.current_len = n
+            num_seq_chunks = self.current_len // self.chunk_size
+            self_attn_emb = self.rotary_pos_emb(self.current_len)
+        elif inference_max_sequence_len is not None:
+            # only handles single token increment
+            assert n == 1
+            self.current_len += n
+            self_attn_emb = self.rotary_pos_emb(self.current_len)
+            num_seq_chunks = self.current_len // self.chunk_size
+        else:
+            # this is normal forward without inference
+            num_seq_chunks = n // self.chunk_size
+            self_attn_emb = self.rotary_pos_emb(n)
 
         if retrieved_emb is not None:
             b, k, r, rn, dim = retrieved_emb.shape
             assert (
                 k == num_seq_chunks
             ), f'sequence requires {num_seq_chunks} retrieved chunks, but only {k} passed in'  # need to add extra chunk size, since it will be shifted
-        self_attn_emb = self.rotary_pos_emb(n)
 
         if retrieved_emb is not None:
-            cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1)
+            cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1, offset=-self.chunk_size + 1)
             cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=0)
             attn_pos_emb = (self_attn_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
         else:
@@ -362,6 +478,12 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         dec_attn_mask_3d = self._calculate_dec_att_mask(dec_attn_mask, eod_positions)
 
         if retrieved_emb is not None:
+            # need to shift the dec_attn_mask as first causal_padding elements are ignored
+            # also pad it to be the multiple of self.chunk_size
+            causal_padding = self.chunk_size - 1
+            reminder = (self.chunk_size - (dec_attn_mask.shape[1] + 1)) % self.chunk_size
+            dec_attn_mask = F.pad(dec_attn_mask, (-causal_padding, reminder), value=False)
+
             dec_attn_mask = rearrange(dec_attn_mask, 'b (k n) -> (b k) n', k=k)
             retrieved_attn_mask = rearrange(retrieved_attn_mask, 'b k r n -> (b k) (r n)')
 
@@ -382,6 +504,8 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
             retrieved_emb=retrieved_emb,
             enc_dec_attn_mask=enc_dec_attn_mask_3d,
             rotary_pos_emb=attn_pos_emb,
+            set_inference_key_value_memory=set_inference_key_value_memory,
+            inference_max_sequence_len=inference_max_sequence_len,
         )
 
         return enc_output

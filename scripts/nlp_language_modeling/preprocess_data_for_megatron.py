@@ -12,7 +12,75 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Processing data for megatron pretraining."""
+"""Processing data for megatron pretraining.
+
+It can be used to convert the text data into indexed dataset for BERT, GPT, T5, RETRO models etc.
+
+
+Example script to preprocess the loose JSON file for BERT model
+
+```python
+python scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    --input=PATH_TO_THE_RETRIEVAL_DB_LOOSE_JSON_FILE \
+    --json-keys=text \
+    --vocab-file=PATH_TO_VOCAB_FILE \
+    --dataset-impl=mmap \
+    --output-prefix=YOUR_DATA_PREFIX \
+    --tokenizer-library=megatron \
+    --tokenizer-type=BertWordPieceCase \
+    --split-sentences \
+    --workers=48
+```
+
+Example script to preprocess the loose JSON file for GPT model
+
+```python
+python scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    --input=PATH_TO_THE_RETRIEVAL_DB_LOOSE_JSON_FILE \
+    --json-keys=text \
+    --tokenizer-library=megatron \
+    --tokenizer-type=GPT2BPETokenizer \
+    --dataset-impl=mmap \
+    --merge-file=YOUR_MERGE_FILE \
+    --vocab-file=YOUR_VOCAB_FILE \
+    --output-prefix=YOUR_DATA_PREFIX \
+    --append-eod \
+    --workers=48
+```
+
+Example script to preprocess the loose JSON file for retrieval DB Dataset
+
+```python
+python scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    --input=PATH_TO_THE_RETRIEVAL_DB_LOOSE_JSON_FILE \
+    --json-keys=text \
+    --tokenizer-library=sentencepiece \
+    --dataset-impl=retmmap \
+    --tokenizer-model=tokenizer.model \
+    --output-prefix=retro_db \
+    --need-pad-id \
+    --append-eod \
+    --retrieval-db \
+    --chunk_size=64 \
+    --workers=64 
+```
+
+Example script to preprocess the JSON file for retrieval training dataset
+
+```python
+python scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    --input=PATH_TO_THE_RETRIEVAL_TRAIN_VAL_TEST_LOOSE_JSON_FILE \
+    --json-keys=text \
+    --tokenizer-library=sentencepiece \
+    --dataset-impl=retmmap \
+    --tokenizer-model=tokenizer.model \
+    --output-prefix=retro_data \
+    --need-pad-id \
+    --append-eod \
+    --chunk_size=64 \
+    --workers=64 
+```
+"""
 
 import argparse
 import gzip
@@ -54,20 +122,31 @@ class IdentitySplitter(object):
         return text
 
 
+def get_tokenizer(args):
+    tokenizer = get_nmt_tokenizer(
+        library=args.tokenizer_library,
+        model_name=args.tokenizer_type,
+        tokenizer_model=args.tokenizer_model,
+        vocab_file=args.vocab_file,
+        merges_file=args.merge_file,
+        delimiter=args.delimiter,
+    )
+    if args.need_pad_id:
+        if not hasattr(tokenizer, "pad_id"):
+            tokenizer.add_special_tokens({'pad_token': '<pad>'})
+        elif hasattr(tokenizer, "pad_id") and (tokenizer.pad_id is None or tokenizer.pad_id < 0):
+            tokenizer.add_special_tokens({'pad_token': '<pad>'})
+    return tokenizer
+
+
 class Encoder(object):
     def __init__(self, args):
         self.args = args
 
     def initializer(self):
         # Use Encoder class as a container for global data
-        Encoder.tokenizer = get_nmt_tokenizer(
-            library=self.args.tokenizer_library,
-            model_name=self.args.tokenizer_type,
-            tokenizer_model=self.args.tokenizer_model,
-            vocab_file=self.args.vocab_file,
-            merges_file=self.args.merge_file,
-            delimiter=self.args.delimiter,
-        )
+        Encoder.tokenizer = get_tokenizer(self.args)
+
         if self.args.split_sentences:
             if not nltk_available:
                 print("NLTK is not available to split sentences.")
@@ -150,13 +229,16 @@ def get_args():
     group.add_argument('--merge-file', type=str, default=None, help='Path to the BPE merge file (if necessary).')
     group.add_argument('--delimiter', type=str, default=None, help='delimiter used for tabular tokenizer')
     group.add_argument('--append-eod', action='store_true', help='Append an <eod> token to the end of a document.')
-
+    group.add_argument('--retrieval-db', action='store_true', help='Dataset used for retrieval.')
+    group.add_argument('--need-pad-id', action='store_true', help='Whether we need the pad id for the tokenizer')
     group = parser.add_argument_group(title='output data')
     group.add_argument('--output-prefix', type=str, required=True, help='Path to binary output file without suffix')
-    group.add_argument('--dataset-impl', type=str, default='mmap', choices=['lazy', 'cached', 'mmap'])
+    group.add_argument('--dataset-impl', type=str, default='mmap', choices=['lazy', 'cached', 'mmap', 'retmmap'])
 
     group = parser.add_argument_group(title='runtime')
     group.add_argument('--workers', type=int, default=1, help='Number of worker processes to launch')
+    group.add_argument('--chunk_size', type=int, default=64, help='chunk size used for retrieval')
+
     group.add_argument('--log-interval', type=int, default=100, help='Interval between progress updates')
     group.add_argument(
         '--preproc-folder',
@@ -204,14 +286,7 @@ def main():
 
     encoder = Encoder(args)
 
-    tokenizer = get_nmt_tokenizer(
-        library=args.tokenizer_library,
-        model_name=args.tokenizer_type,
-        tokenizer_model=args.tokenizer_model,
-        vocab_file=args.vocab_file,
-        merges_file=args.merge_file,
-        delimiter=args.delimiter,
-    )
+    tokenizer = get_tokenizer(args)
 
     level = "document"
     if args.split_sentences:
@@ -226,7 +301,12 @@ def main():
         output_bin_files[key] = "{}_{}_{}.bin".format(args.output_prefix, key, level)
         output_idx_files[key] = "{}_{}_{}.idx".format(args.output_prefix, key, level)
         builders[key] = indexed_dataset.make_builder(
-            output_bin_files[key], impl=args.dataset_impl, vocab_size=tokenizer.vocab_size
+            output_bin_files[key],
+            impl=args.dataset_impl,
+            chunk_size=args.chunk_size,
+            pad_id=tokenizer.pad_id,
+            retrieval_db=args.retrieval_db,
+            vocab_size=tokenizer.vocab_size,
         )
 
     startup_end = time.time()

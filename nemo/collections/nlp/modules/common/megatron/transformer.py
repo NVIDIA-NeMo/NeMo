@@ -599,7 +599,11 @@ class ParallelAttention(MegatronModule):
             # adjust the key rotary positional embedding
             if rotary_pos_emb is not None:
                 q_pos_emb, k_pos_emb = rotary_pos_emb
-                k_pos_emb = k_pos_emb[:, :, :end, :]
+                if not set_inference_key_value_memory:
+                    # In inference, we compute one token at a time.
+                    # Select the correct positional embedding.
+                    q_pos_emb = q_pos_emb[end - 1 : end]
+                k_pos_emb = k_pos_emb[:end, :, :, :]
                 rotary_pos_emb = (q_pos_emb, k_pos_emb)
 
         real_seq_length = hidden_states.shape[0]
@@ -691,6 +695,15 @@ class ParallelAttention(MegatronModule):
         # attention scores and attention mask [b, np, sq, sk]
         attention_probs = self.scale_mask_softmax(attention_scores, attention_mask)
 
+        # Currently if all key sequences are masked, attention will be uniformly distributed.
+        # E.g. attention_mask last dimension all True, attention prob is 1 / last_dim
+        # # The correct behavior should be paying zero attention to them
+        # issue is created at https://github.com/NVIDIA/apex/issues/1390
+        # following is a work around:
+        # all_k_masked = attention_mask.all(axis=-1)
+        # zero_attention_mask = (1.0 - all_k_masked.float())[:, :, :, None]
+        # attention_probs = attention_probs * zero_attention_mask
+
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
         with tensor_parallel.random.get_cuda_rng_tracker().fork():
@@ -744,7 +757,7 @@ class ParallelAttention(MegatronModule):
 
 
 class ParallelChunkedCrossAttention(MegatronModule):
-    """Parallel chunked cross-attention layer abstract class.
+    """Parallel chunked cross-attention layer class.
 
     Self-attention layer takes input with size [b, s, h]
     and returns output of the same size.
@@ -794,7 +807,13 @@ class ParallelChunkedCrossAttention(MegatronModule):
         self.chunk_size = chunk_size
 
     def forward(
-        self, hidden_states, attention_mask, position_bias=None, encoder_output=None, rotary_pos_emb=None,
+        self,
+        hidden_states,
+        attention_mask,
+        encoder_output=None,
+        set_inference_key_value_memory=False,
+        inference_max_sequence_len=None,
+        rotary_pos_emb=None,
     ):
         # hidden_states is assumed to have dimension [token length, batch, dimension]
         # derive variables
@@ -802,18 +821,45 @@ class ParallelChunkedCrossAttention(MegatronModule):
         context = encoder_output
         # context is assumed to have dimension [num_chunks, num_neighbors, context_token_len, batch, dimension]
         chunk_size = self.chunk_size
-
-        b, n, num_chunks, num_retrieved = (
+        b, n, dim = (
             hidden_states.shape[1],
             hidden_states.shape[0],
+            hidden_states.shape[2],
+        )
+        empty_bias = torch.zeros(dim, dtype=hidden_states.dtype, device=hidden_states.device)
+        if set_inference_key_value_memory:
+            seq_index = (n // chunk_size) * chunk_size
+            self.current_len = n
+        elif inference_max_sequence_len is not None:
+            # only handles single token increment
+            assert n == 1
+            self.current_len += n
+            token_pos = (self.current_len - 1) % chunk_size
+            chunk_id = self.current_len // chunk_size
+            if chunk_id <= 0:
+                # if sequence length less than chunk size, do an early return
+                return torch.zeros_like(hidden_states), empty_bias
+            causal_padding = chunk_size - 1
+            # pad it as a full chunk, put it at the end of the chunk position
+            hidden_states = F.pad(hidden_states, (0, 0, 0, 0, causal_padding, 0), value=0.0)
+            # only use the relevant context
+            context = context[chunk_id - 1 : chunk_id, :, :, :, :]
+            attention_mask = rearrange(attention_mask, '(b k) 1 q v -> b k 1 q v', b=b)
+            # select the relevant chunk attn mask
+            attention_mask = attention_mask[:, chunk_id - 1]
+            seq_index = chunk_size
+        else:
+            # this is normal forward without inference
+            seq_index = (n // chunk_size) * chunk_size
+
+        # if sequence length less than chunk size, do an early return
+        if n < self.chunk_size and set_inference_key_value_memory and inference_max_sequence_len is not None:
+            return torch.zeros_like(hidden_states), empty_bias
+
+        num_chunks, num_retrieved = (
             context.shape[-5],
             context.shape[-4],
         )
-
-        # if sequence length less than chunk size, do an early return
-
-        if n < self.chunk_size:
-            return torch.zeros_like(hidden_states)
 
         # causal padding
         causal_padding = chunk_size - 1
@@ -822,7 +868,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
 
         # remove sequence which is ahead of the neighbors retrieved (during inference)
 
-        seq_index = (n // chunk_size) * chunk_size
+        # seq_index = (n // chunk_size) * chunk_size
         x, x_remainder = x[:seq_index], x[seq_index:]
 
         seq_remain_len = x_remainder.shape[0]
@@ -834,13 +880,20 @@ class ParallelChunkedCrossAttention(MegatronModule):
         # currently implementation is broken
         # q need to extend to causal_padding, and just do
         # q_pos_emb = F.pad(q_pos_emb, (0, 0, -causal_padding, 0), value = 0.)
-        q_pos_emb = F.pad(q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding, 0), value=0.0)
+        if inference_max_sequence_len is not None and not set_inference_key_value_memory:
+            q_pos_emb = F.pad(
+                q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding - token_pos, -causal_padding + token_pos), value=0.0
+            )
+        else:
+            q_pos_emb = F.pad(q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding, 0), value=0.0)
 
         k_pos_emb = repeat(k_pos_emb, 'n b h d -> (r n) b h d', r=num_retrieved)
         rotary_pos_emb = (q_pos_emb, k_pos_emb)
 
-        # reshape so we have chunk to chunk attention, without breaking causality
+        # make sure number context chunks is enough
+        assert x.shape[0] // chunk_size == num_chunks
 
+        # reshape so we have chunk to chunk attention, without breaking causality
         x = rearrange(x, '(k n) b d -> n (b k) d', k=num_chunks)
         context = rearrange(context, 'k r n b d -> (r n) (b k) d')
         # cross attention
@@ -853,6 +906,8 @@ class ParallelChunkedCrossAttention(MegatronModule):
         # pad back to original, with 0s at the beginning (which will be added to the residual and be fine)
 
         out = F.pad(out, (0, 0, 0, 0, causal_padding, -causal_padding + seq_remain_len), value=0.0)
+        if not set_inference_key_value_memory and inference_max_sequence_len is not None:
+            out = out[-1:]
         return out, bias
 
 
@@ -942,53 +997,58 @@ class ParallelTransformerLayer_(MegatronModule):
 
         self.fp32_residual_connection = fp32_residual_connection  # if true move residual connections to fp32
 
-        # Layernorm on the input data.
-        if normalization == 'layernorm':
-            self.input_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
-        else:
-            self.input_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
-
-        # Self attention.
-        self.self_attention = ParallelAttention(
-            init_method=init_method,
-            output_layer_init_method=output_layer_init_method,
-            layer_number=layer_number,
-            num_attention_heads=num_attention_heads,
-            hidden_size=hidden_size,
-            attention_type=AttnType.self_attn,
-            attn_mask_type=self_attn_mask_type,
-            precision=precision,
-            apply_query_key_layer_scaling=apply_query_key_layer_scaling,
-            kv_channels=kv_channels,
-            use_cpu_initialization=use_cpu_initialization,
-            masked_softmax_fusion=masked_softmax_fusion,
-            attention_dropout=attention_dropout,
-            position_embedding_type=position_embedding_type,
-            relative_attention_num_buckets=relative_attention_num_buckets,
-            relative_attention_max_distance=relative_attention_max_distance,
-            layer_type=layer_type,
-            megatron_legacy=megatron_legacy,
-            bias=bias,
-            headscale=headscale,
-        )
         self.hidden_dropout = hidden_dropout
         self.attention_dropout = attention_dropout
         self.bias_dropout_fusion = bias_dropout_fusion  # if true, enable bias dropout fusion
-
-        # Normformer normalization
-        if transformer_block_type == 'normformer':
+        # Self attention.
+        # retrieval_decoder_after_self_attn skips the self attention
+        if self.layer_type != LayerType.retrieval_decoder_after_self_attn:
+            # Layernorm on the input data.
             if normalization == 'layernorm':
-                self.post_attention_normformer_norm = get_layer_norm(
-                    hidden_size, layernorm_epsilon, persist_layer_norm
-                )
+                self.input_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
             else:
-                self.post_attention_normformer_norm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
+                self.input_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
 
-        # Layernorm on the attention output
-        if normalization == 'layernorm':
-            self.post_attention_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
-        else:
-            self.post_attention_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
+            self.self_attention = ParallelAttention(
+                init_method=init_method,
+                output_layer_init_method=output_layer_init_method,
+                layer_number=layer_number,
+                num_attention_heads=num_attention_heads,
+                hidden_size=hidden_size,
+                attention_type=AttnType.self_attn,
+                attn_mask_type=self_attn_mask_type,
+                precision=precision,
+                apply_query_key_layer_scaling=apply_query_key_layer_scaling,
+                kv_channels=kv_channels,
+                use_cpu_initialization=use_cpu_initialization,
+                masked_softmax_fusion=masked_softmax_fusion,
+                attention_dropout=attention_dropout,
+                position_embedding_type=position_embedding_type,
+                relative_attention_num_buckets=relative_attention_num_buckets,
+                relative_attention_max_distance=relative_attention_max_distance,
+                layer_type=layer_type,
+                megatron_legacy=megatron_legacy,
+                bias=bias,
+                headscale=headscale,
+            )
+            # Normformer normalization
+            if transformer_block_type == 'normformer':
+                if normalization == 'layernorm':
+                    self.post_attention_normformer_norm = get_layer_norm(
+                        hidden_size, layernorm_epsilon, persist_layer_norm
+                    )
+                else:
+                    self.post_attention_normformer_norm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
+
+            # Layernorm on the attention output
+            if normalization == 'layernorm':
+                self.post_attention_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
+            else:
+                self.post_attention_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
+
+        if self.layer_type == LayerType.decoder_pre_mlp:
+            # skip MLP and cross attention
+            return
 
         if self.layer_type == LayerType.decoder or self.layer_type == LayerType.retrieval_encoder:
             self.inter_attention = ParallelAttention(
@@ -1028,7 +1088,10 @@ class ParallelTransformerLayer_(MegatronModule):
                 )
             else:
                 self.post_inter_attention_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
-        elif self.layer_type == LayerType.retrieval_decoder:
+        elif (
+            self.layer_type == LayerType.retrieval_decoder
+            or self.layer_type == LayerType.retrieval_decoder_after_self_attn
+        ):
             self.inter_attention = ParallelChunkedCrossAttention(
                 init_method=init_method,
                 output_layer_init_method=output_layer_init_method,
@@ -1120,25 +1183,6 @@ class ParallelTransformerLayer_(MegatronModule):
         position_bias=None,
         encoder_decoder_position_bias=None,
     ):
-        # hidden_states: [b, s, h]
-
-        # Pre-LN: x -> LN -> MHA -> Residual -> LN -> MLP -> Residual
-        # Post-LN: x -> MHA -> Residual -> LN -> MLP -> Residual -> LN
-        # Normformer: x -> LN -> MHA -> LN -> Residual -> MLP (w/LN) -> Residual
-
-        if type(hidden_states) is tuple:
-            if len(hidden_states) == 2:
-                hidden_states, position_bias = hidden_states
-            elif len(hidden_states) == 3:
-                hidden_states, position_bias, encoder_decoder_position_bias = hidden_states
-            else:
-                raise IndexError('Hidden_states needs to be tuple containing 2 or 3 elements.')
-
-        residual = hidden_states
-        # Layer norm at the beginning of the transformer layer.
-        if self.transformer_block_type in ['pre_ln', 'normformer']:
-            hidden_states = self.input_layernorm(hidden_states)
-
         # Self attention.
         if rotary_pos_emb is not None:
             # self attention pos_emb is (q, q)
@@ -1147,62 +1191,104 @@ class ParallelTransformerLayer_(MegatronModule):
         else:
             self_attention_pos_emb = None
             cross_attention_pos_emb = None
-        attention_output, attention_bias = self.self_attention(
-            hidden_states,
-            attention_mask,
-            layer_past=layer_past,
-            position_bias=position_bias,
-            get_key_value=get_key_value,
-            set_inference_key_value_memory=set_inference_key_value_memory,
-            inference_max_sequence_len=inference_max_sequence_len,
-            rotary_pos_emb=self_attention_pos_emb,
-        )
 
-        if get_key_value:
-            attention_output, presents = attention_output
-        if self.position_embedding_type == 'relative':
-            attention_output, position_bias = attention_output[0], attention_output[1]
+        if self.layer_type != LayerType.retrieval_decoder_after_self_attn:
+            # hidden_states: [b, s, h]
 
-        # If normformer, apply norm on the output of the self attention.
-        if self.transformer_block_type == 'normformer':
-            # Normformer normalization
-            attention_output = attention_output + attention_bias if attention_bias is not None else attention_output
-            attention_output = self.post_attention_normformer_norm(attention_output)
-            attention_bias = None
+            # Pre-LN: x -> LN -> MHA -> Residual -> LN -> MLP -> Residual
+            # Post-LN: x -> MHA -> Residual -> LN -> MLP -> Residual -> LN
+            # Normformer: x -> LN -> MHA -> LN -> Residual -> MLP (w/LN) -> Residual
 
-        # jit scripting for a nn.module (with dropout) is not
-        # trigerring the fusion kernel. For now, we use two
-        # different nn.functional routines to account for varying
-        # dropout semantics during training and inference phases.
+            if type(hidden_states) is tuple:
+                if len(hidden_states) == 2:
+                    hidden_states, position_bias = hidden_states
+                elif len(hidden_states) == 3:
+                    hidden_states, position_bias, encoder_decoder_position_bias = hidden_states
+                else:
+                    raise IndexError('Hidden_states needs to be tuple containing 2 or 3 elements.')
 
-        bias_dropout_add_func = self._get_bias_droput_add_func(
-            transformer_block_type=self.transformer_block_type, position_after='attention'
-        )
+            residual = hidden_states
+            # Layer norm at the beginning of the transformer layer.
+            if self.transformer_block_type in ['pre_ln', 'normformer']:
+                hidden_states = self.input_layernorm(hidden_states)
 
-        if attention_bias is not None:
-            attention_bias = attention_bias.expand_as(residual)
+            attention_output, attention_bias = self.self_attention(
+                hidden_states,
+                attention_mask,
+                layer_past=layer_past,
+                get_key_value=get_key_value,
+                set_inference_key_value_memory=set_inference_key_value_memory,
+                inference_max_sequence_len=inference_max_sequence_len,
+                rotary_pos_emb=self_attention_pos_emb,
+            )
 
-        layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
+            if get_key_value:
+                attention_output, presents = attention_output
 
-        # Post-LN normalization after residual
-        if self.transformer_block_type == 'post_ln':
-            normalization_output = self.input_layernorm(layernorm_input)
-        elif self.transformer_block_type in ['pre_ln', 'normformer']:
-            # Layer norm post the self attention.
-            normalization_output = self.post_attention_layernorm(layernorm_input)
+            if self.position_embedding_type == 'relative':
+                attention_output, position_bias = attention_output[0], attention_output[1]
+
+            # If normformer, apply norm on the output of the self attention.
+            if self.transformer_block_type == 'normformer':
+                # Normformer normalization
+                attention_output = (
+                    attention_output + attention_bias if attention_bias is not None else attention_output
+                )
+                attention_output = self.post_attention_normformer_norm(attention_output)
+                attention_bias = None
+
+            # jit scripting for a nn.module (with dropout) is not
+            # trigerring the fusion kernel. For now, we use two
+            # different nn.functional routines to account for varying
+            # dropout semantics during training and inference phases.
+
+            bias_dropout_add_func = self._get_bias_droput_add_func(
+                transformer_block_type=self.transformer_block_type, position_after='attention'
+            )
+
+            if attention_bias is not None:
+                attention_bias = attention_bias.expand_as(residual)
+
+            layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
+
+            # Post-LN normalization after residual
+            if self.transformer_block_type == 'post_ln':
+                normalization_output = self.input_layernorm(layernorm_input)
+            elif self.transformer_block_type in ['pre_ln', 'normformer']:
+                # Layer norm post the self attention.
+                normalization_output = self.post_attention_layernorm(layernorm_input)
+        else:
+            layernorm_input, normalization_output = hidden_states
+
+        if self.layer_type == LayerType.decoder_pre_mlp:
+            return layernorm_input, normalization_output
 
         if (
             self.layer_type == LayerType.decoder
             or self.layer_type == LayerType.retrieval_decoder
             or self.layer_type == LayerType.retrieval_encoder
+            or self.layer_type == LayerType.retrieval_decoder_after_self_attn
         ):
-            attention_output, attention_bias = self.inter_attention(
-                normalization_output,
-                enc_dec_attn_mask,
-                encoder_output=encoder_output,
-                rotary_pos_emb=cross_attention_pos_emb,
-                position_bias=encoder_decoder_position_bias,
-            )
+            if (
+                self.layer_type == LayerType.retrieval_decoder
+                or self.layer_type == LayerType.retrieval_decoder_after_self_attn
+            ):
+                attention_output, attention_bias = self.inter_attention(
+                    normalization_output,
+                    enc_dec_attn_mask,
+                    encoder_output=encoder_output,
+                    rotary_pos_emb=cross_attention_pos_emb,
+                    set_inference_key_value_memory=set_inference_key_value_memory,
+                    inference_max_sequence_len=inference_max_sequence_len,
+                )
+            else:
+                attention_output, attention_bias = self.inter_attention(
+                    normalization_output,
+                    enc_dec_attn_mask,
+                    encoder_output=encoder_output,
+                    rotary_pos_emb=cross_attention_pos_emb,
+                    position_bias=encoder_decoder_position_bias,
+                )
             if self.position_embedding_type == 'relative':
                 attention_output, encoder_decoder_position_bias = attention_output[0], attention_output[1]
             # If normformer, apply norm on the output of the self attention.
@@ -1354,6 +1440,7 @@ class ParallelTransformer(MegatronModule):
         normalization='layernorm',
         transformer_block_type='pre_ln',
         headscale=False,
+        layer_number_offset=0,  # this is use only for attention norm_factor scaling
     ):
         super(ParallelTransformer, self).__init__()
 
@@ -1394,7 +1481,7 @@ class ParallelTransformer(MegatronModule):
             return ParallelTransformerLayer(
                 init_method=init_method,
                 output_layer_init_method=output_layer_init_method,
-                layer_number=layer_number,
+                layer_number=layer_number + layer_number_offset,
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
                 num_attention_heads=num_attention_heads,

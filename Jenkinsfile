@@ -2457,9 +2457,11 @@ pipeline {
         trainer.max_steps=10 \
         trainer.precision=16 \
         trainer.gradient_clip_val=1.0 \
-        trainer.val_check_interval=20 \
+        trainer.val_check_interval=10 \
         exp_manager.exp_dir=examples/nlp/language_modeling/retro_results \
         model.data.data_prefix='' \
+        model.data.knn_index='' \
+        model.data.retrieval_prefix='' \
         model.tensor_model_parallel_size=2 \
         model.micro_batch_size=4 \
         model.optim.name=fused_adam \
@@ -2474,7 +2476,7 @@ pipeline {
         model.dec_num_layers=2 \
         model.enc_cross_attention=[1] \
         model.dec_cross_attention=[1] \
-        model.data.mock=True"
+        +model.data.mock=True"
         sh "python examples/nlp/language_modeling/megatron_retro_pretraining.py \
         trainer.devices=2 \
         trainer.num_nodes=1 \
@@ -2482,12 +2484,14 @@ pipeline {
         trainer.accumulate_grad_batches=1 \
         trainer.limit_val_batches=2 \
         exp_manager.resume_if_exists=True \
-        trainer.max_steps=30 \
+        trainer.max_steps=20 \
         trainer.precision=16 \
         trainer.gradient_clip_val=1.0 \
-        trainer.val_check_interval=20 \
+        trainer.val_check_interval=10 \
         exp_manager.exp_dir=examples/nlp/language_modeling/retro_results \
         model.data.data_prefix='' \
+        model.data.knn_index='' \
+        model.data.retrieval_prefix='' \
         model.tensor_model_parallel_size=2 \
         model.micro_batch_size=4 \
         model.optim.name=fused_adam \
@@ -2502,7 +2506,7 @@ pipeline {
         model.dec_num_layers=2 \
         model.enc_cross_attention=[1] \
         model.dec_cross_attention=[1] \
-        model.data.mock=True"
+        +model.data.mock=True"
         sh "rm -rf examples/nlp/language_modeling/retro_results"
       }
     }

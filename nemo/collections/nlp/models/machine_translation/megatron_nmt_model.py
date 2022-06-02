@@ -201,7 +201,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
 
     def eval_step(self, batch, batch_idx, dataloader_idx, data_cfg):
         # Need to squeze dim 0 for tarred datasets since things are pre-batched and we ask the dataloader for batch size 1.
-        logging.info('Eval step ...')
         batch = [[x.squeeze(dim=0) if x.ndim == 3 else x for x in microbatch] for microbatch in batch]
         batch = self.process_global_batch_for_tarred_datasets(batch)
         if data_cfg.dataset_type in ['tarred', 'text']:
@@ -240,11 +239,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         encoder_inputs = self.postprocess_outputs(
             outputs=tokens_enc, tokenizer=self.encoder_tokenizer, processor=source_processor,
         )
-
-        logging.info(f'Inputs : {encoder_inputs}')
-        logging.info(f'Translations : {preds}')
-        logging.info(f'GTs : {labels}')
-        logging.info(f'Loss : {reduced_loss}')
 
         return {
             'inputs': encoder_inputs,
@@ -313,9 +307,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         return self.eval_epoch_end(outputs, 'test')
 
     def eval_epoch_end(self, outputs, mode):
-        logging.info('Eval epoch end ...')
         if not outputs:
-            logging.info('No outputs ...')
             return
         if isinstance(outputs[0], dict):
             outputs = [outputs]
@@ -389,7 +381,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             else:
                 bleu_score = 0.0
 
-            logging.info(f'Epoch End BLEU : {bleu_score}')
             loss_list.append(averaged_loss.cpu().numpy())
             bleu_score_list.append(bleu_score)
             if dataloader_idx == 0:

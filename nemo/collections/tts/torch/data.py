@@ -37,7 +37,6 @@ from nemo.collections.tts.torch.helpers import (
 from nemo.collections.tts.torch.tts_data_types import (
     DATA_STR2DATA_CLASS,
     MAIN_DATA_TYPES,
-    VALID_SUPPLEMENTARY_DATA_TYPES,
     AlignPriorMatrix,
     Durations,
     Energy,
@@ -253,15 +252,19 @@ class TTSDataset(Dataset):
             Path(sup_data_path).mkdir(parents=True, exist_ok=True)
             self.sup_data_path = sup_data_path
 
-        self.sup_data_types = (
-            [DATA_STR2DATA_CLASS[d_as_str] for d_as_str in sup_data_types] if sup_data_types is not None else []
-        )
+        self.sup_data_types = []
+        if sup_data_types is not None:
+            for d_as_str in sup_data_types:
+                try:
+                    sup_data_type = DATA_STR2DATA_CLASS[d_as_str]
+                except KeyError:
+                    raise NotImplementedError(f"Current implementation doesn't support {d_as_str} type.")
+
+                self.sup_data_types.append(sup_data_type)
+
         self.sup_data_types_set = set(self.sup_data_types)
 
         for data_type in self.sup_data_types:
-            if data_type not in VALID_SUPPLEMENTARY_DATA_TYPES:
-                raise NotImplementedError(f"Current implementation doesn't support {data_type} type.")
-
             getattr(self, f"add_{data_type.name}")(**kwargs)
 
     @staticmethod

@@ -728,34 +728,40 @@ pipeline {
             exp_manager=null'
           }
         }
-       stage('Test Restore with AlBERT') {
+        stage('Test Restore with AlBERT') {
           steps {
-            sh 'python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
-            +do_training=false \
-            +do_testing=true \
-            pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_and_Capitalization_albert.nemo \
-            +model.test_ds.use_cache=false \
-            ~model.train_ds \
-            ~model.validation_ds \
-            model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-            trainer.devices=[1] \
-            trainer.accelerator="gpu" \
-            exp_manager=null'
+            sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
+            python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
+              +do_training=false \
+              +do_testing=true \
+              pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_and_Capitalization_albert.nemo \
+              +model.test_ds.use_cache=false \
+              ~model.train_ds \
+              ~model.validation_ds \
+              model.test_ds.ds_item="${data_dir}" \
+              trainer.devices=[1] \
+              trainer.accelerator="gpu" \
+              exp_manager=null && \
+            rm -rf "${data_dir}"'
           }
         }
         stage('Test Restore with RoBERTa') {
           steps {
-            sh 'python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
-            +do_training=false \
-            +do_testing=true \
-            pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_and_Capitalization_roberta.nemo \
-            +model.test_ds.use_cache=false \
-            ~model.train_ds \
-            ~model.validation_ds \
-            model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-            trainer.devices=[1] \
-            trainer.accelerator="gpu" \
-            exp_manager=null'
+            sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
+            python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
+              +do_training=false \
+              +do_testing=true \
+              pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_and_Capitalization_roberta.nemo \
+              +model.test_ds.use_cache=false \
+              ~model.train_ds \
+              ~model.validation_ds \
+              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
+              trainer.devices=[1] \
+              trainer.accelerator="gpu" \
+              exp_manager=null && \
+            rm -rf "${data_dir}"'
           }
         }
       }
@@ -1412,18 +1418,21 @@ pipeline {
         stage ('Punctuation and capitalization finetuning from pretrained test') {
           steps {
             sh 'cd examples/nlp/token_classification && \
+            data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
             python punctuation_capitalization_train_evaluate.py \
-            pretrained_model=punctuation_en_bert \
-            model.train_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-            model.validation_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-            model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-            +model.train_ds.use_cache=false \
-            +model.validation_ds.use_cache=false \
-            +model.test_ds.use_cache=false \
-            trainer.devices=[1] \
-            trainer.accelerator="gpu" \
-            +trainer.fast_dev_run=true \
-            exp_manager.exp_dir=null'
+              pretrained_model=punctuation_en_bert \
+              model.train_ds.ds_item="${data_dir}" \
+              model.validation_ds.ds_item="${data_dir}" \
+              model.test_ds.ds_item="${data_dir}" \
+              +model.train_ds.use_cache=false \
+              +model.validation_ds.use_cache=false \
+              +model.test_ds.use_cache=false \
+              trainer.devices=[1] \
+              trainer.accelerator="gpu" \
+              +trainer.fast_dev_run=true \
+              exp_manager.exp_dir=null && \
+            rm -rf "${data_dir}"'
           }
         }
         stage ('NER with TurkuNLP/bert-base-finnish-cased-v1') {
@@ -1449,26 +1458,30 @@ pipeline {
         }
         stage('Evaluation script for Punctuation') {
           steps {
-            sh 'python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
-            +do_training=false \
-            +do_testing=true \
-            model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-            ~model.train_ds \
-            ~model.validation_ds \
-            +model.test_ds.use_cache=false \
-            pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_Capitalization_with_DistilBERT_base_uncased.nemo'
+            sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
+            python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
+              +do_training=false \
+              +do_testing=true \
+              model.test_ds.ds_item="${data_dir}" \
+              ~model.train_ds \
+              ~model.validation_ds \
+              +model.test_ds.use_cache=false \
+              pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_Capitalization_with_DistilBERT_base_uncased.nemo && \
+            rm -rf "${data_dir}"'
           }
         }
         stage('L2: Punctuation & Capitalization, 2GPUs with DistilBERT, Fine-tuning on different data') {
           steps {
             sh 'cd examples/nlp/token_classification && \
-            mkdir -p tmp_data && \
-            cp /home/TestData/nlp/token_classification_punctuation/*.txt tmp_data/ && \
+            output_dir="$(mktemp -d -p "$(pwd)")" && \
+            tmp_data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${tmp_data_dir}"/ && \
             python punctuation_capitalization_train_evaluate.py \
               model.train_ds.use_tarred_dataset=false \
-              model.train_ds.ds_item=tmp_data \
-              model.validation_ds.ds_item=tmp_data \
-              model.test_ds.ds_item=tmp_data \
+              model.train_ds.ds_item="${tmp_data_dir}" \
+              model.validation_ds.ds_item="${tmp_data_dir}" \
+              model.test_ds.ds_item="${tmp_data_dir}" \
               model.language_model.pretrained_model_name=distilbert-base-uncased \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
@@ -1477,15 +1490,17 @@ pipeline {
               trainer.accelerator="gpu" \
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
-              +exp_manager.explicit_log_dir=/home/TestData/nlp/token_classification_punctuation/output \
+              +exp_manager.explicit_log_dir="${output_dir}" \
               +do_testing=true && \
-            mv tmp_data tmp_data2 && \
+            tmp_data_dir_2="$(mktemp -d -p "$(pwd)")" && \
+            mv "${tmp_data_dir}"/* "${tmp_data_dir_2}" && \
+            rm -rf "${tmp_data_dir}" && \
             python punctuation_capitalization_train_evaluate.py \
               model.train_ds.use_tarred_dataset=false \
-              model.train_ds.ds_item=tmp_data2 \
-              model.validation_ds.ds_item=tmp_data2 \
-              model.test_ds.ds_item=tmp_data2 \
-              pretrained_model=/home/TestData/nlp/token_classification_punctuation/output/checkpoints/Punctuation_and_Capitalization.nemo \
+              model.train_ds.ds_item="${tmp_data_dir_2}" \
+              model.validation_ds.ds_item="${tmp_data_dir_2}" \
+              model.test_ds.ds_item="${tmp_data_dir_2}" \
+              pretrained_model="${output_dir}/checkpoints/Punctuation_and_Capitalization.nemo" \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
               +model.test_ds.use_cache=false \
@@ -1494,14 +1509,10 @@ pipeline {
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
               exp_manager=null && \
-            rm -r tmp_data2 && \
-            rm -rf /home/TestData/nlp/token_classification_punctuation/output/*'
+            rm -rf /workspace/NeMo/examples/nlp/token_classification/nemo_experiments \
+              "${tmp_data_dir_2}" \
+              "${output_dir}"'
           }
-        }
-      }
-      post {
-        always {
-          sh 'pwd && ls nemo_* && rm -rf nemo_experiments && ls nemo_*'
         }
       }
     }
@@ -1516,11 +1527,13 @@ pipeline {
       stages {
         stage('create and use tarred dataset') {
           steps {
-            sh 'data_dir=/home/TestData/nlp/token_classification_punctuation && \
+            sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp -r /home/TestData/nlp/token_classification_punctuation/*.txt \
+              /home/TestData/nlp/token_classification_punctuation/wmt_wiki_10000 \
+              "${data_dir}"/ && \
             usual_data=${data_dir}/wmt_wiki_10000 && \
-            tarred_data=${data_dir}/train_tarred && \
-            TIME=`date +"%Y-%m-%d-%T"` \
-            output=${data_dir}/output_${TIME} && \
+            output_dir="$(mktemp -d -p "$(pwd)")" && \
+            tarred_data=${output_dir}/train_tarred && \
             tokens_in_batch=2000 && \
             max_seq_length=512 && \
             lm_model=distilbert-base-uncased && \
@@ -1543,8 +1556,8 @@ pipeline {
             ls ${tarred_data}/*.csv && \
             metadata_file=${tarred_data}/metadata.punctuation_capitalization.tokens${tokens_in_batch}.max_seq_length${max_seq_length}.${lm_model}.json && \
             python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
-              model.validation_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
+              model.validation_ds.ds_item="${data_dir}" \
+              model.test_ds.ds_item="${data_dir}" \
               model.train_ds.ds_item=${tarred_data} \
               model.language_model.pretrained_model_name=${lm_model} \
               model.train_ds.use_tarred_dataset=true \
@@ -1556,8 +1569,8 @@ pipeline {
               trainer.accelerator="gpu" \
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
-              +exp_manager.explicit_log_dir=${output} && \
-            rm -rf ${output}/* ${tarred_data}'
+              +exp_manager.explicit_log_dir=${output_dir}/output && \
+            rm -rf "${output_dir}" "${data_dir}"'
           }
         }
       }
@@ -1571,20 +1584,22 @@ pipeline {
       }
       failFast true
       stages {
-        stage('Punctuation & Capitalization, Using model.common_datasest_parameters.label_vocab_dir') {
+        stage('Punctuation & Capitalization, Using model.common_dataset_parameters.label_vocab_dir') {
           steps {
             sh 'cd examples/nlp/token_classification && \
-            label_vocab_dir=label_vocab_dir && \
-            mkdir -p ${label_vocab_dir} && \
+            output_dir="$(mktemp -d -p "$(pwd)")" && \
+            data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
+            label_vocab_dir="$(mktemp -d -p "$(pwd)")" && \
             punct_label_vocab="${label_vocab_dir}/punct_label_vocab.csv" && \
             capit_label_vocab="${label_vocab_dir}/capit_label_vocab.csv" && \
             printf "O\n,\n.\n?\n" > "${punct_label_vocab}" && \
             printf "O\nU\n" > "${capit_label_vocab}" && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               model.train_ds.use_tarred_dataset=false \
-              model.train_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.validation_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
+              model.train_ds.ds_item="${data_dir}" \
+              model.validation_ds.ds_item="${data_dir}" \
+              model.test_ds.ds_item="${data_dir}" \
               model.language_model.pretrained_model_name=distilbert-base-uncased \
               model.common_dataset_parameters.label_vocab_dir="${label_vocab_dir}" \
               model.class_labels.punct_labels_file="$(basename "${punct_label_vocab}")" \
@@ -1595,15 +1610,15 @@ pipeline {
               trainer.devices=[0,1] \
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
-              +exp_manager.explicit_log_dir=/home/TestData/nlp/token_classification_punctuation/output \
+              +exp_manager.explicit_log_dir="${output_dir}" \
               +do_testing=false && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               +do_training=false \
               +do_testing=true \
               ~model.train_ds \
               ~model.validation_ds \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              pretrained_model=/home/TestData/nlp/token_classification_punctuation/output/checkpoints/Punctuation_and_Capitalization.nemo \
+              model.test_ds.ds_item="${data_dir}" \
+              pretrained_model="${output_dir}/checkpoints/Punctuation_and_Capitalization.nemo" \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
               +model.test_ds.use_cache=false \
@@ -1611,27 +1626,29 @@ pipeline {
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
               exp_manager=null && \
-            rm -r "${label_vocab_dir}" && \
-            rm -rf /home/TestData/nlp/token_classification_punctuation/output/*'
+            rm -rf "${label_vocab_dir}" "${data_dir}" "${output_dir}"'
           }
         }
-        stage('Punctuation & Capitalization, Using model.common_datasest_parameters.{punct,capit}_label_ids') {
+        stage('Punctuation & Capitalization, Using model.common_dataset_parameters.{punct,capit}_label_ids') {
           steps {
             sh 'cd examples/nlp/token_classification && \
-            conf_path=/home/TestData/nlp/token_classification_punctuation && \
+            output_dir="$(mktemp -d -p "$(pwd)")" && \
+            data_dir="$(mktemp -d -p "$(pwd)")" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
+            conf_path="$(mktemp -d -p "$(pwd)")" && \
             conf_name=punctuation_capitalization_config_with_ids && \
             cp conf/punctuation_capitalization_config.yaml "${conf_path}/${conf_name}.yaml" && \
             sed -i $\'s/punct_label_ids: null/punct_label_ids: {O: 0, \\\',\\\': 1, .: 2, \\\'?\\\': 3}/\' \
               "${conf_path}/${conf_name}.yaml" && \
             sed -i $\'s/capit_label_ids: null/capit_label_ids: {O: 0, U: 1}/\' \
               "${conf_path}/${conf_name}.yaml" && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               --config-path "${conf_path}" \
               --config-name "${conf_name}" \
               model.train_ds.use_tarred_dataset=false \
-              model.train_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.validation_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
+              model.train_ds.ds_item="${data_dir}" \
+              model.validation_ds.ds_item="${data_dir}" \
+              model.test_ds.ds_item="${data_dir}" \
               model.language_model.pretrained_model_name=distilbert-base-uncased \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
@@ -1639,15 +1656,15 @@ pipeline {
               trainer.devices=[0,1] \
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
-              +exp_manager.explicit_log_dir=/home/TestData/nlp/token_classification_punctuation/output \
+              +exp_manager.explicit_log_dir="${output_dir}" \
               +do_testing=false && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               +do_training=false \
               +do_testing=true \
               ~model.train_ds \
               ~model.validation_ds \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              pretrained_model=/home/TestData/nlp/token_classification_punctuation/output/checkpoints/Punctuation_and_Capitalization.nemo \
+              model.test_ds.ds_item="${data_dir}" \
+              pretrained_model="${output_dir}/checkpoints/Punctuation_and_Capitalization.nemo" \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
               +model.test_ds.use_cache=false \
@@ -1655,8 +1672,7 @@ pipeline {
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
               exp_manager=null && \
-            rm -rf /home/TestData/nlp/token_classification_punctuation/output/* && \
-            rm "${conf_path}/${conf_name}.yaml"'
+            rm -rf "${output_dir}" "${data_dir}" "${conf_path}"'
           }
         }
       }
@@ -1672,15 +1688,16 @@ pipeline {
       stages {
         stage('Restore punctuation and capitalization in long text') {
           steps {
-            sh 'python examples/nlp/token_classification/punctuate_capitalize_infer.py \
-            --input_manifest /home/TestData/nlp/token_classification_punctuation/iwslt_tst2019.manifest \
-            --output_text iwslt_inference_result.txt \
-            --max_seq_length 92 \
-            --step 8 \
-            --margin 16 \
-            --pretrained_name punctuation_en_bert \
-            --batch_size 32 && \
-            rm iwslt_inference_result.txt'
+            sh 'output_dir="$(mktemp -d -p "$(pwd)")" && \
+            python examples/nlp/token_classification/punctuate_capitalize_infer.py \
+              --input_manifest /home/TestData/nlp/token_classification_punctuation/iwslt_tst2019.manifest \
+              --output_text "${output_dir}/iwslt_inference_result.txt" \
+              --max_seq_length 92 \
+              --step 8 \
+              --margin 16 \
+              --pretrained_name punctuation_en_bert \
+              --batch_size 32 && \
+            rm -rf "${output_dir}"'
           }
         }
       }

@@ -827,8 +827,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
         label_info_save_dir (:obj:`Union[str, os.PathLike]`, `optional`): a path to a directory where label frequencies
             are saved. Be default a ``text_file`` parent directory is used. When method
             :meth:`save_labels_and_get_file_paths` is called label ids are saved into ``label_info_save_dir``
-            directory. Parameters ``cache_dir`` and ``label_info_save_dir`` are added for cases when directory
-            containing. This parameter is useful if directory containing ``text_file`` is read-only.
+            directory. This parameter is useful if directory containing ``text_file`` is read-only.
         punct_label_vocab_file (:obj:`Union[str, os.PathLike]`, `optional`): a path to a .csv file containing
             punctuation label vocabulary. Each line in such a vocabulary file contains exactly one label. The first
             line has to contain `pad_label`, otherwise error will be raised.

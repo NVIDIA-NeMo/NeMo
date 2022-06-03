@@ -23,12 +23,12 @@ from nemo.collections.nlp.models import MTEncDecModel
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_config import AAYNBaseConfig
 
 
-def export_test(model, suffix, try_script=False):
+def export_test(model, suffix):
     with tempfile.TemporaryDirectory() as restore_folder:
-        enc_filename = os.path.join(restore_folder, 'nmt_e' + suffix)
-        dec_filename = os.path.join(restore_folder, 'nmt_d' + suffix)
-        model.encoder.export(output=enc_filename, try_script=try_script)
-        model.decoder.export(output=dec_filename, try_script=try_script)
+        filename = os.path.join(restore_folder, 'nmt' + suffix)
+        enc_filename = os.path.join(restore_folder, 'encoder-nmt' + suffix)
+        dec_filename = os.path.join(restore_folder, 'decoder-nmt' + suffix)
+        model.export(output=filename, check_trace=True)
         assert os.path.exists(enc_filename)
         assert os.path.exists(dec_filename)
 
@@ -109,18 +109,6 @@ class TestMTEncDecModel:
         train_loss = model.loss_fn(log_probs=log_probs, labels=tgt_ids)
         eval_loss = model.eval_loss_fn(log_probs=log_probs, labels=tgt_ids)
         assert torch.allclose(train_loss, eval_loss)
-
-    @pytest.mark.unit
-    def test_cpu_export_onnx(self):
-        model = MTEncDecModel(cfg=get_cfg())
-        assert isinstance(model, MTEncDecModel)
-        export_test(model, ".ts")
-
-    @pytest.mark.unit
-    def test_cpu_export_ts(self):
-        model = MTEncDecModel(cfg=get_cfg())
-        assert isinstance(model, MTEncDecModel)
-        export_test(model, ".onnx")
 
     @pytest.mark.skipif(not os.path.exists('/home/TestData/nlp'), reason='Not a Jenkins machine')
     @pytest.mark.run_only_on('GPU')

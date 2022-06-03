@@ -27,16 +27,16 @@
 # limitations under the License.
 
 import argparse
-import logging
+import os
 import sys
 
 import torch
 from pytorch_lightning import Trainer
 
 from nemo.core import ModelPT
-from nemo.core.classes import Exportable, typecheck
+from nemo.core.classes import Exportable
 from nemo.core.config.pytorch_lightning import TrainerConfig
-from nemo.utils.export_utils import forward_method, parse_input_example, verify_runtime
+from nemo.utils import logging
 
 try:
     from contextlib import nullcontext
@@ -73,12 +73,7 @@ def nemo_export(argv):
         if not isinstance(numeric_level, int):
             raise ValueError('Invalid log level: %s' % numeric_level)
         loglevel = numeric_level
-
-    logger = logging.getLogger(__name__)
-    if logger.handlers:
-        for handler in logger.handlers:
-            logger.removeHandler(handler)
-    logging.basicConfig(level=loglevel, format='%(asctime)s [%(levelname)s] %(message)s')
+    logging.setLevel(loglevel)
     logging.info("Logging level set to {}".format(loglevel))
 
     """Convert a .nemo saved model into .riva Riva input format."""
@@ -109,60 +104,38 @@ def nemo_export(argv):
         )
         raise e
 
-    logging.info("Model {} restored from '{}'".format(model.cfg.target, nemo_in))
+    logging.info("Model {} restored from '{}'".format(model.__class__.__name__, nemo_in))
 
     if not isinstance(model, Exportable):
-        logging.error("Your NeMo model class ({}) is not Exportable.".format(model.cfg.target))
+        logging.error("Your NeMo model class ({}) is not Exportable.".format(model.__class__.__name__))
         sys.exit(1)
-    typecheck.set_typecheck_enabled(enabled=False)
 
+    #
+    #  Add custom export parameters here
+    #
+    in_args = {}
+    if args.max_batch is not None:
+        in_args["max_batch"] = args.max_batch
+    if args.max_dim is not None:
+        in_args["max_dim"] = args.max_dim
+
+    autocast = nullcontext
+    model.to(device=args.device).freeze()
+    if args.autocast:
+        autocast = torch.cuda.amp.autocast
     try:
-        #
-        #  Add custom export parameters here
-        #
-        in_args = {}
-        if args.max_batch is not None:
-            in_args["max_batch"] = args.max_batch
-        if args.max_dim is not None:
-            in_args["max_dim"] = args.max_dim
-
-        autocast = nullcontext
-        model = model.to(device=args.device)
-        model.eval()
-        with torch.inference_mode():
-            input_example = model.input_module.input_example(**in_args)
-        if args.autocast:
-            autocast = torch.cuda.amp.autocast
         with autocast(), torch.inference_mode():
-            logging.info(f"Getting output example")
-            input_list, input_dict = parse_input_example(input_example)
-            output_example = forward_method(model)(*input_list, **input_dict)
-            logging.info(f"Exporting model with autocast={args.autocast}")
-            input_names = model.input_names
-            output_names = model.output_names
-
             _, descriptions = model.export(
-                out,
-                check_trace=False,
-                input_example=input_example,
-                onnx_opset_version=args.onnx_opset,
-                verbose=args.verbose,
+                out, check_trace=args.runtime_check, onnx_opset_version=args.onnx_opset, verbose=args.verbose,
             )
 
     except Exception as e:
         logging.error(
             "Export failed. Please make sure your NeMo model class ({}) has working export() and that you have the latest NeMo package installed with [all] dependencies.".format(
-                model.cfg.target
+                model.__class__
             )
         )
         raise e
-
-    logging.info("Successfully exported to {}".format(out))
-
-    del model
-
-    if args.runtime_check:
-        verify_runtime(out, input_list, input_dict, input_names, output_names, output_example)
 
 
 if __name__ == '__main__':

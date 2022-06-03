@@ -66,6 +66,8 @@ def get_export_format(filename: str):
 
 
 def augment_filename(output: str, prepend: str):
+    if prepend == 'self':
+        return output
     path, filename = os.path.split(output)
     filename = f"{prepend}-{filename}"
     return os.path.join(path, filename)

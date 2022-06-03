@@ -36,7 +36,6 @@ from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
-from nemo.utils.export_utils import augment_filename
 
 
 class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
@@ -918,18 +917,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                     norm = param.grad.norm()
                     param.grad.data.div_(norm)
 
-    def export(self, output: str, input_example=None, **kwargs):
-        encoder_exp, encoder_descr = self.encoder.export(
-            augment_filename(output, 'Encoder'), input_example=input_example, **kwargs,
-        )
-        decoder_joint = RNNTDecoderJoint(self.decoder, self.joint)
-        decoder_exp, decoder_descr = decoder_joint.export(
-            augment_filename(output, 'Decoder-Joint'),
-            # TODO: propagate from export()
-            input_example=None,
-            **kwargs,
-        )
-        return encoder_exp + decoder_exp, encoder_descr + decoder_descr
+    # EncDecRNNTModel is exported in 2 parts
+    def list_export_subnets(self):
+        return ['encoder', 'decoder_joint']
+
+    # for export
+    @property
+    def decoder_joint(self):
+        return RNNTDecoderJoint(self.decoder, self.joint)
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:

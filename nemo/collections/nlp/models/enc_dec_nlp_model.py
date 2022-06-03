@@ -80,6 +80,3 @@ class EncDecNLPModel(NLPModel):
     @decoder.setter
     def decoder(self, decoder):
         self._decoder = decoder
-
-    def export(self, **kwargs):
-        raise NotImplementedError('For EncDecNLPModel, you must export encoder and decoder separately!')

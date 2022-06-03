@@ -151,7 +151,7 @@ class ClassifyFst(GraphFst):
             logging.debug(f"punct: {time.time() - start_time: .2f}s -- {punct_graph.num_states()} nodes")
 
             start_time = time.time()
-            word_graph = WordFst(deterministic=deterministic).fst
+            word_graph = WordFst(punctuation=punctuation, deterministic=deterministic).fst
             logging.debug(f"word: {time.time() - start_time: .2f}s -- {word_graph.num_states()} nodes")
 
             start_time = time.time()

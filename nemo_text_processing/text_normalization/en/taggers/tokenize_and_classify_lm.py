@@ -122,14 +122,15 @@ class ClassifyFst(GraphFst):
             measure_graph = measure.fst
             date = DateFst(cardinal=cardinal, deterministic=True, lm=True)
             date_graph = date.fst
-            word_graph = WordFst(deterministic=deterministic).graph
+            punctuation = PunctuationFst(deterministic=True)
+            punct_graph = punctuation.graph
+            word_graph = WordFst(punctuation=punctuation, deterministic=deterministic).graph
             time_graph = TimeFst(cardinal=cardinal, deterministic=True).fst
             telephone_graph = TelephoneFst(deterministic=True).fst
             electronic_graph = ElectronicFst(deterministic=True).fst
             money_graph = MoneyFst(cardinal=cardinal, decimal=decimal, deterministic=False).fst
             whitelist = WhiteListFst(input_case=input_case, deterministic=False, input_file=whitelist)
             whitelist_graph = whitelist.graph
-            punct_graph = PunctuationFst(deterministic=True).graph
             serial_graph = SerialFst(cardinal=cardinal, ordinal=ordinal, deterministic=deterministic, lm=True).fst
 
             # VERBALIZERS

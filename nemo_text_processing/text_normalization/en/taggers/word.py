@@ -19,6 +19,7 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_SIGMA,
     GraphFst,
     convert_space,
+    get_abs_path,
 )
 
 try:
@@ -37,11 +38,12 @@ class WordFst(GraphFst):
         e.g. sleep -> tokens { name: "sleep" }
 
     Args:
+        punctuation: PunctuationFst
         deterministic: if True will provide a single transduction option,
             for False multiple transduction are generated (used for audio-based normalization)
     """
 
-    def __init__(self, deterministic: bool = True):
+    def __init__(self, punctuation: GraphFst, deterministic: bool = True):
         super().__init__(name="word", kind="classify", deterministic=deterministic)
 
         symbols_to_exclude = (pynini.union("$", "€", "₩", "£", "¥", "#", "%") | NEMO_DIGIT).optimize()
@@ -56,6 +58,21 @@ class WordFst(GraphFst):
             + pynini.accep(pynini.escape("]"))
         )
 
+        # leave IPA phones of format [ˈdoʊv] untouched, single words and sentences with punctuation marks allowed
+        punct_marks = pynini.union(*punctuation.punct_marks).optimize()
+        stress = pynini.union("ˈ", "'", "ˌ")
+        ipa_phoneme_unit = pynini.string_file(get_abs_path("data/whitelist/ipa_symbols.tsv"))
+        # word in ipa form
+        ipa_phonemes = (
+            pynini.closure(stress, 0, 1)
+            + pynini.closure(ipa_phoneme_unit, 1)
+            + pynini.closure(stress | ipa_phoneme_unit)
+        )
+        # allow sentences of words in IPA format separated with spaces or punct marks
+        delim = (punct_marks | pynini.accep(" ")) ** (1, ...)
+        ipa_phonemes = ipa_phonemes + pynini.closure(delim + ipa_phonemes) + pynini.closure(delim, 0, 1)
+        ipa_phonemes = (pynini.accep(pynini.escape("[")) + ipa_phonemes + pynini.accep(pynini.escape("]"))).optimize()
+
         if not deterministic:
             phoneme = (
                 pynini.accep(pynini.escape("["))
@@ -64,6 +81,11 @@ class WordFst(GraphFst):
                 + phoneme_unit
                 + pynini.closure(pynini.accep(" "), 0, 1)
                 + pynini.accep(pynini.escape("]"))
-            )
-        self.graph = plurals._priority_union(convert_space(phoneme), graph, NEMO_SIGMA)
+            ).optimize()
+            ipa_phonemes = (
+                pynini.accep(pynini.escape("[")) + ipa_phonemes + pynini.accep(pynini.escape("]"))
+            ).optimize()
+
+        phoneme |= ipa_phonemes
+        self.graph = plurals._priority_union(convert_space(phoneme.optimize()), graph, NEMO_SIGMA)
         self.fst = (pynutil.insert("name: \"") + self.graph + pynutil.insert("\"")).optimize()

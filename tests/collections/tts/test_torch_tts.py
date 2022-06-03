@@ -71,3 +71,27 @@ class TestTTSDataset:
                     g2p=EnglishG2p(),
                 ),
             )
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.torch_tts
+    def test_raise_exception_on_not_supported_window(self, test_data_dir):
+        manifest_path = os.path.join(test_data_dir, 'tts/mini_ljspeech/manifest.json')
+        sup_path = os.path.join(test_data_dir, 'tts/mini_ljspeech/sup')
+        with pytest.raises(NotImplementedError):
+            dataset = TTSDataset(
+                manifest_filepath=manifest_path,
+                sample_rate=22050,
+                sup_data_types=["pitch"],
+                sup_data_path=sup_path,
+                window="not_supported_window",
+                text_tokenizer=EnglishPhonemesTokenizer(
+                    punct=True,
+                    stresses=True,
+                    chars=True,
+                    space=' ',
+                    apostrophe=True,
+                    pad_with_space=True,
+                    g2p=EnglishG2p(),
+                ),
+            )

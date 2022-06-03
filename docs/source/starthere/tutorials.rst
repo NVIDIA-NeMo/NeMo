@@ -34,6 +34,9 @@ To run a tutorial:
    * - General
      - Exploring NeMo Adapters
      - `NeMo Adapters <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/02_NeMo_Adapters.ipynb>`_
+   * - General
+     - Publishing NeMo models on Hugging Face Hub
+     - `NeMo Models on HF Hub <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/Publish_NeMo_Model_On_Hugging_Face_Hub.ipynb>`_
    * - ASR
      - ASR with NeMo
      - `ASR with NeMo <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_with_NeMo.ipynb>`_

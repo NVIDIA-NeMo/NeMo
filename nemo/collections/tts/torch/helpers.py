@@ -31,12 +31,13 @@ class BetaBinomialInterpolator:
         self.round_text_len_to = round_text_len_to
         self.bank = functools.lru_cache(maxsize=cache_size)(beta_binomial_prior_distribution)
 
-    def round(self, val, to):
+    @staticmethod
+    def round(val, to):
         return max(1, int(np.round((val + 1) / to))) * to
 
     def __call__(self, w, h):
-        bw = self.round(w, to=self.round_mel_len_to)
-        bh = self.round(h, to=self.round_text_len_to)
+        bw = BetaBinomialInterpolator.round(w, to=self.round_mel_len_to)
+        bh = BetaBinomialInterpolator.round(h, to=self.round_text_len_to)
         ret = ndimage.zoom(self.bank(bw, bh).T, zoom=(w / bw, h / bh), order=1)
         assert ret.shape[0] == w, ret.shape
         assert ret.shape[1] == h, ret.shape

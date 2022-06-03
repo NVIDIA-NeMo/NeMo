@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, GraphFst, convert_space
+from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, NEMO_SIGMA, GraphFst, convert_space
 
 try:
     import pynini
@@ -38,12 +38,11 @@ class RangeFst(GraphFst):
     """
 
     def __init__(
-        self, time: GraphFst, date: GraphFst, cardinal: GraphFst, deterministic: bool = True, lm: bool = False
+        self, time: GraphFst, date: GraphFst, cardinal: GraphFst, deterministic: bool = True, lm: bool = False,
     ):
         super().__init__(name="range", kind="classify", deterministic=deterministic)
 
         delete_space = pynini.closure(pynutil.delete(" "), 0, 1)
-        cardinal = cardinal.graph_with_and
 
         approx = pynini.cross("~", "approximately")
 
@@ -51,10 +50,10 @@ class RangeFst(GraphFst):
         time_graph = time + delete_space + pynini.cross("-", " to ") + delete_space + time
         self.graph = time_graph | (approx + time)
 
+        cardinal = cardinal.graph_with_and
         # YEAR
         date_year_four_digit = (NEMO_DIGIT ** 4 + pynini.closure(pynini.accep("s"), 0, 1)) @ date
         date_year_two_digit = (NEMO_DIGIT ** 2 + pynini.closure(pynini.accep("s"), 0, 1)) @ date
-
         year_to_year_graph = (
             date_year_four_digit
             + delete_space
@@ -62,7 +61,10 @@ class RangeFst(GraphFst):
             + delete_space
             + (date_year_four_digit | date_year_two_digit | (NEMO_DIGIT ** 2 @ cardinal))
         )
+        mid_year_graph = pynini.accep("mid") + pynini.cross("-", " ") + (date_year_four_digit | date_year_two_digit)
+
         self.graph |= year_to_year_graph
+        self.graph |= mid_year_graph
 
         # ADDITION
         range_graph = cardinal + pynini.closure(pynini.cross("+", " plus ") + cardinal, 1)

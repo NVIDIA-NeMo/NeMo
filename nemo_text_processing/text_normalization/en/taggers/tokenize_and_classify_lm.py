@@ -149,12 +149,13 @@ class ClassifyFst(GraphFst):
             v_date_graph = vDate(ordinal=ordinal, deterministic=deterministic, lm=True).fst
             v_money_graph = vMoney(decimal=decimal, deterministic=deterministic).fst
             v_roman_graph = vRoman(deterministic=deterministic).fst
-
-            time_final = pynini.compose(time_graph, v_time_graph)
+            v_word_graph = vWord(deterministic=deterministic).fst
 
             cardinal_or_date_final = plurals._priority_union(date_graph, cardinal_graph, NEMO_SIGMA)
             cardinal_or_date_final = pynini.compose(cardinal_or_date_final, (v_cardinal_graph | v_date_graph))
 
+            time_final = pynini.compose(time_graph, v_time_graph)
+            ordinal_final = pynini.compose(ordinal_graph, v_ordinal_graph)
             sem_w = 1
             word_w = 100
             punct_w = 2
@@ -162,7 +163,7 @@ class ClassifyFst(GraphFst):
                 pynutil.add_weight(time_final, sem_w)
                 | pynutil.add_weight(pynini.compose(decimal_graph, v_decimal_graph), sem_w)
                 | pynutil.add_weight(pynini.compose(measure_graph, v_measure_graph), sem_w)
-                | pynutil.add_weight(pynini.compose(ordinal_graph, v_ordinal_graph), sem_w)
+                | pynutil.add_weight(ordinal_final, sem_w)
                 | pynutil.add_weight(pynini.compose(telephone_graph, v_telephone_graph), sem_w)
                 | pynutil.add_weight(pynini.compose(electronic_graph, v_electronic_graph), sem_w)
                 | pynutil.add_weight(pynini.compose(fraction_graph, v_fraction_graph), sem_w)
@@ -170,7 +171,7 @@ class ClassifyFst(GraphFst):
                 | pynutil.add_weight(cardinal_or_date_final, sem_w)
                 | pynutil.add_weight(whitelist_graph, sem_w)
                 | pynutil.add_weight(
-                    pynini.compose(serial_graph, v_cardinal_graph), 1.1001
+                    pynini.compose(serial_graph, v_word_graph), 1.1001
                 )  # should be higher than the rest of the classes
             ).optimize()
 
@@ -182,7 +183,6 @@ class ClassifyFst(GraphFst):
             range_graph = RangeFst(
                 time=time_final, cardinal=cardinal_tagger, date=date_final, deterministic=deterministic
             ).fst
-            v_word_graph = vWord(deterministic=deterministic).fst
             classify_and_verbalize |= pynutil.add_weight(pynini.compose(range_graph, v_word_graph), sem_w)
             classify_and_verbalize = pynutil.insert("< ") + classify_and_verbalize + pynutil.insert(" >")
             classify_and_verbalize |= pynutil.add_weight(word_graph, word_w)

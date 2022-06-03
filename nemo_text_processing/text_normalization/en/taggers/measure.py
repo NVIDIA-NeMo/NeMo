@@ -196,6 +196,18 @@ class MeasureFst(GraphFst):
             + (cardinal_graph | NEMO_ALPHA)
         )
 
+        math |= (
+            (cardinal_graph | NEMO_ALPHA)
+            + delimiter
+            + pynini.cross("=", "equals")
+            + delimiter
+            + (cardinal_graph | NEMO_ALPHA)
+            + delimiter
+            + math_operations
+            + delimiter
+            + cardinal_graph
+        )
+
         math = (
             pynutil.insert("units: \"math\" cardinal { integer: \"")
             + math

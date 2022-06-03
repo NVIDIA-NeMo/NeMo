@@ -185,8 +185,8 @@ class ClassifyFst(GraphFst):
                 | pynutil.add_weight(serial_graph, 1.1001)  # should be higher than the rest of the classes
             )
 
-            # roman_graph = RomanFst(deterministic=deterministic).fst
-            # classify |= pynutil.add_weight(roman_graph, 1.1)
+            roman_graph = RomanFst(deterministic=deterministic).fst
+            classify |= pynutil.add_weight(roman_graph, 1.1)
 
             if not deterministic:
                 abbreviation_graph = AbbreviationFst(deterministic=deterministic).fst

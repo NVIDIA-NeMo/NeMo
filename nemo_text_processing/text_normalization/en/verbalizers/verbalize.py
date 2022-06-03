@@ -72,8 +72,8 @@ class VerbalizeFst(GraphFst):
             | whitelist_graph
         )
 
-        # roman_graph = RomanFst(deterministic=deterministic).fst
-        # graph |= roman_graph
+        roman_graph = RomanFst(deterministic=deterministic).fst
+        graph |= roman_graph
 
         if not deterministic:
             abbreviation_graph = AbbreviationFst(deterministic=deterministic).fst

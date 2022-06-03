@@ -14,3 +14,5 @@ from 2-10~from two - ten
 1960s-80s~nineteen sixties to eighties
 1960s-1980s~nineteen sixties to nineteen eighties
 1960-80~nineteen sixty to eighty
+mid-1980s~mid nineteen eighties
+mid-80s~mid eighties

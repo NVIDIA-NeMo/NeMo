@@ -50,5 +50,4 @@ Jan-15~january fifteenth
 15-01-2020~the fifteenth of january twenty twenty
 15.01.2020~the fifteenth of january twenty twenty
 340 A.D~three forty AD
-1973-1975~nineteen seventy three to nineteen seventy five
 1998/2/30~february thirtieth nineteen ninety eight

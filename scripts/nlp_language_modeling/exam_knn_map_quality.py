@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-This is the script to exam the KNN mapping quality between indexed data and indexed retrieval database. 
+This is the script to exam the KNN mapping quality between indexed data and indexed retrieval database.
 
 It requires the training text data to be converted into `bin` and `idx` files by `preprocess_data_for_megatron.py` script.
 It also requires KNNIndex built by `build_retrieval_index.py` script.
@@ -20,7 +20,7 @@ It also requires KNNIndex built by `build_retrieval_index.py` script.
 Here is an example to using it:
 
 ```python
-python scripts/nlp_language_modeling/example_knn_map_quality.py \
+python scripts/nlp_language_modeling/exam_knn_map_quality.py \
     --input_data_prefix=PATH_TO_DATA \
     --input_retrieval_prefix=PATH_TO_RETRIEVAL_DATA \
     --knn_index=PATH_TO_KNN_MAP_INDEX \
@@ -39,6 +39,23 @@ from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_data
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.utils import logging
 
+
+def get_tokenizer(args):
+    tokenizer = get_nmt_tokenizer(
+        library=args.tokenizer_library,
+        model_name=args.tokenizer_type,
+        tokenizer_model=args.tokenizer_model,
+        vocab_file=args.vocab_file,
+        merges_file=args.merge_file,
+        delimiter=args.delimiter,
+    )
+    if not hasattr(tokenizer, "pad_id"):
+        tokenizer.add_special_tokens({'pad_token': '<pad>'})
+    elif hasattr(tokenizer, "pad_id") and (tokenizer.pad_id is None or tokenizer.pad_id < 0):
+        tokenizer.add_special_tokens({'pad_token': '<pad>'})
+    return tokenizer
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="build Faiss index",)
     parser.add_argument(
@@ -49,6 +66,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--knn_index', type=str, required=True, help='Input knn map index file',
+    )
+    parser.add_argument(
+        '--neighbors', type=int, default=None, help='number of neighbors',
     )
     parser.add_argument(
         '--chunk_ids',
@@ -77,15 +97,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    tokenizer = get_nmt_tokenizer(
-        library=args.tokenizer_library,
-        model_name=args.tokenizer_type,
-        tokenizer_model=args.tokenizer_model,
-        vocab_file=args.vocab_file,
-        merges_file=args.merge_file,
-        delimiter=args.delimiter,
-    )
-
+    tokenizer = get_tokenizer(args)
     data_ds = MMapRetrievalIndexedDataset(args.input_data_prefix)
     retrieval_ds = MMapRetrievalIndexedDataset(args.input_retrieval_prefix)
     knn_index = KNNIndex(args.knn_index)
@@ -95,12 +107,17 @@ if __name__ == "__main__":
     logging.info(f'KNN index has {knn_index.K} neighbors')
     assert knn_index.knn_map.max() < retrieval_ds.chunks
     assert data_ds._index.chunk_size == retrieval_ds._index.chunk_size
+    print_num_neighbors = knn_index.K
+    if args.neighbors is not None:
+        assert args.neighbors <= knn_index.K
+        print_num_neighbors = args.neighbors
 
     for chunk_id in args.chunk_ids:
-        token_ids = data_ds.get_chunk(chunk_id)
+        token_ids = data_ds.get_chunk(chunk_id, force_no_cont_ids=True)
         assert token_ids.shape[0] == data_ds._index.chunk_size
         query_text = tokenizer.ids_to_text(token_ids)
         neighbor_chunk_ids = knn_index.get_KNN_chunk_ids(chunk_id)
+        neighbor_chunk_ids = neighbor_chunk_ids[:print_num_neighbors]
         print(f'Query: {query_text}')
         for i, neighbor in enumerate(neighbor_chunk_ids):
             token_ids = retrieval_ds.get_chunk(neighbor)

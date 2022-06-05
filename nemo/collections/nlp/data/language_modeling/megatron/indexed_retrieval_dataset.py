@@ -422,15 +422,15 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
         """
         return self._index.from_chunk_id_to_doc_id(chunk_id)
 
-    def get_chunk(self, chunk_id, force_no_padding=False):
+    def get_chunk(self, chunk_id, force_no_cont_ids=False):
         """ Retrieves a single chunk item from the dataset.
         It will get chunk_size tokens for training data
         or 2*chunk_size tokens for retrieval data.
-        If force_no_padding=True, it will always get chunk_size tokens
+        If force_no_cont_ids=True, it will always get chunk_size tokens
         """
         if isinstance(chunk_id, (int, np.int64, np.int32)):
             ptr = self._index.get_chunk_address(chunk_id)
-            if self._index.retrieval_db:
+            if self._index.retrieval_db and (not force_no_cont_ids):
                 size = self._index.chunk_size * 2
             else:
                 size = self._index.chunk_size
@@ -440,7 +440,7 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
             start, stop, step = chunk_id.indices(self.chunks)
             if step != 1:
                 raise ValueError("Slices into indexed_dataset must be contiguous")
-            if self._index.retrieval_db and (not force_no_padding):
+            if self._index.retrieval_db and (not force_no_cont_ids):
                 chunk_size = self._index.chunk_size * 2
             else:
                 chunk_size = self._index.chunk_size

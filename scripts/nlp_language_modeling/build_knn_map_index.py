@@ -118,7 +118,7 @@ def process_sentence_chunks(ds: MMapRetrievalIndexedDataset, tokenizer, chunk_si
         if start / total_chunks > threshold:
             logging.info(f"sentence processing {start / total_chunks} is done")
             threshold += 0.1
-        id_slices = ds.get_chunk(slice(start, min(start + chunk_size, total_chunks)), force_no_padding=True)
+        id_slices = ds.get_chunk(slice(start, min(start + chunk_size, total_chunks)), force_no_cont_ids=True)
         start = min(start + chunk_size, total_chunks)
         sentences = [tokenizer.ids_to_text(ids) for ids in id_slices]
         queue.put(sentences)

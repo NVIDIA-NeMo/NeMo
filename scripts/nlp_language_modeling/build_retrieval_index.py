@@ -79,7 +79,7 @@ def process_sentence_chunks(
         total_chunks = ds._index._chunk_id_start[min(use_num_docs, num_docs - 1)]
     logging.info(f"{total_chunks} chunks are used to build the index")
     assert warm_up_size < total_chunks
-    warm_up_slices = ds.get_chunk(slice(0, warm_up_size), force_no_padding=True)
+    warm_up_slices = ds.get_chunk(slice(0, warm_up_size), force_no_cont_ids=True)
     sentences = [tokenizer.ids_to_text(ids) for ids in warm_up_slices]
     queue.put(sentences)
 
@@ -89,7 +89,7 @@ def process_sentence_chunks(
         if start / total_chunks > threshold:
             logging.info(f"sentence processing {start / total_chunks} is done")
             threshold += 0.1
-        id_slices = ds.get_chunk(slice(start, min(start + chunk_size, total_chunks)), force_no_padding=True)
+        id_slices = ds.get_chunk(slice(start, min(start + chunk_size, total_chunks)), force_no_cont_ids=True)
         start = min(start + chunk_size, total_chunks)
         sentences = [tokenizer.ids_to_text(ids) for ids in id_slices]
         queue.put(sentences)

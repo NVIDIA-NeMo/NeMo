@@ -48,6 +48,10 @@ model:
     use_cache: true
     do_lower_case: true
     # if true does lower case
+    keep_doc_spans: all
+    # if all, keep all doc spans
+    # if only_positive, keep doc spans containing answer only
+    # if limited_negative, keep 10 doc spans closest to answer per question
 
     num_workers:  2
     pin_memory: false
@@ -126,6 +130,10 @@ exp_manager:
   name: *name # name of experiment
   create_tensorboard_logger: True
   create_checkpoint_callback: True
+  create_wandb_logger: True
+  wandb_logger_kwargs:
+    name: ???
+    project: QA
 
 hydra:
   run:

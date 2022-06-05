@@ -1,6 +1,6 @@
 # Copyright 2018 The Google AI Language Team Authors and
 # The HuggingFace Inc. team.
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,22 +16,25 @@
 
 
 import collections
-import json
 import os
 import pickle
+from functools import lru_cache
 from typing import Dict, List, Optional
 
 import numpy as np
+import psutil
 import torch
+from tqdm import trange
 
 from nemo.collections.common.parts.utils import _compute_softmax
+from nemo.collections.nlp.data.data_utils import is_whitespace
 from nemo.collections.nlp.data.question_answering_squad.qa_squad_processing import (
     EVALUATION_MODE,
     INFERENCE_MODE,
     TRAINING_MODE,
     SquadProcessor,
+    _improve_answer_span,
     apply_no_ans_threshold,
-    convert_examples_to_features,
     exact_match_score,
     f1_score,
     find_all_best_thresh,
@@ -44,7 +47,86 @@ from nemo.collections.nlp.data.question_answering_squad.qa_squad_processing impo
 from nemo.core.classes import Dataset
 from nemo.utils import logging
 
-__all__ = ['SquadDataset']
+__all__ = ['SquadDataset', 'InputFeatures', '_check_is_max_context']
+
+
+class InputFeatures(object):
+    """A single set of features of data."""
+
+    def __init__(
+        self,
+        unique_id: int,
+        input_ids: List[int],
+        input_mask: List[int],
+        segment_ids: List[int],
+        example_index: int = None,
+        doc_span_index: int = None,
+        tokens: List[str] = None,
+        token_to_orig_map: Dict[int, int] = None,
+        token_is_max_context: Dict[int, bool] = None,
+        start_position: Optional[int] = None,
+        end_position: Optional[int] = None,
+        is_impossible: Optional[int] = None,
+    ):
+        self.unique_id = unique_id
+        self.example_index = example_index
+        self.doc_span_index = doc_span_index
+        self.tokens = tokens
+        self.token_to_orig_map = token_to_orig_map
+        self.token_is_max_context = token_is_max_context
+        self.input_ids = input_ids
+        self.input_mask = input_mask
+        self.segment_ids = segment_ids
+        self.start_position = start_position
+        self.end_position = end_position
+        self.is_impossible = is_impossible
+
+
+def _check_is_max_context(doc_spans, cur_span_index, position):
+    """Check if this is the 'max context' doc span for the token.
+    Because of the sliding window approach taken to scoring documents,
+    a single token can appear in multiple documents.
+    Example:
+        Doc: the man went to the store and bought a gallon of milk
+        Span A: the man went to the
+        Span B: to the store and bought
+        Span C: and bought a gallon of
+        ...
+    Now the word 'bought' will have two scores from spans B and C. We only
+    want to consider the score with "maximum context", which we define as
+    the *minimum* of its left and right context (the *sum* of left and
+    right context will always be the same, of course).
+    In the example the maximum context for 'bought' would be span C since
+    it has 1 left context and 3 right context, while span B has 4 left context
+    and 0 right context.
+    Code adapted from the code by the Google AI and HuggingFace.
+    """
+    best_span_index = get_best_span_index(doc_spans, position)
+    return cur_span_index == best_span_index
+
+
+@lru_cache(maxsize=10000)
+def get_best_span_index(doc_spans, position):
+    """
+    For a particular position, identify which doc_span gives the most context around token
+
+    Helper function for _check_is_max_context; see _check_is_max_context for more details
+    """
+    best_score = None
+    best_span_index = None
+    for (span_index, doc_span) in enumerate(doc_spans):
+        end = doc_span.start + doc_span.length - 1
+        if position < doc_span.start:
+            continue
+        if position > end:
+            continue
+        num_left_context = position - doc_span.start
+        num_right_context = end - position
+        score = min(num_left_context, num_right_context) + 0.01 * doc_span.length
+        if best_score is None or score > best_score:
+            best_score = score
+            best_span_index = span_index
+    return best_span_index
 
 
 class SquadDataset(Dataset):
@@ -73,6 +155,7 @@ class SquadDataset(Dataset):
     def __init__(
         self,
         data_file: str,
+        keep_doc_spans: str,
         tokenizer: object,
         doc_stride: int,
         max_query_length: int,
@@ -86,6 +169,17 @@ class SquadDataset(Dataset):
         self.version_2_with_negative = version_2_with_negative
         self.processor = SquadProcessor(data_file=data_file, mode=mode)
         self.mode = mode
+        self.keep_doc_spans = keep_doc_spans
+
+        # hashing to reduce memory use
+        self.input_mask_id = 0
+        self.input_mask_id_to_input_mask = {}
+        self.input_mask_to_input_mask_id = {}
+
+        self.segment_mask_id = 0
+        self.segment_mask_id_to_segment_mask = {}
+        self.segment_mask_to_segment_mask_id = {}
+
         if mode not in [TRAINING_MODE, EVALUATION_MODE, INFERENCE_MODE]:
             raise ValueError(
                 f"mode should be either {TRAINING_MODE}, {EVALUATION_MODE}, {INFERENCE_MODE} but got {mode}"
@@ -117,12 +211,27 @@ class SquadDataset(Dataset):
 
         if use_cache and os.path.exists(cached_features_file):
             logging.info(f"loading from {cached_features_file}")
+            # delete self.examples during training mode to save memory
+            if self.mode == TRAINING_MODE:
+                del self.examples
+                del self.processor
+
             with open(cached_features_file, "rb") as reader:
-                self.features = pickle.load(reader)
+                items_to_pickle = pickle.load(reader)
+                (
+                    self.features,
+                    self.input_mask_id_to_input_mask,
+                    self.input_mask_to_input_mask_id,
+                    self.segment_mask_id_to_segment_mask,
+                    self.segment_mask_to_segment_mask_id,
+                ) = items_to_pickle
+                items_to_pickle = None
+                del items_to_pickle
+
         else:
             logging.info(f"Preprocessing data.")
 
-            self.features = convert_examples_to_features(
+            self.features = self.convert_examples_to_features(
                 examples=self.examples,
                 tokenizer=tokenizer,
                 max_seq_length=max_seq_length,
@@ -136,29 +245,414 @@ class SquadDataset(Dataset):
                 if master_device:
                     logging.info("  Saving train features into cached file %s", cached_features_file)
                     with open(cached_features_file, "wb") as writer:
-                        pickle.dump(self.features, writer)
+                        items_to_pickle = [
+                            self.features,
+                            self.input_mask_id_to_input_mask,
+                            self.input_mask_to_input_mask_id,
+                            self.segment_mask_id_to_segment_mask,
+                            self.segment_mask_to_segment_mask_id,
+                        ]
+                        pickle.dump(items_to_pickle, writer)
+
+            # delete self.examples during training mode to save memory
+            if self.mode == TRAINING_MODE:
+                self.examples = []
+                del self.processor
+
+        logging.info("Converting dict features into object features")
+        for i in trange(len(self.features)):
+            self.features[i] = InputFeatures(**self.features[i])
+
+    @staticmethod
+    def get_doc_tokens_and_offset_from_context_id(
+        context_id, start_position_character, is_impossible, answer_text, context_id_to_context_text
+    ):
+        start_position, end_position = 0, 0
+        context_text = context_id_to_context_text[context_id]
+        doc_tokens, char_to_word_offset = SquadDataset.split_into_words(context_text)
+
+        # Start end end positions only has a value during evaluation.
+        if start_position_character is not None and not is_impossible:
+            # start_position is index of word, end_position inclusive
+            start_position = char_to_word_offset[start_position_character]
+            end_position = char_to_word_offset[
+                min(start_position_character + len(answer_text) - 1, len(char_to_word_offset) - 1)
+            ]
+
+        return doc_tokens, char_to_word_offset, start_position, end_position, context_text
+
+    @staticmethod
+    def split_into_words(context_text):
+        """
+        Split on whitespace so that different tokens
+        may be attributed to their original position.
+        ex: context_text = "hi yo"
+            char_to_word_offset = [0, 0, 0, 1, 1]
+            doc_tokens = ["hi", "yo"]
+        """
+        doc_tokens = []
+        char_to_word_offset = []
+        prev_is_whitespace = True
+        for c in context_text:
+            if is_whitespace(c):
+                prev_is_whitespace = True
+            else:
+                if prev_is_whitespace:
+                    doc_tokens.append(c)
+                else:
+                    doc_tokens[-1] += c
+                prev_is_whitespace = False
+            char_to_word_offset.append(len(doc_tokens) - 1)
+        return doc_tokens, char_to_word_offset
 
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
+        """Some features are obtained from hashmap to reduce CPU memory use"""
         feature = self.features[idx]
         if self.mode == INFERENCE_MODE:
             return (
                 np.array(feature.input_ids),
-                np.array(feature.segment_ids),
-                np.array(feature.input_mask),
+                np.array(self.segment_mask_id_to_segment_mask[feature.segment_ids]),
+                np.array(self.input_mask_id_to_input_mask[feature.input_mask]),
                 np.array(feature.unique_id),
             )
         else:
             return (
                 np.array(feature.input_ids),
-                np.array(feature.segment_ids),
-                np.array(feature.input_mask),
+                np.array(self.segment_mask_id_to_segment_mask[feature.segment_ids]),
+                np.array(self.input_mask_id_to_input_mask[feature.input_mask]),
                 np.array(feature.unique_id),
                 np.array(feature.start_position),
                 np.array(feature.end_position),
             )
+
+    @staticmethod
+    def get_docspans(all_doc_tokens, max_tokens_for_doc, doc_stride):
+        """
+        Get docspans which are sliding window spans from a document
+
+        Args:
+            all_doc_tokens: list of all tokens in document
+            max_tokens_for_doc: maximum number of tokens in each doc span
+            doc_stride: stride size which sliding window moves with
+        
+        Returns:
+            doc_spans: all possible doc_spans from document
+        """
+        _DocSpan = collections.namedtuple("DocSpan", ["start", "length"])
+        doc_spans = []
+        start_offset = 0
+        while start_offset < len(all_doc_tokens):
+            length = len(all_doc_tokens) - start_offset
+            if length > max_tokens_for_doc:
+                length = max_tokens_for_doc
+            doc_spans.append(_DocSpan(start=start_offset, length=length))
+            if start_offset + length == len(all_doc_tokens):
+                break
+            start_offset += min(length, doc_stride)
+        return doc_spans
+
+    @staticmethod
+    def check_if_sufficient_memory():
+        """
+        Check if there is sufficient memory to prevent system from being unresponsive
+        Otherwise system can become unresponsive as memory is slowly filled up, possibly leading to system unable to kill process
+        Interrupts run if CPU memory use is more than 75%, to leave some capacity for model loading
+        """
+        percent_memory = psutil.virtual_memory().percent
+        if percent_memory > 75:
+            raise ValueError('Please use a device with more CPU ram or a smaller dataset')
+
+    @staticmethod
+    def get_average_dist_to_tok_start_and_end(doc_span, tok_start_position, tok_end_position):
+        """
+        Find distance between doc_span and answer_span to determine if doc_span is likely to be useful for the answer
+        Helper function to filter out doc_spans that may not be helpful
+
+        Args:
+            doc_span
+            tok_start_position: start position of answer in document
+            tok_end_position: end position of answer in document
+        
+        Returns:
+            average distance of doc_span to answer
+        """
+        center_answer = (tok_start_position + tok_end_position) // 2
+        dist_to_start = abs(doc_span.start - center_answer)
+        dist_to_end = abs(doc_span.start + doc_span.length - 1 - center_answer)
+        return (dist_to_start + dist_to_end) // 2
+
+    @staticmethod
+    def keep_relevant_docspans(doc_spans, tok_start_position, tok_end_position, mode):
+        """
+        Filters out doc_spans, which might not be relevant to answering question, 
+        which can be helpful when document is extremely long leading to many doc_spans with no answers
+
+        Args:
+            doc_spans: all possible doc_spans
+            tok_start_position: start position of answer in document
+            tok_end_position: end position of answer in document
+            mode:
+                all: do not filter
+                only_positive: only keep doc_spans containing the answer
+                limited_negative: only keep 10 doc_spans that are nearest to answer
+        
+        Returns:
+            doc_spans: doc_spans after filtering
+        """
+        if mode == 'all':
+            return doc_spans
+        elif mode == 'only_positive':
+            if tok_start_position in [-1, None] or tok_end_position in [-1, None]:
+                return []
+            else:
+                return [
+                    doc_span
+                    for doc_span in doc_spans
+                    if tok_start_position >= doc_span.start
+                    and tok_end_position <= doc_span.start + doc_span.length - 1
+                ]
+        elif mode == 'limited_negative':
+            n_candidates = 10
+            if tok_start_position in [-1, None] or tok_end_position in [-1, None]:
+                pass
+            else:
+                doc_spans.sort(
+                    key=lambda doc_span: SquadDataset.get_average_dist_to_tok_start_and_end(
+                        doc_span, tok_start_position, tok_end_position
+                    )
+                )
+            return doc_spans[:n_candidates]
+        else:
+            raise ValueError('mode can only be in {all, only_positive and limited_negative')
+
+    def convert_examples_to_features(
+        self,
+        examples: List[object],
+        tokenizer: object,
+        max_seq_length: int,
+        doc_stride: int,
+        max_query_length: int,
+        has_groundtruth: bool,
+    ):
+        """Loads a data file into a list of `InputBatch`s."""
+
+        unique_id = 1000000000
+        features = []
+        text_to_tokens_dict = {}
+
+        for example_index in trange(len(examples)):
+
+            if example_index % 1000 == 0:
+                SquadDataset.check_if_sufficient_memory()
+
+            example = examples[example_index]
+            if example.question_text not in text_to_tokens_dict:
+                text_to_tokens_dict[example.question_text] = tokenizer.text_to_tokens(example.question_text)[
+                    :max_query_length
+                ]
+            query_tokens = text_to_tokens_dict[example.question_text]
+
+            # context: index of token -> index of word
+            tok_to_orig_index = []
+            # context: index of word -> index of first token in token list
+            orig_to_tok_index = []
+            # context without white spaces after tokenization
+            all_doc_tokens = []
+            # doc tokens is word separated context
+            (
+                doc_tokens,
+                char_to_word_offset,
+                start_position,
+                end_position,
+                context_text,
+            ) = SquadDataset.get_doc_tokens_and_offset_from_context_id(
+                example.context_id,
+                example.start_position_character,
+                example.is_impossible,
+                example.answer_text,
+                self.processor.doc_id_to_context_text,
+            )
+
+            example.start_position = start_position
+            example.end_position = end_position
+            if self.mode != TRAINING_MODE:
+                example.doc_tokens = doc_tokens
+            # the text to tokens step is the slowest step
+            for (i, token) in enumerate(doc_tokens):
+                orig_to_tok_index.append(len(all_doc_tokens))
+                if token not in text_to_tokens_dict:
+                    text_to_tokens_dict[token] = tokenizer.text_to_tokens(token)
+                sub_tokens = text_to_tokens_dict[token]
+
+                for sub_token in sub_tokens:
+                    tok_to_orig_index.append(i)
+                    all_doc_tokens.append(sub_token)
+
+            # idx of query token start and end in context
+            tok_start_position = None
+            tok_end_position = None
+            if has_groundtruth and example.is_impossible:
+                tok_start_position = -1
+                tok_end_position = -1
+            if has_groundtruth and not example.is_impossible:
+                tok_start_position = orig_to_tok_index[example.start_position]
+                if example.end_position < len(doc_tokens) - 1:
+                    tok_end_position = orig_to_tok_index[example.end_position + 1] - 1
+                else:
+                    tok_end_position = len(all_doc_tokens) - 1
+
+                (tok_start_position, tok_end_position) = _improve_answer_span(
+                    all_doc_tokens, tok_start_position, tok_end_position, tokenizer, example.answer_text
+                )
+
+            # The -3 accounts for tokenizer.cls_token, tokenizer.sep_token and tokenizer.sep_token
+            # doc_spans contains all possible contexts options of given length
+            max_tokens_for_doc = max_seq_length - len(query_tokens) - 3
+
+            doc_spans = SquadDataset.get_docspans(all_doc_tokens, max_tokens_for_doc, doc_stride)
+
+            doc_spans = SquadDataset.keep_relevant_docspans(
+                doc_spans, tok_start_position, tok_end_position, self.keep_doc_spans
+            )
+
+            # make compatible for hashing
+            doc_spans = tuple(doc_spans)
+
+            for (doc_span_index, doc_span) in enumerate(doc_spans):
+
+                tokens = [tokenizer.cls_token] + query_tokens + [tokenizer.sep_token]
+                segment_ids = [0 for i in range(len(tokens))]
+
+                token_is_max_context = {}
+                # maps context tokens idx in final input -> word idx in context
+                token_to_orig_map = {}
+
+                for i in range(doc_span.length):
+                    split_token_index = doc_span.start + i
+                    token_to_orig_map[len(tokens)] = tok_to_orig_index[split_token_index]
+                    is_max_context = _check_is_max_context(doc_spans, doc_span_index, split_token_index)
+                    token_is_max_context[len(tokens)] = is_max_context
+                    tokens.append(all_doc_tokens[split_token_index])
+                    segment_ids.append(1)
+                tokens.append(tokenizer.sep_token)
+                segment_ids.append(1)
+
+                input_ids = tokenizer.tokens_to_ids(tokens)
+
+                # The mask has 1 for real tokens and 0 for padding tokens.
+                # Only real tokens are attended to.
+                input_mask = [1] * len(input_ids)
+
+                # Zero-pad up to the sequence length.
+                while len(input_ids) < max_seq_length:
+                    input_ids.append(tokenizer.pad_id)
+                    input_mask.append(0)
+                    segment_ids.append(0)
+
+                assert len(input_ids) == max_seq_length
+                assert len(input_mask) == max_seq_length
+                assert len(segment_ids) == max_seq_length
+
+                # calculate start and end position in final array
+                # of tokens in answer if no answer,
+                # 0 for both pointing to tokenizer.cls_token
+                start_position = 0
+                end_position = 0
+                if has_groundtruth and not example.is_impossible:
+                    doc_start = doc_span.start
+                    doc_end = doc_span.start + doc_span.length - 1
+                    out_of_span = False
+                    if not (tok_start_position >= doc_start and tok_end_position <= doc_end):
+                        out_of_span = True
+                    if out_of_span:
+                        start_position = 0
+                        end_position = 0
+                    else:
+                        doc_offset = len(query_tokens) + 2
+                        start_position = tok_start_position - doc_start + doc_offset
+                        end_position = tok_end_position - doc_start + doc_offset
+                if has_groundtruth and example.is_impossible:
+                    # if our document chunk does not contain
+                    # an annotation we throw it out, since there is nothing
+                    # to predict.
+                    start_position = 0
+                    end_position = 0
+
+                if example_index < 1:
+                    logging.info("*** Example ***")
+                    logging.info("unique_id: %s" % (unique_id))
+                    logging.info("example_index: %s" % (example_index))
+                    logging.info("doc_span_index: %s" % (doc_span_index))
+                    logging.info("tokens: %s" % " ".join(tokens))
+                    logging.info(
+                        "token_to_orig_map: %s" % " ".join(["%d:%d" % (x, y) for (x, y) in token_to_orig_map.items()])
+                    )
+                    logging.info(
+                        "token_is_max_context: %s"
+                        % " ".join(["%d:%s" % (x, y) for (x, y) in token_is_max_context.items()])
+                    )
+                    logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+                    logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+                    logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+                    if has_groundtruth and example.is_impossible:
+                        logging.info("impossible example")
+                    if has_groundtruth and not example.is_impossible:
+                        answer_text = " ".join(tokens[start_position : (end_position + 1)])
+                        logging.info("start_position: %d" % (start_position))
+                        logging.info("end_position: %d" % (end_position))
+                        logging.info("answer: %s" % (answer_text))
+
+                # memoization to save CPU memory for large datasets
+                input_mask = tuple(input_mask)
+                if input_mask in self.input_mask_to_input_mask_id:
+                    feature_input_mask_id = self.input_mask_to_input_mask_id[input_mask]
+                else:
+                    self.input_mask_id_to_input_mask[self.input_mask_id] = input_mask
+                    self.input_mask_to_input_mask_id[input_mask] = self.input_mask_id
+                    feature_input_mask_id = self.input_mask_id
+                    self.input_mask_id += 1
+
+                segment_mask = tuple(segment_ids)
+                if segment_mask in self.segment_mask_to_segment_mask_id:
+                    feature_segment_mask_id = self.segment_mask_to_segment_mask_id[segment_mask]
+                else:
+                    self.segment_mask_id_to_segment_mask[self.segment_mask_id] = segment_mask
+                    self.segment_mask_to_segment_mask_id[segment_mask] = self.segment_mask_id
+                    feature_segment_mask_id = self.segment_mask_id
+                    self.segment_mask_id += 1
+                # end memoization
+
+                if self.mode == TRAINING_MODE:
+                    input_feature = {
+                        "unique_id": unique_id,
+                        "input_ids": input_ids,
+                        "input_mask": feature_input_mask_id,
+                        "segment_ids": feature_segment_mask_id,
+                        "start_position": start_position,
+                        "end_position": end_position,
+                    }
+                else:
+                    input_feature = {
+                        "unique_id": unique_id,
+                        "input_ids": input_ids,
+                        "input_mask": feature_input_mask_id,
+                        "segment_ids": feature_segment_mask_id,
+                        "start_position": start_position,
+                        "end_position": end_position,
+                        "example_index": example_index,
+                        "doc_span_index": doc_span_index,
+                        "tokens": tokens,
+                        "token_to_orig_map": token_to_orig_map,
+                        "token_is_max_context": token_is_max_context,
+                        "is_impossible": example.is_impossible,
+                    }
+
+                features.append(input_feature)
+                unique_id += 1
+        return features
 
     def get_predictions(
         self,
@@ -195,6 +689,13 @@ class SquadDataset(Dataset):
 
             features = example_index_to_features[example_index]
 
+            doc_tokens, _, _, _, _ = SquadDataset.get_doc_tokens_and_offset_from_context_id(
+                example.context_id,
+                example.start_position_character,
+                example.is_impossible,
+                example.answer_text,
+                self.processor.doc_id_to_context_text,
+            )
             prelim_predictions = []
             # keep track of the minimum score of null start+end of position 0
             # large and positive
@@ -272,7 +773,7 @@ class SquadDataset(Dataset):
                     tok_tokens = feature.tokens[pred.start_index : (pred.end_index + 1)]
                     orig_doc_start = feature.token_to_orig_map[pred.start_index]
                     orig_doc_end = feature.token_to_orig_map[pred.end_index]
-                    orig_tokens = example.doc_tokens[orig_doc_start : (orig_doc_end + 1)]
+                    orig_tokens = doc_tokens[orig_doc_start : (orig_doc_end + 1)]
                     tok_text = " ".join(tok_tokens)
 
                     # De-tokenize WordPieces that have been split off.
@@ -330,9 +831,15 @@ class SquadDataset(Dataset):
                 output["text"] = entry.text
                 output["probability"] = probs[i]
                 output["start_logit"] = (
-                    entry.start_logit if isinstance(entry.start_logit, float) else list(entry.start_logit)
+                    entry.start_logit
+                    if (isinstance(entry.start_logit, float) or isinstance(entry.start_logit, int))
+                    else list(entry.start_logit)
                 )
-                output["end_logit"] = entry.end_logit if isinstance(entry.end_logit, float) else list(entry.end_logit)
+                output["end_logit"] = (
+                    entry.end_logit
+                    if (isinstance(entry.end_logit, float) or isinstance(entry.end_logit, int))
+                    else list(entry.end_logit)
+                )
                 nbest_json.append(output)
 
             assert len(nbest_json) >= 1

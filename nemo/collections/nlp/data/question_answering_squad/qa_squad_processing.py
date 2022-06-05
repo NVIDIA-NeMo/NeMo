@@ -1,6 +1,6 @@
 # Copyright 2018 The Google AI Language Team Authors and
 # The HuggingFace Inc. team.
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,16 +15,15 @@
 # limitations under the License.
 
 import collections
-import json
-from typing import Dict, List, Optional
+from typing import List
 
-from tqdm import tqdm
+import ijson
+import numpy as np
 from transformers.models.bert.tokenization_bert import BasicTokenizer
 
 from nemo.collections.nlp.data.data_utils import (
     DataProcessor,
     check_chinese_char,
-    is_whitespace,
     normalize_answer,
     normalize_chinese_answer,
 )
@@ -39,13 +38,6 @@ https://github.com/huggingface/transformers
 TRAINING_MODE = "train"
 EVALUATION_MODE = "eval"
 INFERENCE_MODE = "infer"
-
-
-def _get_tokens(s):
-    """get normalized tokens"""
-    if not s:
-        return []
-    return normalize_answer(s).split()
 
 
 def _get_tokens(s):
@@ -85,14 +77,8 @@ def _get_tokens(s):
 
 def get_best_indexes(logits, n_best_size):
     """Get the n-best logits from a list."""
-    index_and_score = sorted(enumerate(logits), key=lambda x: x[1], reverse=True)
-
-    best_indexes = []
-    for i in range(len(index_and_score)):
-        if i >= n_best_size:
-            break
-        best_indexes.append(index_and_score[i][0])
-    return best_indexes
+    best_indices = np.argsort(logits)[::-1]
+    return best_indices[:n_best_size]
 
 
 def get_final_text(pred_text: str, orig_text: str, do_lower_case: bool, verbose_logging: bool = False):
@@ -248,7 +234,7 @@ def make_eval_dict(exact_scores, f1_scores, qid_list=None):
 
 
 def merge_eval(main_eval, new_eval, prefix):
-    """merges 2 evaluation dictionaries into the first one by adding prefix as key for name collision handling"""
+    """Merges 2 evaluation dictionaries into the first one by adding prefix as key for name collision handling"""
     for k in new_eval:
         main_eval["%s_%s" % (prefix, k)] = new_eval[k]
 
@@ -292,6 +278,21 @@ def _find_best_thresh(preds, scores, na_probs, qid_to_has_ans):
     return 100.0 * best_score / len(scores), best_thresh
 
 
+def _improve_answer_span(
+    doc_tokens: List[str], input_start: int, input_end: int, tokenizer: object, orig_answer_text: str
+):
+    """Returns tokenized answer spans that better match the annotated answer."""
+    tok_answer_text = " ".join(tokenizer.text_to_tokens(orig_answer_text))
+
+    for new_start in range(input_start, input_end + 1):
+        for new_end in range(input_end, new_start - 1, -1):
+            text_span = " ".join(doc_tokens[new_start : (new_end + 1)])
+            if text_span == tok_answer_text:
+                return (new_start, new_end)
+
+    return (input_start, input_end)
+
+
 class SquadProcessor(DataProcessor):
     """
     Processor for the SQuAD data set.
@@ -305,52 +306,73 @@ class SquadProcessor(DataProcessor):
     def __init__(self, data_file: str, mode: str):
         self.data_file = data_file
         self.mode = mode
+        # Memoizes documents to reduce memory use (as the same document is often used for many questions)
+        self.doc_id = 0
+        self.context_text_to_doc_id = {}
+        self.doc_id_to_context_text = {}
 
     def get_examples(self):
+        """
+        Get examples from raw json file
+        """
         if self.data_file is None:
             raise ValueError(f"{self.mode} data file is None.")
 
-        with open(self.data_file, "r", encoding="utf-8") as reader:
-            input_data = json.load(reader)["data"]
-        return self._create_examples(input_data, set_type=self.mode)
+        # remove this line and the replace cache line below - which is a temp fix
+        with open(self.data_file.replace('_cache', ''), "r", encoding="utf-8") as reader:
+            input_data = ijson.items(reader, "data.item")
 
-    def _create_examples(self, input_data, set_type):
-        examples = []
-        for entry in tqdm(input_data):
-            title = entry["title"]
-            for paragraph in entry["paragraphs"]:
-                context_text = paragraph["context"]
-                for qa in paragraph["qas"]:
-                    qas_id = qa["id"]
-                    question_text = qa["question"]
-                    start_position_character = None
-                    answer_text = None
-                    answers = []
-                    if "is_impossible" in qa:
-                        is_impossible = qa["is_impossible"]
-                    else:
-                        is_impossible = False
+            examples = []
+            for entry in input_data:
+                len_docs = []
+                title = entry["title"]
+                for paragraph in entry["paragraphs"]:
+                    context_text = paragraph["context"]
+                    for qa in paragraph["qas"]:
+                        qas_id = qa["id"]
+                        question_text = qa["question"]
+                        if not question_text:
+                            continue
+                        start_position_character = None
+                        answer_text = None
+                        answers = []
+                        if "is_impossible" in qa:
+                            is_impossible = qa["is_impossible"] or len(qa["answers"]) < 1
+                        else:
+                            is_impossible = False
 
-                    if not is_impossible:
-                        if set_type in [TRAINING_MODE, EVALUATION_MODE]:
-                            answer = qa["answers"][0]
-                            answer_text = answer["text"]
-                            start_position_character = answer["answer_start"]
-                        if set_type == EVALUATION_MODE:
-                            answers = qa["answers"]
+                        if not is_impossible:
+                            if self.mode in [TRAINING_MODE, EVALUATION_MODE]:
+                                answer = qa["answers"][0]
+                                answer_text = answer["text"]
+                                start_position_character = answer["answer_start"]
+                            if self.mode == EVALUATION_MODE:
+                                answers = qa["answers"]
+                        if context_text in self.context_text_to_doc_id:
+                            doc_id = self.context_text_to_doc_id[context_text]
+                        else:
+                            doc_id = self.doc_id
+                            self.context_text_to_doc_id[context_text] = doc_id
+                            self.doc_id_to_context_text[doc_id] = context_text
+                            self.doc_id += 1
+                            len_docs.append(len(context_text))
 
-                    example = SquadExample(
-                        qas_id=qas_id,
-                        question_text=question_text,
-                        context_text=context_text,
-                        answer_text=answer_text,
-                        start_position_character=start_position_character,
-                        title=title,
-                        is_impossible=is_impossible,
-                        answers=answers,
-                    )
+                        example = SquadExample(
+                            qas_id=qas_id,
+                            question_text=question_text,
+                            context_text=context_text,
+                            context_id=doc_id,
+                            answer_text=answer_text,
+                            start_position_character=start_position_character,
+                            title=title,
+                            is_impossible=is_impossible,
+                            answers=answers,
+                        )
 
-                    examples.append(example)
+                        examples.append(example)
+
+                logging.info('mean no. of chars in doc: {}'.format(np.mean(len_docs)))
+                logging.info('max no. of chars in doc: {}'.format(np.max(len_docs)))
         return examples
 
 
@@ -361,6 +383,7 @@ class SquadExample(object):
         qas_id: The example's unique identifier
         question_text: The question string
         context_text: The context string
+        context_id: id representing context string
         answer_text: The answer string
         start_position_character: The character position of the start of
             the answer, 0 indexed
@@ -376,6 +399,7 @@ class SquadExample(object):
         qas_id: str,
         question_text: str,
         context_text: str,
+        context_id: int,
         answer_text: str,
         start_position_character: int,
         title: str,
@@ -384,302 +408,9 @@ class SquadExample(object):
     ):
         self.qas_id = qas_id
         self.question_text = question_text
-        self.context_text = context_text
+        self.context_id = context_id
         self.answer_text = answer_text
         self.title = title
         self.is_impossible = is_impossible
         self.answers = answers
-
-        self.start_position, self.end_position = 0, 0
-
-        doc_tokens = []
-        char_to_word_offset = []
-        prev_is_whitespace = True
-
-        # Split on whitespace so that different tokens
-        # may be attributed to their original position.
-        # ex: context_text = ["hi yo"]
-        #     char_to_word_offset = [0, 0, 0, 1, 1]
-        #     doc_tokens = ["hi", "yo"]
-        for c in self.context_text:
-            if is_whitespace(c):
-                prev_is_whitespace = True
-            else:
-                if prev_is_whitespace:
-                    doc_tokens.append(c)
-                else:
-                    doc_tokens[-1] += c
-                prev_is_whitespace = False
-            char_to_word_offset.append(len(doc_tokens) - 1)
-
-        self.doc_tokens = doc_tokens
-        self.char_to_word_offset = char_to_word_offset
-
-        # Start end end positions only has a value during evaluation.
-        if start_position_character is not None and not is_impossible:
-            # start_position is index of word, end_position inclusive
-            self.start_position = char_to_word_offset[start_position_character]
-            self.end_position = char_to_word_offset[
-                min(start_position_character + len(answer_text) - 1, len(char_to_word_offset) - 1)
-            ]
-
-
-def convert_examples_to_features(
-    examples: List[object],
-    tokenizer: object,
-    max_seq_length: int,
-    doc_stride: int,
-    max_query_length: int,
-    has_groundtruth: bool,
-):
-    """Loads a data file into a list of `InputBatch`s."""
-
-    unique_id = 1000000000
-
-    features = []
-    for (example_index, example) in enumerate(examples):
-        query_tokens = tokenizer.text_to_tokens(example.question_text)
-
-        if len(query_tokens) > max_query_length:
-            query_tokens = query_tokens[0:max_query_length]
-
-        # context: index of token -> index of word
-        tok_to_orig_index = []
-        # context: index of word -> index of first token in token list
-        orig_to_tok_index = []
-        # context without white spaces after tokenization
-        all_doc_tokens = []
-        # doc tokens is word separated context
-        for (i, token) in enumerate(example.doc_tokens):
-            orig_to_tok_index.append(len(all_doc_tokens))
-            sub_tokens = tokenizer.text_to_tokens(token)
-            for sub_token in sub_tokens:
-                tok_to_orig_index.append(i)
-                all_doc_tokens.append(sub_token)
-
-        # idx of query token start and end in context
-        tok_start_position = None
-        tok_end_position = None
-        if has_groundtruth and example.is_impossible:
-            tok_start_position = -1
-            tok_end_position = -1
-        if has_groundtruth and not example.is_impossible:
-            tok_start_position = orig_to_tok_index[example.start_position]
-            if example.end_position < len(example.doc_tokens) - 1:
-                tok_end_position = orig_to_tok_index[example.end_position + 1] - 1
-            else:
-                tok_end_position = len(all_doc_tokens) - 1
-
-            (tok_start_position, tok_end_position) = _improve_answer_span(
-                all_doc_tokens, tok_start_position, tok_end_position, tokenizer, example.answer_text
-            )
-        # The -3 accounts for tokenizer.cls_token, tokenizer.sep_token and tokenizer.sep_token
-        # doc_spans contains all possible contexts options of given length
-        max_tokens_for_doc = max_seq_length - len(query_tokens) - 3
-        _DocSpan = collections.namedtuple("DocSpan", ["start", "length"])
-        doc_spans = []
-        start_offset = 0
-        while start_offset < len(all_doc_tokens):
-            length = len(all_doc_tokens) - start_offset
-            if length > max_tokens_for_doc:
-                length = max_tokens_for_doc
-            doc_spans.append(_DocSpan(start=start_offset, length=length))
-            if start_offset + length == len(all_doc_tokens):
-                break
-            start_offset += min(length, doc_stride)
-
-        for (doc_span_index, doc_span) in enumerate(doc_spans):
-            tokens = []
-            # maps context tokens idx in final input -> word idx in context
-            token_to_orig_map = {}
-            token_is_max_context = {}
-            segment_ids = []
-            tokens.append(tokenizer.cls_token)
-            segment_ids.append(0)
-            for token in query_tokens:
-                tokens.append(token)
-                segment_ids.append(0)
-            tokens.append(tokenizer.sep_token)
-            segment_ids.append(0)
-
-            for i in range(doc_span.length):
-                split_token_index = doc_span.start + i
-                token_to_orig_map[len(tokens)] = tok_to_orig_index[split_token_index]
-
-                is_max_context = _check_is_max_context(doc_spans, doc_span_index, split_token_index)
-                token_is_max_context[len(tokens)] = is_max_context
-                tokens.append(all_doc_tokens[split_token_index])
-                segment_ids.append(1)
-            tokens.append(tokenizer.sep_token)
-            segment_ids.append(1)
-
-            input_ids = tokenizer.tokens_to_ids(tokens)
-
-            # The mask has 1 for real tokens and 0 for padding tokens.
-            # Only real tokens are attended to.
-            input_mask = [1] * len(input_ids)
-
-            # Zero-pad up to the sequence length.
-            while len(input_ids) < max_seq_length:
-                input_ids.append(tokenizer.pad_id)
-                input_mask.append(0)
-                segment_ids.append(0)
-
-            assert len(input_ids) == max_seq_length
-            assert len(input_mask) == max_seq_length
-            assert len(segment_ids) == max_seq_length
-
-            # calculate start and end position in final array
-            # of tokens in answer if no answer,
-            # 0 for both pointing to tokenizer.cls_token
-            start_position = None
-            end_position = None
-            if has_groundtruth and not example.is_impossible:
-                doc_start = doc_span.start
-                doc_end = doc_span.start + doc_span.length - 1
-                out_of_span = False
-                if not (tok_start_position >= doc_start and tok_end_position <= doc_end):
-                    out_of_span = True
-                if out_of_span:
-                    start_position = 0
-                    end_position = 0
-                else:
-                    doc_offset = len(query_tokens) + 2
-                    start_position = tok_start_position - doc_start + doc_offset
-                    end_position = tok_end_position - doc_start + doc_offset
-            if has_groundtruth and example.is_impossible:
-                # if our document chunk does not contain
-                # an annotation we throw it out, since there is nothing
-                # to predict.
-                start_position = 0
-                end_position = 0
-
-            if example_index < 1:
-                logging.info("*** Example ***")
-                logging.info("unique_id: %s" % (unique_id))
-                logging.info("example_index: %s" % (example_index))
-                logging.info("doc_span_index: %s" % (doc_span_index))
-                logging.info("tokens: %s" % " ".join(tokens))
-                logging.info(
-                    "token_to_orig_map: %s" % " ".join(["%d:%d" % (x, y) for (x, y) in token_to_orig_map.items()])
-                )
-                logging.info(
-                    "token_is_max_context: %s"
-                    % " ".join(["%d:%s" % (x, y) for (x, y) in token_is_max_context.items()])
-                )
-                logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-                logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-                logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-                if has_groundtruth and example.is_impossible:
-                    logging.info("impossible example")
-                if has_groundtruth and not example.is_impossible:
-                    answer_text = " ".join(tokens[start_position : (end_position + 1)])
-                    logging.info("start_position: %d" % (start_position))
-                    logging.info("end_position: %d" % (end_position))
-                    logging.info("answer: %s" % (answer_text))
-            if example_index % 100 == 0:
-                logging.info(f"Finished processing: {example_index}")
-            features.append(
-                InputFeatures(
-                    unique_id=unique_id,
-                    example_index=example_index,
-                    doc_span_index=doc_span_index,
-                    tokens=tokens,
-                    token_to_orig_map=token_to_orig_map,
-                    token_is_max_context=token_is_max_context,
-                    input_ids=input_ids,
-                    input_mask=input_mask,
-                    segment_ids=segment_ids,
-                    start_position=start_position,
-                    end_position=end_position,
-                    is_impossible=example.is_impossible,
-                )
-            )
-            unique_id += 1
-
-    return features
-
-
-def _improve_answer_span(
-    doc_tokens: List[str], input_start: int, input_end: int, tokenizer: object, orig_answer_text: str
-):
-    """Returns tokenized answer spans that
-    better match the annotated answer."""
-    tok_answer_text = " ".join(tokenizer.text_to_tokens(orig_answer_text))
-
-    for new_start in range(input_start, input_end + 1):
-        for new_end in range(input_end, new_start - 1, -1):
-            text_span = " ".join(doc_tokens[new_start : (new_end + 1)])
-            if text_span == tok_answer_text:
-                return (new_start, new_end)
-
-    return (input_start, input_end)
-
-
-def _check_is_max_context(doc_spans, cur_span_index, position):
-    """Check if this is the 'max context' doc span for the token.
-    Because of the sliding window approach taken to scoring documents,
-    a single token can appear in multiple documents.
-    Example:
-        Doc: the man went to the store and bought a gallon of milk
-        Span A: the man went to the
-        Span B: to the store and bought
-        Span C: and bought a gallon of
-        ...
-    Now the word 'bought' will have two scores from spans B and C. We only
-    want to consider the score with "maximum context", which we define as
-    the *minimum* of its left and right context (the *sum* of left and
-    right context will always be the same, of course).
-    In the example the maximum context for 'bought' would be span C since
-    it has 1 left context and 3 right context, while span B has 4 left context
-    and 0 right context.
-    Code adapted from the code by the Google AI and HuggingFace.
-    """
-    best_score = None
-    best_span_index = None
-    for (span_index, doc_span) in enumerate(doc_spans):
-        end = doc_span.start + doc_span.length - 1
-        if position < doc_span.start:
-            continue
-        if position > end:
-            continue
-        num_left_context = position - doc_span.start
-        num_right_context = end - position
-        score = min(num_left_context, num_right_context) + 0.01 * doc_span.length
-        if best_score is None or score > best_score:
-            best_score = score
-            best_span_index = span_index
-
-    return cur_span_index == best_span_index
-
-
-class InputFeatures(object):
-    """A single set of features of data."""
-
-    def __init__(
-        self,
-        unique_id: int,
-        example_index: int,
-        doc_span_index: int,
-        tokens: List[str],
-        token_to_orig_map: Dict[int, int],
-        token_is_max_context: Dict[int, bool],
-        input_ids: List[int],
-        input_mask: List[int],
-        segment_ids: List[int],
-        start_position: Optional[int] = None,
-        end_position: Optional[int] = None,
-        is_impossible: Optional[int] = None,
-    ):
-        self.unique_id = unique_id
-        self.example_index = example_index
-        self.doc_span_index = doc_span_index
-        self.tokens = tokens
-        self.token_to_orig_map = token_to_orig_map
-        self.token_is_max_context = token_is_max_context
-        self.input_ids = input_ids
-        self.input_mask = input_mask
-        self.segment_ids = segment_ids
-        self.start_position = start_position
-        self.end_position = end_position
-        self.is_impossible = is_impossible
+        self.start_position_character = start_position_character

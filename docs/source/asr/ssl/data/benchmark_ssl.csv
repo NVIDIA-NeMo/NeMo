@@ -1,0 +1,3 @@
+Model Name,Model Base Class,Model Card
+ssl_en_conformer_large,SpeechEncDecSelfSupervisedModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:ssl_en_conformer_large"
+ssl_en_conformer_xlarge,SpeechEncDecSelfSupervisedModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:ssl_en_conformer_xlarge"

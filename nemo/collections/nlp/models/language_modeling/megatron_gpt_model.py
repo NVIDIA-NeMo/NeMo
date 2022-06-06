@@ -640,6 +640,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 fp32_grad_accum=fp32_grad_accum,
                 contiguous_grad_bucket=contiguous_grad_bucket,
                 async_grad_allreduce=async_grad_allreduce,
+                grad_div_ar_fusion=self.cfg.get('grad_div_ar_fusion', True),
                 grad_allreduce_chunk_size_mb=self.cfg.get('grad_allreduce_chunk_size_mb', 125),
             )
 

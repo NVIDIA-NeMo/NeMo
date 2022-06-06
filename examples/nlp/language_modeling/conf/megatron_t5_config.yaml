@@ -73,6 +73,7 @@ model:
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   bias_gelu_fusion: True # Use a kernel that fuses the bias addition from weight matrices with the subsequent gelu activation.
   bias_activation_fusion: True # Use a kernel that fuses the bias addition from weight matrices with the subsequent activation function.
+  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce
   masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
   bias_dropout_add_fusion: True # Use a kernel that fuses the bias addition, dropout and residual connection addition.
   bias: True # Whether to use bias terms in all weight matrices.

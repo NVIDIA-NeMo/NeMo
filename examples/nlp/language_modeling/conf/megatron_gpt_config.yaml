@@ -65,6 +65,8 @@ model:
   post_process: True # add pooler
   persist_layer_norm: True # Use of persistent fused layer norm kernel.
 
+  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce
+
   tokenizer:
     library: 'megatron'
     type: 'GPT2BPETokenizer'

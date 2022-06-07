@@ -201,6 +201,7 @@ class GermanCharsTokenizer(BaseCharsTokenizer):
         pad_with_space=False,
         non_default_punct_list=None,
         text_preprocessing_func=german_text_preprocessing,
+        phonemes=True,
     ):
         """Deutsch char-based tokenizer.
         Args:
@@ -215,6 +216,9 @@ class GermanCharsTokenizer(BaseCharsTokenizer):
         """
 
         de_alphabet = "abcdefghijklmnopqrstuvwxyzäöüß"
+        if phonemes:
+            de_ipa = "ʊʃŋɜːɛɾəɪçɔøɡœɑÜ„1Q̃ɒʒÄɹÖʌθàó̈ðéɐá"
+            de_alphabet += de_ipa
         super().__init__(
             chars=de_alphabet,
             punct=punct,

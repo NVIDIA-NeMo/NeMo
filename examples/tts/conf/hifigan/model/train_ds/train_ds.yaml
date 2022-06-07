@@ -10,3 +10,4 @@ dataloader_params:
   shuffle: true
   batch_size: 16
   num_workers: 4
+  pin_memory: true

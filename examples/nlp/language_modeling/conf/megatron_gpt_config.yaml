@@ -17,6 +17,7 @@ trainer:
   limit_test_batches: 500
   accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
   gradient_clip_val: 1.0
+  benchmark: False
 
 exp_manager:
   explicit_log_dir: null

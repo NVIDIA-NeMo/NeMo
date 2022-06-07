@@ -20,5 +20,5 @@ LATEST_RELEASE=$(git -c 'versionsort.suffix=-' \
     | tail --lines=1 \
     | cut --delimiter='/' --fields=3)
 
-K2_MAKE_ARGS="-j" pip install git+${K2_REPO}@${LATEST_RELEASE}#egg=k2 || (echo "k2 could not be installed!"; exit 1)
+K2_MAKE_ARGS="-j" pip install -v git+${K2_REPO}@${LATEST_RELEASE}#egg=k2 || (echo "k2 could not be installed!"; exit 1)
 python3 -m k2.version > /dev/null || (echo "k2 installed with errors! Please check installation manually."; exit 1) && echo "k2 installed successfully!"

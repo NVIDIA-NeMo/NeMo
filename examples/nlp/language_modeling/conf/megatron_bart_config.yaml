@@ -17,6 +17,7 @@ trainer:
   limit_test_batches: 500
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
+  benchmark: False
 
 exp_manager:
   explicit_log_dir: null

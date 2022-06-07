@@ -51,6 +51,7 @@ def get_intents(infold):
     intents = [f[:-4] for f in os.listdir(infold)]
     intents.sort()
     logging.info(f'Found {len(intents)} intents')
+
     return intents
 
 
@@ -70,7 +71,7 @@ def get_intent_queries(infold, intent_names, mode):
 
 def get_slots(infold, modes):
     """
-    Find a slot of unique slot types in training and testing data.
+    Find a list of unique slot types in training and testing data.
     We use a single slot type name both for starting and continuation tokens (not using B-, I- notation).
     """
     slots = set()
@@ -89,6 +90,7 @@ def get_slots(infold, modes):
     slots = sorted(slots)
     slots.append("O")
     logging.info(f'Found {len(slots)} slot types')
+
     return slots
 
 

@@ -8,6 +8,7 @@ trainer:
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   replace_sampler_ddp: False
+  benchmark: False
 
 exp_manager:
   explicit_log_dir: null

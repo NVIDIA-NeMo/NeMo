@@ -21,6 +21,8 @@ model:
     labels: ${model.labels}
     batch_size: 128
     shuffle: True
+    num_workers: 8
+    pin_memory: true
     # tarred datasets
     is_tarred: false
     tarred_audio_filepaths: null
@@ -44,6 +46,8 @@ model:
     labels: ${model.labels}
     batch_size: 128
     shuffle: False
+    num_workers: 8
+    pin_memory: true
     val_loss_idx: 0
 
   test_ds:
@@ -52,6 +56,8 @@ model:
     labels: ${model.labels}
     batch_size: 128
     shuffle: False
+    num_workers: 8
+    pin_memory: true
     test_loss_idx: 0
 
   preprocessor:

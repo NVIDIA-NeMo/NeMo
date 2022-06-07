@@ -12,6 +12,8 @@ model:
     trim_silence: True
     max_duration: 16.7
     shuffle: True
+    num_workers: 8
+    pin_memory: true
     # tarred datasets
     is_tarred: false
     tarred_audio_filepaths: null
@@ -26,6 +28,8 @@ model:
     sample_rate: 16000
     batch_size: 32
     shuffle: False
+    num_workers: 8
+    pin_memory: true
 
   tokenizer:
     dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)

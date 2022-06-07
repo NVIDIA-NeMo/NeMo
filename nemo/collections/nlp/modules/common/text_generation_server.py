@@ -158,6 +158,9 @@ class MegatronGenerate(Resource):
                 repetition_penalty,
                 min_tokens_to_generate,
             )
+            for k in output:
+                if isinstance(output[k], torch.Tensor):
+                    output[k] = output[k].tolist()
         if not all_probs:
             del output['full_logprob']
         return jsonify(output)

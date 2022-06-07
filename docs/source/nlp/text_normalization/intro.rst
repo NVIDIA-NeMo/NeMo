@@ -1,6 +1,8 @@
 (Inverse) Text Normalization
 ============================
 
+NeMo supports Text Normalization (TN) and Inverse Text Normalization (ITN) tasks via rule-based `nemo_text_processing` python package and Neural-based TN/ITN models.
+
 Rule-based (WFST) TN/ITN:
 
 .. toctree::
@@ -9,11 +11,10 @@ Rule-based (WFST) TN/ITN:
    wfst/intro
 
 
-Neural TN/ITN:
+Neural-based TN/ITN:
 
 .. toctree::
    :maxdepth: 1
 
-   nn_text_normalization
-
+   neural_models
 

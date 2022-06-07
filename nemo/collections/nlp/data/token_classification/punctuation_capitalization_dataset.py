@@ -1109,7 +1109,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
     ) -> None:
         if not isinstance(pkl_punct_label_ids, dict):
             raise ValueError(
-                f"Punctuation label ids loaded from features file {self.features_pkl} has wrong type "
+                f"Punctuation label ids loaded from features file {self.features_pkl} have wrong type "
                 f"{type(pkl_punct_label_ids)}"
             )
         if parameter_punct_label_ids is not None:

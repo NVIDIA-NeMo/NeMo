@@ -16,6 +16,8 @@ model:
     trim_silence: True
     max_duration: 16.7
     shuffle: True
+    num_workers: 8
+    pin_memory: true
     # tarred datasets
     is_tarred: false
     tarred_audio_filepaths: null
@@ -30,6 +32,8 @@ model:
     labels: *labels
     batch_size: 32
     shuffle: False
+    num_workers: 8
+    pin_memory: true
 
   test_ds:
     manifest_filepath: null
@@ -37,6 +41,8 @@ model:
     labels: *labels
     batch_size: 32
     shuffle: False
+    num_workers: 8
+    pin_memory: true
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor

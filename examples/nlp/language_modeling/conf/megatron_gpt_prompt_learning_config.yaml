@@ -15,6 +15,7 @@ trainer:
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  benchmark: False
 
 
 exp_manager:
@@ -32,7 +33,7 @@ exp_manager:
     monitor: val_loss
     save_top_k: 2
     mode: min
-    save_nemo_on_train_end: True
+    save_nemo_on_train_end: False
     filename: 'megatron_gpt_prompt_tune--{val_loss:.3f}-{step}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
@@ -69,8 +70,8 @@ model:
 
   - taskname: 'rte'
     prompt_template: '<|VIRTUAL_PROMPT_0|>{text}{answer}'
-    total_virtual_tokens: 100 
-    virtual_token_splits: [100]
+    total_virtual_tokens: 9 
+    virtual_token_splits: [9]
     truncate_field: null
     answer_only_loss: True
     answer_field: 'answer'
@@ -84,11 +85,11 @@ model:
     num_layers: 2
 
   data:
-    train_ds: [data/squad_train.jsonl,]
-    validation_ds: [data/squad_val.jsonl,]
+    train_ds: [data/rte_train.jsonl,]
+    validation_ds: [data/rte_val.jsonl,]
     add_eos: True
     shuffle: True
-    num_workers: 1
+    num_workers: 8
     pin_memory: True
 
 

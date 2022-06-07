@@ -19,6 +19,8 @@ model:
     is_tarred: false
     tarred_audio_filepaths: null
     use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
 
   validation_ds:
     manifest_filepath: ???
@@ -26,6 +28,8 @@ model:
     batch_size: ??
     shuffle: false
     use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
 
   test_ds:
     manifest_filepath: null
@@ -33,6 +37,8 @@ model:
     batch_size: null
     shuffle: false
     use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
   
   tokenizer:
     dir: ??? # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)

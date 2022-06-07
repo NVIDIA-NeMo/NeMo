@@ -32,6 +32,7 @@ $ and 5% or %~dollar and five percent or percent sign
  1~one
 1~one
 !1~! one
-love him while we may,~love him while we may,
 mar~mar
 /$€₩£BB¥#%AA and $€₩£¥#%~slash dollar euro won pound BB yen hash percent sign AA and dollar euro won pound yen hash percent sign
+love him while we may,~love him while we may,
+mar~mar

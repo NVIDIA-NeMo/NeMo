@@ -28,6 +28,8 @@ model:
     tarred_audio_filepaths: null
     shuffle_n: 2048
     use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
     # bucketing params
     bucketing_strategy: "synced_randomized"
     bucketing_batch_size: null
@@ -38,6 +40,8 @@ model:
     batch_size: 32
     shuffle: false
     use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
     max_duration: 35.0
     min_duration: 8.0
 

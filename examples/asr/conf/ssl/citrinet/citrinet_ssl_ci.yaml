@@ -16,6 +16,8 @@ model:
     is_tarred: false
     tarred_audio_filepaths: null
     use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
     # bucketing params
     bucketing_strategy: "synced_randomized"
     bucketing_batch_size: null

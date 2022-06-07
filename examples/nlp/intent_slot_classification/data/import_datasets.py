@@ -143,7 +143,6 @@ def process_jarvis_datasets(
         do_lowercase: whether to lowercase the input utterances
         ignore_prev_intent: whether to include intent from previous turn in predicting intent of current turn
     """
-
     dataset_name = "jarvis"
     if if_exist(outfold, ['dict.intents.csv', 'dict.slots.csv']):
         logging.info(DATABASE_EXISTS_TMP.format(dataset_name, outfold))

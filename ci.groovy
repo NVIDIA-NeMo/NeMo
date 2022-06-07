@@ -15,7 +15,7 @@ spec:
       path: /vol/scratch1/scratch.okuchaiev_blossom
   containers:
   - name: cuda
-    image: nvcr.io/nvidia/pytorch:22.04-py3
+    image: nvcr.io/nvidia/pytorch:22.05-py3
     command:
     - cat
     volumeMounts:

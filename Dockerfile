@@ -35,13 +35,10 @@ RUN apt-get update && \
 # uninstall stuff from base container
 RUN pip uninstall -y sacrebleu torchtext
 
-# build torchaudio (change latest release version to match pytorch)
+# build torchaudio
 WORKDIR /tmp/torchaudio_build
-RUN git clone --depth 1 --branch release/0.11 https://github.com/pytorch/audio.git && \
-    cd audio && \
-    git submodule update --init --recursive && \
-    BUILD_SOX=1 python setup.py install && \
-    cd .. && rm -r audio
+COPY scripts/installers /tmp/torchaudio_build/scripts/installers/
+RUN /bin/bash /tmp/torchaudio_build/scripts/installers/install_torchaudio_latest.sh
 
 #install TRT tools: PT quantization support and ONNX graph optimizer
 WORKDIR /tmp/trt_build

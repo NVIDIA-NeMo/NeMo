@@ -6,7 +6,6 @@ rapidfuzz
 gdown
 inflect
 sacrebleu[ja]
-sacremoses>=0.0.43
 nltk>=3.6.5
 fasttext
 opencc

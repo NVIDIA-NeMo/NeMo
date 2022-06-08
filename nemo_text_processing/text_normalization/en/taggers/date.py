@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_CHAR,
     NEMO_DIGIT,
@@ -28,27 +29,15 @@ from nemo_text_processing.text_normalization.en.utils import (
     get_abs_path,
     load_labels,
 )
+from pynini.examples import plurals
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-    from pynini.examples import plurals
-
-    graph_teen = pynini.invert(pynini.string_file(get_abs_path("data/number/teen.tsv"))).optimize()
-    graph_digit = pynini.invert(pynini.string_file(get_abs_path("data/number/digit.tsv"))).optimize()
-    ties_graph = pynini.invert(pynini.string_file(get_abs_path("data/number/ty.tsv"))).optimize()
-    year_suffix = load_labels(get_abs_path("data/date/year_suffix.tsv"))
-    year_suffix.extend(augment_labels_with_punct_at_end(year_suffix))
-    year_suffix = pynini.string_map(year_suffix).optimize()
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    # Add placeholders for global variables
-    graph_teen = None
-    graph_digit = None
-    ties_graph = None
-
-    PYNINI_AVAILABLE = True
+graph_teen = pynini.invert(pynini.string_file(get_abs_path("data/number/teen.tsv"))).optimize()
+graph_digit = pynini.invert(pynini.string_file(get_abs_path("data/number/digit.tsv"))).optimize()
+ties_graph = pynini.invert(pynini.string_file(get_abs_path("data/number/ty.tsv"))).optimize()
+year_suffix = load_labels(get_abs_path("data/date/year_suffix.tsv"))
+year_suffix.extend(augment_labels_with_punct_at_end(year_suffix))
+year_suffix = pynini.string_map(year_suffix).optimize()
 
 
 def get_ties_graph(deterministic: bool = True):

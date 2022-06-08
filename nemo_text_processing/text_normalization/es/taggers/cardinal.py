@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_ALPHA,
     NEMO_DIGIT,
@@ -23,29 +24,14 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
 )
 from nemo_text_processing.text_normalization.es.graph_utils import cardinal_separator
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/zero.tsv")))
-    digit = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv")))
-    teen = pynini.invert(pynini.string_file(get_abs_path("data/numbers/teen.tsv")))
-    ties = pynini.invert(pynini.string_file(get_abs_path("data/numbers/ties.tsv")))
-    twenties = pynini.invert(pynini.string_file(get_abs_path("data/numbers/twenties.tsv")))
-    hundreds = pynini.invert(pynini.string_file(get_abs_path("data/numbers/hundreds.tsv")))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    zero = None
-    digit = None
-    teen = None
-    ties = None
-    twenties = None
-    hundreds = None
-
-    PYNINI_AVAILABLE = False
+zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/zero.tsv")))
+digit = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv")))
+teen = pynini.invert(pynini.string_file(get_abs_path("data/numbers/teen.tsv")))
+ties = pynini.invert(pynini.string_file(get_abs_path("data/numbers/ties.tsv")))
+twenties = pynini.invert(pynini.string_file(get_abs_path("data/numbers/twenties.tsv")))
+hundreds = pynini.invert(pynini.string_file(get_abs_path("data/numbers/hundreds.tsv")))
 
 
 def filter_punctuation(fst: 'pynini.FstLike') -> 'pynini.FstLike':

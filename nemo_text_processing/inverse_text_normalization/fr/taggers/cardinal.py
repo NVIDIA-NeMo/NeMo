@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pynini
 from nemo_text_processing.inverse_text_normalization.fr.graph_utils import (
     NEMO_CHAR,
     NEMO_DIGIT,
@@ -22,14 +23,7 @@ from nemo_text_processing.inverse_text_normalization.fr.graph_utils import (
     delete_hyphen,
 )
 from nemo_text_processing.inverse_text_normalization.fr.utils import get_abs_path
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+from pynini.lib import pynutil
 
 
 def rewrite(cardinal: 'pynini.FstLike') -> 'pynini.FstLike':

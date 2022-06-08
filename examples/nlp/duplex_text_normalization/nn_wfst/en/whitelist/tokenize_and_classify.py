@@ -15,6 +15,7 @@
 
 import os
 
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_WHITE_SPACE,
     GraphFst,
@@ -25,16 +26,9 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 from nemo_text_processing.text_normalization.en.taggers.whitelist import WhiteListFst
 from nemo_text_processing.text_normalization.en.taggers.word import WordFst
+from pynini.lib import pynutil
 
 from nemo.utils import logging
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
 
 
 class ClassifyFst(GraphFst):
@@ -75,9 +69,10 @@ class ClassifyFst(GraphFst):
         else:
             logging.info(f"Creating ClassifyFst grammars.")
 
-            word_graph = WordFst(deterministic=deterministic).fst
+            punctuation = PunctuationFst(deterministic=deterministic)
+            punct_graph = punctuation.fst
+            word_graph = WordFst(deterministic=deterministic, punctuation=punctuation).fst
             whitelist_graph = WhiteListFst(input_case=input_case, deterministic=deterministic).fst
-            punct_graph = PunctuationFst(deterministic=deterministic).fst
 
             classify = pynutil.add_weight(whitelist_graph, 1) | pynutil.add_weight(word_graph, 100)
 

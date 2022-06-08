@@ -14,6 +14,7 @@
 
 import os
 
+import pynini
 from nemo_text_processing.text_normalization.de.taggers.cardinal import CardinalFst
 from nemo_text_processing.text_normalization.de.taggers.date import DateFst
 from nemo_text_processing.text_normalization.de.taggers.decimal import DecimalFst
@@ -35,16 +36,9 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     generator_main,
 )
 from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
+from pynini.lib import pynutil
 
 from nemo.utils import logging
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
 
 
 class ClassifyFst(GraphFst):

@@ -15,6 +15,7 @@
 
 import os
 
+import pynini
 from nemo_text_processing.inverse_text_normalization.vi.graph_utils import (
     GraphFst,
     delete_extra_space,
@@ -34,16 +35,9 @@ from nemo_text_processing.inverse_text_normalization.vi.taggers.telephone import
 from nemo_text_processing.inverse_text_normalization.vi.taggers.time import TimeFst
 from nemo_text_processing.inverse_text_normalization.vi.taggers.whitelist import WhiteListFst
 from nemo_text_processing.inverse_text_normalization.vi.taggers.word import WordFst
+from pynini.lib import pynutil
 
 from nemo.utils import logging
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
 
 
 class ClassifyFst(GraphFst):
@@ -63,7 +57,7 @@ class ClassifyFst(GraphFst):
         far_file = None
         if cache_dir is not None and cache_dir != "None":
             os.makedirs(cache_dir, exist_ok=True)
-            far_file = os.path.join(cache_dir, "_en_itn.far")
+            far_file = os.path.join(cache_dir, "_vi_itn.far")
         if not overwrite_cache and far_file and os.path.exists(far_file):
             self.fst = pynini.Far(far_file, mode="r")["tokenize_and_classify"]
             logging.info(f"ClassifyFst.fst was restored from {far_file}.")

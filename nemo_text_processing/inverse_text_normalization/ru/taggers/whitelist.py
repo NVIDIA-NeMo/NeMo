@@ -13,16 +13,10 @@
 # limitations under the License.
 
 
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import GraphFst, convert_space
 from nemo_text_processing.text_normalization.ru.utils import get_abs_path
-
-try:
-    from pynini.lib import pynutil
-    import pynini
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+from pynini.lib import pynutil
 
 
 class WhiteListFst(GraphFst):

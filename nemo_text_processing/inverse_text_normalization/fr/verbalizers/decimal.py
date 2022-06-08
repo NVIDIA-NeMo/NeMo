@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pynini
 from nemo_text_processing.inverse_text_normalization.fr.graph_utils import (
     NEMO_DIGIT,
     NEMO_NON_BREAKING_SPACE,
@@ -19,14 +20,7 @@ from nemo_text_processing.inverse_text_normalization.fr.graph_utils import (
     GraphFst,
     delete_space,
 )
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+from pynini.lib import pynutil
 
 
 class NumberParser(GraphFst):

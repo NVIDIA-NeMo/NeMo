@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_ALPHA,
     NEMO_DIGIT,
@@ -22,27 +23,13 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
 )
 from nemo_text_processing.text_normalization.es.graph_utils import decimal_separator
 from nemo_text_processing.text_normalization.es.utils import get_abs_path, load_labels
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    maj_singular_labels = load_labels(get_abs_path("data/money/currency_major.tsv"))
-    maj_singular = pynini.string_file((get_abs_path("data/money/currency_major.tsv")))
-    min_singular = pynini.string_file(get_abs_path("data/money/currency_minor.tsv"))
-    fem_plural = pynini.string_file((get_abs_path("data/money/currency_plural_fem.tsv")))
-    masc_plural = pynini.string_file((get_abs_path("data/money/currency_plural_masc.tsv")))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    maj_singular_labels = None
-    min_singular = None
-    maj_singular = None
-    fem_plural = None
-    masc_plural = None
-
-    PYNINI_AVAILABLE = False
+maj_singular_labels = load_labels(get_abs_path("data/money/currency_major.tsv"))
+maj_singular = pynini.string_file((get_abs_path("data/money/currency_major.tsv")))
+min_singular = pynini.string_file(get_abs_path("data/money/currency_minor.tsv"))
+fem_plural = pynini.string_file((get_abs_path("data/money/currency_plural_fem.tsv")))
+masc_plural = pynini.string_file((get_abs_path("data/money/currency_plural_masc.tsv")))
 
 
 class MoneyFst(GraphFst):

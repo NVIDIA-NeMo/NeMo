@@ -11,28 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_SIGMA, GraphFst, insert_space
 from nemo_text_processing.text_normalization.es.graph_utils import ones
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    graph_digit = pynini.string_file(get_abs_path("data/numbers/digit.tsv"))
-    graph_ties = pynini.string_file(get_abs_path("data/numbers/ties.tsv"))
-    graph_teen = pynini.string_file(get_abs_path("data/numbers/teen.tsv"))
-    graph_twenties = pynini.string_file(get_abs_path("data/numbers/twenties.tsv"))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    graph_digit = None
-    graph_ties = None
-    graph_teen = None
-    graph_twenties = None
-
-    PYNINI_AVAILABLE = False
+graph_digit = pynini.string_file(get_abs_path("data/numbers/digit.tsv"))
+graph_ties = pynini.string_file(get_abs_path("data/numbers/ties.tsv"))
+graph_teen = pynini.string_file(get_abs_path("data/numbers/teen.tsv"))
+graph_twenties = pynini.string_file(get_abs_path("data/numbers/twenties.tsv"))
 
 
 class TelephoneFst(GraphFst):

@@ -14,7 +14,4 @@
 
 from nemo.collections.nlp.models.duplex_text_normalization.duplex_decoder import DuplexDecoderModel
 from nemo.collections.nlp.models.duplex_text_normalization.duplex_tagger import DuplexTaggerModel
-from nemo.collections.nlp.models.duplex_text_normalization.duplex_tn import (
-    DuplexTextNormalizationModel,
-    post_process_punct,
-)
+from nemo.collections.nlp.models.duplex_text_normalization.duplex_tn import DuplexTextNormalizationModel

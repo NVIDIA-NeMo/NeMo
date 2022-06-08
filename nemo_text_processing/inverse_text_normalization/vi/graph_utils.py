@@ -18,75 +18,40 @@ import string
 from pathlib import Path
 from typing import Dict
 
-try:
-    import pynini
-    from pynini import Far
-    from pynini.export import export
-    from pynini.lib import byte, pynutil, utf8
+import pynini
+from pynini import Far
+from pynini.export import export
+from pynini.lib import byte, pynutil, utf8
 
-    NEMO_CHAR = utf8.VALID_UTF8_CHAR
+NEMO_CHAR = utf8.VALID_UTF8_CHAR
 
-    NEMO_DIGIT = byte.DIGIT
-    NEMO_LOWER = pynini.union(*string.ascii_lowercase).optimize()
-    NEMO_UPPER = pynini.union(*string.ascii_uppercase).optimize()
-    NEMO_ALPHA = pynini.union(NEMO_LOWER, NEMO_UPPER).optimize()
-    NEMO_ALNUM = pynini.union(NEMO_DIGIT, NEMO_ALPHA).optimize()
-    NEMO_HEX = pynini.union(*string.hexdigits).optimize()
-    NEMO_NON_BREAKING_SPACE = "\u00A0"
-    NEMO_SPACE = " "
-    NEMO_WHITE_SPACE = pynini.union(" ", "\t", "\n", "\r", "\u00A0").optimize()
-    NEMO_NOT_SPACE = pynini.difference(NEMO_CHAR, NEMO_WHITE_SPACE).optimize()
-    NEMO_NOT_QUOTE = pynini.difference(NEMO_CHAR, r'"').optimize()
+NEMO_DIGIT = byte.DIGIT
+NEMO_LOWER = pynini.union(*string.ascii_lowercase).optimize()
+NEMO_UPPER = pynini.union(*string.ascii_uppercase).optimize()
+NEMO_ALPHA = pynini.union(NEMO_LOWER, NEMO_UPPER).optimize()
+NEMO_ALNUM = pynini.union(NEMO_DIGIT, NEMO_ALPHA).optimize()
+NEMO_HEX = pynini.union(*string.hexdigits).optimize()
+NEMO_NON_BREAKING_SPACE = "\u00A0"
+NEMO_SPACE = " "
+NEMO_WHITE_SPACE = pynini.union(" ", "\t", "\n", "\r", "\u00A0").optimize()
+NEMO_NOT_SPACE = pynini.difference(NEMO_CHAR, NEMO_WHITE_SPACE).optimize()
+NEMO_NOT_QUOTE = pynini.difference(NEMO_CHAR, r'"').optimize()
 
-    NEMO_PUNCT = pynini.union(*map(pynini.escape, string.punctuation)).optimize()
-    NEMO_GRAPH = pynini.union(NEMO_ALNUM, NEMO_PUNCT).optimize()
+NEMO_PUNCT = pynini.union(*map(pynini.escape, string.punctuation)).optimize()
+NEMO_GRAPH = pynini.union(NEMO_ALNUM, NEMO_PUNCT).optimize()
 
-    NEMO_SIGMA = pynini.closure(NEMO_CHAR)
+NEMO_SIGMA = pynini.closure(NEMO_CHAR)
 
-    delete_space = pynutil.delete(pynini.closure(NEMO_WHITE_SPACE))
-    insert_space = pynutil.insert(" ")
-    delete_extra_space = pynini.cross(pynini.closure(NEMO_WHITE_SPACE, 1), " ")
+delete_space = pynutil.delete(pynini.closure(NEMO_WHITE_SPACE))
+insert_space = pynutil.insert(" ")
+delete_extra_space = pynini.cross(pynini.closure(NEMO_WHITE_SPACE, 1), " ")
 
-    # French frequently compounds numbers with hyphen.
-    delete_hyphen = pynutil.delete(pynini.closure("-", 0, 1))
-    insert_hyphen = pynutil.insert("-")
+# French frequently compounds numbers with hyphen.
+delete_hyphen = pynutil.delete(pynini.closure("-", 0, 1))
+insert_hyphen = pynutil.insert("-")
 
-    TO_LOWER = pynini.union(*[pynini.cross(x, y) for x, y in zip(string.ascii_uppercase, string.ascii_lowercase)])
-    TO_UPPER = pynini.invert(TO_LOWER)
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    # Create placeholders
-    NEMO_CHAR = None
-
-    NEMO_DIGIT = None
-    NEMO_LOWER = None
-    NEMO_UPPER = None
-    NEMO_ALPHA = None
-    NEMO_ALNUM = None
-    NEMO_HEX = None
-    NEMO_NON_BREAKING_SPACE = "\u00A0"
-    NEMO_SPACE = " "
-    NEMO_WHITE_SPACE = None
-    NEMO_NOT_SPACE = None
-    NEMO_NOT_QUOTE = None
-
-    NEMO_PUNCT = None
-    NEMO_GRAPH = None
-
-    NEMO_SIGMA = None
-
-    delete_space = None
-    insert_space = None
-    delete_extra_space = None
-
-    delete_hyphen = None
-    insert_hyphen = None
-
-    TO_LOWER = None
-    TO_UPPER = None
-
-    PYNINI_AVAILABLE = False
+TO_LOWER = pynini.union(*[pynini.cross(x, y) for x, y in zip(string.ascii_uppercase, string.ascii_lowercase)])
+TO_UPPER = pynini.invert(TO_LOWER)
 
 
 def generator_main(file_name: str, graphs: Dict[str, pynini.FstLike]):

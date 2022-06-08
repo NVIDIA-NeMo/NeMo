@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_DIGIT,
     NEMO_SIGMA,
@@ -19,21 +20,10 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     insert_space,
 )
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    time_zone_graph = pynini.string_file(get_abs_path("data/time/time_zone.tsv"))
-    suffix = pynini.string_file(get_abs_path("data/time/time_suffix.tsv"))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    time_zone_graph = None
-    suffix = None
-
-    PYNINI_AVAILABLE = False
+time_zone_graph = pynini.string_file(get_abs_path("data/time/time_zone.tsv"))
+suffix = pynini.string_file(get_abs_path("data/time/time_suffix.tsv"))
 
 
 class TimeFst(GraphFst):

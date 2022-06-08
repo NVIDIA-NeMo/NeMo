@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_NOT_QUOTE,
     NEMO_SIGMA,
@@ -20,27 +21,13 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     insert_space,
 )
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
+alt_minutes = pynini.string_file(get_abs_path("data/time/alt_minutes.tsv"))
 
-    alt_minutes = pynini.string_file(get_abs_path("data/time/alt_minutes.tsv"))
-
-    morning_times = pynini.string_file(get_abs_path("data/time/morning_times.tsv"))
-    afternoon_times = pynini.string_file(get_abs_path("data/time/afternoon_times.tsv"))
-    evening_times = pynini.string_file(get_abs_path("data/time/evening_times.tsv"))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    alt_minutes = None
-
-    morning_times = None
-    afternoon_times = None
-    evening_times = None
-
-    PYNINI_AVAILABLE = False
+morning_times = pynini.string_file(get_abs_path("data/time/morning_times.tsv"))
+afternoon_times = pynini.string_file(get_abs_path("data/time/afternoon_times.tsv"))
+evening_times = pynini.string_file(get_abs_path("data/time/evening_times.tsv"))
 
 
 class TimeFst(GraphFst):

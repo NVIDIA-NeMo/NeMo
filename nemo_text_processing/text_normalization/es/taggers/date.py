@@ -11,25 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, NEMO_SPACE, GraphFst, delete_extra_space
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    articles = pynini.union("de", "del", "el", "del año")
-    delete_leading_zero = (pynutil.delete("0") | (NEMO_DIGIT - "0")) + NEMO_DIGIT
-    month_numbers = pynini.string_file(get_abs_path("data/dates/months.tsv"))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    articles = None
-    delete_leading_zero = None
-    month_numbers = None
-
-    PYNINI_AVAILABLE = False
+articles = pynini.union("de", "del", "el", "del año")
+delete_leading_zero = (pynutil.delete("0") | (NEMO_DIGIT - "0")) + NEMO_DIGIT
+month_numbers = pynini.string_file(get_abs_path("data/dates/months.tsv"))
 
 
 class DateFst(GraphFst):

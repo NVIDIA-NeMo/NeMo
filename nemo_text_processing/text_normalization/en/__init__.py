@@ -15,18 +15,3 @@
 from nemo_text_processing.text_normalization.en.taggers.tokenize_and_classify import ClassifyFst
 from nemo_text_processing.text_normalization.en.verbalizers.verbalize import VerbalizeFst
 from nemo_text_processing.text_normalization.en.verbalizers.verbalize_final import VerbalizeFinalFst
-
-from nemo.utils import logging
-
-try:
-    import pynini
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    logging.warning(
-        "`pynini` is not installed ! \n"
-        "Please run the `nemo_text_processing/setup.sh` script"
-        "prior to usage of this toolkit."
-    )
-
-    PYNINI_AVAILABLE = False

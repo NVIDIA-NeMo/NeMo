@@ -14,19 +14,13 @@
 
 from collections import defaultdict
 
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_DIGIT, NEMO_SPACE, GraphFst, insert_space
 from nemo_text_processing.text_normalization.en.utils import load_labels
 from nemo_text_processing.text_normalization.ru.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    delete_space = pynutil.delete(" ")
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+delete_space = pynutil.delete(" ")
 
 
 def prepare_labels_for_insertion(file_path: str):

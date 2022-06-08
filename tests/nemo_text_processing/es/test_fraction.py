@@ -18,26 +18,19 @@ from nemo_text_processing.text_normalization.normalize import Normalizer
 from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
 from parameterized import parameterized
 
-from ..utils import CACHE_DIR, PYNINI_AVAILABLE, parse_test_case_file
+from ..utils import CACHE_DIR, parse_test_case_file
 
 
 class TestFraction:
-    normalizer = (
-        Normalizer(input_case='cased', lang='es', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE
-        else None
-    )
+    normalizer = Normalizer(input_case='cased', lang='es', cache_dir=CACHE_DIR, overwrite_cache=False)
 
     normalizer_with_audio = (
         NormalizerWithAudio(input_case='cased', lang='es', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE and CACHE_DIR
+        if CACHE_DIR
         else None
     )
 
     @parameterized.expand(parse_test_case_file('es/data_text_normalization/test_cases_fraction.txt'))
-    @pytest.mark.skipif(
-        not PYNINI_AVAILABLE, reason="`pynini` not installed, please install via nemo_text_processing/setup.sh"
-    )
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_norm(self, test_input, expected):

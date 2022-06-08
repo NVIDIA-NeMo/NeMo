@@ -11,54 +11,31 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_SIGMA, NEMO_SPACE
 from nemo_text_processing.text_normalization.es import LOCALIZATION
 from nemo_text_processing.text_normalization.es.utils import get_abs_path, load_labels
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
+digits = pynini.project(pynini.string_file(get_abs_path("data/numbers/digit.tsv")), "input")
+tens = pynini.project(pynini.string_file(get_abs_path("data/numbers/ties.tsv")), "input")
+teens = pynini.project(pynini.string_file(get_abs_path("data/numbers/teen.tsv")), "input")
+twenties = pynini.project(pynini.string_file(get_abs_path("data/numbers/twenties.tsv")), "input")
+hundreds = pynini.project(pynini.string_file(get_abs_path("data/numbers/hundreds.tsv")), "input")
 
-    digits = pynini.project(pynini.string_file(get_abs_path("data/numbers/digit.tsv")), "input")
-    tens = pynini.project(pynini.string_file(get_abs_path("data/numbers/ties.tsv")), "input")
-    teens = pynini.project(pynini.string_file(get_abs_path("data/numbers/teen.tsv")), "input")
-    twenties = pynini.project(pynini.string_file(get_abs_path("data/numbers/twenties.tsv")), "input")
-    hundreds = pynini.project(pynini.string_file(get_abs_path("data/numbers/hundreds.tsv")), "input")
+accents = pynini.string_map([("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")])
 
-    accents = pynini.string_map([("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")])
+if LOCALIZATION == "am":  # Setting localization for central and northern america formatting
+    cardinal_separator = pynini.string_map([",", NEMO_SPACE])
+    decimal_separator = pynini.accep(".")
+else:
+    cardinal_separator = pynini.string_map([".", NEMO_SPACE])
+    decimal_separator = pynini.accep(",")
 
-    if LOCALIZATION == "am":  # Setting localization for central and northern america formatting
-        cardinal_separator = pynini.string_map([",", NEMO_SPACE])
-        decimal_separator = pynini.accep(".")
-    else:
-        cardinal_separator = pynini.string_map([".", NEMO_SPACE])
-        decimal_separator = pynini.accep(",")
-
-    ones = pynini.union("un", "ún")
-    fem_ones = pynini.union(pynini.cross("un", "una"), pynini.cross("ún", "una"), pynini.cross("uno", "una"))
-    one_to_one_hundred = pynini.union(digits, "uno", tens, teens, twenties, tens + pynini.accep(" y ") + digits)
-    fem_hundreds = hundreds @ pynini.cdrewrite(pynini.cross("ientos", "ientas"), "", "", NEMO_SIGMA)
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    digits = None
-    tens = None
-    teens = None
-    twenties = None
-    hundreds = None
-
-    accents = None
-
-    cardinal_separator = None
-    decimal_separator = None
-
-    ones = None
-    fem_ones = None
-    one_to_one_hundred = None
-    fem_hundreds = None
-
-    PYNINI_AVAILABLE = False
+ones = pynini.union("un", "ún")
+fem_ones = pynini.union(pynini.cross("un", "una"), pynini.cross("ún", "una"), pynini.cross("uno", "una"))
+one_to_one_hundred = pynini.union(digits, "uno", tens, teens, twenties, tens + pynini.accep(" y ") + digits)
+fem_hundreds = hundreds @ pynini.cdrewrite(pynini.cross("ientos", "ientas"), "", "", NEMO_SIGMA)
 
 
 def strip_accent(fst: 'pynini.FstLike') -> 'pynini.FstLike':

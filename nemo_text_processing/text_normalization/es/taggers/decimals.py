@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_DIGIT,
     NEMO_SIGMA,
@@ -25,23 +26,11 @@ from nemo_text_processing.text_normalization.es.graph_utils import (
     strip_cardinal_apocope,
 )
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    quantities = pynini.string_file(get_abs_path("data/numbers/quantities.tsv"))
-    digit = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv")))
-    zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/zero.tsv")))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    quantities = None
-    digit = None
-    zero = None
-
-    PYNINI_AVAILABLE = False
+quantities = pynini.string_file(get_abs_path("data/numbers/quantities.tsv"))
+digit = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv")))
+zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/zero.tsv")))
 
 
 def get_quantity(decimal_graph: 'pynini.FstLike', cardinal_graph: 'pynini.FstLike') -> 'pynini.FstLike':

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_NOT_QUOTE,
     NEMO_SIGMA,
@@ -19,29 +20,14 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     insert_space,
 )
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
+digit_no_zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv")))
+zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/zero.tsv")))
 
-    digit_no_zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/digit.tsv")))
-    zero = pynini.invert(pynini.string_file(get_abs_path("data/numbers/zero.tsv")))
-
-    graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbols.tsv"))
-    server_common = pynini.string_file(get_abs_path("data/electronic/server_name.tsv"))
-    domain_common = pynini.string_file(get_abs_path("data/electronic/domain.tsv"))
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    digit_no_zero = None
-    zero = None
-
-    graph_symbols = None
-    server_common = None
-    domain_common = None
-
-    PYNINI_AVAILABLE = False
+graph_symbols = pynini.string_file(get_abs_path("data/electronic/symbols.tsv"))
+server_common = pynini.string_file(get_abs_path("data/electronic/server_name.tsv"))
+domain_common = pynini.string_file(get_abs_path("data/electronic/domain.tsv"))
 
 
 class ElectronicFst(GraphFst):

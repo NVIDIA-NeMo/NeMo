@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_NOT_QUOTE,
     NEMO_SIGMA,
@@ -20,30 +21,16 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
 )
 from nemo_text_processing.text_normalization.es.graph_utils import shift_cardinal_gender, strip_cardinal_apocope
 from nemo_text_processing.text_normalization.es.utils import get_abs_path
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
+fem = pynini.string_file((get_abs_path("data/money/currency_plural_fem.tsv")))
+masc = pynini.string_file((get_abs_path("data/money/currency_plural_masc.tsv")))
 
-    fem = pynini.string_file((get_abs_path("data/money/currency_plural_fem.tsv")))
-    masc = pynini.string_file((get_abs_path("data/money/currency_plural_masc.tsv")))
+fem_singular = pynini.project(fem, "input")
+masc_singular = pynini.project(masc, "input")
 
-    fem_singular = pynini.project(fem, "input")
-    masc_singular = pynini.project(masc, "input")
-
-    fem_plural = pynini.project(fem, "output")
-    masc_plural = pynini.project(masc, "output")
-
-    PYNINI_AVAILABLE = True
-
-except (ModuleNotFoundError, ImportError):
-    fem_plural = None
-    masc_plural = None
-
-    fem_singular = None
-    masc_singular = None
-
-    PYNINI_AVAILABLE = False
+fem_plural = pynini.project(fem, "output")
+masc_plural = pynini.project(masc, "output")
 
 
 class MoneyFst(GraphFst):

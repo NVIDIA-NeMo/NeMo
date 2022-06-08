@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_ALPHA,
     NEMO_DIGIT,
@@ -22,15 +23,8 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     convert_space,
 )
 from nemo_text_processing.text_normalization.en.utils import get_abs_path, load_labels
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-    from pynini.examples import plurals
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+from pynini.examples import plurals
+from pynini.lib import pynutil
 
 
 class SerialFst(GraphFst):

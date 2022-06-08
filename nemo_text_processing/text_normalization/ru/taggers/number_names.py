@@ -25,17 +25,10 @@
 # Intersects the universal factorization transducer (F) with language-specific
 # acceptor (G).
 
+import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import NEMO_SIGMA
 from nemo_text_processing.text_normalization.ru.utils import get_abs_path, load_labels
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-    from pynini.lib import rewrite
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+from pynini.lib import pynutil, rewrite
 
 
 def get_number_names():

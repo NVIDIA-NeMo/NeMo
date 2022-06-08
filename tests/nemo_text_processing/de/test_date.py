@@ -18,40 +18,28 @@ from nemo_text_processing.text_normalization.normalize import Normalizer
 from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
 from parameterized import parameterized
 
-from ..utils import CACHE_DIR, PYNINI_AVAILABLE, parse_test_case_file
+from ..utils import CACHE_DIR, parse_test_case_file
 
 
 class TestDate:
-    inverse_normalizer = (
-        InverseNormalizer(lang='de', cache_dir=CACHE_DIR, overwrite_cache=False) if PYNINI_AVAILABLE else None
-    )
+    inverse_normalizer = InverseNormalizer(lang='de', cache_dir=CACHE_DIR, overwrite_cache=False)
 
     @parameterized.expand(parse_test_case_file('de/data_inverse_text_normalization/test_cases_date.txt'))
-    @pytest.mark.skipif(
-        not PYNINI_AVAILABLE, reason="`pynini` not installed, please install via nemo_text_processing/setup.sh"
-    )
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_denorm(self, test_input, expected):
         pred = self.inverse_normalizer.inverse_normalize(test_input, verbose=False)
         assert pred == expected
 
-    normalizer = (
-        Normalizer(input_case='cased', lang='de', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE
-        else None
-    )
+    normalizer = Normalizer(input_case='cased', lang='de', cache_dir=CACHE_DIR, overwrite_cache=False)
 
     normalizer_with_audio = (
         NormalizerWithAudio(input_case='cased', lang='de', cache_dir=CACHE_DIR, overwrite_cache=False)
-        if PYNINI_AVAILABLE and CACHE_DIR
+        if CACHE_DIR
         else None
     )
 
     @parameterized.expand(parse_test_case_file('de/data_text_normalization/test_cases_date.txt'))
-    @pytest.mark.skipif(
-        not PYNINI_AVAILABLE, reason="`pynini` not installed, please install via nemo_text_processing/setup.sh"
-    )
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_norm(self, expected, test_input):

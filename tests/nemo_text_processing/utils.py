@@ -14,14 +14,6 @@
 
 import os
 
-try:
-    import pynini
-
-    PYNINI_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    PYNINI_AVAILABLE = False
-
-
 CACHE_DIR = None
 RUN_AUDIO_BASED_TESTS = False
 

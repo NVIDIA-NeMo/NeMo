@@ -18,23 +18,8 @@ import os
 import time
 from argparse import ArgumentParser
 
-from nemo.utils import logging
-
-try:
-    import pynini
-    from nemo_text_processing.text_normalization.en.graph_utils import generator_main
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-
-    logging.warning(
-        "`pynini` is not installed ! \n"
-        "Please run the `nemo_text_processing/setup.sh` script"
-        "prior to usage of this toolkit."
-    )
-
-    PYNINI_AVAILABLE = False
-
+import pynini
+from nemo_text_processing.text_normalization.en.graph_utils import generator_main
 
 # This script exports compiled grammars inside nemo_text_processing into OpenFst finite state archive files
 # tokenize_and_classify.far and verbalize.far for production purposes

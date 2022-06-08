@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pynini
 from nemo_text_processing.text_normalization.de.utils import get_abs_path
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_ALPHA,
@@ -22,20 +23,11 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     convert_space,
     insert_space,
 )
+from pynini.examples import plurals
+from pynini.lib import pynutil
 
-try:
-    import pynini
-    from pynini.lib import pynutil
-    from pynini.examples import plurals
-
-    unit_singular = pynini.string_file(get_abs_path("data/measure/measurements.tsv"))
-    suppletive = pynini.string_file(get_abs_path("data/measure/suppletive.tsv"))
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
-    unit_singular = None
-    suppletive = None
+unit_singular = pynini.string_file(get_abs_path("data/measure/measurements.tsv"))
+suppletive = pynini.string_file(get_abs_path("data/measure/suppletive.tsv"))
 
 
 def singular_to_plural():

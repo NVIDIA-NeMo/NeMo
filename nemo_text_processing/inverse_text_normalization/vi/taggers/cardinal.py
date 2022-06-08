@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import pynini
 from nemo_text_processing.inverse_text_normalization.vi.graph_utils import (
     NEMO_DIGIT,
     NEMO_SPACE,
@@ -21,14 +22,7 @@ from nemo_text_processing.inverse_text_normalization.vi.graph_utils import (
     delete_space,
 )
 from nemo_text_processing.inverse_text_normalization.vi.utils import get_abs_path
-
-try:
-    import pynini
-    from pynini.lib import pynutil
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    PYNINI_AVAILABLE = False
+from pynini.lib import pynutil
 
 
 class CardinalFst(GraphFst):

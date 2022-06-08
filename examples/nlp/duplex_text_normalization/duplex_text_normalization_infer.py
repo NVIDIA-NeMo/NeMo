@@ -50,13 +50,13 @@ import os
 from typing import List
 
 from helpers import DECODER_MODEL, TAGGER_MODEL, instantiate_model_and_trainer
+from nemo_text_processing.text_normalization.data_loader_utils import post_process_punct
 from nn_wfst.en.electronic.normalize import ElectronicNormalizer
 from nn_wfst.en.whitelist.normalize import WhitelistNormalizer
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.data.text_normalization import constants
 from nemo.collections.nlp.models import DuplexTextNormalizationModel
-from nemo.collections.nlp.models.duplex_text_normalization import post_process_punct
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 

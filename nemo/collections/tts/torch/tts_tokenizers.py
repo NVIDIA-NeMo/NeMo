@@ -21,6 +21,7 @@ from typing import List
 from nemo.collections.tts.torch.de_utils import german_text_preprocessing
 from nemo.collections.tts.torch.en_utils import english_text_preprocessing
 from nemo.utils import logging
+from nemo.utils.decorators import experimental
 
 
 class BaseTokenizer(abc.ABC):
@@ -284,7 +285,7 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
              Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't applied here, because text can contains phonemes (it will be handled by g2p).
+             Note that lower() function shouldn't applied here, in case the text contains phonemes (it will be handled by g2p).
         """
 
         self.phoneme_probability = None
@@ -363,6 +364,147 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
         if self.pad_with_space:
             ps = [space] + ps + [space]
 
+        return [self._token2id[p] for p in ps]
+
+    @contextmanager
+    def set_phone_prob(self, prob):
+        if hasattr(self.g2p, "phoneme_probability"):
+            self.g2p.phoneme_probability = prob
+        try:
+            yield
+        finally:
+            if hasattr(self.g2p, "phoneme_probability"):
+                self.g2p.phoneme_probability = self.phoneme_probability
+
+
+@experimental
+class IPATokenizer(BaseTokenizer):
+    # fmt: off
+    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
+        ',', '.', '!', '?', '-',
+        ':', ';', '/', '"', '(',
+        ')', '[', ']', '{', '}',
+    )
+
+    def __init__(
+        self,
+        g2p,
+        punct=True,
+        non_default_punct_list=None,
+        chars=False,
+        *,
+        space=' ',
+        silence=None,
+        apostrophe=False,
+        oov=BaseTokenizer.OOV,
+        sep='|',  # To be able to distinguish between symbols
+        add_blank_at=None,
+        pad_with_space=False,
+        text_preprocessing_func=lambda text: english_text_preprocessing(text, lower=False),
+    ):
+        """General-purpose IPA-based tokenizer.
+        Args:
+            g2p: Grapheme to phoneme module, should be IPAG2P or some subclass thereof.
+            punct: Whether to reserve grapheme for basic punctuation or not.
+            non_default_punct_list: List of punctuation marks which will be used instead default, if any.
+            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return chars too.
+            space: Space token as string.
+            silence: Silence token as string (will be disabled if it is None).
+            apostrophe: Whether to use apostrophe or not.
+            oov: OOV token as string.
+            sep: Separation token as string.
+            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+             if None then no blank in labels.
+            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+             Basically, it replaces all non-unicode characters with unicode ones.
+             Note that lower() function shouldn't applied here, in case the text contains phonemes (it will be handled by g2p).
+             Defaults to English text preprocessing.
+        """
+        if not hasattr(g2p, "symbols"):
+            logging.error(
+                f"Please make sure the G2P module passed into the IPATokenizer has a `symbols` attribute. "
+                f"This is required in order to build the tokenizer vocabulary.\n"
+                f"Expected e.g. IPAG2P, found {type(g2p)}"
+            )
+            raise ValueError("G2P modules passed into the IPATokenizer must have `symbols` defined.")
+
+        self.phoneme_probability = None
+        if hasattr(g2p, "phoneme_probability"):
+            self.phoneme_probability = g2p.phoneme_probability
+
+        # Build tokens list
+        tokens = sorted(list(g2p.symbols))  # Sort to ensure that vocab is in the same order every time
+
+        if chars or self.phoneme_probability is not None:
+            if not chars:
+                logging.warning(
+                    "phoneme_probability was not None, characters will be enabled even though "
+                    "chars was set to False."
+                )
+            
+            # Add uppercase chars if G2P class uses them, otherwise use lowercase ones
+            if g2p.set_graphemes_upper:
+                tokens.extend(string.ascii_uppercase)
+            else:
+                tokens.extend(string.ascii_lowercase)
+
+        if space in g2p.symbols:
+            self.space = tokens.index(space)
+        else:
+            self.space, tokens = len(tokens), tokens + [space]
+
+        if silence is not None:
+            self.silence, tokens = len(tokens), tokens + [silence]
+
+        if apostrophe:
+            tokens.append("'")
+
+        if punct:
+            if non_default_punct_list is not None:
+                self.PUNCT_LIST = non_default_punct_list
+            tokens.extend(self.PUNCT_LIST)
+
+        super().__init__(tokens, oov=oov, sep=sep, add_blank_at=add_blank_at)
+
+        self.chars = chars if self.phoneme_probability is None else True
+        self.punct = punct
+        self.pad_with_space = pad_with_space
+
+        self.text_preprocessing_func = text_preprocessing_func
+        self.g2p = g2p
+
+    def encode(self, text):
+        """See base class for more information."""
+        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
+
+        text = self.text_preprocessing_func(text)
+        g2p_text = self.g2p(text)   # Double-check this
+
+        for p in g2p_text:
+            if p == space and len(ps) > 0 and ps[-1] != space:
+                # Add space if last token isn't one
+                ps.append(p)
+            elif p in tokens:
+                # Add next phoneme or char (if chars=True)
+                ps.append(p)
+            elif (p in self.PUNCT_LIST) and self.punct:
+                # Add punct
+                ps.append(p)
+            elif p != space:
+                logging.warning(
+                    f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
+                    f"Original text: [{text}]. Symbol will be skipped."
+                )
+
+        # Remove trailing spaces
+        while ps[-1] == space:
+            ps.pop()
+
+        if self.pad_with_space:
+            ps = [space] + ps + [space]
+
+        # Token index lookups
         return [self._token2id[p] for p in ps]
 
     @contextmanager

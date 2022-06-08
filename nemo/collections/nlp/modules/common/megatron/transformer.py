@@ -1262,6 +1262,7 @@ class ParallelTransformerLayer_(MegatronModule):
             # Post-LN normalization after residual
             if self.transformer_block_type == 'post_ln':
                 normalization_output = self.input_layernorm(layernorm_input)
+                layernorm_input = normalization_output
             elif self.transformer_block_type in ['pre_ln', 'normformer']:
                 # Layer norm post the self attention.
                 normalization_output = self.post_attention_layernorm(layernorm_input)
@@ -1319,7 +1320,9 @@ class ParallelTransformerLayer_(MegatronModule):
 
             layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
             normalization_output = self.post_inter_attention_layernorm(layernorm_input)
-
+            # Post-LN normalization after residual
+            if self.transformer_block_type == 'post_ln':
+                layernorm_input = normalization_output
         # MLP.
         mlp_output, mlp_bias = self.mlp(normalization_output)
 

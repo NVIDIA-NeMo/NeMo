@@ -11,7 +11,7 @@ trainer:
   max_epochs: 3
   max_steps: null # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
-  val_check_interval: 200
+  val_check_interval: 1.0
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
@@ -33,48 +33,49 @@ exp_manager:
     monitor: val_loss
     save_top_k: 2
     mode: min
-    save_nemo_on_train_end: False
+    save_nemo_on_train_end: False # Should be false, correct prompt learning model file is saved at model.nemo_path set below, 
     filename: 'megatron_gpt_prompt_tune--{val_loss:.3f}-{step}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
 
 model:
   seed: 1234
-  nemo_path: ${name}.nemo # .nemo filename and path to where the model and associated artifacts should be saved
+  nemo_path: ${name}.nemo # .nemo filename/absolute path to where the virtual prompt model parameters will be saved
   virtual_prompt_style: 'p-tuning' # one of 'prompt-tuning', 'p-tuning', or 'inference'
   encoder_seq_length: 2048 
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
-  batch_size: 8
+  global_batch_size: 8
+  micro_batch_size: 4
 
   restore_path: null # Path to an existing p-tuned/prompt tuned .nemo model you wish to add new tasks to or run inference with
-  language_model_path: models/megatron_125M_gpt.nemo # Path to the GPT language model .nemo file, not needed if restore path is set  
+  language_model_path: models/megatron_125M_gpt.nemo # Path to the GPT language model .nemo file, always required
   existing_tasks: ['boolq', 'intent_and_slot'] # List of tasks the model has already been p-tuned/prompt-tuned for, needed when a restore path is given
   new_tasks: ['rte'] # List of new tasknames to be prompt-tuned
 
   task_templates: # Add more/replace tasks as needed, these are just examples
-  - taskname: 'boolq' # The task name
-    prompt_template: '<|VIRTUAL_PROMPT_0|> Passage: {passage} <|VIRTUAL_PROMPT_1|> \nQuestion: {question} \nAnswer: {answer}' # Prompt template for task, specify virtual prompt positions with <|VIRTUAL_PROMPT_#|>
-    total_virtual_tokens: 80 # Sum of tokens in virtual_token_splits must add to this number. Can differ between new and existing tasks, but must match across all new tasks being tuned at the same time.
-    virtual_token_splits: [60, 20] # number of virtual tokens to be inserted at each VIRTUAL PROMPT location, must add to total_virtual_tokens
-    truncate_field: 'passage' # The {field} in the prompt template whose text will be truncated if the input is too long, if null, inputs that are too long will just be skipped.
+  - taskname: "boolq" # The task name
+    prompt_template: "<|VIRTUAL_PROMPT_0|> Passage: {passage} <|VIRTUAL_PROMPT_1|> \nQuestion: {question} \nAnswer: {answer}" # Prompt template for task, specify virtual prompt positions with <|VIRTUAL_PROMPT_#|>
+    total_virtual_tokens: 30 # Sum of tokens in virtual_token_splits must add to this number. Can differ between new and existing tasks, but must match across all new tasks being tuned at the same time.
+    virtual_token_splits: [20, 10] # number of virtual tokens to be inserted at each VIRTUAL PROMPT location, must add to total_virtual_tokens
+    truncate_field: "passage" # The {field} in the prompt template whose text will be truncated if the input is too long, if null, inputs that are too long will just be skipped.
     answer_only_loss: True 
-    answer_field: 'answer'
+    answer_field: "answer"
 
-  - taskname: 'intent_and_slot'
-    prompt_template: '<|VIRTUAL_PROMPT_0|> intent options: {intent_options} <|VIRTUAL_PROMPT_1|> slot options: {slot_options} <|VIRTUAL_PROMPT_2|> {utterance} \nintent: {intent} \nslot: {slot}' 
-    total_virtual_tokens: 80
+  - taskname: "intent_and_slot"
+    prompt_template: "<|VIRTUAL_PROMPT_0|> intent options: {intent_options} <|VIRTUAL_PROMPT_1|> slot options: {slot_options} <|VIRTUAL_PROMPT_2|> {utterance} \nintent: {intent} \nslot: {slot}"
+    total_virtual_tokens: 30
     answer_only_loss: False 
-    virtual_token_splits: [34, 33, 13]
+    virtual_token_splits: [15, 10, 5]
     truncate_field: null
 
-  - taskname: 'rte'
-    prompt_template: '<|VIRTUAL_PROMPT_0|>{text}{answer}'
+  - taskname: "rte" 
+    prompt_template: "<|VIRTUAL_PROMPT_0|>{premise}\n{hypothesis}\nAnswer: {answer}" 
     total_virtual_tokens: 9 
-    virtual_token_splits: [9]
+    virtual_token_splits: [9] 
     truncate_field: null
     answer_only_loss: True
-    answer_field: 'answer'
+    answer_field: "answer"
 
   prompt_tuning: # Prompt tunin specific params
     new_prompt_init_methods: ['text'] # List of 'text' or 'random', should correspond to tasks listed in new tasks
@@ -103,7 +104,7 @@ model:
     sched:
       name: CosineAnnealing
       warmup_steps: 50
-      constant_steps: 10
-      min_lr: 1e-6
+      constant_steps: 0 # Constant steps should also be 0 when min_lr=0
+      min_lr: 0.0 # min_lr must be 0.0 for prompt learning
       monitor: val_loss
       reduce_on_plateau: false

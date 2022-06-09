@@ -108,7 +108,6 @@ pipeline {
         sh 'python -c "import nemo.collections.tts as nemo_tts"'
       }
     }
-
     stage('L0: Unit Tests GPU') {
       steps {
         sh 'NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme and not torch_tts" --with_downloads'
@@ -2711,75 +2710,69 @@ pipeline {
             trainer.num_nodes=1"
       }
     }
-    stage('L2: Megatron GPT Prompt Learning and Inference') {
+    stage('L2: Megatron GPT Prompt Learning') {
       when {
-	anyOf {
-	  branch 'main'
-	  changeRequest target: 'main'
-	}
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
       }
       failFast true
-      steps {
-        sh "echo 'TESTING P-TUNING TRAINING -------'"
-        sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
-            --config-name=megatron_gpt_prompt_learning_config \
-            name='/home/TestData/nlp/prompt_learning/p_tuning_test' \
-            trainer.max_steps=6 \
-            trainer.max_epochs=null \
-            trainer.val_check_interval=2 \
-            model.language_model_path='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
-            model.existing_tasks=[] \
-            model.new_tasks=['rte'] \
-            model.virtual_prompt_style='p-tuning' \
-            model.data.train_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test_train.jsonl'] \
-            model.data.validation_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test_val.jsonl']"
-
-        sh "echo 'TESTING P-TUNING INFERENCE --------'"
-        sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-            virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/p_tuning_test.nemo' \
-            gpt_model_file='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
-            inference.greedy=True \
-            inference.add_BOS=True \
-            trainer.devices=1 \
-            trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
-            prompts=['/home/TestData/nlp/prompt_learning/rte_CI_test_test.jsonl']"
-
-        sh "echo TESTING PROMPT-TUNING TRAINING ------"
-        sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
-            --config-name=megatron_gpt_prompt_learning_config \
-            name='/home/TestData/nlp/prompt_learning/prompt_tuning_test' \
-            trainer.max_steps=6 \
-            trainer.max_epochs=null \
-            trainer.val_check_interval=2 \
-            model.restore_path='/home/TestData/nlp/prompt_learning/p_tuning_test.nemo' \
-            model.language_model_path='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
-            model.existing_tasks=['rte'] \
-            model.new_tasks=['boolq, intent_and_slot'] \
-            model.virtual_prompt_style='prompt-tuning' \
-            model.prompt_tuning.new_prompt_init_methods=['text, random'] \
-            model.prompt_tuning.new_prompt_init_text=['some init text goes here, None'] \
-            model.data.train_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test_train.jsonl, /home/TestData/nlp/prompt_learning/intent_and_slot_CI_test_train.jsonl'] \
-            model.data.validation_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test_val.jsonl, /home/TestData/nlp/prompt_learning/intent_and_slot_CI_test_val.jsonl']"
-
-        sh "echo TESTING PROMPT-TUNING INFERENCE --------"
-        sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
-            virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/prompt_tuning_test.nemo' \
-            gpt_model_file='/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo' \
-            inference.greedy=True \
-            inference.add_BOS=True \
-            trainer.devices=1 \
-            trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
-            prompts=['/home/TestData/nlp/prompt_learning/rte_CI_test_test.jsonl, /home/TestData/nlp/prompt_learning/intent_and_slot_CI_test_test.jsonl, /home/TestData/nlp/prompt_learning/boolq_CI_test_test.jsonl']"
-
-        sh "rm -rf nemo_experiments"
-        sh "rm -rf /home/TestData/nlp/prompt_learning/prompt_tuning_test.nemo"
-        sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test.nemo"
-        sh "rm -rf /home/TestData/nlp/prompt_learning/prompt_tuning_test"
-        sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test"
+      parallel{
+        stage('GPT Prompt Learning TP=2 PP=1') {
+          steps {
+            sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
+                --config-name=megatron_gpt_prompt_learning_config \
+                name='/home/TestData/nlp/prompt_learning/p_tuning_test_tp' \
+                trainer.devices=2 \
+                trainer.max_steps=6 \
+                trainer.max_epochs=null \
+                model.tensor_model_parallel_size=2 \
+                model.language_model_path='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp2_pp1.nemo' \
+                model.existing_tasks=[] \
+                model.new_tasks=['rte'] \
+                model.data.train_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                model.data.validation_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                model.global_batch_size=4"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_tp"
+            sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
+                virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/p_tuning_test_tp.nemo' \
+                gpt_model_file='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp2_pp1.nemo' \
+                inference.greedy=True \
+                inference.add_BOS=False \
+                trainer.devices=2 \
+                tensor_model_parallel_size=2 \
+                prompts=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl']"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_tp.nemo"
+          }
+        }
+        stage('GPT Prompt Learning TP=1 PP=2') {
+          steps {
+            sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
+                --config-name=megatron_gpt_prompt_learning_config \
+                name='/home/TestData/nlp/prompt_learning/p_tuning_test_pp' \
+                trainer.devices=2 \
+                trainer.max_steps=6 \
+                trainer.max_epochs=null \
+                model.pipeline_model_parallel_size=2 \
+                model.language_model_path='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp2.nemo' \
+                model.existing_tasks=[] \
+                model.new_tasks=['boolq'] \
+                model.data.train_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl'] \
+                model.data.validation_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl'] \
+                model.global_batch_size=4"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp"
+            sh "python examples/nlp/language_modeling/megatron_gpt_eval.py \
+                virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/p_tuning_test_pp.nemo' \
+                gpt_model_file='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp2.nemo' \
+                inference.greedy=True \
+                inference.add_BOS=False \
+                trainer.devices=2 \
+                pipeline_model_parallel_size=2 \
+                prompts=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl']"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp.nemo"
+          }
+        }
       }
     }
 

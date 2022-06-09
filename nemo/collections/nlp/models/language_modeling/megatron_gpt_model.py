@@ -303,30 +303,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         """
         return
 
-    def allreduce_gradients(self):
-        """Reduce gradients across data parallel ranks.
-           Modified from megatron-lm: https://github.com/NVIDIA/Megatron-LM/blob/d41696840ed0a7edb7e0499eb82a48ae112d9bb3/megatron/model/distributed.py#L188
-        """
-        # Bucketize and all-reduce
-        buckets = {}
-        for param in self.parameters():
-            if param.requires_grad and param.grad is not None:
-                tp = param.data.type()
-                if tp not in buckets:
-                    buckets[tp] = []
-                buckets[tp].append(param)
-                # param.main_grad = param.grad
-
-        # For each bucket, all-reduce and copy all-reduced grads.
-        for tp in buckets:
-            bucket = buckets[tp]
-            grads = [param.grad.data for param in bucket]
-            coalesced = torch._utils._flatten_dense_tensors(grads)
-            coalesced /= parallel_state.get_data_parallel_world_size()
-            torch.distributed.all_reduce(coalesced, group=parallel_state.get_data_parallel_group())
-            for buf, synced in zip(grads, torch._utils._unflatten_dense_tensors(coalesced, grads)):
-                buf.copy_(synced)
-
     def allreduce_first_last_embeddings(self):
 
         # Modified from megatron-lm: https://github.com/NVIDIA/Megatron-LM/blob/d41696840ed0a7edb7e0499eb82a48ae112d9bb3/megatron/training.py#L407

@@ -252,7 +252,7 @@ def main(cfg) -> None:
         pass
 
     try:
-        model.frozen_model.language_model.encoder.activations_checkpoint_method = None
+        model.frozen_model.model.language_model.encoder.activations_checkpoint_method = None
     except AttributeError:
         pass
 

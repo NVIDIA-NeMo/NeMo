@@ -17,7 +17,7 @@ import math
 import torch
 from torch import nn
 
-from nemo.collections.tts.modules.aligner import ConvNorm
+from nemo.collections.tts.modules.submodules import ConvNorm
 from nemo.collections.tts.modules.transformer import PositionalEmbedding
 
 

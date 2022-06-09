@@ -367,9 +367,13 @@ def tacotron2_log_to_wandb_func(
             swriter.log({"audios": audios})
 
 
-def plot_alignment_to_numpy(alignment, info=None):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    im = ax.imshow(alignment, aspect='auto', origin='lower', interpolation='none')
+def plot_alignment_to_numpy(alignment, title='', info=None, phoneme_seq=None, vmin=None, vmax=None):
+    if phoneme_seq:
+        fig, ax = plt.subplots(figsize=(15, 10))
+    else:
+        fig, ax = plt.subplots(figsize=(6, 4))
+    im = ax.imshow(alignment, aspect='auto', origin='lower', interpolation='none', vmin=vmin, vmax=vmax)
+    ax.set_title(title)
     fig.colorbar(im, ax=ax)
     xlabel = 'Decoder timestep'
     if info is not None:
@@ -377,6 +381,12 @@ def plot_alignment_to_numpy(alignment, info=None):
     plt.xlabel(xlabel)
     plt.ylabel('Encoder timestep')
     plt.tight_layout()
+
+    if phoneme_seq != None:
+        # for debugging of phonemes and durs in maps. Not used by def in training code
+        ax.set_yticks(np.arange(len(phoneme_seq)))
+        ax.set_yticklabels(phoneme_seq)
+        ax.hlines(np.arange(len(phoneme_seq)), xmin=0.0, xmax=max(ax.get_xticks()))
 
     fig.canvas.draw()
     data = save_figure_to_numpy(fig)

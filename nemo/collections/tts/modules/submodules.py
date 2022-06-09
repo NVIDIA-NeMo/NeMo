@@ -19,6 +19,73 @@ from torch.autograd import Variable
 from torch.nn import functional as F
 
 
+class PartialConv1d(torch.nn.Conv1d):
+    """
+    Zero padding creates a unique identifier for where the edge of the data is, such that the model can almost always identify
+    exactly where it is relative to either edge given a sufficient receptive field. Partial padding goes to some lengths to remove 
+    this affect.
+    """
+
+    def __init__(self, *args, **kwargs):
+
+        self.multi_channel = False
+        self.return_mask = False
+        super(PartialConv1d, self).__init__(*args, **kwargs)
+
+        self.weight_maskUpdater = torch.ones(1, 1, self.kernel_size[0])
+        self.slide_winsize = self.weight_maskUpdater.shape[1] * self.weight_maskUpdater.shape[2]
+
+        self.last_size = (None, None, None)
+        self.update_mask = None
+        self.mask_ratio = None
+
+    def forward(self, input: torch.Tensor, mask_in: Tuple[int, int, int] = None):
+        assert len(input.shape) == 3
+        # if a mask is input, or tensor shape changed, update mask ratio
+        if mask_in is not None or self.last_size != tuple(input.shape):
+            # borisf: disabled update for inference
+            if self.training:
+                self.last_size = tuple(input.shape)
+            with torch.no_grad():
+                if self.weight_maskUpdater.type() != input.type():
+                    self.weight_maskUpdater = self.weight_maskUpdater.to(input)
+                if mask_in is None:
+                    mask = torch.ones(1, 1, input.shape[2]).to(input)
+                else:
+                    mask = mask_in
+                update_mask = F.conv1d(
+                    mask,
+                    self.weight_maskUpdater,
+                    bias=None,
+                    stride=self.stride,
+                    padding=self.padding,
+                    dilation=self.dilation,
+                    groups=1,
+                )
+                # for mixed precision training, change 1e-8 to 1e-6
+                mask_ratio = self.slide_winsize / (update_mask + 1e-6)
+                update_mask = torch.clamp(update_mask, 0, 1)
+                mask_ratio = torch.mul(mask_ratio, update_mask)
+            self.update_mask = update_mask
+            self.mask_ratio = mask_ratio
+        else:
+            mask_ratio = self.mask_ratio
+            update_mask = self.update_mask
+
+        raw_out = super(PartialConv1d, self).forward(torch.mul(input, mask) if mask_in is not None else input)
+        if self.bias is not None:
+            bias_view = self.bias.view(1, self.out_channels, 1)
+            output = torch.mul(raw_out - bias_view, mask_ratio) + bias_view
+            output = torch.mul(output, update_mask)
+        else:
+            output = torch.mul(raw_out, mask_ratio)
+
+        if self.return_mask:
+            return output, update_mask
+        else:
+            return output
+
+
 class LinearNorm(torch.nn.Module):
     def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear'):
         super().__init__()
@@ -41,13 +108,21 @@ class ConvNorm(torch.nn.Module):
         dilation=1,
         bias=True,
         w_init_gain='linear',
+        use_partial_padding=False,
+        use_weight_norm=False,
     ):
-        super().__init__()
+        super(ConvNorm, self).__init__()
         if padding is None:
             assert kernel_size % 2 == 1
             padding = int(dilation * (kernel_size - 1) / 2)
-
-        self.conv = torch.nn.Conv1d(
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.use_partial_padding = use_partial_padding
+        self.use_weight_norm = use_weight_norm
+        conv_fn = torch.nn.Conv1d
+        if self.use_partial_padding:
+            conv_fn = PartialConv1d
+        self.conv = conv_fn(
             in_channels,
             out_channels,
             kernel_size=kernel_size,
@@ -56,11 +131,15 @@ class ConvNorm(torch.nn.Module):
             dilation=dilation,
             bias=bias,
         )
-
         torch.nn.init.xavier_uniform_(self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+        if self.use_weight_norm:
+            self.conv = nn.utils.weight_norm(self.conv)
 
-    def forward(self, signal):
-        conv_signal = self.conv(signal)
+    def forward(self, signal, mask=None):
+        if self.use_partial_padding:
+            conv_signal = self.conv(signal, mask)
+        else:
+            conv_signal = self.conv(signal)
         return conv_signal
 
 

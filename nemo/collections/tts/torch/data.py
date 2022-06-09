@@ -42,9 +42,11 @@ from nemo.collections.tts.torch.tts_data_types import (
     Energy,
     LMTokens,
     LogMel,
+    P_voiced,
     Pitch,
     SpeakerID,
     TTSDataType,
+    Voiced_mask,
     WithLens,
 )
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer, EnglishPhonemesTokenizer
@@ -130,6 +132,8 @@ class TTSDataset(Dataset):
             log_mel_folder (Optional[Union[Path, str]]): The folder that contains or will contain log mel spectrograms.
             align_prior_matrix_folder (Optional[Union[Path, str]]): The folder that contains or will contain align prior matrices.
             pitch_folder (Optional[Union[Path, str]]): The folder that contains or will contain pitch.
+            voiced_mask_folder (Optional[Union[Path, str]]): The folder that contains or will contain voiced mask of the pitch 
+            p_voiced_folder (Optional[Union[Path, str]]): The folder that contains or will contain p_voiced(probability) of the pitch 
             energy_folder (Optional[Union[Path, str]]): The folder that contains or will contain energy.
             durs_file (Optional[str]): String path to pickled durations location.
             durs_type (Optional[str]): Type of durations. Currently supported only "aligner-based".
@@ -375,6 +379,23 @@ class TTSDataset(Dataset):
         self.pitch_std = kwargs.pop("pitch_std", None)
         self.pitch_norm = kwargs.pop("pitch_norm", False)
 
+    # saving voiced_mask and p_voiced with pitch
+    def add_voiced_mask(self, **kwargs):
+        self.voiced_mask_folder = kwargs.pop('voiced_mask_folder', None)
+
+        if self.voiced_mask_folder is None:
+            self.voiced_mask_folder = Path(self.sup_data_path) / Voiced_mask.name
+
+        self.voiced_mask_folder.mkdir(exist_ok=True, parents=True)
+
+    def add_p_voiced(self, **kwargs):
+        self.p_voiced_folder = kwargs.pop('p_voiced_folder', None)
+
+        if self.p_voiced_folder is None:
+            self.p_voiced_folder = Path(self.sup_data_path) / P_voiced.name
+
+        self.p_voiced_folder.mkdir(exist_ok=True, parents=True)
+
     def add_energy(self, **kwargs):
         self.energy_folder = kwargs.pop('energy_folder', None)
 
@@ -402,6 +423,23 @@ class TTSDataset(Dataset):
         return log_mel
 
     def __getitem__(self, index):
+        def load_from_dir(folder):
+            voiced_path = folder / f"{rel_audio_path_as_text_id}.pt"
+            if voiced_path.exists():
+                voiced = torch.load(voiced_path).float()
+            else:
+                _, voiced, _ = librosa.pyin(
+                    audio.numpy(),
+                    fmin=self.pitch_fmin,
+                    fmax=self.pitch_fmax,
+                    frame_length=self.win_length,
+                    sr=self.sample_rate,
+                    fill_na=0.0,
+                )
+                voiced = torch.from_numpy(voiced).float()
+                torch.save(voiced, voiced_path)
+            return voiced
+
         sample = self.data[index]
 
         # Let's keep audio name and all internal directories in rel_audio_path_as_text_id to avoid any collisions
@@ -466,28 +504,18 @@ class TTSDataset(Dataset):
         # Load pitch if needed
         pitch, pitch_length = None, None
         if Pitch in self.sup_data_types_set:
-            pitch_path = self.pitch_folder / f"{rel_audio_path_as_text_id}.pt"
-
-            if pitch_path.exists():
-                pitch = torch.load(pitch_path).float()
-            else:
-                pitch, _, _ = librosa.pyin(
-                    audio.numpy(),
-                    fmin=self.pitch_fmin,
-                    fmax=self.pitch_fmax,
-                    frame_length=self.win_length,
-                    sr=self.sample_rate,
-                    fill_na=0.0,
-                )
-                pitch = torch.from_numpy(pitch).float()
-                torch.save(pitch, pitch_path)
-
+            pitch = load_from_dir(self.pitch_folder)
             if self.pitch_mean is not None and self.pitch_std is not None and self.pitch_norm:
                 pitch -= self.pitch_mean
                 pitch[pitch == -self.pitch_mean] = 0.0  # Zero out values that were previously zero
                 pitch /= self.pitch_std
 
             pitch_length = torch.tensor(len(pitch)).long()
+
+        # Load voiced_mask if needed
+        voiced_mask = load_from_dir(self.voiced_mask_folder) if Voiced_mask in self.sup_data_types_set else None
+        # Load p_voiced if needed
+        p_voiced = load_from_dir(self.p_voiced_folder) if P_voiced in self.sup_data_types_set else None
 
         # Load energy if needed
         energy, energy_length = None, None
@@ -522,6 +550,8 @@ class TTSDataset(Dataset):
             energy,
             energy_length,
             speaker_id,
+            voiced_mask,
+            p_voiced,
         )
 
     def __len__(self):
@@ -551,6 +581,8 @@ class TTSDataset(Dataset):
             pitches_lengths,
             energies,
             energies_lengths,
+            voiced_masks,
+            p_voiceds,
             _,
         ) = zip(*batch)
 
@@ -573,7 +605,17 @@ class TTSDataset(Dataset):
             if AlignPriorMatrix in self.sup_data_types_set
             else []
         )
-        audios, tokens, log_mels, durations_list, pitches, energies, speaker_ids = [], [], [], [], [], [], []
+        audios, tokens, log_mels, durations_list, pitches, energies, speaker_ids, voiced_masks, p_voiceds = (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
 
         for i, sample_tuple in enumerate(batch):
             (
@@ -590,6 +632,8 @@ class TTSDataset(Dataset):
                 energy,
                 energy_length,
                 speaker_id,
+                voiced_mask,
+                p_voiceds,
             ) = sample_tuple
 
             audio = general_padding(audio, audio_len.item(), max_audio_len)
@@ -608,6 +652,12 @@ class TTSDataset(Dataset):
                 ] = align_prior_matrix
             if Pitch in self.sup_data_types_set:
                 pitches.append(general_padding(pitch, pitch_length.item(), max_pitches_len))
+
+            if Voiced_mask in self.sup_data_types_set:
+                voiced_masks.append(general_padding(voiced_mask, pitch_length.item(), max_pitches_len))
+            if P_voiced in self.sup_data_types_set:
+                p_voiceds.append(general_padding(voiced_mask, pitch_length.item(), max_pitches_len))
+
             if Energy in self.sup_data_types_set:
                 energies.append(general_padding(energy, energy_length.item(), max_energies_len))
             if SpeakerID in self.sup_data_types_set:
@@ -627,6 +677,8 @@ class TTSDataset(Dataset):
             "energy": torch.stack(energies) if Energy in self.sup_data_types_set else None,
             "energy_lens": torch.stack(energies_lengths) if Energy in self.sup_data_types_set else None,
             "speaker_id": torch.stack(speaker_ids) if SpeakerID in self.sup_data_types_set else None,
+            "voiced_mask": torch.stack(voiced_masks) if Voiced_mask in self.sup_data_types_set else None,
+            "p_voiced": torch.stack(p_voiceds) if P_voiced in self.sup_data_types_set else None,
         }
 
         return data_dict
@@ -689,6 +741,8 @@ class MixerTTSXDataset(TTSDataset):
             energy,
             energy_length,
             speaker_id,
+            voiced_mask,
+            p_voiced,
         ) = super().__getitem__(index)
 
         lm_tokens = None
@@ -709,6 +763,8 @@ class MixerTTSXDataset(TTSDataset):
             energy,
             energy_length,
             speaker_id,
+            voiced_mask,
+            p_voiced,
             lm_tokens,
         )
 

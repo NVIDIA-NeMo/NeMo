@@ -313,6 +313,38 @@ def labels_to_rttmfile(labels, uniq_id, out_rttm_dir):
     return filename
 
 
+def string_to_float(x, round_digits):
+    """
+    Convert string to float then round the number.
+    """
+    return round(float(x), round_digits)
+
+
+def convert_rttm_line(rttm_line, round_digits=3):
+    """
+    Convert a line in RTTM file to speaker label, start and end timestamps.
+
+    Args:
+        rttm_line (str):
+            A line in RTTM formatted file containing offset and duration of each segment.
+        round_digits (int):
+            Number of digits to be rounded.
+
+    Returns:
+        start (float)
+            Start timestamp in floating point number.
+        end (float):
+            End timestamp in floating point number.
+        speaker (str):
+            speaker string in RTTM lines.
+    """
+    rttm = rttm_line.strip().split()
+    start = string_to_float(rttm[3], round_digits)
+    end = string_to_float(rttm[4], round_digits) + string_to_float(rttm[3], round_digits)
+    speaker = rttm[7]
+    return start, end, speaker
+
+
 def rttm_to_labels(rttm_filename):
     """
     Prepare time stamps label list from rttm file
@@ -320,8 +352,7 @@ def rttm_to_labels(rttm_filename):
     labels = []
     with open(rttm_filename, 'r') as f:
         for line in f.readlines():
-            rttm = line.strip().split()
-            start, end, speaker = float(rttm[3]), float(rttm[4]) + float(rttm[3]), rttm[7]
+            start, end, speaker = convert_rttm_line(line, round_digits=3)
             labels.append('{} {} {}'.format(start, end, speaker))
     return labels
 

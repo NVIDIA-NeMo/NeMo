@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.data import audio_to_text
+from nemo.collections.asr.metrics.wer import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.models import EncDecCTCModel, configs
 from nemo.utils.config_utils import assert_dataclass_signature_match, update_model_config
 
@@ -144,6 +145,20 @@ class TestEncDecCTCModel:
         asr_model.change_vocabulary(new_vocabulary=new_vocab)
         # fully connected + bias
         assert asr_model.num_weights == nw1 + 3 * (asr_model.decoder._feat_in + 1)
+
+    @pytest.mark.unit
+    def test_decoding_change(self, asr_model):
+        assert asr_model.decoding is not None
+        assert isinstance(asr_model.decoding, CTCDecoding)
+        assert asr_model.decoding.cfg.strategy == "greedy"
+        assert asr_model.decoding.preserve_alignments is False
+        assert asr_model.decoding.compute_timestamps is False
+
+        cfg = CTCDecodingConfig(preserve_alignments=True, compute_timestamps=True)
+        asr_model.change_decoding_strategy(cfg)
+
+        assert asr_model.decoding.preserve_alignments is True
+        assert asr_model.decoding.compute_timestamps is True
 
     @pytest.mark.unit
     def test_change_conv_asr_se_context_window(self, asr_model):

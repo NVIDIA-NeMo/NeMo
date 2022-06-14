@@ -29,7 +29,7 @@ import tensorrt as trt
 import torch
 from omegaconf import open_dict
 
-from nemo.collections.asr.metrics.wer import WER, word_error_rate
+from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig, word_error_rate
 from nemo.collections.asr.models import EncDecCTCModel
 from nemo.utils import logging
 
@@ -102,7 +102,9 @@ def main():
         asr_model = asr_model.cuda()
     asr_model.eval()
     labels_map = dict([(i, asr_model.decoder.vocabulary[i]) for i in range(len(asr_model.decoder.vocabulary))])
-    wer = WER(vocabulary=asr_model.decoder.vocabulary, use_cer=args.use_cer)
+    decoding_cfg = CTCDecodingConfig()
+    char_decoding = CTCDecoding(decoding_cfg, vocabulary=labels_map)
+    wer = WER(char_decoding, use_cer=args.use_cer)
     wer_result = evaluate(asr_model, args.asr_onnx, labels_map, wer, args.qat)
     logging.info(f'Got WER of {wer_result}.')
 

@@ -23,8 +23,8 @@ import torch
 from omegaconf import OmegaConf
 
 import nemo.collections.asr as nemo_asr
-from nemo.collections.asr.metrics.wer import WER
-from nemo.collections.asr.metrics.wer_bpe import WERBPE
+from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig
+from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.models import EncDecCTCModel, EncDecCTCModelBPE
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map, get_uniqname_from_filepath
 from nemo.collections.asr.parts.utils.streaming_utils import AudioFeatureIterator, FrameBatchASR
@@ -59,12 +59,16 @@ class WERBPE_TS(WERBPE):
         tokenizer: TokenizerSpec,
         batch_dim_index=0,
         use_cer=False,
-        ctc_decode=True,
+        ctc_decode=None,
         log_prediction=True,
         dist_sync_on_step=False,
     ):
+        if ctc_decode is not None:
+            logging.warning(f'`ctc_decode` was set to {ctc_decode}. Note that this is ignored.')
 
-        super().__init__(tokenizer, batch_dim_index, use_cer, ctc_decode, log_prediction, dist_sync_on_step)
+        decoding_cfg = CTCBPEDecodingConfig(batch_dim_index=batch_dim_index)
+        decoding = CTCBPEDecoding(decoding_cfg, tokenizer=tokenizer)
+        super().__init__(decoding, use_cer, log_prediction, dist_sync_on_step)
 
     def ctc_decoder_predictions_tensor_with_ts(
         self, time_stride, predictions: torch.Tensor, predictions_len: torch.Tensor = None
@@ -75,15 +79,15 @@ class WERBPE_TS(WERBPE):
         prediction_cpu_tensor = predictions.long().cpu()
         # iterate over batch
         self.time_stride = time_stride
-        for ind in range(prediction_cpu_tensor.shape[self.batch_dim_index]):
+        for ind in range(prediction_cpu_tensor.shape[self.decoding.batch_dim_index]):
             prediction = prediction_cpu_tensor[ind].detach().numpy().tolist()
             if predictions_len is not None:
                 prediction = prediction[: predictions_len[ind]]
             # CTC decoding procedure
             decoded_prediction, char_ts, timestamp_list = [], [], []
-            previous = self.blank_id
+            previous = self.decoding.blank_id
             for pdx, p in enumerate(prediction):
-                if (p != previous or previous == self.blank_id) and p != self.blank_id:
+                if (p != previous or previous == self.decoding.blank_id) and p != self.decoding.blank_id:
                     decoded_prediction.append(p)
                     char_ts.append(round(pdx * self.time_stride, 2))
                     timestamp_list.append(round(pdx * self.time_stride, 2))
@@ -100,15 +104,15 @@ class WERBPE_TS(WERBPE):
         return hypotheses, timestamps, word_timestamps
 
     def decode_tokens_to_str_with_ts(self, tokens: List[int]) -> str:
-        hypothesis = self.tokenizer.ids_to_text(tokens)
+        hypothesis = self.decoding.tokenizer.ids_to_text(tokens)
         return hypothesis
 
     def decode_ids_to_tokens_with_ts(self, tokens: List[int]) -> List[str]:
-        token_list = self.tokenizer.ids_to_tokens(tokens)
+        token_list = self.decoding.tokenizer.ids_to_tokens(tokens)
         return token_list
 
     def get_ts_from_decoded_prediction(self, decoded_prediction: List[str], hypothesis: List[str], char_ts: List[str]):
-        decoded_char_list = self.tokenizer.ids_to_tokens(decoded_prediction)
+        decoded_char_list = self.decoding.tokenizer.ids_to_tokens(decoded_prediction)
         stt_idx, end_idx = 0, len(decoded_char_list) - 1
         stt_ch_idx, end_ch_idx = 0, 0
         space = '▁'
@@ -150,11 +154,16 @@ class WER_TS(WER):
         vocabulary,
         batch_dim_index=0,
         use_cer=False,
-        ctc_decode=True,
+        ctc_decode=None,
         log_prediction=True,
         dist_sync_on_step=False,
     ):
-        super().__init__(vocabulary, batch_dim_index, use_cer, ctc_decode, log_prediction, dist_sync_on_step)
+        if ctc_decode is not None:
+            logging.warning(f'`ctc_decode` was set to {ctc_decode}. Note that this is ignored.')
+
+        decoding_cfg = CTCDecodingConfig(batch_dim_index=batch_dim_index)
+        decoding = CTCDecoding(decoding_cfg, vocabulary=vocabulary)
+        super().__init__(decoding, use_cer, log_prediction, dist_sync_on_step)
 
     def decode_tokens_to_str_with_ts(self, tokens: List[int], timestamps: List[int]) -> str:
         """
@@ -162,14 +171,14 @@ class WER_TS(WER):
         start and end of each word.
         """
         token_list, timestamp_list = self.decode_ids_to_tokens_with_ts(tokens, timestamps)
-        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
+        hypothesis = ''.join(self.decoding.decode_ids_to_tokens(tokens))
         return hypothesis, timestamp_list
 
     def decode_ids_to_tokens_with_ts(self, tokens: List[int], timestamps: List[int]) -> List[str]:
         token_list, timestamp_list = [], []
         for i, c in enumerate(tokens):
-            if c != self.blank_id:
-                token_list.append(self.labels_map[c])
+            if c != self.decoding.blank_id:
+                token_list.append(self.decoding.labels_map[c])
                 timestamp_list.append(timestamps[i])
         return token_list, timestamp_list
 
@@ -182,16 +191,16 @@ class WER_TS(WER):
         """
         hypotheses, timestamps = [], []
         prediction_cpu_tensor = predictions.long().cpu()
-        for ind in range(prediction_cpu_tensor.shape[self.batch_dim_index]):
+        for ind in range(prediction_cpu_tensor.shape[self.decoding.batch_dim_index]):
             prediction = prediction_cpu_tensor[ind].detach().numpy().tolist()
             if predictions_len is not None:
                 prediction = prediction[: predictions_len[ind]]
 
             # CTC decoding procedure with timestamps
             decoded_prediction, decoded_timing_list = [], []
-            previous = self.blank_id
+            previous = self.decoding.blank_id
             for pdx, p in enumerate(prediction):
-                if (p != previous or previous == self.blank_id) and p != self.blank_id:
+                if (p != previous or previous == self.decoding.blank_id) and p != self.decoding.blank_id:
                     decoded_prediction.append(p)
                     decoded_timing_list.append(pdx)
                 previous = p

@@ -26,7 +26,7 @@ from tqdm.auto import tqdm
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
-from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
@@ -80,12 +80,21 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         else:
             self.spec_augmentation = None
 
-        # Setup metric objects
+        # Setup decoding objects
+        decoding_cfg = self.cfg.get('decoding', None)
+
+        # In case decoding config not found, use default config
+        if decoding_cfg is None:
+            decoding_cfg = OmegaConf.structured(CTCDecodingConfig)
+            with open_dict(self.cfg):
+                self.cfg.decoding = decoding_cfg
+
+        self.decoding = CTCDecoding(self.cfg.decoding, vocabulary=self.decoder.vocabulary)
+
+        # Setup metric with decoding strategy
         self._wer = WER(
-            vocabulary=self.decoder.vocabulary,
-            batch_dim_index=0,
+            decoding=self.decoding,
             use_cer=self._cfg.get('use_cer', False),
-            ctc_decode=True,
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
         )
@@ -136,6 +145,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
 
         # We will store transcriptions here
         hypotheses = []
+        all_hypotheses = []
+
         # Model's mode and device
         mode = self.training
         device = next(self.parameters()).device
@@ -177,16 +188,24 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                             lg = logits[idx][: logits_len[idx]]
                             hypotheses.append(lg.cpu().numpy())
                     else:
-                        current_hypotheses = self._wer.ctc_decoder_predictions_tensor(
-                            greedy_predictions, predictions_len=logits_len, return_hypotheses=return_hypotheses,
+                        current_hypotheses, all_hyp = self.decoding.ctc_decoder_predictions_tensor(
+                            logits, decoder_lengths=logits_len, return_hypotheses=return_hypotheses,
                         )
 
                         if return_hypotheses:
                             # dump log probs per file
                             for idx in range(logits.shape[0]):
                                 current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
+                                if current_hypotheses[idx].alignments is None:
+                                    current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
 
                         hypotheses += current_hypotheses
+
+                        # Keep following for beam search integration
+                        # if all_hyp is not None:
+                        #     all_hypotheses += all_hyp
+                        # else:
+                        #     all_hypotheses += current_hypotheses
 
                     del greedy_predictions
                     del logits
@@ -200,9 +219,10 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                 self.encoder.unfreeze()
                 self.decoder.unfreeze()
             logging.set_verbosity(logging_level)
+
         return hypotheses
 
-    def change_vocabulary(self, new_vocabulary: List[str]):
+    def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
         """
         Changes vocabulary used during CTC decoding process. Use this method when fine-tuning on from pre-trained model.
         This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, you would
@@ -237,19 +257,31 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                 zero_infinity=True,
                 reduction=self._cfg.get("ctc_reduction", "mean_batch"),
             )
+
+            if decoding_cfg is None:
+                # Assume same decoding config as before
+                decoding_cfg = self.cfg.decoding
+
+            # Assert the decoding config with all hyper parameters
+            decoding_cls = OmegaConf.structured(CTCDecodingConfig)
+            decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
+            decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
+
+            self.decoding = CTCDecoding(decoding_cfg=decoding_cfg, vocabulary=self.decoder.vocabulary)
+
             self._wer = WER(
-                vocabulary=self.decoder.vocabulary,
-                batch_dim_index=0,
+                decoding=self.decoding,
                 use_cer=self._cfg.get('use_cer', False),
-                ctc_decode=True,
                 dist_sync_on_step=True,
                 log_prediction=self._cfg.get("log_prediction", False),
             )
 
             # Update config
-            OmegaConf.set_struct(self._cfg.decoder, False)
-            self._cfg.decoder = new_decoder_config
-            OmegaConf.set_struct(self._cfg.decoder, True)
+            with open_dict(self.cfg.decoder):
+                self._cfg.decoder = new_decoder_config
+
+            with open_dict(self.cfg.decoding):
+                self.cfg.decoding = decoding_cfg
 
             ds_keys = ['train_ds', 'validation_ds', 'test_ds']
             for key in ds_keys:
@@ -258,6 +290,39 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                         self.cfg[key]['labels'] = OmegaConf.create(new_vocabulary)
 
             logging.info(f"Changed decoder to output to {self.decoder.vocabulary} vocabulary.")
+
+    def change_decoding_strategy(self, decoding_cfg: DictConfig):
+        """
+        Changes decoding strategy used during CTC decoding process.
+
+        Args:
+            decoding_cfg: A config for the decoder, which is optional. If the decoding type
+                needs to be changed (from say Greedy to Beam decoding etc), the config can be passed here.
+        """
+        if decoding_cfg is None:
+            # Assume same decoding config as before
+            logging.info("No `decoding_cfg` passed when changing decoding strategy, using internal config")
+            decoding_cfg = self.cfg.decoding
+
+        # Assert the decoding config with all hyper parameters
+        decoding_cls = OmegaConf.structured(CTCDecodingConfig)
+        decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
+        decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
+
+        self.decoding = CTCDecoding(decoding_cfg=decoding_cfg, vocabulary=self.decoder.vocabulary)
+
+        self._wer = WER(
+            decoding=self.decoding,
+            use_cer=self._wer.use_cer,
+            log_prediction=self._wer.log_prediction,
+            dist_sync_on_step=True,
+        )
+
+        # Update config
+        with open_dict(self.cfg.decoding):
+            self.cfg.decoding = decoding_cfg
+
+        logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if 'augmentor' in config:
@@ -503,7 +568,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
 
         if (batch_nb + 1) % log_every_n_steps == 0:
             self._wer.update(
-                predictions=predictions,
+                predictions=log_probs,
                 targets=transcript,
                 target_lengths=transcript_len,
                 predictions_lengths=encoded_len,
@@ -524,7 +589,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
 
         transcribed_texts = self._wer.ctc_decoder_predictions_tensor(
-            predictions=predictions, predictions_len=encoded_len, return_hypotheses=False,
+            predictions=log_probs, predictions_len=encoded_len, return_hypotheses=False,
         )
 
         sample_id = sample_id.cpu().detach().numpy()
@@ -543,7 +608,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
         )
         self._wer.update(
-            predictions=predictions, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len
+            predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len
         )
         wer, wer_num, wer_denom = self._wer.compute()
         self._wer.reset()

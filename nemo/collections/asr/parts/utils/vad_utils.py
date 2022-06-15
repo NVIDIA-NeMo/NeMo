@@ -71,15 +71,18 @@ def prepare_manifest(config: dict) -> str:
             "The input for manifest preparation would either be a string of the filepath to manifest or a list of {'audio_filepath': i, 'offset': 0, 'duration': null} "
         )
 
-    p = multiprocessing.Pool(processes=config['num_workers'])
     args_func = {
         'label': 'infer',
         'split_duration': config['split_duration'],
         'window_length_in_sec': config['window_length_in_sec'],
     }
 
-    results = p.starmap(write_vad_infer_manifest, zip(input_list, repeat(args_func)))
-    p.close()
+    if config.get('num_workers') is not None and config['num_workers'] > 1:
+        p = multiprocessing.Pool(processes=config['num_workers'])
+        results = p.starmap(write_vad_infer_manifest, zip(input_list, repeat(args_func)))
+        p.close()
+    else:
+        results = [write_vad_infer_manifest(input_el, args_func) for input_el in input_list]
 
     if os.path.exists(manifest_vad_input):
         logging.info("The prepared manifest file exists. Overwriting!")
@@ -236,7 +239,6 @@ def generate_overlap_vad_seq(
         overlap_out_dir(str): directory of the generated predictions.
     """
 
-    p = multiprocessing.Pool(processes=num_workers)
     frame_filepathlist = glob.glob(frame_pred_dir + "/*.frame")
     if out_dir:
         overlap_out_dir = out_dir
@@ -253,10 +255,14 @@ def generate_overlap_vad_seq(
         "out_dir": overlap_out_dir,
         "smoothing_method": smoothing_method,
     }
-
-    p.starmap(generate_overlap_vad_seq_per_file, zip(frame_filepathlist, repeat(per_args)))
-    p.close()
-    p.join()
+    if num_workers is not None and num_workers > 1:
+        p = multiprocessing.Pool(processes=num_workers)
+        p.starmap(generate_overlap_vad_seq_per_file, zip(frame_filepathlist, repeat(per_args)))
+        p.close()
+        p.join()
+    else:
+        for frame_filepath in frame_filepathlist:
+            generate_overlap_vad_seq_per_file(frame_filepath, per_args)
 
     return overlap_out_dir
 
@@ -663,7 +669,6 @@ def generate_vad_segment_table(
         table_out_dir(str): directory of the generated table.
     """
 
-    p = multiprocessing.Pool(processes=num_workers)
     suffixes = ("frame", "mean", "median")
     vad_pred_filepath_list = [os.path.join(vad_pred_dir, x) for x in os.listdir(vad_pred_dir) if x.endswith(suffixes)]
 
@@ -685,9 +690,14 @@ def generate_vad_segment_table(
     }
     per_args = {**per_args, **postprocessing_params}
 
-    p.starmap(generate_vad_segment_table_per_file, zip(vad_pred_filepath_list, repeat(per_args)))
-    p.close()
-    p.join()
+    if num_workers is not None and num_workers > 1:
+        p = multiprocessing.Pool(processes=num_workers)
+        p.starmap(generate_vad_segment_table_per_file, zip(vad_pred_filepath_list, repeat(per_args)))
+        p.close()
+        p.join()
+    else:
+        for vad_pred_filepath in vad_pred_filepath_list:
+            generate_vad_segment_table_per_file(vad_pred_filepath, per_args)
 
     return table_out_dir
 

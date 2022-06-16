@@ -190,6 +190,7 @@ exp_manager:
     name: null
     project: null
     entity: null
+    save_dir: null
 
   resume_if_exists: false
   resume_ignore_no_checkpoint: false

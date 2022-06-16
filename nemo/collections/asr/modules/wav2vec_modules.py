@@ -313,7 +313,7 @@ class Wav2VecTransformerEncoder(TransformerEncoder):
             audio_signal[idx, :, len:] = 0.0
 
         signal_conv = self.pos_conv(audio_signal)  # B, C, T
-        audio_signal += signal_conv
+        audio_signal = audio_signal + signal_conv
 
         audio_signal = audio_signal.transpose(1, 2)  # B, C, T -> B, T, C
         audio_signal = self.layer_norm(audio_signal)

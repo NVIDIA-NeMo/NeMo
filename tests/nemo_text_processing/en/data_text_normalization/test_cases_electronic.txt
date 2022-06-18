@@ -26,3 +26,4 @@ ourdailynews.com/123-sm~ourdailynews dot com slash one two three dash SM
 ourdailynews.abc~ourdailynews.abc
 file:///c/code/NeMo/docs/build/html/processing/intro.html~file semicolon slash slash slash c slash code slash NeMo slash docs slash build slash html slash processing slash intro dot HTML
 file:///photos/image.jpg~file semicolon slash slash slash photos slash image dot jpeg
+electronic test.com and test2.uk~electronic test dot com and test two dot UK

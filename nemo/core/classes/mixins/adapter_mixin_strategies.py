@@ -41,7 +41,7 @@ class AbstractAdapterStrategy(ABC):
                 therefore the strategy can access all other adapters in this module via `module.adapter_layer`.
 
         Returns:
-            The result tensor, after all active adapters have finished their forward passes.
+            The result tensor, after one of the active adapters has finished its forward passes.
         """
         raise NotImplementedError()
 
@@ -80,7 +80,7 @@ class ResidualAddAdapterStrategy(AbstractAdapterStrategy):
                 therefore the strategy can access all other adapters in this module via `module.adapter_layer`.
 
         Returns:
-            The result tensor, after all active adapters have finished their forward passes.
+            The result tensor, after one of the active adapters has finished its forward passes.
         """
         out = adapter(input)
 

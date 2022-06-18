@@ -5,3 +5,4 @@ webdataset>=0.1.48,<=0.1.62
 omegaconf>=2.1.2,<2.2
 hydra-core>=1.1.0,<1.2
 pyyaml<6  # Pinned until omegaconf works with pyyaml>=6
+wandb

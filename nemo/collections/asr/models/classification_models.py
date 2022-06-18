@@ -481,6 +481,7 @@ class EncDecClassificationModel(_EncDecBaseModel):
 
         self.log('train_loss', loss_value)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('global_step', self.trainer.global_step)
 
         self._accuracy(logits=logits, labels=labels)
         topk_scores = self._accuracy.compute()

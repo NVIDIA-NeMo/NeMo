@@ -286,7 +286,7 @@ class ParallelAttention(MegatronModule):
         layer_type=None,
         megatron_legacy=False,
         bias=True,
-        headscale=True,
+        headscale=False,
     ):
         super(ParallelAttention, self).__init__()
 

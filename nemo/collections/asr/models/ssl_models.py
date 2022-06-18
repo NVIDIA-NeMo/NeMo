@@ -469,7 +469,10 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths
         )
 
-        tensorboard_logs = {'learning_rate': self._optimizer.param_groups[0]['lr']}
+        tensorboard_logs = {
+            'learning_rate': self._optimizer.param_groups[0]['lr'],
+            'global_step': self.trainer.global_step,
+        }
 
         for loss_name, loss_val in loss_val_dict.items():
             tensorboard_logs['train_' + loss_name] = loss_val

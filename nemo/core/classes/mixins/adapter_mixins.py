@@ -455,27 +455,29 @@ class AdapterModuleMixin(ABC):
 class AdapterModelPTMixin(AdapterModuleMixin):
     """ Adapter Mixin that can augment a ModelPT subclass with Adapter support.
 
-        This mixin class should be used only with a top level ModelPT subclass.
-        This mixin class adds several utility methods which should be subclassed and overriden to
-        propagated to the submodules as necessary.
+    This mixin class should be used only with a top level ModelPT subclass.
+    This mixin class adds several utility methods which should be subclassed and overriden to
+    propagated to the submodules as necessary.
 
-        An Adapter module is any Pytorch nn.Module that possess a few properties :
+    An Adapter module is any Pytorch nn.Module that possess a few properties :
 
-        - It's input and output dimension are the same, while the hidden dimension need not be the same.
-        - The final layer of the Adapter module is zero-initialized, so that the residual connection to the adapter
-            yields the original output.
+    - It's input and output dimension are the same, while the hidden dimension need not be the same.
+    - The final layer of the Adapter module is zero-initialized, so that the residual connection to the adapter
+        yields the original output.
 
-        This mixin adds the following instance variables to the class this inherits it:
+    This mixin adds the following instance variables to the class this inherits it:
 
-            -   `adapter_layer`: A torch.nn.ModuleDict(), whose keys are the names of the adapter (globally unique),
-                    and values are the Adapter nn.Module().
-            -   `adapter_cfg`: A OmegaConf DictConfig object that holds the config of the adapters that are initialized.
-            -   `adapter_global_cfg_key`: A str representing a key in the model config that can be provided by the user.
-                The value resolves to `global_cfg`, and can be overridden via `model.cfg.adapters.global_cfg.*`.
+        -   `adapter_layer`: A torch.nn.ModuleDict(), whose keys are the names of the adapter (globally unique),
+                and values are the Adapter nn.Module().
+        -   `adapter_cfg`: A OmegaConf DictConfig object that holds the config of the adapters that are initialized.
+        -   `adapter_global_cfg_key`: A str representing a key in the model config that can be provided by the user.
+            The value resolves to `global_cfg`, and can be overridden via `model.cfg.adapters.global_cfg.*`.
 
-        **Note**: This module **is** responsible for maintaining its config. At the ModelPT level, it will access and
-            write Adapter config information to `self.cfg.adapters`.
-        """
+    .. note::
+
+        This module **is** responsible for maintaining its config. At the ModelPT level, it will access and
+        write Adapter config information to `self.cfg.adapters`.
+    """
 
     def setup_adapters(self):
         """
@@ -786,7 +788,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             adapter_cfg = config[adapter_name]
 
             # Recreate the module:adapter_name
-            if module_name is '':
+            if module_name == '':
                 module_adapter_name = adapter_name
             else:
                 module_adapter_name = f'{module_name}:{adapter_name}'
@@ -842,7 +844,10 @@ class AdapterModelPTMixin(AdapterModuleMixin):
     def update_adapter_cfg(self, cfg: DictConfig):
         """
         Utility method to recursively update all of the Adapter module configs with the provided config.
-        **Note**: It is not a (deep)copy, but a reference copy. Changes made to the config will be reflected to
+
+        .. note::
+
+            It is not a (deep)copy, but a reference copy. Changes made to the config will be reflected to
             adapter submodules, but it is still encouraged to explicitly update the adapter_cfg using this method.
 
         Args:

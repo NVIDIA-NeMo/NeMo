@@ -53,6 +53,8 @@ class MegatronBaseModel(NLPModel):
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
+        if trainer is None:
+            raise ValueError(f"Trainer cannot be None for Megatron-based models. Please provide a PTL trainer object.")
         # this prevents base constructor from initializing tokenizer
         self.tokenizer = None
 

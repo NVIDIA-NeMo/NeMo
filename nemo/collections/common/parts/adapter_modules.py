@@ -68,6 +68,8 @@ class LinearAdapter(AbstractAdapterModule):
         activation: Str name for an activation function.
         norm_position: Str, can be `pre` or `post`. Defaults to `post`. Determines whether the normalization
             will occur in the first layer or the last layer. Certain architectures may prefer one over the other.
+        dropout: float value, whether to perform dropout on the output of the last layer of the adapter.
+        adapter_strategy: By default, ResidualAddAdapterStrategyConfig. An adapter composition function object.
     """
 
     def __init__(

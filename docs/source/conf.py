@@ -119,6 +119,7 @@ bibtex_bibfiles = [
     'nlp/text_normalization/tn_itn_all.bib',
     'tools/tools_all.bib',
     'tts_all.bib',
+    'core/adapters/adapter_bib.bib',
 ]
 
 intersphinx_mapping = {
@@ -210,7 +211,7 @@ html_title = 'NVIDIA NeMo'
 
 html_theme_options = {
     'logo_only': True,
-    # 'display_version': True,
+    'display_version': True,
     # 'prev_next_buttons_location': 'bottom',
     # 'style_external_links': False,
     # 'style_nav_header_background': '#000000',

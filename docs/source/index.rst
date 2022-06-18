@@ -20,6 +20,7 @@ NVIDIA NeMo User Guide
    core/exp_manager
    core/neural_types
    core/export
+   core/adapters/intro
    core/api
 
 
@@ -32,6 +33,7 @@ NVIDIA NeMo User Guide
    asr/speech_classification/intro
    asr/speaker_recognition/intro
    asr/speaker_diarization/intro
+   asr/ssl/intro
 
 .. toctree::
    :maxdepth: 3

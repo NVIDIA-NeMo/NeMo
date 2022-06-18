@@ -286,6 +286,8 @@ def main():
 
     encoder = Encoder(args)
 
+    if args.dataset_impl == 'retmmap':
+        assert args.need_pad_id, "retmmap need --need_pad_id flag"
     tokenizer = get_tokenizer(args)
 
     level = "document"
@@ -304,7 +306,7 @@ def main():
             output_bin_files[key],
             impl=args.dataset_impl,
             chunk_size=args.chunk_size,
-            pad_id=tokenizer.pad_id,
+            pad_id=tokenizer.pad_id if hasattr(tokenizer, "pad_id") else 0,
             retrieval_db=args.retrieval_db,
             vocab_size=tokenizer.vocab_size,
         )

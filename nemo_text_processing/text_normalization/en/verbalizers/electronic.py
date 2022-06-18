@@ -15,6 +15,7 @@
 import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_NOT_QUOTE,
+    NEMO_NOT_SPACE,
     NEMO_SIGMA,
     TO_UPPER,
     GraphFst,
@@ -51,6 +52,9 @@ class ElectronicFst(GraphFst):
         default_chars_symbols = pynini.cdrewrite(
             pynutil.insert(" ") + (graph_symbols | graph_digit) + pynutil.insert(" "), "", "", NEMO_SIGMA
         )
+        default_chars_symbols = pynini.compose(
+            pynini.closure(NEMO_NOT_SPACE), default_chars_symbols.optimize()
+        ).optimize()
 
         user_name = (
             pynutil.delete("username:")

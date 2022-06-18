@@ -12,13 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import is_dataclass
+
 import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.utils import logging
 
 
+def convert_adapter_cfg_to_dict_config(cfg: DictConfig):
+    # Convert to DictConfig from dict or Dataclass
+    if is_dataclass(cfg):
+        cfg = OmegaConf.structured(cfg)
+
+    if not isinstance(cfg, DictConfig):
+        cfg = DictConfig(cfg)
+
+    return cfg
+
+
 def update_adapter_cfg_input_dim(module: torch.nn.Module, cfg: DictConfig, *, module_dim: int):
+    """
+    Update the input dimension of the provided adapter config with some default value.
+
+    Args:
+        module: The module that implements AdapterModuleMixin.
+        cfg: A DictConfig or a Dataclass representing the adapter config.
+        module_dim: A default module dimension, used if cfg has an incorrect input dimension.
+
+    Returns:
+        A DictConfig representing the adapter's config.
+    """
+    cfg = convert_adapter_cfg_to_dict_config(cfg)
+
     if 'in_features' in cfg:
         in_planes = cfg['in_features']
 

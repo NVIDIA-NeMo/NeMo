@@ -130,7 +130,7 @@ exp_manager:
   name: *name # name of experiment
   create_tensorboard_logger: True
   create_checkpoint_callback: True
-  create_wandb_logger: True
+  create_wandb_logger: False
   wandb_logger_kwargs:
     name: ???
     project: QA

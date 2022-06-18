@@ -44,7 +44,8 @@ class TimeFst(GraphFst):
 
         suffix_graph = pynini.string_file(get_abs_path("data/time/time_suffix.tsv"))
         time_zone_graph = pynini.invert(pynini.string_file(get_abs_path("data/time/time_zone.tsv")))
-        time_to_graph = pynini.string_file(get_abs_path("data/time/time_to.tsv"))
+        to_hour_graph = pynini.string_file(get_abs_path("data/time/to_hour.tsv"))
+        minute_to_graph = pynini.string_file(get_abs_path("data/time/minute_to.tsv"))
 
         # only used for < 1000 thousand -> 0 weight
         cardinal = pynutil.add_weight(CardinalFst().graph_no_exception, weight=-0.7)
@@ -67,7 +68,8 @@ class TimeFst(GraphFst):
             | graph_minute_double
         )
         final_suffix = pynutil.insert("suffix: \"") + convert_space(suffix_graph) + pynutil.insert("\"")
-        final_suffix_optional = pynini.closure(delete_space + insert_space + final_suffix, 0, 1)
+        final_suffix = delete_space + insert_space + final_suffix
+        final_suffix_optional = pynini.closure(final_suffix, 0, 1)
         final_time_zone_optional = pynini.closure(
             delete_space
             + insert_space
@@ -85,7 +87,7 @@ class TimeFst(GraphFst):
             final_graph_hour + delete_extra_space + pynutil.insert("minutes: \"") + graph_minute + pynutil.insert("\"")
         )
         # 10 past four, quarter past four, half past four
-        graph_mh = (
+        graph_m_past_h = (
             pynutil.insert("minutes: \"")
             + pynini.union(graph_minute_single, graph_minute_double, graph_minute_verbose)
             + pynutil.insert("\"")
@@ -103,8 +105,22 @@ class TimeFst(GraphFst):
             + pynutil.delete(pynini.union("to", "till"))
             + delete_extra_space
             + pynutil.insert("hours: \"")
-            + time_to_graph
+            + to_hour_graph
             + pynutil.insert("\"")
+        )
+
+        graph_m_to_h_suffix_time = (
+            pynutil.insert("minutes: \"")
+            + ((graph_minute_single | graph_minute_double).optimize() @ minute_to_graph)
+            + pynutil.insert("\"")
+            + pynini.closure(delete_space + pynutil.delete(pynini.union("min", "mins", "minute", "minutes")), 0, 1)
+            + delete_space
+            + pynutil.delete(pynini.union("to", "till"))
+            + delete_extra_space
+            + pynutil.insert("hours: \"")
+            + to_hour_graph
+            + pynutil.insert("\"")
+            + final_suffix
         )
 
         graph_h = (
@@ -113,14 +129,15 @@ class TimeFst(GraphFst):
             + pynutil.insert("minutes: \"")
             + (pynutil.insert("00") | graph_minute)
             + pynutil.insert("\"")
-            + delete_space
-            + insert_space
             + final_suffix
             + final_time_zone_optional
         )
-        final_graph = (graph_hm | graph_mh | graph_quarter_time) + final_suffix_optional + final_time_zone_optional
+        final_graph = (
+            (graph_hm | graph_m_past_h | graph_quarter_time) + final_suffix_optional + final_time_zone_optional
+        )
         final_graph |= graph_h
+        final_graph |= graph_m_to_h_suffix_time
 
-        final_graph = self.add_tokens(final_graph)
+        final_graph = self.add_tokens(final_graph.optimize())
 
         self.fst = final_graph.optimize()

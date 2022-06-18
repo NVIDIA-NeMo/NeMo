@@ -21,7 +21,7 @@ import pytest
 class TestDataDir:
     @pytest.mark.unit
     def test_test_data_dir(self, test_data_dir):
-        """" Just a dummy tests showing how to use the test_data_dir fixture. """
+        """Just a dummy tests showing how to use the test_data_dir fixture."""
         # test_data_dir contains the absolute path to nemo -> tests/.data
         assert exists(test_data_dir)
         assert exists(join(test_data_dir, "test_data.tar.gz"))

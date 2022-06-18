@@ -90,9 +90,9 @@ class TTSDataset(Dataset):
     ):
         """Dataset which can be used for training spectrogram generators and end-to-end TTS models.
         It loads main data types (audio, text) and specified supplementary data types (log mel, durations, align prior matrix, pitch, energy, speaker id).
-        Some of supplementary data types will be computed on the fly and saved in the sup_data_path if they did not exist before.
+        Some supplementary data types will be computed on the fly and saved in the sup_data_path if they did not exist before.
         Saved folder can be changed for some supplementary data types (see keyword args section).
-        Arguments for supplementary data should be also specified in this class and they will be used from kwargs (see keyword args section).
+        Arguments for supplementary data should be also specified in this class, and they will be used from kwargs (see keyword args section).
         Args:
             manifest_filepath (Union[str, Path, List[str], List[Path]]): Path(s) to the .json manifests containing information on the
                 dataset. Each line in the .json file should be valid json. Note: the .json file itself is not valid
@@ -136,7 +136,7 @@ class TTSDataset(Dataset):
             p_voiced_folder (Optional[Union[Path, str]]): The folder that contains or will contain p_voiced(probability) of the pitch
             energy_folder (Optional[Union[Path, str]]): The folder that contains or will contain energy.
             durs_file (Optional[str]): String path to pickled durations location.
-            durs_type (Optional[str]): Type of durations. Currently supported only "aligner-based".
+            durs_type (Optional[str]): Type of durations. Currently, supported only "aligner-based".
             use_beta_binomial_interpolator (Optional[bool]): Whether to use beta-binomial interpolator for calculating alignment prior matrix. Defaults to False.
             pitch_fmin (Optional[float]): The fmin input to librosa.pyin. Defaults to librosa.note_to_hz('C2').
             pitch_fmax (Optional[float]): The fmax input to librosa.pyin. Defaults to librosa.note_to_hz('C7').
@@ -276,6 +276,12 @@ class TTSDataset(Dataset):
                     raise NotImplementedError(f"Current implementation doesn't support {d_as_str} type.")
 
                 self.sup_data_types.append(sup_data_type)
+
+            if ("voiced_mask" in sup_data_types or "p_voiced" in sup_data_types) and ("pitch" not in sup_data_types):
+                raise ValueError(
+                    "Please add 'pitch' to sup_data_types in YAML because 'pitch' is required when using either "
+                    "'voiced_mask' or 'p_voiced' or both."
+                )
 
         self.sup_data_types_set = set(self.sup_data_types)
 
@@ -423,23 +429,6 @@ class TTSDataset(Dataset):
         return log_mel
 
     def __getitem__(self, index):
-        def load_from_dir(folder):
-            voiced_path = folder / f"{rel_audio_path_as_text_id}.pt"
-            if voiced_path.exists():
-                voiced = torch.load(voiced_path).float()
-            else:
-                _, voiced, _ = librosa.pyin(
-                    audio.numpy(),
-                    fmin=self.pitch_fmin,
-                    fmax=self.pitch_fmax,
-                    frame_length=self.win_length,
-                    sr=self.sample_rate,
-                    fill_na=0.0,
-                )
-                voiced = torch.from_numpy(voiced).float()
-                torch.save(voiced, voiced_path)
-            return voiced
-
         sample = self.data[index]
 
         # Let's keep audio name and all internal directories in rel_audio_path_as_text_id to avoid any collisions
@@ -501,21 +490,43 @@ class TTSDataset(Dataset):
                     align_prior_matrix = torch.from_numpy(align_prior_matrix)
                     torch.save(align_prior_matrix, prior_path)
 
-        # Load pitch if needed
-        pitch, pitch_length = None, None
-        if Pitch in self.sup_data_types_set:
-            pitch = load_from_dir(self.pitch_folder)
+        non_exist_voiced_index = []
+        my_var = locals()
+        for i, voiced_item in enumerate([Pitch, Voiced_mask, P_voiced]):
+            if voiced_item in self.sup_data_types_set:
+                voiced_folder = getattr(self, f"{voiced_item.name}_folder")
+                voiced_filepath = voiced_folder / f"{rel_audio_path_as_text_id}.pt"
+                if voiced_filepath.exists():
+                    my_var.__setitem__(voiced_item.name, torch.load(voiced_filepath).float())
+                else:
+                    non_exist_voiced_index.append((i, voiced_item.name, voiced_filepath))
+
+        if len(non_exist_voiced_index) != 0:
+            voiced_tuple = librosa.pyin(
+                audio.numpy(),
+                fmin=self.pitch_fmin,
+                fmax=self.pitch_fmax,
+                frame_length=self.win_length,
+                sr=self.sample_rate,
+                fill_na=0.0,
+            )
+            for (i, voiced_name, voiced_filepath) in non_exist_voiced_index:
+                my_var.__setitem__(voiced_name, torch.from_numpy(voiced_tuple[i]).float())
+                torch.save(my_var.get(voiced_name), voiced_filepath)
+
+        pitch = my_var.get('pitch', None)
+        pitch_length = my_var.get('pitch_length', None)
+        voiced_mask = my_var.get('voiced_mask', None)
+        p_voiced = my_var.get('p_voiced', None)
+
+        # normalize pitch if requested.
+        if pitch is not None:
             if self.pitch_mean is not None and self.pitch_std is not None and self.pitch_norm:
                 pitch -= self.pitch_mean
                 pitch[pitch == -self.pitch_mean] = 0.0  # Zero out values that were previously zero
                 pitch /= self.pitch_std
 
             pitch_length = torch.tensor(len(pitch)).long()
-
-        # Load voiced_mask if needed
-        voiced_mask = load_from_dir(self.voiced_mask_folder) if Voiced_mask in self.sup_data_types_set else None
-        # Load p_voiced if needed
-        p_voiced = load_from_dir(self.p_voiced_folder) if P_voiced in self.sup_data_types_set else None
 
         # Load energy if needed
         energy, energy_length = None, None

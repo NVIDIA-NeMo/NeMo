@@ -133,7 +133,7 @@ class ConvNorm(torch.nn.Module):
         )
         torch.nn.init.xavier_uniform_(self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
         if self.use_weight_norm:
-            self.conv = nn.utils.weight_norm(self.conv)
+            self.conv = torch.nn.utils.weight_norm(self.conv)
 
     def forward(self, signal, mask=None):
         if self.use_partial_padding:

@@ -280,7 +280,7 @@ def main():
     for batch_idx, probs in enumerate(all_probs):
         preds = np.argmax(probs, axis=1)
         preds_tensor = torch.tensor(preds, device='cpu').unsqueeze(0)
-        pred_text = asr_model._wer.ctc_decoder_predictions_tensor(preds_tensor)[0]
+        pred_text = asr_model._wer.decoding.ctc_decoder_predictions_tensor(preds_tensor)[0][0]
 
         pred_split_w = pred_text.split()
         target_split_w = target_transcripts[batch_idx].split()

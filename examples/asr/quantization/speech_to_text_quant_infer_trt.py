@@ -212,7 +212,7 @@ def evaluate(asr_model, asr_onnx, labels_map, wer, qat):
                 input_signal=processed_signal,
                 input_signal_length=processed_signal_length,
             )
-            hypotheses += wer.ctc_decoder_predictions_tensor(greedy_predictions)
+            hypotheses += wer.decoding.ctc_decoder_predictions_tensor(greedy_predictions)[0]
             for batch_ind in range(greedy_predictions.shape[0]):
                 seq_len = test_batch[3][batch_ind].cpu().detach().numpy()
                 seq_ids = test_batch[2][batch_ind].cpu().detach().numpy()

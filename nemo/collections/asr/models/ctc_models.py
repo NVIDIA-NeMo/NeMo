@@ -592,7 +592,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         else:
             log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
 
-        transcribed_texts = self._wer.ctc_decoder_predictions_tensor(
+        transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
             predictions=log_probs, predictions_len=encoded_len, return_hypotheses=False,
         )
 

@@ -202,7 +202,7 @@ def evaluate(asr_model, labels_map, wer):
             log_probs, encoded_len, greedy_predictions = asr_model(
                 input_signal=test_batch[0], input_signal_length=test_batch[1]
             )
-        hypotheses += wer.ctc_decoder_predictions_tensor(greedy_predictions)
+        hypotheses += wer.decoding.ctc_decoder_predictions_tensor(greedy_predictions)[0]
         for batch_ind in range(greedy_predictions.shape[0]):
             seq_len = test_batch[3][batch_ind].cpu().detach().numpy()
             seq_ids = test_batch[2][batch_ind].cpu().detach().numpy()

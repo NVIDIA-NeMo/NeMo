@@ -48,7 +48,7 @@ model:
     pad_label: 'O'
     ignore_extra_tokens: false
     ignore_start_end: false
-    use_cache: true
+    use_cache: false
     # shared among dataloaders
     num_workers:  2
     pin_memory: false

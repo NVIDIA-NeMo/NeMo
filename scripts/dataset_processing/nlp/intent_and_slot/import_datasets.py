@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,12 +31,20 @@ from nemo.utils import logging
 
 
 def ids2text(ids, vocab):
+    """
+    Map list of ids of words in utterance to utterance
+    """
     return ' '.join([vocab[int(id_)] for id_ in ids])
 
 
 def process_atis(infold, outfold, modes=['train', 'test'], do_lower_case=False):
-    """ MSFT's dataset, processed by Kaggle
-    https://www.kaggle.com/siddhadev/atis-dataset-from-ms-cntk
+    """ 
+    Process ATIS dataset found at https://www.kaggle.com/siddhadev/atis-dataset-from-ms-cntk
+    Args:
+        infold: location for input fold of data
+        outfold: location for output fold of data
+        modes: dataset splits to process
+        do_lowercase: whether to lowercase the input utterances
     """
     vocab = get_vocab(f'{infold}/atis.dict.vocab.csv')
 
@@ -72,6 +80,15 @@ def process_atis(infold, outfold, modes=['train', 'test'], do_lower_case=False):
 
 
 def process_snips(infold, outfold, do_lower_case, modes=['train', 'test'], dev_split=0.1):
+    """
+    Process snips dataset
+    Args:
+        infold: location for input fold of data
+        outfold: location for output fold of data
+        do_lowercase: whether to lowercase the input utterances
+        modes: dataset splits to process
+        dev_split: proportion of train samples to put into dev set
+    """
     if not os.path.exists(infold):
         link = 'https://github.com/snipsco/spoken-language-understanding-research-datasets'
         raise ValueError(f'Data not found at {infold}. ' f'You may request to download the SNIPS dataset from {link}.')
@@ -117,7 +134,14 @@ def process_snips(infold, outfold, do_lower_case, modes=['train', 'test'], dev_s
 def process_jarvis_datasets(
     infold, outfold, modes=['train', 'test', 'dev'], do_lower_case=False, ignore_prev_intent=False
 ):
-    """ process and convert Jarvis datasets into NeMo's BIO format
+    """ 
+    Process and convert Jarvis datasets into NeMo's BIO format
+    Args:
+        infold: location for input fold of data
+        outfold: location for output fold of data
+        modes: dataset splits to process
+        do_lowercase: whether to lowercase the input utterances
+        ignore_prev_intent: whether to include intent from previous turn in predicting intent of current turn
     """
     dataset_name = "jarvis"
     if if_exist(outfold, ['dict.intents.csv', 'dict.slots.csv']):

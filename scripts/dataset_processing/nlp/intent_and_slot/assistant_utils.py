@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,12 @@ from nemo.utils import logging
 
 
 def copy_input_files(infold):
-    """ Put training files in convenient place for conversion to our format. """
+    """ 
+    Put training files in convenient place for conversion to our format. 
+    
+    Args:
+        infold: location of an original fold of the dataset (in the sense of k-fold cross validation)
+    """
     our_infold = infold + "/dataset"
 
     if os.path.exists(our_infold + "/trainset") and os.path.exists(our_infold + "/testset"):
@@ -45,7 +50,8 @@ def get_intents(infold):
     """ Get list of intents from file names. """
     intents = [f[:-4] for f in os.listdir(infold)]
     intents.sort()
-    print(f'Found {len(intents)} intents')
+    logging.info(f'Found {len(intents)} intents')
+
     return intents
 
 
@@ -65,8 +71,8 @@ def get_intent_queries(infold, intent_names, mode):
 
 def get_slots(infold, modes):
     """
-    Find a lost of unique slot types in training and testing data.
-    We use a single slot type name both for starting and continuation tokes (not using B-, I- notation).
+    Find a list of unique slot types in training and testing data.
+    We use a single slot type name both for starting and continuation tokens (not using B-, I- notation).
     """
     slots = set()
 
@@ -83,12 +89,20 @@ def get_slots(infold, modes):
 
     slots = sorted(slots)
     slots.append("O")
-    print(f'Found {len(slots)} slot types')
+    logging.info(f'Found {len(slots)} slot types')
+
     return slots
 
 
 def get_slot_queries(infold, slot_dict, mode, intent_names):
-    """ Convert each word in a query to corresponding slot number. """
+    """ 
+    Convert each word in a query to corresponding slot number. 
+    Args:
+        infold: fold of the data
+        slot_dict: dict containing slot-names to positions 
+        mode: train, validation or test
+        intent_names: list of intents
+    """
     slot_queries = []
     outside_slot = len(slot_dict) - 1
 

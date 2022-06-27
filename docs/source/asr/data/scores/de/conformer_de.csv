@@ -1,0 +1,3 @@
+Model Name,Language,MCV Dev-Set (v??) (de),MCV Dev-Set v7.0 (de),MCV Test-Set v7.0 (de),MLS Dev (en),MLS Test (en),VoxPopuli Dev (de),VoxPopuli Test (de)
+stt_de_conformer_ctc_large,de,,5.84,6.68,3.85,4.63,12.56,10.51
+stt_de_conformer_transducer_large,de,,4.75,5.36,3.46,4.19,11.21,9.14

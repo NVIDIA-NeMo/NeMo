@@ -1,0 +1,3 @@
+Model Name,Language,Fisher-Dev-Es,Librispeech Dev-Clean,Librispeech Dev-Other,Librispeech Test-Clean,Librispeech Test-Other,MCV Dev-Set v7.0 (en),MLS Dev (es),VoxPopuli Dev (es)
+stt_enes_conformer_ctc_large,enes,16.7 %,2.2 %,5.5 %,2.6 %,5.5 %,5.8 %,3.5 %,5.7 %
+stt_enes_conformer_transducer_large,enes,16.2 %,2.0 %,4.6 %,2.2 %,4.6 %,5.0 %,3.3 %,5.3 %

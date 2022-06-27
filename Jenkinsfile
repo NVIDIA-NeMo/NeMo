@@ -734,7 +734,7 @@ pipeline {
             exp_manager=null'
           }
         }
-        stage('Test Restore with AlBERT') {
+        stage('Test Restore Punctuation & Capitalization with AlBERT') {
           steps {
             sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
             cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
@@ -752,7 +752,7 @@ pipeline {
             rm -rf "${data_dir}"'
           }
         }
-        stage('Test Restore with RoBERTa') {
+        stage('Test Restore Punctuation & Capitalization with RoBERTa') {
           steps {
             sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
             cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
@@ -763,7 +763,7 @@ pipeline {
               +model.test_ds.use_cache=false \
               ~model.train_ds \
               ~model.validation_ds \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation/ \
+              model.test_ds.ds_item="${data_dir}" \
               trainer.devices=[1] \
               trainer.accelerator="gpu" \
               exp_manager=null && \
@@ -1593,17 +1593,23 @@ pipeline {
         stage('Punctuation & Capitalization, Using model.common_datasest_parameters.label_vocab_dir') {
           steps {
             sh 'cd examples/nlp/token_classification && \
-            label_vocab_dir=label_vocab_dir && \
+            work_dir="$(mktemp -d -p "$(pwd)")" && \
+            label_vocab_dir="${work_dir}/labels" && \
             mkdir -p ${label_vocab_dir} && \
+            data_dir="${work_dir}/data" && \
+            mkdir -p "${data_dir}" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}" && \
+            output_dir="${work_dir}/output" && \
+            mkdir -p "${output_dir}" && \
             punct_label_vocab="${label_vocab_dir}/punct_label_vocab.csv" && \
             capit_label_vocab="${label_vocab_dir}/capit_label_vocab.csv" && \
             printf "O\n,\n.\n?\n" > "${punct_label_vocab}" && \
             printf "O\nU\n" > "${capit_label_vocab}" && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               model.train_ds.use_tarred_dataset=false \
-              model.train_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.validation_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
+              model.train_ds.ds_item="${data_dir}" \
+              model.validation_ds.ds_item="${data_dir}" \
+              model.test_ds.ds_item="${data_dir}" \
               model.language_model.pretrained_model_name=distilbert-base-uncased \
               model.common_dataset_parameters.label_vocab_dir="${label_vocab_dir}" \
               model.class_labels.punct_labels_file="$(basename "${punct_label_vocab}")" \
@@ -1614,15 +1620,15 @@ pipeline {
               trainer.devices=[0,1] \
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
-              +exp_manager.explicit_log_dir=/home/TestData/nlp/token_classification_punctuation/output \
+              +exp_manager.explicit_log_dir="${output_dir}" \
               +do_testing=false && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               +do_training=false \
               +do_testing=true \
               ~model.train_ds \
               ~model.validation_ds \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              pretrained_model=/home/TestData/nlp/token_classification_punctuation/output/checkpoints/Punctuation_and_Capitalization.nemo \
+              model.test_ds.ds_item="${data_dir}" \
+              pretrained_model="${output_dir}/checkpoints/Punctuation_and_Capitalization.nemo" \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
               +model.test_ds.use_cache=false \
@@ -1630,27 +1636,31 @@ pipeline {
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
               exp_manager=null && \
-            rm -r "${label_vocab_dir}" && \
-            rm -rf /home/TestData/nlp/token_classification_punctuation/output/*'
+            rm -rf "${work_dir}"'
           }
         }
         stage('Punctuation & Capitalization, Using model.common_datasest_parameters.{punct,capit}_label_ids') {
           steps {
             sh 'cd examples/nlp/token_classification && \
-            conf_path=/home/TestData/nlp/token_classification_punctuation && \
+            work_dir="$(mktemp -d -p "$(pwd)")" && \
+            output_dir="${work_dir}/output" && \
+            mkdir -p "${output_dir}" && \
+            data_dir="${work_dir}/data" && \
+            mkdir -p "${data_dir}" && \
+            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}" && \
             conf_name=punctuation_capitalization_config_with_ids && \
-            cp conf/punctuation_capitalization_config.yaml "${conf_path}/${conf_name}.yaml" && \
+            cp conf/punctuation_capitalization_config.yaml "${work_dir}/${conf_name}.yaml" && \
             sed -i $\'s/punct_label_ids: null/punct_label_ids: {O: 0, \\\',\\\': 1, .: 2, \\\'?\\\': 3}/\' \
-              "${conf_path}/${conf_name}.yaml" && \
+              "${work_dir}/${conf_name}.yaml" && \
             sed -i $\'s/capit_label_ids: null/capit_label_ids: {O: 0, U: 1}/\' \
-              "${conf_path}/${conf_name}.yaml" && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
-              --config-path "${conf_path}" \
+              "${work_dir}/${conf_name}.yaml" && \
+            python punctuation_capitalization_train_evaluate.py \
+              --config-path "${work_dir}" \
               --config-name "${conf_name}" \
               model.train_ds.use_tarred_dataset=false \
-              model.train_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.validation_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
+              model.train_ds.ds_item="${data_dir}" \
+              model.validation_ds.ds_item="${data_dir}" \
+              model.test_ds.ds_item="${data_dir}" \
               model.language_model.pretrained_model_name=distilbert-base-uncased \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
@@ -1658,15 +1668,15 @@ pipeline {
               trainer.devices=[0,1] \
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
-              +exp_manager.explicit_log_dir=/home/TestData/nlp/token_classification_punctuation/output \
+              +exp_manager.explicit_log_dir="${output_dir}" \
               +do_testing=false && \
-            CUDA_LAUNCH_BLOCKING=1 python punctuation_capitalization_train_evaluate.py \
+            python punctuation_capitalization_train_evaluate.py \
               +do_training=false \
               +do_testing=true \
               ~model.train_ds \
               ~model.validation_ds \
-              model.test_ds.ds_item=/home/TestData/nlp/token_classification_punctuation \
-              pretrained_model=/home/TestData/nlp/token_classification_punctuation/output/checkpoints/Punctuation_and_Capitalization.nemo \
+              model.test_ds.ds_item="${data_dir}" \
+              pretrained_model="${output_dir}/checkpoints/Punctuation_and_Capitalization.nemo" \
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
               +model.test_ds.use_cache=false \
@@ -1674,8 +1684,7 @@ pipeline {
               trainer.strategy=ddp \
               trainer.max_epochs=1 \
               exp_manager=null && \
-            rm -rf /home/TestData/nlp/token_classification_punctuation/output/* && \
-            rm "${conf_path}/${conf_name}.yaml"'
+            rm -rf "${work_dir}"'
           }
         }
       }

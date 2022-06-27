@@ -31,7 +31,7 @@ import itertools
 import multiprocessing as mp
 import os
 import pickle
-import random
+import tempfile
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -975,13 +975,24 @@ class BertPunctuationCapitalizationDataset(Dataset):
                 n_jobs=n_jobs,
             )
             self.features_pkl.parent.mkdir(parents=True, exist_ok=True)
-            pickle.dump(tuple(list(features) + [punct_label_ids, capit_label_ids]), self.features_pkl.open("wb"))
+
+            # save features to a temp file first to make sure that non-master processes don't start reading the file
+            # until the master process is done with writing
+            ofd, tmp_features_pkl = tempfile.mkstemp(
+                suffix='.pkl', prefix=os.path.basename(self.features_pkl), dir=os.path.dirname(self.features_pkl)
+            )
+            with os.fdopen(ofd, 'wb') as temp_f:
+                pickle.dump(tuple(list(features) + [punct_label_ids, capit_label_ids]), temp_f)
+
+            os.rename(tmp_features_pkl, self.features_pkl)
+
             if self.verbose:
                 logging.info(f'Features saved to {self.features_pkl}')
 
         # wait until the master process writes to the processed data files
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        if not master_device:
+            while features is None and not os.path.exists(self.features_pkl):
+                sleep(10)
 
         if features is None:
             features = pickle.load(self.features_pkl.open('rb'))

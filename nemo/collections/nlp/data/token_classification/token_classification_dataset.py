@@ -22,10 +22,11 @@ https://github.com/huggingface/pytorch-pretrained-BERT
 
 import os
 import pickle
+import tempfile
+import time
 from typing import Dict, List, Optional
 
 import numpy as np
-import torch
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.nlp.data.data_utils.data_preprocessing import get_stats
@@ -266,12 +267,21 @@ class BertTokenClassificationDataset(Dataset):
                 ignore_start_end=ignore_start_end,
             )
 
-            pickle.dump(features, open(features_pkl, "wb"))
+            # save features to a temp file first to make sure that non-master processes don't start reading the file
+            # until the master process is done with writing
+            ofd, tmp_features_pkl = tempfile.mkstemp(
+                suffix='.pkl', prefix=os.path.basename(features_pkl), dir=os.path.dirname(features_pkl)
+            )
+            with os.fdopen(ofd, 'wb') as temp_f:
+                pickle.dump(features, temp_f)
+
+            os.rename(tmp_features_pkl, features_pkl)
             logging.info(f'features saved to {features_pkl}')
 
         # wait until the master process writes to the processed data files
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        if not master_device:
+            while features is None and not os.path.exists(features_pkl):
+                time.sleep(10)
 
         if features is None:
             features = pickle.load(open(features_pkl, 'rb'))

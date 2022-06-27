@@ -1,0 +1,3 @@
+Model Name,Language,MCV Dev-Set (v??) (fr),MCV Dev-Set v7.0 (fr),MCV Dev-Set v7.0 (fr) (No Hyphen),MCV Test-Set v7.0 (fr),MCV Test-Set v7.0 (fr) (No Hyphen),MLS Dev (en),MLS Dev (en) (No Hyphen),MLS Test (en),MLS Test (en) (No Hyphen)
+stt_fr_conformer_ctc_large,fr,,8.35,7.88,9.63,9.01,5.88,5.90,4.91,4.63
+stt_fr_conformer_transducer_large,fr,,6.85,,7.95,,5.05,,4.10,

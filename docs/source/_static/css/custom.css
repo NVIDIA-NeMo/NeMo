@@ -58,8 +58,19 @@ a:visited
 	margin-left: unset;
 }
 
+section {
+	overflow-x: auto;
+}
 
 /* ----------------------------------------------TABLES--------------------------------------- */
+section table {
+	overflow-x: auto;
+	display: block;
+}
+
+table {
+	font-size: small;
+}
 
 /* Table head Color */
 thead td

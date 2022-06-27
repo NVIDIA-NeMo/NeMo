@@ -37,6 +37,7 @@ The full documentation tree is as follows:
    datasets
    asr_language_modeling
    results
+   scores
    configs
    api
    resources

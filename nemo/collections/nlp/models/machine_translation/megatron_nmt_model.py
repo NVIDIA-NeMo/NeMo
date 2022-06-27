@@ -649,6 +649,16 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                 data_parallel_size=parallel_state.get_data_parallel_world_size(),
             )
 
+    def on_validation_epoch_start(self):
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=parallel_state.get_data_parallel_world_size(),
+            micro_batch_size=1,
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
+        )
+
     @torch.no_grad()
     def translate(
         self,

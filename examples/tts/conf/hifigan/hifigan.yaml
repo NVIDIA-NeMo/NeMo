@@ -64,7 +64,7 @@ model:
       min_lr: 1e-5
       warmup_ratio: 0.02
 
-  max_steps: 25000000
+  max_steps: 2500000
   l1_loss_factor: 45
   denoise_strength: 0.0025
 

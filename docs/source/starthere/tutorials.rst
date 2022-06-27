@@ -129,7 +129,7 @@ To run a tutorial:
      - `Punctuation and Capitalization <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Punctuation_and_Capitalization.ipynb>`_
    * - NLP
      - Entity Linking
-     - `Entity Linking <https://colab.research.google.com/github/NVIDIA/NeMo/blob/v1.0.2/tutorials/nlp/Entity_Linking_Medical.ipynb>`_
+     - `Entity Linking <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Entity_Linking_Medical.ipynb>`_
    * - NLP
      - Named Entity Recognition - BioMegatron
      - `Named Entity Recognition - BioMegatron <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Token_Classification-BioMegatron.ipynb>`_
@@ -138,7 +138,7 @@ To run a tutorial:
      - `Relation Extraction - BioMegatron <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Relation_Extraction-BioMegatron.ipynb>`_
    * - NLP
      - P-Tuning/Prompt-Tuning
-     - `P-Tuning/Prompt-Tuning <https://github.com/NVIDIA/NeMo/blob/main/tutorials/nlp/Multitask_Prompt_and_PTuning.ipynb>`_
+     - `P-Tuning/Prompt-Tuning <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/Multitask_Prompt_and_PTuning.ipynb>`_
    * - TTS
      - Speech Synthesis
      - `TTS Inference <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/tts/Inference_ModelSelect.ipynb>`_

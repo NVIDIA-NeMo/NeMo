@@ -34,6 +34,7 @@ from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import prepare_lr_scheduler
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
+from nemo.utils.debug_hook import register_debug_hooks
 from nemo.utils.get_rank import is_global_rank_zero
 
 try:
@@ -169,6 +170,11 @@ class ModelPT(LightningModule, Model):
 
     def __init_subclass__(cls) -> None:
         cls._save_restore_connector = SaveRestoreConnector()
+
+    def on_fit_start(self) -> None:
+        if self.cfg.get("dump_debug_info", False):
+            register_debug_hooks(self.model, self.trainer, self.log, self.cfg.get("dump_debug_info_to_file", False))
+        return super().on_fit_start()
 
     def register_artifact(
         self, config_path: str, src: str, verify_src_exists: bool = True,

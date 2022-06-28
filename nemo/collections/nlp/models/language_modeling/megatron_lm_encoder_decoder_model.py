@@ -36,7 +36,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 )
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
-from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
 from nemo.utils import AppState, logging
 
 try:
@@ -729,48 +728,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         if hasattr(self, '_test_ds'):
             consumed_samples = 0
             self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
-
-    def configure_optimizers(self):
-        self.setup_optimization()
-
-        # Wrap the baseline optimizer with the optimizer class with master parameters
-        if self.megatron_amp_o2 and self._optimizer is not None:
-            if self.cfg.precision == 'bf16':
-                fp32_grad_accum = True
-                contiguous_grad_bucket = True
-
-            elif self.cfg.precision == 16:
-                fp32_grad_accum = False
-                # TODO: contiguous grad bucket for fp16 is also planned to be supported
-                contiguous_grad_bucket = False
-
-            # if using tensor parallel only, we can use async grad all-reduce
-            if self.cfg.get('pipeline_model_parallel_size', 1) == 1:
-                async_grad_allreduce = True
-            else:
-                async_grad_allreduce = False
-
-            self._optimizer = MainParamsOptimizerWrapper(
-                self._optimizer,
-                fp32_grad_accum=fp32_grad_accum,
-                contiguous_grad_bucket=contiguous_grad_bucket,
-                async_grad_allreduce=async_grad_allreduce,
-                grad_div_ar_fusion=self.cfg.get('grad_div_ar_fusion', True),
-                grad_allreduce_chunk_size_mb=self.cfg.get('grad_allreduce_chunk_size_mb', 125),
-            )
-
-            assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
-            if hasattr(self._cfg.optim, 'sched'):
-                sched_config = self._cfg.optim.sched
-                sched_config['max_steps'] = self._trainer.max_steps
-                self._scheduler = prepare_lr_scheduler(
-                    optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
-                )
-
-        if self._scheduler is None:
-            return self._optimizer
-        else:
-            return [self._optimizer], [self._scheduler]
 
     def compute_consumed_samples(self, steps_since_resume=0):
         app_state = AppState()

@@ -790,6 +790,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
         megatron_legacy=False,
         chunk_size=64,  # each chunk, how many tokens
         bias=True,
+        headscale=False,
     ):
         super(ParallelChunkedCrossAttention, self).__init__()
         self.cross_attention = ParallelAttention(
@@ -811,6 +812,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
             relative_attention_max_distance=relative_attention_max_distance,
             megatron_legacy=megatron_legacy,
             bias=bias,
+            headscale=headscale,
         )
         self.chunk_size = chunk_size
 
@@ -1048,15 +1050,26 @@ class ParallelTransformerLayer_(MegatronModule):
                 else:
                     self.post_attention_normformer_norm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
 
+            if self.layer_type != LayerType.decoder_pre_mlp or self.transformer_block_type != 'post_ln':
+                #  the post_attention_layernorm is used for layermorm after mlp
+                # don't need it for decoder_pre_mlp and post_ln
+                if normalization == 'layernorm':
+                    self.post_attention_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
+                else:
+                    self.post_attention_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
+
+        if self.layer_type == LayerType.decoder_pre_mlp:
+            # skip MLP and cross attention
+            return
+
+        # the post_attention_layernorm is used for layermorm after mlp
+        # need it for post_ln
+        if self.layer_type == LayerType.retrieval_decoder_after_self_attn and self.transformer_block_type == 'post_ln':
             # Layernorm on the attention output
             if normalization == 'layernorm':
                 self.post_attention_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
             else:
                 self.post_attention_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
-
-        if self.layer_type == LayerType.decoder_pre_mlp:
-            # skip MLP and cross attention
-            return
 
         if self.layer_type == LayerType.decoder or self.layer_type == LayerType.retrieval_encoder:
             self.inter_attention = ParallelAttention(
@@ -1118,6 +1131,7 @@ class ParallelTransformerLayer_(MegatronModule):
                 megatron_legacy=megatron_legacy,
                 chunk_size=chunk_size,
                 bias=bias,
+                headscale=headscale,
             )
             # Normformer normalization
             if transformer_block_type == 'normformer':
@@ -1253,6 +1267,8 @@ class ParallelTransformerLayer_(MegatronModule):
             bias_dropout_add_func = self._get_bias_droput_add_func(
                 transformer_block_type=self.transformer_block_type, position_after='attention'
             )
+            if attention_bias is not None:
+                attention_bias = attention_bias.expand_as(residual)
 
             layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
 
@@ -1551,7 +1567,7 @@ class ParallelTransformer(MegatronModule):
 
         self.layers = torch.nn.ModuleList([build_layer(i + 1 + offset) for i in range(self.num_layers)])
 
-        if self.post_process:
+        if self.post_process and self.transformer_block_type != 'post_ln':
             # Final layer norm before output.
             if normalization == 'layernorm':
                 self.final_layernorm = get_layer_norm(hidden_size, layernorm_epsilon, persist_layer_norm)
@@ -1781,8 +1797,10 @@ class ParallelTransformer(MegatronModule):
         # Final layer norm.
         if self.post_process:
             # Reverting data format change [s b h] --> [b s h].
-            hidden_states = hidden_states.transpose(0, 1).contiguous()
-            output = self.final_layernorm(hidden_states)
+            output = hidden_states.transpose(0, 1).contiguous()
+            # only apply the final_layernorm for pre-ln
+            if self.transformer_block_type != 'post_ln':
+                output = self.final_layernorm(output)
         else:
             output = hidden_states
         if get_key_value:

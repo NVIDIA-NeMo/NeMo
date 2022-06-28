@@ -23,6 +23,7 @@ from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common.megatron.clip_grads import clip_grad_norm_fp32
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
 from nemo.utils import logging
 
 try:
@@ -221,3 +222,47 @@ class MegatronBaseModel(NLPModel):
             torch.distributed.all_reduce(coalesced, group=parallel_state.get_data_parallel_group())
             for buf, synced in zip(grads, torch._utils._unflatten_dense_tensors(coalesced, grads)):
                 buf.copy_(synced)
+
+    def configure_optimizers(self):
+        self.setup_optimization()
+
+        # Wrap the baseline optimizer with the optimizer class with master parameters
+        if self.megatron_amp_o2 and self._optimizer is not None:
+            if self.cfg.precision == 'bf16':
+                fp32_grad_accum = True
+                contiguous_grad_bucket = True
+            elif self.cfg.precision == 16:
+                fp32_grad_accum = False
+                # TODO: contiguous grad bucket for fp16 is also planned to be supported
+                contiguous_grad_bucket = False
+                raise ValueError(
+                    "fp16 training is not yet supported with O2. Please set megatron_amp_O2 to False in the model config."
+                )
+
+            # if using tensor parallel only, we can use async grad all-reduce
+            if self.cfg.get('pipeline_model_parallel_size', 1) == 1:
+                async_grad_allreduce = True
+            else:
+                async_grad_allreduce = False
+
+            self._optimizer = MainParamsOptimizerWrapper(
+                self._optimizer,
+                fp32_grad_accum=fp32_grad_accum,
+                contiguous_grad_bucket=contiguous_grad_bucket,
+                async_grad_allreduce=async_grad_allreduce,
+                grad_div_ar_fusion=self.cfg.get('grad_div_ar_fusion', True),
+                grad_allreduce_chunk_size_mb=self.cfg.get('grad_allreduce_chunk_size_mb', 125),
+            )
+
+            assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
+            if hasattr(self._cfg.optim, 'sched'):
+                sched_config = self._cfg.optim.sched
+                sched_config['max_steps'] = self._trainer.max_steps
+                self._scheduler = prepare_lr_scheduler(
+                    optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
+                )
+
+        if self._scheduler is None:
+            return self._optimizer
+        else:
+            return [self._optimizer], [self._scheduler]

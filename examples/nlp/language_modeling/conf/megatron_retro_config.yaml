@@ -68,6 +68,9 @@ model:
   headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
   transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
 
+  dump_debug_info: False # dump out the debug information
+  dump_debug_info_to_file: False # dump out the debug information to files
+
   # retro architecture
   chunk_size: 64   # the chunk size used to retrive
   enc_num_layers: 4    # total number of encoder layers
@@ -80,6 +83,9 @@ model:
   pre_process: True # add embedding
   post_process: True # add pooler
   bert_binary_head: True # BERT binary head
+
+  megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
+  grad_allreduce_chunk_size_mb: 125
 
   tokenizer:
     library: 'megatron'

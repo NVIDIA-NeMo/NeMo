@@ -33,6 +33,8 @@ except (ImportError, ModuleNotFoundError):
     ModelType = ApexGuardDefaults()
     HAVE_APEX = False
 
+MIN_DIM_HEAD = 32
+
 
 class MegatronRetrievalTransformerEncoderModule(MegatronModule):
     """Transformer encoder model.
@@ -76,6 +78,7 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
     ):
         super(MegatronRetrievalTransformerEncoderModule, self).__init__()
 
+        self.transformer_block_type = transformer_block_type
         self.pre_process = pre_process
         self.post_process = post_process
         self.hidden_size = hidden_size
@@ -130,7 +133,9 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
             layer_number_offset=layer_number_offset,
         )
         rot_dim = hidden_size // num_attention_heads if kv_channels is None else kv_channels
-        self.rotary_pos_emb = RotaryEmbedding(rot_dim)
+        # partial rotary embeddings, which is better than full rotary
+        # Wang and Komatsuzaki et al https://github.com/kingoflolz/mesh-transformer-jax/
+        self.rotary_pos_emb = RotaryEmbedding(min(rot_dim, MIN_DIM_HEAD))
         self.chunk_size = chunk_size
         self._model_key = 'model'
 
@@ -393,7 +398,9 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
             layer_number_offset=layer_number_offset,
         )
         rot_dim = hidden_size // num_attention_heads if kv_channels is None else kv_channels
-        self.rotary_pos_emb = RotaryEmbedding(rot_dim)
+        # partial rotary embeddings, which is better than full rotary
+        # Wang and Komatsuzaki et al https://github.com/kingoflolz/mesh-transformer-jax/
+        self.rotary_pos_emb = RotaryEmbedding(min(rot_dim, MIN_DIM_HEAD))
         self.chunk_size = chunk_size
         self._model_key = 'model'
 

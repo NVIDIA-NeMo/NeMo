@@ -473,7 +473,10 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
     # Promote state so it can be retrieved or set via
     # "optimizer_instance.state"
     def _get_state(self):
-        return self.optimizer.state
+        if hasattr(self, 'optimizer'):
+            return self.optimizer.state
+        else:
+            return []
 
     def _set_state(self, value):
         self.optimizer.state = value
@@ -484,9 +487,25 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
     # "optimizer_instance.param_groups"
     # (for example, to adjust the learning rate)
     def _get_param_groups(self):
-        return self.optimizer.param_groups
+        if hasattr(self, 'optimizer'):
+            return self.optimizer.param_groups
+        else:
+            return []
 
     def _set_param_groups(self, value):
         self.optimizer.param_groups = value
 
     param_groups = property(_get_param_groups, _set_param_groups)
+
+    # Promote defaults so it can be retrieved or set via
+    # "optimizer_instance.defaults
+    def _get_defaults(self):
+        if hasattr(self, 'optimizer'):
+            return self.optimizer.defaults
+        else:
+            return []
+
+    def _set_defaults(self, value):
+        self.optimizer.defaults = value
+
+    defaults = property(_get_defaults, _set_defaults)

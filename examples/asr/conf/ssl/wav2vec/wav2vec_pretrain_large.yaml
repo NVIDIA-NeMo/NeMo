@@ -19,6 +19,7 @@ model:
     batch_size: ???
     trim_silence: false
     max_duration: null
+    min_duration: 8
     shuffle: true
     is_tarred: false
     tarred_audio_filepaths: null
@@ -34,6 +35,7 @@ model:
     use_start_end_token: false
     num_workers: 8
     pin_memory: true
+    min_duration: 8
 
   preprocessor:
     _target_: nemo.collections.asr.modules.wav2vec_modules.ConvFeatureEncoder
@@ -43,35 +45,34 @@ model:
     normalize_audio: true
     embedding_dim: *emb_dim # Final dimensions of output
     conv_layers:
-    - - 512
-      - 10
-      - 5
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 2
-      - 2
-    - - 512
-      - 2
-      - 2
+      - emb_dim: 512
+        kernel_size: 10
+        stride: 5
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 2
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 2
+        stride: 2
 
   spec_augment:
-    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 0
-    time_masks: 20
-    freq_width: 0
-    time_width: 10
-    mask_value: 0.0
+    _target_: nemo.collections.asr.modules.MaskedPatchAugmentation
+    freq_masks: 3
+    freq_width: 20
+    patch_size: 12
+    mask_patches: 0.5
 
   encoder:
     _target_: nemo.collections.asr.modules.wav2vec_modules.Wav2VecTransformerEncoder
@@ -101,7 +102,9 @@ model:
     _target_: nemo.collections.asr.losses.ContrastiveLoss
     in_dim: *emb_dim
     proj_dim: *final_dim
-    sample_from_non_masked: true
+    quantized_targets: true # should quantizer or linear layer be used
+    sample_from_same_utterance_only: true # should negatives be sampled only from the same utterance
+    sample_from_non_masked: false # should negatives be sampled from non-masked steps
 
   optim:
     name: adamw
@@ -121,22 +124,23 @@ model:
       warmup_ratio: null
 
 trainer:
-  devices: -1 # number of gpus
+  devices: 1  # number of gpus
   num_nodes: 1
-  accelerator: gpu
-  strategy: ddp
   max_steps: 250000 # computed at runtime if not set
+  accelerator: cpu
+  strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
-  log_every_n_steps: 10- # Interval of logging.
+  amp_backend: apex
+  amp_level: O1 
+  precision: 16 # Should be set to 16 for O1 and O2 to enable the AMP. # Should be set to 16 for O1 and O2 to enable the AMP.
+  log_every_n_steps: 100 # Interval of logging.
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
   sync_batchnorm: true
   enable_checkpointing: False # Provided by exp_manager
   logger: false # Provided by exp_manager
-  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 exp_manager:
   exp_dir: null
@@ -144,6 +148,12 @@ exp_manager:
   create_tensorboard_logger: true
   create_checkpoint_callback: true
   create_wandb_logger: false
+  checkpoint_callback_params:
+    monitor: "val_loss"
+    mode: "min"
+    save_top_k: 5
+    every_n_epochs: 1
+    always_save_nemo: true
   wandb_logger_kwargs:
     name: null
     project: null

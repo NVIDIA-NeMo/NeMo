@@ -1,12 +1,18 @@
-# This config contains the default values for training a wav2vec model with CTC loss and BPE-based vocabulary.
-# Default learning parameters in this config are set for effective batch size of 1k on 32 GPUs.
-# To train it with smaller batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
+# This config file contains parameters for training a Wav2Vec semi-supervised encoder
+# These parameters are based off the FairSeq implementation.
+# See here: https://github.com/pytorch/fairseq/blob/master/examples/wav2vec/config/pretraining/wav2vec2_base_librispeech.yaml
 
-name: &name Wav2Vec_CTC_Large
+# kernel: \[([0-9]+)\]
+# filters: ([0-9]+)
+name: &name "Wav2vec_Pretrain"
 
 model:
   sample_rate: &sample_rate 16000
-  embedding_dim: &emb_dim 1024 # Project size of embedding dimension for transformer
+  feature_penalty: 0.0
+  dropout_features: 0.1 # Dropout applied to inputs to context encoder
+  dropout_features_q: 0.1 # Dropout applied to inputs to target quantizer
+  embedding_dim: &emb_dim 768 # Project size of embedidng dimension for transformer
+  final_dim: &final_dim 256 # Project final representations and targets to this dimension (target embeddings).
 
   train_ds:
     manifest_filepath: ???
@@ -14,6 +20,7 @@ model:
     batch_size: ???
     trim_silence: false
     max_duration: null
+    min_duration: 8.0
     shuffle: true
     is_tarred: false
     tarred_audio_filepaths: null
@@ -24,24 +31,12 @@ model:
   validation_ds:
     manifest_filepath: ???
     sample_rate: *sample_rate
-    batch_size: 4
+    batch_size: ???
     shuffle: false
     use_start_end_token: false
     num_workers: 8
     pin_memory: true
-
-  test_ds:
-    manifest_filepath: null
-    sample_rate: *sample_rate
-    batch_size: null
-    shuffle: false
-    use_start_end_token: false
-    num_workers: 8
-    pin_memory: true
-  
-  tokenizer:
-    dir: ??? # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
-    type: bpe # Can be either bpe or wpe
+    min_duration: 8.0
 
   preprocessor:
     _target_: nemo.collections.asr.modules.wav2vec_modules.ConvFeatureEncoder
@@ -49,60 +44,68 @@ model:
     conv_bias: False # Include bias in convolution feature extractor model
     feature_grad_mult: 1.0 # Multiply extracted feature gradients
     normalize_audio: true
-    embedding_dim: *emb_dim # Final dimensions of output
+    embedding_dim: *emb_dim # projected final depth of feature embeddings
     conv_layers:
-    - - 512
-      - 10
-      - 5
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 3
-      - 2
-    - - 512
-      - 2
-      - 2
-    - - 512
-      - 2
-      - 2
+      - emb_dim: 512
+        kernel_size: 10
+        stride: 5
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 3
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 2
+        stride: 2
+      - emb_dim: 512
+        kernel_size: 2
+        stride: 2
 
   spec_augment:
-    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 4
-    time_masks: 10
-    freq_width: 27
-    time_width: 0.05
-    mask_value: 0.0
+    _target_: nemo.collections.asr.modules.MaskedPatchAugmentation
+    freq_masks: 3
+    freq_width: 20
+    patch_size: 12
+    mask_patches: 0.5
 
   encoder:
     _target_: nemo.collections.asr.modules.wav2vec_modules.Wav2VecTransformerEncoder
-    layer_drop: 0.2
+    layer_drop: 0.05
     pos_embed: # Config for convolutional model that generates positional embeddings required for attention layer
       embedding_dim: *emb_dim
       conv_pos: 128 # Number of filters for convolutional positional embeddings
       conv_pos_groups: 16 # Number of groups for convolutional positional embeddings
     transformer: # Config for nemo.collections.nlp.modules.common.transformer.TransformerEncoder
-      num_layers: 24 # Number of encoder layers in transformer model
+      num_layers: 12 # Number of encoder layers in transformer model
       hidden_size: *emb_dim # Encoder embedding dim
-      inner_size: 4096 # Encoder embedding dim for feed forward
-      num_attention_heads: 16 # Number of encoder attention heads
-      attn_score_dropout: .1 #probability of dropout applied to attention scores
-      attn_layer_dropout: .1 #probability of dropout applied to the output of the attention layers, but before layer normalization
+      inner_size: 3072 # Encoder embedding dim for feed forward
+      num_attention_heads: 8 # Number of encoder attention heads
+      attn_score_dropout: .1 # probability of dropout applied to attention scores
+      attn_layer_dropout: .1 # probability of dropout applied to the output of the attention layers, but before layer normalization
       ffn_dropout: .1 # probability of dropout applied to FFN output
       hidden_act: gelu # Activation for transformer
-    
+
   decoder:
-    _target_: nemo.collections.asr.modules.ConvASRDecoder
+    _target_: nemo.collections.asr.modules.ConvASRDecoderReconstruction
     feat_in: *emb_dim
-    num_classes: -1  # filled with vocabulary size from tokenizer at runtime
-    vocabulary: []  # filled with vocabulary from tokenizer at runtime
+    feat_hidden: *emb_dim
+    feat_out: *final_dim
+    stride_layers: 0
+
+  loss:
+    _target_: nemo.collections.asr.losses.ContrastiveLoss
+    in_dim: *emb_dim
+    proj_dim: *final_dim
+    quantized_targets: true # should quantizer or linear layer be used
+    sample_from_same_utterance_only: true # should negatives be sampled only from the same utterance
+    sample_from_non_masked: false # should negatives be sampled from non-masked steps
 
   optim:
     name: adamw
@@ -122,22 +125,21 @@ model:
       warmup_ratio: null
 
 trainer:
-  devices: -1 # number of gpus
+  devices: 1 # number of gpus
   num_nodes: 1
-  max_steps: 250000 # computed at runtime if not set
+  max_steps: 400000 # computed at runtime if not set
   accelerator: gpu
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
   precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
-  log_every_n_steps: 10- # Interval of logging.
+  log_every_n_steps: 100 # Interval of logging.
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
   sync_batchnorm: true
   enable_checkpointing: False # Provided by exp_manager
   logger: false # Provided by exp_manager
-  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 exp_manager:
   exp_dir: null
@@ -145,9 +147,21 @@ exp_manager:
   create_tensorboard_logger: true
   create_checkpoint_callback: true
   create_wandb_logger: false
+  checkpoint_callback_params:
+    monitor: "val_loss"
+    mode: "min"
+    save_top_k: 5
+    every_n_epochs: 1
+    always_save_nemo: true
   wandb_logger_kwargs:
     name: null
     project: null
   resume_if_exists: false
   resume_ignore_no_checkpoint: false
 
+hydra:
+  run:
+    dir: .
+  job_logging:
+    root:
+      handlers: null

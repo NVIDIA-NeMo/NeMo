@@ -17,9 +17,9 @@ model:
   train_ds:
     manifest_filepath: ???
     sample_rate: *sample_rate
-    batch_size: 32
+    batch_size: 8
     trim_silence: false
-    max_duration: 35.0
+    max_duration: 20.0
     min_duration: 8.0
     shuffle: true
     is_tarred: false
@@ -34,12 +34,12 @@ model:
   validation_ds:
     manifest_filepath: ???
     sample_rate: *sample_rate
-    batch_size: 32
+    batch_size: 8
     shuffle: false
     use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    max_duration: 35.0
+    max_duration: 20.0
     min_duration: 8.0
 
   preprocessor:
@@ -87,10 +87,10 @@ model:
       conv_pos: 128 # Number of filters for convolutional positional embeddings
       conv_pos_groups: 16 # Number of groups for convolutional positional embeddings
     transformer: # Config for nemo.collections.nlp.modules.common.transformer.TransformerEncoder
-      num_layers: 12 # Number of encoder layers in transformer model
+      num_layers: 6 # Number of encoder layers in transformer model
       hidden_size: *emb_dim # Encoder embedding dim
-      inner_size: 3072 # Encoder embedding dim for feed forward
-      num_attention_heads: 8 # Number of encoder attention heads
+      inner_size: 1536 # Encoder embedding dim for feed forward
+      num_attention_heads: 4 # Number of encoder attention heads
       attn_score_dropout: .1 # probability of dropout applied to attention scores
       attn_layer_dropout: .1 # probability of dropout applied to the output of the attention layers, but before layer normalization
       ffn_dropout: .1 # probability of dropout applied to FFN output

@@ -818,15 +818,15 @@ class VocoderDataset(Dataset):
     ):
         """Dataset which can be used for training and fine-tuning vocoder with pre-computed mel-spectrograms.
         Args:
-            manifest_filepath (Union[str, Path, List[str], List[Path]]): Path(s) to the .json manifests containing information on the
-            dataset. Each line in the .json file should be valid json. Note: the .json file itself is not valid
-            json. Each line should contain the following:
+            manifest_filepath (Union[str, Path, List[str], List[Path]]): Path(s) to the .json manifests containing
+            information on the dataset. Each line in the .json file should be valid json. Note: the .json file itself
+            is not valid json. Each line should contain the following:
                 "audio_filepath": <PATH_TO_WAV>,
                 "duration": <Duration of audio clip in seconds> (Optional),
                 "mel_filepath": <PATH_TO_LOG_MEL> (Optional, can be in .npy (numpy.save) or .pt (torch.save) format)
             sample_rate (int): The sample rate of the audio. Or the sample rate that we will resample all files to.
             n_segments (int): The length of audio in samples to load. For example, given a sample rate of 16kHz, and
-                n_segments=16000, a random 1 second section of audio from the clip will be loaded. The section will
+                n_segments=16000, a random 1-second section of audio from the clip will be loaded. The section will
                 be randomly sampled everytime the audio is batched. Can be set to None to load the entire audio.
                 Must be specified if load_precomputed_mel is True.
             max_duration (Optional[float]): Max duration of audio clips in seconds. All samples exceeding this will be
@@ -838,7 +838,8 @@ class VocoderDataset(Dataset):
             ignore_file (Optional[Union[str, Path]]): The location of a pickle-saved list of audio paths
                 that will be pruned prior to training. Defaults to None which does not prune.
             trim (bool): Whether to apply librosa.effects.trim to the audio file. Defaults to False.
-            load_precomputed_mel (bool): Whether to load precomputed mel (useful for fine-tuning). Note: Requires "mel_filepath" to be set in the manifest file.
+            load_precomputed_mel (bool): Whether to load precomputed mel (useful for fine-tuning).
+                Note: Requires "mel_filepath" to be set in the manifest file.
             hop_length (Optional[int]): The hope length between fft computations. Must be specified if load_precomputed_mel is True.
         """
         super().__init__()

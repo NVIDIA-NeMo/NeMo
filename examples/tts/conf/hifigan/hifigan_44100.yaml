@@ -18,7 +18,7 @@ highfreq: null
 window: hann
 
 train_n_segments: 16384
-train_max_duration: null
+train_max_duration: null  # change to null to include longer audios.
 train_min_duration: 0.75
 
 val_n_segments: 131072
@@ -70,13 +70,13 @@ model:
 
 trainer:
   num_nodes: 1
-  devices: 1
+  devices: -1
   accelerator: gpu
   strategy: ddp
-  precision: 32
+  precision: 16
   max_steps: ${model.max_steps}
   accumulate_grad_batches: 1
-  enable_checkpointing: False  # Provided by exp_manager
+  enable_checkpointing: false  # Provided by exp_manager
   logger: false # Provided by exp_manager
   log_every_n_steps: 100
   check_val_every_n_epoch: 10

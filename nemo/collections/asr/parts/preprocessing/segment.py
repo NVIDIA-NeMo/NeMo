@@ -186,7 +186,7 @@ class AudioSegment(object):
         try:
             with sf.SoundFile(audio_file, 'r') as f:
                 sample_rate = f.samplerate
-                if n_segments > 0 and len(f) > n_segments:
+                if 0 < n_segments < len(f):
                     max_audio_start = len(f) - n_segments
                     audio_start = random.randint(0, max_audio_start)
                     f.seek(audio_start)

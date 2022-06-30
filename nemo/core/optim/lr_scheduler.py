@@ -868,7 +868,7 @@ def compute_max_steps(
         logging.warning(
             "Please note that drop_last is broken in pytorch 1.6.0. We will fix when pytorch 1.7.0 is released"
         )
-        # TODO: Master verion, not in pytorch 1.6.0
+        # TODO: Master version, not in pytorch 1.6.0
         # sampler_num_samples = math.ceil((num_samples - num_workers)/ num_workers)
 
     steps_per_epoch = _round(sampler_num_samples / batch_size)

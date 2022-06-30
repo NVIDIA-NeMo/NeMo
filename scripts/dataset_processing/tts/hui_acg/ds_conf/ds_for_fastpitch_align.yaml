@@ -1,0 +1,48 @@
+name: "ds_for_fastpitch_align"
+
+manifest_filepath: ???
+sup_data_path: ???
+sup_data_types: [ "align_prior_matrix", "pitch" ]
+whitelist_path: "nemo_text_processing/text_normalization/de/data/whitelist.tsv"
+
+dataset:
+  _target_: nemo.collections.tts.torch.data.TTSDataset
+  manifest_filepath: ${manifest_filepath}
+  sample_rate: 44100
+  sup_data_path: ${sup_data_path}
+  sup_data_types: ${sup_data_types}
+  n_fft: 2048
+  win_length: 2048
+  hop_length: 512
+  window: "hann"
+  n_mels: 80
+  lowfreq: 0
+  highfreq: null
+  max_duration: 15
+  min_duration: 0.1
+  ignore_file: null
+  trim: false
+  pitch_fmin: 65.40639132514966
+  pitch_fmax: 2093.004522404789
+  use_beta_binomial_interpolator: true
+
+  text_normalizer:
+    _target_: nemo_text_processing.text_normalization.normalize.Normalizer
+    lang: de
+    input_case: cased
+    whitelist: ${whitelist_path}
+
+  text_normalizer_call_kwargs:
+    verbose: false
+    punct_pre_process: true
+    punct_post_process: true
+
+  text_tokenizer:
+    _target_: nemo.collections.tts.torch.tts_tokenizers.GermanCharsTokenizer
+    punct: true
+    apostrophe: true
+    pad_with_space: true
+    phonemes: true
+
+dataloader_params:
+  num_workers: 12

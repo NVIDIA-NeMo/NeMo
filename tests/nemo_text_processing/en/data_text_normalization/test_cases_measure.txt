@@ -15,3 +15,4 @@ covid-19.5~covid- nineteen point five
 2°C~two degrees Celsius
 1°C~one degree Celsius
 1234-123kg~one thousand two hundred and thirty four to one hundred and twenty three kilograms
+45º&C~forty five degree and C

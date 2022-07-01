@@ -2,55 +2,53 @@
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400&display=swap');
 
 body {
- font-size: 100%;
- font-family: 'Roboto', sans-serif;
+	font-size: 100%;
+	font-family: 'Roboto', sans-serif;
 }
 
 
 /* Width of template */
 
 .wy-nav-content {
-    max-width: 1200px !important;
+	max-width: 1200px !important;
 }
 
 
 
 /* Standard Text Formatting */
 
-h1
-{
+h1 {
 	color: #76b900;
-    text-align: center;
+	text-align: center;
 	background-color: #ffffff;
 }
 
-h2
-{
+h2 {
 	color: #ffffff;
-	background-color: #ffffff;  /* #76b900 */
-    Padding: 5px;
+	background-color: #ffffff;
+	/* #76b900 */
+	Padding: 5px;
 }
 
-h3
-{
+h3 {
 	padding-top: 0px;
-	border-top: solid 3px #000000;  /* #76b900 */
-	border-bottom: solid 3px #000000;  /* #76b900 */
+	border-top: solid 3px #000000;
+	/* #76b900 */
+	border-bottom: solid 3px #000000;
+	/* #76b900 */
 }
 
-p
-{
+p {
 	margin-bottom: 24px;
 }
+
 /* Link Colors */
-a
-{
-    color: #76b900;
+a {
+	color: #76b900;
 }
 
-a:visited
-{
-    color: #218219;
+a:visited {
+	color: #218219;
 }
 
 .container-xl {
@@ -73,56 +71,52 @@ table {
 }
 
 /* Table head Color */
-thead td
-{
+thead td {
 	background-color: #333333 !important;
 }
 
-.row-odd p
-{
+.row-odd p {
 	/*padding-bottom: 0px;*/
 	/*margin-bottom: 0px;*/
 }
+
 /* even rows*/
 
-.row-even tr
-{
-  background-color: #e5f1e6 !important;
+.row-even tr {
+	background-color: #e5f1e6 !important;
 }
 
 /* odd rows*/
 
 
 .wy-table-responsive table tr {
-      background-color: #ffffff !important;
+	background-color: #ffffff !important;
 }
 
 
 
 .wy-table-responsive table td {
-	  white-space: normal;
+	white-space: normal;
 }
 
 
 /* Removes bottom margin in tables*/
 
 .rst-content .line-block {
-    margin-bottom: 0px;
+	margin-bottom: 0px;
 }
 
 .wy-table-responsive {
-	  overflow: visible !important;
+	overflow: visible !important;
 }
 
 /* reduces the size of text in multiline table columns. */
 
-.rst-content table.docutils td
-{
-	  font-size: 80%;
+.rst-content table.docutils td {
+	font-size: 80%;
 }
 
-.rst-content dl:not(.docutils) dt
-{
+.rst-content dl:not(.docutils) dt {
 
 	background-color: inherit;
 	color: #000000;
@@ -131,100 +125,130 @@ thead td
 }
 
 .rst-content dl:not(.docutils) dt:before {
-    color: #333333;
+	color: #333333;
 }
 
 .rst-content .line-block {
-    margin-bottom: 0px;
+	margin-bottom: 0px;
 }
 
-.wy-side-nav-search, .wy-nav-top
-	{
-		background-color: #000000;
-		padding: 0;
-	}
+.wy-side-nav-search,
+.wy-nav-top {
+	background-color: #000000;
+	padding: 0;
+}
 
-.wy-side-nav-search img
-	{
-		padding: 0px;
-		padding: 0px 0px;
-    	margin-bottom: 0;
-	}
+.wy-side-nav-search img {
+	padding: 0px;
+	padding: 0px 0px;
+	margin-bottom: 0;
+}
 
-.wy-side-nav-search input[type=text]
-	{
-		border-radius: 0px;
-	}
+.wy-side-nav-search input[type=text] {
+	border-radius: 0px;
+}
 
 
-.wy-menu-vertical p.caption
-	{
+.wy-menu-vertical p.caption {
 	color: #76b900;
-	}
+}
 
 
-.wy-side-nav-search>a img.logo, .wy-side-nav-search .wy-dropdown>a img.logo
-	{
+.wy-side-nav-search>a img.logo,
+.wy-side-nav-search .wy-dropdown>a img.logo {
 	margin: 0px 0px 0px 0px;
-	}
-
-.wy-nav-content
-	{
-    margin: 0;
-    min-height: 100%;
-    height: 100%;
-    background: #ffffff;
-	}
-
-	/* List (numbered, bulleted) padding Fix */
-
-
-.wy-plain-list-decimal li
-{
-    margin-top: -6px;
-    margin-bottom: -6px;
 }
 
-.rst-content .section ol.loweralpha
-{
-    margin-top: -6px;
-    margin-bottom: 12px;
+.wy-nav-content {
+	margin: 0;
+	min-height: 100%;
+	height: 100%;
+	background: #ffffff;
 }
 
-.wy-plain-list-disc, .rst-content .toctree-wrapper ul, article ul
-{
-    margin-top: 0px !important;
-    margin-bottom: 12px;
+/* List (numbered, bulleted) padding Fix */
+
+
+.wy-plain-list-decimal li {
+	margin-top: -6px;
+	margin-bottom: -6px;
 }
 
-	/* Alert Boxes */
-	/* Background color of Alert Box Title */
-
-.rst-content .section ul
-{
-    margin-top: -12px;
-    margin-bottom: 16px;
+.rst-content .section ol.loweralpha {
+	margin-top: -6px;
+	margin-bottom: 12px;
 }
 
-.wy-alert.wy-alert-info .wy-alert-title, .rst-content .note .wy-alert-title, .rst-content .wy-alert-info.attention .wy-alert-title, .rst-content .wy-alert-info.caution .wy-alert-title, .rst-content .wy-alert-info.danger .wy-alert-title, .rst-content .wy-alert-info.error .wy-alert-title, .rst-content .wy-alert-info.hint .wy-alert-title, .rst-content .wy-alert-info.important .wy-alert-title, .rst-content .wy-alert-info.tip .wy-alert-title, .rst-content .wy-alert-info.warning .wy-alert-title, .rst-content .seealso .wy-alert-title, .rst-content .wy-alert-info.admonition-todo .wy-alert-title, .rst-content .wy-alert-info.admonition .wy-alert-title, .wy-alert.wy-alert-info .rst-content .admonition-title, .rst-content .wy-alert.wy-alert-info .admonition-title, .rst-content .note .admonition-title, .rst-content .wy-alert-info.attention .admonition-title, .rst-content .wy-alert-info.caution .admonition-title, .rst-content .wy-alert-info.danger .admonition-title, .rst-content .wy-alert-info.error .admonition-title, .rst-content .wy-alert-info.hint .admonition-title, .rst-content .wy-alert-info.important .admonition-title, .rst-content .wy-alert-info.tip .admonition-title, .rst-content .wy-alert-info.warning .admonition-title, .rst-content .seealso .admonition-title, .rst-content .wy-alert-info.admonition-todo .admonition-title, .rst-content .wy-alert-info.admonition .admonition-title
-    {
+.wy-plain-list-disc,
+.rst-content .toctree-wrapper ul,
+article ul {
+	margin-top: 0px !important;
+	margin-bottom: 12px;
+}
+
+/* Alert Boxes */
+/* Background color of Alert Box Title */
+
+.rst-content .section ul {
+	margin-top: -12px;
+	margin-bottom: 16px;
+}
+
+.wy-alert.wy-alert-info .wy-alert-title,
+.rst-content .note .wy-alert-title,
+.rst-content .wy-alert-info.attention .wy-alert-title,
+.rst-content .wy-alert-info.caution .wy-alert-title,
+.rst-content .wy-alert-info.danger .wy-alert-title,
+.rst-content .wy-alert-info.error .wy-alert-title,
+.rst-content .wy-alert-info.hint .wy-alert-title,
+.rst-content .wy-alert-info.important .wy-alert-title,
+.rst-content .wy-alert-info.tip .wy-alert-title,
+.rst-content .wy-alert-info.warning .wy-alert-title,
+.rst-content .seealso .wy-alert-title,
+.rst-content .wy-alert-info.admonition-todo .wy-alert-title,
+.rst-content .wy-alert-info.admonition .wy-alert-title,
+.wy-alert.wy-alert-info .rst-content .admonition-title,
+.rst-content .wy-alert.wy-alert-info .admonition-title,
+.rst-content .note .admonition-title,
+.rst-content .wy-alert-info.attention .admonition-title,
+.rst-content .wy-alert-info.caution .admonition-title,
+.rst-content .wy-alert-info.danger .admonition-title,
+.rst-content .wy-alert-info.error .admonition-title,
+.rst-content .wy-alert-info.hint .admonition-title,
+.rst-content .wy-alert-info.important .admonition-title,
+.rst-content .wy-alert-info.tip .admonition-title,
+.rst-content .wy-alert-info.warning .admonition-title,
+.rst-content .seealso .admonition-title,
+.rst-content .wy-alert-info.admonition-todo .admonition-title,
+.rst-content .wy-alert-info.admonition .admonition-title {
 	background: #76b900;
-	}
+}
 
-    /* Background and Font Color of Alert Box Main Body*/
-.wy-alert.wy-alert-info, .rst-content .note, .rst-content .wy-alert-info.attention, .rst-content .wy-alert-info.caution, .rst-content .wy-alert-info.danger, .rst-content .wy-alert-info.error, .rst-content .wy-alert-info.hint, .rst-content .wy-alert-info.important, .rst-content .wy-alert-info.tip, .rst-content .wy-alert-info.warning, .rst-content .seealso, .rst-content .wy-alert-info.admonition-todo, .rst-content .wy-alert-info.admonition {
-    background: #333333;
-    color: #999999;
-	}
+/* Background and Font Color of Alert Box Main Body*/
+.wy-alert.wy-alert-info,
+.rst-content .note,
+.rst-content .wy-alert-info.attention,
+.rst-content .wy-alert-info.caution,
+.rst-content .wy-alert-info.danger,
+.rst-content .wy-alert-info.error,
+.rst-content .wy-alert-info.hint,
+.rst-content .wy-alert-info.important,
+.rst-content .wy-alert-info.tip,
+.rst-content .wy-alert-info.warning,
+.rst-content .seealso,
+.rst-content .wy-alert-info.admonition-todo,
+.rst-content .wy-alert-info.admonition {
+	background: #333333;
+	color: #999999;
+}
 
-.section
-{
+.section {
 	margin-top: 50px;
 }
 
 /* Logo */
 .navbar-brand-box {
-    background-color: #ffffff;
+	background-color: #ffffff;
 }
 
 /* ---------------------------------------------- Media Queries --------------------------------------- */
@@ -238,7 +262,7 @@ thead td
 	body {
 		font-size: 18px;
 	}
-	
+
 	#site-navigation nav ul.nav {
 		font-size: 18px;
 	}
@@ -254,7 +278,7 @@ thead td
 	.toc-h2 {
 		font-size: 18px;
 	}
-	
+
 	.toc-h3 {
 		font-size: 1rem;
 	}
@@ -267,7 +291,7 @@ thead td
 		font-size: 18px;
 	}
 
-	#main-content > div {
+	#main-content>div {
 		margin-left: 10%;
 		margin-right: 10%;
 	}

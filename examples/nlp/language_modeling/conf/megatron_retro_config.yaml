@@ -59,7 +59,7 @@ model:
   layernorm_epsilon: 1e-5
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   persist_layer_norm: False
-  bias_gelu_fusion: True
+  bias_activation_fusion: True # Use a kernel that fuses the bias addition from weight matrices with the subsequent activation function.
   bias_dropout_add_fusion: True
   masked_softmax_fusion: True
   activation: 'gelu'

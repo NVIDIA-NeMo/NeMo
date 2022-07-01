@@ -14,6 +14,7 @@
 
 import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
+    MIN_NEG_WEIGHT,
     NEMO_ALPHA,
     NEMO_DIGIT,
     NEMO_NOT_SPACE,
@@ -22,6 +23,7 @@ from nemo_text_processing.text_normalization.en.graph_utils import (
     convert_space,
     get_abs_path,
 )
+from nemo_text_processing.text_normalization.en.taggers.punctuation import PunctuationFst
 from pynini.examples import plurals
 from pynini.lib import pynutil
 
@@ -40,8 +42,11 @@ class WordFst(GraphFst):
     def __init__(self, punctuation: GraphFst, deterministic: bool = True):
         super().__init__(name="word", kind="classify", deterministic=deterministic)
 
+        punct = PunctuationFst().graph
+        default_graph = pynini.closure(pynini.difference(NEMO_NOT_SPACE, punct.project("input")), 1)
         symbols_to_exclude = (pynini.union("$", "€", "₩", "£", "¥", "#", "%") | NEMO_DIGIT).optimize()
         graph = pynini.closure(pynini.difference(NEMO_NOT_SPACE, symbols_to_exclude), 1)
+        graph = pynutil.add_weight(graph, MIN_NEG_WEIGHT) | default_graph
 
         # leave phones of format [HH AH0 L OW1] untouched
         phoneme_unit = pynini.closure(NEMO_ALPHA, 1) + pynini.closure(NEMO_DIGIT)

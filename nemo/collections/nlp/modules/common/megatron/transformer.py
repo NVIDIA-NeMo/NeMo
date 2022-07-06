@@ -234,7 +234,9 @@ class ParallelMLP(MegatronModule):
                     intermediate_parallel, bias_parallel, intermediate_parallel_2, bias_parallel_2
                 )
 
-        elif self.activation in ['reglu', 'swiglu']:
+        elif self.activation in ['reglu', 'swiglu'] or (
+            self.glu_activation_family and not self.bias_activation_fusion
+        ):
             if bias_parallel is not None:
                 intermediate_parallel = self.activation_func(intermediate_parallel + bias_parallel) * (
                     intermediate_parallel_2 + bias_parallel_2

@@ -120,6 +120,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
     def model_provider_func(self, pre_process, post_process, add_encoder, add_decoder):
         # TODO: create get_encoder_decoder_model()here for different losses (e..g, nll, vae, mim)
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1 and self.cfg.encoder_arch == 'perceiver':
+            raise ValueError(f"Perceivers with pipeline parallel > 1 is not supported yet.")
         if hasattr(self.cfg, 'bias_gelu_fusion'):
             logging.warning('bias_gelu_fusion is deprecated. Please use bias_activation_fusion instead.')
             activation_fusion = self.cfg.bias_gelu_fusion
@@ -163,6 +165,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             normalization=self.cfg.get('normalization', 'layernorm'),
             transformer_block_type=self.cfg.get('transformer_block_type', 'pre_ln'),
             headscale=self.cfg.get('headscale', False),
+            hidden_steps=self.cfg.get('hidden_steps', -1),
+            num_self_attention_per_cross_attention=self.cfg.get('num_self_attention_per_cross_attention', 1),
             add_encoder=add_encoder,
             add_decoder=add_decoder,
         )

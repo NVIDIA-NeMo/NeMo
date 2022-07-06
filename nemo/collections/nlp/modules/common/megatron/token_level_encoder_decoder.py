@@ -111,10 +111,10 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         normalization='layernorm',
         transformer_block_type='pre_ln',
         hidden_steps=-1,
-        hidden_blocks=1,
         headscale=False,
         add_encoder=True,
         add_decoder=True,
+        num_self_attention_per_cross_attention=1,
     ):
         super(MegatronTokenLevelEncoderDecoderModule, self).__init__()
 
@@ -190,13 +190,13 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
                 hidden_steps=hidden_steps,
-                hidden_blocks=hidden_blocks,
                 activation=activation,
                 bias=bias,
                 normalization=normalization,
                 transformer_block_type=transformer_block_type,
                 headscale=headscale,
                 parent_model_type=ModelType.encoder_and_decoder,
+                num_self_attention_per_cross_attention=num_self_attention_per_cross_attention,
             )
 
         if add_decoder:
@@ -255,7 +255,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
                 hidden_steps=hidden_steps,
-                hidden_blocks=hidden_blocks,
                 activation=activation,
                 bias=bias,
                 normalization=normalization,
@@ -264,7 +263,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 parent_model_type=ModelType.encoder_and_decoder,
             )
 
-        self.enc_dec_model = MegatronTransformerEncoderDecoderModule(encoder=encoder, decoder=decoder)
+        self.enc_dec_model = MegatronTransformerEncoderDecoderModule(
+            encoder=encoder, decoder=decoder, hidden_steps=hidden_steps
+        )
         self._enc_dec_model_key = "enc_dec_model"
 
         self.initialize_word_embeddings(

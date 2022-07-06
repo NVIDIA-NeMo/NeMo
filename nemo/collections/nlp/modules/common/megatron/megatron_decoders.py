@@ -76,7 +76,6 @@ def get_decoder_model(
     headscale=False,
     transformer_block_type="pre_ln",
     hidden_steps=-1,
-    hidden_blocks=1,
     parent_model_type=ModelType.encoder_or_decoder,
     layer_type=None,
     chunk_size=64,

@@ -13,7 +13,9 @@
 # limitations under the License.
 
 """Transformer based language model."""
+import torch
 
+from nemo.collections.nlp.modules.common.megatron.megatron_perceiver_encoders import MegatronPerceiverEncoderModule
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 
@@ -41,15 +43,25 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
         # AttnMaskType enum mask type (e.g., padding, casual)
         encoder_attn_mask_type: AttnMaskType = None,
         decoder_attn_mask_type: AttnMaskType = None,
+        hidden_steps: int = None,
     ):
         super(MegatronTransformerEncoderDecoderModule, self).__init__()
 
         self.encoder = encoder
         self.decoder = decoder
+        self.hidden_steps = hidden_steps
+        if isinstance(encoder, MegatronPerceiverEncoderModule) and hidden_steps is None:
+            raise ValueError(
+                f"hidden_steps cannot be None for perceiver encoders. It is needed to compute the encoder-decoder cross attention mask."
+            )
+
         # try to infer mask_type if not given
         if encoder_attn_mask_type is None:
             if encoder is None:
                 encoder_attn_mask_type = None
+            # Perceiver does not have a `.model` attribute, assume it always uses padding mask.
+            elif isinstance(encoder, MegatronPerceiverEncoderModule):
+                encoder_attn_mask_type = AttnMaskType.padding
             elif hasattr(encoder.model, 'self_attn_mask_type'):
                 encoder_attn_mask_type = encoder.model.self_attn_mask_type
             else:
@@ -136,6 +148,10 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
             return enc_output
 
         # decoder
+        # Adjust encoder attention mask if encoder is a perceiver.
+        if self.encoder is not None and isinstance(self.encoder, MegatronPerceiverEncoderModule):
+            enc_attn_mask = torch.ones(enc_output.size(0), self.hidden_steps).to(enc_output.device)
+
         dec_output = self.decode(
             dec_input=dec_input,
             dec_attn_mask=dec_attn_mask,

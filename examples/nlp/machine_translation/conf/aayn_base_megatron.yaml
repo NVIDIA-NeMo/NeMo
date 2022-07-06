@@ -66,7 +66,7 @@ model:
 
   seq_length: 512
   max_position_embeddings: ${.seq_length}
-  num_layers: 12
+  num_layers: 12 # For perceiver models, this is the number of cross-attention blocks. Each layer has 1 cross-attention and "num_self_attention_per_cross_attention" self-attention layers.
   hidden_size: 768
   ffn_hidden_size: 3072 # Transformer FFN hidden size. Usually 4 * hidden_size.
   num_attention_heads: 12
@@ -91,6 +91,8 @@ model:
   activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu']
   headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
   transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
+  hidden_steps: 32 # Number of latent vectors to use for pereceiver encoders
+  num_self_attention_per_cross_attention: 1 # Number of self-attention layers for every cross-attention layer.
 
   # precision
   native_amp_init_scale: 4294967296 # 2 ** 32

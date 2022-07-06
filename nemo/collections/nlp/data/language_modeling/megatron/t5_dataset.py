@@ -29,6 +29,9 @@ from nemo.core import Dataset
 
 
 class T5Dataset(Dataset):
+    # account for added tokens
+    MAX_SEQ_LENGTH_DELTA = 2
+
     def __init__(
         self,
         cfg,
@@ -86,7 +89,7 @@ class T5Dataset(Dataset):
             data_prefix=data_prefix,
             num_epochs=num_epochs,
             max_num_samples=max_num_samples,
-            max_seq_length=self.max_seq_length - 2,  # account for added tokens
+            max_seq_length=self.max_seq_length - self.MAX_SEQ_LENGTH_DELTA,  # account for added tokens
             short_seq_prob=self.short_seq_prob,
             seed=self.seed,
             name=self.name,

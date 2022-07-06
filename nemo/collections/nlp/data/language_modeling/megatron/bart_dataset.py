@@ -20,6 +20,9 @@ from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import T5Da
 
 
 class BARTDataset(T5Dataset):
+    # account for added tokens
+    MAX_SEQ_LENGTH_DELTA = 1
+
     def __init__(
         self,
         cfg,
@@ -77,8 +80,8 @@ class BARTDataset(T5Dataset):
         self, tokens, output_tokens, masked_positions, masked_labels, masked_spans=None, np_rng=None,
     ):
         """Pad sequences and convert them to numpy."""
-        bart_decoder_in = [self.bos_id] + tokens[:-1]
-        bart_decoder_out = tokens
+        bart_decoder_in = [self.bos_id] + tokens
+        bart_decoder_out = tokens + [self.eos_id]
 
         if masked_spans is not None:
             # construct bart input by collapsing multiple <mask> into one, and delete randomly

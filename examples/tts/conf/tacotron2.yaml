@@ -83,7 +83,7 @@ model:
   validation_ds:
     dataset:
       _target_: "nemo.collections.tts.torch.data.TTSDataset"
-      manifest_filepath: ${train_dataset}
+      manifest_filepath: ${validation_datasets}
       sample_rate: ${model.sample_rate}
       sup_data_path: ${sup_data_path}
       sup_data_types: ${sup_data_types}

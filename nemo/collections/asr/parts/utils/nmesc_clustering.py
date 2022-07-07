@@ -441,12 +441,21 @@ def getMultiScaleCosAffinityMatrix(uniq_embs_and_timestamps: dict, device: torch
 
 
 @torch.jit.script
-def getCosAffinityMatrix(_emb: torch.Tensor):
+def getCosAffinityMatrix(emb: torch.Tensor):
     """
     Calculate cosine similarity values among speaker embeddings then min-max normalize
     the affinity matrix.
+    Args:
+        emb: (torch.tensor)
+            Matrix containing embedding vectors. emb variable should be float(FP32) type to make the data-type
+            compatible with torch.mm operation for both CPU and GPU(CUDA).
+            dimension: (Number of embedding vectors) x (embedding dimension)
+    Returns:
+        sim_d: (torch.tensor)
+            Matrix containing cosine similarity values among the given embedding vectors.
+            dimension: (Number of embedding vectors) x (Number of embedding vectors)
     """
-    emb = _emb.half()
+    emb = emb.float()
     sim_d = cos_similarity(emb, emb)
     sim_d = ScalerMinMax(sim_d)
     return sim_d
@@ -788,10 +797,11 @@ class NMESC:
         max_rp_threshold: float = 0.15,
         sparse_search: bool = True,
         sparse_search_volume: int = 30,
+        NME_mat_size: int = 512,
         use_subsampling_for_NME: bool = True,
         fixed_thres: float = 0.0,
+        maj_vote_spk_count: bool = False,
         cuda: bool = False,
-        NME_mat_size: int = 512,
         device: torch.device = torch.device('cpu'),
     ):
         """
@@ -826,6 +836,11 @@ class NMESC:
                 threshold with NME analysis. If fixed_thres is float,
                 it skips the NME analysis part.
 
+            maj_vote_spk_count: (bool)
+                If True, take a majority vote on all p-values in the given range to estimate the number of speakers.
+                The majority voting may contribute to surpress overcounting of the speakers and improve speaker
+                counting accuracy.
+
             cuda (bool)
                 Use cuda for Eigen decomposition if cuda=True.
 
@@ -840,13 +855,15 @@ class NMESC:
         self.NME_mat_size: int = NME_mat_size
         self.sparse_search = sparse_search
         self.sparse_search_volume = sparse_search_volume
+        self.min_p_value = torch.tensor(2)
         self.fixed_thres: float = fixed_thres
         self.cuda: bool = cuda
         self.eps = 1e-10
         self.max_N = torch.tensor(0)
         self.mat = mat
-        self.p_value_list: torch.Tensor = torch.tensor(0)
+        self.p_value_list: torch.Tensor = self.min_p_value.unsqueeze(0)
         self.device = device
+        self.maj_vote_spk_count = maj_vote_spk_count
 
     def NMEanalysis(self):
         """
@@ -859,13 +876,14 @@ class NMESC:
 
         # Scans p_values and find a p_value that generates
         # the smallest g_p value.
-        eig_ratio_list = []
+        eig_ratio_list, est_num_of_spk_list = [], []
         est_spk_n_dict: Dict[int, torch.Tensor] = {}
         self.p_value_list = self.getPvalueList()
         for p_value in self.p_value_list:
             est_num_of_spk, g_p = self.getEigRatio(p_value)
             est_spk_n_dict[p_value.item()] = est_num_of_spk
             eig_ratio_list.append(g_p)
+            est_num_of_spk_list.append(est_num_of_spk)
         index_nn = torch.argmin(torch.tensor(eig_ratio_list))
         rp_p_value = self.p_value_list[index_nn]
         affinity_mat = getAffinityGraphMat(self.mat, rp_p_value)
@@ -878,7 +896,10 @@ class NMESC:
             )
 
         p_hat_value = (subsample_ratio * rp_p_value).type(torch.int)
-        est_num_of_spk = est_spk_n_dict[rp_p_value.item()]
+        if self.maj_vote_spk_count:
+            est_num_of_spk = torch.mode(torch.tensor(est_num_of_spk_list))[0]
+        else:
+            est_num_of_spk = est_spk_n_dict[rp_p_value.item()]
         return est_num_of_spk, p_hat_value
 
     def subsampleAffinityMat(self, NME_mat_size: int):
@@ -923,7 +944,6 @@ class NMESC:
         Returns:
             est_num_of_spk: (int)
                 Estimated number of speakers
-
             g_p: (float)
                 The ratio between p_neighbors value and the maximum eigen gap value.
         """
@@ -937,19 +957,39 @@ class NMESC:
 
     def getPvalueList(self):
         """
-        Generates a p-value (p_neighbour) list for searching.
+        Generates a p-value (p_neighbour) list for searching. p_value_list must include 2 (min_p_value)
+        since at least one neighboring segment should be selected other than itself.
+
+        If fixed_thres value is specified, then only one p-value is specified.
+        If fixed_thres is not provided, multiple p-values are searched.
+            If sparse_search is True:
+                - Limit the number of p-values to be searched to sparse_search_volume.
+                - N should be at least 2 to include a number greater than 1.
+            If sparse_search is False:
+                - Scan all the p_values from 1 to max_N
+                - If sparse_search is False, NMESC analysis could take more time compared to sparse_search = True.
+
+        Returns:
+            p_value_list: (torch.tensor)
+                Tensor containing the p_values to be searched.
         """
-        if self.fixed_thres > 0.0:
-            p_value_list = torch.floor(torch.tensor(self.mat.shape[0] * self.fixed_thres)).type(torch.int)
-            self.max_N = p_value_list[0]
+        if self.fixed_thres is not None and self.fixed_thres > 0.0:
+            self.max_N = torch.max(
+                torch.floor(torch.tensor(self.mat.shape[0] * self.fixed_thres)).type(torch.int), self.min_p_value
+            )
+            p_value_list = torch.tensor(self.max_N).unsqueeze(0)
         else:
-            self.max_N = torch.floor(torch.tensor(self.mat.shape[0] * self.max_rp_threshold)).type(torch.int)
+            self.max_N = torch.max(
+                torch.floor(torch.tensor(self.mat.shape[0] * self.max_rp_threshold)).type(torch.int), self.min_p_value
+            )
             if self.sparse_search:
-                N = torch.min(self.max_N, torch.tensor(self.sparse_search_volume).type(torch.int))
+                search_volume = torch.min(self.max_N, torch.tensor(self.sparse_search_volume).type(torch.int))
+                N = torch.max(search_volume, torch.tensor(2))
                 p_value_list = torch.unique(torch.linspace(start=1, end=self.max_N, steps=N).type(torch.int))
             else:
-                p_value_list = torch.arange(1, self.max_N)
-
+                p_value_list = torch.arange(1, self.max_N + 1)
+        if p_value_list.shape[0] == 0:
+            raise ValueError("p_value_list should not be empty.")
         return p_value_list
 
 
@@ -960,7 +1000,9 @@ def COSclustering(
     min_samples_for_NMESC: int = 6,
     enhanced_count_thres: int = 80,
     max_rp_threshold: float = 0.15,
+    sparse_search: bool = True,
     sparse_search_volume: int = 30,
+    maj_vote_spk_count: bool = False,
     fixed_thres: float = 0.0,
     cuda=False,
 ):
@@ -997,6 +1039,14 @@ def COSclustering(
             Clustering performance can vary depending on this range.
             Default is 0.15.
 
+        maj_vote_spk_count: (bool)
+            If True, take a majority vote on all p-values in the given range to estimate the number of speakers.
+            The majority voting may contribute to surpress overcounting of the speakers and improve speaker
+            counting accuracy.
+
+        sparse_search: (bool)
+            Toggle sparse search mode. If True, limit the size of p_value_list to sparse_search_volume.
+
         sparse_search_volume: (int)
             Number of p_values we search during NME analysis.
             Default is 30. The lower the value, the faster NME-analysis becomes.
@@ -1018,7 +1068,7 @@ def COSclustering(
     emb = uniq_scale_dict[max(uniq_scale_dict.keys())]['embeddings']
 
     if emb.shape[0] == 1:
-        return torch.zeros((1,), dtype=torch.int32)
+        return torch.zeros((1,), dtype=torch.int32).cpu().numpy()
     elif emb.shape[0] <= max(enhanced_count_thres, min_samples_for_NMESC) and oracle_num_speakers is None:
         est_num_of_spk_enhanced = getEnhancedSpeakerCount(emb, cuda)
     else:
@@ -1033,10 +1083,11 @@ def COSclustering(
         mat,
         max_num_speaker=max_num_speaker,
         max_rp_threshold=max_rp_threshold,
-        sparse_search=True,
+        sparse_search=sparse_search,
         sparse_search_volume=sparse_search_volume,
         fixed_thres=fixed_thres,
         NME_mat_size=300,
+        maj_vote_spk_count=maj_vote_spk_count,
         cuda=cuda,
         device=device,
     )
@@ -1054,5 +1105,4 @@ def COSclustering(
 
     spectral_model = SpectralClustering(n_clusters=est_num_of_spk, cuda=cuda, device=device)
     Y = spectral_model.predict(affinity_mat)
-
     return Y.cpu().numpy()

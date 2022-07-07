@@ -34,7 +34,7 @@ def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--input", help="input file path", type=str)
     parser.add_argument(
-        "--lang", help="language", choices=['en', 'de', 'es', 'ru', 'fr', 'vi'], default="en", type=str
+        "--lang", help="language", choices=['en', 'de', 'es', 'pt', 'ru', 'fr', 'vi'], default="en", type=str
     )
     parser.add_argument(
         "--cat",

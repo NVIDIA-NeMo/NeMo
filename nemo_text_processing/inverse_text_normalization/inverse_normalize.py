@@ -23,7 +23,7 @@ from nemo_text_processing.text_normalization.token_parser import TokenParser
 
 class InverseNormalizer(Normalizer):
     """
-    Inverse normalizer that converts text from spoken to written form. Useful for ASR postprocessing. 
+    Inverse normalizer that converts text from spoken to written form. Useful for ASR postprocessing.
     Input is expected to have no punctuation outside of approstrophe (') and dash (-) and be lower cased.
 
     Args:
@@ -43,6 +43,12 @@ class InverseNormalizer(Normalizer):
         elif lang == 'es':
             from nemo_text_processing.inverse_text_normalization.es.taggers.tokenize_and_classify import ClassifyFst
             from nemo_text_processing.inverse_text_normalization.es.verbalizers.verbalize_final import (
+                VerbalizeFinalFst,
+            )
+
+        elif lang == 'pt':
+            from nemo_text_processing.inverse_text_normalization.pt.taggers.tokenize_and_classify import ClassifyFst
+            from nemo_text_processing.inverse_text_normalization.pt.verbalizers.verbalize_final import (
                 VerbalizeFinalFst,
             )
 
@@ -75,7 +81,7 @@ class InverseNormalizer(Normalizer):
 
     def inverse_normalize_list(self, texts: List[str], verbose=False) -> List[str]:
         """
-        NeMo inverse text normalizer 
+        NeMo inverse text normalizer
 
         Args:
             texts: list of input strings
@@ -106,7 +112,7 @@ def parse_args():
     input.add_argument("--input_file", dest="input_file", help="input file path", type=str)
     parser.add_argument('--output_file', dest="output_file", help="output file path", type=str)
     parser.add_argument(
-        "--language", help="language", choices=['en', 'de', 'es', 'ru', 'fr', 'vi'], default="en", type=str
+        "--language", help="language", choices=['en', 'de', 'es', 'pt', 'ru', 'fr', 'vi'], default="en", type=str
     )
     parser.add_argument("--verbose", help="print info for debugging", action='store_true')
     parser.add_argument("--overwrite_cache", help="set to True to re-create .far grammar files", action="store_true")

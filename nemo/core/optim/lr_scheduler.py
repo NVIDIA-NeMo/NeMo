@@ -472,9 +472,6 @@ class NoamAnnealing(_LRScheduler):
 
         step = max(1, self.last_epoch)
 
-        if step > self.max_steps:
-            return [self.min_lr for _ in self.base_lrs]
-
         for initial_lr in self.base_lrs:
             if initial_lr < self.min_lr:
                 raise ValueError(
@@ -485,7 +482,11 @@ class NoamAnnealing(_LRScheduler):
         return new_lrs
 
     def _noam_annealing(self, initial_lr, step):
-        mult = self._normalize * min(step ** (-0.5), step * (self.warmup_steps ** (-1.5)))
+        if self.warmup_steps > 0:
+            mult = self._normalize * min(step ** (-0.5), step * (self.warmup_steps ** (-1.5)))
+        else:
+            mult = self._normalize * step ** (-0.5)
+
         out_lr = initial_lr * mult
         if step > self.warmup_steps:
             out_lr = max(out_lr, self.min_lr)

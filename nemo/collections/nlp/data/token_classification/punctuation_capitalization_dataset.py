@@ -1065,15 +1065,6 @@ class BertPunctuationCapitalizationDataset(Dataset):
                 f'   [WORD] [SPACE] [WORD] [SPACE] [WORD] (for text.txt) and '
                 f'   [LABEL] [SPACE] [LABEL] [SPACE] [LABEL] (for labels.txt).'
             )
-        if not str(text_file).endswith('.txt'):
-            raise ValueError(
-                f"Parameter `text_file` has to be path to a file with .txt extension, whereas `text_file={text_file}`"
-            )
-        if not str(labels_file).endswith('.txt'):
-            raise ValueError(
-                f"Parameter `labels_file` has to be path to a file with .txt extension, whereas "
-                f"`labels_file={labels_file}`"
-            )
         if punct_label_ids is not None and punct_label_vocab_file is not None:
             punct_label_vocab_file = Path(punct_label_vocab_file).expanduser()
             file_punct_label_ids = load_label_ids(punct_label_vocab_file)

@@ -89,8 +89,8 @@ model:
     tar_shuffle_n: 1
 
   validation_ds:
-    # if evaluation data is not in the model.dataset.data_dir as the training data or multiple datasets are used for
-    # evaluation is needed, specify ds_item, otherwise by default data_dir is used
+    # if evaluation data is not in the model.train_ds.ds_item as the training data or multiple datasets are used for
+    # evaluation is needed, specify ds_item, otherwise by default model.train_ds.ds_item is used
     # See `train_ds` section for more details on tarred dataset
     use_tarred_dataset: false
     # expected format: `[PATH_TO_DEV1,PATH_TO_DEV2]` OR `PATH_TO_DEV` (Note no space between the paths and square
@@ -113,8 +113,8 @@ model:
     tar_metadata_file: null
 
   test_ds:
-    # if evaluation data is not in the model.dataset.data_dir as the training data or multiple datasets are used for
-    # evaluation is needed, specify ds_item, otherwise by default data_dir is used
+    # if evaluation data is not in the model.train_ds.ds_item as the training data or multiple datasets are used for
+    # evaluation is needed, specify ds_item, otherwise by default model.train_ds.ds_item is used
     # See `train_ds` section for more details on tarred dataset
     use_tarred_dataset: false
     ds_item: ???  # expected format: [PATH_TO_DEV1,PATH_TO_DEV2] (Note no space between the paths and square brackets)

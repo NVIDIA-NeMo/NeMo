@@ -126,7 +126,7 @@ def main(
 
         duration = None
         if add_duration:
-            y, sr = librosa.get_duration(filename=audio_line, sr=None)
+            y, sr = librosa.load(audio_line, sr=None)
             duration = librosa.get_duration(y=y, sr=sr)
         meta = [
             {

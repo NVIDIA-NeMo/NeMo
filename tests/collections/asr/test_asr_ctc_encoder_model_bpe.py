@@ -301,6 +301,7 @@ class TestEncDecCTCModel:
             'blank_index',
             'bucketing_batch_size',
             'bucketing_strategy',
+            'bucketing_weights',
         ]
 
         REMAP_ARGS = {'trim_silence': 'trim', 'labels': 'tokenizer'}
@@ -335,6 +336,7 @@ class TestEncDecCTCModel:
             'world_size',
             'bucketing_batch_size',
             'bucketing_strategy',
+            'bucketing_weights',
         ]
 
         REMAP_ARGS = {

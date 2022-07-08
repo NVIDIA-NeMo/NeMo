@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 from abc import ABC
+from typing import Dict, List, Optional, Type, Union
 
 import onnx
 import torch
@@ -56,7 +57,7 @@ class Exportable(ABC):
         do_constant_folding=True,
         onnx_opset_version=None,
         training=TrainingMode.EVAL,
-        check_trace: bool = False,
+        check_trace: Union[bool, List[torch.Tensor]] = False,
         dynamic_axes=None,
         check_tolerance=0.01,
     ):
@@ -174,8 +175,11 @@ class Exportable(ABC):
                     )
 
                     if check_trace:
-                        verify_runtime(output, input_list, input_dict, input_names, output_names, output_example)
-
+                        if isinstance(check_trace, bool):
+                            check_trace_input = [input_example]
+                        else:
+                            check_trace_input = check_trace
+                        verify_runtime(self, output, check_trace_input, input_names)
                 else:
                     raise ValueError(f'Encountered unknown export format {format}.')
         finally:

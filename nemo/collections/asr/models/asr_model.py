@@ -20,6 +20,7 @@ import torch
 from nemo.core.classes import ModelPT
 from nemo.core.classes.exportable import Exportable
 from nemo.utils import model_utils
+from nemo.utils.export_utils import cast_all
 
 __all__ = ['ASRModel']
 
@@ -125,6 +126,8 @@ class ExportableEncDecModel(Exportable):
         else:
             decoder_input = encoder_output
         if hasattr(self.output_module, 'forward_for_export'):
-            return self.output_module.forward_for_export(decoder_input)
+            ret = self.output_module.forward_for_export(decoder_input)
         else:
-            return self.output_module(decoder_input)
+            ret = self.output_module(decoder_input)
+        # convert all FP16 results to FP32 for consistency
+        return cast_all(ret, from_dtype=torch.float16, to_dtype=torch.float32)

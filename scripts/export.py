@@ -113,20 +113,41 @@ def nemo_export(argv):
     #
     #  Add custom export parameters here
     #
+    check_trace = args.runtime_check
+
     in_args = {}
+    max_batch = 1
+    max_dim = None
     if args.max_batch is not None:
         in_args["max_batch"] = args.max_batch
+        max_batch = args.max_batch
     if args.max_dim is not None:
         in_args["max_dim"] = args.max_dim
+        max_dim = args.max_dim
 
     autocast = nullcontext
     model.to(device=args.device).freeze()
+    model.eval()
+    with torch.inference_mode():
+        input_example = model.input_module.input_example(**in_args)
+    if check_trace:
+        check_trace = [input_example]
+        if max_dim:
+            in_args["max_dim"] = (max_dim + 1) // 2
+            in_args["max_batch"] = (max_batch + 1) // 2
+            input_example2 = model.input_module.input_example(**in_args)
+            check_trace.append(input_example2)
+
     if args.autocast:
         autocast = torch.cuda.amp.autocast
     try:
         with autocast(), torch.inference_mode():
             _, descriptions = model.export(
-                out, check_trace=args.runtime_check, onnx_opset_version=args.onnx_opset, verbose=args.verbose,
+                out,
+                input_example=input_example,
+                check_trace=check_trace,
+                onnx_opset_version=args.onnx_opset,
+                verbose=args.verbose,
             )
 
     except Exception as e:

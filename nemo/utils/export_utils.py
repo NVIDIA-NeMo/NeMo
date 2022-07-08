@@ -44,6 +44,23 @@ _EXT_DICT = {
 }
 
 
+def cast_tensor(x, from_dtype=torch.float16, to_dtype=torch.float32):
+    return x.to(dtype=to_dtype) if x.dtype == from_dtype else x
+
+
+def cast_all(x, from_dtype=torch.float16, to_dtype=torch.float32):
+    if isinstance(x, torch.Tensor):
+        return cast_tensor(x, from_dtype=from_dtype, to_dtype=to_dtype)
+    else:
+        if isinstance(x, dict):
+            new_dict = {}
+            for k in x.keys():
+                new_dict[k] = cast_all(x[k], from_dtype=from_dtype, to_dtype=to_dtype)
+            return new_dict
+        elif isinstance(x, tuple):
+            return tuple(cast_all(y, from_dtype=from_dtype, to_dtype=to_dtype) for y in x)
+
+
 class CastToFloat(nn.Module):
     def __init__(self, mod):
         super(CastToFloat, self).__init__()
@@ -51,7 +68,7 @@ class CastToFloat(nn.Module):
 
     def forward(self, x):
         if torch.is_autocast_enabled():
-            ret = self.mod.forward(x.to(torch.float)).to(x.dtype)
+            ret = self.mod.forward(x.to(torch.float32)).to(x.dtype)
         else:
             ret = self.mod.forward(x)
         return ret
@@ -68,6 +85,7 @@ def get_export_format(filename: str):
 def augment_filename(output: str, prepend: str):
     if prepend == 'self':
         return output
+
     path, filename = os.path.split(output)
     filename = f"{prepend}-{filename}"
     return os.path.join(path, filename)
@@ -102,23 +120,21 @@ def parse_input_example(input_example):
     return input_list, input_dict
 
 
-def to_onnxrt_input(input_names, input_dict, input_list):
+def to_onnxrt_input(ort_input_names, input_names, input_dict, input_list):
     odict = {}
     for k in reversed(input_names):
         if k in input_dict:
-            odict[k] = input_dict[k].cpu().numpy()
+            val = input_dict[k].cpu().numpy()
         else:
-            odict[k] = input_list.pop().cpu().numpy()
+            val = input_list.pop().cpu().numpy()
+        if k in ort_input_names:
+            odict[k] = val
     return odict
 
 
-def verify_runtime(
-    output, input_list, input_dict, input_names, output_names, output_example, check_tolerance=0.01,
-):
-    # Verify the model can be read, and is valid
-
+def verify_runtime(model, output, input_examples, input_names, check_tolerance=0.01):
     onnx_model = onnx.load(output)
-    input_names = [node.name for node in onnx_model.graph.input]
+    ort_input_names = [node.name for node in onnx_model.graph.input]
 
     global ort_available
     if not ort_available:
@@ -131,18 +147,30 @@ def verify_runtime(
     sess = onnxruntime.InferenceSession(
         onnx_model.SerializeToString(), sess_options=onnx_session_opt, providers=['CUDAExecutionProvider']
     )
-    ort_out = sess.run(output_names, to_onnxrt_input(input_names, input_dict, input_list))
     all_good = True
+    for input_example in input_examples:
+        input_list, input_dict = parse_input_example(input_example)
+        output_example = model.forward(*input_list, **input_dict)
+        ort_input = to_onnxrt_input(ort_input_names, input_names, input_dict, input_list)
+        all_good = all_good and run_ort_and_compare(sess, ort_input, output_example, check_tolerance)
+    status = "SUCCESS" if all_good else "FAIL"
+    logging.info(f"ONNX generated at {output} verified with onnxruntime : " + status)
+    return all_good
 
-    for i, out in enumerate(ort_out[0]):
+
+def run_ort_and_compare(sess, ort_input, output_example, check_tolerance=0.01):
+    # Verify the model can be read, and is valid
+    ort_out = sess.run(None, ort_input)
+    all_good = True
+    for i, out in enumerate(ort_out):
         expected = output_example[i]
+
         if torch.is_tensor(expected):
             tout = torch.from_numpy(out)
+            logging.info(f"Checking output {i}, shape: {expected.shape}:\n{expected}\n{tout}")
             if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=100 * check_tolerance):
                 all_good = False
                 logging.info(f"onnxruntime results mismatch! PyTorch(expected):\n{expected}\nONNXruntime:\n{tout}")
-    status = "SUCCESS" if all_good else "FAIL"
-    logging.info(f"ONNX generated at {output} verified with onnxruntime : " + status)
     return all_good
 
 

@@ -33,7 +33,6 @@ Optionally post processes the manifest file to create dev and train split for sp
 training, also optionally segment an audio file in to segments of random DURATIONS and create those
 wav files in CWD. 
 
-While creating segments, if audio is not sampled at 16kHz, it resamples to 16kHz and write the wav file.
 Args: 
 --filelist: path to file containing list of audio files
 --manifest(optional): if you already have manifest file, but would like to process it for creating 
@@ -50,7 +49,6 @@ Args:
 DURATIONS = sorted([1, 2, 3, 4], reverse=True)
 MIN_ENERGY = 0.01
 CWD = os.getcwd()
-SAMPLE_RATE = 16000
 
 
 def filter_manifest_line(manifest_line):
@@ -65,7 +63,7 @@ def filter_manifest_line(manifest_line):
     os.makedirs(os.path.dirname(to_path), exist_ok=True)
 
     if dur >= min(DURATIONS):
-        signal, sr = l.load(audio_path, sr=SAMPLE_RATE)
+        signal, sr = sf.read(audio_path)
         remaining_dur = dur - start
 
         segments = DURATIONS.copy()

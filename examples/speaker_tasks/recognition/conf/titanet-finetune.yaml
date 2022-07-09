@@ -1,0 +1,158 @@
+name: &name "TitaNet-Finetune"
+sample_rate: &sample_rate 16000
+
+init_from_pretrained_model:
+  speaker_tasks:
+    name: 'titanet_large'
+    include: ["preprocessor","encoder"]
+    exclude: ["decoder.final"] # Add specific layer names here to exlude or just ["decoder"] if to exclude all of decoder pretrained weights
+
+model:
+  train_ds:
+    manifest_filepath: ???
+    sample_rate: 16000
+    labels: null
+    batch_size: 64
+    shuffle: True
+    is_tarred: False
+    tarred_audio_filepaths: null
+    tarred_shard_strategy: "scatter"
+    augmentor:
+      speed:
+        prob: 0.3
+        sr: *sample_rate
+        resample_type: 'kaiser_fast'
+        min_speed_rate: 0.95
+        max_speed_rate: 1.05
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: 16000
+    labels: null
+    batch_size: 128
+    shuffle: False
+
+  model_defaults:
+    filters: 1024
+    repeat: 3
+    dropout: 0.1
+    separable: true
+    se: true
+    se_context_size: -1
+    kernel_size_factor: 1.0
+    
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    normalize: "per_feature"
+    window_size: 0.025
+    sample_rate: *sample_rate
+    window_stride: 0.01
+    window: "hann"
+    features: &n_mels 80
+    n_fft: 512
+    frame_splicing: 1
+    dither: 0.00001
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConvASREncoder
+    feat_in: *n_mels
+    activation: relu
+    conv_mask: true
+
+    jasper:
+      -   filters: ${model.model_defaults.filters}
+          repeat: 1
+          kernel: [3]
+          stride: [1]
+          dilation: [1]
+          dropout: 0.0
+          residual: false
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat:  ${model.model_defaults.repeat}
+          kernel: [7]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat: ${model.model_defaults.repeat}
+          kernel: [11]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat: ${model.model_defaults.repeat}
+          kernel: [15]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: &enc_feat_out 3072
+          repeat: 1
+          kernel: [1]
+          stride: [1]
+          dilation: [1]
+          dropout: 0.0
+          residual: false
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+  decoder:
+    _target_: nemo.collections.asr.modules.SpeakerDecoder
+    feat_in: *enc_feat_out
+    num_classes: ???
+    pool_mode: 'attention'
+    emb_sizes: 192
+    angular: True
+
+  loss:
+    scale: 30
+    margin: 0.2
+
+  optim:
+    name: adamw
+    lr: .0001 #(original titanet-large was trained with 0.08 lr)
+    weight_decay: 0.0002
+
+    # scheduler setup
+    sched:
+      name: CosineAnnealing
+      warmup_ratio: 0.1
+      min_lr: 0.0
+
+trainer:
+  devices: 1 # number of gpus (original titanet-large was trained on 4 nodes with 8 gpus each)
+  max_epochs: 10
+  max_steps: -1 # computed at runtime if not set
+  num_nodes: 1
+  accelerator: gpu
+  strategy: ddp
+  deterministic: True
+  enable_checkpointing: False
+  logger: False
+  log_every_n_steps: 1  # Interval of logging.
+  val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+
+exp_manager:
+  exp_dir: null
+  name: *name
+  create_tensorboard_logger: True
+  create_checkpoint_callback: True

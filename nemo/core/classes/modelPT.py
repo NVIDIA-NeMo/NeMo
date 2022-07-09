@@ -1105,7 +1105,7 @@ class ModelPT(LightningModule, Model):
                             restored_model.state_dict(),
                             include,
                             exclude,
-                            f'pretrained chackpoint with name `{model_name}`',
+                            f'pretrained checkpoint with name `{model_name}`',
                         )
 
                         del restored_model

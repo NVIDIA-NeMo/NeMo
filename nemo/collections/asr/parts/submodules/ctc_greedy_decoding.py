@@ -156,7 +156,8 @@ class GreedyCTCInfer(Typing):
         hypothesis.score = (prediction_logprobs[non_blank_ids]).sum()
 
         if self.preserve_alignments:
-            hypothesis.alignments = prediction.clone()
+            # Preserve the logprobs, as well as labels after argmax
+            hypothesis.alignments = (prediction.clone(), prediction_labels.clone())
 
         if self.compute_timestamps:
             hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].numpy().tolist()

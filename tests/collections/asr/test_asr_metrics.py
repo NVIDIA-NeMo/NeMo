@@ -178,7 +178,7 @@ class TestWordErrorRate:
         assert (hyp.y_sequence - torch.tensor([3, 1, 20])).sum() == 0
         assert hyp.score == 3  # sum of number of tokens in one hot representation
         assert hyp.text == 'cat'
-        assert (hyp.alignments == sample).all()
+        assert (hyp.alignments[0] == sample).all()
         assert hyp.length == 0
 
         length = torch.tensor([tensor.shape[1 - batch_dim_index]], dtype=torch.long)
@@ -210,7 +210,7 @@ class TestWordErrorRate:
         assert (hyp.y_sequence - torch.tensor([3, 1, 20])).sum() == 0
         assert hyp.score == 3  # sum of number of tokens in one hot representation
         assert hyp.text == 'cat'
-        assert (hyp.alignments == sample).all()
+        assert (hyp.alignments[0] == sample).all()
         assert hyp.length == 0
 
         length = torch.tensor([tensor.shape[1 - batch_dim_index]], dtype=torch.long)

@@ -1050,7 +1050,8 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         for t in range(len(alignments)):
             for u in range(len(alignments[t])):
-                token_id = int(alignments[t][u])
+                _, token_id = alignments[t][u]  # (logprob, token_id)
+                token_id = int(token_id)
                 if token_id != blank_id:
                     token = tokenizer.ids_to_tokens([token_id])[0]
                     s.append(token)

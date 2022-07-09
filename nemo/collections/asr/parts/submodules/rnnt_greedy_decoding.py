@@ -81,7 +81,8 @@ class _GreedyRNNTInfer(Typing):
             no limit.
         preserve_alignments: Bool flag which preserves the history of alignments generated during
             greedy decoding (sample / batched). When set to true, the Hypothesis will contain
-            the non-null value for `alignments` in it. Here, `alignments` is a List of List of ints.
+            the non-null value for `alignments` in it. Here, `alignments` is a List of List of
+            Tuple(Tensor (of length V + 1), Tensor(scalar, label after argmax)).
 
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
@@ -202,7 +203,8 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             no limit.
         preserve_alignments: Bool flag which preserves the history of alignments generated during
             greedy decoding (sample / batched). When set to true, the Hypothesis will contain
-            the non-null value for `alignments` in it. Here, `alignments` is a List of List of ints.
+            the non-null value for `alignments` in it. Here, `alignments` is a List of List of
+            Tuple(Tensor (of length V + 1), Tensor(scalar, label after argmax)).
 
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
@@ -291,7 +293,6 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
 
         if self.preserve_alignments:
             # Alignments is a 2-dimensional dangling list representing T x U
-            # alignments = [[]]
             hypothesis.alignments = [[]]
 
         # For timestep t in X_t
@@ -328,8 +329,8 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
                 k = k.item()  # K is the label at timestep t_s in inner loop, s >= 0.
 
                 if self.preserve_alignments:
-                    # insert logits into last timestep
-                    hypothesis.alignments[-1].append(k)
+                    # insert logprobs into last timestep
+                    hypothesis.alignments[-1].append((logp.to('cpu'), torch.tensor(k, dtype=torch.int32)))
 
                 del logp
 
@@ -376,7 +377,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             no limit.
         preserve_alignments: Bool flag which preserves the history of alignments generated during
             greedy decoding (sample / batched). When set to true, the Hypothesis will contain
-            the non-null value for `alignments` in it. Here, `alignments` is a List of List of ints.
+            the non-null value for `alignments` in it. Here, `alignments` is a List of List of
+            Tuple(Tensor (of length V + 1), Tensor(scalar, label after argmax)).
 
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
@@ -479,11 +481,6 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                 # alignments is a 3-dimensional dangling list representing B x T x U
                 for hyp in hypotheses:
                     hyp.alignments = [[]]
-                # alignments = []
-                # for _ in range(batchsize):
-                #     alignments.append([[]])
-            else:
-                alignments = None
 
             # Last Label buffer + Last Label without blank buffer
             # batch level equivalent of the last_label
@@ -540,11 +537,11 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     # If preserving alignments, check if sequence length of sample has been reached
                     # before adding alignment
                     if self.preserve_alignments:
-                        # Insert ids into last timestep per sample
-                        logp_vals = logp.to('cpu').max(1)[1]
+                        # Insert logprobs into last timestep per sample
+                        logp_vals = logp.to('cpu')
                         for batch_idx in range(batchsize):
                             if time_idx < out_len[batch_idx]:
-                                hypotheses[batch_idx].alignments[-1].append(logp_vals[batch_idx])
+                                hypotheses[batch_idx].alignments[-1].append((logp_vals[batch_idx], k[batch_idx]))
                         del logp_vals
                     del logp
 
@@ -711,11 +708,11 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     # If preserving alignments, check if sequence length of sample has been reached
                     # before adding alignment
                     if self.preserve_alignments:
-                        # Insert ids into last timestep per sample
-                        logp_vals = logp.to('cpu').max(1)[1]
+                        # Insert logprobs into last timestep per sample
+                        logp_vals = logp.to('cpu')
                         for batch_idx in range(batchsize):
                             if time_idx < out_len[batch_idx]:
-                                hypotheses[batch_idx].alignments[-1].append(logp_vals[batch_idx])
+                                hypotheses[batch_idx].alignments[-1].append((logp_vals[batch_idx], k[batch_idx]))
                         del logp_vals
                     del logp
 

@@ -117,6 +117,12 @@ def get_tarred_speech_label_dataset(
     tarred_audio_filepaths = convert_to_config_list(tarred_audio_filepaths)
     manifest_filepaths = convert_to_config_list(manifest_filepaths)
 
+    bucketing_weights = config.get('bucketing_weights', None)  # For upsampling buckets
+    if bucketing_weights:
+        for idx, weight in enumerate(bucketing_weights):
+            if not isinstance(weight, int) or weight <= 0:
+                raise ValueError(f"bucket weights must be positive integers")
+
     if len(manifest_filepaths) != len(tarred_audio_filepaths):
         raise ValueError(
             f"manifest_filepaths (length={len(manifest_filepaths)}) and tarred_audio_filepaths (length={len(tarred_audio_filepaths)}) need to have the same number of buckets."
@@ -144,6 +150,9 @@ def get_tarred_speech_label_dataset(
             world_size=world_size,
         )
 
-        datasets.append(dataset)
+        if bucketing_weights:
+            [datasets.append(dataset) for _ in range(bucketing_weights[dataset_idx])]
+        else:
+            datasets.append(dataset)
 
     return get_chain_dataset(datasets=datasets, ds_config=config)

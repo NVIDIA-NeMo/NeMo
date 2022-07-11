@@ -759,6 +759,9 @@ class MTDataPreproc:
         encoder_special_tokens=None,
         decoder_special_tokens=None,
         spt_symbols=None,
+        byte_fallback=False,
+        split_digits=False,
+        split_by_whitespace=True,
     ):
         """Trains a tokenizer with requested parameters, returns None if the tokenizer is not trainable"""
 
@@ -817,6 +820,9 @@ class MTDataPreproc:
                                     pad=True,
                                     control_symbols=spt_symbols,
                                     user_defined_symbols=encoder_special_tokens,
+                                    byte_fallback=byte_fallback,
+                                    split_digits=split_digits,
+                                    split_by_whitespace=split_by_whitespace,
                                 )
                                 os.rename(
                                     os.path.join(out_dir, 'tokenizer.model'),
@@ -859,6 +865,9 @@ class MTDataPreproc:
                                 pad=True,
                                 control_symbols=spt_symbols,
                                 user_defined_symbols=encoder_special_tokens,
+                                byte_fallback=byte_fallback,
+                                split_digits=split_digits,
+                                split_by_whitespace=split_by_whitespace,
                             )
                             os.rename(os.path.join(dir_name, 'tokenizer.model'), os.path.join(encoder_tokenizer_model))
 
@@ -898,6 +907,9 @@ class MTDataPreproc:
                                 pad=True,
                                 control_symbols=spt_symbols,
                                 user_defined_symbols=decoder_special_tokens,
+                                byte_fallback=byte_fallback,
+                                split_digits=split_digits,
+                                split_by_whitespace=split_by_whitespace,
                             )
                             os.rename(os.path.join(dir_name, 'tokenizer.model'), os.path.join(decoder_tokenizer_model))
 

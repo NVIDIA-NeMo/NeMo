@@ -270,6 +270,9 @@ def create_spt_model(
     pad: bool = False,
     control_symbols: List[str] = None,
     user_defined_symbols: List[str] = None,
+    byte_fallback: bool = False,
+    split_digits: bool = False,
+    split_by_whitespace: bool = True,
 ):
     """
     Creates sentence piece tokenizer model from data file.
@@ -292,6 +295,9 @@ def create_spt_model(
             These tokens get removed at decode time and are not encoded from the text - can only be added to the input programatically.
         user_defined_symbols: user symbols to add to tokenizer, as defined by sentencepiece.
             These tokens remain in the decoded text and are encoded automatically when present in the input text.
+        byte_fallback: If <unk>, fallback to a byte sequence of the character.
+        split_digits: If true, digits are split into individual tokens.
+        split_by_whitespace: Whether to respect white space while creating subwords. If False, will learn merges across whitespace.
     """
 
     if not data_file or not os.path.exists(data_file):
@@ -348,6 +354,15 @@ def create_spt_model(
 
     if max_sentencepiece_length >= 0:
         cmd += f" --max_sentencepiece_length={max_sentencepiece_length}"
+
+    if byte_fallback:
+        cmd += " --byte_fallback=true"
+
+    if split_digits:
+        cmd += " --split_digits=true"
+
+    if not split_by_whitespace:
+        cmd += " --split_by_whitespace=false"
 
     sentencepiece.SentencePieceTrainer.Train(cmd)
 

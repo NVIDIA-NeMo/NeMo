@@ -104,9 +104,6 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
                 self.start_step[decoder_loss_name] = decoder_loss_cfg.get("start_step", 0)
                 self.transpose_encoded[decoder_loss_name] = decoder_loss_cfg.get("transpose_encoded", False)
 
-                if self.output_from_layer[decoder_loss_name] is not None:
-                    self.set_access_enabled(access_enabled=True)
-
             self.decoder_losses = nn.ModuleDict(self.decoder_losses)
 
         else:
@@ -310,8 +307,29 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             3) The encoded features tensor of shape [B, D, T].
             2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
         """
+        # Reset access registry
+        if self.is_access_enabled():
+            self.reset_registry()
+
+        # Check for special flag for validation step
+        if hasattr(self, '_in_validation_step'):
+            in_validation_step = self._in_validation_step
+        else:
+            in_validation_step = False
+
         # reset module registry from AccessMixin
-        self.reset_registry()
+        if (
+            (self.training or in_validation_step)
+            and self.decoder_losses is not None
+            and self.output_from_layer is not None
+            and len(self.output_from_layer) > 0
+        ):
+            layer_names = list(self.output_from_layer.values())
+            register_layer = any([name is not None for name in layer_names])
+
+            if register_layer:
+                self.access_cfg['save_encoder_tensors'] = True
+                self.set_access_enabled(access_enabled=True)
 
         has_input_signal = input_signal is not None and input_signal_length is not None
         has_processed_signal = processed_signal is not None and processed_signal_length is not None
@@ -408,7 +426,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
                     dec_input = encoded
                 else:
                     # extract output from specified layer using AccessMixin registry
-                    dec_input = registry[self.output_from_layer[dec_loss_name]][-1]
+                    dec_input = registry[self.output_from_layer[dec_loss_name]]['encoder'][-1]
                 if self.transpose_encoded[dec_loss_name]:
                     dec_input = dec_input.transpose(-2, -1)
 
@@ -480,9 +498,15 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
         if self.feat_pen:
             loss_value += self.feat_pen
 
+        # Reset access registry
+        self.reset_registry()
+
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        # Set flag to register tensors
+        self._in_validation_step = True
+
         signal, signal_len, targets, target_lengths = batch
         spectrograms, spec_masks, encoded, encoded_len = self.forward(
             input_signal=signal, input_signal_length=signal_len,
@@ -492,6 +516,10 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
         if self.feat_pen:
             loss_value += self.feat_pen
+
+        # reset access registry
+        self.reset_registry()
+        del self._in_validation_step
 
         return {
             'val_loss': loss_value,

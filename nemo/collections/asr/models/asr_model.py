@@ -19,7 +19,8 @@ import torch
 
 from nemo.core.classes import ModelPT
 from nemo.core.classes.exportable import Exportable
-from nemo.utils import model_utils
+from nemo.core.classes.mixins import AccessMixin
+from nemo.utils import logging, model_utils
 from nemo.utils.export_utils import cast_all
 
 __all__ = ['ASRModel']
@@ -62,6 +63,43 @@ class ASRModel(ModelPT, ABC):
         # recursively walk the subclasses to generate pretrained model info
         list_of_models = model_utils.resolve_subclass_pretrained_model_info(cls)
         return list_of_models
+
+    def add_auxiliary_losses(self, loss: torch.Tensor, reset_registry: bool = False) -> torch.Tensor:
+        """
+        Utility method to enable calculation of auxiliary losses for ASR training.
+
+        Args:
+            loss: The output loss value prior to addition with auxiliary losses.
+            reset_registry: Bool, whether to reset the AccessMixin registry after adding auxiliary losses.
+
+        Returns:
+            Loss tensor used for back propagation.
+        """
+        # Add adapter auxiliary losses, if registered
+        if AccessMixin.is_access_enabled():
+            registry = AccessMixin.get_module_registry(self)
+            log_dict = {}
+
+            for loss_key, loss_registry in registry.items():
+                # Add auxiliary loss to total loss
+                loss_list = loss_registry['adapter_loss']
+                loss_value = sum(loss_list)
+                loss += loss_value
+
+                # Log current loss name and value
+                keys = loss_key.split(".")
+                key = "/".join(keys)
+                key = "adapter_loss/" + key
+                log_dict[key] = loss_value.detach()
+
+            if len(log_dict) > 0:
+                self.log_dict(log_dict)
+
+        if reset_registry:
+            AccessMixin.reset_registry(self)
+
+        # return total loss
+        return loss
 
     def setup_optimization_flags(self):
         """

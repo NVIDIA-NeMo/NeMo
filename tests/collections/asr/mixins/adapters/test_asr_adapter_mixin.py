@@ -18,6 +18,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.asr.models import ASRModel, EncDecCTCModel, EncDecRNNTModel
 from nemo.collections.common.parts import adapter_modules
+from nemo.core.classes.mixins.access_mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin, get_registered_adapter
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
@@ -405,3 +406,32 @@ class TestASRAdapterMixin:
         model.freeze()
         model.unfreeze_enabled_adapters()
         assert model.num_weights < 1e5
+
+    @pytest.mark.unit
+    def test_asr_model_adapter_loss(self, model):
+        original_num_params = model.num_weights
+        x = torch.randn(2, 512)
+        x_len = torch.tensor([256, 512], dtype=torch.int32)
+
+        adapter_cfg = get_adapter_cfg()  # type: adapter_modules.LinearAdapterConfig
+        adapter_cfg.adapter_strategy.l2_lambda = 0.01
+
+        model.add_adapter(name='adapter_0', cfg=adapter_cfg)
+        new_num_params = model.num_weights
+        assert new_num_params > original_num_params
+
+        model.train()  # set training mode to true
+
+        with torch.no_grad():
+            AccessMixin.reset_registry(model)
+            AccessMixin.update_access_cfg({'save_encoder_tensors': False})
+            _ = model(input_signal=x, input_signal_length=x_len)
+
+            # extract losses
+            auxiliary_losses = AccessMixin.get_module_registry(model)
+
+            loss = list(auxiliary_losses.values())[0]
+            assert 'adapter_loss' in loss
+            assert loss['adapter_loss'][0] == torch.tensor(0.0)  # initially adapter is 0 init, no loss required.
+
+            AccessMixin.reset_registry(model)

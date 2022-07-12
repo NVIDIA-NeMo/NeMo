@@ -31,6 +31,7 @@ from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecMode
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, LogprobsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 
@@ -547,6 +548,10 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
+
         signal, signal_len, transcript, transcript_len = batch
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
@@ -558,6 +563,13 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         loss_value = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
         )
+
+        # Add auxiliary losses, if registered
+        loss_value = self.add_auxiliary_losses(loss_value)
+
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
 
         tensorboard_logs = {
             'train_loss': loss_value,
@@ -593,7 +605,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
 
         transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
-            predictions=log_probs, predictions_len=encoded_len, return_hypotheses=False,
+            decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False,
         )
 
         sample_id = sample_id.cpu().detach().numpy()

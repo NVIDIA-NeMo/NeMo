@@ -1042,8 +1042,8 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
 
                 out = out.transpose(1, 2)  # (B, C, T)
 
-        if self.is_access_enabled():
-            self.register_accessible_tensor(tensor=out)
+        if self.is_access_enabled() and self.access_cfg.get('save_encoder_tensors', False):
+            self.register_accessible_tensor(name='encoder', tensor=out)
 
         if self.res is not None and self.dense_residual:
             return xs + [out], lens

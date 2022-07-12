@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from abc import ABC
+from typing import Optional
 
 import torch
 from omegaconf import DictConfig
@@ -35,9 +36,9 @@ class AccessMixin(ABC):
 
     def __init__(self):
         super().__init__()
-        self._registry = []
+        self._registry = {}  # dictionary of lists
 
-    def register_accessible_tensor(self, tensor):
+    def register_accessible_tensor(self, name, tensor):
         """
         Register tensor for later use.
         """
@@ -48,12 +49,12 @@ class AccessMixin(ABC):
             tensor = tensor.detach()
 
         if not hasattr(self, '_registry'):
-            self._registry = []
+            self._registry = {}
 
-        if len(self._registry) > 0:
-            self._registry.clear()
+        if name not in self._registry:
+            self._registry[name] = []
 
-        self._registry.append(tensor)
+        self._registry[name].append(tensor)
 
     @classmethod
     def get_module_registry(cls, module: torch.nn.Module):
@@ -68,15 +69,37 @@ class AccessMixin(ABC):
                 module_registry[name] = m._registry
         return module_registry
 
-    def reset_registry(self):
+    def reset_registry(self: torch.nn.Module, registry_key: Optional[str] = None):
         """
         Reset the registries of all named sub-modules
         """
         if hasattr(self, "_registry"):
-            self._registry.clear()
+            if registry_key is None:
+                self._registry.clear()
+            else:
+                if registry_key in self._registry:
+                    self._registry.pop(registry_key)
+                else:
+                    raise KeyError(
+                        f"Registry key `{registry_key}` provided, but registry does not have this key.\n"
+                        f"Available keys in registry : {list(self._registry.keys())}"
+                    )
+
         for _, m in self.named_modules():
             if hasattr(m, "_registry"):
-                m._registry.clear()
+                if registry_key is None:
+                    m._registry.clear()
+                else:
+                    if registry_key in self._registry:
+                        self._registry.pop(registry_key)
+                    else:
+                        raise KeyError(
+                            f"Registry key `{registry_key}` provided, but registry does not have this key.\n"
+                            f"Available keys in registry : {list(self._registry.keys())}"
+                        )
+
+        # Explicitly disable registry cache after reset
+        AccessMixin.set_access_enabled(access_enabled=False)
 
     @property
     def access_cfg(self):
@@ -87,10 +110,17 @@ class AccessMixin(ABC):
         global _ACCESS_CFG
         return _ACCESS_CFG
 
-    def is_access_enabled(self):
+    @classmethod
+    def update_access_cfg(cls, cfg: dict):
+        global _ACCESS_CFG
+        _ACCESS_CFG.update(cfg)
+
+    @classmethod
+    def is_access_enabled(cls):
         global _ACCESS_ENABLED
         return _ACCESS_ENABLED
 
-    def set_access_enabled(self, access_enabled: bool):
+    @classmethod
+    def set_access_enabled(cls, access_enabled: bool):
         global _ACCESS_ENABLED
         _ACCESS_ENABLED = access_enabled

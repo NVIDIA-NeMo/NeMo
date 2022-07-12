@@ -20,10 +20,10 @@ from omegaconf import OmegaConf
 from torch import nn as nn
 
 from nemo.collections.common.parts.utils import activation_registry
-from nemo.core.classes.mixins import adapter_mixin_strategies
+from nemo.core.classes.mixins import access_mixins, adapter_mixin_strategies
 
 
-class AbstractAdapterModule(nn.Module):
+class AbstractAdapterModule(nn.Module, access_mixins.AccessMixin):
     """
     Base class of Adapter Modules, providing common functionality to all Adapter Modules.
     """

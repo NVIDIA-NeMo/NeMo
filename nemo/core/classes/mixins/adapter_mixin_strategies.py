@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 import torch
 
+from nemo.core.classes.mixins import AccessMixin
+
 
 class AbstractAdapterStrategy(ABC):
     def forward(self, input: torch.Tensor, adapter: torch.nn.Module, *, module: 'AdapterModuleMixin'):
@@ -55,7 +57,7 @@ class ResidualAddAdapterStrategy(AbstractAdapterStrategy):
     Supports stochastic depth regularization.
     """
 
-    def __init__(self, stochastic_depth: float = 0.0):
+    def __init__(self, stochastic_depth: float = 0.0, l2_lambda: float = 0.0):
         """
         An implementation of residual addition of an adapter module with its input.
         Performs output = input + adapter(input).
@@ -63,9 +65,12 @@ class ResidualAddAdapterStrategy(AbstractAdapterStrategy):
         Args:
             stochastic_depth: float, when greater than one, can optionally dropout the output of
                 the adapter's forward pass.
+            l2_lambda: L2 norm of the difference between the original input to the function, and the adapter's
+                output result. Disabled if set to 0.0.
         """
         super().__init__()
         self.stochastic_depth = stochastic_depth
+        self.l2_lambda = l2_lambda
 
     def forward(self, input: torch.Tensor, adapter: torch.nn.Module, *, module: 'AdapterModuleMixin'):
         """
@@ -104,12 +109,33 @@ class ResidualAddAdapterStrategy(AbstractAdapterStrategy):
             out = noise * out
 
         # Return the residual connection output = input + adapter(input)
-        return input + out
+        result = input + out
+
+        # If l2_lambda is activated, register the loss value
+        if module.training and self.l2_lambda > 0.0:
+            if not isinstance(adapter, AccessMixin):
+                raise ValueError(f"Module {adapter.__class__.__name__} does not implement AccessMixin !")
+
+            # Only add auxiliary loss if adapter has trainable parameters that require gradients
+            if next(adapter.parameters()).requires_grad is True:
+                # Check if globally allowed to compute aux loss
+                compute_aux_loss = adapter.access_cfg.get('compute_adapter_loss', True)
+
+                if compute_aux_loss:
+                    # if l2 lambda is enabled, also enable AccessMixin
+                    adapter.set_access_enabled(access_enabled=True)
+
+                    l2_loss = self.l2_lambda * (input - result).square().reshape(input.size(0), -1).sum(dim=-1).mean()
+                    adapter.register_accessible_tensor(name='adapter_loss', tensor=l2_loss)
+
+        return result
 
 
 @dataclass
 class ResidualAddAdapterStrategyConfig:
     stochastic_depth: float = 0.0
+    l2_lambda: float = 0.0
+
     _target_: str = "{0}.{1}".format(
         ResidualAddAdapterStrategy.__module__, ResidualAddAdapterStrategy.__name__
     )  # mandatory field

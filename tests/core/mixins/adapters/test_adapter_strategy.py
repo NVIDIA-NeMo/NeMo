@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from nemo.core import NeuralModule
-from nemo.core.classes.mixins import AdapterModuleMixin, adapter_mixin_strategies, adapter_mixins
+from nemo.core.classes.mixins import AdapterModuleMixin, access_mixins, adapter_mixin_strategies, adapter_mixins
 from nemo.utils import config_utils
 
 
@@ -152,3 +152,34 @@ class TestAdapterStrategy:
             else:
                 check = module_out
             assert (out - check).abs().mean() < 1e-5
+
+    @pytest.mark.unit
+    def test_strategy_l2_lambda(self):
+        torch.random.manual_seed(0)
+        x = torch.randn(2, 50)
+
+        module = DefaultModuleAdapter()
+        module.add_adapter(name='temp', cfg=get_adapter_cfg())
+        module.train()
+        adapter = module.adapter_layer[module.get_enabled_adapters()[0]]
+
+        # update the strategy
+        adapter_strategy = adapter_mixin_strategies.ResidualAddAdapterStrategy(l2_lambda=0.01)
+        adapter.adapter_strategy = adapter_strategy
+
+        with torch.no_grad():
+            access_mixins.AccessMixin.reset_registry(module)
+            assert access_mixins.AccessMixin.is_access_enabled() is False
+
+            assert adapter_strategy.stochastic_depth == 0.0
+            assert adapter_strategy.l2_lambda > 0.0
+
+            out = adapter_strategy.forward(x, adapter, module=module)
+            assert (out - x).abs().mean() < 1e-5
+
+            # extract losses
+            assert access_mixins.AccessMixin.is_access_enabled() is True
+            auxiliary_losses = access_mixins.AccessMixin.get_module_registry(module)
+            loss = list(auxiliary_losses.values())[0]
+            assert 'adapter_loss' in loss
+            assert loss['adapter_loss'][0] == torch.tensor(0.0)  # initially adapter is 0 init, no loss required.

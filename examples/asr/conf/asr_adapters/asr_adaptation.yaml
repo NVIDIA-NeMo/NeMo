@@ -77,6 +77,7 @@ model:
     adapter_strategy:
       _target_: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
       stochastic_depth: 0.0  # float, setting to > 0 will enable stochastic depth for each adapter block.
+      l2_lambda: 0.0  # float, setting to > 0 will enable l2 norm auxiliary loss for each adapter's output.
 
     # Optional global config available to all adapters at a global level.
     # A global config is shared across every layer of the adapters, defining global properties rather

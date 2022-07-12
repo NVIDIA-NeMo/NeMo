@@ -48,7 +48,7 @@ class ElectronicFst(GraphFst):
         username = (
             pynutil.insert("username: \"") + all_accepted_symbols + pynutil.insert("\"") + pynini.cross('@', ' ')
         )
-        domain_graph = all_accepted_symbols + pynini.accep('.') + all_accepted_symbols
+        domain_graph = all_accepted_symbols + pynini.accep('.') + all_accepted_symbols + NEMO_ALPHA
         protocol_symbols = pynini.closure((graph_symbols | pynini.cross(":", "semicolon")) + pynutil.insert(" "))
         protocol_start = (pynini.cross("https", "HTTPS ") | pynini.cross("http", "HTTP ")) + (
             pynini.accep("://") @ protocol_symbols

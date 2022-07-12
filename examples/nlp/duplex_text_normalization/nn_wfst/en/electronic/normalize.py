@@ -13,6 +13,9 @@
 # limitations under the License.
 
 from nemo_text_processing.text_normalization.normalize import Normalizer
+from nemo_text_processing.text_normalization.token_parser import TokenParser
+
+from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
 
 
 class ElectronicNormalizer(Normalizer):
@@ -37,13 +40,6 @@ class ElectronicNormalizer(Normalizer):
         overwrite_cache: bool = False,
     ):
 
-        super().__init__(
-            input_case=input_case,
-            lang=lang,
-            deterministic=deterministic,
-            cache_dir=cache_dir,
-            overwrite_cache=overwrite_cache,
-        )
         from nn_wfst.en.electronic.tokenize_and_classify import ClassifyFst
         from nn_wfst.en.electronic.verbalize_final import VerbalizeFinalFst
 
@@ -51,3 +47,7 @@ class ElectronicNormalizer(Normalizer):
             input_case=input_case, deterministic=deterministic, cache_dir=cache_dir, overwrite_cache=overwrite_cache
         )
         self.verbalizer = VerbalizeFinalFst(deterministic=deterministic)
+        self.post_processor = None
+        self.parser = TokenParser()
+        self.lang = lang
+        self.processor = MosesProcessor(lang_id=lang)

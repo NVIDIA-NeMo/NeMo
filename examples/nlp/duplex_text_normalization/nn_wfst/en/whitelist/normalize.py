@@ -13,6 +13,9 @@
 # limitations under the License.
 
 from nemo_text_processing.text_normalization.normalize import Normalizer
+from nemo_text_processing.text_normalization.token_parser import TokenParser
+
+from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
 
 
 class WhitelistNormalizer(Normalizer):
@@ -39,18 +42,10 @@ class WhitelistNormalizer(Normalizer):
         whitelist: str = None,
     ):
 
-        super().__init__(
-            input_case=input_case,
-            lang=lang,
-            deterministic=deterministic,
-            cache_dir=cache_dir,
-            overwrite_cache=overwrite_cache,
-            whitelist=whitelist,
-        )
         from nn_wfst.en.whitelist.tokenize_and_classify import ClassifyFst
         from nn_wfst.en.whitelist.verbalize_final import VerbalizeFinalFst
 
-        self.tagger = self.tagger = ClassifyFst(
+        self.tagger = ClassifyFst(
             input_case=input_case,
             deterministic=deterministic,
             cache_dir=cache_dir,
@@ -58,3 +53,7 @@ class WhitelistNormalizer(Normalizer):
             whitelist=whitelist,
         )
         self.verbalizer = VerbalizeFinalFst(deterministic=deterministic)
+        self.post_processor = None
+        self.parser = TokenParser()
+        self.lang = lang
+        self.processor = MosesProcessor(lang_id=lang)

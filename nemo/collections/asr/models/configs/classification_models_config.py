@@ -53,6 +53,11 @@ class EncDecClassificationDatasetConfig(nemo.core.classes.dataset.DatasetConfig)
     normalize_audio: bool = False
     is_regression_task: bool = False
 
+    # bucketing params
+    bucketing_strategy: str = "synced_randomized"
+    bucketing_batch_size: Optional[Any] = None
+    bucketing_weights: Optional[List[int]] = None
+
 
 @dataclass
 class EncDecClassificationConfig(model_cfg.ModelConfig):

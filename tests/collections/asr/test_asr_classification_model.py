@@ -191,6 +191,9 @@ class TestEncDecClassificationModel:
             'sample_rate',
             'normalize_audio',
             'augmentor',
+            'bucketing_batch_size',
+            'bucketing_strategy',
+            'bucketing_weights',
         ]
 
         REMAP_ARGS = {'trim_silence': 'trim'}

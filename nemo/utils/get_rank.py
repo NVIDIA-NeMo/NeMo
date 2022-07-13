@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
+
 from nemo.utils.env_var_parsing import get_envint
 
 
@@ -36,3 +38,13 @@ def is_global_rank_zero():
     node_rank = get_envint("NODE_RANK", get_envint("GROUP_RANK", 0))
     local_rank = get_envint("LOCAL_RANK", 0)
     return node_rank == 0 and local_rank == 0
+
+
+def get_rank():
+    """ Helper function that returns torch.distributed.get_rank() if DDP has been initialized otherwise it returns 0.
+    """
+
+    if is_global_rank_zero():
+        return 0
+    else:
+        return torch.distributed.get_rank()

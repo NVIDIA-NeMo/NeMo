@@ -52,11 +52,6 @@ model:
   # Dialogue GPT Classification/Generation and Dialogue S2S Generation Model args
   tokens_to_generate: 32 # for generation mode only
 
-  # Dialogue GPT Classification megatron prompt tuning model args
-  new_prompt_tags: [] # brief short name (each element is a string "<tag>")
-  new_prompt_init_methods: [] # text (preferably) or random
-  new_prompt_init_text: [] # long descriptive text to init
-
   # Intent Slot Classification model args
   class_balancing: ${model.dataset.class_balancing}
   intent_loss_weight: 0.6 # relation of intent to slot loss in total loss (between 0 to 1)
@@ -65,6 +60,28 @@ model:
     num_output_layers: 2
     fc_dropout: 0.1
   
+  # Dialogue GPT Classification Magetron Prompt Learning model args
+  prompt_learning: false # please change to true to activate prompt learning
+  language_model_path: ${model.language_model.lm_checkpoint}
+  new_tasks: ['intent_and_slot']
+  prompt_tuning:
+    new_prompt_init_methods: ['text']
+    new_prompt_init_text: ['intent classification and slot filling']
+  data: {}
+  virtual_prompt_style: 'prompt-tuning' #'p-tuning'
+  encoder_seq_length: 2048
+  pipeline_model_parallel_size: 1
+  global_batch_size: 8
+  micro_batch_size: 8
+
+  task_templates:
+  - taskname: "intent_and_slot"
+    prompt_template: "<|VIRTUAL_PROMPT_0|> {utterance} \nintent: {intent} \nslot: {slot}"
+    total_virtual_tokens: 10
+    answer_only_loss: True
+    virtual_token_splits: [10]
+    truncate_field: null
+
   # SGDQA args
   encoder:
     dropout: 0.1

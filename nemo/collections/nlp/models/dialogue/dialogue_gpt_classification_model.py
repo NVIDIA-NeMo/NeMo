@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import collections
+import copy
 import os
 import random
 from typing import Dict, Optional, Union
@@ -31,6 +32,9 @@ from nemo.collections.nlp.data.dialogue.data_processor.design_data_processor imp
 from nemo.collections.nlp.metrics.classification_report import ClassificationReport
 from nemo.collections.nlp.metrics.dialogue_metrics import DialogueClassificationMetrics
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
+from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model import (
+    MegatronGPTPromptLearningModel,
+)
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -53,25 +57,14 @@ class DialogueGPTClassificationModel(NLPModel):
             self.language_model = AutoModelWithLMHead.from_pretrained(cfg.language_model.pretrained_model_name)
             self.language_model.resize_token_embeddings(len(self.tokenizer.tokenizer))
         elif self.cfg.library == "megatron":
-            self.language_model = MegatronGPTModel.restore_from(cfg.language_model.lm_checkpoint, trainer=trainer)
-            # 1 corresponds to intent slot; 0 corresponds to squad
-            self.prompt_tags = [1, 0] if 'prompt_table' in dir(self.language_model) else []
-            if hasattr(self.language_model, 'prompt_table'):
-                self.language_model.prompt_tuning_param_freeze_and_optimizer_setup()
-
-            # Init all new prompts
-            for idx, tag in enumerate(cfg.new_prompt_tags):
-                self.prompt_tags.append(tag)
-                init_method = cfg.new_prompt_init_methods[idx]
-                if init_method == "text":
-                    init_text = cfg.new_prompt_init_text[idx]
-                    self.language_model.init_prompt_from_text(tag, init_text)
-                elif init_method == 'random':
-                    self.language_model.init_prompt_from_random(tag)
-                else:
-                    raise ValueError(
-                        f'\n Soft prompt init method {init_method} is not recognized, please use text or random'
-                    )
+            self.prompt_learning = self.cfg.prompt_learning
+            if self.prompt_learning:
+                # removing tokenizer cfg as this triggers tokenizer construction which is not helpful here as we have a separate tokenizer
+                new_cfg = copy.copy(cfg)
+                del new_cfg.tokenizer
+                self.language_model = MegatronGPTPromptLearningModel(new_cfg, trainer)
+            else:
+                self.language_model = MegatronGPTModel.restore_from(cfg.language_model.lm_checkpoint, trainer=trainer)
 
         all_labels = list(
             self._train_dl.dataset.all_possible_labels.union(
@@ -136,7 +129,7 @@ class DialogueGPTClassificationModel(NLPModel):
             attn_masks = torch.stack(new_attn_masks)
             labels = self.get_binary_score_labels(input_ids)
 
-        loss = self(input_ids, attn_masks, labels)
+        loss = self(input_ids, attn_masks, labels, inference=False)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return {'loss': loss}
 
@@ -231,7 +224,7 @@ class DialogueGPTClassificationModel(NLPModel):
         # return self(batch)
         raise NotImplementedError()
 
-    def forward(self, input_ids, attention_mask, labels):
+    def forward(self, input_ids, attention_mask, labels, inference=True):
 
         if self.cfg.library == "huggingface":
             output = self.language_model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
@@ -239,24 +232,17 @@ class DialogueGPTClassificationModel(NLPModel):
 
         elif self.cfg.library == "megatron":
             num_prompt_tokens = (
-                self.language_model.num_prompt_tokens if hasattr(self.language_model, 'num_prompt_tokens') else 0
+                len(self.language_model.pseudo_token_ids) if hasattr(self.language_model, 'pseudo_token_ids') else 0
             )
+
             position_ids = torch.arange(
-                start=num_prompt_tokens,
-                end=num_prompt_tokens + input_ids.size(1),
-                dtype=torch.long,
-                device=input_ids.device,
+                start=0, end=num_prompt_tokens + input_ids.size(1), dtype=torch.long, device=input_ids.device,
             )
 
             position_ids = position_ids.unsqueeze(0).repeat(input_ids.size(0), 1)
 
-            # 'assit_intent_and_slot' has prompt_id of 1
-            # 'assit_intent_and_slot_with_options' has prompt_id of 2
-            prompt_ids = torch.tensor([1] * input_ids.size(0)) if self.prompt_tags else None
+            prompt_ids = torch.tensor([0] * input_ids.size(0)) if self.prompt_learning else None
 
-            # this makes a 1d tensor of values 2 rather than 1, which is the prompt_id of 'assit_intent_and_slot_with_options'
-            if self.cfg.dataset.prompt_template == "prompt_tuning_with_options" and prompt_ids is not None:
-                prompt_ids = prompt_ids * 2
             attn_mask_add_on = torch.ones((attention_mask.size(0), num_prompt_tokens), device=attention_mask.device)
             full_attention_mask = torch.cat([attn_mask_add_on, attention_mask], axis=-1)
             full_attention_mask_expand = torch.tril(
@@ -269,28 +255,51 @@ class DialogueGPTClassificationModel(NLPModel):
                 size=(input_ids.size(0), num_prompt_tokens),
                 fill_value=self.tokenizer.tokenizer.pad_token_id,
                 dtype=torch.long,
-                device=input_ids.device,
             )
 
-            input_ids_new = torch.cat([prompt_token_labels, input_ids], axis=1)
+            if self.prompt_learning:
+                prompt_token_labels.data = torch.LongTensor(
+                    np.tile(np.array(self.language_model.pseudo_token_ids), (input_ids.size(0), 1))
+                )
+
+            prompt_token_labels = prompt_token_labels.to(input_ids.device)
+
+            input_ids_new = torch.cat([torch.zeros_like(prompt_token_labels), input_ids], axis=1)
             make_up_last_column_input_ids = (
                 torch.ones_like(input_ids_new[:, -1:]) * self.tokenizer.tokenizer.pad_token_id
             )
             left_shifted_input_ids = torch.cat([input_ids_new[:, 1:], make_up_last_column_input_ids], axis=-1)
+            if self.prompt_learning:
+                unmasked_unreduced_loss = self.language_model(
+                    input_ids_new,
+                    position_ids,
+                    attn_mask,
+                    labels=left_shifted_input_ids,
+                    taskname_ids=prompt_ids,
+                    inference=inference,
+                )
+            else:
+                unmasked_unreduced_loss = self.language_model(
+                    input_ids, position_ids, attn_mask, labels=left_shifted_input_ids
+                )
 
-            unmasked_unreduced_loss = self.language_model(
-                input_ids, position_ids, attn_mask, left_shifted_input_ids, prompt_ids=prompt_ids
-            )
+            if isinstance(unmasked_unreduced_loss, tuple):
+                unmasked_unreduced_loss = unmasked_unreduced_loss[0]
 
-            labels = torch.cat([torch.zeros_like(prompt_token_labels), labels], axis=1)
+            labels = torch.cat([prompt_token_labels, labels], axis=1)
             make_up_last_column_labels = torch.ones_like(labels[:, -1:]) * self.tokenizer.tokenizer.pad_token_id
             new_labels = torch.cat([labels[:, 1:], make_up_last_column_labels], axis=-1)
             filler = torch.zeros_like(new_labels)
             labels_mask_0 = torch.where(new_labels != -100, new_labels, filler)
             labels_mask = labels_mask_0 > 0
 
-            loss = self.language_model.loss_func(labels_mask, unmasked_unreduced_loss)
+            loss = self.mask_and_reduce_loss(labels_mask, unmasked_unreduced_loss)
+        return loss
 
+    def mask_and_reduce_loss(self, loss_mask, output_tensor):
+        losses = output_tensor.float()
+        loss_mask = loss_mask.view(-1).float()
+        loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
         return loss
 
     def decode(self, tokens):
@@ -417,7 +426,7 @@ class DialogueGPTClassificationModel(NLPModel):
         # adapted from MegatronGPTModel._bucketize_gpt_inference 
         """
         batch_size = labels.size(0)
-        prompt_tags = [self.prompt_tags[0]] * batch_size if self.prompt_tags else None
+        prompt_tags = [self.prompt_tags[0]] * batch_size if self.prompt_learning else None
         batch_tokens = input_ids.tolist()
 
         # unpad tokens
@@ -601,6 +610,11 @@ class DialogueGPTClassificationModel(NLPModel):
             raise ValueError("Only sgd, assistant, zero_shot, design supported for Dialogue GPT Classification Model")
 
         self.data_prepared = True
+
+    def setup(self, stage=None):
+        super().setup()
+        if self.cfg.library == "megatron" and self.prompt_learning:
+            self.language_model.init_new_prompts()
 
     def update_data_dirs(self, data_dir: str, dialogues_example_dir: str):
         """

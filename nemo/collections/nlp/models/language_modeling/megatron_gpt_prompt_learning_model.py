@@ -296,7 +296,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
 
         return tasks
 
-    def state_dict(self):
+    def state_dict(self, destination=None, prefix=None, keep_vars=False):
         """
         Custom state dict that only contains prompt table and prompt encoder parameters. 
         No frozen model parameters are stored in the state dict. Prompt encoder parameters 
@@ -397,7 +397,6 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
                 input_embeds = self.embed_input_inference(input_ids, taskname_ids)
             else:
                 input_embeds = self.embed_input_train(input_ids, taskname_ids)
-
             position_embeddings = self.frozen_model.model.language_model.embedding.position_embeddings(position_ids)
             encoder_input = input_embeds + position_embeddings
         else:

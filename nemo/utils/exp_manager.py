@@ -232,7 +232,6 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     global_rank = trainer.node_rank * trainer.num_devices + local_rank
     logging.rank = global_rank
-    world_size = trainer.world_size
 
     if cfg is None:
         logging.error("exp_manager did not receive a cfg argument. It will be disabled.")

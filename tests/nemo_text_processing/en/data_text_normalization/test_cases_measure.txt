@@ -16,3 +16,4 @@ covid-19.5~covid- nineteen point five
 1°C~one degree Celsius
 1234-123kg~one thousand two hundred and thirty four to one hundred and twenty three kilograms
 45º&C~forty five degree and C
+41,459.00 km³~forty one thousand four hundred and fifty nine point zero zero cubic kilometers

@@ -16,6 +16,7 @@ import pynini
 from nemo_text_processing.text_normalization.en.graph_utils import (
     NEMO_CHAR,
     NEMO_NOT_SPACE,
+    NEMO_SIGMA,
     NEMO_UPPER,
     SINGULAR_TO_PLURAL,
     GraphFst,
@@ -64,7 +65,10 @@ class WhiteListFst(GraphFst):
             return graph
 
         graph = _get_whitelist_graph(input_case, get_abs_path("data/whitelist/tts.tsv"))
-        graph |= _get_whitelist_graph(input_case, get_abs_path("data/whitelist/symbol.tsv"))
+        graph |= pynini.compose(
+            pynini.difference(NEMO_SIGMA, pynini.accep("/")).optimize(),
+            _get_whitelist_graph(input_case, get_abs_path("data/whitelist/symbol.tsv")),
+        ).optimize()
 
         if deterministic:
             names = get_names()

@@ -96,12 +96,39 @@ extras_require = {
 extras_require['all'] = list(chain(extras_require.values()))
 
 # Add lightning requirements as needed
-extras_require['common'] = list(chain([extras_require['common'], extras_require['nemo_text_processing']]))
-extras_require['test'] = list(chain([extras_require['tts'], extras_require['core'], extras_require['common']]))
+extras_require['common'] = list(chain([extras_require['common'], extras_require['core']]))
+extras_require['test'] = list(
+    chain(
+        [
+            extras_require['tts'],
+            extras_require['core'],
+            extras_require['common'],
+            extras_require['nemo_text_processing'],
+        ]
+    )
+)
 extras_require['asr'] = list(chain([extras_require['asr'], extras_require['core'], extras_require['common']]))
 extras_require['cv'] = list(chain([extras_require['cv'], extras_require['core'], extras_require['common']]))
-extras_require['nlp'] = list(chain([extras_require['nlp'], extras_require['core'], extras_require['common']]))
-extras_require['tts'] = list(chain([extras_require['tts'], extras_require['core'], extras_require['common']]))
+extras_require['nlp'] = list(
+    chain(
+        [
+            extras_require['nlp'],
+            extras_require['core'],
+            extras_require['common'],
+            extras_require['nemo_text_processing'],
+        ]
+    )
+)
+extras_require['tts'] = list(
+    chain(
+        [
+            extras_require['tts'],
+            extras_require['core'],
+            extras_require['common'],
+            extras_require['nemo_text_processing'],
+        ]
+    )
+)
 
 # TTS has extra dependencies
 extras_require['tts'] = list(chain([extras_require['tts'], extras_require['asr']]))

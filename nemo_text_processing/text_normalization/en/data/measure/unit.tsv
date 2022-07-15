@@ -34,6 +34,8 @@ kg	kilogram
 khz	kilohertz
 km2	square kilometer
 km²	square kilometer
+km3	cubic kilometer
+km³	cubic kilometer
 km	kilometer
 kpa	kilopascal
 kwh	kilowatt hour
@@ -50,6 +52,9 @@ mg	milligram
 mhz	megahertz
 mi2	square mile
 mi²	square mile
+mi3	cubic mile
+mi³	cubic mile
+cu mi	cubic mile
 mi	mile
 min	minute
 ml	milliliter

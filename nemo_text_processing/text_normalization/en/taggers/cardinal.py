@@ -119,19 +119,22 @@ class CardinalFst(GraphFst):
                 graph, NEMO_SIGMA + pynini.closure(pynini.cross("hundred ", " "), 0, 1) + NEMO_SIGMA
             )
 
-        not_quote = pynini.closure(NEMO_NOT_QUOTE)
-        no_thousand_million = pynini.difference(
-            not_quote, not_quote + pynini.union("thousand", "million") + not_quote
-        ).optimize()
-        integer = (
-            not_quote + pynutil.add_weight(pynini.cross("hundred ", "hundred and ") + no_thousand_million, -0.0001)
-        ).optimize()
+        graph_with_and = pynutil.add_weight(graph, 0.00001)
 
-        no_hundred = pynini.difference(NEMO_SIGMA, not_quote + pynini.accep("hundred") + not_quote).optimize()
-        integer |= (
-            not_quote + pynutil.add_weight(pynini.cross("thousand ", "thousand and ") + no_hundred, -0.0001)
-        ).optimize()
+        if not self.lm:
+            not_quote = pynini.closure(NEMO_NOT_QUOTE)
+            no_thousand_million = pynini.difference(
+                not_quote, not_quote + pynini.union("thousand", "million") + not_quote
+            ).optimize()
+            integer = (
+                not_quote + pynutil.add_weight(pynini.cross("hundred ", "hundred and ") + no_thousand_million, -0.0001)
+            ).optimize()
 
-        graph_with_and = pynini.compose(graph, integer).optimize() | pynutil.add_weight(graph, 0.00001)
+            no_hundred = pynini.difference(NEMO_SIGMA, not_quote + pynini.accep("hundred") + not_quote).optimize()
+            integer |= (
+                not_quote + pynutil.add_weight(pynini.cross("thousand ", "thousand and ") + no_hundred, -0.0001)
+            ).optimize()
+
+            graph_with_and |= pynini.compose(graph, integer).optimize()
 
         return graph_with_and

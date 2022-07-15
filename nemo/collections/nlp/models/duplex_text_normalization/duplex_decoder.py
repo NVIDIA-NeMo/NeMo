@@ -18,6 +18,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Union
 
 import torch
+from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, DataCollatorForSeq2Seq
@@ -34,13 +35,6 @@ from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types import ChannelType, LabelsType, LossType, MaskType, NeuralType
 from nemo.utils import logging
-
-try:
-    from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
-
-    PYNINI_AVAILABLE = True
-except (ModuleNotFoundError, ImportError) as e:
-    PYNINI_AVAILABLE = False
 
 __all__ = ['DuplexDecoderModel']
 
@@ -105,8 +99,6 @@ class DuplexDecoderModel(NLPModel):
         if hasattr(self.tokenizer, 'do_lower_case') and self.tokenizer.do_lower_case:
             input_case = 'lower_cased'
 
-        if not PYNINI_AVAILABLE:
-            raise ValueError(f"pynini not installed")
         self.cg_normalizer = NormalizerWithAudio(input_case=input_case, lang=self.lang)
 
     @typecheck()

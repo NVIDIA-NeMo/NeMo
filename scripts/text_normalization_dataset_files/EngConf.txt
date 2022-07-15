@@ -1,0 +1,808 @@
+# This dataset is licensed under a Creative Commons Attribution 4.0 International License. https://creativecommons.org/licenses/by/4.0/
+# This dataset is hand labeled and is intended for English text normalization and has both true positive (~~1) and true negative labels (~~0).
+# This dataset focuses on inputs with ambiguous semiotic tokens where normalization dependends on the context. 
+# This dataset is used to evaluate the context-aware hybrid text normalization under /NeMo/nemo_text_processing/hybrid/
+# 
+The train leaves on 1/4 at 5pm.~~RAW
+The train leaves on one quarter at five p m.~~0
+The train leaves on january fourth at five p m.~~1
+The train leaves on the fourth of january at five p m.~~1
+
+Chapter I~~RAW
+Chapter one~~1
+Chapter the first~~0
+Chapter first~~0
+
+Henry III~~RAW
+Henry one~~0
+Henry the third~~1
+Henry third~~1
+Henry first~~0
+
+And they agreed that I should go~~RAW
+And they agreed that I should go~~1
+And they agreed that one should go~~0
+And they agreed that first should go~~0
+And they agreed that the first should go~~0
+
+Serial number V75S~~RAW
+Serial number V-seven five S~~1
+Serial number five seventy five S~~0
+Serial number V-seventy five S~~1
+
+St. Patrick's cathedral~~RAW
+Saint Patrick's cathedral~~1
+Street Patrick's cathedral~~0
+
+I'm turning onto Main St. right now.~~RAW
+I'm turning onto Main Street right now.~~1
+I'm turning onto Main Saint right now.~~0
+
+They delivered 25 kg of apples.~~RAW
+They delivered twenty five kilograms of apples.~~1
+They delivered twenty five kg of apples.~~0
+They delivered two five kg of apples.~~0
+They delivered two five kilograms of apples.~~0
+
+Text me at 650-451-1234~~RAW
+Text me at six five o, four five one, one two three four~~1
+Text me at six hundred fifty four hundred fifty one one two three four~~0
+Text me at six five zero-four five one-one two three four~~1
+
+Boeing 737~~RAW
+Boeing seven hundred thirty seven~~1
+Boeing seven hundred and thirty seven~~1
+
+The equation is 35-20=15~~RAW
+The equation is thirty five - twenty = fifteen~~0
+The equation is thirty five minus twenty equals fifteen~~1
+
+He owns Jane $125.67~~RAW
+He owns Jane one hundred twenty five dollars and sixty seven cents~~1
+He owns Jane one hundred and twenty five dollars and sixty seven cents~~1
+He owns Jane one hundred twenty five dollars sixty seven cents~~1
+
+He was dismissed with C grade.~~RAW
+He was dismissed with C grade.~~1
+He was dismissed with one hundred grade.~~0
+
+When I beg him for play, he shake his head no.~~RAW
+When I beg him for play, he shake his head no.~~1
+When I beg him for play, he shake his head number.~~0
+
+The 3D computer graphics look sharp.~~RAW
+The three d computer graphics look sharp.~~1
+The 3D computer graphics look sharp.~~0
+
+The temperature went up from 10-13 °C~~RAW
+The temperature went up from ten to thirteen degrees Celsius.~~1
+The temperature went up ten minus thirteen degrees Celsius.~~0
+The temperature went up ten - thirteen degrees Celsius.~~0
+
+Dr. Smith was brilliant, and he lived not far at 123 Circle Dr., Santa Maria, CA, 91230~~RAW
+Doctor Smith was brilliant, and he lived not far at one twenty three Circle Drive, Santa Maria, California, nine one two three zero~~1
+Doctor Smith was brilliant, and he lived not far at one twenty three Circle Drive Santa Maria California ninety one thousand two hundred thirty~~1
+Doctor Smith was brilliant, and he lived not far at one hundred twenty three Circle Drive, Santa Maria, California, nine one two three zero~~1
+Doctor Smith was brilliant, and he lived not far at one hundred twenty three Circle Drive Santa Maria California ninety one thousand two hundred thirty~~1
+
+9th of April 1928~~RAW
+Ninth of April nineteen twenty eight~~1
+
+The story took place in England, January 1921.~~RAW
+The story took place in England, January nineteen twenty one.~~1
+
+The story took place in England, January, 1921.~~RAW
+The story took place in England, January, nineteen twenty one.~~1
+
+On June 19, 1865, Maj. Gen. Gordon Granger, who had fought for the Union, led a force of soldiers to Galveston, TX, to deliver a very important message: The war was finally over, the Union had won, and it now had the manpower to enforce the end of slavery.~~RAW
+On the nineteenth of June, eighteen sixty five, Major General Gordon Granger, who had fought for the Union, led a force of soldiers to Galveston, Texas, to deliver a very important message: The war was finally over, the Union had won, and it now had the manpower to enforce the end of slavery.~~1
+On June nineteenth, eighteen sixty five, Major General Gordon Granger, who had fought for the Union, led a force of soldiers to Galveston, Texas, to deliver a very important message: The war was finally over, the Union had won, and it now had the manpower to enforce the end of slavery.~~1
+
+It was another Mohammed, not a prophet but a great soldier, surnamed the Conqueror, who finally conquered it, in 1453, after another tremendous siege, of which you will read in history.~~RAW
+It was another Mohammed, not a prophet but a great soldier, surnamed the Conqueror, who finally conquered it, in fourteen fifty three, after another tremendous siege, of which you will read in history.~~1
+
+In 3/4 of an hour look at it, and should it have swollen very much, and begin to crack, it will be light enough to bake.~~RAW
+In three quarters of an hour look at it, and should it have swollen very much, and begin to crack, it will be light enough to bake.~~1
+In three fourths of an hour look at it, and should it have swollen very much, and begin to crack, it will be light enough to bake.~~1
+
+In 3/4 hour look at it, and should it have swollen very much, and begin to crack, it will be light enough to bake.~~RAW
+In three quarters hour look at it, and should it have swollen very much, and begin to crack, it will be light enough to bake.~~1
+In three fourths hour look at it, and should it have swollen very much, and begin to crack, it will be light enough to bake.~~1
+
+Mr. Childs died at 3.01 A.M.~~RAW
+Mister Childs died at three o one a m.~~1
+
+He set his alarm clock for 4:00 a.m. and dropped immediately into a deep and exhausted sleep.~~RAW
+He set his alarm clock for < four a m > and dropped immediately into a deep and exhausted sleep.~~1
+
+Excellent march of 19 1/2 miles, 10.5 before lunch.~~RAW
+Excellent march of nineteen and a half miles, ten point five before lunch.~~1
+
+We have opened out on the 1/7th increase and it makes a lot of difference.~~RAW
+We have opened out on the one seventh increase and it makes a lot of difference.~~1
+
+carbonate, 2 drams; borax, 1/2 ounce; the salts to be dissolved in water and the other ingredients to be added gradually.~~RAW
+carbonate, two drams; borax, one half ounce; the salts to be dissolved in water and the other ingredients to be added gradually.~~1
+carbonate, two drams; borax, a half ounce; the salts to be dissolved in water and the other ingredients to be added gradually.~~1
+
+In three years, when he was twenty-one, he had become the head of a publishing house,--Childs & Peterson.~~RAW
+In three years, when he was twenty-one, he had become the head of a publishing house,--Childs and Peterson.~~1
+
+I live in NEW YORK, N.Y.~~RAW
+I live in NEW YORK, New York.~~1
+
+I live in Kansas City, MO.~~RAW
+I live in Kansas City, Missouri.~~1
+
+At this point projectoscope RB-3 of the ship now out of focus control.~~RAW
+At this point projectoscope RB-three of the ship now out of focus control.~~1
+
+Compare the parallel teaching in Micah 6:6-8.~~RAW
+Compare the parallel teaching in Micah six:six to eight.~~1
+Compare the parallel teaching in Micah six:six-eight.~~1
+Compare the parallel teaching in Micah six: from six to eight.~~1
+
+A sound authority who knew him of old pronounced him "as good at telling an anecdote as in the '30's.~~RAW
+A sound authority who knew him of old pronounced him "as good at telling an anecdote as in the 'thirty's.~~1
+A sound authority who knew him of old pronounced him "as good at telling an anecdote as in the 'thirties.~~1
+
+I got a bullet on the liver in the campaign of '03, due to over smoking;~~RAW
+I got a bullet on the liver in the campaign of 'zero three, due to over smoking;~~1
+
+The ph level of the skin is around 7.~~RAW
+The ph level of the skin is around seven~~1
+
+Gran just back on ski; left party at 5 1/4 miles.~~RAW
+Gran just back on ski; left party at five and one quarter miles.~~1
+Gran just back on ski; left party at five and a quarter miles.~~1
+
+1/2 oz. of peppercorns, 4 onions, 6 thin slices of bacon, 2 hard-boiled eggs.~~RAW
+one half ounce of peppercorns, four onions, six thin slices of bacon, two hard - boiled eggs.~~1
+one half ounces of peppercorns, four onions, six thin slices of bacon, two hard - boiled eggs.~~1
+
+He was a trooper in the 23rd Dragoons.~~RAW
+He was a trooper in the twenty third Dragoons.~~1
+
+The life principle in trees, &c., as we have seen, was believed to have been derived from the tears of deities.~~RAW
+The life principle in trees, and c., as we have seen, was believed to have been derived from the tears of deities.~~1
+
+AC is used to refer to an electric current that continually changes direction as it flows.~~RAW
+Alternating current is used to refer to an electric current that continually changes direction as it flows.~~1
+
+Central AC circulate cool air through a system of supply and return ducts.~~RAW
+Central air conditioners circulate cool air through a system of supply and return ducts.~~1
+
+What type of AC system do you have?~~RAW
+What type of air conditioning system do you have?~~1
+
+The initials are A.B.C. and X.X.X.X.~~RAW
+The initials are ABC. and XXXX.~~1
+
+Please schedule the re-assessment for Tu (2/22) at 5 pm.~~RAW
+Please schedule the re-assessment for Tuesday (february twenty second) at five p m.~~1
+Please schedule the re-assessment for Tuesday (the twenty second of february) at five p m.~~1
+
+Félicien Tshamalenga Kabundi (born 15 May 1980) is a football defender from Congo DR.~~RAW
+Félicien Tshamalenga Kabundi (born the fifteenth of may nineteen eighty) is a football defender from Congo DR.~~1
+
+Aces of World War I Osprey Aircraft of the Aces # 40.~~RAW
+Aces of World War one Osprey Aircraft of the Aces number forty.~~1
+
+The college is affiliated to Tamil Nadu Dr. M.G.R. Medical University.~~RAW
+The college is affiliated to Tamil Nadu Dr. MGR Medical University.~~1
+The college is affiliated to Tamil Nadu Dr. M.G.R. Medical University.~~1
+The college is affiliated to Tamil Nadu Doctor MGR Medical University.~~1
+
+Vanderheide, Al, "Dutch Reformed Leader dr G.C. Berkouwer Passes Away", Internet Christian Library.~~RAW
+Vanderheide, Al, "Dutch Reformed Leader doctor GC Berkouwer Passes Away", Internet Christian Library.~~1
+
+In the '70s~~RAW
+In the 'seventies~~1
+
+PMID 18583455 Tracey WR, Magee WP, Oleynek JJ, Hill RJ, Smith AH, Flynn DM, Knight DR~~RAW
+PMID one eight five eight three four five five Tracey WR, Magee WP, Oleynek JJ, Hill RJ, Smith AH, Flynn DM, Knight DR~~1
+PMID eighteen million five hundred eighty three thousand four hundred fifty five Tracey WR, Magee WP, Oleynek JJ, Hill RJ, Smith AH, Flynn DM, Knight DR~~1
+
+Dutch doctors may use the letter D behind their name.~~RAW
+Dutch doctors may use the letter D behind their name.~~1
+
+The route is from 3 Lamps to Queen st via K 'rd, Pitt st, & Grey st. The fare is threepence.~~RAW
+The route is from three Lamps to Queen street via K 'road, Pitt street, and Grey street. The fare is threepence.~~1
+
+North Dakota Cultural Resources Survey: Building at 317 S. 3rd st" (PDF).~~RAW
+North Dakota Cultural Resources Survey: Building at three hundred seventeen south third street" (p d f).~~1
+North Dakota Cultural Resources Survey: Building at three hundred seventeen south third street" (PDF).~~1
+North Dakota Cultural Resources Survey: Building at three seventeen south third street" (PDF).~~1
+
+York st # 4, Covent Garden, London; Original from Fogg Library, Digitized May 18, 2007: George Bell and Sons.~~RAW
+York street number four, Covent Garden, London; Original from Fogg Library, Digitized may eighteenth two thousand seven: George Bell and Sons.~~1
+York street number four, Covent Garden, London; Original from Fogg Library, Digitized the eighteenth of may, two thousand seven: George Bell and Sons.~~1
+
+Risk of invasive cervical cancer associated with polymorphic HLA-DR/DQ haplotypes".~~RAW
+Risk of invasive cervical cancer associated with polymorphic HLA-DR/DQ haplotypes"~~1
+Risk of invasive cervical cancer associated with polymorphic HLA dash DR slash DQ haplotypes"~~1
+Risk of invasive cervical cancer associated with polymorphic HLA-DR slash DQ haplotypes"~~1
+
+Vetter U, Weis MA, Morike M, Eanes ED, Eyre DR (Feb 1993).~~RAW
+Vetter U, Weis MA, Morike M, Eanes ED, Eyre DR (february nineteen ninety three).~~1
+
+This approach, similar to OSPF's DR / BDR feature, provides large networks with added IBGP scalability.~~RAW
+This approach, similar to OSPF's DR / BDR feature, provides large networks with added IBGP scalability.~~1
+This approach, similar to OSPF's DR slash BDR feature, provides large networks with added IBGP scalability.~~1
+
+Microsoft DOS was released through the OEM channel, until DRI released DR DOS 5.0 as a retail upgrade.~~RAW
+Microsoft DOS was released through the OEM channel, until DRI released DR DOS five point zero as a retail upgrade.~~1
+
+The ST 10 telescopic sight used for direct fire was graduated up to 900 metres.~~RAW
+The ST ten telescopic sight used for direct fire was graduated up to nine hundred metres.~~1
+
+"STOCKTON ST JOHN'S".~~RAW
+"STOCKTON Saint JOHN'S".~~1
+
+"Ericsson and st microelectronics complete transaction to split up ST Ericsson".~~RAW
+"Ericsson and st microelectronics complete transaction to split up st Ericsson".~~1
+
+Single ended, single truck cars (SE ST) from Brownell Car Company which supplied the first electric streetcar to Montreal.~~RAW
+Single ended, single truck cars (SE ST) from Brownell Car Company which supplied the first electric streetcar to Montreal.~~1
+
+The attenuation of DDAH allows ADMA to accumulate, and to block NO synthesis.~~RAW
+The attenuation of DDAH allows ADMA to accumulate, and to block nitrogen monoxide synthesis.~~1
+
+Exceptions are odd electron molecules such as nitric oxide, NO, nitrogen dioxide, NO 2, some chlorine oxides and the hydroxyl radical.~~RAW
+Exceptions are odd electron molecules such as nitric oxide, nitrogen monoxide, nitrogen dioxide, nitrogen monoxide two, some chlorine oxides and the hydroxyl radical.~~1
+
+Now Magazine, VOL 24 NO 39.~~RAW
+Now Magazine, Volume twenty four number thirty nine.~~1
+Now Magazine, Volume two four number thirty nine.~~1
+Now Magazine, Volume two four number three nine.~~1
+
+She performed in the Michael Kerns play, "AIDS, US Women: Silent NO More."~~RAW
+She performed in the Michael Kerns play, "AIDS, US Women: Silent NO More."~~1
+
+MacGinnitie AJ, Anant S, Davidson NO (1995).~~RAW
+MacGinnitie AJ, Anant S, Davidson NO (nineteen ninety five).~~1
+MacGinnitie AJ, Anant S, Davidson NO (one thousand nine hundred ninety five).~~1
+
+MacGinnitie AJ, Anant S, Davidson N.O. (1995).~~RAW
+MacGinnitie AJ, Anant S, Davidson NO (nineteen ninety five).~~1
+MacGinnitie AJ, Anant S, Davidson N.O. (one thousand nine hundred ninety five).~~1
+
+THERE IS NO BODY CAVITY THAT CANNOT BE REACHED WITH A # 14 G NEEDLE AND A GOOD STRONG ARM.~~RAW
+THERE IS NO BODY CAVITY THAT CANNOT BE REACHED WITH A number fourteen G NEEDLE AND A GOOD STRONG ARM.~~1
+THERE IS NO BODY CAVITY THAT CANNOT BE REACHED WITH A number one four G NEEDLE AND A GOOD STRONG ARM.~~1
+
+"Vote NO on Proposition YES # 1".~~RAW
+"Vote NO on Proposition YES number one".~~1
+
+Kandrour Bridge: (8 kilometres from Bilaspur on National Highway NO 88, across the river Satluj).~~RAW
+Kandrour Bridge: (eight kilometres from Bilaspur on National Highway number eighty eight, across the river Satluj).~~1
+
+18 - 19 Morgen's Anklageschrift, in Nuremberg document NO 2366 John Toland (1976).~~RAW
+eighteen to nineteen Morgen's Anklageschrift, in Nuremberg document number two three six six John Toland (nineteen seventy six).~~1
+eighteen to nineteen Morgen's Anklageschrift, in Nuremberg document number two three six six John Toland (one thousand nine hundred seventy six).~~1
+eighteen to nineteen Morgen's Anklageschrift, in Nuremberg document number twenty three sixty six John Toland (nineteen seventy six).~~1
+eighteen to nineteen Morgen's Anklageschrift, in Nuremberg document number twenty three sixty six John Toland (one thousand nine hundred seventy six).~~1
+eighteen to nineteen Morgen's Anklageschrift, in Nuremberg document number two thousand three hundred sixty six John Toland (one thousand nine hundred seventy six).~~1
+eighteen to nineteen Morgen's Anklageschrift, in Nuremberg document number two thousand three hundred sixty six John Toland (nineteen seventy six).~~1
+
+The primary School is Two Name is Z. P School NO 1 & Z. P School NO 2 & Sambhaji English School in Kusumba.~~RAW
+The primary School is Two Name is Z. P School number one and Z. P School number two and Sambhaji English School in Kusumba.~~1
+
+It is situated on State Highway NO 14, RJ SH 14.~~RAW
+It is situated on State Highway number fourteen, RJ SH fourteen.~~1
+
+Maharagama Vidyala junction (Route NO 990), Maharagama Hokandra (Route NO 994) Maharagama Malabe (Route NO 993), Kottawa Malabe (Route NO 336) but routes operate through Vidyala junction.~~RAW
+Maharagama Vidyala junction (Route number nine hundred ninety), Maharagama Hokandra (Route number nine hundred ninety four) Maharagama Malabe (Route number nine hundred ninety three), Kottawa Malabe (Route number three hundred thirty six) but routes operate through Vidyala junction.~~1
+
+The place can be reached by road from Barpeta Road (20 KM) connecting National highway NO 31 that connects rest of India.~~RAW
+The place can be reached by road from Barpeta Road (twenty kilometers) connecting National highway number thirty one that connects rest of India.~~1
+
+Journal of Reliability Engineering Association of Japan Accession number; 02 A 0509168, ISSN 0919-2697, VOL. 24; NO. 4; PAGE 276 - 283 (2002) "A. Albertsen, Electrolytic Capacitor Lifetime Estimation" (PDF).~~RAW
+Journal of Reliability Engineering Association of Japan Accession number; zero two A zero five zero nine one six eight, ISSN o nine one nine sil two six nine seven, volume twenty four; number point four; PAGE two hundred seventy six to two hundred eighty three (two thousand two) "A. Albertsen, Electrolytic Capacitor Lifetime Estimation" (PDF).~~1
+Journal of Reliability Engineering Association of Japan Accession number; zero two A zero five zero nine one six eight, ISSN zero nine nineteen to twenty six ninety seven, Volume twenty four; number four; PAGE two hundred seventy six to two hundred eighty three (two thousand two) "A. Albertsen, Electrolytic Capacitor Lifetime Estimation" (PDF).~~1
+Journal of Reliability Engineering Association of Japan Accession number; zero two A zero five zero nine one six eight, ISSN zero nine one nine to twenty six ninety seven, Volume twenty four; number four; PAGE two hundred seventy six to two hundred eighty three (two thousand two) "A. Albertsen, Electrolytic Capacitor Lifetime Estimation" (PDF).~~1
+Journal of Reliability Engineering Association of Japan Accession number; zero two A zero five zero nine one six eight, ISSN zero nine one nine - twenty six ninety seven, Volume twenty four; number four; PAGE two hundred seventy six to two hundred eighty three (two thousand two) "A. Albertsen, Electrolytic Capacitor Lifetime Estimation" (PDF).~~1
+
+Zanella AJ, Broom DM, Hunter JC, Mendl MT~~RAW
+Zanella AJ, Broom DM, Hunter JC, Mendl MT~~1
+
+From then the forks were primarily manufactured at Rock Shox in mt View, california.~~RAW
+From then the forks were primarily manufactured at Rock Shox in mountain View, california.~~1
+
+dr Tofallis, Kypros, A History of Cyprus, p .98 (2002) Morton, Michael Quentin (December 2011).~~RAW
+doctor Tofallis, Kypros, A History of Cyprus, p point nine eight (two thousand two) Morton, Michael Quentin (december twenty eleven).~~1
+
+dr Hassan AyatHassan Ayat (1938 - 1981) Relations of Banisadr and AyatAsayesh, Hossein; Adlina Ab.~~RAW
+doctor Hassan AyatHassan Ayat (nineteen thirty eight to nineteen eighty one) Relations of Banisadr and AyatAsayesh, Hossein; Adlina Ab.~~1
+
+"Death Takes dr Fauver Of Wesleyan: Funeral of Former Athletic Director To Be Held Friday Dies in Middletown".~~RAW
+"Death Takes doctor Fauver Of Wesleyan: Funeral of Former Athletic Director To Be Held Friday Dies in Middletown".~~1
+
+dr C.H. Asrani.~~RAW
+doctor C.H. Asrani.~~1
+
+dr Rajendra Prasad became the first President of India.~~RAW
+doctor Rajendra Prasad became the first President of India.~~1
+
+"Key University Post to dr F.A. DeMarco".~~RAW
+"Key University Post to doctor F.A. DeMarco".~~1
+"Key University Post to doctor FA DeMarco".~~1
+
+The college is affiliated to Tamil Nadu DR MGR Medical University.~~RAW
+The college is affiliated to Tamil Nadu DR MGR Medical University.~~1
+
+Khan invited dr Smith to attend the holiday party.~~RAW
+Khan invited doctor Smith to attend the holiday party.~~1
+
+Other TV shows he has starred in include Coogan's Run, dr Terrible's House of Horrible, Monkey Trousers and Saxondale.~~RAW
+Other Television shows he has starred in include Coogan's Run, doctor Terrible's House of Horrible, Monkey Trousers and Saxondale.~~1
+
+HLA- DRA encodes the alpha subunit of HLA-DR~~RAW
+HLA- DRA encodes the alpha subunit of HLA-DR~~1
+
+"121 Seahawk Dr., DeSoto, Texas, 75115."~~RAW
+"one twenty one Seahawk drive, DeSoto, Texas, seven five one one five."~~1
+"one twenty one Seahawk drive, DeSoto, Texas, seventy five one one five."~~1
+"one twenty one Seahawk drive, DeSoto, Texas, seventy five thousand one hundred fifteen"~~1
+
+612 - 613 "Former Elkhorn Mayor Is Dead", - dr E. T. Ridgway.~~RAW
+six hundred twelve to six hundred thirteen "Former Elkhorn Mayor Is Dead", - doctor ET Ridgway.~~1
+
+There are two higher education centers located at Laguna dr.~~RAW
+There are two higher education centers located at Laguna drive.~~1
+
+Happy Computers (HCI) was a small company producing disk drive enhancements for the Atari 8 - bit and Atari ST computer families.~~RAW
+Happy Computers (HCI) was a small company producing disk drive enhancements for the Atari eight - bit and Atari ST computer families.~~1
+
+From sawdust to stardust: the biography of DeForest Kelley, Star Trek's Dr. McCoy.~~RAW
+From sawdust to stardust: the biography of DeForest Kelley, Star Trek's doctor McCoy.~~1
+
+Dr. Zac Varghese & Mathew A. Kallumpram.~~RAW
+Doctor Zac Varghese and Mathew A. Kallumpram.~~1
+
+st Louis Business Journal.~~RAW
+saint Louis Business Journal.~~1
+
+1918 - 1950: The County Borough of Salford wards of Albert Park, Charlestown, Grosvenor, Kersal, and st Matthias.~~RAW
+nineteen eighteen to nineteen fifty: The County Borough of Salford wards of Albert Park, Charlestown, Grosvenor, Kersal, and saint Matthias.~~1
+from nineteen eighteen to nineteen fifty: The County Borough of Salford wards of Albert Park, Charlestown, Grosvenor, Kersal, and saint Matthias.~~1
+
+st Louis traded this pick along with a fourth rounder (# 123) to Arizona in exchange for cornerback Aeneas Williams.~~RAW
+saint Louis traded this pick along with a fourth rounder (number one hundred twenty three) to Arizona in exchange for cornerback Aeneas Williams.~~1
+
+All streetcars westbound on st Clair turn northbound on Gunns, enter the loop westbound, and exit onto st Clair eastbound.~~RAW
+All streetcars westbound on saint Clair turn northbound on Gunns, enter the loop westbound, and exit onto saint Clair eastbound.~~1
+
+st Peters Church.~~RAW
+saint Peters Church.~~1
+
+The Puerto Rican Bank has never been connected to its closest eastern bank, st Maarten.~~RAW
+The Puerto Rican Bank has never been connected to its closest eastern bank, saint Maarten.~~1
+
+Save for the Atlantic outlier of st Kilda.~~RAW
+Save for the Atlantic outlier of saint Kilda.~~1
+
+st Petersburg Times.~~RAW
+saint Petersburg Times.~~1
+
+In 1113, King David I of Scotland married Maud, Countess of Huntingdon, widow of Simon de st Liz.~~RAW
+In eleven thirteen, King David the first of Scotland married Maud, Countess of Huntingdon, widow of Simon de saint Liz.~~1
+In one thousand one hundred thirteen, King David the first of Scotland married Maud, Countess of Huntingdon, widow of Simon de saint Liz.~~1
+
+Born and rasie in the hard streets of st Louis.~~RAW
+Born and rasie in the hard streets of saint Louis.~~1
+
+"Iowa st 74, Texas A&M 50".~~RAW
+"Iowa street seventy four, Texas a and m fifty".~~1
+
+New York: st Martin's Press.~~RAW
+New York: saint Martin's Press.~~1
+
+New York: st Martin's, 2000.~~RAW
+New York: saint Martin's, two thousand.~~1
+
+new york new york: st Martin's Press.~~RAW
+new york new york: saint Martin's Press.~~1
+
+New York: st Martin's Press, 1996.~~RAW
+New York: saint Martin's Press, nineteen ninety six.~~1
+New York: saint Martin's Press, one thousand nine hundred ninety six.~~1
+
+new york new york: st Martin's Press.~~RAW
+new york new york: saint Martin's Press.~~1
+
+New York: st Martin's Press, 1990, The London Gazette: no~~RAW
+New York: saint Martin's Press, nineteen ninety, The London Gazette: no~~1
+New York: saint Martin's Press, one thousand nine hundred ninety, The London Gazette: no~~1
+
+Katharine M. Rogers, L. Frank Baum, Creator of Oz: A Biography, New York, st Martin's Press, 2002; p. 62.~~RAW
+Katharine M. Rogers, L. Frank Baum, Creator of Oz: A Biography, New York, saint Martin's Press, two thousand two; p. sixty two.~~1
+
+Crestwood, New York: st Vladimir's Seminary Press.~~RAW
+Crestwood, New York: saint Vladimir's Seminary Press.~~1
+
+Engelke DR, Hoener PA, Collins FS (1988).~~RAW
+Engelke DR, Hoener PA, Collins FS (nineteen eighty eight).~~1
+
+Danish TV- Documentary, aired several times at DR 'channelsDanish TV- Documentary, aired several times at DR (broadcaster)' channels.~~RAW
+Danish TV- Documentary, aired several times at DR 'channelsDanish TV- Documentary, aired several times at DR (broadcaster)' channels.~~1
+
+Lin L, Nemeth E, Goodnough JB, Thapa DR, Gabayan V, Ganz T (2008).~~RAW
+Lin L, Nemeth E, Goodnough JB, Thapa DR, Gabayan V, Ganz T (two thousand eight).~~1
+
+Friedlander DR, Milev P, Karthikeyan L et al.~~RAW
+Friedlander DR, Milev P, Karthikeyan L et al.~~1
+
+In 1366 Dr. King Morkann died, appointing his son Korox, the leader of Elestam's Crusaders, to succeed him.~~RAW
+In thirteen sixty six doctor King Morkann died, appointing his son Korox, the leader of Elestam's Crusaders, to succeed him.~~1
+In thirteen sixty six Doctor King Morkann died, appointing his son Korox, the leader of Elestam's Crusaders, to succeed him.~~1
+
+Shiau AK, Harris SF, Southworth DR, Agard DA (Oct 2006).~~RAW
+Shiau AK, Harris SF, Southworth DR, Agard DA (october two thousand six).~~1
+
+His song was also chosen as "Song of the Week" on Denmark's DR P 3 Radio.~~RAW
+His song was also chosen as "Song of the Week" on Denmark's DR P three Radio.~~1
+
+For data deduplication, NetVault Backup supports several solutions, including Dell's own DR appliance and NetVault SmartDisk.~~RAW
+For data deduplication, NetVault Backup supports several solutions, including Dell's own DR appliance and NetVault SmartDisk.~~1
+
+"BBC News — DR Congo's 23 rebels: Rwandan support 'falling'".~~RAW
+"BBC News — DR Congo's twenty three rebels: Rwandan support 'falling'".~~1
+
+Richard Stanford (DR) 9.~~RAW
+Richard Stanford (Doctor) nine.~~1
+
+Use of battery power enabled these memories to retain their contents which the DR 110 was switched off.~~RAW
+Use of battery power enabled these memories to retain their contents which the DR one hundred ten was switched off.~~1
+
+Crystal Serenity was built in 2003 in STX Europe in st Nazaire.~~RAW
+Crystal Serenity was built in two thousand three in STX Europe in saint Nazaire.~~1
+
+He was elected as the Member of Legislative Assembly of Arunachal Pradesh from the 6 - Thrizino Buragaon (ST) in 2014 assembly election.~~RAW
+He was elected as the Member of Legislative Assembly of Arunachal Pradesh from the six - Thrizino Buragaon (ST) in twenty fourteen assembly election.~~1
+
+"TRU for all Districts (SC & ST and Total)".~~RAW
+"TRU for all Districts (SC and ST and Total)".~~1
+
+ST S adds ST on sunroof and 16" alloy wheels.~~RAW
+ST S adds ST on sunroof and sixteen inches alloy wheels.~~1
+
+"ST Engineering Acquires Specialized Vehicles Corporations" (Press release).~~RAW
+"ST Engineering Acquires Specialized Vehicles Corporations" (Press release).~~1
+
+The first order formulation of ST rules out quantifying over types.~~RAW
+The first order formulation of ST rules out quantifying over types.~~1
+
+"Description of FEMTO ST Laboratory".~~RAW
+"Description of FEMTO ST Laboratory".~~1
+
+"TRU for all Districts (SC & ST and Total)".~~RAW
+"TRU for all Districts (SC and ST and Total)".~~1
+
+Atari ST User 3 (1).~~RAW
+Atari ST User three (one).~~1
+
+Similar motifs occur with serine or threonine as residue i, which are called ST turns.~~RAW
+Similar motifs occur with serine or threonine as residue i, which are called ST turns.~~1
+
+As the popularity of the ST increased, it was given its own pull out section called Atari ST User.~~RAW
+As the popularity of the ST increased, it was given its own pull out section called Atari ST User.~~1
+
+Martin ST, Sato N, Dhara S, et al.~~RAW
+Martin ST, Sato N, Dhara S, et al.~~1
+
+ST Aerospace started as a maintenance depot to support the Republic of Singapore Air Force in 1975.~~RAW
+ST Aerospace started as a maintenance depot to support the Republic of Singapore Air Force in nineteen seventy five.~~1
+
+The ST segment corresponds to a period of ventricular depolarization.~~RAW
+The ST segment corresponds to a period of ventricular depolarization.~~1
+
+The first version was released in 1990 for the Atari ST, the most recent version for the GBA in 2002.~~RAW
+The first version was released in nineteen ninety for the Atari ST, the most recent version for the GBA in two thousand two.~~1
+
+Logic stemmed from Creator, then Notator, made by C - Lab (the company's forerunner) for the Atari ST platform.~~RAW
+Logic stemmed from Creator, then Notator, made by C - Lab (the company's forerunner) for the Atari ST platform.~~1
+
+This game was released for the Amiga, Atari ST, and PC DOS.~~RAW
+This game was released for the Amiga, Atari ST, and PC DOS.~~1
+
+Los Angeles: Capitol Records ST 11547.~~RAW
+Los Angeles: Capitol Records ST one one five four seven.~~1
+Los Angeles: Capitol Records ST eleven thousand five hundred forty seven.~~1
+
+Andrade J, Pearce ST, Zhao H, Barroso M (Dec 2004).~~RAW
+Andrade J, Pearce ST, Zhao H, Barroso M (december two thousand four).~~1
+
+Nielsen C, Hansen D, Husby S, Jacobsen BB, Lillevang ST (Dec 2003).~~RAW
+Nielsen C, Hansen D, Husby S, Jacobsen BB, Lillevang ST (december two thousand three).~~1
+
+However, random access to the stack registers can be obtained through an instruction which exchanges any specified ST (x) with ST (0).~~RAW
+However, random access to the stack registers can be obtained through an instruction which exchanges any specified ST (x) with ST (zero).~~1
+
+5% of places are reserved for talented ST / SC students of the weaker section of the society.~~RAW
+five percent of places are reserved for talented ST / SC students of the weaker section of the society.~~1
+five percent of places are reserved for talented ST slash SC students of the weaker section of the society.~~1
+
+Calamus is a desktop publishing application, built for the Atari ST computer.~~RAW
+Calamus is a desktop publishing application, built for the Atari ST computer.~~1
+
+"Hanson Chicagoan Cigno Firenze ST and Gatto".~~RAW
+"Hanson Chicagoan Cigno Firenze ST and Gatto".~~1
+
+Another achievement on the Atari ST was the first multiplayer first person shooter on a homecomputer: MIDI Maze.~~RAW
+Another achievement on the Atari ST was the first multiplayer first person shooter on a homecomputer: MIDI Maze.~~1
+
+The Acorn Electron, BBC Micro, 1990: Amiga, Atari ST, DOS and NES ports followed in 1989.~~RAW
+The Acorn Electron, BBC Micro, nineteen ninety: Amiga, Atari ST, DOS and NES ports followed in nineteen eighty nine.~~1
+
+The NO MORE Project.~~RAW
+The NO MORE Project.~~1
+
+NO 4, 1984 (PDF).~~RAW
+Number four, nineteen eighty four (PDF).~~1
+Number four, one thousand nine hundred eighty four (PDF).~~1
+
+The highest share of "NO" votes was in Crete, particularly in the constituencies of Heraklion and Chania.~~RAW
+The highest share of "NO" votes was in Crete, particularly in the constituencies of Heraklion and Chania.~~1
+
+While he was Vice Chancellor of Banaras Hindu University, it was declared the NO. 1 university of India by India Today.~~RAW
+While he was Vice Chancellor of Banaras Hindu University, it was declared the number one university of India by India Today.~~1
+
+ltd vs Uttam Manohar Nakate on 18 January, 2005,, CASE NO.~~RAW
+limited versus Uttam Manohar Nakate on the eighteenth of january, two thousand five,, CASE number.~~1
+limited versus Uttam Manohar Nakate on the eighteenth of january, twenty oh five,, CASE number.~~1
+
+"Climatography of the United States NO. 81" (PDF).~~RAW
+"Climatography of the United States number eighty one" (PDF).~~1
+
+NO TRIPPING UP or HEEL KICKING is allowed.~~RAW
+NO TRIPPING UP or HEEL KICKING is allowed.~~1
+
+Corey Feldman stated in his November 25, 2008 blog post, "NO!~~RAW
+Corey Feldman stated in his november twenty fifth, two thousand eight blog post, "NO!~~1
+Corey Feldman stated in his the twenty fifth of november, two thousand eight blog post, "NO!~~1
+
+"No LIMITS for front rows".~~RAW
+"No LIMITS for front rows".~~1
+
+"CALDWELL'S TNA NO SURRENDER PPV REPORT 9/20: Ongoing" virtual time "coverage of Kurt Angle vs~~RAW
+"CALDWELL'S TNA No SURRENDER PPV REPORT september twentieth: Ongoing" virtual time "coverage of Kurt Angle versus~~1
+
+"SETH MacFARLANE RELEASES NEW ALBUM NO ONE EVER TELLS YOU TO ALL DIGITAL PARTNERS".~~RAW
+"SETH MacFARLANE RELEASES NEW ALBUM NO ONE EVER TELLS YOU TO ALL DIGITAL PARTNERS".~~1
+
+Nutphand, W. (No DATE).~~RAW
+Nutphand, W. (No DATE).~~1
+
+"Vote NO Referendum Website Launched", Family First Press Release, 22 June 2009.~~RAW
+"Vote NO Referendum Website Launched", Family First Press Release, the twenty second of june two thousand nine.~~1
+
+"Investigation and Analyses of Problems in Standardization of 'NO. 1 Military Project'".~~RAW
+"Investigation and Analyses of Problems in Standardization of 'Number one Military Project'".~~1
+
+"No matter what shape (YOUR STOMACH'S IN) by THE T - BONES".~~RAW
+"No matter what shape (YOUR STOMACH'S IN) by THE T - BONES".~~1
+
+Impaired NO synthesisNitric oxide is known as an important stimulator of cell proliferation, maturation and differentiation.~~RAW
+Impaired nitrogen monoxide synthesisNitric oxide is known as an important stimulator of cell proliferation, maturation and differentiation.~~1
+
+"PUSH & SHOVE by No Doubt (CD)".~~RAW
+"PUSH and SHOVE by No Doubt (CD)".~~1
+
+Sahih Bukhari hadith NO 732-733 "Hajj".~~RAW
+Sahih Bukhari hadith number seven hundred thirty two to seven hundred thirty three "Hajj".~~1
+
+The next prime mover models, which marginally differed from the NO 2, were the NO 3 and NO 6.~~RAW
+The next prime mover models, which marginally differed from the number two, were the number three and number six.~~1
+
+Kottawa Kiriwaththuduwa (Route NO 128), Kottawa Malabe (Route NO 336), Rukmalagama Pettah (Route No 138/3), Athurugiriya Pettah (Route No 136,138/4) bus routes operate through this junction.~~RAW
+Kottawa Kiriwaththuduwa (Route number one hundred twenty eight), Kottawa Malabe (Route number three hundred thirty six), Rukmalagama Pettah (Route No one hundred thirty eight thirds), Athurugiriya Pettah (Route No one hundred thirty six thousand one hundred thirty eight quarters) bus routes operate through this junction.~~1
+
+Play '70s music now~~RAW
+Play seventies music now~~1
+
+02.15.2017~~RAW
+february fifteenth twenty seventeen~~1
+
+02/15/2017~~RAW
+february fifteenth twenty seventeen~~1
+
+Remove Tuesday alarm of 9.00 a.m.~~RAW
+Remove Tuesday alarm of nine a m~~1
+
+repeat song no. 10 from main list~~RAW
+repeat song number ten from main list~~1
+
+what will the weather conditions of Lucknow on 9th feb 2017~~RAW
+what will the weather conditions of Lucknow on the ninth of february twenty seventeen~~1
+what will the weather conditions of Lucknow on ninth february twenty seventeen~~1
+
+lower the light of hall by 75%~~RAW
+lower the light of hall by seventy five percent~~1
+
+I like songs from 90s~~RAW
+i like songs from nineties~~1
+
+Can you see to it that the coffee maker is ready with my filter coffee in approx. 10 min. from now?~~RAW
+Can you see to it that the coffee maker is ready with my filter coffee in approximately ten minutes. from now~~1
+Can you see to it that the coffee maker is ready with my filter coffee in approximately ten minutes from now~~1
+
+Play 1999 by prince~~RAW
+Play one thousand nine hundred ninety nine by prince~~1
+Play nineteen ninety nine by prince~~1
+
+What is the time in India, when the time in US is 12pm~~RAW
+What is the time in India, when the time in US is twelve pm~~1
+What is the time in India, when the time in US is twelve p m~~1
+
+05/02/2017~~RAW
+may second twenty seventeen~~1
+the second of may twenty seventeen~~1
+
+10/02/2017~~RAW
+october second twenty seventeen~~1
+the second of october twenty seventeen~~1
+
+What was the news for March 4th 2017?~~RAW
+What was the news for march fourth twenty seventeen?~~1
+What was the news for the fourth of march twenty seventeen?~~1
+
+Select and play only christian rock from 1990 upwards~~RAW
+Select and play only christian rock from nineteen ninety upwards~~1
+Select and play only christian rock from one thousand nine hundred ninety nine upwards~~1
+
+How is the weather in 57701?~~RAW
+How is the weather in five seven seven zero one?~~1
+How is the weather in fifty seven thousand seven hundred one?~~1
+
+Where can I find a tax preparation professional for under $100?~~RAW
+Where can I find a tax preparation professional for under one hundred dollars~~1
+
+What's going on between 10am and 2 pm?~~RAW
+What's going on between ten a m and two p m?~~1
+What's going on between ten am and two p m?~~1
+What's going on between ten am and two pm?~~1
+
+Set a meeting on Wednesday at 3pm in room G30.~~RAW
+Set a meeting on Wednesday at three p m in room G thirty.~~1
+Set a meeting on Wednesday at three p m in room G three zero.~~1
+
+Add to calender, Dr. K at 3:30 pm on March 7~~RAW
+Add to calender, doctor K at three thirty p m on march seventh~~1
+
+Set a 2-week reminder for the 20th of every quarter beginning 3/20 to pay my HOA.~~RAW
+Set a two-week reminder for the twentieth of every quarter beginning march twentieth to pay my HOA.~~1
+Set a two-week reminder for the twentieth of every quarter beginning the twentieth of march to pay my HOA.~~1
+
+What do i have on the schedule today from 12pm-2pm~~RAW
+What do i have on the schedule today from twelve p m to two p m~~1
+What do i have on the schedule today from twelve p m-two p m~~1
+
+if a pencil costs $4 and a book cost $10, how much i should pay if i buy 2 pencil and 3 books?~~RAW
+if a pencil costs four dollars and a book cost ten dollars, how much i should pay if i buy two pencil and three books?~~1
+
+how many shares of apple can I get for $800~~RAW
+how many shares of apple can I get for eight hundred dollars~~1
+
+I have a meeting, set a reminder for 4/9~~RAW
+I have a meeting, set a reminder for the ninth of april~~1
+
+Find Rush Limbaugh on 97X~~RAW
+Find Rush Limbaugh on ninety seven X~~1
+Find Rush Limbaugh on nine seven X~~1
+
+play the radio channel 93.25~~RAW
+play the radio channel ninety three point two five~~1
+play the radio channel ninety three point twenty five~~1
+
+Check time of 10887 train from Jodhpur station on monday~~RAW
+Check time of one zero eight eight seven train from Jodhpur station on monday~~1
+Check time of ten thousand eight hundred eighty seven train from Jodhpur station on monday~~1
+
+Divide 1500 by 160~~RAW
+Divide one thousand five hundred by one hundred sixty~~1
+Divide fifteen hundred by one hundred sixty~~1
+
+What's 1/2 cup plus 2/3rd cup~~RAW
+What's a half cup plus two thirds cup~~1
+What's one half cup plus two thirds cup~~1
+
+Set the thermostat to 75F~~RAW
+Set the thermostat to seventy five degrees Fahrenheit~~1
+
+What music is currently playing on 99.9FM?~~RAW
+what music is currently playing on ninety nine point nine f m~~1
+
+convert 23:30 from GMT +4:30 to GMT -2:00~~RAW
+convert twenty three thirty from GMT plus four thirty to GMT minus two o'clock~~1
+convert twenty three thirty from GMT + four thirty to GMT - two o'clock~~1
+
+convert 10:30 from GMT +2:30 to GMT 0:00~~RAW
+convert ten thirty from GMT plus two thirty to GMT zero o'clock~~1
+convert ten thirty from GMT + two thirty to GMT zero o'clock~~1
+convert ten thirty from g m t plus two thirty to g m t zero hundred~~1
+
+order take out from Jason's Deli on 6th ave~~RAW
+order take out from jason's Deli on sixth avenue~~1
+
+remind me at 13:00 ~~RAW
+remind me at thirteen o'clock~~1
+remind me at thirteen hundred~~1
+
+Play be warned by tech n9ne~~RAW
+Play be warned by tech n nine ne~~1
+
+Please play any music created in the 1980's decade~~RAW
+please play any music created in the nineteen eighties decade~~1
+please play any music created in the nineteen eighty's decade~~1
+
+Play 46&2 by Tool~~RAW
+Play forty six&two by tool~~1
+Play forty six and two by tool~~1
+
+Have Pho #1 send 3 egg rolls.~~RAW
+have Pho number one send three egg rolls.~~1
+have Pho # one send three egg rolls.~~1
+
+set an event'happy birthday john' to repeat on Jan-21-2017~~RAW
+set an event'happy birthday john to repeat on january twenty first twenty seventeen~~1
+set an event'happy birthday john to repeat on the twenty first of january twenty seventeen~~1
+
+I have a doctor's appointment with Dr. Barlease tomorrow at 7:30 a.m.~~RAW
+i have a doctor's appointment with doctor barlease tomorrow at seven thirty a m.~~1
+
+What do I have going on this morning between 10 - 12~~RAW
+what do i have going on this morning between ten to twelve~~1
+
+Put on fm101~~RAW
+Put on fm one zero one~~1
+Put on fm one o one~~1
+Put on fm one oh one~~1
+Put on fm one hundred one~~1
+
+let's play fifa2016, you'll be the keeper and never change position.~~RAW
+let's play fifa twenty sixteen, you'll be the keeper and never change position.~~1
+let's play fifa two thousand sixteen, you'll be the keeper and never change position.~~1
+let's play fifa two zero one six, you'll be the keeper and never change position.~~1
+
+what is 0/0?~~RAW
+what is zero divided by zero?~~1
+
+what is 123 * 123?~~RAW
+what is one hundred twenty three times one hundred twenty three?~~1
+
+What is 1+1?~~RAW
+What is one plus one?~~1
+
+How much is 1+1?~~RAW
+How much is one plus one?~~1
+
+What does 1+1 equal?~~RAW
+what does one plus one equal?~~1
+
+Can you add up 13+5+9 for me?~~RAW
+Can you add up thirteen plus five plus nine for me?~~1
+
+How do you solve 3 - 2?~~RAW
+How do you solve three minus two?~~1
+
+what's 50kg in lbs?~~RAW
+what's fifty kilograms in pounds?~~1
+
+answer the equation 8*7~~RAW
+answer the equation eight times seven?~~1
+
+How much is 1000 USD in Indian Rupees?~~RAW
+How much is one thousand united states dollars in indian rupees?~~1
+How much is one thousand USD in indian rupees?~~1
+
+Solve this equation: 1+1.~~RAW
+Solve this equation one plus one.~~1
+
+whats was the value of x if x+2 = 5?~~RAW
+whats was the value of x if x plus two equals five?~~1
+
+Please tweet @PizzaHut I've been waiting for my delivery for 85min now #nothappy~~RAW
+Please tweet at PizzaHut I've been waiting for my delivery for eighty five minute now hashtag nothappy~~1
+Please tweet at PizzaHut I've been waiting for my delivery for eighty five minute now hash nothappy~~1
+Please tweet @ PizzaHut I've been waiting for my delivery for eighty five minute now # nothappy~~1

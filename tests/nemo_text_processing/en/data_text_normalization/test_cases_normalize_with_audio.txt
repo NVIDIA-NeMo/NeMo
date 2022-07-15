@@ -162,5 +162,4 @@ two divided by eight
 [YI1]
 [YI one]
 ~/ and $
-slash and dollar
 / and dollar

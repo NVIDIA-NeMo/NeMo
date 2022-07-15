@@ -61,7 +61,7 @@ class RomanFst(GraphFst):
             pynutil.insert("key_cardinal: \"") + key_words + pynutil.insert("\"") + pynini.accep(" ") + default_graph
         ).optimize()
 
-        if deterministic:
+        if deterministic or lm:
             # two digit roman numerals up to 49
             roman_to_cardinal = pynini.compose(
                 pynini.closure(NEMO_ALPHA, 2),

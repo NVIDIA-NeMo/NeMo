@@ -3,13 +3,25 @@
 Text (Inverse) Normalization
 ============================
 
-The `nemo_text_processing` Python package :cite:`textprocessing-norm-zhang2021nemo` is based on WFST grammars :cite:`textprocessing-norm-mohri2005weighted` and supports:
+The `nemo_text_processing` Python package is based on WFST grammars :cite:`textprocessing-norm-mohri2005weighted` and supports:
 
 1. Text Normalization (TN) converts text from written form into its verbalized form. It is used as a preprocessing step before Text to Speech (TTS). For example,
 
 .. code-block:: bash
 
      "123" -> "one hundred twenty three"
+
+NeMo has both a fast version which is deterministic :cite:`textprocessing-norm-zhang2021nemo` which has more language support and a context-aware version :cite:`textprocessing-norm-bakhturina2022shallow`.
+In case of ambiguous input, e.g. 
+
+.. code-block:: bash
+
+     "St. Patrick's Day" -> "Saint Patrick's Day"
+     "St. Patrick's Day" -> "Street Patrick's Day"
+
+
+the context-aware TN will convert "St. Patrick's Day" to  "Saint Patrick's Day".
+
 
 2. Inverse text normalization (ITN) is a part of the Automatic Speech Recognition (ASR) post-processing pipeline and can be used to convert normalized ASR model outputs into written form to improve text readability. For example,
    
@@ -44,10 +56,26 @@ Quick Start Guide
 Text Normalization 
 ^^^^^^^^^^^^^^^^^^
 
+The standard text normalization based on WFST  :cite:`textprocessing-norm-zhang2021nemo` is not context-aware. It is fast and can be run like this:
+
 .. code-block:: bash
 
     cd NeMo/nemo_text_processing/text_normalization/
     python normalize.py --text="123" --language=en
+
+The context-aware version :cite:`textprocessing-norm-bakhturina2022shallow` is a shallow fusion of non-deterministic WFST and pretrained masked language model.
+
+    .. image:: images/shallow_fusion.png
+        :align: center
+        :alt: Text Shallow Fusion of WFST and LM
+        :scale: 80%
+
+
+.. code-block:: bash
+
+    cd NeMo/nemo_text_processing/
+    python wfst_lm_rescoring.py
+
 
 
 Inverse Text Normalization 
@@ -96,23 +124,23 @@ Additional Arguments:
 Language Support Matrix
 ------------------------
 
-+------------------+----------+----------+----------+--------------------+
-| **Language**     | **ID**   | **TN**   | **ITN**  | **Audio-based TN** |
-+------------------+----------+----------+----------+--------------------+
-| English          | en       | x        | x        | x                  |
-+------------------+----------+----------+----------+--------------------+
-| Spanish          | es       | x        | x        | x                  |
-+------------------+----------+----------+----------+--------------------+
-| German           | de       | x        | x        | x                  |
-+------------------+----------+----------+----------+--------------------+
-| French           | fr       |          | x        |                    |
-+------------------+----------+----------+----------+--------------------+
-| Russian          | ru       |          | x        | x                  |
-+------------------+----------+----------+----------+--------------------+
-| Vietnamese       | vi       |          | x        |                    |
-+------------------+----------+----------+----------+--------------------+
-| Portuguese       | pt       |          | x        |                    |
-+------------------+----------+----------+----------+--------------------+
++------------------+----------+----------+----------+--------------------+----------------------+
+| **Language**     | **ID**   | **TN**   | **ITN**  | **Audio-based TN** | **context-aware TN** |
++------------------+----------+----------+----------+--------------------+----------------------+
+| English          | en       | x        | x        | x                  | x                    |
++------------------+----------+----------+----------+--------------------+----------------------+
+| Spanish          | es       | x        | x        | x                  |                      |
++------------------+----------+----------+----------+--------------------+----------------------+
+| German           | de       | x        | x        | x                  |                      |
++------------------+----------+----------+----------+--------------------+----------------------+
+| French           | fr       |          | x        |                    |                      |
++------------------+----------+----------+----------+--------------------+----------------------+
+| Russian          | ru       |          | x        | x                  |                      |
++------------------+----------+----------+----------+--------------------+----------------------+
+| Vietnamese       | vi       |          | x        |                    |                      |
++------------------+----------+----------+----------+--------------------+----------------------+
+| Portugese        | pt       |          | x        |                    |                      |
++------------------+----------+----------+----------+--------------------+----------------------+
 
 Grammar customization
 ---------------------

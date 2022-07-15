@@ -81,7 +81,7 @@ class SerialFst(GraphFst):
         # serial graph with delimiter
         delimiter = pynini.accep("-") | pynini.accep("/") | pynini.accep(" ")
         if not deterministic:
-            delimiter |= pynini.cross("-", " dash ") | pynini.cross("/", " slash")
+            delimiter |= pynini.cross("-", " dash ") | pynini.cross("/", " slash ")
 
         alphas = pynini.closure(NEMO_ALPHA, 1)
         letter_num = alphas + delimiter + num_graph
@@ -124,6 +124,13 @@ class SerialFst(GraphFst):
         serial_graph |= pynini.compose(graph_with_space, serial_graph.optimize()).optimize()
         serial_graph = pynini.compose(pynini.closure(NEMO_NOT_SPACE, 2), serial_graph).optimize()
 
+        # this is not to verbolize "/" as "slash" in cases like "import/export"
+        serial_graph = pynini.compose(
+            pynini.difference(
+                NEMO_SIGMA, pynini.closure(NEMO_ALPHA, 1) + pynini.accep("/") + pynini.closure(NEMO_ALPHA, 1)
+            ),
+            serial_graph,
+        )
         self.graph = serial_graph.optimize()
         graph = pynutil.insert("name: \"") + convert_space(self.graph).optimize() + pynutil.insert("\"")
         self.fst = graph.optimize()

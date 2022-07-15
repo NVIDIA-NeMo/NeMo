@@ -144,6 +144,7 @@ class NormalizerWithAudio(Normalizer):
             if self.lang == "en":
                 # this to keep arpabet phonemes in the list of options
                 if "[" in text and "]" in text:
+
                     lattice = rewrite.rewrite_lattice(text, self.tagger.fst)
                 else:
                     try:
@@ -156,11 +157,10 @@ class NormalizerWithAudio(Normalizer):
                 tagged_texts, weights = list(zip(*tagged_texts))
         else:
             tagged_texts = self._get_tagged_text(text, n_tagged)
-
         # non-deterministic Eng normalization uses tagger composed with verbalizer, no permutation in between
         if self.lang == "en":
             normalized_texts = tagged_texts
-            normalized_texts = set([self.post_process(text) for text in normalized_texts])
+            normalized_texts = [self.post_process(text) for text in normalized_texts]
         else:
             normalized_texts = []
             for tagged_text in tagged_texts:
@@ -178,7 +178,9 @@ class NormalizerWithAudio(Normalizer):
                 ]
 
         if self.lm:
-            return normalized_texts, weights
+            remove_dup = sorted(list(set(zip(normalized_texts, weights))), key=lambda x: x[1])
+            normalized_texts, weights = zip(*remove_dup)
+            return list(normalized_texts), weights
 
         normalized_texts = set(normalized_texts)
         return normalized_texts
@@ -383,6 +385,7 @@ def _normalize_line(
         text=line["text"], verbose=verbose, n_tagged=n_tagged, punct_post_process=punct_post_process,
     )
 
+    normalized_texts = set(normalized_texts)
     normalized_text, cer = normalizer.select_best_match(
         normalized_texts=normalized_texts,
         input_text=line["text"],
@@ -492,6 +495,8 @@ if __name__ == "__main__":
             punct_post_process=not args.no_punct_post_process,
         )
 
+        if not normalizer.lm:
+            normalized_texts = set(normalized_texts)
         if args.audio_data:
             asr_model = get_asr_model(args.model)
             pred_text = asr_model.transcribe([args.audio_data])[0]

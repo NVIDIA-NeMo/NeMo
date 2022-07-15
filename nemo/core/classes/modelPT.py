@@ -37,13 +37,6 @@ from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
 from nemo.utils.get_rank import get_rank, is_global_rank_zero
 
-try:
-    from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
-
-    HAVE_NLPPLUGIN = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_NLPPLUGIN = False
-
 __all__ = ['ModelPT']
 
 
@@ -495,10 +488,16 @@ class ModelPT(LightningModule, Model):
                 optim_config['sched']['t_max_epochs'] = self._trainer.max_epochs
                 optim_config['sched']['t_accumulate_grad_batches'] = self._trainer.accumulate_grad_batches
                 optim_config['sched']['t_limit_train_batches'] = self._trainer.limit_train_batches
-                optim_config['sched']['t_num_workers'] = self._trainer.num_devices * self._trainer.num_nodes
-                if HAVE_NLPPLUGIN and isinstance(self._trainer.accelerator.training_type_plugin, NLPDDPPlugin):
-                    app = AppState()
-                    optim_config['sched']['t_num_workers'] = app.data_parallel_size
+
+                app_state = AppState()
+                if app_state.data_parallel_size is not None:
+                    optim_config['sched']['t_num_workers'] = app_state.data_parallel_size
+                elif app_state.model_parallel_size is None:
+                    optim_config['sched']['t_num_workers'] = self._trainer.num_devices * self._trainer.num_nodes
+                else:
+                    optim_config['sched']['t_num_workers'] = (
+                        self._trainer.num_devices * self._trainer.num_nodes
+                    ) / app_state.model_parallel_size
             else:
                 optim_config['sched']['max_steps'] = self._trainer.max_steps
 

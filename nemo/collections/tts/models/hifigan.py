@@ -371,6 +371,15 @@ class HifiGanModel(Vocoder, Exportable):
         )
         list_of_models.append(model)
 
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_en_hifitts_hifigan_ft_fastpitch",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_multispeaker_fastpitchhifigan/versions/1.10.0/files/tts_en_hifitts_hifigan_ft_fastpitch.nemo",
+            description="This model is trained on HiFiTTS audio sampled at 44100Hz and mel spectrograms generated from"
+            " FastPitch. This model has been tested on generating male and female English voices with an American accent.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
         return list_of_models
 
     def load_state_dict(self, state_dict, strict=True):

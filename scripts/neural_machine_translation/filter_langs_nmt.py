@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 """
 Usage:
-python filter_by_language.py --input-src train.en \
+python filter_langs_nmt.py --input-src train.en \
     --input-tgt train.de \
     --output-src train_lang_filtered.en \
     --output-tgt train_lang_filtered.de \

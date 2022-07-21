@@ -1,0 +1,3 @@
+Model Name,Language,MCV Test-Set v9.0 (ca)
+stt_ca_conformer_ctc_large,ca,4.27
+stt_ca_conformer_transducer_large,ca,3.85

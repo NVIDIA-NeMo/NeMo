@@ -52,6 +52,13 @@ CA
     
 --------------------
 
+.. csv-table::
+    :header-rows: 1
+    :align: left
+    :file: data/scores/ca/conformer_ca.csv
+    
+--------------------
+
 DE
 ^^
 

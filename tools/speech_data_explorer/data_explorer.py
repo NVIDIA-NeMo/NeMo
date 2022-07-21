@@ -24,6 +24,8 @@ import operator
 import os
 import pickle
 from collections import defaultdict
+from os.path import expanduser
+from pathlib import Path
 
 import dash
 import dash_bootstrap_components as dbc
@@ -143,7 +145,8 @@ def load_data(data_filename, disable_caching=False, estimate_audio=False, vocab=
                     item['OOV'] = item['word'] not in vocabulary_ext
             if estimate_audio:
                 for item in data:
-                    signal, sr = librosa.load(path=item['audio_filepath'], sr=None)
+                    filepath = absolute_audio_filepath(item['audio_filepath'], data_filename)
+                    signal, sr = librosa.load(path=filepath, sr=None)
                     bw = eval_bandwidth(signal, sr)
                     item['freq_bandwidth'] = int(bw)
                     item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
@@ -228,7 +231,8 @@ def load_data(data_filename, disable_caching=False, estimate_audio=False, vocab=
                 data[-1]['D-I'] = measures['deletions'] - measures['insertions']
 
             if estimate_audio:
-                signal, sr = librosa.load(path=item['audio_filepath'], sr=None)
+                filepath = absolute_audio_filepath(item['audio_filepath'], data_filename)
+                signal, sr = librosa.load(path=filepath, sr=None)
                 bw = eval_bandwidth(signal, sr)
                 item['freq_bandwidth'] = int(bw)
                 item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
@@ -310,6 +314,28 @@ def plot_word_accuracy(vocabulary_data):
     )
 
     return fig
+
+
+def absolute_audio_filepath(audio_filepath, manifest_path):
+    """Return absolute path to an audio file.
+
+    Check if a file existst at audio_filepath.
+    If not, assume that the path is relative to the directory where manifest is stored.
+    """
+    audio_filepath = Path(audio_filepath)
+
+    if not audio_filepath.is_file() and not audio_filepath.is_absolute():
+        # assume audio_filepath is relative to the directory where the manifest is stored
+        manifest_dir = Path(args.manifest).parent
+        audio_filepath = manifest_dir / audio_filepath
+        if audio_filepath.is_file():
+            filename = str(audio_filepath)
+        else:
+            filename = expanduser(audio_filepath)
+    else:
+        filename = expanduser(audio_filepath)
+
+    return filename
 
 
 args = parse_args()
@@ -736,7 +762,7 @@ def plot_signal(idx, data):
         raise PreventUpdate
     figs = make_subplots(rows=2, cols=1, subplot_titles=('Waveform', 'Spectrogram'))
     try:
-        filename = data[idx[0]]['audio_filepath']
+        filename = absolute_audio_filepath(data[idx[0]]['audio_filepath'], args.manifest)
         audio, fs = librosa.load(path=filename, sr=None)
         if 'offset' in data[idx[0]]:
             audio = audio[
@@ -777,8 +803,8 @@ def plot_signal(idx, data):
         figs.update_yaxes(title_text='Amplitude', row=1, col=1)
         figs.update_xaxes(title_text='Time, s', row=2, col=1)
         figs.update_yaxes(title_text='Frequency, kHz', row=2, col=1)
-    except Exception:
-        pass
+    except Exception as ex:
+        app.logger.error(f'ERROR in plot signal: {ex}')
 
     return figs
 
@@ -788,7 +814,7 @@ def update_player(idx, data):
     if len(idx) == 0:
         raise PreventUpdate
     try:
-        filename = data[idx[0]]['audio_filepath']
+        filename = absolute_audio_filepath(data[idx[0]]['audio_filepath'], args.manifest)
         signal, sr = librosa.load(path=filename, sr=None)
         if 'offset' in data[idx[0]]:
             signal = signal[

@@ -57,6 +57,8 @@ class UL2Dataset(T5Dataset):
         permutation=False,
         whole_word_masking=True,
         favor_long_ngrams=False,
+        respect_document_boundaries=True,
+        documents=None,
     ):
         super().__init__(
             cfg=cfg,
@@ -78,6 +80,8 @@ class UL2Dataset(T5Dataset):
             permutation=permutation,
             whole_word_masking=whole_word_masking,
             favor_long_ngrams=favor_long_ngrams,
+            respect_document_boundaries=respect_document_boundaries,
+            documents=documents,
         )
         self.mean_ngram_size = mean_ngram_size
         self.min_ngram_size = min_ngram_size
@@ -90,10 +94,7 @@ class UL2Dataset(T5Dataset):
         self.prefix_lm_pivot_mean = prefix_lm_pivot_mean
 
     def __getitem__(self, idx):
-        start_index, end_index, seq_length = self.samples_mapping[idx]
-        sample = []
-        for index in range(start_index, end_index):
-            sample.append(self.indexed_dataset[index])
+        sample, seq_length = self._get_sample(idx)
         # Note that this rng state should be numpy and not python since
         # python randint is inclusive whereas the numpy one is exclusive.
         np_rng = np.random.RandomState(seed=(self.seed + idx))

@@ -176,6 +176,7 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
             permutation=self._cfg.data.get('permutation', False),
             whole_word_masking=self._cfg.data.get('whole_word_masking', True),
             favor_long_ngrams=self._cfg.data.get('favor_long_ngrams', False),
+            respect_document_boundaries=self._cfg.data.get('respect_document_boundaries', True),
             # additional arguments from child classes
             **self._build_train_valid_test_datasets_kwargs,
         )

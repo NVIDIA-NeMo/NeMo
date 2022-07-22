@@ -25,6 +25,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import (
     create_masked_lm_predictions,
     get_samples_mapping,
 )
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_dataset import _build_index_mappings
 from nemo.core import Dataset
 
 
@@ -53,6 +54,8 @@ class T5Dataset(Dataset):
         permutation=False,
         whole_word_masking=True,
         favor_long_ngrams=False,
+        respect_document_boundaries=True,
+        documents=None,
     ):
         super().__init__()
 
@@ -69,6 +72,7 @@ class T5Dataset(Dataset):
         self.permutation = permutation
         self.whole_word_masking = whole_word_masking
         self.favor_long_ngrams = favor_long_ngrams
+        self.respect_document_boundaries = respect_document_boundaries
 
         # Dataset.
         self.indexed_dataset = indexed_dataset
@@ -84,18 +88,35 @@ class T5Dataset(Dataset):
             torch.distributed.barrier()
 
         # Build the samples mapping.
-        self.samples_mapping = get_samples_mapping(
-            indexed_dataset=self.indexed_dataset,
-            data_prefix=data_prefix,
-            num_epochs=num_epochs,
-            max_num_samples=max_num_samples,
-            max_seq_length=self.max_seq_length - self.MAX_SEQ_LENGTH_DELTA,  # account for added tokens
-            short_seq_prob=self.short_seq_prob,
-            seed=self.seed,
-            name=self.name,
-            binary_head=False,
-            index_mapping_dir=self.index_mapping_dir,
-        )
+        if not respect_document_boundaries:
+            # Build index mappings.
+            assert documents is not None
+            assert np.min(documents) >= 0
+            assert np.max(documents) < indexed_dataset.sizes.shape[0]
+
+            self.doc_idx, self.sample_idx, self.shuffle_idx = _build_index_mappings(
+                name=self.name,
+                data_prefix=data_prefix,
+                documents=documents,
+                sizes=self.indexed_dataset.sizes,
+                num_samples=max_num_samples,
+                seq_length=self.max_seq_length - self.MAX_SEQ_LENGTH_DELTA,
+                seed=self.seed,
+                index_mapping_dir=self.index_mapping_dir,
+            )
+        else:
+            self.samples_mapping = get_samples_mapping(
+                indexed_dataset=self.indexed_dataset,
+                data_prefix=data_prefix,
+                num_epochs=num_epochs,
+                max_num_samples=max_num_samples,
+                max_seq_length=self.max_seq_length - self.MAX_SEQ_LENGTH_DELTA,  # account for added tokens
+                short_seq_prob=self.short_seq_prob,
+                seed=self.seed,
+                name=self.name,
+                binary_head=False,
+                index_mapping_dir=self.index_mapping_dir,
+            )
 
         self.tokenizer = tokenizer
         self.tokenizer_type = 'wordpiece'  # TODO: better checks for tokenizer types. How do we do this for HF tokenizers that are not BERT?
@@ -131,14 +152,47 @@ class T5Dataset(Dataset):
         assert len(self.sentinel_tokens) > 0
 
     def __len__(self):
-        return self.samples_mapping.shape[0]
+        if self.respect_document_boundaries:
+            return self.samples_mapping.shape[0]
+        else:
+            return self.sample_idx.shape[0] - 1
+
+    def _get_sample(self, idx):
+        if self.respect_document_boundaries:
+            start_index, end_index, seq_length = self.samples_mapping[idx]
+            sample = []
+            for index in range(start_index, end_index):
+                sample.append(self.indexed_dataset[index])
+        else:
+            # Get the shuffled index.
+            idx = self.shuffle_idx[idx]
+            # Start and end documents and offsets.
+            doc_index_f = self.sample_idx[idx][0]
+            doc_index_l = self.sample_idx[idx + 1][0]
+            offset_f = self.sample_idx[idx][1]
+            offset_l = self.sample_idx[idx + 1][1]
+            # If we are within the same document, just extract the chunk.
+            if doc_index_f == doc_index_l:
+                sample = self.indexed_dataset.get(
+                    self.doc_idx[doc_index_f], offset=offset_f, length=offset_l - offset_f + 1
+                )
+            else:
+                # Otherwise, get the rest of the initial document.
+                sample_list = [self.indexed_dataset.get(self.doc_idx[doc_index_f], offset=offset_f)]
+                # Loop over all in between documents and add the entire document.
+                for i in range(doc_index_f + 1, doc_index_l):
+                    sample_list.append(self.indexed_dataset.get(self.doc_idx[i]))
+                # And finally add the relevant portion of last document.
+                sample_list.append(self.indexed_dataset.get(self.doc_idx[doc_index_l], length=offset_l + 1))
+                sample = np.concatenate(sample_list)
+                sample.astype(np.int64)
+            seq_length = len(sample)
+            sample = [sample]
+
+        return sample, seq_length
 
     def __getitem__(self, idx):
-
-        start_index, end_index, seq_length = self.samples_mapping[idx]
-        sample = []
-        for index in range(start_index, end_index):
-            sample.append(self.indexed_dataset[index])
+        sample, seq_length = self._get_sample(idx)
         # Note that this rng state should be numpy and not python since
         # python randint is inclusive whereas the numpy one is exclusive.
         np_rng = np.random.RandomState(seed=(self.seed + idx))
@@ -175,7 +229,7 @@ class T5Dataset(Dataset):
             whole_word_masking: Always masks entire words instead of individual sub-word tokens.
             favor_long_ngrams: Favor longer ngrams over shorter ones.
         """
-        assert target_seq_length <= self.max_seq_length
+        # assert target_seq_length <= self.max_seq_length
 
         # flatten sentences into one list
         tokens = [token for sentence in sample for token in sentence]

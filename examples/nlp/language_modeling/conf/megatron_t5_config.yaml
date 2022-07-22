@@ -137,6 +137,7 @@ model:
     permutation: False
     whole_word_masking: True
     favor_longer_ngrams: False
+    respect_document_boundaries: True # If true, a single training exampl cannot cross document boundaries, increasing the fraction of <pad> tokens within a batch.
 
   optim:
     name: fused_adam

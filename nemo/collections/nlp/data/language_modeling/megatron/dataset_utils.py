@@ -552,6 +552,7 @@ def build_train_valid_test_datasets(
     whole_word_masking=True,
     favor_long_ngrams=False,
     delete_mask_prob=0,
+    respect_document_boundaries=True,
 ):
 
     if len(data_prefix) == 1:
@@ -578,6 +579,7 @@ def build_train_valid_test_datasets(
             whole_word_masking=whole_word_masking,
             favor_long_ngrams=favor_long_ngrams,
             delete_mask_prob=delete_mask_prob,
+            respect_document_boundaries=respect_document_boundaries,
         )
     # Blending dataset.
     # Parse the values.
@@ -612,6 +614,7 @@ def build_train_valid_test_datasets(
             whole_word_masking=whole_word_masking,
             favor_long_ngrams=favor_long_ngrams,
             delete_mask_prob=delete_mask_prob,
+            respect_document_boundaries=respect_document_boundaries,
         )
         if train_ds:
             train_datasets.append(train_ds)
@@ -657,6 +660,7 @@ def _build_train_valid_test_datasets(
     whole_word_masking=True,
     favor_long_ngrams=False,
     delete_mask_prob=0,  # This flag is used in BART only, and will not have effect on T5/BERT
+    respect_document_boundaries=True,
 ):
 
     if dataset_type not in DSET_TYPES:
@@ -737,6 +741,7 @@ def _build_train_valid_test_datasets(
             elif dataset_type == DSET_TYPE_T5:
                 assert tokenizer is not None, "Tokenizer is required for T5 dataset"
                 logging.info("Instatiating T5 Dataset ...")
+                documents = np.arange(start=splits[index], stop=splits[index + 1], step=1, dtype=np.int32)
                 dataset = T5Dataset(
                     cfg=cfg,
                     trainer=trainer,
@@ -751,6 +756,8 @@ def _build_train_valid_test_datasets(
                     permutation=permutation,
                     whole_word_masking=whole_word_masking,
                     favor_long_ngrams=favor_long_ngrams,
+                    documents=documents,
+                    respect_document_boundaries=respect_document_boundaries,
                     **kwargs,
                 )
             elif dataset_type == DSET_TYPE_BERT:
@@ -780,6 +787,7 @@ def _build_train_valid_test_datasets(
                 )
             elif dataset_type == DSET_TYPE_BART:
                 assert tokenizer is not None, "Tokenizer is required for BART dataset"
+                documents = np.arange(start=splits[index], stop=splits[index + 1], step=1, dtype=np.int32)
                 logging.info("Instatiating BART Dataset ...")
                 dataset = BARTDataset(
                     cfg=cfg,
@@ -795,10 +803,13 @@ def _build_train_valid_test_datasets(
                     whole_word_masking=whole_word_masking,
                     favor_long_ngrams=favor_long_ngrams,
                     delete_mask_prob=delete_mask_prob,
+                    documents=documents,
+                    respect_document_boundaries=respect_document_boundaries,
                     **kwargs,
                 )
             elif dataset_type == DSET_TYPE_UL2:
                 assert tokenizer is not None, "Tokenizer is required for UL2 dataset"
+                documents = np.arange(start=splits[index], stop=splits[index + 1], step=1, dtype=np.int32)
                 logging.info("Instatiating UL2 Dataset ...")
                 extreme_ngram_span_length_distribution = cfg.data.get(
                     "extreme_ngram_span_length_distribution", "truncated_normal"
@@ -838,6 +849,8 @@ def _build_train_valid_test_datasets(
                     extreme_mean_ngram_size=cfg.data.get("extreme_mean_ngram_size", 64),
                     extreme_min_ngram_size=cfg.data.get("extreme_min_ngram_size", 32),
                     prefix_lm_pivot_mean=cfg.data.get("prefix_lm_pivot_mean", 0.25),
+                    respect_document_boundaries=respect_document_boundaries,
+                    documents=documents,
                     **kwargs,
                 )
             else:

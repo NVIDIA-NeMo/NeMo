@@ -209,3 +209,13 @@ Marathi
    :widths: 40, 10, 50
    :header-rows: 1
 
+-----------------------------
+
+Kinyarwanda
+^^^^^^^
+.. csv-table::
+   :file: data/benchmark_rw.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1
+

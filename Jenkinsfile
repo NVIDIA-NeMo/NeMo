@@ -1088,7 +1088,7 @@ pipeline {
         }
       }
     }
-    stage('L2: Parallel BERT SQUAD v1.1 / v2.0') {
+    stage('L2: Duplex Text Normalization') {
       when {
         anyOf {
           branch 'main'
@@ -1097,53 +1097,6 @@ pipeline {
       }
       failFast true
       parallel {
-        stage('BERT SQUAD 1.1') {
-          // Cannot do fast_dev_run because squad needs whole dev dataset
-          steps {
-            sh 'cd examples/nlp/question_answering && \
-            python question_answering_squad.py \
-            model.train_ds.file=/home/TestData/nlp/squad_mini/v1.1/train-v1.1.json \
-            model.dataset.use_cache=false \
-            model.validation_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
-            model.test_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
-            model.train_ds.batch_size=2 \
-            model.train_ds.num_samples=2 \
-            model.validation_ds.batch_size=2 \
-            model.validation_ds.num_samples=2 \
-            model.test_ds.num_samples=2 \
-            model.test_ds.batch_size=2 \
-            trainer.max_epochs=1 \
-            +trainer.max_steps=1 \
-            model.language_model.pretrained_model_name=bert-base-uncased \
-            model.dataset.version_2_with_negative=false \
-            trainer.precision=16 \
-            trainer.devices=[0] \
-            trainer.accelerator="gpu" \
-            exp_manager=null'
-          }
-        }
-        stage('BERT SQUAD 2.0') {
-          // Cannot do fast_dev_run because squad needs whole dev dataset
-          steps {
-            sh 'cd examples/nlp/question_answering && \
-            python question_answering_squad.py \
-            model.train_ds.file=/home/TestData/nlp/squad_mini/v2.0/train-v2.0.json \
-            model.dataset.use_cache=false \
-            model.train_ds.batch_size=2 \
-            model.train_ds.num_samples=2 \
-            model.validation_ds.batch_size=2 \
-            model.validation_ds.num_samples=2 \
-            trainer.max_epochs=1 \
-            +trainer.max_steps=1 \
-            model.validation_ds.file=/home/TestData/nlp/squad_mini/v2.0/dev-v2.0.json \
-            model.language_model.pretrained_model_name=bert-base-uncased \
-            model.dataset.version_2_with_negative=true \
-            trainer.precision=16 \
-            trainer.devices=[1] \
-            trainer.accelerator="gpu" \
-            exp_manager=null'
-          }
-        }
         stage('Duplex Text Normalization with Tarred dataset') {
           steps {
             sh 'cd examples/nlp/duplex_text_normalization && \
@@ -1199,7 +1152,7 @@ pipeline {
     //   }
     // }
 
-    stage('L2: Parallel SQUAD v1.1 & v2.0') {
+    stage('L2: BERT Text Classification') {
       when {
         anyOf {
           branch 'main'
@@ -1208,57 +1161,6 @@ pipeline {
       }
       failFast true
       parallel {
-        // TODO: use megatron bert when supported again
-        stage('SQUAD v2.0 with DistilBERT Uncased') {
-        // stage('SQUAD v2.0 with Megatron with ckpt & config') {
-          // Cannot do fast_dev_run because squad needs whole dev dataset
-          // model.language_model.pretrained_model_name=megatron-bert-uncased  \
-          // model.language_model.lm_checkpoint=/home/TestData/nlp/megatron_345m_uncased/model_optim_rng.pt \
-          // model.language_model.config_file=/home/TestData/nlp/megatron_345m_uncased/345m_config.json \
-          steps {
-            sh 'cd examples/nlp/question_answering && \
-            python question_answering_squad.py \
-            model.train_ds.file=/home/TestData/nlp/squad_mini/v2.0/train-v2.0.json \
-            model.dataset.use_cache=false \
-            model.train_ds.batch_size=1 \
-            model.train_ds.num_samples=1 \
-            model.validation_ds.batch_size=1 \
-            model.validation_ds.num_samples=1 \
-            trainer.accelerator=gpu \
-            trainer.strategy=ddp \
-            trainer.max_epochs=1 \
-            +trainer.max_steps=1 \
-            model.validation_ds.file=/home/TestData/nlp/squad_mini/v2.0/dev-v2.0.json \
-            model.language_model.pretrained_model_name=distilbert-base-uncased  \
-            model.dataset.version_2_with_negative=true \
-            trainer.precision=16 \
-            trainer.devices=[1] \
-            trainer.accelerator="gpu" \
-            exp_manager=null'
-          }
-        }
-        stage('RoBERTa SQUAD 1.1') {
-          // Cannot do fast_dev_run because squad needs whole dev dataset
-          steps {
-            sh 'cd examples/nlp/question_answering && \
-            python question_answering_squad.py \
-            model.train_ds.file=/home/TestData/nlp/squad_mini/v1.1/train-v1.1.json \
-            model.dataset.use_cache=false \
-            model.train_ds.batch_size=2 \
-            model.train_ds.num_samples=2 \
-            model.validation_ds.batch_size=2 \
-            model.validation_ds.num_samples=2 \
-            trainer.max_epochs=1 \
-            +trainer.max_steps=1 \
-            model.validation_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
-            model.language_model.pretrained_model_name=roberta-base \
-            model.dataset.version_2_with_negative=false \
-            trainer.precision=16 \
-            trainer.devices=[0] \
-            trainer.accelerator="gpu" \
-            exp_manager=null'
-          }
-        }
         stage ('Text Classification with BERT Test') {
           steps {
             sh 'cd examples/nlp/text_classification && \
@@ -1274,6 +1176,163 @@ pipeline {
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             exp_manager=null'
+          }
+        }
+      }
+    }
+
+    stage('L2: Parallel BERT/BART/GPT2 Question-Answering SQUAD v1.1 & v2.0') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        stage('BERT SQUAD 1.1') {
+          // Cannot do fast_dev_run because squad needs whole dev dataset
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/question_answering && \
+            python question_answering.py \
+            model.train_ds.file=/home/TestData/nlp/squad_mini/v1.1/train-v1.1.json \
+            model.dataset.use_cache=false \
+            model.validation_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
+            model.test_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
+            model.train_ds.batch_size=2 \
+            model.train_ds.num_samples=2 \
+            model.validation_ds.batch_size=2 \
+            model.validation_ds.num_samples=2 \
+            model.test_ds.num_samples=2 \
+            model.test_ds.batch_size=2 \
+            trainer.max_epochs=1 \
+            trainer.max_steps=1 \
+            model.language_model.pretrained_model_name=bert-base-uncased \
+            model.dataset.version_2_with_negative=false \
+            trainer.precision=16 \
+            trainer.devices=[0] \
+            trainer.accelerator="gpu" \
+            exp_manager=null && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('BART SQUAD 1.1') {
+          // Cannot do fast_dev_run because squad needs whole dev dataset
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/question_answering && \
+            python question_answering.py \
+            model.train_ds.file=/home/TestData/nlp/squad_mini/v1.1/train-v1.1.json \
+            model.dataset.use_cache=false \
+            model.dataset.check_if_answer_in_context=false \
+            model.validation_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
+            model.test_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
+            model.train_ds.batch_size=2 \
+            model.train_ds.num_samples=2 \
+            model.validation_ds.batch_size=2 \
+            model.validation_ds.num_samples=2 \
+            model.test_ds.num_samples=2 \
+            model.test_ds.batch_size=2 \
+            trainer.max_epochs=1 \
+            trainer.max_steps=1 \
+            model.language_model.pretrained_model_name=facebook/bart-base \
+            model.dataset.version_2_with_negative=false \
+            trainer.precision=16 \
+            trainer.devices=[0] \
+            trainer.accelerator="gpu" \
+            exp_manager=null && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('GPT2 SQUAD 1.1') {
+          // Cannot do fast_dev_run because squad needs whole dev dataset
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/question_answering && \
+            python question_answering.py \
+            model.train_ds.file=/home/TestData/nlp/squad_mini/v1.1/train-v1.1.json \
+            model.dataset.use_cache=false \
+            model.dataset.check_if_answer_in_context=false \
+            model.validation_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
+            model.test_ds.file=/home/TestData/nlp/squad_mini/v1.1/dev-v1.1.json \
+            model.train_ds.batch_size=2 \
+            model.train_ds.num_samples=2 \
+            model.validation_ds.batch_size=2 \
+            model.validation_ds.num_samples=2 \
+            model.test_ds.num_samples=2 \
+            model.test_ds.batch_size=2 \
+            trainer.max_epochs=1 \
+            trainer.max_steps=1 \
+            model.language_model.pretrained_model_name=gpt2 \
+            model.dataset.version_2_with_negative=false \
+            trainer.precision=16 \
+            trainer.devices=[0] \
+            trainer.accelerator="gpu" \
+            exp_manager=null && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('BERT SQUAD 2.0') {
+          // Cannot do fast_dev_run because squad needs whole dev dataset
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/question_answering && \
+            python question_answering.py \
+            model.train_ds.file=/home/TestData/nlp/squad_mini/v2.0/train-v2.0.json \
+            model.dataset.use_cache=false \
+            model.train_ds.batch_size=2 \
+            model.train_ds.num_samples=2 \
+            model.validation_ds.batch_size=2 \
+            model.validation_ds.num_samples=2 \
+            trainer.max_epochs=1 \
+            trainer.max_steps=1 \
+            model.validation_ds.file=/home/TestData/nlp/squad_mini/v2.0/dev-v2.0.json \
+            model.language_model.pretrained_model_name=bert-base-uncased \
+            model.dataset.version_2_with_negative=true \
+            trainer.precision=16 \
+            trainer.devices=[1] \
+            trainer.accelerator="gpu" \
+            exp_manager=null && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('BART SQUAD 2.0') {
+          // Cannot do fast_dev_run because squad needs whole dev dataset
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/question_answering && \
+            python question_answering.py \
+            model.train_ds.file=/home/TestData/nlp/squad_mini/v2.0/train-v2.0.json \
+            model.dataset.use_cache=false \
+            model.dataset.check_if_answer_in_context=false \
+            model.train_ds.batch_size=2 \
+            model.train_ds.num_samples=2 \
+            model.validation_ds.batch_size=2 \
+            model.validation_ds.num_samples=2 \
+            trainer.max_epochs=1 \
+            trainer.max_steps=1 \
+            model.validation_ds.file=/home/TestData/nlp/squad_mini/v2.0/dev-v2.0.json \
+            model.language_model.pretrained_model_name=facebook/bart-base \
+            model.dataset.version_2_with_negative=true \
+            trainer.precision=16 \
+            trainer.devices=[1] \
+            trainer.accelerator="gpu" \
+            exp_manager=null && TRANSFORMERS_OFFLINE=1'
+          }
+        }
+        stage('GPT2 SQUAD 2.0') {
+          // Cannot do fast_dev_run because squad needs whole dev dataset
+          steps {
+            sh 'TRANSFORMERS_OFFLINE=0 && cd examples/nlp/question_answering && \
+            python question_answering.py \
+            model.train_ds.file=/home/TestData/nlp/squad_mini/v2.0/train-v2.0.json \
+            model.dataset.use_cache=false \
+            model.dataset.check_if_answer_in_context=false \
+            model.train_ds.batch_size=2 \
+            model.train_ds.num_samples=2 \
+            model.validation_ds.batch_size=2 \
+            model.validation_ds.num_samples=2 \
+            trainer.max_epochs=1 \
+            trainer.max_steps=1 \
+            model.validation_ds.file=/home/TestData/nlp/squad_mini/v2.0/dev-v2.0.json \
+            model.language_model.pretrained_model_name=gpt2 \
+            model.dataset.version_2_with_negative=true \
+            trainer.precision=16 \
+            trainer.devices=[1] \
+            trainer.accelerator="gpu" \
+            exp_manager=null && TRANSFORMERS_OFFLINE=1'
           }
         }
       }

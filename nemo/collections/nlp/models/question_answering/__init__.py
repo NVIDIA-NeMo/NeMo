@@ -12,4 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.collections.nlp.models.question_answering.qa_base_model import BaseQAModel
+from nemo.collections.nlp.models.question_answering.qa_bert_model import BERTQAModel
+from nemo.collections.nlp.models.question_answering.qa_gpt_model import GPTQAModel
 from nemo.collections.nlp.models.question_answering.qa_model import QAModel
+from nemo.collections.nlp.models.question_answering.qa_s2s_model import S2SQAModel

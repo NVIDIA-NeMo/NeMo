@@ -57,14 +57,15 @@ class QAModel(NLPModel):
 
     @typecheck()
     def forward(self, input_ids, attention_mask, token_type_ids):
-        hidden_states = self.bert_model(
-            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
-        )
+        with autocast():
+            hidden_states = self.bert_model(
+                input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
+            )
 
-        if isinstance(hidden_states, tuple):
-            hidden_states = hidden_states[0]
+            if isinstance(hidden_states, tuple):
+                hidden_states = hidden_states[0]
 
-        logits = self.classifier(hidden_states=hidden_states)
+            logits = self.classifier(hidden_states=hidden_states)
         return logits
 
     def training_step(self, batch, batch_idx):

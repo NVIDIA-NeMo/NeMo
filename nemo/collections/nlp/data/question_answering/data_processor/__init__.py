@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp.metrics.classification_report import ClassificationReport, MultiLabelClassificationReport
-from nemo.collections.nlp.metrics.dialogue_metrics import DialogueClassificationMetrics
-from nemo.collections.nlp.metrics.qa_metrics import QAMetrics
-from nemo.collections.nlp.metrics.sequence_perplexity import SequencePerplexity
+from nemo.collections.nlp.data.question_answering.data_processor.qa_processing import QAProcessor

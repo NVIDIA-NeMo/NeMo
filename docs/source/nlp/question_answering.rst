@@ -1,57 +1,45 @@
 .. _question_answering:
 
-Question Answering model
-========================
+Question Answering
+==================
 
-With Question Answering, or Reading Comprehension, given a question and a passage of content (context) that may contain an answer for 
-the question, the model predicts the span within the text with a start and end position indicating the answer to the question. For 
-datasets like SQuAD 2.0, this model supports cases when the answer is not contained in the content.
+Given a context and a natural language query, we want to generate an answer for the query
+Depending on how the answer is generated, the task can be broadly divided into two types:
 
-For every word in the context of a given question, the model is trained to predict:
+1. Extractive Question Answering
+2. Generative Question Answering
 
-- The likelihood this word is the start of the span.
-- The likelihood this word is the end of the span.
+**Extractive Question Answering with BERT-like models**
 
-The model chooses the start and end words with maximal probabilities. When the content does not contain the answer, we would like the 
-start and end span to be set for the first token.
+Given a question and a context, both in natural language, predict the span within the context with a start and end position which indicates the answer to the question.
+For every word in our training dataset the model predicts:
 
-A pretrained BERT encoder with two span prediction heads is used for the prediction start and the end position of the answer. The span 
-predictions are token classifiers consisting of a single linear layer.
+- likelihood this word is the start of the span 
+- likelihood this word is the end of the span
 
-Quick Start Guide
------------------
+**Generative Question Answering with S2S and GPT-like models**
 
-.. code-block:: python
+Given a question and a context, both in natural language, generate an answer for the question. Unlike the BERT-like models, there is no constraint that the answer should be a span within the context.
 
-    from nemo.collections.nlp.models import QAModel
+Supported Tasks
+===============
 
-    # to get the list of pre-trained models
-    QAModel.list_available_models()
-
-    # Download and load the pre-trained BERT-based model
-    model = QAModel.from_pretrained("qa_squadv1.1_bertbase")
-
-    # try the model on a few examples
-    model.inference(test_file)
-
-  
-.. note::
-
-    We recommend you try Question Answering model in a Jupyter notebook (can run on `Google's Colab <https://colab.research.google.com/notebooks/intro.ipynb>`_.): 
-    `NeMo/tutorials/nlp/Question_Answering_Squad.ipynb <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/Question_Answering_Squad.ipynb>`__.
-
-    Connect to an instance with a GPU (**Runtime** -> **Change runtime type** -> select **GPU** for the hardware accelerator).
-
-    An example script on how to train and evaluate the model can be found here: `NeMo/examples/nlp/question_answering/question_answering_squad.py <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/question_answering/question_answering_squad.py>`__.
-
-    The default configuration file for the model can be found at: `NeMo/examples/nlp/question_answering/conf/question_answering_squad.yaml <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/question_answering/conf/question_answering_squad_config.yaml>`__.
-
-
++----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
+| **Task**                         |   **Models**    | **Supported Options for model.language_model.pretrained_model_name** | **Supported options for model.library**  |                                                                       
++----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
+| Extractive Question Answering    | BERTQAModel     | bert-{base, large}-{cased, uncased}, roberta{base, large}            | Huggingface, Megatron                    |
++----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
+| Generative Question Answering    | S2SQAModel      | t5-{small, base, large}, bart-{base, large}                          | Huggingface                              |
++----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
+|                                  | GPTQAModel      | gpt2, gpt2-{medium, large, xl}                                       | Huggingface                              |
++----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
 
 Available models
 ^^^^^^^^^^^^^^^^
 
-.. list-table:: *Pretrained Models*
+Following BERT-like models are available for Extractive Question-Answering
+
+.. list-table::
    :widths: 5 10
    :header-rows: 1
 
@@ -74,29 +62,56 @@ Available models
    * - qa_squadv2.0_megatron_uncased
      - https://ngc.nvidia.com/catalog/models/nvidia:nemo:qa_squadv2_0_megatron_uncased
 
+Module Design
+=============
 
-.. _dataset_question_answering:
+The module is decouple data and model components to support idependent integration of various model achitectures and datasets.
+QAProcessor, QAExample, and the base QADataset modules are responsible for model-independent data handling utilites like loading SQuAD format dataset files and parsing examples.
+<Model>QADataset modules handle model-specific data formatting.
+Similarly, the BaseQAModel module handles common model tasks like creating dataloader, and the <Model>QAModel modules handle model architecture-specific functions like trainig, testing, and evaluation.
+
+.. image:: question_answering_arch.png
+  :alt: Question-Answerin-Architecture
+
+Configuration
+=============
+
+The default sample model training configuration can be found at: `NeMo/examples/nlp/question_answering/conf/qa_conf.yaml`
+
+The configuration defines parameters for the following main components:
+
+- :code:`model.dataset`: parameters that describe the dataset being used, ex. max sequence length, max query length, max answer length
+- :code:`model.train_ds`, :code:`model.validation_ds`, :code:`model.test_ds`: parameters for the dataloaders, ex. batch size, source filepath
+- :code:`model.language_model`, :code:`model.tokenizer`: language model and the tokenizer to be used for initializing the model
+- :code:`model.optim`: optimiation parameters, ex. learning rate, scheduler, weight decay
+- :code:`model.token_classifier`: used only for the BERTQAModel, defines the span prediction head for extractive question answering
+- :code:`trainer`: defines the training process, ex. number of gpus, epochs, etc.
+- :code:`exp_manager`: describes the experiment manager for logging training progress and checkpointing
+
+Arguments that very commonly need to be edited for all models and datasets
+
+- :code:`do_training`: perform training or only testing
+- :code:`trainer.devices`: number of GPUs (int) or list of GPUs e.g. [0, 1, 3]
+- :code:`model.library`: library to load language model from [huggingface or megatron]
+- :code:`model.language_model.pretrained_model_name`: pretrained QA model from ``list_available_models()`` or path to a ``.nemo`` file (Check the ``Available Models`` section for some of the available checkpoints)  
+- :code:`model.language_model.lm_checkpoint`: specifying a trained checkpoint (.bin / .ckpt / .nemo)
+- :code:`model.<train_ds/validation_ds/test_ds>.file`: filepath for loading respective datasets
+- :code:`model.<train_ds/validation_ds/test_ds>.num_samples`: the number of samples to use from the training dataset (use ``-1`` to specify all samples)
+- :code:`model.dataset.use_cache`: if ``True``, features will be loaded from a cache file if it exists and created features will be dumped to the cache file
+- :code:`model.dataset.version_2_with_negative`: boolean indicating whether dataset contains unanswerable questions (yes if set to ``True``)
+- :code:`model.dataset.check_if_answer_in_context`: boolean indicating whether the context spans that do not have the answer text in them should be considered as negative examples (set to ``True`` for datasets of extractive nature like SQuAD and ``False`` for datasets of generative nature like MS-MARCO)
+- :code:`model.dataset.doc_stride`: stride for splitting long documents into chunks
+- :code:`model.dataset.max_query_length`: questions exceeding this value will be truncated
+- :code:`model.dataset.max_answer_length`: ground truth answers exceeding this value will be truncated
+- :code:`model.dataset.max_seq_length`: maximum allowed sequence length for input to the model including context, query, and answer
+- :code:`model.tokens_to_generate`: maximum answer tokens to be generated for the generative models
 
 Data Format
------------
+===========
 
-This model expects the dataset in `SQuAD format`_ (i.e., a JSON file for each dataset split). The code snippet below shows an example 
-of the training file. Each title has one or multiple paragraph entries, each consisting of the "context" and question-answer entries. 
-Each question-answer entry has:
+The QA models expect datasets to be present in the SQuAD format. For using datasets other than the standard SQuAD v1.1 and v2.0, the datasets should be first converted into the SQuAD format.
 
-- A question
-- A globally unique id
-- The Boolean flag ``is_impossible``, which shows whether a question is answerable or not:
-   - if the question is answerable, one answer entry contains the text span and its starting character index in the context
-   - if the question is not answerable, an empty ``answers`` list is provided
-
-.. _SQuAD format: https://rajpurkar.github.io/SQuAD-explorer/
-
-The evaluation files (for validation and testing) follow the above format, except that it can provide more than one answer to the 
-same question. The inference file also follows the above format, except that it does not require the ``answers`` and ``is_impossible`` 
-keywords.
-
-The following is an example of the data format (JSON file):
+The following is an example of the expected SQuAD data format (JSON file):
 
 .. code::
 
@@ -133,16 +148,22 @@ The following is an example of the data format (JSON file):
         ]
     }
 
+.. Note::
 
-Dataset Download
-----------------
+   For datasets of generative nature where the answer might not be an exact span within the context, the :code:`answer_start` field can be set to -1.
 
-To perform training of the Question Answering model on the SQuAD dataset, you must first download it from `here
-<https://rajpurkar.github.io/SQuAD-explorer/>`_ or run:
+Downloading Datasets
+====================
+
+Following sections describes how to download the SQuAD datasets, along with an example of converting a non-SQuAD dataset (MS-MARCO) into the SQuAD format for the QA models.
+
+**SQuAD Dataset**
+
+To perform training of the Question Answering model on the SQuAD dataset, you must first download it from https://rajpurkar.github.io/SQuAD-explorer or run:
 
 .. code::
 
-    python get_squad.py 
+    python NeMo/examples/nlp/question_answering/get_squad.py 
 
 There are two versions: 
 
@@ -163,139 +184,102 @@ evaluation:
          |-- v2.0/train-v2.0.json
          |-- v2.0/dev-v2.0.json
 
+**MS-MARCO Dataset**
 
-.. _model_training_question_answering:
+MS-MARCO(Microsoft Machine Reading Comprehension) is a large scale dataset focused on machine reading comprehension, question answering, and passage ranking. MS-MARCO consists of 1,010,916 queries generated from real, anonymized Bing user queries. The contexts are extracted from real web documents and the answers are generated by humans.
 
-Model Training
---------------
+For downloading the MS-MARCO dataset, Terms of Use need to be accepted at https://microsoft.github.io/msmarco/. 
 
-In the Question Answering Model, we are training a span prediction head on top of a pre-trained language model, such as 
-`BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding <https://arxiv.org/abs/1810.04805>`__ :cite:`nlp-qa-devlin2018bert`.
-Unless the user provides a pre-trained checkpoint for the language model, the language model is initialized with the pre-trained model 
-from `HuggingFace Transformers <https://github.com/huggingface/transformers>`__.
+The dataset files can be downloaded from: 
+  - https://msmarco.blob.core.windows.net/msmarco/train_v2.1.json.gz
+  - https://msmarco.blob.core.windows.net/msmarco/dev_v2.1.json.gz
 
-Example of model configuration file for training the model can be found at: `NeMo/examples/nlp/question_answering/conf/question_answering_squad_config.yaml <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/question_answering/conf/question_answering_squad_config.yaml>`__.
+The QA models expect data in SQuAD format. The MS-MARCO dataset is originally not in the SQuAD format. The dataset has the following structure:
 
-The specification can be grouped into three categories:
+.. code::
+    
+    {
+        "answers":["A corporation is a company or group of people authorized to act as a single entity and recognized as such in law."],
+        "passages":[
+            {
+                "is_selected":0,
+                "url":"http:\/\/www.wisegeek.com\/what-is-a-corporation.htm",
+                "passage_text":"A company is incorporated in a specific nation, often within the bounds of a smaller subset of that nation, such as a state or province. The corporation is then governed by the laws of incorporation in that state. A corporation may issue stock, either private or public, or may be classified as a non-stock corporation. If stock is issued, the corporation will usually be governed by its shareholders, either directly or indirectly."},
+            ...
+            }],
+        "query":". what is a corporation?",
+        "query_id":1102432,
+        "query_type":"DESCRIPTION",
+        "wellFormedAnswers":"[]"
+    }
 
-- Parameters that describe the training process: **trainer**
-- Parameters that describe the datasets: **model.dataset**, **model.train_ds**, **model.validation_ds**, **model.test_ds**
-- Parameters that describe the model: **model**
-
-More details about parameters in the spec file can be found below:
-
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **Parameter**                             | **Data Type**   | **Description**                                                                                              |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **pretrained_model**                      | string          | Pretrained QA model model from ``list_available_models()`` or path to a ``.nemo`` file.                      |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **do_training**                           | bool            | If ``true``, starts training, otherwise, skips training and continues with evaluation/inference.             |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **model.dataset.version_2_with_negative** | bool            | Set to ``true`` to allow examples without an answer, e.g. for SQuAD v2.0.                                    |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **model.dataset.do_lower_case**           | bool            | If ``true``, converts text to lower case, only import for inference/evaluation.                              |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **model.dataset.use_cache**               | bool            | If ``true``, either loads all preprocessed data from cache or saves preprocessed data for future use.        |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **training_ds.file**                      | string          | The training file path.                                                                                      |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **training_ds.num_samples**               | integer         | The number of samples to use from the training dataset (use ``-1`` to specify all samples).                  |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **validation_ds.file**                    | string          | The validation file path.                                                                                    |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **validation_ds.num_samples**             | integer         | The number of samples to use from the validation dataset (use ``-1`` to specify all samples).                |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **test_ds.file**                          | string          | The test file path (optional).                                                                               |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-| **test_ds.num_samples**                   | integer         | The number of samples to use from the test dataset (use ``-1`` to specify all samples).                      |
-+-------------------------------------------+-----------------+--------------------------------------------------------------------------------------------------------------+
-
-Example of the command for training the model:
+The conversion to SQuAD format can be performed using the following script:
 
 .. code::
 
-    python question_answering_squad.py \
-           model.train_ds.file=<PATH_TO_TRAIN_DATA_FILE>  \
-           model.validation_ds.file=<PATH_TO_VALIDATION_DATA_FILE>  \
-           model.dataset.version_2_with_negative=<ALLOW_UNANSWERABLE_SAMPLES>  \
-           model.dataset.do_lower_case=<DO_LOWER_CASE> \
-           trainer.max_epochs=<NUM_EPOCHS> \
-           trainer.devices=[<CHANGE_TO_GPU(s)_YOU_WANT_TO_USE>] \
-           trainer.accelerator='gpu'
+    python NeMo/examples/nlp/question_answering/convert_msmarco_to_squad_format.py \
+        --msmarco_train_input_filepath=/path/to/msmarco_train_v2.1.json \
+        --msmarco_dev_input_filepath=/path/to/msmarco_dev_v2.1.json \
+        --converted_train_save_path=/path/to/msmarco_squad_format_train.json \
+        --converted_dev_save_path=/path/to/msmarco_squad_format_dev.json \
+        --exclude_negative_samples=False \
+        --keep_only_relevant_passages=False
 
-.. Note:: 
-  
-   The first time you train, it will take an extra 5-10 minutes to process the dataset. For future training runs, it will use the 
-   processed dataset if :code:`model.dataset.use_cache=true`, which is automatically cached in the files in the same directory as
-   the data.
+.. Note::
 
-Required Arguments for Training
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   - setting :code:`exclude_negative_samples` to ``True`` will exclude samples from the MS-MARCO dataset that do not have a answer
+   - setting :code:`keep_only_relevant_passages` to ``True`` will exclude passages that have ``is_selected=0`` in the MS-MARCO dataset
 
-- :code:`model.train_ds.file`: path to the training file in JSON format
-- :code:`model.validation_ds.file`: path to the validation file in JSON format
+Training, Validation, Testing 
+=============================
 
-Fine-tuning Procedure
-^^^^^^^^^^^^^^^^^^^^^
+A step-by-step guide to training and testing QA models, as well as running inference can be found at `NeMo/tutorials/nlp/Question_Answering.ipynb`. Following is an example of training a QA model using the example script provided at `NeMo/examples/nlp/question_answering/question_answering.py`:
 
-Fine-tuning procedure and logs look similar to what's described in the Model Training section, with the addition of the model
-that is initially loaded from a previously trained checkpoint, e.g. by specifying :code:`pretrained_model=<PRETRAINED_MODEL_NAME>`.
+.. code:: 
 
-Inference
----------
+    python NeMo/examples/nlp/question_answering/question_answering.py \
+        do_training=true \
+        model.train_ds.file=<PATH_TO_DATASET> \
+        model.validation_ds.file=<PATH_TO_DATASET> \
+        model.test_ds.file=<PATH_TO_DATASET> \
+        model.train_ds.batch_size=16 \
+        model.train_ds.num_samples=-1 \
+        model.validation_ds.batch_size=16 \
+        model.validation_ds.num_samples=-1 \
+        model.test_ds.num_samples=16 \
+        model.test_ds.batch_size=-1 \
+        model.language_model.pretrained_model_name=<PRETRAINED_MODEL_NAME> \
+        model.dataset.use_cache=false \
+        model.dataset.version_2_with_negative=true \
+        model.dataset.check_if_answer_in_context=true \
+        trainer.max_epochs=3 \
+        trainer.max_steps=-1 \
+        trainer.precision=16 \
+        trainer.devices=[0] \
+        trainer.accelerator="gpu"
 
-An example script on how to run inference can be found at `examples/nlp/question_answering/question_answering_squad.py <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/question_answering/question_answering_squad.py>`_.
+.. Note::
 
-To run inference with the pre-trained model, run:
+   - :code:`version_2_with_negative` should be set based on whether the dataset contains unanswerable questions or not, ex. set to ``True`` for SQuAD v2.0 and ``False`` for SQuAD v1.1
+   - :code:`check_if_answer_in_context` should be set according to the extractive or generative nature of the dataset, ex. set to ``True`` for SQuAD datasets and ``False`` for the MS-MARCO dataset
+   - :code:`do_training` can be set to ``False`` for running only testing on the test dataset without training
 
-.. code::
+Following is an example of running inference using the example script at `NeMo/examples/nlp/question_answering/question_answering.py`:
 
-    python question_answering_squad.py \
-           pretrained_model=<PRETRAINED_MODEL> \
-           model.dataset.version_2_with_negative=<ALLOW_UNANSWERABLE_SAMPLES>  \
-           model.dataset.do_lower_case=<DO_LOWER_CASE>  \
-           do_training=false \
-           model.validation_ds.file=<PATH_TO_INFERENCE_DATA_FILE>
+.. code:: 
 
-Required Arguments for inference:
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    python NeMo/examples/nlp/question_answering/question_answering.py \
+        pretrained_model=<PRETRAINED_MODEL> \
+        do_training=false \
+        model.test_ds.file=<PATH_TO_DATASET> \
+        model.test_ds.num_samples=1 \
+        model.test_ds.batch_size=-1 \
+        trainer.devices=[0] \
+        trainer.accelerator="gpu"
 
-- :code:`pretrained_model`: pretrained QA Model model from ``list_available_models()`` or path to a ``.nemo`` file
-
-Model Evaluation
-----------------
-
-An example script on how to evaluate the pre-trained model, can be found at `examples/nlp/question_answering/question_answering_squad.py <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/question_answering/question_answering_squad.py>`_.
-
-To run evaluation of the pre-trained model, run:
-
-.. code::
-
-    python question_answering_squad.py \
-           pretrained_model=<PRETRAINED_MODEL> \
-           model.dataset.version_2_with_negative=<ALLOW_UNANSWERABLE_SAMPLES>  \
-           model.dataset.do_lower_case=<DO_LOWER_CASE>  \
-           do_training=false \
-           model.test_ds.file=<PATH_TO_TEST_DATA_FILE>
-
-
-Required Arguments:
-^^^^^^^^^^^^^^^^^^^
-
-- :code:`pretrained_model`: pretrained QA model from `list_available_models()`` or path to a ``.nemo`` file
-- :code:`model.test_ds.file`: path to test file
-
-During evaluation of the :code:`test_ds`, the script generates the following metrics:
+During evaluation of the :code:`validation_ds` and :code:`test_ds`, the script generates the following metrics:
 
 - :code:`Exact Match (EM)`
 - :code:`F1`
 
 More details about these metrics can be found `here <https://en.wikipedia.org/wiki/F-score>`__.
-
-References
-----------
-
-.. bibliography:: nlp_all.bib
-    :style: plain
-    :labelprefix: NLP-QA
-    :keyprefix: nlp-qa-

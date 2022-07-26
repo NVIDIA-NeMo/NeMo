@@ -70,7 +70,7 @@ model:
     in_features: ???  # User must provide the output dimension of the layers of the model, which is the input dimension of this adapter.
     dim: 32  # The hidden dimension of the adapter, as chosen by user, but small values are preferred to reduce param count.
     activation: swish
-    norm_position: 'post'  # Can be `pre` or `post`
+    norm_position: 'pre'  # Can be `pre` or `post`
     dropout: 0.0  # float, dropout for the adapter
 
     # Adapter strategy config
@@ -147,8 +147,8 @@ model:
       name: CosineAnnealing
 
       # scheduler config override
-      warmup_steps: 100  # Warmup steps should be set, and smaller than the trainer.max_steps set below.
-      warmup_ratio: null
+      warmup_steps: null  # Warmup steps should be set, and smaller than the trainer.max_steps set below.
+      warmup_ratio: 0.1   # Warmup steps will be 10% of the training steps.
       min_lr: 1e-5
       last_epoch: -1
 
@@ -192,6 +192,8 @@ exp_manager:
     project: null
     entity: null
     save_dir: null
+    offline: false # If true, wandb logging will be done offline and would require manual syncing.
+    tags: null # List of tags to assign to the run
 
   resume_if_exists: false
   resume_ignore_no_checkpoint: false

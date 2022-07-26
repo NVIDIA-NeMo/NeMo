@@ -36,6 +36,7 @@ import math
 import random
 
 import librosa
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -100,7 +101,18 @@ class WaveformFeaturizer(object):
     def max_augmentation_length(self, length):
         return self.augmentor.max_augmentation_length(length)
 
-    def process(self, file_path, offset=0, duration=0, trim=False, orig_sr=None):
+    def process(
+        self,
+        file_path,
+        offset=0,
+        duration=0,
+        trim=False,
+        trim_ref=np.max,
+        trim_top_db=60,
+        trim_frame_length=2048,
+        trim_hop_length=512,
+        orig_sr=None,
+    ):
         audio = AudioSegment.from_file(
             file_path,
             target_sr=self.sample_rate,
@@ -108,6 +120,10 @@ class WaveformFeaturizer(object):
             offset=offset,
             duration=duration,
             trim=trim,
+            trim_ref=trim_ref,
+            trim_top_db=trim_top_db,
+            trim_frame_length=trim_frame_length,
+            trim_hop_length=trim_hop_length,
             orig_sr=orig_sr,
         )
         return self.process_segment(audio)

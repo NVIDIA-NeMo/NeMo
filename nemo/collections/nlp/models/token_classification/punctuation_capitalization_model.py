@@ -468,6 +468,24 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             train_data_config = self._cfg.train_ds
 
         self._train_dl = self._setup_dataloader_from_config(cfg=train_data_config, train=True)
+
+        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
+        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
+        # So we set the number of steps manually (to the correct number) to fix this.
+        if 'use_tarred_dataset' in train_data_config and train_data_config['use_tarred_dataset']:
+            # We also need to check if limit_train_batches is already set.
+            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
+            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
+            if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
+                self._trainer.limit_train_batches = int(
+                    self._trainer.limit_train_batches * ceil(len(self._train_dl.dataset) / self.world_size)
+                )
+            elif self._trainer is None:
+                logging.warning(
+                    "Model Trainer was not set before constructing the dataset, incorrect number of "
+                    "training batches will be used. Please set the trainer and rebuild the dataset."
+                )
+
         self.punct_label_ids = self._train_dl.dataset.punct_label_ids.copy()
         self.capit_label_ids = self._train_dl.dataset.capit_label_ids.copy()
         self.label_ids_are_set = True
@@ -540,6 +558,24 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             val_data_config = self._cfg.validation_ds
 
         self._validation_dl = self._setup_dataloader_from_config(cfg=val_data_config, train=False)
+
+        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
+        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
+        # So we set the number of steps manually (to the correct number) to fix this.
+        if 'use_tarred_dataset' in val_data_config and val_data_config['use_tarred_dataset']:
+            # We also need to check if limit_val_batches is already set.
+            # If it's an int, we assume that the user has set it to something sane, i.e. <= # validation batches,
+            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
+            if self._trainer is not None and isinstance(self._trainer.limit_val_batches, float):
+                self._trainer.limit_val_batches = int(
+                    self._trainer.limit_val_batches * ceil(len(self._validation_dl.dataset) / self.world_size)
+                )
+            elif self._trainer is None:
+                logging.warning(
+                    "Model Trainer was not set before constructing the dataset, incorrect number of "
+                    "validation batches will be used. Please set the trainer and rebuild the dataset."
+                )
+
         loss_kw, punct_kw, capit_kw = self._get_eval_metrics_kwargs()
         self.metrics['val']['loss'].append(GlobalAverageLossMetric(**loss_kw))
         self.metrics['val']['punct_class_report'].append(ClassificationReport(**punct_kw))
@@ -741,6 +777,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 world_size=self.world_size,
                 global_rank=self.global_rank,
                 shuffle_n=cfg.tar_shuffle_n,
+                shard_strategy=cfg.shard_strategy,
                 label_info_save_dir=cfg.label_info_save_dir,
             )
             dataset.check_for_label_consistency_with_model_config(

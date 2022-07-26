@@ -85,7 +85,7 @@ class PunctuationCapitalizationDataConfigBase:
 
     labels_file: Optional[str] = None
     """A path to a file with punctuation and capitalization labels in NeMo format. NeMo format is described in
-    `documentation 
+    `documentation
     <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/punctuation_and_capitalization.html#nemo-data-format>`_
     """
 
@@ -112,7 +112,7 @@ class PunctuationCapitalizationDataConfigBase:
     """A path to a directory containing cache or directory where newly created cache is saved. By default, it is
     a directory containing ``text_file``. You may need this parameter if cache for a dataset is going to be created
     and the dataset directory is read-only.
-    
+
     ``cache_dir`` and ``label_info_save_dir`` are separate parameters for the case when a cache is ready and this cache
     is stored in a read only directory. In this case you will separate ``label_info_save_dir``."""
 
@@ -141,6 +141,22 @@ class PunctuationCapitalizationDataConfigBase:
 
     tar_shuffle_n: int = 1
     """The size of shuffle buffer of `webdataset`. The number of batches which are permuted."""
+
+    shard_strategy: Optional[str] = 'scatter'
+    """Tarred dataset shard distribution strategy chosen as a str value during ddp. Accepted values are `scatter` and `replicate`.
+    `scatter`: The default shard strategy applied by WebDataset, where each node gets a unique set of shards, which are permanently
+    pre-allocated and never changed at runtime. `replicate` is an optional shard strategy, where each node gets the entire set of shards
+    available in the tarred dataset, which are permanently pre-allocated and never changed at runtime. The benefit of replication is that
+    it allows each node to sample data points from the entire dataset independently of other nodes, and reduces dependence on value of
+    ``tar_shuffle_n``.
+
+    .. warning::
+        Replicated strategy allows every node to sample the entire set of available tarfiles, and therefore more than one node may sample
+        the same tarfile, and even sample the same data points! As such, there is no assured guarantee that all samples in the dataset
+        will be sampled at least once during 1 epoch. Scattered strategy, on the other hand, on specific occasions (when the number of
+        shards is not divisible with ``world_size``), will not sample the entire dataset. For these reasons it is not advisable to use
+        tarred datasets as validation or test datasets.
+    """
 
     #################################################
     # PYTORCH DATALOADER PARAMETERS

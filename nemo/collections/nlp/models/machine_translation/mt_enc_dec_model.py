@@ -16,6 +16,7 @@ import itertools
 import json
 import os
 import random
+from math import ceil
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -609,6 +610,23 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         )
         self._train_dl = MTEncDecModel._setup_dataloader_from_config(cfg=train_data_config, dataset=self._train_ds,)
 
+        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
+        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
+        # So we set the number of steps manually (to the correct number) to fix this.
+        if 'use_tarred_dataset' in train_data_config and train_data_config['use_tarred_dataset']:
+            # We also need to check if limit_train_batches is already set.
+            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
+            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
+            if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
+                self._trainer.limit_train_batches = int(
+                    self._trainer.limit_train_batches * ceil(len(self._train_dl.dataset) / self.world_size)
+                )
+            elif self._trainer is None:
+                logging.warning(
+                    "Model Trainer was not set before constructing the dataset, incorrect number of "
+                    "training batches will be used. Please set the trainer and rebuild the dataset."
+                )
+
     def setup_multiple_validation_data(self, val_data_config: Union[DictConfig, Dict]):
         self.setup_validation_data(val_data_config)
 
@@ -626,6 +644,24 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         self._validation_dl = MTEncDecModel._setup_eval_dataloader_from_config(
             cfg=val_data_config, datasets=self._validation_ds
         )
+
+        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
+        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
+        # So we set the number of steps manually (to the correct number) to fix this.
+        if 'use_tarred_dataset' in val_data_config and val_data_config['use_tarred_dataset']:
+            # We also need to check if limit_val_batches is already set.
+            # If it's an int, we assume that the user has set it to something sane, i.e. <= # validation batches,
+            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
+            if self._trainer is not None and isinstance(self._trainer.limit_val_batches, float):
+                self._trainer.limit_val_batches = int(
+                    self._trainer.limit_val_batches * ceil(len(self._validation_dl.dataset) / self.world_size)
+                )
+            elif self._trainer is None:
+                logging.warning(
+                    "Model Trainer was not set before constructing the dataset, incorrect number of "
+                    "validation batches will be used. Please set the trainer and rebuild the dataset."
+                )
+
         # instantiate Torchmetric for each val dataloader
         if self._validation_dl is not None:
             for dataloader_idx in range(len(self._validation_dl)):

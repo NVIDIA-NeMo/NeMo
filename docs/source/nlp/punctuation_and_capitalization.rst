@@ -3,7 +3,7 @@
 Punctuation and Capitalization Model
 ====================================
 
-Automatic Speech Recognition (ASR) systems typically generate text with no punctuation and capitalization of the words. 
+Automatic Speech Recognition (ASR) systems typically generate text with no punctuation and capitalization of the words.
 There are two issues with non-punctuated ASR output:
 
 - it could be difficult to read and understand
@@ -35,7 +35,7 @@ For each word in the input text, the Punctuation and Capitalization model:
 - predicts a punctuation mark that should follow the word (if any). By default, the model supports commas, periods, and question marks.
 - predicts if the word should be capitalized or not
 
-In the Punctuation and Capitalization model, we are jointly training two token-level classifiers on top of a pre-trained 
+In the Punctuation and Capitalization model, we are jointly training two token-level classifiers on top of a pre-trained
 language model, such as `BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding <https://arxiv.org/abs/1810.04805>`__ :cite:`nlp-punct-devlin2018bert`.
 
 .. note::
@@ -85,7 +85,7 @@ NeMo Data Format
 
 The Punctuation and Capitalization model expects the data in the following format:
 
-The training and evaluation data is divided into 2 files: 
+The training and evaluation data is divided into 2 files:
 - ``text.txt``
 - ``labels.txt``
 
@@ -108,10 +108,10 @@ spaces. Each label in ``labels.txt`` file consists of 2 symbols:
 - the second symbol determines if a word needs to be capitalized or not (where ``U`` indicates that the word should be
   upper cased, and ``O`` - no capitalization needed)
 
-By default, the following punctuation marks are considered: commas, periods, and question marks; the remaining punctuation marks were 
+By default, the following punctuation marks are considered: commas, periods, and question marks; the remaining punctuation marks were
 removed from the data. This can be changed by introducing new labels in the ``labels.txt`` files.
 
-Each line of the ``labels.txt`` should follow the format: ``[LABEL] [SPACE] [LABEL] [SPACE] [LABEL]`` (for ``labels.txt``). For example, 
+Each line of the ``labels.txt`` should follow the format: ``[LABEL] [SPACE] [LABEL] [SPACE] [LABEL]`` (for ``labels.txt``). For example,
 labels for the above ``text.txt`` file should be:
 
     ::
@@ -120,7 +120,7 @@ labels for the above ``text.txt`` file should be:
         OU OO OO OO ...
         ...
 
-The complete list of all possible labels used in this tutorial are: 
+The complete list of all possible labels used in this tutorial are:
 
 - ``OO``
 - ``.O``
@@ -588,6 +588,22 @@ For convenience, items of data config are described in 4 tables:
      - ``1``
      - The size of shuffle buffer of `webdataset <https://github.com/webdataset/webdataset>`_. The number of batches
        which are permuted.
+   * - **shard_strategy**
+     - string
+     - ``scatter``
+     - Tarred dataset shard distribution strategy chosen as a str value during ddp. Accepted values are ``scatter`` and ``replicate``.
+       ``scatter``: Each node gets a unique set of shards, which are permanently pre-allocated and never changed at runtime, when the total
+       number of shards is not divisible with ``world_size``, some shards (at max ``world_size-1``) will not be used.
+       ``replicate``: Each node gets the entire set of shards available in the tarred dataset, which are permanently pre-allocated and never
+       changed at runtime. The benefit of replication is that it allows each node to sample data points from the entire dataset independently
+       of other nodes, and reduces dependence on value of ``tar_shuffle_n``.
+
+       .. warning::
+           Replicated strategy allows every node to sample the entire set of available tarfiles, and therefore more than one node may sample
+           the same tarfile, and even sample the same data points! As such, there is no assured guarantee that all samples in the dataset will be
+           sampled at least once during 1 epoch. Scattered strategy, on the other hand, on specific occasions (when the number of shards is not
+           divisible with ``world_size``), will not sample the entire dataset. For these reasons it is not advisable to use tarred datasets as
+           validation or test datasets.
 
 .. _pytorch-dataloader-parameters-label:
 

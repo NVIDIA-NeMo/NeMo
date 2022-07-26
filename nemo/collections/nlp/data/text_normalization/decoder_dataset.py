@@ -452,10 +452,15 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
                 available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
                 The benefit of replication is that it allows each node to sample data points from the entire
                 dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
-                Note: Replicated strategy allows every node to sample the entire set of available tarfiles,
-                and therefore more than one node may sample the same tarfile, and even sample the same
-                data points! As such, there is no assured guarantee that all samples in the dataset will be
-                sampled at least once during 1 epoch.
+
+                .. warning::
+                    Replicated strategy allows every node to sample the entire set of available tarfiles,
+                    and therefore more than one node may sample the same tarfile, and even sample the same
+                    data points! As such, there is no assured guarantee that all samples in the dataset will be
+                    sampled at least once during 1 epoch. Scattered strategy, on the other hand, on specific
+                    occasions (when the number of shards is not divisible with ``world_size``), will not sample
+                    the entire dataset. For these reasons it is not advisable to use tarred datasets as validation
+                    or test datasets.
         global_rank: Worker rank, used for partitioning shards.
         world_size: Total number of processes, used for partitioning shards.
     """
@@ -473,7 +478,11 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
 
         valid_shard_strategies = ['scatter', 'replicate']
         if shard_strategy not in valid_shard_strategies:
-            raise ValueError(f"`shard_strategy` must be one of {valid_shard_strategies}")
+            raise ValueError(
+                f"Invalid shard strategy of type {type(shard_strategy)} "
+                f"{repr(shard_strategy) if len(repr(shard_strategy)) < 100 else repr(shard_strategy)[:100] + '...'}! "
+                f"Allowed values are: {valid_shard_strategies}."
+            )
 
         if isinstance(text_tar_filepaths, str):
             # Replace '(', '[', '<' and '_OP_' with '{'
@@ -493,12 +502,14 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
             text_tar_filepaths = list(braceexpand.braceexpand(text_tar_filepaths))
 
         if shard_strategy == 'scatter':
-            logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
+            logging.info("Tarred dataset shards will be scattered evenly across all nodes.")
             if len(text_tar_filepaths) % world_size != 0:
                 logging.warning(
                     f"Number of shards in tarred dataset ({len(text_tar_filepaths)}) is not divisible "
-                    f"by number of distributed workers ({world_size})."
+                    f"by number of distributed workers ({world_size}). "
+                    f"Some shards will not be used ({len(text_tar_filepaths) % world_size})."
                 )
+            batches_per_tar = num_batches // len(text_tar_filepaths)
             begin_idx = (len(text_tar_filepaths) // world_size) * global_rank
             end_idx = begin_idx + (len(text_tar_filepaths) // world_size)
             logging.info('Begin Index : %d' % (begin_idx))
@@ -507,16 +518,17 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
             logging.info(
                 "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
             )
+            self.length = batches_per_tar * len(text_tar_filepaths) * world_size
 
         elif shard_strategy == 'replicate':
             logging.info("All tarred dataset shards will be replicated across all nodes.")
+            self.length = num_batches
 
         else:
             raise ValueError(f"Invalid shard strategy! Allowed values are: {valid_shard_strategies}")
 
         # Put together WebDataset
         self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
-        self.length = num_batches // world_size
         if shuffle_n > 0:
             self._dataset = self._dataset.shuffle(shuffle_n)
         else:

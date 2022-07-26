@@ -94,33 +94,38 @@ class NLPDDPPlugin(DDPPlugin):
             Sets find_unused_parameters to False to use activation-checkpoint-recomputation.
         """
 
-        app_state = AppState()
-
-        if app_state.model_parallel_size is not None:
-            logging.info(f"Configuring DDP for model parallelism.")
-
-            # With model parallelism, multiple GPUs form a large "logical GPU"
-            # this means that data parallel groups span multiple GPUs
-            # and are non-trivial
-            # TODO: for megatron-lm self.model is a list
-            self.pre_configure_ddp()
-            # device_ids = self.determine_ddp_device_ids()
-            self._model = DistributedDataParallel(
-                LightningDistributedModule(self.model),
-                process_group=parallel_state.get_data_parallel_group(),
-                **self._ddp_kwargs,
-            )
-
-            if self.no_ddp_communication_hook:
-                # When using custom gradient accumulation and allreduce, disable
-                # DDP communication hook that works on the gradient bucket.
-                # Instead, use the custom gradient function and communication hook,
-                # which is defined in the master optimizer wrapper.
-                self._model.require_backward_grad_sync = False
-                self._model.register_comm_hook(None, noop_hook)
-
+        if hasattr(self.model, 'megatron_amp_o2'):
+            # do not use DDP if using megatron amp O2
+            self._model = LightningDistributedModule(self.model)
         else:
-            super().configure_ddp()
+            app_state = AppState()
+
+            if app_state.model_parallel_size is not None:
+
+                logging.info(f"Configuring DDP for model parallelism.")
+
+                # With model parallelism, multiple GPUs form a large "logical GPU"
+                # this means that data parallel groups span multiple GPUs
+                # and are non-trivial
+                # TODO: for megatron-lm self.model is a list
+                self.pre_configure_ddp()
+                # device_ids = self.determine_ddp_device_ids()
+                self._model = DistributedDataParallel(
+                    LightningDistributedModule(self.model),
+                    process_group=parallel_state.get_data_parallel_group(),
+                    **self._ddp_kwargs,
+                )
+
+                if self.no_ddp_communication_hook:
+                    # When using custom gradient accumulation and allreduce, disable
+                    # DDP communication hook that works on the gradient bucket.
+                    # Instead, use the custom gradient function and communication hook,
+                    # which is defined in the master optimizer wrapper.
+                    self._model.require_backward_grad_sync = False
+                    self._model.register_comm_hook(None, noop_hook)
+
+            else:
+                super().configure_ddp()
 
     def init_model_parallel(self, global_rank: int, world_size: int) -> None:
         """ Initializes Megatron-LM model parallel if using model parallelism.

@@ -1,4 +1,5 @@
 # Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -120,7 +121,8 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 num_tokentypes=num_tokentypes,
                 use_cpu_initialization=use_cpu_initialization,
                 embedding_dropout_prob=hidden_dropout,
-                add_position_embedding=add_position_embedding,
+                position_embedding_type='learned_absolute' if add_position_embedding else '',
+                transpose_batch_sequence=False,
             )
             self._embedding_key = "embedding"
 
@@ -340,7 +342,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
             # hidden is a tuple, (layernorm_input, layernorm_output)
             self.post_decoder.set_input_tensor(hidden)
             # scale down the pre-decoder output by half
-            hidden = (hidden[0] * 0.5, hidden[1] * 0.5)
+            # hidden = (hidden[0] * 0.5, hidden[1] * 0.5)
             # stop passing through the gradients
             encoder_output = hidden[1].transpose(0, 1).contiguous()
 
@@ -370,6 +372,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 set_inference_key_value_memory=set_inference_key_value_memory,
                 inference_max_sequence_len=inference_max_sequence_len,
             )
+            dec_output = dec_output.transpose(0, 1).contiguous()
             # only transpose it for post_ln
             token_logits = self.tokens_head(dec_output, self.word_embeddings_weight())
 

@@ -93,14 +93,21 @@ class BertLMHead(MegatronModule):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.gelu(hidden_states)
         hidden_states = self.layernorm(hidden_states)
-        output = parallel_lm_logits(hidden_states, word_embeddings_weight, self.parallel_output, bias=self.bias)
+        async_tensor_model_parallel_allreduce = parallel_state.get_tensor_model_parallel_world_size() > 1
+        output = parallel_lm_logits(
+            hidden_states,
+            word_embeddings_weight,
+            self.parallel_output,
+            bias=self.bias,
+            async_tensor_model_parallel_allreduce=async_tensor_model_parallel_allreduce,
+        )
         return output
 
 
 def post_language_model_processing(
     lm_output, pooled_output, lm_head, binary_head, lm_labels, logit_weights, fp16_lm_cross_entropy
 ):
-    # Output.
+    # lm_logits: [s, b, vocab_size]
     lm_logits = lm_head(lm_output, logit_weights)
 
     binary_logits = None
@@ -108,13 +115,19 @@ def post_language_model_processing(
         binary_logits = binary_head(pooled_output)
 
     if lm_labels is None:
+        # lm_logits: [s, b, vocab_size] -> [b, s, vocab_size]
+        lm_logits = lm_logits.transpose(0, 1).contiguous()
         return lm_logits, binary_logits
     else:
+        # lm_labels: [b, s] -> [s, b]
+        lm_labels = lm_labels.transpose(0, 1).contiguous()
         if fp16_lm_cross_entropy:
             assert lm_logits.dtype == torch.half
             lm_loss = tensor_parallel.vocab_parallel_cross_entropy(lm_logits, lm_labels)
         else:
             lm_loss = tensor_parallel.vocab_parallel_cross_entropy(lm_logits.float(), lm_labels)
+        # lm_loss: [s, b] -> [b, s]
+        lm_loss = lm_loss.transpose(0, 1).contiguous()
         return lm_loss, binary_logits
 
 

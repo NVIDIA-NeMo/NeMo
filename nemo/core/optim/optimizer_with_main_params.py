@@ -299,7 +299,7 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
         # Hook used for back-prop.
         def param_hook(*unused):
             # Accumulates gradients on main gradients
-            if param.grad.data is not None:
+            if param.grad is not None:
                 if main_param.grad is None:
                     main_param.grad = param.grad.float()
                 else:
@@ -408,6 +408,12 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
 
     @torch.no_grad()
     def step(self, **kwargs):
+        # while async grad allreduce is enabled, bprop will keep moving forward without waiting for
+        # the finish of async grad AR works. Hence, to guarantee the correctness of grads reduction,
+        # we cannot start weight update until all async grad AR works are done.
+        if self._async_grad_allreduce:
+            torch.cuda.synchronize()
+
         # Step the optimizer.
         self.optimizer.step(closure=None, **kwargs)
 

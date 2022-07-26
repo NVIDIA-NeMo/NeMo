@@ -63,6 +63,32 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                     raise KeyError(
                         f"{data_cfg.metric.name} is not supported. List of supported metrics: {MetricStringToTorchMetric.keys()}"
                     )
+                if data_cfg.metric.name in self._metrics_require_string2category_map:
+                    if data_cfg.metric.average is None:
+                        raise ValueError(
+                            f"{data_cfg.metric.name} requires specifying whether you want to compute a micro or macro average. Found None."
+                        )
+                if (
+                    data_cfg.metric.get('labels_are_strings', False)
+                    and data_cfg.metric.name in self._metrics_require_string2category_map
+                ):
+                    if data_cfg.metric.num_classes is None:
+                        raise ValueError(
+                            "Number of classes is not provided in the metric section within the data config. "
+                            f"Please provide the number of classes in the data config to use the {data_cfg.metric.name} metric."
+                        )
+                    if data_cfg.metric.get('class_labels', None) is None or not isinstance(
+                        data_cfg.metric.get('class_labels', None), ListConfig
+                    ):
+                        raise ValueError(
+                            "Class labels are not provided properly in the metric section witnin the data config. "
+                            f"Please provide the class labels as a list of strings in the data config to use the {data_cfg.metric.name} metric."
+                        )
+                    if len(data_cfg.metric.get('class_labels', None)) != data_cfg.metric.num_classes:
+                        raise ValueError(
+                            f"Number of class labels {len(data_cfg.metric.get('class_labels', None))} does not match `num_classes` : {data_cfg.metric.num_classes}"
+                        )
+
             metric_name = data_cfg.metric.name
             metric = MetricStringToTorchMetric[metric_name]
             # GLUE will not have a "src_file_name" attribute and will always have only a single metric.
@@ -71,6 +97,8 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                     # We pass average and num_classes to the metric constructor via kwargs even if they don't exist for each metric.
                     metric = [
                         metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
+                        if metric_name != 'exact_string_match'
+                        else metric()
                         for _ in range(len(self.cfg.data.test_ds.src_file_name))
                     ]
                 else:
@@ -79,6 +107,10 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                 metric = [metric()]  # GLUE does need to specify average or num_classes.
 
         return metric, metric_name
+
+    @property
+    def _metrics_require_string2category_map(self):
+        return set(["f1", "accuracy", "average_precision"])
 
     def setup(self, stage=None):
         # This is just to keep the parent class happy since we override its setup() method.
@@ -168,7 +200,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         batch = self._process_global_batch(batch)
         return super().training_step(batch, batch_idx)
 
-    def cast_for_metric(self, pred, label, metric_name):
+    def cast_for_metric(self, pred, label, metric_name, class_labels=None, labels_are_strings=False):
         if metric_name == 'exact_string_match':
             return pred, label
         pred = pred.replace(' ', '')
@@ -191,7 +223,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             label = torch.FloatTensor([label]).to(self.device)
 
         # Other metrics require casting to integers.
-        elif metric_name in ['accuracy', 'auc', 'auroc', 'average_precision', 'f1']:
+        elif metric_name in self._metrics_require_string2category_map and not labels_are_strings:
             # Text-to-text model predictions may not always be valid integers.
             try:
                 pred = int(pred)
@@ -206,6 +238,18 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             pred = torch.LongTensor([pred]).to(self.device)
             label = torch.LongTensor([label]).to(self.device)
 
+        # If labels are strings, we need to convert them to indices for some metrics.
+        elif metric_name in self._metrics_require_string2category_map and labels_are_strings:
+            # Cast string labels to integers before computing the metric.
+            if pred not in class_labels:
+                pred = 0  # If the prediction is not in the class labels, use the first class label.
+            else:
+                pred = class_labels.index(pred)
+            if label not in class_labels:
+                raise ValueError(f"Ground truth labe; {label} is not in the class labels list : {class_labels}")
+            label = class_labels.index(label)
+            pred = torch.LongTensor([pred]).to(self.device)
+            label = torch.LongTensor([label]).to(self.device)
         else:
             raise ValueError(f'Metric {metric_name} not supported.')
 
@@ -256,7 +300,11 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         for _, (pred, label, category) in enumerate(zip(preds_text, labels_text, categories)):
             # To compute metrics like pearson or spearman correlation, we need to cast the predicted string and labels to floats.
             pred, label = self.cast_for_metric(
-                pred, label, self.val_metric_name if mode == 'validation' else self.test_metric_name
+                pred=pred,
+                label=label,
+                metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
+                class_labels=self.cfg.data.validation_ds.metric.get('class_labels', None),
+                labels_are_strings=self.cfg.data.validation_ds.metric.get('labels_are_strings', False),
             )
             if batch_has_lang_information:
                 _ = metric(pred, label, category)

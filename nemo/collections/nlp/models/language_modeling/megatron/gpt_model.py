@@ -26,7 +26,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 )
 
 try:
-    from apex.transformer import tensor_parallel
+    from apex.transformer import tensor_parallel, parallel_state
     from apex.transformer.enums import AttnMaskType
 
     HAVE_APEX = True
@@ -45,26 +45,45 @@ def post_language_model_processing(
     forward_method_parallel_output,
     fp16_lm_cross_entropy,
     return_logits=False,
+    sequence_parallel=False,
+    gradient_accumulation_fusion=False,
 ):
     if get_key_value:
         lm_output, presents = lm_output
 
-    # Output.
+    # Output. Format is [s b h]
     if forward_method_parallel_output is not None:
         parallel_output = forward_method_parallel_output
-    output = parallel_lm_logits(lm_output, logit_weights, parallel_output)
+    async_tensor_model_parallel_allreduce = (
+        parallel_state.get_tensor_model_parallel_world_size() > 1 and not sequence_parallel
+    )
+    output = parallel_lm_logits(
+        lm_output,
+        logit_weights,
+        parallel_output,
+        sequence_parallel=sequence_parallel,
+        gradient_accumulation_fusion=gradient_accumulation_fusion,
+        async_tensor_model_parallel_allreduce=async_tensor_model_parallel_allreduce,
+    )
 
     if get_key_value:
         output = [output, presents]
 
     if labels is None:
-        return output
+        # [s b h] -> [b s h]
+        return output.transpose(0, 1).contiguous()
     else:
+        # [b s] -> [s b]
+        labels = labels.transpose(0, 1).contiguous()
+
         if fp16_lm_cross_entropy:
             assert output.dtype == torch.half
             loss = tensor_parallel.vocab_parallel_cross_entropy(output, labels)
         else:
             loss = tensor_parallel.vocab_parallel_cross_entropy(output.float(), labels)
+
+        # [s b] -> [b, s]
+        loss = loss.transpose(0, 1).contiguous()
 
         if return_logits:
             return loss, output
@@ -95,6 +114,7 @@ class GPTModel(MegatronModule):
         hidden_dropout=0.1,
         precision=16,
         fp32_residual_connection=False,
+        activations_checkpoint_granularity=None,
         activations_checkpoint_method=None,
         activations_checkpoint_num_layers=1,
         layernorm_epsilon=1e-5,
@@ -102,6 +122,8 @@ class GPTModel(MegatronModule):
         persist_layer_norm=False,
         openai_gelu=False,
         onnx_safe=False,
+        sequence_parallel=False,
+        gradient_accumulation_fusion=False,
     ):
 
         super(GPTModel, self).__init__()
@@ -110,6 +132,8 @@ class GPTModel(MegatronModule):
         self.pre_process = pre_process
         self.post_process = post_process
         self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
+        self.sequence_parallel = sequence_parallel
+        self.gradient_accumulation_fusion = gradient_accumulation_fusion
 
         if kv_channels is None:
             assert (
@@ -138,6 +162,7 @@ class GPTModel(MegatronModule):
             use_cpu_initialization=use_cpu_initialization,
             precision=precision,
             fp32_residual_connection=fp32_residual_connection,
+            activations_checkpoint_granularity=activations_checkpoint_granularity,
             activations_checkpoint_method=activations_checkpoint_method,
             activations_checkpoint_num_layers=activations_checkpoint_num_layers,
             layernorm_epsilon=layernorm_epsilon,
@@ -145,6 +170,8 @@ class GPTModel(MegatronModule):
             persist_layer_norm=persist_layer_norm,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
+            sequence_parallel=sequence_parallel,
+            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
 
         self.initialize_word_embeddings(
@@ -169,6 +196,9 @@ class GPTModel(MegatronModule):
         set_inference_key_value_memory=False,
         inference_max_sequence_len=None,
     ):
+        # input_ids: [b, s]
+        # position_ids: [b, s]
+        # attention_mask: [1, 1, s, s]
 
         lm_output = self.language_model(
             input_ids,
@@ -191,6 +221,8 @@ class GPTModel(MegatronModule):
                 forward_method_parallel_output,
                 self.fp16_lm_cross_entropy,
                 return_logits=encoder_input is not None,
+                sequence_parallel=self.sequence_parallel,
+                gradient_accumulation_fusion=self.gradient_accumulation_fusion,
             )
         else:
             return lm_output

@@ -70,6 +70,9 @@ def get_language_model(
     openai_gelu=False,
     onnx_safe=False,
     megatron_legacy=False,
+    activations_checkpoint_granularity=None,
+    sequence_parallel=False,
+    gradient_accumulation_fusion=False,
 ):
     """Build language model and return along with the key to save."""
 
@@ -117,6 +120,9 @@ def get_language_model(
         openai_gelu=openai_gelu,
         onnx_safe=onnx_safe,
         megatron_legacy=megatron_legacy,
+        activations_checkpoint_granularity=activations_checkpoint_granularity,
+        sequence_parallel=sequence_parallel,
+        gradient_accumulation_fusion=gradient_accumulation_fusion,
     )
     # key used for checkpoints.
     language_model_key = 'language_model'
@@ -136,14 +142,21 @@ class Pooler(MegatronModule):
             bias is set to zero.
     """
 
-    def __init__(self, hidden_size, init_method):
+    def __init__(self, hidden_size, init_method, sequence_parallel=False):
         super(Pooler, self).__init__()
         self.dense = get_linear_layer(hidden_size, hidden_size, init_method)
+        self.sequence_parallel = sequence_parallel
 
     def forward(self, hidden_states, sequence_index=0):
-        # hidden_states: [b, s, h]prompt_embeddings
+        # hidden_states: [s, b, h] prompt_embeddings
         # sequence_index: index of the token to pool.
-        pooled = hidden_states[:, sequence_index, :]
+
+        # gather data along sequence dimensions
+        # same pooler is run on all tensor parallel nodes
+        if self.sequence_parallel:
+            hidden_states = tensor_parallel.gather_from_sequence_parallel_region()
+
+        pooled = hidden_states[sequence_index, :, :]
         pooled = self.dense(pooled)
         pooled = torch.tanh(pooled)
         return pooled
@@ -162,7 +175,7 @@ class Embedding(MegatronModule):
         num_tokentypes: size of the token-type embeddings. 0 value
                         will ignore this embedding
         use_cpu_initialization: whether to initialize the weights in CPU
-        add_position_embedding: flag for controlling whether to add position embedding to the input.
+        position_embedding_type: position embedding type determines whether we instantiate a learnable position embedding table.
     """
 
     def __init__(
@@ -174,13 +187,18 @@ class Embedding(MegatronModule):
         init_method,
         num_tokentypes=0,
         use_cpu_initialization=False,
-        add_position_embedding=True,
+        fp32_residual_connection=False,
+        sequence_parallel=False,
+        position_embedding_type='learned_absolute',
+        transpose_batch_sequence=True,
     ):
         super(Embedding, self).__init__()
 
         self.hidden_size = hidden_size
         self.init_method = init_method
         self.num_tokentypes = num_tokentypes
+        self.position_embedding_type = position_embedding_type
+        self.transpose_batch_sequence = transpose_batch_sequence
 
         # Word embeddings (parallel).
         self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
@@ -188,9 +206,7 @@ class Embedding(MegatronModule):
         )
         self._word_embeddings_key = 'word_embeddings'
 
-        self.add_position_embedding = add_position_embedding
-
-        if self.add_position_embedding:
+        if self.position_embedding_type == 'learned_absolute':
             # Position embedding (serial).
             self.position_embeddings = torch.nn.Embedding(max_sequence_length, self.hidden_size)
             self._position_embeddings_key = 'position_embeddings'
@@ -209,6 +225,9 @@ class Embedding(MegatronModule):
         else:
             self.tokentype_embeddings = None
 
+        self.fp32_residual_connection = fp32_residual_connection
+        self.sequence_parallel = sequence_parallel
+
         # Embeddings dropout
         self.embedding_dropout = torch.nn.Dropout(embedding_dropout_prob)
 
@@ -216,7 +235,7 @@ class Embedding(MegatronModule):
         """Zero out all parameters in embedding."""
         self.word_embeddings.weight.data.fill_(0)
         self.word_embeddings.weight.shared = True
-        if self.add_position_embedding:
+        if self.position_embedding_type == 'learned_absolute':
             self.position_embeddings.weight.data.fill_(0)
             self.position_embeddings.weight.shared = True
         if self.num_tokentypes > 0:
@@ -240,7 +259,7 @@ class Embedding(MegatronModule):
     def forward(self, input_ids, position_ids, token_type_ids=None):
         # Embeddings.
         words_embeddings = self.word_embeddings(input_ids)
-        if self.add_position_embedding:
+        if self.position_embedding_type == 'learned_absolute':
             position_embeddings = self.position_embeddings(position_ids)
             embeddings = words_embeddings + position_embeddings
         else:
@@ -251,8 +270,21 @@ class Embedding(MegatronModule):
         else:
             assert self.tokentype_embeddings is None
 
+        # Data format change to avoid explicit tranposes : [b s h] --> [s b h].
+        if self.transpose_batch_sequence:
+            embeddings = embeddings.transpose(0, 1).contiguous()
+
+        # If the input flag for fp32 residual connection is set, convert for float.
+        if self.fp32_residual_connection:
+            embeddings = embeddings.float()
+
         # Dropout.
-        embeddings = self.embedding_dropout(embeddings)
+        if self.sequence_parallel:
+            embeddings = tensor_parallel.mappings.scatter_to_sequence_parallel_region(embeddings)
+            with tensor_parallel.random.get_cuda_rng_tracker().fork():
+                embeddings = self.embedding_dropout(embeddings)
+        else:
+            embeddings = self.embedding_dropout(embeddings)
 
         return embeddings
 
@@ -261,7 +293,7 @@ class Embedding(MegatronModule):
 
         state_dict_ = {}
         state_dict_[self._word_embeddings_key] = self.word_embeddings.state_dict(destination, prefix, keep_vars)
-        if self.add_position_embedding:
+        if self.position_embedding_type == 'learned_absolute':
             state_dict_[self._position_embeddings_key] = self.position_embeddings.state_dict(
                 destination, prefix, keep_vars
             )
@@ -286,7 +318,7 @@ class Embedding(MegatronModule):
                     state_dict_[key.split('word_embeddings.')[1]] = state_dict[key]
         self.word_embeddings.load_state_dict(state_dict_, strict=strict)
 
-        if self.add_position_embedding:
+        if self.position_embedding_type == 'learned_absolute':
             # Position embedding.
             if self._position_embeddings_key in state_dict:
                 state_dict_ = state_dict[self._position_embeddings_key]
@@ -362,6 +394,9 @@ class TransformerLanguageModel(MegatronModule):
         openai_gelu=False,
         onnx_safe=False,
         megatron_legacy=False,
+        activations_checkpoint_granularity=None,
+        sequence_parallel=False,
+        gradient_accumulation_fusion=False,
     ):
         super(TransformerLanguageModel, self).__init__()
 
@@ -397,6 +432,8 @@ class TransformerLanguageModel(MegatronModule):
                 num_tokentypes=self.num_tokentypes,
                 use_cpu_initialization=use_cpu_initialization,
                 embedding_dropout_prob=self.hidden_dropout,
+                sequence_parallel=sequence_parallel,
+                fp32_residual_connection=fp32_residual_connection,
             )
             self._embedding_key = 'embedding'
 
@@ -426,6 +463,9 @@ class TransformerLanguageModel(MegatronModule):
             onnx_safe=onnx_safe,
             masked_softmax_fusion=masked_softmax_fusion,
             megatron_legacy=megatron_legacy,
+            sequence_parallel=sequence_parallel,
+            activations_checkpoint_granularity=activations_checkpoint_granularity,
+            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
         self._encoder_key = 'encoder'
 
@@ -457,13 +497,16 @@ class TransformerLanguageModel(MegatronModule):
                 onnx_safe=onnx_safe,
                 masked_softmax_fusion=masked_softmax_fusion,
                 megatron_legacy=megatron_legacy,
+                sequence_parallel=sequence_parallel,
+                activations_checkpoint_granularity=activations_checkpoint_granularity,
+                gradient_accumulation_fusion=gradient_accumulation_fusion,
             )
             self._decoder_key = 'decoder'
 
         if self.post_process:
             # Pooler.
             if self.add_pooler:
-                self.pooler = Pooler(self.hidden_size, self.init_method)
+                self.pooler = Pooler(self.hidden_size, self.init_method, sequence_parallel=sequence_parallel)
                 self._pooler_key = 'pooler'
 
     def set_input_tensor(self, input_tensor):
@@ -499,6 +542,10 @@ class TransformerLanguageModel(MegatronModule):
             encoder_input = self.embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
         else:
             pass
+
+        # encoder_input: [s, b, h]
+
+        # enc_attn_mask: [1, 1, s, s]
 
         # encoder.
         if enc_hidden_states is None:

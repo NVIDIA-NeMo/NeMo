@@ -66,8 +66,6 @@ model:
   post_process: True # add pooler
   persist_layer_norm: True # Use of persistent fused layer norm kernel.
 
-  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce
-
   tokenizer:
     library: 'megatron'
     type: 'GPT2BPETokenizer'
@@ -86,6 +84,7 @@ model:
   # Megatron O2-style half-precision
   megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
   grad_allreduce_chunk_size_mb: 125
+  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce
 
   # miscellaneous
   seed: 1234
@@ -93,9 +92,26 @@ model:
   onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
   gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+  gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism.
 
-  activations_checkpoint_method: null # 'uniform', 'block'
-  activations_checkpoint_num_layers: 1 
+  ## Activation Checkpointing
+  # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.
+  # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  # 'full' will checkpoint the entire transformer layer.
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  # when using 'uniform' this creates groups of transformer layers to checkpoint. Usually set to 1. Increase to save more memory.
+  # when using 'block' this this will checkpoint the first activations_checkpoint_num_layers per pipeline stage.
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
 
   data:
     # Path to data must be specified by the user.

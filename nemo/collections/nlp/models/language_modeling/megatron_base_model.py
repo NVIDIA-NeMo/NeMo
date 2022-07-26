@@ -16,6 +16,7 @@
 import os
 
 import torch
+from omegaconf import open_dict
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
@@ -61,6 +62,8 @@ class MegatronBaseModel(NLPModel):
 
         super().__init__(cfg, trainer=trainer, no_lm_init=no_lm_init)
 
+        self._validate_config()
+
         # used in NVIDIA NGC PyTorch containers
         self._enable_nvidia_optimizations()
 
@@ -97,7 +100,7 @@ class MegatronBaseModel(NLPModel):
     def _enable_nvidia_optimizations(self):
         "These optimizations are present in NVIDIA NGC PyTorch Containers"
 
-        # Version check
+        # NVIDIA container version check
         nvidia_torch_version = os.getenv('NVIDIA_PYTORCH_VERSION', None)
         if nvidia_torch_version is not None:
             NVIDIA_TORCH_MAJOR = int(nvidia_torch_version.split('.')[0])
@@ -119,8 +122,9 @@ class MegatronBaseModel(NLPModel):
                 torch._C._jit_set_texpr_fuser_enabled(False)
                 torch._C._jit_set_nvfuser_enabled(True)
                 torch._C._debug_set_autodiff_subgraph_inlining(False)
+
         else:
-            # Not a Nvidia container. Dependency check is on users
+            # Not a Nvidia container. NVFUSER Dependency check is on users
             pass
 
     def _build_tokenizer(self):
@@ -239,18 +243,28 @@ class MegatronBaseModel(NLPModel):
                     "fp16 training is not yet supported with O2. Please set megatron_amp_O2 to False in the model config."
                 )
 
-            # if using tensor parallel only, we can use async grad all-reduce
-            if self.cfg.get('pipeline_model_parallel_size', 1) == 1:
+            # if using tensor parallel only, we automatically use async grad all-reduce
+            # if using pipeline parallel or sequence parallel or gradient accumulation fusion, then we disable it
+            if self.cfg.get('pipeline_model_parallel_size', 1) == 1 and not (
+                self.cfg.get('sequence_parallel', False) or self.cfg.get('gradient_accumulation_fusion', False)
+            ):
                 async_grad_allreduce = True
             else:
                 async_grad_allreduce = False
+
+            if async_grad_allreduce:
+                # we need this to be configurable until make_nccl_premul_sum is in public PyTorch.
+                # currently cannot be imported in PyTorch 1.12.0
+                grad_div_ar_fusion = self.cfg.get('grad_div_ar_fusion', False)
+            else:
+                grad_div_ar_fusion = False
 
             self._optimizer = MainParamsOptimizerWrapper(
                 self._optimizer,
                 fp32_grad_accum=fp32_grad_accum,
                 contiguous_grad_bucket=contiguous_grad_bucket,
                 async_grad_allreduce=async_grad_allreduce,
-                grad_div_ar_fusion=self.cfg.get('grad_div_ar_fusion', True),
+                grad_div_ar_fusion=grad_div_ar_fusion,
                 grad_allreduce_chunk_size_mb=self.cfg.get('grad_allreduce_chunk_size_mb', 125),
             )
 
@@ -266,3 +280,26 @@ class MegatronBaseModel(NLPModel):
             return self._optimizer
         else:
             return [self._optimizer], [self._scheduler]
+
+    def _validate_config(self):
+        """ Certain configurations might be incompatible or discouraged. We can check for them here."""
+
+        if self.cfg.get('sequence_parallel', False) and self.cfg.get('tensor_model_parallel_size', 1) == 1:
+            logging.info(
+                "Sequence parallel should only be used with tensor parallel size > 1. Setting sequence parallel to False"
+            )
+            with open_dict(self.cfg):
+                self.cfg.sequence_parallel = False
+
+        if (
+            self.cfg.get('gradient_accumulation_fusion', False)
+            and self.cfg.get('pipeline_model_parallel_size', 1) == 1
+        ):
+            logging.info("Gradient accumulation fusion can only be used with pipeline parallel size > 1.")
+            with open_dict(self.cfg):
+                self.cfg.gradient_accumulation_fusion = False
+
+        if self.cfg.get('gradient_accumulation_fusion', False) and not self.cfg.get('megatron_amp_O2', False):
+            logging.info("Gradient accumulation fusion can only be used with megatron amp O2 mixed precision.")
+            with open_dict(self.cfg):
+                self.cfg.gradient_accumulation_fusion = False

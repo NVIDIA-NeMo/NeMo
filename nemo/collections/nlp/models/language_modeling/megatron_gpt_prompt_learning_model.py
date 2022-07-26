@@ -399,6 +399,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
                 input_embeds = self.embed_input_train(input_ids, taskname_ids)
             position_embeddings = self.frozen_model.model.language_model.embedding.position_embeddings(position_ids)
             encoder_input = input_embeds + position_embeddings
+            encoder_input = encoder_input.transpose(0, 1).contiguous()
         else:
             encoder_input = None
 

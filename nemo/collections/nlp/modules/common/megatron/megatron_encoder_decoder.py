@@ -85,7 +85,12 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
         self._decoder_key = "decoder"
 
     def encode(
-        self, enc_input, enc_attn_mask, enc_layer_past=None, enc_get_key_value=False,
+        self,
+        enc_input,
+        enc_attn_mask,
+        enc_layer_past=None,
+        enc_get_key_value=False,
+        enc_self_attention_relative_position_bias=None,
     ):
         if self.encoder is None:
             raise ValueError(f"Cannot call .encode(...) when self.encoder is None.")
@@ -95,12 +100,21 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
             enc_attn_mask=enc_attn_mask,
             layer_past=enc_layer_past,
             get_key_value=enc_get_key_value,
+            enc_self_attention_relative_position_bias=enc_self_attention_relative_position_bias,
         )
 
         return enc_output
 
     def decode(
-        self, dec_input, dec_attn_mask, enc_output, enc_attn_mask, dec_layer_past=None, dec_get_key_value=False,
+        self,
+        dec_input,
+        dec_attn_mask,
+        enc_output,
+        enc_attn_mask,
+        dec_layer_past=None,
+        dec_get_key_value=False,
+        dec_self_attention_relative_position_bias=None,
+        dec_cross_attention_relative_position_bias=None,
     ):
         if self.decoder is None:
             raise ValueError(f"Cannot call .decode(...) when self.decoder is None.")
@@ -112,6 +126,8 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
             get_key_value=dec_get_key_value,
             enc_output=enc_output,
             enc_attn_mask=enc_attn_mask,
+            dec_self_attention_relative_position_bias=dec_self_attention_relative_position_bias,
+            dec_cross_attention_relative_position_bias=dec_cross_attention_relative_position_bias,
         )
 
         return dec_output
@@ -128,6 +144,9 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
         dec_layer_past=None,
         dec_get_key_value=False,
         output_enc_hidden_only=False,
+        enc_self_attention_relative_position_bias=None,
+        dec_self_attention_relative_position_bias=None,
+        dec_cross_attention_relative_position_bias=None,
     ):
         # encoder
         if enc_output is None:
@@ -137,6 +156,7 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
                     enc_attn_mask=enc_attn_mask,
                     enc_layer_past=enc_layer_past,
                     enc_get_key_value=enc_get_key_value,
+                    enc_self_attention_relative_position_bias=enc_self_attention_relative_position_bias,
                 )
             else:
                 assert self.encoder_hidden_state is not None
@@ -159,6 +179,8 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
             enc_attn_mask=enc_attn_mask,
             dec_layer_past=dec_layer_past,
             dec_get_key_value=dec_get_key_value,
+            dec_self_attention_relative_position_bias=dec_self_attention_relative_position_bias,
+            dec_cross_attention_relative_position_bias=dec_cross_attention_relative_position_bias,
         )
 
         return dec_output, enc_output

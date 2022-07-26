@@ -15,7 +15,7 @@
 
 
 try:
-    from apex.contrib.layer_norm.layer_norm import FastLayerNorm
+    from apex.transformer.layers.layer_norm import FastLayerNorm
     from apex.normalization.fused_layer_norm import MixedFusedLayerNorm
 
     HAVE_APEX = True
@@ -23,7 +23,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 
-def get_layer_norm(hidden_size, eps=1e-5, persist_layer_norm=False):
+def get_layer_norm(hidden_size, eps=1e-5, persist_layer_norm=False, sequence_parallel=False):
     # List of hiddens sizes supported in the persistent layer norm kernel
     # If the hidden size is not supported, fall back to the non-persistent
     # kernel.
@@ -57,6 +57,6 @@ def get_layer_norm(hidden_size, eps=1e-5, persist_layer_norm=False):
         persist_layer_norm = False
 
     if persist_layer_norm:
-        return FastLayerNorm(hidden_size, eps)
+        return FastLayerNorm(hidden_size, eps, sequence_parallel_enabled=sequence_parallel)
     else:
-        return MixedFusedLayerNorm(hidden_size, eps)
+        return MixedFusedLayerNorm(hidden_size, eps, sequence_parallel_enbaled=sequence_parallel)

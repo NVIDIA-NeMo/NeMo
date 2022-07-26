@@ -232,6 +232,8 @@ class TestGPTModel:
                         attention_mask=attn_mask.cuda(),
                         labels=None,
                     )
+                # output is [b s h]
+                assert output_tensor.shape[0] == 1
                 assert output_tensor.shape[1] == tokens.shape[1]
                 assert output_tensor.shape[2] == gpt_model.padded_vocab_size
                 assert output_tensor.dtype == dtype

@@ -150,6 +150,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             position_embedding_type=self.cfg.get('position_embedding_type', 'learned_absolute'),
             relative_attention_num_buckets=self.cfg.get('relative_attention_num_buckets', 32),
             relative_attention_max_distance=self.cfg.get('relative_attention_max_distance', 128),
+            relative_position_bias_self_attention_only=self.cfg.get(
+                'relative_position_bias_self_attention_only', True
+            ),
             precision=self.cfg.get('precision', 16),
             fp32_residual_connection=self.cfg.get('fp32_residual_connection', False),
             activations_checkpoint_method=self.cfg.get('activations_checkpoint_method', None),
@@ -270,12 +273,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
             # when using pipeline parallelism, we need keep the word and position embeddings in sync
             self.allreduce_word_and_position_embeddings()
-
-        # while async grad allreduce is enabled, bprop will keep moving forward without waiting for
-        # the finish of async grad AR works. Hence, to guarantee the correctness of grads reduction,
-        # we cannot start weight update until all async grad AR works are done.
-        if self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) == 1:
-            torch.cuda.synchronize()
 
         ## logging
         # we can only log on one rank if it is rank zero so we broadcast from last rank
@@ -401,14 +398,14 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                     parallel_state.is_rank_in_position_embedding_group()
                     and parallel_state.get_pipeline_model_parallel_world_size() > 1
                     and parallel_state.get_pipeline_model_parallel_split_rank() is not None
+                    and self.cfg.get('position_embedding_type') == 'learned_absolute'
                 ):
-                    if self.cfg.get('position_embedding_type') != 'relative':
-                        position_embeddings_weight = self.enc_dec_model.position_embeddings_weight()
-                        if self.megatron_amp_o2:
-                            grad = position_embeddings_weight.main_grad
-                        else:
-                            grad = position_embeddings_weight.grad
-                        torch.distributed.all_reduce(grad, group=parallel_state.get_position_embedding_group())
+                    position_embeddings_weight = self.enc_dec_model.position_embeddings_weight()
+                    if self.megatron_amp_o2:
+                        grad = position_embeddings_weight.main_grad
+                    else:
+                        grad = position_embeddings_weight.grad
+                    torch.distributed.all_reduce(grad, group=parallel_state.get_position_embedding_group())
 
     def get_forward_output_and_loss_func(self):
         def fwd_output_and_loss_func(batch, model):

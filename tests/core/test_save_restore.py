@@ -19,6 +19,7 @@ from typing import Dict, Optional, Set, Union
 
 import pytest
 import torch
+from huggingface_hub.hf_api import ModelFilter, ModelInfo
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.models import EncDecCTCModel, EncDecCTCModelBPE
@@ -605,3 +606,53 @@ class TestSaveRestore:
         restored_state_dict = restored_model.state_dict()
         for orig, restored in zip(original_state_dict.keys(), restored_state_dict.keys()):
             assert (original_state_dict[orig] - restored_state_dict[restored]).abs().mean() < 1e-6
+
+    @pytest.mark.unit
+    def test_hf_model_filter(self):
+        filt = ModelPT.get_hf_model_filter()
+        assert isinstance(filt, ModelFilter)
+        assert filt.library == 'nemo'
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_hf_model_info(self):
+        filt = ModelPT.get_hf_model_filter()
+
+        # check no override results
+        model_infos = ModelPT.search_huggingface_models(model_filter=None)
+        assert len(model_infos) > 0
+
+        # check with default override results (should match above)
+        default_model_infos = ModelPT.search_huggingface_models(model_filter=filt)
+        assert len(model_infos) == len(default_model_infos)
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_hf_model_info_with_card_data(self):
+        filt = ModelPT.get_hf_model_filter()
+
+        # check no override results
+        model_infos = ModelPT.search_huggingface_models(model_filter=filt)
+        assert len(model_infos) > 0
+        assert not hasattr(model_infos[0], 'cardData')
+
+        # check overriden defaults
+        filt.resolve_card_info = True
+        model_infos = ModelPT.search_huggingface_models(model_filter=filt)
+        assert len(model_infos) > 0
+        assert hasattr(model_infos[0], 'cardData') and model_infos[0].cardData is not None
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_hf_model_info_with_limited_results(self):
+        filt = ModelPT.get_hf_model_filter()
+
+        # check no override results
+        model_infos = ModelPT.search_huggingface_models(model_filter=filt)
+        assert len(model_infos) > 0
+
+        # check overriden defaults
+        filt.limit_results = 5
+        new_model_infos = ModelPT.search_huggingface_models(model_filter=filt)
+        assert len(new_model_infos) <= 5
+        assert len(new_model_infos) < len(model_infos)

@@ -21,6 +21,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.utils.activations import Swish
+from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 from nemo.utils import logging
@@ -137,41 +138,60 @@ class ConformerConvolution(nn.Module):
     Args:
         d_model (int): hidden dimension
         kernel_size (int): kernel size for depthwise convolution
+        pointwise_activation (str): name of the activation function to be used for the pointwise conv.
+            Note that Conformer uses a special key `glu_` which is treated as the original default from
+            the paper.
     """
 
-    def __init__(self, d_model, kernel_size, norm_type='batch_norm'):
+    def __init__(self, d_model, kernel_size, norm_type='batch_norm', pointwise_activation='glu_'):
         super(ConformerConvolution, self).__init__()
         assert (kernel_size - 1) % 2 == 0
         self.d_model = d_model
+        self.kernel_size = kernel_size
+
+        if pointwise_activation in activation_registry:
+            self.pointwise_activation = activation_registry[pointwise_activation]()
+            dw_conv_input_dim = d_model * 2
+
+            if hasattr(self.pointwise_activation, 'inplace'):
+                self.pointwise_activation.inplace = True
+        else:
+            self.pointwise_activation = pointwise_activation
+            dw_conv_input_dim = d_model
 
         self.pointwise_conv1 = nn.Conv1d(
             in_channels=d_model, out_channels=d_model * 2, kernel_size=1, stride=1, padding=0, bias=True
         )
         self.depthwise_conv = nn.Conv1d(
-            in_channels=d_model,
-            out_channels=d_model,
+            in_channels=dw_conv_input_dim,
+            out_channels=dw_conv_input_dim,
             kernel_size=kernel_size,
             stride=1,
             padding=(kernel_size - 1) // 2,
-            groups=d_model,
+            groups=dw_conv_input_dim,
             bias=True,
         )
         if norm_type == 'batch_norm':
-            self.batch_norm = nn.BatchNorm1d(d_model)
+            self.batch_norm = nn.BatchNorm1d(dw_conv_input_dim)
         elif norm_type == 'layer_norm':
-            self.batch_norm = nn.LayerNorm(d_model)
+            self.batch_norm = nn.LayerNorm(dw_conv_input_dim)
         else:
             raise ValueError(f"conv_norm_type={norm_type} is not valid!")
 
         self.activation = Swish()
         self.pointwise_conv2 = nn.Conv1d(
-            in_channels=d_model, out_channels=d_model, kernel_size=1, stride=1, padding=0, bias=True
+            in_channels=dw_conv_input_dim, out_channels=d_model, kernel_size=1, stride=1, padding=0, bias=True
         )
 
     def forward(self, x, pad_mask=None):
         x = x.transpose(1, 2)
         x = self.pointwise_conv1(x)
-        x = nn.functional.glu(x, dim=1)
+
+        # Compute the activation function or use GLU for original Conformer
+        if self.pointwise_activation == 'glu_':
+            x = nn.functional.glu(x, dim=1)
+        else:
+            x = self.pointwise_activation(x)
 
         if pad_mask is not None:
             x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
@@ -190,6 +210,18 @@ class ConformerConvolution(nn.Module):
         x = x.transpose(1, 2)
         return x
 
+    def reset_parameters_conv(self):
+        pw1_max = pw2_max = self.d_model ** -0.5
+        dw_max = self.kernel_size ** -0.5
+
+        with torch.no_grad():
+            nn.init.uniform_(self.pointwise_conv1.weight, -pw1_max, pw1_max)
+            nn.init.uniform_(self.pointwise_conv1.bias, -pw1_max, pw1_max)
+            nn.init.uniform_(self.pointwise_conv2.weight, -pw2_max, pw2_max)
+            nn.init.uniform_(self.pointwise_conv2.bias, -pw2_max, pw2_max)
+            nn.init.uniform_(self.depthwise_conv.weight, -dw_max, dw_max)
+            nn.init.uniform_(self.depthwise_conv.bias, -dw_max, dw_max)
+
 
 class ConformerFeedForward(nn.Module):
     """
@@ -198,6 +230,8 @@ class ConformerFeedForward(nn.Module):
 
     def __init__(self, d_model, d_ff, dropout, activation=Swish()):
         super(ConformerFeedForward, self).__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
         self.linear1 = nn.Linear(d_model, d_ff)
         self.activation = activation
         self.dropout = nn.Dropout(p=dropout)
@@ -209,3 +243,12 @@ class ConformerFeedForward(nn.Module):
         x = self.dropout(x)
         x = self.linear2(x)
         return x
+
+    def reset_parameters_ff(self):
+        ffn1_max = self.d_model ** -0.5
+        ffn2_max = self.d_ff ** -0.5
+        with torch.no_grad():
+            nn.init.uniform_(self.linear1.weight, -ffn1_max, ffn1_max)
+            nn.init.uniform_(self.linear1.bias, -ffn1_max, ffn1_max)
+            nn.init.uniform_(self.linear2.weight, -ffn2_max, ffn2_max)
+            nn.init.uniform_(self.linear2.bias, -ffn2_max, ffn2_max)

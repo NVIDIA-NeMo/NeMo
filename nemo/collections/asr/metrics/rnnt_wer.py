@@ -524,6 +524,8 @@ class RNNTWER(Metric):
             distances for all prediction - reference pairs, total number of words in all references.
     """
 
+    full_state_update = True
+
     def __init__(
         self, decoding: RNNTDecoding, batch_dim_index=0, use_cer=False, log_prediction=True, dist_sync_on_step=False
     ):

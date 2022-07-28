@@ -127,6 +127,8 @@ You may find the example config files of Conformer-Transducer model with charact
 ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_transducer_char.yaml`` and
 with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_transducer_bpe.yaml``.
 
+.. _LSTM-Transducer_model:
+
 LSTM-Transducer
 ---------------
 
@@ -138,11 +140,44 @@ It can be trained/used in unidirectional or bidirectional mode. The unidirection
 This model supports both the sub-word level and character level encodings. You may find the example config file of RNNT model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml``.
 You can find more details on the config files for the RNNT models at ``LSTM-Transducer <./configs.html#lstm-transducer>``.
 
+.. _LSTM-CTC_model:
+
 LSTM-CTC
--------
+--------
 
 LSTM-CTC model is a CTC-variant of the LSTM-Transducer model which uses CTC loss/decoding instead of Transducer.
 You may find the example config file of LSTM-CTC model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml``.
+
+.. _Squeezeformer-CTC_model:
+
+Squeezeformer-CTC
+-----------------
+
+Squeezeformer-CTC is a CTC-based variant of the Squeezeformer model introduced in :cite:`asr-models-kim2022squeezeformer`. Squeezeformer-CTC has a
+similar encoder as the original Squeezeformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model. The vast majority of the architecture is similar to Conformer model, so please refer to `Conformer-CTC <./models.html#conformer-ctc>`.
+
+The model primarily differs from Conformer in the following ways :
+
+* Temporal U-Net style time reduction, effectively reducing memory consumption and FLOPs for execution.
+* Unified activations throughout the model.
+* Simplification of module structure, removal of redundant layers.
+
+Here is the overall architecture of the encoder of Squeezeformer-CTC:
+
+    .. image:: images/squeezeformer.png
+        :align: center
+        :alt: Squeezeformer-CTC Model
+        :scale: 50%
+
+This model supports both the sub-word level and character level encodings. You can find more details on the config files for the
+Squeezeformer-CTC models at `Squeezeformer-CTC <./configs.html#squeezeformer-ctc>`. The variant with sub-word encoding is a BPE-based model
+which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class, while the
+character-based variant is based on :class:`~nemo.collections.asr.models.EncDecCTCModel`.
+
+You may find the example config files of Squeezeformer-CTC model with character-based encoding at
+``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and
+with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``.
+
 
 References
 ----------

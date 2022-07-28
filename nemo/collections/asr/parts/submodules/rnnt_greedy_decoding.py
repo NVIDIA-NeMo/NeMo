@@ -539,9 +539,12 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     if self.preserve_alignments:
                         # Insert logprobs into last timestep per sample
                         logp_vals = logp.to('cpu')
+                        logp_ids = logp_vals.max(1)[1]
                         for batch_idx in range(batchsize):
                             if time_idx < out_len[batch_idx]:
-                                hypotheses[batch_idx].alignments[-1].append((logp_vals[batch_idx], k[batch_idx]))
+                                hypotheses[batch_idx].alignments[-1].append(
+                                    (logp_vals[batch_idx], logp_ids[batch_idx])
+                                )
                         del logp_vals
                     del logp
 
@@ -710,9 +713,12 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     if self.preserve_alignments:
                         # Insert logprobs into last timestep per sample
                         logp_vals = logp.to('cpu')
+                        logp_ids = logp_vals.max(1)[1]
                         for batch_idx in range(batchsize):
                             if time_idx < out_len[batch_idx]:
-                                hypotheses[batch_idx].alignments[-1].append((logp_vals[batch_idx], k[batch_idx]))
+                                hypotheses[batch_idx].alignments[-1].append(
+                                    (logp_vals[batch_idx], logp_ids[batch_idx])
+                                )
                         del logp_vals
                     del logp
 

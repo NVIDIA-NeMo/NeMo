@@ -702,7 +702,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             tensorboard_logs = {
                 'train_loss': loss_value,
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
-                'global_step': self.trainer.global_step,
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
 
             if (sample_id + 1) % log_every_n_steps == 0:
@@ -735,7 +735,11 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             if AccessMixin.is_access_enabled():
                 AccessMixin.reset_registry(self)
 
-            tensorboard_logs = {'train_loss': loss_value, 'learning_rate': self._optimizer.param_groups[0]['lr']}
+            tensorboard_logs = {
+                'train_loss': loss_value,
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
 
             if compute_wer:
                 tensorboard_logs.update({'training_batch_wer': wer})
@@ -824,6 +828,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             tensorboard_logs['val_wer_num'] = wer_num
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
+
+        self.log_dict({'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32)})
 
         return tensorboard_logs
 

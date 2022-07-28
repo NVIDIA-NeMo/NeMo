@@ -58,6 +58,9 @@ class ConvSubsampling(torch.nn.Module):
     def __init__(self, subsampling, subsampling_factor, feat_in, feat_out, conv_channels, activation=nn.ReLU()):
         super(ConvSubsampling, self).__init__()
         self._subsampling = subsampling
+        self._conv_channels = conv_channels
+        self._feat_in = feat_in
+        self._feat_out = feat_out
 
         if subsampling_factor % 2 != 0:
             raise ValueError("Sampling factor should be a multiply of 2!")
@@ -95,6 +98,50 @@ class ConvSubsampling(torch.nn.Module):
                     )
                 )
                 in_channels = conv_channels
+
+        elif subsampling == 'dw_striding':
+            self._padding = 1
+            self._stride = 2
+            self._kernel_size = 3
+            self._ceil_mode = False
+
+            # Layer 1
+            layers.append(
+                torch.nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=conv_channels,
+                    kernel_size=self._kernel_size,
+                    stride=self._stride,
+                    padding=self._padding,
+                )
+            )
+            in_channels = conv_channels
+            layers.append(activation)
+
+            for i in range(self._sampling_num - 1):
+                layers.extend(
+                    [
+                        torch.nn.Conv2d(
+                            in_channels=in_channels,
+                            out_channels=in_channels,
+                            kernel_size=self._kernel_size,
+                            stride=self._stride,
+                            padding=self._padding,
+                            groups=in_channels,
+                        ),
+                        torch.nn.Conv2d(
+                            in_channels=in_channels,
+                            out_channels=conv_channels,
+                            kernel_size=1,
+                            stride=1,
+                            padding=0,
+                            groups=1,
+                        ),
+                    ]
+                )
+                layers.append(activation)
+                in_channels = conv_channels
+
         elif subsampling == 'striding':
             self._padding = 1
             self._stride = 2
@@ -138,7 +185,7 @@ class ConvSubsampling(torch.nn.Module):
             repeat_num=self._sampling_num,
         )
         x = x.unsqueeze(1)
-        if self._subsampling == 'striding':
+        if self._subsampling in ['striding', 'dw_striding']:
             # added in order to prevent slowdown in torch.nn.Conv2d with bfloat16 / CUDNN v8 API
             # to be removed once the above is fixed in cudnn
             with torch.cuda.amp.autocast(dtype=torch.float32):
@@ -149,6 +196,29 @@ class ConvSubsampling(torch.nn.Module):
         b, c, t, f = x.size()
         x = self.out(x.transpose(1, 2).reshape(b, t, -1))
         return x, lengths
+
+    def reset_parameters(self):
+        # initialize weights
+        if self._subsampling == 'dw_striding':
+            with torch.no_grad():
+                # init conv
+                scale = 1.0 / self._kernel_size
+                dw_max = (self._kernel_size ** 2) ** -0.5
+                pw_max = self._conv_channels ** -0.5
+
+                torch.nn.init.uniform_(self.conv[0].weight, -scale, scale)
+                torch.nn.init.uniform_(self.conv[0].bias, -scale, scale)
+
+                for idx in range(2, len(self.conv), 3):
+                    torch.nn.init.uniform_(self.conv[idx].weight, -dw_max, dw_max)
+                    torch.nn.init.uniform_(self.conv[idx].bias, -dw_max, dw_max)
+                    torch.nn.init.uniform_(self.conv[idx + 1].weight, -pw_max, pw_max)
+                    torch.nn.init.uniform_(self.conv[idx + 1].bias, -pw_max, pw_max)
+
+                # init fc (80 * 64 = 5120 from https://github.com/kssteven418/Squeezeformer/blob/13c97d6cf92f2844d2cb3142b4c5bfa9ad1a8951/src/models/conformer_encoder.py#L487
+                fc_scale = (self._feat_out * self._feat_in / self._sampling_num) ** -0.5
+                torch.nn.init.uniform_(self.out.weight, -fc_scale, fc_scale)
+                torch.nn.init.uniform_(self.out.bias, -fc_scale, fc_scale)
 
 
 def calc_length(lengths, padding, kernel_size, stride, ceil_mode, repeat_num=1):
@@ -162,3 +232,68 @@ def calc_length(lengths, padding, kernel_size, stride, ceil_mode, repeat_num=1):
         else:
             lengths = torch.floor(lengths)
     return lengths.to(dtype=torch.int)
+
+
+class TimeReductionModule(nn.Module):
+    """
+    Squeezeformer Time Reduction procedure. Downsamples the audio by `stride` in the time dimension.
+
+    Args:
+        d_model (int): input dimension of MultiheadAttentionMechanism and PositionwiseFeedForward
+        out_dim (int): Output dimension of the module.
+        kernel_size (int): Conv kernel size for depthwise convolution in convolution module
+        stride (int): Downsampling factor in time dimension.
+    """
+
+    def __init__(self, d_model: int, out_dim: int, kernel_size: int = 5, stride: int = 2):
+        super().__init__()
+
+        self.d_model = d_model
+        self.out_dim = out_dim
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = max(0, self.kernel_size - self.stride)
+
+        self.dw_conv = nn.Conv1d(
+            in_channels=d_model,
+            out_channels=d_model,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=self.padding,
+            groups=d_model,
+        )
+
+        self.pw_conv = nn.Conv1d(
+            in_channels=d_model, out_channels=out_dim, kernel_size=1, stride=1, padding=0, groups=1,
+        )
+
+        self.reset_parameters()
+
+    def forward(self, x, att_mask=None, pad_mask=None):
+        x = x.transpose(1, 2)  # [B, C, T]
+        if pad_mask is not None:
+            x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
+
+        x = self.dw_conv(x)
+        x = self.pw_conv(x)
+
+        x = x.transpose(1, 2)  # [B, T, C]
+
+        B, T, D = x.size()
+        if att_mask is not None and pad_mask is not None:
+            att_mask = att_mask[:, :: self.stride, :: self.stride]
+            pad_mask = pad_mask[:, :: self.stride]
+            L = pad_mask.size(-1)
+            x = torch.nn.functional.pad(x, (0, 0, 0, L - T))
+
+        return x, att_mask, pad_mask
+
+    def reset_parameters(self):
+        dw_max = self.kernel_size ** -0.5
+        pw_max = self.d_model ** -0.5
+
+        with torch.no_grad():
+            torch.nn.init.uniform_(self.dw_conv.weight, -dw_max, dw_max)
+            torch.nn.init.uniform_(self.dw_conv.bias, -dw_max, dw_max)
+            torch.nn.init.uniform_(self.pw_conv.weight, -pw_max, pw_max)
+            torch.nn.init.uniform_(self.pw_conv.bias, -pw_max, pw_max)

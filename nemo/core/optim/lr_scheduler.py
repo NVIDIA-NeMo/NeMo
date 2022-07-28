@@ -361,6 +361,15 @@ def _poly_decay(initial_lr, step, decay_steps, power, min_lr, cycle):
     return lr
 
 
+def _noam_hold_annealing(initial_lr, step, warmup_steps, hold_steps, decay_rate, min_lr):
+    # hold_steps = total number of steps to hold the LR, not the warmup + hold steps.
+    T_warmup_decay = max(1, warmup_steps ** decay_rate)
+    T_hold_decay = max(1, (step - hold_steps) ** decay_rate)
+    lr = (initial_lr * T_warmup_decay) / T_hold_decay
+    lr = max(lr, min_lr)
+    return lr
+
+
 class SquareAnnealing(WarmupPolicy):
     def __init__(self, optimizer, *, max_steps, min_lr=1e-5, last_epoch=-1, **kwargs):
         super().__init__(optimizer=optimizer, max_steps=max_steps, last_epoch=last_epoch, min_lr=min_lr, **kwargs)
@@ -491,6 +500,70 @@ class NoamAnnealing(_LRScheduler):
         if step > self.warmup_steps:
             out_lr = max(out_lr, self.min_lr)
         return out_lr
+
+
+class NoamHoldAnnealing(WarmupHoldPolicy):
+    def __init__(self, optimizer, *, max_steps, decay_rate=0.5, min_lr=0.0, last_epoch=-1, **kwargs):
+        """
+        Implementation of the Noam Hold Annealing policy from the SqueezeFormer paper.
+
+        Unlike NoamAnnealing, the peak learning rate can be explicitly set for this scheduler.
+        The schedule first performs linear warmup, then holds the peak LR, then decays with some schedule for
+        the remainder of the steps. Therefore the min-lr is still dependent on the hyper parameters selected.
+
+        It's schedule is determined by three factors-
+
+        Warmup Steps: Initial stage, where linear warmup occurs uptil the peak LR is reached. Unlike NoamAnnealing,
+            the peak LR is explicitly stated here instead of a scaling factor.
+
+        Hold Steps: Intermediate stage, where the peak LR is maintained for some number of steps. In this region,
+            the high peak LR allows the model to converge faster if training is stable. However the high LR
+            may also cause instability during training. Should usually be a significant fraction of training
+            steps (around 30-40% of the entire training steps).
+
+        Decay Steps: Final stage, where the LR rapidly decays with some scaling rate (set by decay rate).
+            To attain Noam decay, use 0.5, for Squeezeformer recommended decay, use 1.0. The fast decay after
+            prolonged high LR during hold phase allows for rapid convergence.
+
+        References:
+            - [Squeezeformer: An Efficient Transformer for Automatic Speech Recognition](https://arxiv.org/abs/2206.00888)
+
+        Args:
+            optimizer: Pytorch compatible Optimizer object.
+            warmup_steps: Number of training steps in warmup stage
+            warmup_ratio: Ratio of warmup steps to total steps
+            hold_steps: Number of training steps to hold the learning rate after warm up
+            hold_ratio: Ratio of hold steps to total steps
+            max_steps: Total number of steps while training or `None` for
+                infinite training
+            decay_rate: Float value describing the polynomial decay after the hold period. Default value
+                of 0.5 corresponds to Noam decay.
+            min_lr: Minimum learning rate.
+        """
+        self.decay_rate = decay_rate
+        super().__init__(optimizer=optimizer, max_steps=max_steps, last_epoch=last_epoch, min_lr=min_lr, **kwargs)
+
+    def _get_lr(self, step):
+        if self.warmup_steps is None or self.warmup_steps == 0:
+            raise ValueError("Noam scheduler cannot be used without warmup steps")
+
+        if self.hold_steps > 0:
+            hold_steps = self.hold_steps - self.warmup_steps
+        else:
+            hold_steps = 0
+
+        new_lrs = [
+            _noam_hold_annealing(
+                initial_lr,
+                step=step,
+                warmup_steps=self.warmup_steps,
+                hold_steps=hold_steps,
+                decay_rate=self.decay_rate,
+                min_lr=self.min_lr,
+            )
+            for initial_lr in self.base_lrs
+        ]
+        return new_lrs
 
 
 class WarmupAnnealing(WarmupPolicy):
@@ -888,6 +961,7 @@ AVAILABLE_SCHEDULERS = {
     'SquareAnnealing': SquareAnnealing,
     'CosineAnnealing': CosineAnnealing,
     'NoamAnnealing': NoamAnnealing,
+    'NoamHoldAnnealing': NoamHoldAnnealing,
     'WarmupAnnealing': WarmupAnnealing,
     'InverseSquareRootAnnealing': InverseSquareRootAnnealing,
     'T5InverseSquareRootAnnealing': T5InverseSquareRootAnnealing,

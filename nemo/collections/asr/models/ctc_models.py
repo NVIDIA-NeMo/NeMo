@@ -574,7 +574,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         tensorboard_logs = {
             'train_loss': loss_value,
             'learning_rate': self._optimizer.param_groups[0]['lr'],
-            'global_step': self.trainer.global_step,
+            'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
         }
 
         if hasattr(self, '_trainer') and self._trainer is not None:
@@ -628,6 +628,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         )
         wer, wer_num, wer_denom = self._wer.compute()
         self._wer.reset()
+
+        self.log_dict({'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32)})
+
         return {
             'val_loss': loss_value,
             'val_wer_num': wer_num,

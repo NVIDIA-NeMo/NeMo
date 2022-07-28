@@ -17,6 +17,17 @@ This script serves three goals:
     (1) Demonstrate how to use NeMo Models outside of PytorchLightning
     (2) Shows example of batch ASR inference
     (3) Serves as CI test for pre-trained checkpoint
+
+python speech_to_text_buffered_infer_ctc.py \
+    --asr_model="<Add model path here>" \
+    --test_manifest="<Add test dataset here>" \
+    --model_stride=4 \
+    --batch_size=32 \
+    --total_buffer_in_secs=4.0 \
+    --chunk_len_in_ms=1000
+
+
+
 """
 
 import copy
@@ -27,6 +38,7 @@ from argparse import ArgumentParser
 
 import torch
 from omegaconf import OmegaConf
+from tqdm import tqdm
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
@@ -47,7 +59,7 @@ def get_wer_feat(mfst, asr, frame_len, tokens_per_chunk, delay, preprocessor_cfg
     refs = []
 
     with open(mfst, "r") as mfst_f:
-        for l in mfst_f:
+        for l in tqdm(mfst_f, desc="Sample:"):
             asr.reset()
             row = json.loads(l.strip())
             asr.read_audio_file(row['audio_filepath'], delay, model_stride_in_secs)
@@ -129,7 +141,7 @@ def main():
         model_stride_in_secs,
         asr_model.device,
     )
-    logging.info(f"WER is {round(wer, 2)} when decoded with a delay of {round(mid_delay*model_stride_in_secs, 2)}s")
+    logging.info(f"WER is {round(wer, 4)} when decoded with a delay of {round(mid_delay*model_stride_in_secs, 2)}s")
 
     if args.output_path is not None:
 

@@ -45,7 +45,7 @@ Key Features
 
 * Speech processing
     * `Automatic Speech Recognition (ASR) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/intro.html>`_
-        * Supported models: Jasper, QuartzNet, CitriNet, Conformer-CTC, Conformer-Transducer, ContextNet, LSTM-Transducer (RNNT), LSTM-CTC, ...
+        * Supported models: Jasper, QuartzNet, CitriNet, Conformer-CTC, Conformer-Transducer, Squeezeformer-CTC, Squeezeformer-Transducer, ContextNet, LSTM-Transducer (RNNT), LSTM-CTC, ...
         * Supports CTC and Transducer/RNNT losses/decoders
         * Beam Search decoding
         * `Language Modelling for ASR <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/asr_language_modeling.html>`_: N-gram LM in fusion with Beam Search decoding, Neural Rescoring with Transformer

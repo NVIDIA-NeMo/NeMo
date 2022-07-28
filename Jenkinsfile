@@ -357,6 +357,37 @@ pipeline {
       }
     }
 
+    stage('L2: ASR dev run - part two') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        stage('L2: Speech to Text WPE - Squeezeformer') {
+          steps {
+            sh 'python examples/asr/asr_ctc/speech_to_text_ctc_bpe.py \
+            --config-path="../conf/squeezeformer" --config-name="squeezeformer_ctc_bpe" \
+            model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
+            model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
+            model.tokenizer.dir="/home/TestData/asr_tokenizers/an4_wpe_128/" \
+            model.tokenizer.type="wpe" \
+            model.encoder.d_model=144 \
+            model.train_ds.batch_size=4 \
+            model.validation_ds.batch_size=4 \
+            trainer.devices=[0] \
+            trainer.accelerator="gpu" \
+            +trainer.fast_dev_run=True \
+            exp_manager.exp_dir=examples/asr/speech_to_text_wpe_squeezeformer_results'
+            sh 'rm -rf examples/asr/speech_to_text_wpe_squeezeformer_results'
+          }
+        }
+      }
+    }
+
+
     stage('L2: Speaker dev run') {
       when {
         anyOf {
@@ -3000,7 +3031,7 @@ pipeline {
                 4"
             sh "rm /home/TestData/nlp/megatron_gpt/TP2/test-increase.nemo"
           }
-        }        
+        }
       }
     }
     stage('L2: Megatron T5 Pretraining and Resume Training TP=2') {

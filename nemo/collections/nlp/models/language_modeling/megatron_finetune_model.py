@@ -99,7 +99,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                         metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
                         if metric_name != 'exact_string_match'
                         else metric()
-                        for _ in range(len(self.cfg.data.test_ds.src_file_name))
+                        for _ in range(len(data_cfg.src_file_name))
                     ]
                 else:
                     metric = [metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)]
@@ -387,7 +387,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                     metric = metric['acc']
             else:
                 self.log(metric_log_key, metric)
-                logging.info(f"{mode} {metric_name}: {metric}")
+                logging.info(f"{metric_log_key}: {metric}")
             metric_object.reset()
 
             averaged_loss.append(loss)
@@ -663,11 +663,11 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         if stage != 'test':
             self._validation_ds = self._build_eval_dataset(self.cfg.data.validation_ds)
 
-        if stage != 'validation':
+        if stage != 'validate':
             if hasattr(self.cfg.data, 'test_ds'):
                 self._test_ds = self._build_eval_dataset(self.cfg.data.test_ds)
 
-        if stage == 'validation' or stage == 'test':
+        if stage == 'validate' or stage == 'test':
             return
         self._train_ds = self._build_train_dataset(self.cfg.data.train_ds)
         logging.info(f'Finished building datasets ...')

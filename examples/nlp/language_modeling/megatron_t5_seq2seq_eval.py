@@ -65,9 +65,14 @@ def main(cfg) -> None:
             trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
     # Get the T5 Base configuration.
-    t5_cfg = MegatronT5GLUEModel.restore_from(
-        restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True
-    )
+    if hasattr(t5_cfg.data.validation_ds, 'task_name'):
+        t5_cfg = MegatronT5GLUEModel.restore_from(
+            restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True
+        )
+    else:
+        t5_cfg = MegatronT5FinetuneModel.restore_from(
+            restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True
+        )
 
     # Override the T5 configuration with the one from the config file.
     # NOTE: Only data can be overriden here since this the file being restored here should already correspond to a GLUE/XNLI finetuned model.

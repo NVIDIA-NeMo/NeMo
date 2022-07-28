@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
+from nemo.collections.asr.parts.utils.speaker_utils import get_rttm_speaker_index, rttm_to_labels
 from nemo.collections.common.parts.preprocessing import manifest, parsers
 from nemo.utils import logging
 
@@ -209,7 +210,13 @@ class ASRAudioText(AudioText):
             **kwargs: Kwargs to pass to `AudioText` constructor.
         """
 
-        ids, audio_files, durations, texts, offsets, = [], [], [], [], []
+        ids, audio_files, durations, texts, offsets, = (
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
         speakers, orig_srs, token_labels, langs = [], [], [], []
         for item in manifest.item_iter(manifests_files):
             ids.append(item['id'])
@@ -415,7 +422,7 @@ class FeatureSequenceLabel(_Collection):
         super().__init__(data)
 
     def relative_speaker_parser(self, seq_label):
-        """ Convert sequence of speaker labels to relative labels.
+        """Convert sequence of speaker labels to relative labels.
         Convert sequence of absolute speaker to sequence of relative speaker [E A C A E E C] -> [0 1 2 1 0 0 2]
         In this seq of label , if label do not appear before, assign new relative labels len(pos); else reuse previous assigned relative labels.
         Args:
@@ -628,7 +635,7 @@ class DiarizationSpeechLabel(DiarizationLabel):
             seq_eval_mode (bool):
                 If True, F1 score will be calculated for each speaker pair during inference mode.
             pairwise_infer (bool):
-                If True, this Dataset class operates in inference mode. In inference mode, a set of speakers in the input audio
+                If True, this dataset class operates in inference mode. In inference mode, a set of speakers in the input audio
                 is split into multiple pairs of speakers and speaker tuples (e.g. 3 speakers: [(0,1), (1,2), (0,2)]) and then
                 fed into the diarization system to merge the individual results.
             *args: Args to pass to `SpeechLabel` constructor.
@@ -651,6 +658,7 @@ class DiarizationSpeechLabel(DiarizationLabel):
         )
 
         for item in manifest.item_iter(manifests_files, parse_func=self.__parse_item_rttm):
+            # Inference mode
             if self.pairwise_infer:
                 clus_speaker_digits = sorted(list(set([x[2] for x in clus_label_dict[item['uniq_id']]])))
                 if item['rttm_file']:
@@ -664,17 +672,17 @@ class DiarizationSpeechLabel(DiarizationLabel):
                     sess_spk_dict = None
                     rttm_speaker_digits = None
 
-                if len(clus_speaker_digits) == 1:
-                    spk_comb_list = [(0, 1)]
-                else:
-                    spk_comb_list = [x for x in combinations(clus_speaker_digits, 2)]
-
+            # Training mode
             else:
-                target_spks = ((0, 1),)
-                spk_comb_list = [target_spks]
+                sess_spk_dict = get_rttm_speaker_index(rttm_to_labels(item['rttm_file']))
+                target_spks = tuple(sess_spk_dict.keys())
                 clus_speaker_digits = target_spks
-                rttm_speaker_digits = None
-                sess_spk_dict = None
+                rttm_speaker_digits = target_spks
+
+            if len(clus_speaker_digits) <= 2:
+                spk_comb_list = [(0, 1)]
+            else:
+                spk_comb_list = [x for x in combinations(clus_speaker_digits, 2)]
 
             for target_spks in spk_comb_list:
                 audio_files.append(item['audio_file'])

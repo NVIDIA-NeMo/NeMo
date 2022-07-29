@@ -49,7 +49,7 @@ class TestRegexTokenizer:
         tokenizer = RegExTokenizer(regex=DEFAULT_REGEX)
 
         tokens = tokenizer.text_to_tokens("Zc")
-        assert ''.join(tokens) == '^Zc&'
+        assert ''.join(tokens) == 'Zc'
 
     @pytest.mark.unit
     def test_text_2_ids(self):
@@ -58,7 +58,7 @@ class TestRegexTokenizer:
         tokenizer.build_vocab_from_csv(data_csv_file=data_file_path)
 
         ids = tokenizer.text_to_ids("Zc")
-        assert ','.join(list(map(lambda x: str(x), ids))) == '2,1,11,3'
+        assert ','.join(list(map(lambda x: str(x), ids))) == '1,11'
 
     @pytest.mark.unit
     def test_tokens_2_text(self):

@@ -93,6 +93,8 @@ model:
   transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
   hidden_steps: 32 # Number of latent vectors to use for pereceiver encoders
   num_self_attention_per_cross_attention: 1 # Number of self-attention layers for every cross-attention layer.
+  share_token_embeddings: True # If True share encoder/decoder embeddings
+  share_decoder_tokens_head_embeddings: True # If True share decoder embeddings and decoder projection to logits
 
   # precision
   native_amp_init_scale: 4294967296 # 2 ** 32

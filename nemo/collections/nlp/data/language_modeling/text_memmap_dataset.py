@@ -40,6 +40,7 @@ class TextMemMapDataset(Dataset):
         self, dataset_paths, newline_int=10, header_lines=0, workers=None, tokenizer=None, sort_dataset_paths=True,
     ):
         super().__init__()
+        self.mdata_midx_list = []
 
         if len(dataset_paths) < 1:
             raise ValueError("files_list must contain at leat one file name")

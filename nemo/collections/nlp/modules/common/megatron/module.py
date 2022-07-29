@@ -43,14 +43,14 @@ class MegatronModule(torch.nn.Module):
     """Megatron specific extensions of torch Module with support
     for pipelining."""
 
-    def __init__(self, share_word_embeddings=True):
+    def __init__(self, share_token_embeddings=True):
         if not HAVE_APEX:
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super(MegatronModule, self).__init__()
 
-        self.share_word_embeddings = share_word_embeddings
+        self.share_token_embeddings = share_token_embeddings
 
     def word_embeddings_weight(self):
         if self.pre_process:
@@ -66,9 +66,9 @@ class MegatronModule(torch.nn.Module):
                 )
         else:
             # This is the pipeline parallel last stage.
-            if not self.share_word_embeddings:
+            if not self.share_token_embeddings:
                 raise Exception(
-                    'word_embeddings_weight() called for last ' 'stage, but share_word_embeddings is false'
+                    'word_embeddings_weight() called for last ' 'stage, but share_token_embeddings is false'
                 )
             return self.word_embeddings.weight
 
@@ -89,8 +89,8 @@ class MegatronModule(torch.nn.Module):
             raise ValueError(f"Pre_process is False, there is no position embedding on this rank.")
 
     def initialize_word_embeddings(self, init_method, vocab_size, hidden_size):
-        if not self.share_word_embeddings:
-            raise Exception('initialize_word_embeddings() was called but ' 'share_word_embeddings is false')
+        if not self.share_token_embeddings:
+            raise Exception('initialize_word_embeddings() was called but ' 'share_token_embeddings is false')
 
         # This function just initializes the word embeddings in the final stage
         # when we are using pipeline parallelism. If we aren't using pipeline
@@ -264,9 +264,9 @@ class Float16Module(MegatronModule):
                 )
         else:
             # This is the pipeline parallel last stage.
-            if not self.share_word_embeddings:
+            if not self.share_token_embeddings:
                 raise Exception(
-                    'word_embeddings_weight() called for last ' 'stage, but share_word_embeddings is false'
+                    'word_embeddings_weight() called for last ' 'stage, but share_token_embeddings is false'
                 )
             return self.module.word_embeddings.weight
 

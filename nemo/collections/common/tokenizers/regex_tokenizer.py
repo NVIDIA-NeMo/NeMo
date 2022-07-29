@@ -68,8 +68,9 @@ class RegExTokenizer(TokenizerSpec):
         self.sep_token = sep_token
         self.unk_token = unk_token
 
-        # holds base name of .model/.vocab files
-        self.base_fname = None
+        # holds names of .model/.vocab files
+        self.regex_file = None
+        self.vocab_file = None
 
         # initialize with default vocab
         self.vocab = {
@@ -96,12 +97,12 @@ class RegExTokenizer(TokenizerSpec):
         regex_string += r".)"
         self._compiled_regex = re.compile(regex_string)
 
+    @property
+    def vocab_size(self):
+        return len(self.vocab)
+
     def text_to_tokens(self, text):
-        # Begin token
-        tokens = [self.bos_token]
-        tokens.extend(self._compiled_regex.findall(text))
-        # End token
-        tokens.append(self.eos_token)
+        tokens = self._compiled_regex.findall(text)
 
         return tokens
 
@@ -137,18 +138,28 @@ class RegExTokenizer(TokenizerSpec):
             ids_list.append(ids)
         return ids_list
 
-    def ids_to_tokens(self, ids):
+    def ids_to_tokens(self, ids_list):
+        if len(ids_list) and not isinstance(ids_list[0], list):
+            ids_list = [ids_list]
+            added_list = True
+        else:
+            added_list = False
+
         tokens_list = []
-        for ids in ids:
+        for ids in ids_list:
+            tokens = []
             for token_id in ids:
                 token = self._decode_vocab.get(token_id)
                 if token is None:
                     raise ValueError(f"Token id {token_id} is not recognised")
+                tokens.append(token)
 
-            tokens = [self._decode_vocab.get(token_id) for token_id in ids]
             tokens_list.append(tokens)
 
-        return tokens_list
+        if added_list:
+            return tokens_list[0]
+        else:
+            return tokens_list
 
     def text_to_ids(self, text):
         tokens = self.text_to_tokens(text)
@@ -159,51 +170,73 @@ class RegExTokenizer(TokenizerSpec):
         tokens = self.ids_to_tokens(ids)
         return self.tokens_to_text(tokens)
 
-    def save_tokenizer(self, base_fname=None):
+    @property
+    def pad_id(self):
+        return 0
+
+    @property
+    def unk_id(self):
+        return 1
+
+    @property
+    def bos_id(self):
+        return 2
+
+    @property
+    def eos_id(self):
+        return 3
+
+    @property
+    def mask_id(self):
+        return 4
+
+    @property
+    def sep_id(self):
+        return 5
+
+    def _get_regex_vocab_files(self, regex_file=None, vocab_file=None):
         """
-        Saves tokenizer's regex (base_fname.model) and vocab (base_fname.vocab) files
+        Infers files or update if given.
         """
-        if base_fname.endswith(".model"):
-            base_fname = os.path.splitext(base_fname)[0]
+        regex_file = regex_file or self.regex_file
+        if not regex_file:
+            raise ValueError(f"regex_file must be specified")
 
-        if base_fname:
-            self.base_fname = base_fname
+        vocab_file = vocab_file or self.vocab_file
+        # try to infer vocab_file from regex_file
+        if not vocab_file:
+            vocab_file = os.path.splitext(regex_file)[0] + '.vocab'
 
-        if not self.base_fname:
-            raise ValueError(f"base_fname must be specified")
+        self.regex_file = regex_file
+        self.vocab_file = vocab_file
 
-        vocab_file = self.base_fname + '.vocab'
-        regex_file = self.base_fname + '.model'
+        return regex_file, vocab_file
 
-        logging.debug(f"Saving vocabulary to file = {vocab_file}")
+    def save_tokenizer(self, regex_file=None, vocab_file=None):
+        """
+        Saves tokenizer's regex and vocab files
+        """
+        regex_file, vocab_file = self._get_regex_vocab_files(regex_file=regex_file, vocab_file=vocab_file)
+
+        logging.info(f"Saving vocabulary to file = {vocab_file}")
         with open(vocab_file, 'w') as fp:
             for token in self.vocab:
                 fp.write(f"{token[0]}\n")
 
-        logging.debug(f"Saving regex to file = {regex_file}")
+        logging.info(f"Saving regex to file = {regex_file}")
         open(regex_file, 'w').write(self.regex)
 
-    def load_tokenizer(self, base_fname):
+    def load_tokenizer(self, regex_file=None, vocab_file=None):
         """
-        Loads tokenizer's regex (base_fname.model) and vocab (base_fname.vocab) files
+        Loads tokenizer's regex and vocab files
         """
-        if base_fname.endswith(".model"):
-            base_fname = os.path.splitext(base_fname)[0]
-
-        if base_fname:
-            self.base_fname = base_fname
-
-        if not self.base_fname:
-            raise ValueError(f"base_fname must be specified")
-
-        vocab_file = self.base_fname + '.vocab'
-        regex_file = self.base_fname + '.model'
+        regex_file, vocab_file = self._get_regex_vocab_files(regex_file=regex_file, vocab_file=vocab_file)
 
         # load vocab file
         # vocab_file: path to file with vocabulary which consists
         # of characters separated by \n (None/"" for empty vocab)
 
-        logging.debug(f"Loading vocabulary from file = {vocab_file}")
+        logging.info(f"Loading vocabulary from file = {vocab_file}")
         if os.path.exists(vocab_file):
             vocab = {}
             with open(vocab_file, "r") as f:
@@ -217,10 +250,13 @@ class RegExTokenizer(TokenizerSpec):
 
         # load regex from a file
         if os.path.exists(regex_file):
-            logging.debug(f"Loading regex from file = {regex_file}")
+            logging.info(f"Loading regex from file = {regex_file}")
             self.regex = open(regex_file, encoding="utf-8").read().strip()
         else:
             raise RuntimeError(f"Missing regex_file = {regex_file}")
+
+        self._update_cache()
+        self._compile_regex()
 
         return self
 

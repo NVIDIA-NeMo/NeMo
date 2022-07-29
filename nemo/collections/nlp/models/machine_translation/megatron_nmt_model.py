@@ -215,6 +215,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         # This returns the averaged loss across data-parallel groups.
         reduced_loss = super().validation_step(batch, batch_idx)
         tokens_enc, labels, enc_mask = batch['text_enc'], batch['labels'], batch['enc_mask']
+
         predicted_tokens_ids, _ = self.decode(
             tokens_enc,
             enc_mask,
@@ -222,6 +223,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             + self._cfg.max_generation_delta,  # Generate up to src-length + max generation delta. TODO: Implement better stopping when everything hits <EOS>.
             tokenizer=self.decoder_tokenizer,
         )
+
         if self.multilingual:
             source_processor = self.source_processor_list[dataloader_idx]
             target_processor = self.target_processor_list[dataloader_idx]
@@ -339,7 +341,8 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                 [(t, g, i) for (t, g, i) in zip(translations, ground_truths, inputs)],
                 group=parallel_state.get_data_parallel_group(),
             )
-            if parallel_state.get_data_parallel_rank() == 0:
+            # if parallel_state.get_data_parallel_rank() == 0:
+            if self.global_rank == 0:
                 _translations = []
                 _ground_truths = []
                 _inputs = []

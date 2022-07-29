@@ -33,6 +33,14 @@ from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
+try:
+    from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
+
+    HAVE_APEX = True
+except:
+    HAVE_APEX = False
+
+
 __all__ = ['DialogueS2SGenerationModel']
 
 
@@ -56,6 +64,8 @@ class DialogueS2SGenerationModel(NLPModel):
             with open_dict(t5_cfg):
                 t5_cfg.masked_softmax_fusion = False
                 t5_cfg.precision = 16
+                t5_cfg.encoder_arch = 'transformer'
+                t5_cfg.decoder_arch = 'transformer'
 
             language_model = MegatronT5Model.restore_from(
                 restore_path=cfg.language_model.lm_checkpoint, trainer=trainer, override_config_path=t5_cfg
@@ -151,7 +161,7 @@ class DialogueS2SGenerationModel(NLPModel):
             unmasked_unreduced_loss = self.language_model(
                 input_ids, labels[:, :-1], attention_masks, decoder_attn_masks[:, :-1], lm_labels=labels[:, 1:]
             )
-            loss = self.language_model.loss_func(decoder_attn_masks[:, 1:], unmasked_unreduced_loss)
+            loss = self.language_model.loss_func(decoder_attn_masks[:, 1:].contiguous(), unmasked_unreduced_loss)
         return loss
 
     def prepare_megatron_generation(self, labels, input_ids, template_length):
@@ -213,7 +223,15 @@ class DialogueS2SGenerationModel(NLPModel):
             generated_tokens = self.language_model.generate(**param_dict)
 
         elif self.cfg.library == 'megatron':
-            raise ValueError("Megatron Generation is not supported by DialogueS2SGenerationModel")
+            _reconfigure_microbatch_calculator(
+                rank=0,  # This doesn't matter since it is only used for logging
+                rampup_batch_size=None,
+                global_batch_size=1,
+                micro_batch_size=1,  # Make sure that there is no "grad acc" while decoding.
+                data_parallel_size=1,  # We check above to make sure that dataparallel size is always 1 at inference.
+            )
+            generated_tokens, _ = self.language_model.decode(input_ids, attn_masks, tokens_to_generate)
+
         generated_field = self.process_into_structured_fields(generated_tokens)
         ground_truth_field = self.process_into_structured_fields(labels)
 

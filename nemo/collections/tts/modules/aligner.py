@@ -112,6 +112,37 @@ class AlignmentEncoder(torch.nn.Module):
 
         return torch.tensor(mean_dist_by_durations, dtype=dist.dtype, device=dist.device)
 
+    @staticmethod
+    def get_mean_distance_for_word(l2_dists, durs, start_token, num_tokens):
+        """Calculates the mean distance between text and audio embeddings given a range of text tokens.
+
+        Args:
+            l2_dists (torch.tensor): L2 distance matrix from Aligner inference. T1 x T2 tensor.
+            durs (torch.tensor): List of durations corresponding to each text token. T2 tensor. Should sum to T1.
+            start_token (int): Index of the starting token for the word of interest.
+            num_tokens (int): Length (in tokens) of the word of interest.
+        Output:
+            mean_dist_for_word (float): Mean embedding distance between the word indicated and its predicted audio frames.
+        """
+        # Need to calculate which audio frame we start on by summing all durations up to the start token's duration
+        start_frame = torch.sum(durs[:start_token]).data
+
+        total_frames = 0
+        dist_sum = 0
+
+        # Loop through each text token
+        for token_ind in range(start_token, start_token + num_tokens):
+            # Loop through each frame for the given text token
+            for frame_ind in range(start_frame, start_frame + durs[token_ind]):
+                # Recall that the L2 distance matrix is shape [spec_len, text_len]
+                dist_sum += l2_dists[frame_ind, token_ind]
+
+            # Update total frames so far & the starting frame for the next token
+            total_frames += durs[token_ind]
+            start_frame += durs[token_ind]
+
+        return dist_sum / total_frames
+
     def forward(self, queries, keys, mask=None, attn_prior=None):
         """Forward pass of the aligner encoder.
 

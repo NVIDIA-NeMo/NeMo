@@ -330,12 +330,13 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
         self.text_preprocessing_func = text_preprocessing_func
         self.g2p = g2p
 
-    def encode(self, text):
-        """See base class."""
-        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
+    def encode_from_g2p(self, g2p_text):
+        """Encodes text that has already been run through G2P, can be a mix of phonemes and graphemes.
 
-        text = self.text_preprocessing_func(text)
-        g2p_text = self.g2p(text)  # TODO: handle infer
+        Called for encoding to tokens after text preprocessing and G2P.
+        """
+
+        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
 
         for p in g2p_text:  # noqa
             # Remove stress
@@ -365,6 +366,14 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             ps = [space] + ps + [space]
 
         return [self._token2id[p] for p in ps]
+
+    def encode(self, text):
+        """See base class."""
+
+        text = self.text_preprocessing_func(text)
+        g2p_text = self.g2p(text)  # TODO: handle infer
+
+        return self.encode_from_g2p(g2p_text)
 
     @contextmanager
     def set_phone_prob(self, prob):

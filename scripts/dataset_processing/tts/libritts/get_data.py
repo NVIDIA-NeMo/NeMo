@@ -116,9 +116,12 @@ def main():
         data_sets = "dev_clean,train_clean_100"
     for data_set in data_sets.split(','):
         filepath = data_root / f"{data_set}.tar.gz"
+        print(f"Downloading data for {data_set}...")
         __maybe_download_file(URLS[data_set.upper()], filepath)
+        print("Extracting...")
         __extract_file(str(filepath), str(data_root))
 
+        print("Processing and building manifest.")
         __process_data(
             str(data_root / "LibriTTS" / data_set.replace("_", "-")),
             str(data_root / "LibriTTS" / f"{data_set}.json"),

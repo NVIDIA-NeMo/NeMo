@@ -5,7 +5,6 @@ num_workers: 4
 sample_rate: 16000
 
 # functionality
-gen_overlap_seq: True # whether to generate predictions with overlapping input segments and smoothing filter
 gen_seg_table: True # whether to converting frame level prediction to speech/no-speech segment in start and end times format
 write_to_manifest: True # whether to writing above segments to a single manifest json file.
 

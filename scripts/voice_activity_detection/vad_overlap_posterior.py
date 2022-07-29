@@ -83,19 +83,19 @@ if __name__ == '__main__':
         start = time.time()
         logging.info("Converting frame level prediction to speech/no-speech segment in start and end times format.")
 
+        frame_length_in_sec = args.shift_length_in_sec
         if args.gen_overlap_seq:
             logging.info("Use overlap prediction. Change if you want to use basic frame level prediction")
             vad_pred_dir = overlap_out_dir
-            shift_length_in_sec = 0.01
+            frame_length_in_sec = 0.01
         else:
             logging.info("Use basic frame level prediction")
             vad_pred_dir = args.frame_folder
-            shift_length_in_sec = args.shift_length_in_sec
 
         table_out_dir = generate_vad_segment_table(
             vad_pred_dir=vad_pred_dir,
             postprocessing_params=postprocessing_params,
-            shift_length_in_sec=args.shift_length_in_sec,
+            frame_length_in_sec=frame_length_in_sec,
             num_workers=args.num_workers,
             out_dir=args.table_out_dir,
         )

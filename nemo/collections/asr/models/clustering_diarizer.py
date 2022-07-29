@@ -237,6 +237,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         if not self._vad_params.smoothing:
             # Shift the window by 10ms to generate the frame and use the prediction of the window to represent the label for the frame;
             self.vad_pred_dir = self._vad_dir
+            frame_length_in_sec = self._vad_shift_length_in_sec
         else:
             # Generate predictions with overlapping input segments. Then a smoothing filter is applied to decide the label for a frame spanned by multiple segments.
             # smoothing_method would be either in majority vote (median) or average (mean)
@@ -250,13 +251,14 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                 num_workers=self._cfg.num_workers,
             )
             self.vad_pred_dir = smoothing_pred_dir
+            frame_length_in_sec = 0.01
 
         logging.info("Converting frame level prediction to speech/no-speech segment in start and end times format.")
 
         table_out_dir = generate_vad_segment_table(
             vad_pred_dir=self.vad_pred_dir,
             postprocessing_params=self._vad_params,
-            shift_length_in_sec=self._vad_shift_length_in_sec,
+            frame_length_in_sec=frame_length_in_sec,
             num_workers=self._cfg.num_workers,
         )
 

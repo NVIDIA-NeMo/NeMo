@@ -35,34 +35,8 @@ class CardinalFst(GraphFst):
             self.optional_sign |= pynini.cross("negative: \"true\"", "negative ")
         self.optional_sign = pynini.closure(self.optional_sign + delete_space, 0, 1)
 
-        # no_thousand_million = pynini.difference(
-        #     pynini.closure(NEMO_NOT_QUOTE),
-        #     pynini.closure(NEMO_NOT_QUOTE) + pynini.union("thousand", "million") + pynini.closure(NEMO_NOT_QUOTE),
-        # ).optimize()
-        # integer = (
-        #     pynini.closure(NEMO_NOT_QUOTE)
-        #     + pynini.closure(
-        #         pynutil.add_weight(pynini.cross("hundred ", "hundred and ") + no_thousand_million, -0.0001), 0, 1
-        #     ).optimize()
-        # )
-        # no_hundred = pynini.difference(
-        #     pynini.closure(NEMO_NOT_QUOTE),
-        #     pynini.closure(NEMO_NOT_QUOTE) + "hundred" + pynini.closure(NEMO_NOT_QUOTE),
-        # ).optimize()
-        # integer |= (
-        #     pynini.closure(NEMO_NOT_QUOTE)
-        #     + pynini.closure(
-        #         pynutil.add_weight(pynini.cross("thousand ", "thousand and ") + no_hundred, -0.0001), 0, 1
-        #     ).optimize()
-        # )
-        #
-        # if not deterministic:
-        #     integer |= (
-        #         pynini.closure(NEMO_NOT_QUOTE)
-        #         + pynini.closure(pynini.cross("hundred ", "hundred and ") | pynini.cross("hundred ", " "), 0, 1)
-        #         + pynini.closure(NEMO_NOT_QUOTE)
-        #     ).optimize()
         integer = pynini.closure(NEMO_NOT_QUOTE)
+
         self.integer = delete_space + pynutil.delete("\"") + integer + pynutil.delete("\"")
         integer = pynutil.delete("integer:") + self.integer
 

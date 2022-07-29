@@ -37,7 +37,13 @@ class RomanFst(GraphFst):
         default_graph = pynutil.insert("integer: \"") + default_graph + pynutil.insert("\"")
         ordinal_limit = 19
 
-        graph_teens = pynini.string_map([x[0] for x in roman_dict[:ordinal_limit]]).optimize()
+        if deterministic:
+            # exclude "I"
+            start_idx = 1
+        else:
+            start_idx = 0
+
+        graph_teens = pynini.string_map([x[0] for x in roman_dict[start_idx:ordinal_limit]]).optimize()
 
         # roman numerals up to ordinal_limit with a preceding name are converted to ordinal form
         names = get_names()
@@ -90,7 +96,7 @@ class RomanFst(GraphFst):
         )
 
         graph |= roman_to_ordinal
-        graph = self.add_tokens(graph)
+        graph = self.add_tokens(graph.optimize())
 
         self.fst = graph.optimize()
 

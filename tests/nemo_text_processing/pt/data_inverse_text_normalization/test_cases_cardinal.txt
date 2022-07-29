@@ -28,6 +28,7 @@ duzentos~200
 duzentos e um~201
 mil e um~1001
 mil e uma~1001
+dois mil e vinte e dois~2022
 nove trilhões setecentos e oitenta e nove bilhões trezentos e oitenta e dois milhões quinhentos e trinta e seis mil cento e trinta~9789382536130
 duzentos e cinquenta e quatro~254
 cento e quarenta e sete mil quatrocentos e cinquenta e um~147451

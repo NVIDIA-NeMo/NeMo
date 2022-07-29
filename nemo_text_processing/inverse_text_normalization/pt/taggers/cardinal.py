@@ -365,6 +365,11 @@ class CardinalFst(GraphFst):
         numbers_up_to_million = pynini.compose(graph, digits_up_to_million).optimize()
         self.numbers_up_to_million = numbers_up_to_million
 
+        # save self.digits_from_year for use in DateFst
+        digits_1_2099 = [str(digits) for digits in range(1, 2100)]
+        digits_from_year = (numbers_up_to_million @ pynini.union(*digits_1_2099)).optimize()
+        self.digits_from_year = digits_from_year
+
         # don't convert cardinals from zero to nine inclusive
         graph_exception = pynini.project(pynini.union(graph_digit, graph_zero), 'input')
 

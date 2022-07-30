@@ -37,6 +37,8 @@ import math
 import torch
 import torch.nn as nn
 
+from nemo.collections.common.parts.training_utils import avoid_float16_autocast_context
+
 __all__ = [
     'RelPositionMultiHeadAttention',
     'RelPositionalEncoding',
@@ -120,9 +122,14 @@ class MultiHeadAttention(nn.Module):
         returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
         """
-        q, k, v = self.forward_qkv(query, key, value)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / self.s_d_k
-        return self.forward_attention(v, scores, mask)
+
+        # temporary until we solve this more gracefully
+        with avoid_float16_autocast_context():
+            q, k, v = self.forward_qkv(query, key, value)
+            scores = torch.matmul(q, k.transpose(-2, -1)) / self.s_d_k
+            out = self.forward_attention(v, scores, mask)
+
+        return out
 
 
 class RelPositionMultiHeadAttention(MultiHeadAttention):
@@ -176,34 +183,38 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         Returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
         """
-        q, k, v = self.forward_qkv(query, key, value)
-        q = q.transpose(1, 2)  # (batch, time1, head, d_k)
 
-        n_batch_pos = pos_emb.size(0)
-        p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
-        p = p.transpose(1, 2)  # (batch, head, time1, d_k)
+        # temporary until we solve this more gracefully
+        with avoid_float16_autocast_context():
+            q, k, v = self.forward_qkv(query, key, value)
+            q = q.transpose(1, 2)  # (batch, time1, head, d_k)
 
-        # (batch, head, time1, d_k)
-        q_with_bias_u = (q + self.pos_bias_u).transpose(1, 2)
-        # (batch, head, time1, d_k)
-        q_with_bias_v = (q + self.pos_bias_v).transpose(1, 2)
+            n_batch_pos = pos_emb.size(0)
+            p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
+            p = p.transpose(1, 2)  # (batch, head, time1, d_k)
 
-        # compute attention score
-        # first compute matrix a and matrix c
-        # as described in https://arxiv.org/abs/1901.02860 Section 3.3
-        # (batch, head, time1, time2)
-        matrix_ac = torch.matmul(q_with_bias_u, k.transpose(-2, -1))
+            # (batch, head, time1, d_k)
+            q_with_bias_u = (q + self.pos_bias_u).transpose(1, 2)
+            # (batch, head, time1, d_k)
+            q_with_bias_v = (q + self.pos_bias_v).transpose(1, 2)
 
-        # compute matrix b and matrix d
-        # (batch, head, time1, time2)
-        matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
-        matrix_bd = self.rel_shift(matrix_bd)
-        # drops extra elements in the matrix_bd to match the matrix_ac's size
-        matrix_bd = matrix_bd[:, :, :, : matrix_ac.size(-1)]
+            # compute attention score
+            # first compute matrix a and matrix c
+            # as described in https://arxiv.org/abs/1901.02860 Section 3.3
+            # (batch, head, time1, time2)
+            matrix_ac = torch.matmul(q_with_bias_u, k.transpose(-2, -1))
 
-        scores = (matrix_ac + matrix_bd) / self.s_d_k  # (batch, head, time1, time2)
+            # compute matrix b and matrix d
+            # (batch, head, time1, time2)
+            matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
+            matrix_bd = self.rel_shift(matrix_bd)
+            # drops extra elements in the matrix_bd to match the matrix_ac's size
+            matrix_bd = matrix_bd[:, :, :, : matrix_ac.size(-1)]
 
-        return self.forward_attention(v, scores, mask)
+            scores = (matrix_ac + matrix_bd) / self.s_d_k  # (batch, head, time1, time2)
+            out = self.forward_attention(v, scores, mask)
+
+        return out
 
 
 class PositionalEncoding(torch.nn.Module):

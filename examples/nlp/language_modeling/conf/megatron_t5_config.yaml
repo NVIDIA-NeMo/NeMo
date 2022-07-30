@@ -124,7 +124,20 @@ model:
     #   - /raid/data/pile/my-t5_01_text_document
     data_prefix: ???
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
-    data_impl: mmap
+    data_impl: mmap # mmap, retmmap, text_mmap, csv_mmap
+    # data_impl_kwargs: # currently used only for text_mmap, csv_mmap (should be data_impl dependant)
+    #     # defaults for text_memmap
+    #     newline_int: 10 # byte-value of newline (Use ord('\n') to get value)
+    #     header_lines: 0 # skip first N header lines
+    #     workers: null # number of workers when creating missing index files (null defaults to cpu_num // 2)
+    #     sort_dataset_paths: False # if True datasets will be sorted by name
+    #     # defaults for csv_memmap
+    #     newline_int: 10 # byte-value of newline
+    #     header_lines: 1 # skip first N header lines
+    #     workers: null # number of workers when creating missing index files (null defaults to cpu_num // 2)
+    #     sort_dataset_paths: False # if True datasets will be sorted by name
+    #     data_col: 1 # column to use for data
+    #     data_sep: ',' # string to split text into columns
     splits_string: 949,45,5
     seq_length: ${model.seq_length}
     seq_length_dec: 128

@@ -40,6 +40,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_data
     MMapRetrievalIndexedDataset,
     MMapRetrievalIndexedDatasetBuilder,
 )
+from nemo.collections.nlp.data.language_modeling.text_memmap_dataset import CSVMemMapDataset, TextMemMapDataset
 from nemo.utils import logging
 
 
@@ -87,7 +88,14 @@ def make_builder(out_file, impl, vocab_size=None, chunk_size=64, pad_id=0, retri
         return IndexedDatasetBuilder(out_file)
 
 
-def make_dataset(path, impl, skip_warmup=False):
+def make_dataset(path, impl, skip_warmup=False, impl_kwargs={}):
+    # first handle text memap
+    if impl == 'text_mmap':
+        return TextMemMapDataset(path, **impl_kwargs)
+    elif impl == 'csv_mmap':
+        return CSVMemMapDataset(path, **impl_kwargs)
+
+    # now handle bin memap
     if not IndexedDataset.exists(path):
         print(f"Dataset does not exist: {path}")
         print("Path should be a basename that both .idx and .bin can be appended to get full filenames.")

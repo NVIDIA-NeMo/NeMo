@@ -76,75 +76,74 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
         return dict(max_seq_length_dec=self._cfg.data.seq_length_dec,)
 
     def _build_vocab(self):
-        self._add_special_tokens_to_tokenizer()
-
+        self.num_sentinel_tokens = self._cfg.tokenizer.num_sentinel_tokens
+        MegatronT5Model.add_special_tokens_to_tokenizer(
+            tokenizer=self.tokenizer,
+            tokenizer_cfg=self._cfg.tokenizer,
+            dataset_type=self._cfg.data.get("dataset_type", "t5"),
+        )
         super()._build_vocab()
 
-    def _add_special_tokens_to_tokenizer(self):
+    @classmethod
+    def add_special_tokens_to_tokenizer(cls, tokenizer, tokenizer_cfg, dataset_type="t5"):
         # T5-related construction
-        self.num_sentinel_tokens = self._cfg.tokenizer.num_sentinel_tokens
-
-        if self._cfg.tokenizer.library == 'huggingface' or self._cfg.tokenizer.library == 'megatron':
+        if tokenizer_cfg.library == 'huggingface' or tokenizer_cfg.library == 'megatron':
             additional_tokens = {
-                'additional_special_tokens': [f'<extra_id_{i}>' for i in range(self.num_sentinel_tokens)]
+                'additional_special_tokens': [f'<extra_id_{i}>' for i in range(tokenizer_cfg.num_sentinel_tokens)]
             }
-            if self._cfg.data.get("dataset_type", "t5") == "ul2":
+            if dataset_type == "ul2":
                 for mask_type in ['r', 's', 'x']:
                     additional_tokens['additional_special_tokens'].extend([f'<extra_id_{mask_type}>'])
-            self.tokenizer.add_special_tokens(additional_tokens)
+            tokenizer.add_special_tokens(additional_tokens)
 
-        if self._cfg.tokenizer.library == 'sentencepiece':
+        if tokenizer_cfg.library == 'sentencepiece':
             # Need to add cls, sep, mask tokens to the tokenizer if they don't exist.
             # If cls, sep and mask are not attributes of the tokenizer, add it.
-            if not hasattr(self.tokenizer, 'cls_token'):
-                self.tokenizer.add_special_tokens({'cls_token': '<cls>'})
-            if not hasattr(self.tokenizer.tokenizer, 'sep_id'):
-                self.tokenizer.add_special_tokens({'sep_token': '<sep>'})
-            if not hasattr(self.tokenizer.tokenizer, 'mask_id'):
-                self.tokenizer.add_special_tokens({'mask_token': '<mask>'})
+            if not hasattr(tokenizer, 'cls_token'):
+                tokenizer.add_special_tokens({'cls_token': '<cls>'})
+            if not hasattr(tokenizer.tokenizer, 'sep_id'):
+                tokenizer.add_special_tokens({'sep_token': '<sep>'})
+            if not hasattr(tokenizer.tokenizer, 'mask_id'):
+                tokenizer.add_special_tokens({'mask_token': '<mask>'})
 
             # bos, eos, pad and unk may be present in the provided spm .model file, if they are, use it.
-            if not hasattr(self.tokenizer, 'pad_token'):
-                if hasattr(self.tokenizer.tokenizer, 'pad_id') and self.tokenizer.tokenizer.pad_id() > 0:
-                    self.tokenizer.pad_token = self.tokenizer.tokenizer.id_to_piece(self.tokenizer.tokenizer.pad_id())
+            if not hasattr(tokenizer, 'pad_token'):
+                if hasattr(tokenizer.tokenizer, 'pad_id') and tokenizer.tokenizer.pad_id() > 0:
+                    tokenizer.pad_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.pad_id())
                 else:
-                    self.tokenizer.add_special_tokens({'pad_token': '<pad>'})
+                    tokenizer.add_special_tokens({'pad_token': '<pad>'})
             else:
-                self.tokenizer.add_special_tokens({'pad_token': '<pad>'})
+                tokenizer.add_special_tokens({'pad_token': '<pad>'})
 
-            if not hasattr(self.tokenizer, 'bos_token'):
-                if hasattr(self.tokenizer.tokenizer, 'bos_id') and self.tokenizer.tokenizer.bos_id() > 0:
-                    self.tokenizer.bos_token = self.tokenizer.tokenizer.id_to_piece(self.tokenizer.tokenizer.bos_id())
+            if not hasattr(tokenizer, 'bos_token'):
+                if hasattr(tokenizer.tokenizer, 'bos_id') and tokenizer.tokenizer.bos_id() > 0:
+                    tokenizer.bos_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.bos_id())
                 else:
-                    self.tokenizer.add_special_tokens({'bos_token': '<bos>'})
+                    tokenizer.add_special_tokens({'bos_token': '<bos>'})
             else:
-                self.tokenizer.add_special_tokens({'bos_token': '<s>'})
+                tokenizer.add_special_tokens({'bos_token': '<s>'})
 
-            if not hasattr(self.tokenizer, 'eos_token'):
-                if hasattr(self.tokenizer.tokenizer, 'eos_id') and self.tokenizer.tokenizer.eos_id() > 0:
-                    self.tokenizer.eos_token = self.tokenizer.tokenizer.id_to_piece(self.tokenizer.tokenizer.eos_id())
+            if not hasattr(tokenizer, 'eos_token'):
+                if hasattr(tokenizer.tokenizer, 'eos_id') and tokenizer.tokenizer.eos_id() > 0:
+                    tokenizer.eos_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.eos_id())
                 else:
-                    self.tokenizer.add_special_tokens({'eos_token': '<eos>'})
+                    tokenizer.add_special_tokens({'eos_token': '<eos>'})
             else:
-                self.tokenizer.add_special_tokens({'eos_token': '</s>'})
+                tokenizer.add_special_tokens({'eos_token': '</s>'})
 
             # Special check to see if <extra_id_{}> is already present in the tokenizer. If it is, only modify the additional_special_tokens function.
-            for i in range(self.num_sentinel_tokens):
-                if f'▁<extra_id_{i}>' in self.tokenizer.vocab:
-                    self.tokenizer.special_token_to_id[f'<extra_id_{i}>'] = self.tokenizer.text_to_ids(
-                        f'<extra_id_{i}>'
-                    )[0]
+            for i in range(tokenizer_cfg.num_sentinel_tokens):
+                if f'▁<extra_id_{i}>' in tokenizer.vocab:
+                    tokenizer.special_token_to_id[f'<extra_id_{i}>'] = tokenizer.text_to_ids(f'<extra_id_{i}>')[0]
                 else:
-                    self.tokenizer.add_special_tokens([f'<extra_id_{i}>'])
+                    tokenizer.add_special_tokens([f'<extra_id_{i}>'])
 
-            if self._cfg.data.get("dataset_type", "t5") == "ul2":
+            if dataset_type == "ul2":
                 for mask_type in ['r', 's', 'x']:
-                    if f'▁<extra_id_{mask_type}>' in self.tokenizer.vocab:
-                        self.tokenizer.special_token_to_id[f'<extra_id_{i}>'] = self.tokenizer.text_to_ids(
-                            f'<extra_id_{i}>'
-                        )[0]
+                    if f'▁<extra_id_{mask_type}>' in tokenizer.vocab:
+                        tokenizer.special_token_to_id[f'<extra_id_{i}>'] = tokenizer.text_to_ids(f'<extra_id_{i}>')[0]
                     else:
-                        self.tokenizer.add_special_tokens([f'<extra_id_{mask_type}>'])
+                        tokenizer.add_special_tokens([f'<extra_id_{mask_type}>'])
 
     def build_train_valid_test_datasets(self):
         logging.info(f'Building {self.model_name} datasets.')
@@ -177,6 +176,7 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
             whole_word_masking=self._cfg.data.get('whole_word_masking', True),
             favor_long_ngrams=self._cfg.data.get('favor_long_ngrams', False),
             respect_document_boundaries=self._cfg.data.get('respect_document_boundaries', True),
+            data_impl_kwargs=self._cfg.data.get('data_impl_kwargs', {}),
             # additional arguments from child classes
             **self._build_train_valid_test_datasets_kwargs,
         )

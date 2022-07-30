@@ -145,8 +145,12 @@ def main(cfg) -> None:
             pretrained_cfg.train_ds = cfg.model.train_ds
             pretrained_cfg.train_ds.micro_batch_size = cfg.model.micro_batch_size
             pretrained_cfg.train_ds.global_batch_size = cfg.model.global_batch_size
-            pretrained_cfg.validation_ds = cfg.model.validation_ds
-            pretrained_cfg.test_ds = cfg.model.test_ds
+            if hasattr(cfg.model, 'validation_ds'):
+                pretrained_cfg.validation_ds = cfg.model.validation_ds
+            else:
+                raise AttributeError(f"No validation dataset found in config.")
+            if hasattr(cfg.model, 'test_ds'):
+                pretrained_cfg.test_ds = cfg.model.test_ds
 
             # Class target for the new class being restored.
             pretrained_cfg.target = (

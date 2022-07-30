@@ -37,6 +37,8 @@ import time
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
+from omegaconf.dictconfig import DictConfig
 
 from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
     get_datasets_weights_and_num_samples,
@@ -529,6 +531,14 @@ def pad_and_convert_to_numpy(tokens, tokentypes, masked_positions, masked_labels
     return tokens_np, tokentypes_np, labels_np, padding_mask_np, loss_mask_np
 
 
+def make_text_memmap_bin_compatibility(text_memmap_ds):
+    """Make a TextMemMapDataset compatible with binary memmap."""
+    text_memmap_ds.doc_idx = np.arange(len(text_memmap_ds) + 1, dtype=np.int64)
+    text_memmap_ds.sizes = np.ones(len(text_memmap_ds), dtype=np.int32)
+
+    return text_memmap_ds
+
+
 def build_train_valid_test_datasets(
     cfg,
     trainer,
@@ -553,7 +563,23 @@ def build_train_valid_test_datasets(
     favor_long_ngrams=False,
     delete_mask_prob=0,
     respect_document_boundaries=True,
+    data_impl_kwargs={},
 ):
+    # for VSC and text memmap we need to provide a tokenizer, if not given
+    if data_impl in ["text_mmap", "csv_mmap"]:
+        if "tokenizer" not in data_impl_kwargs:
+            if isinstance(data_impl_kwargs, DictConfig):
+                data_impl_kwargs = OmegaConf.to_object(data_impl_kwargs)
+            else:
+                # prevent updating the default
+                data_impl_kwargs = data_impl_kwargs.copy()
+
+            data_impl_kwargs["tokenizer"] = tokenizer
+
+    if not respect_document_boundaries and data_impl_kwargs != {}:
+        raise ValueError(
+            "respect_document_boundaries=False is not compatible with text_memmap and csv_memmap (data_impl_kwargs != {})"
+        )
 
     if len(data_prefix) == 1:
         return _build_train_valid_test_datasets(
@@ -580,11 +606,13 @@ def build_train_valid_test_datasets(
             favor_long_ngrams=favor_long_ngrams,
             delete_mask_prob=delete_mask_prob,
             respect_document_boundaries=respect_document_boundaries,
+            data_impl_kwargs=data_impl_kwargs,
         )
     # Blending dataset.
     # Parse the values.
     output = get_datasets_weights_and_num_samples(data_prefix, train_valid_test_num_samples)
     prefixes, weights, datasets_train_valid_test_num_samples = output
+    train_n, valid_n, test_n = map(sum, zip(*datasets_train_valid_test_num_samples))
 
     # Build individual datasets.
     train_datasets = []
@@ -615,6 +643,7 @@ def build_train_valid_test_datasets(
             favor_long_ngrams=favor_long_ngrams,
             delete_mask_prob=delete_mask_prob,
             respect_document_boundaries=respect_document_boundaries,
+            data_impl_kwargs=data_impl_kwargs,
         )
         if train_ds:
             train_datasets.append(train_ds)
@@ -626,13 +655,13 @@ def build_train_valid_test_datasets(
         # Blend.
     blending_train_dataset = None
     if train_datasets:
-        blending_train_dataset = BlendableDataset(train_datasets, weights)
+        blending_train_dataset = BlendableDataset(train_datasets, weights, train_n)
     blending_valid_dataset = None
     if valid_datasets:
-        blending_valid_dataset = BlendableDataset(valid_datasets, weights)
+        blending_valid_dataset = BlendableDataset(valid_datasets, weights, valid_n)
     blending_test_dataset = None
     if test_datasets:
-        blending_test_dataset = BlendableDataset(test_datasets, weights)
+        blending_test_dataset = BlendableDataset(test_datasets, weights, test_n)
 
     return (blending_train_dataset, blending_valid_dataset, blending_test_dataset)
 
@@ -661,16 +690,17 @@ def _build_train_valid_test_datasets(
     favor_long_ngrams=False,
     delete_mask_prob=0,  # This flag is used in BART only, and will not have effect on T5/BERT
     respect_document_boundaries=True,
+    data_impl_kwargs={},
 ):
 
     if dataset_type not in DSET_TYPES:
         raise ValueError("Invalid dataset_type: ", dataset_type)
 
     # Indexed dataset.
-    indexed_dataset = get_indexed_dataset_(data_prefix, data_impl, skip_warmup)
+    indexed_dataset = get_indexed_dataset_(data_prefix, data_impl, skip_warmup, data_impl_kwargs=data_impl_kwargs)
 
-    if dataset_type == DSET_TYPE_ICT:
-        title_dataset = get_indexed_dataset_(args.titles_data_path, data_impl, skip_warmup)
+    # if dataset_type == DSET_TYPE_ICT:
+    #     title_dataset = get_indexed_dataset_(args.titles_data_path, data_impl, skip_warmup)
 
     # Get start and end indices of train/valid/train into doc-idx
     # Note that doc-idx is desinged to be num-docs + 1 so we can
@@ -709,13 +739,15 @@ def _build_train_valid_test_datasets(
         dataset = None
         if splits[index + 1] > splits[index]:
             # Get the pointer to the original doc-idx so we can set it later.
-            doc_idx_ptr = indexed_dataset.get_doc_idx()
+            if hasattr(indexed_dataset, 'get_doc_idx'):
+                doc_idx_ptr = indexed_dataset.get_doc_idx()
             # Slice the doc-idx
             start_index = splits[index]
             # Add +1 so we can index into the dataset to get the upper bound.
             end_index = splits[index + 1] + 1
             # New doc_idx view.
-            indexed_dataset.set_doc_idx(doc_idx_ptr[start_index:end_index])
+            if hasattr(indexed_dataset, 'set_doc_idx'):
+                indexed_dataset.set_doc_idx(doc_idx_ptr[start_index:end_index])
             # Build the dataset accordingly.
             kwargs = dict(
                 name=name,
@@ -857,7 +889,8 @@ def _build_train_valid_test_datasets(
                 raise NotImplementedError("Dataset type not fully implemented.")
 
             # Set the original pointer so dataset remains the main dataset.
-            indexed_dataset.set_doc_idx(doc_idx_ptr)
+            if hasattr(indexed_dataset, 'set_doc_idx'):
+                indexed_dataset.set_doc_idx(doc_idx_ptr)
             # Checks.
             assert indexed_dataset.doc_idx[0] == 0
             assert indexed_dataset.doc_idx.shape[0] == (total_num_of_documents + 1)
@@ -870,12 +903,16 @@ def _build_train_valid_test_datasets(
     return (train_dataset, valid_dataset, test_dataset)
 
 
-def get_indexed_dataset_(data_prefix, data_impl, skip_warmup):
+def get_indexed_dataset_(data_prefix, data_impl, skip_warmup, data_impl_kwargs={}):
 
     logging.info(' > building dataset index ...')
 
     start_time = time.time()
-    indexed_dataset = make_indexed_dataset(data_prefix, data_impl, skip_warmup)
+    indexed_dataset = make_indexed_dataset(data_prefix, data_impl, skip_warmup, impl_kwargs=data_impl_kwargs)
+    if data_impl in ['text_mmap', 'csv_mmap']:
+        # make csv/text memmap compatible with Megatron sampling
+        make_text_memmap_bin_compatibility(indexed_dataset)
+
     assert indexed_dataset.sizes.shape[0] == indexed_dataset.doc_idx[-1]
     logging.info(' > finished creating indexed dataset in {:4f} ' 'seconds'.format(time.time() - start_time))
 

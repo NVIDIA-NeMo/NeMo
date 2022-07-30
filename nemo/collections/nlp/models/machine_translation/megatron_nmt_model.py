@@ -27,14 +27,17 @@ from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import (
     BinarizedMemmapSequenceToSequenceDataset,
     TextMemmapSequenceToSequenceDataset,
 )
+from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
+    get_datasets_weights_and_num_samples,
+)
 from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
 from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_samplers import (
     MegatronPretrainingBatchSampler,
-    MegatronPretrainingRandomBatchSampler,
 )
 from nemo.collections.nlp.models.language_modeling.megatron_lm_encoder_decoder_model import (
     MegatronLMEncoderDecoderModel,
 )
+from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_model import MTEncDecModel
 from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
@@ -161,8 +164,9 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             ) = MTEncDecModel.setup_multilingual_ids_and_processors(
                 src_language=self.src_language,
                 tgt_language=self.tgt_language,
-                tokenizer=self.encoder_tokenizer,  # Multilingual training requires shared tokenizers.
-                tokenizer_library=self.encoder_tokenizer_library,
+                encoder_tokenizer=self.encoder_tokenizer,  # Multilingual training requires shared tokenizers.
+                encoder_tokenizer_library=self.encoder_tokenizer_library,
+                decoder_tokenizer_library=self.decoder_tokenizer_library,
             )
         else:
             # After this call, the model will have  self.source_processor and self.target_processor objects
@@ -172,6 +176,15 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             self.multilingual_ids = [None]
 
     def _build_vocab(self):
+        if hasattr(self.cfg, "data"):
+            if hasattr(self.cfg.data, "dataset_type"):
+                # This happens only when restoring a pre-trained model. We need to add all of the special tokens that were added while pre-training to avoid a checkpoint shape mismatch while restoring.
+                MegatronT5Model.add_special_tokens_to_tokenizer(
+                    self.encoder_tokenizer, self.cfg.encoder_tokenizer, self.cfg.data.dataset_type
+                )
+                MegatronT5Model.add_special_tokens_to_tokenizer(
+                    self.decoder_tokenizer, self.cfg.decoder_tokenizer, self.cfg.data.dataset_type
+                )
         self.padded_vocab_size = self._vocab_size_with_padding(
             orig_vocab_size=self.encoder_tokenizer.vocab_size,
             make_vocab_size_divisible_by=self._cfg.get('make_vocab_size_divisible_by', 128),
@@ -314,6 +327,13 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         if isinstance(outputs[0], dict):
             outputs = [outputs]
 
+        self.log(
+            'consumed_samples',
+            self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
+            rank_zero_only=True,
+        )
+        self.log('global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True)
+
         loss_list = []
         bleu_score_list = []
         for dataloader_idx, output in enumerate(outputs):
@@ -387,10 +407,11 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             loss_list.append(averaged_loss.cpu().numpy())
             bleu_score_list.append(bleu_score)
             if dataloader_idx == 0:
-                self.log(f'{mode}_sacreBLEU', bleu_score, sync_dist=True)
-                self.log(f'{mode}_loss', averaged_loss, prog_bar=True)
                 if self.multilingual:
                     self._log_multilingual_bleu_and_loss(dataloader_idx, bleu_score, averaged_loss, mode)
+                else:
+                    self.log(f'{mode}_sacreBLEU', bleu_score, sync_dist=True)
+                    self.log(f'{mode}_loss', averaged_loss, prog_bar=True)
             else:
                 if self.multilingual:
                     self._log_multilingual_bleu_and_loss(dataloader_idx, bleu_score, averaged_loss, mode)
@@ -576,32 +597,50 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                     f"concat_sampling_probabilities must be of the same size as src_file_name and tgt_file_name. Provided size {len(cfg.concat_sampling_probabilities)}, number of datasets {len(cfg.src_file_name)}"
                 )
 
+            # Construct the data prefix list for `get_datasets_weights_and_num_samples()` that is of the format [weight1,file_name1,weight2,file_name2,...]
+            data_prefix = []
+            for weight, prefix in zip(cfg.concat_sampling_probabilities, cfg.src_file_name):
+                data_prefix.append(weight)
+                data_prefix.append(prefix)
+
+            if self.trainer.max_steps is None:
+                raise ValueError(
+                    f"trainer.max_steps must be set to use blendable memmap datasets. Found {self.trainer.max_steps}."
+                )
+            num_train_samples = [self.trainer.max_steps * self._cfg.global_batch_size]
+            _, _, num_train_samples_per_dataset = get_datasets_weights_and_num_samples(data_prefix, num_train_samples)
+            num_train_samples_after_blend = sum([x[0] for x in num_train_samples_per_dataset])
+
             datasets = []
-            for src_file, tgt_fille in zip(cfg.src_file_name, cfg.tgt_file_name):
+            for src_file, tgt_file, num_samples in zip(
+                cfg.src_file_name, cfg.tgt_file_name, num_train_samples_per_dataset
+            ):
                 if cfg.dataset_type == 'bin_memmap':
                     dataset = BinarizedMemmapSequenceToSequenceDataset(
                         src_dataset_prefix=src_file,
-                        tgt_dataset_prefix=tgt_fille,
+                        tgt_dataset_prefix=tgt_file,
                         src_tokenizer=self.encoder_tokenizer,
                         tgt_tokenizer=self.decoder_tokenizer,
                         max_src_seq_length=cfg.max_seq_length,
                         max_tgt_seq_length=cfg.max_seq_length,
-                        start_index=0,
-                        end_index=None,
-                        data_impl="mmap",
-                        skip_warmup=True,
+                        max_num_samples=num_samples[0],
+                        seed=self._cfg.seed,
                     )
                 elif cfg.dataset_type == 'text_memmap':
                     dataset = TextMemmapSequenceToSequenceDataset(
                         src_file_name=src_file,
-                        tgt_file_name=tgt_fille,
+                        tgt_file_name=tgt_file,
                         src_tokenizer=self.encoder_tokenizer,
                         tgt_tokenizer=self.decoder_tokenizer,
                         max_src_seq_length=cfg.max_seq_length,
                         max_tgt_seq_length=cfg.max_seq_length,
+                        max_num_samples=num_samples[0],
+                        seed=self._cfg.seed,
                     )
                 datasets.append(dataset)
-            dataset = BlendableDataset(datasets=datasets, weights=cfg.concat_sampling_probabilities)
+            dataset = BlendableDataset(
+                datasets=datasets, weights=cfg.concat_sampling_probabilities, size=num_train_samples_after_blend
+            )
         else:
             if cfg.dataset_type == 'bin_memmap':
                 dataset = BinarizedMemmapSequenceToSequenceDataset(
@@ -611,10 +650,8 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                     tgt_tokenizer=self.decoder_tokenizer,
                     max_src_seq_length=cfg.max_seq_length,
                     max_tgt_seq_length=cfg.max_seq_length,
-                    start_index=0,
-                    end_index=None,
-                    data_impl="mmap",
-                    skip_warmup=True,
+                    max_num_samples=self.trainer.max_steps * self._cfg.global_batch_size,
+                    seed=self._cfg.seed,
                 )
             elif cfg.dataset_type == 'text_memmap':
                 dataset = TextMemmapSequenceToSequenceDataset(
@@ -624,6 +661,8 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                     tgt_tokenizer=self.decoder_tokenizer,
                     max_src_seq_length=cfg.max_seq_length,
                     max_tgt_seq_length=cfg.max_seq_length,
+                    seed=self._cfg.seed,
+                    # max_num_samples=self.trainer.max_steps * self._cfg.global_batch_size (sandeep: commenting this out till we figure out samples mapping for text memmap)
                 )
         return dataset
 

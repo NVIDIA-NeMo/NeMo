@@ -150,8 +150,8 @@ If you chose to work with the ``main`` branch, we recommend using `NVIDIA's PyTo
     stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:21.05-py3
 
 
-FAQ
----
+`FAQ <https://github.com/NVIDIA/NeMo/discussions>`_
+---------------------------------------------------
 Have a look at our `discussions board <https://github.com/NVIDIA/NeMo/discussions>`_ and feel free to post a question or start a discussion.
 
 

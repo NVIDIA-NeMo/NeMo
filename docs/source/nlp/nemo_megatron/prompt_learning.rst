@@ -1,5 +1,7 @@
+.. _promptlearning:
+
 Prompt Learning
--------------
+---------------
 
 Within NeMo we refer to **p-tuning** and **prompt tuning** methods collectively as prompt learning. Both methods are parameter efficient alternatives to fine-tuning pretrained language models. Our NeMo implementation makes it possible to use one pretrained GPT model on many downstream tasks without needing to tune the model's full set of parameters. It also allows for adding new tasks to your model without overwriting or disrupting previous tasks for which the model has already been p-tuned/prompt-tuned. Because the original model parameters are frozen and never altered by either method, p-tuning/prompt-tuning also avoid cartographic forgetting issues often encountered when fine-tuning models. 
 

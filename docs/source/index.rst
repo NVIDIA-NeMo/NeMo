@@ -40,10 +40,11 @@ NVIDIA NeMo User Guide
    :caption: Natural Language Processing
    :name: Natural Language Processing
 
-   nlp/models
-   nlp/megatron
-   nlp/api
+   nlp/nemo_megatron/intro
+   nlp/machine_translation/machine_translation
    nlp/text_normalization/intro
+   nlp/api
+   
 
 .. toctree::
    :maxdepth: 2

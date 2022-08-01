@@ -94,6 +94,7 @@ class TestExportable:
             assert onnx_model.graph.input[1].name == 'length'
             assert onnx_model.graph.output[0].name == 'logprobs'
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_ConformerModel_export_to_onnx(self, conformer_model):

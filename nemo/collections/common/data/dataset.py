@@ -16,9 +16,9 @@ from typing import Any, List
 
 import numpy as np
 import torch.utils.data as pt_data
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset, IterableDataset
 
-__all__ = ['ConcatDataset']
+__all__ = ['ConcatDataset', 'ConcatMapDataset']
 
 
 class ConcatDataset(IterableDataset):
@@ -176,3 +176,99 @@ class ConcatDataset(IterableDataset):
         while True:
             ind = np.random.choice(np.arange(num), p=p)
             yield ind
+
+
+class ConcatMapDataset(Dataset):
+    """
+    A dataset that accepts as argument multiple datasets and then samples from them based on the specified 
+    sampling technique.
+    Args:
+        datasets (list): A list of datasets to sample from.
+        sampling_technique (str): Sampling technique to choose which dataset to draw a sample from.
+            Defaults to 'temperature'. Currently supports 'temperature', 'random' and 'round-robin'.
+        sampling_temperature (int): Temperature value for sampling. Only used when sampling_technique = 'temperature'.
+            Defaults to 5.
+        sampling_probabilities (list): Probability values for sampling. Only used when sampling_technique = 'random'.
+    """
+
+    def __init__(
+        self,
+        datasets: List[Any],
+        sampling_technique: str = 'temperature',
+        sampling_temperature: int = 5,
+        sampling_probabilities: List[float] = None,
+        consumed_samples: int = 0,
+    ):
+        super().__init__()
+        self.datasets = datasets
+        self.sampling_kwargs = {}
+        self.size = 0
+        self.sampling_technique = sampling_technique
+        self.sampling_temperature = sampling_temperature
+        self.sampling_probabilities = sampling_probabilities
+        self.consumed_samples = consumed_samples
+        self.np_rng = np.random.RandomState(consumed_samples)
+
+        for dataset in datasets:
+            self.size += len(dataset)
+
+        # Pointer into the next index to fetch from each dataset
+        self.dataset_index = np.zeros(len(self.datasets), dtype=np.uint8)
+        self.permuted_dataset_indices = []
+        for dataset in self.datasets:
+            permuted_indices = np.arange(len(dataset))
+            self.np_rng.shuffle(permuted_indices)
+            self.permuted_dataset_indices.append(permuted_indices)
+
+        if self.sampling_technique == 'temperature':
+            lengths = []
+            for dataset in datasets:
+                lengths.append(len(dataset))
+
+            p = np.array(lengths) / np.sum(lengths)
+            p = np.power(p, 1 / self.sampling_temperature)
+            p = p / np.sum(p)
+            self.p = p
+
+        elif self.sampling_technique == 'random':
+            if not self.sampling_probabilities:
+                raise ValueError(
+                    "Random generator expects a 'sampling_probabilities' - a list of probability values corresponding to each dataset."
+                )
+
+            if len(self.sampling_probabilities) != len(self.datasets):
+                raise ValueError(
+                    f"Length of probabilities list must be equal to the number of datasets. Found {len(sampling_probabilities)} probs and {len(self.datasets)} datasets."
+                )
+
+            p = np.array(self.sampling_probabilities)
+            self.p = p / np.sum(p)  # Ensure probabilities sum to 1
+
+    def __len__(self):
+        return self.size
+
+    def _get_dataset_index(self, idx):
+        if self.sampling_technique == 'temperature' or self.sampling_technique == 'random':
+            return self.np_rng.choice(np.arange(len(self.datasets)), p=self.p)
+        elif self.sampling_technique == 'round-robin':
+            return idx % len(self.datasets)
+
+    def __getitem__(self, idx):
+        # Get the dataset we want to sample from
+        dataset_index = self._get_dataset_index(idx)
+
+        # Get the index of the sample we want to fetch from the dataset
+        sample_idx = self.dataset_index[dataset_index]
+
+        # If the sample idx > dataset size, reset to 0.
+        if sample_idx > len(self.datasets[dataset_index]):
+            sample_idx = 0
+            self.dataset_index[dataset_index] = 0
+
+        # Sample index -> shuffled sample index
+        shuffled_sample_idx = self.permuted_dataset_indices[dataset_index][sample_idx]
+
+        sample = self.datasets[dataset_index][shuffled_sample_idx]
+        self.dataset_index[dataset_index] += 1
+
+        return sample

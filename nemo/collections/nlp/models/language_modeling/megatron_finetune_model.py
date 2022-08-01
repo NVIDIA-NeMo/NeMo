@@ -17,7 +17,7 @@ import torch
 from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
-from nemo.collections.common.data import ConcatDataset
+from nemo.collections.common.data import ConcatMapDataset
 from nemo.collections.common.metrics import MetricStringToTorchMetric
 from nemo.collections.common.metrics.classification_accuracy import ExactStringPerCategoryMatchMetric
 from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import SequenceToSequenceDataset
@@ -92,14 +92,17 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             metric_name = data_cfg.metric.name
             metric = MetricStringToTorchMetric[metric_name]
             # GLUE will not have a "src_file_name" attribute and will always have only a single metric.
-            if hasattr(data_cfg, "src_file_name"):
-                if isinstance(data_cfg.src_file_name, ListConfig):
+            if hasattr(data_cfg, "src_file_name") or hasattr(data_cfg, "file_names"):
+                if hasattr(data_cfg, "src_file_name") and isinstance(data_cfg.src_file_name, ListConfig):
                     # We pass average and num_classes to the metric constructor via kwargs even if they don't exist for each metric.
                     metric = [
                         metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
-                        if metric_name != 'exact_string_match'
-                        else metric()
                         for _ in range(len(data_cfg.src_file_name))
+                    ]
+                elif hasattr(data_cfg, "file_names") and isinstance(data_cfg.file_names, ListConfig):
+                    metric = [
+                        metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
+                        for _ in range(len(data_cfg.file_names))
                     ]
                 else:
                     metric = [metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)]
@@ -442,9 +445,9 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                                     deduplicated_outputs['labels'].append(label)
                                     deduplicated_outputs['categories'].append(category)
                                     deduplicated_outputs['inputs'].append(input)
-                self.write_predictions_to_file(
-                    deduplicated_outputs, f"{data_cfg.output_file_path_prefix}_{filename_log_key}"
-                )
+                    self.write_predictions_to_file(
+                        deduplicated_outputs, f"{data_cfg.output_file_path_prefix}_{filename_log_key}"
+                    )
                 torch.distributed.barrier()
 
         # Logging of the averaged metrics:
@@ -523,10 +526,14 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                 f"trainer.val_check_interval {self.trainer.val_check_interval} is > number of global batches {sampler.num_samples // global_batch_size}"
             )
 
+        if isinstance(dataset, ConcatMapDataset):
+            collate_fn = dataset.datasets[0].collate_fn
+        else:
+            collate_fn = dataset.collate_fn
         # Data loader. Note that batch size is the per GPU batch size.
         return torch.utils.data.DataLoader(
             dataset,
-            collate_fn=dataset.collate_fn,
+            collate_fn=collate_fn,
             sampler=sampler,
             batch_size=micro_batch_size,
             num_workers=num_workers,
@@ -603,15 +610,13 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             datasets.append(dataset)
 
         if len(datasets) > 1:
-            dataset = ConcatDataset(
+            dataset = ConcatMapDataset(
                 datasets=datasets,
                 sampling_technique=data_cfg.get('concat_sampling_technique', 'temperature'),
                 sampling_temperature=data_cfg.get('concat_sampling_temperature', 5),
                 sampling_probabilities=data_cfg.get(
                     'concat_sampling_probabilities', [1 / len(datasets)] * len(datasets)
                 ),
-                global_rank=parallel_state.get_data_parallel_rank(),
-                world_size=parallel_state.get_data_parallel_world_size(),
             )
             return dataset
         else:

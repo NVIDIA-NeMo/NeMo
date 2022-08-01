@@ -96,6 +96,7 @@ def main():
 
     print("***************************")
     print(response)
+    print(response[0]['completion']['text'])
     print("***************************")
 
 

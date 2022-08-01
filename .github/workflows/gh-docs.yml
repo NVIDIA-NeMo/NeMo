@@ -1,0 +1,36 @@
+name: gh-docs-build
+on:
+  push:
+  pull_request:
+    paths:
+      - "**"
+
+# Set the access for individual scopes, or use permissions: write-all
+permissions:
+  pull-requests: write
+  issues: write
+  repository-projects: write
+  deployments: write
+  pages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    container:
+      image: squidfunk/mkdocs-material
+
+    steps:
+      - uses: actions/checkout@v3
+        if: github.event.repository.fork == false
+        with:
+          ref: gh-pages
+
+      - name: "Correct github config"
+        if: github.event.repository.fork == false
+        run: git config --global --add safe.directory /__w/NeMo/NeMo
+
+      - name: "Deploy Github Page"
+        continue-on-error: true
+        run:  mkdocs gh-deploy --force
+

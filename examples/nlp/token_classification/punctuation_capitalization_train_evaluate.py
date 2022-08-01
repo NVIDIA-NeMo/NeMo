@@ -143,10 +143,10 @@ def main(cfg: DictConfig) -> None:
         model.set_trainer(trainer)
         if cfg.do_training:
             model.setup_training_data()
-            model.setup_validation_data()
+            model.setup_multiple_validation_data(cfg.model.validation_ds)
             model.setup_optimization()
         else:
-            model.setup_test_data()
+            model.setup_multiple_test_data(cfg.model.test_ds)
     if cfg.do_training:
         trainer.fit(model)
     if cfg.do_testing:

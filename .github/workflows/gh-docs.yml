@@ -5,7 +5,7 @@ on:
     paths:
       - "**"
 
-# Set the access for individual scopes, or use permissions: write-all
+# Set the access for individual scopes
 permissions:
   pull-requests: write
   issues: write

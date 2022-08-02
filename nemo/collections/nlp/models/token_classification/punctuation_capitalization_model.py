@@ -841,6 +841,13 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                     number_of_batches_is_multiple_of = 1
                 else:
                     number_of_batches_is_multiple_of = self._trainer.num_nodes * self._trainer.num_devices
+            if cfg.cache_dir is None:
+                cache_dir = cfg.cache_dir
+            else:
+                # If pickled features are saved `cache_dir` not in the same directory with original data files, then
+                # a full path to data directory have to be appended to `cache_dir`. This is done to avoid collisions
+                # cache for different datasets is save to same `cache_dir`.
+                cache_dir = Path(cfg.cache_dir).joinpath('fsroot', *text_file.expanduser().resolve().parts[1:-1])
             dataset = BertPunctuationCapitalizationDataset(
                 tokenizer=self.tokenizer,
                 text_file=text_file,
@@ -858,7 +865,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 batch_shuffling_random_seed=batch_shuffling_random_seed,
                 verbose=cfg.verbose,
                 get_label_frequencies=cfg.get_label_frequences,
-                cache_dir=cfg.cache_dir,
+                cache_dir=cache_dir,
                 label_info_save_dir=cfg.label_info_save_dir,
             )
         if cfg.shuffle and cfg.use_tarred_dataset:

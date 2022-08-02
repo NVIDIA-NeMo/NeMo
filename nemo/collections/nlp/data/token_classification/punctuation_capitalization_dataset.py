@@ -958,7 +958,9 @@ class BertPunctuationCapitalizationDataset(Dataset):
         self.batch_building_progress_queue = batch_building_progress_queue
 
         master_device = is_global_rank_zero()
-        self.features_pkl = self._get_path_to_pkl_features(self.text_file, cache_dir, max_seq_length, num_samples)
+        self.features_pkl = self._get_path_to_pkl_features(
+            self.text_file, self.labels_file, cache_dir, max_seq_length, num_samples
+        )
         features = None
         if master_device and not (self.features_pkl.is_file() and use_cache):
             if verbose:
@@ -1036,7 +1038,12 @@ class BertPunctuationCapitalizationDataset(Dataset):
             self.capit_label_frequencies = self._calculate_and_save_label_frequencies(self.capit_labels, 'capit')
 
     def _get_path_to_pkl_features(
-        self, text_file: Path, cache_dir: Optional[Union[str, os.PathLike]], max_seq_length: int, num_samples: int
+        self,
+        text_file: Path,
+        labels_file: Path,
+        cache_dir: Optional[Union[str, os.PathLike]],
+        max_seq_length: int,
+        num_samples: int,
     ) -> Path:
         if cache_dir is None:
             cache_dir = text_file.parent
@@ -1044,7 +1051,7 @@ class BertPunctuationCapitalizationDataset(Dataset):
             cache_dir = Path(cache_dir).expanduser()
         vocab_size = getattr(self.tokenizer, "vocab_size", 0)
         features_pkl = cache_dir / "cached.{}.{}.max_seq_length{}.vocab{}.{}.punctuation_capitalization.pkl".format(
-            text_file.stem,
+            '__' + text_file.name + '__' + labels_file.name + '__',
             self.tokenizer.name,
             max_seq_length,
             vocab_size,

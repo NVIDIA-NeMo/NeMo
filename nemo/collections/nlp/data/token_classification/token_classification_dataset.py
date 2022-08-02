@@ -217,17 +217,16 @@ class BertTokenClassificationDataset(Dataset):
         """ Initializes BertTokenClassificationDataset. """
 
         data_dir = os.path.dirname(text_file)
-        filename = os.path.basename(text_file)
+        text_filename = os.path.basename(text_file)
+        lbl_filename = os.path.basename(label_file)
 
-        if not filename.endswith('.txt'):
+        if not text_filename.endswith('.txt'):
             raise ValueError("{text_file} should have extension .txt")
 
         vocab_size = getattr(tokenizer, "vocab_size", 0)
         features_pkl = os.path.join(
             data_dir,
-            "cached_{}_{}_{}_{}_{}".format(
-                filename, tokenizer.name, str(max_seq_length), str(vocab_size), str(num_samples)
-            ),
+            f"cached__{text_filename}__{lbl_filename}__{tokenizer.name}_{max_seq_length}_{vocab_size}_{num_samples}",
         )
 
         master_device = is_global_rank_zero()

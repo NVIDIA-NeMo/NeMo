@@ -74,12 +74,12 @@ class RegExTokenizer(TokenizerSpec):
 
         # initialize with default vocab
         self.vocab = {
-            DEFAULT_PAD_TOKEN: 0,  # pad_token
-            DEFAULT_UNK_TOKEN: 1,  # unk_token
-            DEFAULT_BOS_TOKEN: 2,  # begin_token
-            DEFAULT_EOS_TOKEN: 3,  # end_token
-            DEFAULT_MASK_TOKEN: 4,  # mask_token
-            DEFAULT_SEP_TOKEN: 5,  # sep_token
+            self.pad_token: 0,  # pad_token
+            self.unk_token: 1,  # unk_token
+            self.bos_token: 2,  # begin_token
+            self.eos_token: 3,  # end_token
+            self.mask_token: 4,  # mask_token
+            self.sep_token: 5,  # sep_token
         }
         self._update_cache()
 

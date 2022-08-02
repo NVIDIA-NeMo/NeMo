@@ -140,7 +140,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             encoder_bpe_dropout=self._cfg.encoder_tokenizer.get('bpe_dropout', 0.0)
             if self._cfg.encoder_tokenizer.get('bpe_dropout', 0.0) is not None
             else 0.0,
-            encoder_model_name=None,
+            encoder_model_name=self._cfg.encoder_tokenizer.get('type', None),
             encoder_r2l=self._cfg.encoder_tokenizer.get('r2l', False),
             decoder_tokenizer_library=self.decoder_tokenizer_library,
             encoder_tokenizer_vocab_file=self._cfg.encoder_tokenizer.get('vocab_file', None),
@@ -148,7 +148,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             decoder_bpe_dropout=self._cfg.decoder_tokenizer.get('bpe_dropout', 0.0)
             if self._cfg.decoder_tokenizer.get('bpe_dropout', 0.0) is not None
             else 0.0,
-            decoder_model_name=None,
+            decoder_model_name=self._cfg.encoder_tokenizer.get('type', None),
             decoder_r2l=self._cfg.decoder_tokenizer.get('r2l', False),
             special_tokens=self.special_tokens,
             encoder_sentencepiece_legacy=self._cfg.encoder_tokenizer.get('sentencepiece_legacy', False),

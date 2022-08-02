@@ -59,9 +59,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         encoder_attn_mask_type=AttnMaskType.padding,
         hidden_dropout=0.1,
         attention_dropout=0.1,
-        position_embedding_type='learned_absolute',
-        relative_attention_num_buckets=32,
-        relative_attention_max_distance=128,
         precision=16,
         fp32_residual_connection=False,
         activations_checkpoint_method=None,
@@ -114,12 +111,9 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         self.onnx_safe = onnx_safe
         self.activation = activation
         self.bias = bias
-        self.relative_attention_num_buckets = relative_attention_num_buckets
-        self.relative_attention_max_distance = relative_attention_max_distance
         self.headscale = headscale
         self.hidden_dropout = hidden_dropout
         self.attention_dropout = attention_dropout
-        self.position_embedding_type = position_embedding_type
         self.use_cpu_initialization = use_cpu_initialization
         self.normalization = normalization
         self.parent_model_type = parent_model_type
@@ -163,9 +157,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             layernorm_epsilon=self.layernorm_epsilon,
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
-            position_embedding_type=self.position_embedding_type,
-            relative_attention_num_buckets=self.relative_attention_num_buckets,
-            relative_attention_max_distance=self.relative_attention_max_distance,
             use_cpu_initialization=self.use_cpu_initialization,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_fusion=self.bias_dropout_add_fusion,
@@ -202,9 +193,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             layernorm_epsilon=self.layernorm_epsilon,
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
-            position_embedding_type=self.position_embedding_type,
-            relative_attention_num_buckets=self.relative_attention_num_buckets,
-            relative_attention_max_distance=self.relative_attention_max_distance,
             use_cpu_initialization=self.use_cpu_initialization,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_fusion=self.bias_dropout_add_fusion,
@@ -226,10 +214,20 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         pass
 
     def forward(
-        self, enc_input, enc_attn_mask, layer_past=None, get_key_value=False,
+        self,
+        enc_input,
+        enc_attn_mask,
+        layer_past=None,
+        get_key_value=False,
+        enc_self_attention_relative_position_bias=None,
     ):
+        if enc_self_attention_relative_position_bias is not None:
+            raise ValueError(
+                f"enc_self_attention_relative_position_bias is not supported for Megatron Perceiver Encoders."
+            )
+
         # convert to Megatron mask
-        latent_attention_mask = torch.ones(enc_input.size(0), self.hidden_steps).to(enc_input.device)
+        latent_attention_mask = torch.ones(enc_input.size(1), self.hidden_steps).to(enc_input.device)
 
         # First convert from 2D (B x T) to 3D (B x T x T)
         # Next convert to 4D (B x 1 x T x T) - unsqueeze(1) is for the head dim.
@@ -246,24 +244,21 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             )
         )
 
-        hidden_states = self.init_hidden.unsqueeze(0).expand(enc_input.size(0), -1, -1)  # sequence x batch x dim
+        # 1. Expand latent hidden states to B x S_perceiver x H
+        # 2. Transpose to S_perceiver x B x H
+        hidden_states = self.init_hidden.unsqueeze(0).expand(enc_input.size(1), -1, -1).transpose(1, 0)
         for i in range(self.num_layers):
             residual = hidden_states
-
             hidden_states = self.cross_attn_layers[i](
                 hidden_states=hidden_states,
                 attention_mask=latent_attention_mask_4d,
                 enc_dec_attn_mask=enc_dec_attn_mask_4d,
                 encoder_output=enc_input,
-            ).transpose(
-                1, 0
-            )  # Need to transpose at the end becase pre-process is False
+            )
             for j in range(self.num_self_attention_per_cross_attention):
                 hidden_states = self.self_attn_layers[i * self.num_self_attention_per_cross_attention + j](
                     hidden_states=hidden_states, attention_mask=latent_attention_mask_4d,
-                ).transpose(
-                    1, 0
-                )  # Need to transpose at the end becase pre-process is False
+                )
 
             hidden_states += residual
 

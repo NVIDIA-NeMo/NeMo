@@ -1,4 +1,8 @@
-name: megatron_t5
+defaults:
+  - .@model.encoder: megatron_model_base_config
+  - .@model.decoder: megatron_model_base_config
+
+name: megatron_ul2
 restore_from_path: null # used when starting from a .nemo file
 
 trainer:
@@ -21,7 +25,7 @@ trainer:
 exp_manager:
   explicit_log_dir: null
   exp_dir: null
-  name: megatron_t5
+  name: ${name}
   create_wandb_logger: False
   wandb_logger_kwargs:
     project: null
@@ -34,7 +38,7 @@ exp_manager:
     save_top_k: 10
     mode: min
     always_save_nemo: False # saves nemo file during validation, not implemented for model parallel
-    filename: 'megatron_t5--{${exp_manager.checkpoint_callback_params.monitor}:.2f}-{step}-{consumed_samples}'
+    filename: '${name}--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
 model:
@@ -48,42 +52,14 @@ model:
 
   # model architecture
   make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
-  pre_process: True # add embedding
-  post_process: True # add pooler
 
   megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
+  grad_allreduce_chunk_size_mb: 125
+  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce
+  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
 
   seq_length: 512
   max_position_embeddings: ${.seq_length}
-  num_layers: 12 # For perceiver models, this is the number of cross-attention blocks. Each layer has 1 cross-attention and "num_self_attention_per_cross_attention" self-attention layers.
-  hidden_size: 768
-  ffn_hidden_size: 3072 # Transformer FFN hidden size. Usually 4 * hidden_size.
-  num_attention_heads: 12
-  init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
-  hidden_dropout: 0.1 # Dropout probability for hidden state transformer.
-  attention_dropout: 0.1 # Dropout probability in the attention layer.
-  position_embedding_type: 'learned_absolute' # Position embedding type. Options ['learned_absolute', 'relative']
-  relative_attention_num_buckets: 32 # Relative position number of buckets for computing the bias
-  relative_attention_max_distance: 128 # max_distance to keep relative distance in the attention_num_buckets.
-  kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
-  apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
-  layernorm_epsilon: 1e-5
-  persist_layer_norm: True # Use of persistent fused layer norm kernel.
-  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
-  bias_activation_fusion: True # Use a kernel that fuses the bias addition from weight matrices with the subsequent activation function.
-  masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
-  bias_dropout_add_fusion: True # Use a kernel that fuses the bias addition, dropout and residual connection addition.
-  bias: True # Whether to use bias terms in all weight matrices.
-  normalization: 'layernorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
-  encoder_arch: 'transformer' # Options: ['transformer', 'perceiver']
-  decoder_arch: 'transformer' # Options: ['transformer']
-  activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu']
-  headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
-  transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
-  hidden_steps: 32 # Number of latent vectors to use for pereceiver encoders
-  num_self_attention_per_cross_attention: 1 # Number of self-attention layers for every cross-attention layer.
-  share_token_embeddings: True # If True share encoder/decoder embeddings
-  share_decoder_tokens_head_embeddings: True # If True share decoder embeddings and decoder projection to logits
 
   tokenizer:
     library: 'megatron'
@@ -93,21 +69,25 @@ model:
     merge_file: null
     num_sentinel_tokens: 100
 
+  # weight init
+  embedding_init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
+
+  # embedding dropout
+  embedding_dropout: 0.1
+
+  # embedding sharing
+  share_token_embeddings: True # If True share encoder/decoder embeddings
+  share_decoder_tokens_head_embeddings: True # If True share decoder embeddings and decoder projection to logits
+
   # precision
   native_amp_init_scale: 4294967296 # 2 ** 32
   native_amp_growth_interval: 1000
-  fp32_residual_connection: False # Move residual connections to fp32
   fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
 
   # miscellaneous
   seed: 1234
   use_cpu_initialization: False # Init weights on the CPU (slow for large models)
-  onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
-
-  # not implemented in NeMo yet
-  activations_checkpoint_method: null # 'uniform', 'block'
-  activations_checkpoint_num_layers: 1 
 
   data:
     # Path to data must be specified by the user.

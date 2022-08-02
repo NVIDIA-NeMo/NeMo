@@ -171,7 +171,8 @@ class MegatronTransformerEncoderDecoderModule(MegatronModule):
         # decoder
         # Adjust encoder attention mask if encoder is a perceiver.
         if self.encoder is not None and isinstance(self.encoder, MegatronPerceiverEncoderModule):
-            enc_attn_mask = torch.ones(enc_output.size(0), self.hidden_steps).to(enc_output.device)
+            # Attention mask is expected to be of shape [B x S] and enc_output is of size [S x B x H].
+            enc_attn_mask = torch.ones(enc_output.size(1), self.hidden_steps).to(enc_output.device)
 
         dec_output = self.decode(
             dec_input=dec_input,

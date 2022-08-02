@@ -292,7 +292,6 @@ class CoreAttention(MegatronModule):
         kv_channels=None,
         masked_softmax_fusion=True,
         attention_dropout=0.1,
-        headscale=False,
         sequence_parallel=False,
     ):
 
@@ -328,12 +327,6 @@ class CoreAttention(MegatronModule):
             self.num_attention_heads_per_partition * parallel_state.get_tensor_model_parallel_rank()
         )
 
-        self.headscale = headscale
-        if headscale:
-            self.head_scale_tensor = torch.nn.Parameter(
-                torch.ones(1, self.num_attention_heads_per_partition, 1, 1), requires_grad=True
-            )
-
         coeff = None
         self.norm_factor = math.sqrt(self.hidden_size_per_attention_head)
         if self.apply_query_key_layer_scaling:
@@ -365,6 +358,7 @@ class CoreAttention(MegatronModule):
         get_key_value=False,
         rotary_pos_emb=None,
         relative_position_bias=None,
+        headscale_tensor=None,
     ):
 
         # ===================================
@@ -472,8 +466,8 @@ class CoreAttention(MegatronModule):
         # change view [b, np, sq, hn]
         context_layer = context_layer.view(*output_size)
 
-        if self.headscale:
-            context_layer = context_layer * self.head_scale_tensor
+        if headscale_tensor is not None:
+            context_layer = context_layer * headscale_tensor
 
         # [b, np, sq, hn] --> [sq, b, np, hn]
         context_layer = context_layer.permute(2, 0, 1, 3).contiguous()
@@ -590,7 +584,6 @@ class ParallelAttention(MegatronModule):
             kv_channels=kv_channels,
             masked_softmax_fusion=masked_softmax_fusion,
             attention_dropout=attention_dropout,
-            headscale=headscale,
             sequence_parallel=sequence_parallel,
         )
         self.checkpoint_core_attention = activations_checkpoint_granularity == 'selective'
@@ -608,6 +601,12 @@ class ParallelAttention(MegatronModule):
             gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
 
+        self.headscale = headscale
+        if headscale:
+            self.head_scale_tensor = torch.nn.Parameter(
+                torch.ones(1, self.num_attention_heads_per_partition, 1, 1), requires_grad=True
+            )
+
         # Inference key-value memory
         self.inference_key_memory = None
         self.inference_value_memory = None
@@ -617,7 +616,14 @@ class ParallelAttention(MegatronModule):
         self.layer_type = layer_type
 
     def _checkpointed_attention_forward(
-        self, query_layer, key_layer, value_layer, attention_mask, rotary_pos_emb=None, relative_position_bias=None
+        self,
+        query_layer,
+        key_layer,
+        value_layer,
+        attention_mask,
+        rotary_pos_emb=None,
+        relative_position_bias=None,
+        headscale_tensor=None,
     ):
         """Forward method with activation checkpointing."""
 
@@ -635,6 +641,7 @@ class ParallelAttention(MegatronModule):
                 attention_mask,
                 rotary_pos_emb=rotary_pos_emb,
                 relative_position_bias=relative_position_bias,
+                headscale_tensor=headscale_tensor,
             )
             return output_
 
@@ -647,6 +654,7 @@ class ParallelAttention(MegatronModule):
             attention_mask,
             rotary_pos_emb,
             relative_position_bias,
+            headscale_tensor,
         )
 
         return hidden_states
@@ -821,6 +829,7 @@ class ParallelAttention(MegatronModule):
                 attention_mask,
                 rotary_pos_emb=rotary_pos_emb,
                 relative_position_bias=relative_position_bias,
+                headscale_tensor=self.head_scale_tensor if self.headscale else None,
             )
         else:
             context_layer = self.core_attention(
@@ -832,6 +841,7 @@ class ParallelAttention(MegatronModule):
                 get_key_value=get_key_value,
                 rotary_pos_emb=rotary_pos_emb,
                 relative_position_bias=relative_position_bias,
+                headscale_tensor=self.head_scale_tensor if self.headscale else None,
             )
 
         # =================
@@ -1545,6 +1555,7 @@ class ParallelTransformer(MegatronModule):
         self.model_type = model_type
         self.normalization = normalization
         self.transformer_block_type = transformer_block_type
+        self.layer_type = layer_type
 
         self.activations_checkpoint_method = activations_checkpoint_method
         self.activations_checkpoint_num_layers = activations_checkpoint_num_layers
@@ -1682,12 +1693,17 @@ class ParallelTransformer(MegatronModule):
                 assert parallel_state.get_pipeline_model_parallel_split_rank() is not None
                 num_ranks_in_encoder = parallel_state.get_pipeline_model_parallel_split_rank()
                 num_ranks_in_decoder = parallel_state.get_pipeline_model_parallel_world_size() - num_ranks_in_encoder
-                assert (
-                    num_layers % num_ranks_in_encoder == 0
-                ), 'num_layers must be divisible by number of ranks given to encoder'
-                assert (
-                    num_layers % num_ranks_in_decoder == 0
-                ), 'num_layers must be divisible by number of ranks given to decoder'
+                if self.layer_type == LayerType.encoder:
+                    assert (
+                        num_layers % num_ranks_in_encoder == 0
+                    ), 'num_layers must be divisible by number of ranks given to encoder'
+                elif self.layer_type == LayerType.decoder:
+                    assert (
+                        num_layers % num_ranks_in_decoder == 0
+                    ), 'num_layers must be divisible by number of ranks given to decoder'
+                else:
+                    raise ValueError(f"Unknown layer type {self.layer_type}")
+
                 if parallel_state.is_pipeline_stage_before_split():
                     num_layers = num_layers // num_ranks_in_encoder
                 else:

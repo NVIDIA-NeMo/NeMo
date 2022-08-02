@@ -130,7 +130,16 @@ class TimeFst(GraphFst):
             + graph_hour
         )
 
-        graph_hm |= (graph_hours_at_singular_with_hour | graph_hours_at_plural) + pynutil.insert(
+        graph_hours_at_plural_with_hour = (
+            graph_hours_at_prefix_plural
+            + pynutil.insert("hours: \"")
+            + graph_2_to_23
+            + pynutil.insert("\"")
+            + delete_space
+            + graph_hour
+        )
+
+        graph_hm |= (graph_hours_at_singular_with_hour | graph_hours_at_plural_with_hour) + pynutil.insert(
             " minutes: \"00\"", weight=0.2
         )
 

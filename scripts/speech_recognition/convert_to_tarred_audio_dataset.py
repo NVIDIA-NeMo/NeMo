@@ -584,6 +584,9 @@ class ASRTarredDatasetBuilder:
             if 'offset' in entry:
                 new_entry['offset'] = entry['offset']
 
+            if 'lang' in entry:
+                new_entry['lang'] = entry['lang']
+
             new_entries.append(new_entry)
 
         tar.close()

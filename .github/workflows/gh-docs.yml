@@ -6,12 +6,7 @@ on:
       - "**"
 
 # Set the access for individual scopes
-permissions:
-  pull-requests: write
-  issues: write
-  repository-projects: write
-  deployments: write
-  pages: write
+permissions: write-all
 
 jobs:
   deploy:
@@ -28,7 +23,14 @@ jobs:
 
       - name: "Correct github config"
         if: github.event.repository.fork == false
-        run: git config --global --add safe.directory /__w/NeMo/NeMo
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR}@users.noreply.${GITHUB_DOMAIN:-"github.com"}"
+          remote_repo="https://x-access-token:${GITHUB_TOKEN}@${GITHUB_DOMAIN:-"github.com"}/${GITHUB_REPOSITORY}.git"
+          echo "${remote_repo}"
+          git remote rm origin
+          git remote add origin "${remote_repo}"
 
       - name: "Deploy Github Page"
         continue-on-error: true

@@ -167,7 +167,7 @@ model:
     special_tokens: null
     training_sample_size: null # valid for sentencepiece tokenizer
     r2l: false
-    sentencepiece_legacy: True
+    sentencepiece_legacy: True # Legacy=True allows you to add special tokens to sentencepiece tokenizers.
 
   decoder_tokenizer:
     library: yttm

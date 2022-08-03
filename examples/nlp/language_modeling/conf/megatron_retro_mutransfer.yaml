@@ -1,7 +1,9 @@
 defaults:
+  - .@base_model: megatron_model_base_config
+  - .@delta_model: megatron_model_base_config
   - .@model: megatron_model_base_config
 
-name: test_retro
+name: mu_transfer_retro
 restore_from_path: null # used when starting from a .nemo file
 
 trainer:
@@ -40,8 +42,95 @@ exp_manager:
     filename: 'megatron_retro--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
+base_model:
+  # model parallelism 
+  micro_batch_size: 4
+  tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 1 # has to be one. not supporting pipeline parallel yet
+
+  # model architecture
+  encoder_seq_length: 2048
+  max_position_embeddings: ${.encoder_seq_length}
+
+  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+
+  # retro architecture
+  chunk_size: 64   # the chunk size used to retrive
+  enc_num_layers: 2    # total number of encoder layers
+  dec_num_layers: 12    # total number of decoder layers
+  enc_cross_attention: [0]    # layer numbers for cross attention in encoder
+  dec_cross_attention: [5, 8, 11]    # layer numbers for chunked cross attention in decoder
+  add_position_embedding: False   # whether use the absolute position encoding
+
+  make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
+  pre_process: True # add embedding
+  post_process: True # add pooler
+  bert_binary_head: True # BERT binary head
+
+  megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
+  grad_allreduce_chunk_size_mb: 125
+
+  tokenizer:
+    library: 'megatron'
+    type: 'GPT2BPETokenizer'
+    model: null
+    vocab_file: null
+    merge_file: null 
+    delimiter: null # only used for tabular tokenizer
+
+  # precision
+  native_amp_init_scale: 4294967296 # 2 ** 32
+  native_amp_growth_interval: 1000
+  fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
+
+  # miscellaneous
+  seed: 1234
+
+delta_model:
+  # model parallelism 
+  micro_batch_size: 4
+  tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 1 # has to be one. not supporting pipeline parallel yet
+
+  # model architecture
+  encoder_seq_length: 2048
+  max_position_embeddings: ${.encoder_seq_length}
+
+  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+
+  # retro architecture
+  chunk_size: 64   # the chunk size used to retrive
+  enc_num_layers: 2    # total number of encoder layers
+  dec_num_layers: 12    # total number of decoder layers
+  enc_cross_attention: [0]    # layer numbers for cross attention in encoder
+  dec_cross_attention: [5, 8, 11]    # layer numbers for chunked cross attention in decoder
+  add_position_embedding: False   # whether use the absolute position encoding
+
+  make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
+  pre_process: True # add embedding
+  post_process: True # add pooler
+  bert_binary_head: True # BERT binary head
+
+  megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
+  grad_allreduce_chunk_size_mb: 125
+
+  tokenizer:
+    library: 'megatron'
+    type: 'GPT2BPETokenizer'
+    model: null
+    vocab_file: null
+    merge_file: null 
+    delimiter: null # only used for tabular tokenizer
+
+  # precision
+  native_amp_init_scale: 4294967296 # 2 ** 32
+  native_amp_growth_interval: 1000
+  fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
+  # miscellaneous
+  seed: 1234
 
 model:
+  shape_file: null  # the path to the shape file
   # model parallelism 
   micro_batch_size: 4
   tensor_model_parallel_size: 1
@@ -58,10 +147,10 @@ model:
 
   # retro architecture
   chunk_size: 64   # the chunk size used to retrive
-  enc_num_layers: 4    # total number of encoder layers
-  dec_num_layers: 6    # total number of decoder layers
-  enc_cross_attention: [3]    # layer numbers for cross attention in encoder
-  dec_cross_attention: [3, 5]    # layer numbers for chunked cross attention in decoder
+  enc_num_layers: 2    # total number of encoder layers
+  dec_num_layers: 12    # total number of decoder layers
+  enc_cross_attention: [0]    # layer numbers for cross attention in encoder
+  dec_cross_attention: [5, 8, 11]    # layer numbers for chunked cross attention in decoder
   add_position_embedding: False   # whether use the absolute position encoding
 
   make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
@@ -110,7 +199,7 @@ model:
     neighbors: 2  # number of retrieved neighbors
   
   optim:
-    name: fused_adam
+    name: muadamw
     lr: 1e-4
     weight_decay: 0.01 
     betas: 

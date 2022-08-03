@@ -16,7 +16,7 @@ import re
 from typing import Optional
 
 import torch
-from omegaconf.dictconfig import DictConfig
+from omegaconf import DictConfig
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.trainer import Trainer
 
@@ -196,6 +196,10 @@ class MegatronRetrievalModel(MegatronBaseModel):
         reduced_loss = average_losses_across_data_parallel_group([lm_loss])
         self._reduced_loss_buffer.append(reduced_loss[0])
 
+        if self.cfg.precision == 16:
+            loss_scale = self.trainer.precision_plugin.scaler._scale
+            if loss_scale is not None:
+                self.log('loss_scale', loss_scale)
         # while async grad allreduce is enabled, bprop will keep moving forward without waiting for
         # the finish of async grad AR works. Hence, to guarantee the correctness of grads reduction,
         # we cannot start weight update until all async grad AR works are done.

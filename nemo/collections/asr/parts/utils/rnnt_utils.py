@@ -117,7 +117,7 @@ def is_prefix(x: List[int], pref: List[int]) -> bool:
 
 
 def select_k_expansions(
-    hyps: List[Hypothesis], logps: torch.Tensor, beam_size: int, gamma: float, beta: int,
+    hyps: List[Hypothesis], topk_idxs: torch.Tensor, topk_logps: torch.Tensor, gamma: float, beta: int,
 ) -> List[Tuple[int, Hypothesis]]:
     """
     Obtained from https://github.com/espnet/espnet
@@ -128,8 +128,8 @@ def select_k_expansions(
 
     Args:
         hyps: Hypotheses.
-        beam_logp: Log-probabilities for hypotheses expansions.
-        beam_size: Beam size.
+        topk_idxs: Indices of candidates hypothesis. Shape = [B, num_candidates]
+        topk_logps: Log-probabilities for hypotheses expansions. Shape = [B, V + 1]
         gamma: Allowed logp difference for prune-by-value method.
         beta: Number of additional candidates to store.
 
@@ -139,15 +139,13 @@ def select_k_expansions(
     k_expansions = []
 
     for i, hyp in enumerate(hyps):
-        hyp_i = [(int(k), hyp.score + float(logp)) for k, logp in enumerate(logps[i])]
+        hyp_i = [(int(k), hyp.score + float(v)) for k, v in zip(topk_idxs[i], topk_logps[i])]
         k_best_exp_val = max(hyp_i, key=lambda x: x[1])
 
         k_best_exp_idx = k_best_exp_val[0]
         k_best_exp = k_best_exp_val[1]
 
-        expansions = sorted(filter(lambda x: (k_best_exp - gamma) <= x[1], hyp_i), key=lambda x: x[1],)[
-            : beam_size + beta
-        ]
+        expansions = sorted(filter(lambda x: (k_best_exp - gamma) <= x[1], hyp_i), key=lambda x: x[1],)
 
         if len(expansions) > 0:
             k_expansions.append(expansions)

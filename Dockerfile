@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.05-py3
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.07-py3
 
 
 # build an image that includes only the nemo dependencies, ensures that dependencies
@@ -31,6 +31,13 @@ RUN apt-get update && \
     python-setuptools swig \
     python-dev ffmpeg && \
     rm -rf /var/lib/apt/lists/*
+
+# FIXME a workaround to update apex. Remove when base image is updated
+WORKDIR /tmp/
+RUN git clone https://github.com/ericharper/apex.git && \
+    cd apex && \
+    git checkout 19e4f55eb402452f74dead19f68b65d6291cfdb2 && \
+    pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" ./
 
 # uninstall stuff from base container
 RUN pip uninstall -y sacrebleu torchtext

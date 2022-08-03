@@ -15,12 +15,12 @@ Documentation section for speaker related tasks can be found at:
 Speaker Recognition models can be trained in a similar way as other models in NeMo using train and dev manifest files. Steps on how to create manifest files for voxceleb are provided below.
 We provide three model configurations based on TitaNet, SpeakerNet and modified ECAPA_TDNN, with pretrained models provided for each of them. 
 
-For training speakernet (x-vector) model:
 For training titanet_large (channel-attention) model:
 ```bash
 python speaker_reco.py --config_path='conf' --config_name='titanet_large.yaml' 
 ```
 
+For training speakernet (x-vector) model:
 ```bash
 python speaker_reco.py --config_path='conf' --config_name='SpeakerNet_verification_3x2x256.yaml' 
 ```
@@ -34,7 +34,7 @@ For step by step tutorial see [notebook](https://github.com/NVIDIA/NeMo/blob/mai
 ### Fine Tuning
 For fine tuning on a pretrained .nemo speaker recognition model,
 ```bash
-python speaker_reco_finetune.py --pretrained_model='/path/to/.nemo_or_.ckpt/file' --finetune_config_file='/path/to/finetune/config/yaml/file' 
+python speaker_reco_finetune.py --config_path='conf' --config_name='titanet-finetune.yaml' 
 ```
 for fine tuning tips see this [tutorial](https://github.com/NVIDIA/NeMo/blob/main/tutorials/speaker_tasks/Speaker_Recognition_Verification.ipynb)
 

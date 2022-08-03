@@ -154,18 +154,53 @@ class ExportableEncDecModel(Exportable):
     def output_module(self):
         return self.decoder
 
-    def forward_for_export(self, input, length=None):
+    def forward_for_export(self, input, length=None, cache_last_channel=None, cache_last_time=None):
+        """
+        This forward is used when we need to export the model to ONNX format.
+        Inputs cache_last_channel and cache_last_time are needed to be passed for exporting streaming models.
+        When they are passed, it just passes the inputs through the encoder part and currently the ONNX conversion does not fully work for this case.
+        Args:
+            input: Tensor that represents a batch of raw audio signals,
+                of shape [B, T]. T here represents timesteps.
+            length: Vector of length B, that contains the individual lengths of the audio sequences.
+            cache_last_channel: Tensor of shape [N, B, T, H] which contains the cache for last channel layers
+            cache_last_time: Tensor of shape [N, B, H, T] which contains the cache for last time layers
+                N is the number of such layers which need caching, B is batch size, H is the hidden size of activations,
+                and T is the length of the cache
+
+        Returns:
+            the output of the model
+        """
         if hasattr(self.input_module, 'forward_for_export'):
-            encoder_output = self.input_module.forward_for_export(input, length)
+            if cache_last_channel is None and cache_last_time is None:
+                encoder_output = self.input_module.forward_for_export(input, length)
+            else:
+                encoder_output = self.input_module.forward_for_export(
+                    input, length, cache_last_channel, cache_last_time
+                )
         else:
-            encoder_output = self.input_module(input, length)
+            if cache_last_channel is None and cache_last_time is None:
+                encoder_output = self.input_module(input, length)
+            else:
+                encoder_output = self.input_module(input, length, cache_last_channel, cache_last_time)
         if isinstance(encoder_output, tuple):
             decoder_input = encoder_output[0]
         else:
             decoder_input = encoder_output
         if hasattr(self.output_module, 'forward_for_export'):
-            ret = self.output_module.forward_for_export(decoder_input)
+            if cache_last_channel is None and cache_last_time is None:
+                ret = self.output_module.forward_for_export(decoder_input)
+            else:
+                # TODO: update this part to support full encoder/decoder export
+                ret = encoder_output
         else:
-            ret = self.output_module(decoder_input)
-        # convert all FP16 results to FP32 for consistency
+            if cache_last_channel is None and cache_last_time is None:
+                ret = self.output_module(decoder_input)
+            else:
+                # TODO: update this part to support full encoder/decoder export
+                ret = encoder_output
         return cast_all(ret, from_dtype=torch.float16, to_dtype=torch.float32)
+
+    @property
+    def disabled_deployment_input_names(self):
+        return self.encoder.disabled_deployment_input_names

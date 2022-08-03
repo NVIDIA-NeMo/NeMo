@@ -1,4 +1,5 @@
 # It contains the default values for training a Conformer-CTC ASR model, large size (~120M) with CTC loss and sub-word encoding.
+# This config file demonstrates the use of the AggregateTokenizer for multi-lingual model training
 
 # Architecture and training config:
 # Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
@@ -24,13 +25,12 @@
 # Pre-trained models of Conformer-CTC can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
 # The checkpoint of the large model trained on LibriSpeech with this recipe can be found here: https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_ctc_large_ls
 
-name: "Conformer-CTC-BPE"
+name: "Conformer-CTC-BPE-multilang"
 
 model:
   sample_rate: 16000
   log_prediction: true # enables logging sample predictions in the output during training
   ctc_reduction: 'mean_batch'
-  skip_nan_grad: false
 
   train_ds:
     manifest_filepath: ???
@@ -70,10 +70,16 @@ model:
     use_start_end_token: false
 
   # recommend small vocab size of 128 or 256 when using 4x sub-sampling
-  # you may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  # you may find more detail on how to train a monolingual tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
-    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
-    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+    type: agg  # The AggregateTokenizer is an ordered dict of N monolingual tokenizers, one per language id
+    langs:
+      en: # this language id must match the 'lang' field for english samples in the manifest
+        dir: ??? # path to the en tokenizer which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
+        type: ??? # Can be either bpe or wpe
+      es: # this language id must match the 'lang' field for spanish samples in the manifest
+        dir: ??? # path to the es tokenizer which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
+        type: ??? # Can be either bpe or wpe
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
@@ -109,7 +115,6 @@ model:
     subsampling: striding # vggnet, striding, stacking or stacking_norm, dw_striding
     subsampling_factor: 4 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: -1 # -1 sets it to d_model
-    causal_downsampling: false
 
     # Feed forward module's params
     ff_expansion_factor: 4
@@ -119,7 +124,6 @@ model:
     n_heads: 8 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     att_context_size: [-1, -1] # -1 means unlimited context
-    att_context_style: regular # regular or chunked_limited
     xscaling: true # scales up the input embeddings by sqrt(d_model)
     untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
@@ -127,9 +131,6 @@ model:
     # Convolution module's params
     conv_kernel_size: 31
     conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
-    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
-    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
-    conv_context_size: null
 
     ### regularization
     dropout: 0.1 # The dropout used in most of the Conformer Modules

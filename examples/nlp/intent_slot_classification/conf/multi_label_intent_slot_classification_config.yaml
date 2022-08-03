@@ -1,18 +1,19 @@
 # Intent and Slot classification with pretrained BERT models
 
 trainer:
-  gpus: 1 # the number of gpus, 0 for CPU
+  devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
   max_epochs: 5
   max_steps: null # precedence over max_epochs
   accumulate_grad_batches: 1 # accumulates grads every k batches
   precision: 32 # Should be set to 16 for O1 and O2 amp_level to enable the AMP.
-  accelerator: ddp
+  accelerator: auto
+  strategy: ddp
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
 
-  checkpoint_callback: false  # Provided by exp_manager
+  checkpoint_callback: false # Provided by exp_manager
   logger: false  # Provided by exp_manager
 
 model:

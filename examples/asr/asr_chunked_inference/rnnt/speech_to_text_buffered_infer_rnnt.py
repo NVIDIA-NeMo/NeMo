@@ -98,7 +98,7 @@ parser.add_argument(
     help="Model downsampling factor, 8 for Citrinet models and 4 for Conformer models",
 )
 parser.add_argument(
-    '--max_steps_per_timestep', type=int, default=5, help='Maximum number of tokens decoded per acoustic timestepB'
+    '--max_steps_per_timestep', type=int, default=5, help='Maximum number of tokens decoded per acoustic timestep'
 )
 parser.add_argument('--stateful_decoding', action='store_true', help='Whether to perform stateful decoding')
 parser.add_argument('--device', default=None, type=str, required=False)
@@ -175,10 +175,10 @@ def main(args):
     torch.set_grad_enabled(False)
     if args.asr_model.endswith('.nemo'):
         logging.info(f"Using local ASR model from {args.asr_model}")
-        asr_model = nemo_asr.models.EncDecCTCModelBPE.restore_from(restore_path=args.asr_model)
+        asr_model = nemo_asr.models.ASRModel.restore_from(restore_path=args.asr_model)
     else:
         logging.info(f"Using NGC cloud ASR model {args.asr_model}")
-        asr_model = nemo_asr.models.EncDecCTCModelBPE.from_pretrained(model_name=args.asr_model)
+        asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=args.asr_model)
 
     cfg = copy.deepcopy(asr_model._cfg)
     OmegaConf.set_struct(cfg.preprocessor, False)

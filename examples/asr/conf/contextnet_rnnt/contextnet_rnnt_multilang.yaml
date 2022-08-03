@@ -479,13 +479,14 @@ model:
       last_epoch: -1
 
 trainer:
-  gpus: 0 # number of gpus
+  devices: -1 # number of GPUs, -1 would use all available GPUs
   max_epochs: 100
   max_steps: null # computed at runtime if not set
   num_nodes: 1  # Should be set via SLURM variable `SLURM_JOB_NUM_NODES`
-  accelerator: ddp
+  accelerator: auto
+  strategy: ddp
   accumulate_grad_batches: 1
-  checkpoint_callback: false  # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: false  # Provided by exp_manager
   log_every_n_steps: 100  # Interval of logging.
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations

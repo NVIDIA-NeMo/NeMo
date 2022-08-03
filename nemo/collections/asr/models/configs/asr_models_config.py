@@ -91,3 +91,20 @@ class EncDecCTCConfig(model_cfg.ModelConfig):
 @dataclass
 class EncDecCTCModelConfig(model_cfg.NemoConfig):
     model: EncDecCTCConfig = EncDecCTCConfig()
+
+
+@dataclass
+class FramewiseStreamingConfig:
+    chunk_size: int = 0  # the size of each chunk at each step, it can be a list of two integers to specify different chunk sizes for the first step and others
+    shift_size: int = 0  # the size of the shift in each step, it can be a list of two integers to specify different shift sizes for the first step and others
+
+    cache_drop_size: int = 0  # the number of steps to drop from the cache
+    last_channel_cache_size: int = 0  # the size of the needed cache for last channel layers
+
+    valid_out_len: int = 0  # the number of the steps in the final output which are valid (have the same value as in the offline mode)
+
+    pre_encode_cache_size: int = 0  # the size of the needed cache for the pre-encoding part of the model to avoid caching inside the pre-encoding layers
+    drop_extra_pre_encoded: int = 0  # the number of steps to get dropped after the pre-encoding layer
+
+    last_channel_num: int = 0  # number of the last channel layers (like MHA layers) which need caching in the model
+    last_time_num: int = 0  # number of the last time layers (like convolutions) which need caching in the model

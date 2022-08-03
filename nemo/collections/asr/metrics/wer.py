@@ -186,7 +186,9 @@ class AbstractCTCDecoding(ABC):
             Either a list of str which represent the CTC decoded strings per sample,
             or a list of Hypothesis objects containing additional information.
         """
-        decoder_outputs = move_dimension_to_the_front(decoder_outputs, self.batch_dim_index)
+
+        if isinstance(decoder_outputs, torch.Tensor):
+            decoder_outputs = move_dimension_to_the_front(decoder_outputs, self.batch_dim_index)
 
         with torch.inference_mode():
             # Resolve the forward step of the decoding strategy

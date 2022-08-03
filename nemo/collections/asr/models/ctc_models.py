@@ -540,11 +540,16 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
-        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+        encoder_output = self.encoder(audio_signal=processed_signal, length=processed_signal_length,)
+        encoded = encoder_output[0]
+        encoded_len = encoder_output[1]
         log_probs = self.decoder(encoder_output=encoded)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
-
-        return log_probs, encoded_len, greedy_predictions
+        return (
+            log_probs,
+            encoded_len,
+            greedy_predictions,
+        )
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):

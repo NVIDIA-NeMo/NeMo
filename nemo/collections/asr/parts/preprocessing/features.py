@@ -48,6 +48,8 @@ CONSTANT = 1e-5
 
 
 def normalize_batch(x, seq_len, normalize_type):
+    x_mean = None
+    x_std = None
     if normalize_type == "per_feature":
         x_mean = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
         x_std = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
@@ -62,7 +64,7 @@ def normalize_batch(x, seq_len, normalize_type):
             x_std[i, :] = x[i, :, : seq_len[i]].std(dim=1)
         # make sure x_std is not zero
         x_std += CONSTANT
-        return (x - x_mean.unsqueeze(2)) / x_std.unsqueeze(2)
+        return (x - x_mean.unsqueeze(2)) / x_std.unsqueeze(2), x_mean, x_std
     elif normalize_type == "all_features":
         x_mean = torch.zeros(seq_len.shape, dtype=x.dtype, device=x.device)
         x_std = torch.zeros(seq_len.shape, dtype=x.dtype, device=x.device)
@@ -71,13 +73,17 @@ def normalize_batch(x, seq_len, normalize_type):
             x_std[i] = x[i, :, : seq_len[i].item()].std()
         # make sure x_std is not zero
         x_std += CONSTANT
-        return (x - x_mean.view(-1, 1, 1)) / x_std.view(-1, 1, 1)
+        return (x - x_mean.view(-1, 1, 1)) / x_std.view(-1, 1, 1), x_mean, x_std
     elif "fixed_mean" in normalize_type and "fixed_std" in normalize_type:
         x_mean = torch.tensor(normalize_type["fixed_mean"], device=x.device)
         x_std = torch.tensor(normalize_type["fixed_std"], device=x.device)
-        return (x - x_mean.view(x.shape[0], x.shape[1]).unsqueeze(2)) / x_std.view(x.shape[0], x.shape[1]).unsqueeze(2)
+        return (
+            (x - x_mean.view(x.shape[0], x.shape[1]).unsqueeze(2)) / x_std.view(x.shape[0], x.shape[1]).unsqueeze(2),
+            x_mean,
+            x_std,
+        )
     else:
-        return x
+        return x, x_mean, x_std
 
 
 def splice_frames(x, frame_splicing):
@@ -377,7 +383,7 @@ class FilterbankFeatures(nn.Module):
 
         # normalize if required
         if self.normalize:
-            x = normalize_batch(x, seq_len, normalize_type=self.normalize)
+            x, _, _ = normalize_batch(x, seq_len, normalize_type=self.normalize)
 
         # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
         max_len = x.size(-1)
@@ -392,5 +398,4 @@ class FilterbankFeatures(nn.Module):
             pad_amt = x.size(-1) % pad_to
             if pad_amt != 0:
                 x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
-
         return x, seq_len

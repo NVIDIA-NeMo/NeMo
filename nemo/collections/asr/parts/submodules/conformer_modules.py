@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+
 import torch
 from torch import nn as nn
 from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     RelPositionMultiHeadAttention,
@@ -48,10 +50,12 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         n_heads=4,
         conv_kernel_size=31,
         conv_norm_type='batch_norm',
+        conv_context_size=None,
         dropout=0.1,
         dropout_att=0.1,
         pos_bias_u=None,
         pos_bias_v=None,
+        att_context_size=[-1, -1],
     ):
         super(ConformerLayer, self).__init__()
 
@@ -65,16 +69,30 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         # convolution module
         self.norm_conv = LayerNorm(d_model)
-        self.conv = ConformerConvolution(d_model=d_model, kernel_size=conv_kernel_size, norm_type=conv_norm_type)
+        self.conv = ConformerConvolution(
+            d_model=d_model,
+            kernel_size=conv_kernel_size,
+            norm_type=conv_norm_type,
+            conv_context_size=conv_context_size,
+        )
 
         # multi-headed self-attention module
         self.norm_self_att = LayerNorm(d_model)
+        MHA_max_cache_len = att_context_size[0]
+
         if self_attention_model == 'rel_pos':
             self.self_attn = RelPositionMultiHeadAttention(
-                n_head=n_heads, n_feat=d_model, dropout_rate=dropout_att, pos_bias_u=pos_bias_u, pos_bias_v=pos_bias_v
+                n_head=n_heads,
+                n_feat=d_model,
+                dropout_rate=dropout_att,
+                pos_bias_u=pos_bias_u,
+                pos_bias_v=pos_bias_v,
+                max_cache_len=MHA_max_cache_len,
             )
         elif self_attention_model == 'abs_pos':
-            self.self_attn = MultiHeadAttention(n_head=n_heads, n_feat=d_model, dropout_rate=dropout_att)
+            self.self_attn = MultiHeadAttention(
+                n_head=n_heads, n_feat=d_model, dropout_rate=dropout_att, max_cache_len=MHA_max_cache_len
+            )
         else:
             raise ValueError(
                 f"'{self_attention_model}' is not not a valid value for 'self_attention_model', "
@@ -88,13 +106,27 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         self.dropout = nn.Dropout(dropout)
         self.norm_out = LayerNorm(d_model)
 
-    def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None):
+    def forward(
+        self,
+        x,
+        att_mask=None,
+        pos_emb=None,
+        pad_mask=None,
+        cache_last_time=None,
+        cache_last_channel=None,
+        cache_last_time_next=None,
+        cache_last_channel_next=None,
+    ):
         """
         Args:
             x (torch.Tensor): input signals (B, T, d_model)
             att_mask (torch.Tensor): attention masks(B, T, T)
             pos_emb (torch.Tensor): (L, 1, d_model)
             pad_mask (torch.tensor): padding mask
+            cache_last_time (torch.tensor) : cache for convolutional layers (N, B, d_model, T_cache)
+            cache_last_time_next (torch.tensor) : next cache for convolutional layers (N, B, d_model, T_cache)
+            cache_last_channel (torch.tensor) : cache for MHA layers (N, B, T_cache, d_model)
+            cache_last_channel_next (torch.tensor) : next cache for MHA layers (N, B, T_cache, d_model)
         Returns:
             x (torch.Tensor): (B, T, d_model)
         """
@@ -105,15 +137,25 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         x = self.norm_self_att(residual)
         if self.self_attention_model == 'rel_pos':
-            x = self.self_attn(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb)
+            x = self.self_attn(
+                query=x,
+                key=x,
+                value=x,
+                mask=att_mask,
+                pos_emb=pos_emb,
+                cache=cache_last_channel,
+                cache_next=cache_last_channel_next,
+            )
         elif self.self_attention_model == 'abs_pos':
-            x = self.self_attn(query=x, key=x, value=x, mask=att_mask)
+            x = self.self_attn(
+                query=x, key=x, value=x, mask=att_mask, cache=cache_last_channel, cache_next=cache_last_channel_next
+            )
         else:
             x = None
         residual = residual + self.dropout(x)
 
         x = self.norm_conv(residual)
-        x = self.conv(x, pad_mask)
+        x = self.conv(x, pad_mask=pad_mask, cache=cache_last_time, cache_next=cache_last_time_next)
         residual = residual + self.dropout(x)
 
         x = self.norm_feed_forward2(residual)
@@ -142,11 +184,14 @@ class ConformerConvolution(nn.Module):
             the paper.
     """
 
-    def __init__(self, d_model, kernel_size, norm_type='batch_norm', pointwise_activation='glu_'):
+    def __init__(
+        self, d_model, kernel_size, norm_type='batch_norm', conv_context_size=None, pointwise_activation='glu_'
+    ):
         super(ConformerConvolution, self).__init__()
         assert (kernel_size - 1) % 2 == 0
         self.d_model = d_model
         self.kernel_size = kernel_size
+        self.norm_type = norm_type
 
         if pointwise_activation in activation_registry:
             self.pointwise_activation = activation_registry[pointwise_activation]()
@@ -161,19 +206,37 @@ class ConformerConvolution(nn.Module):
         self.pointwise_conv1 = nn.Conv1d(
             in_channels=d_model, out_channels=d_model * 2, kernel_size=1, stride=1, padding=0, bias=True
         )
-        self.depthwise_conv = nn.Conv1d(
-            in_channels=dw_conv_input_dim,
-            out_channels=dw_conv_input_dim,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=(kernel_size - 1) // 2,
-            groups=dw_conv_input_dim,
-            bias=True,
-        )
+
+        if conv_context_size is None or (
+            conv_context_size[0] == (kernel_size - 1) // 2 and conv_context_size[1] == (kernel_size - 1) // 2
+        ):
+            self.depthwise_conv = nn.Conv1d(
+                in_channels=dw_conv_input_dim,
+                out_channels=dw_conv_input_dim,
+                kernel_size=kernel_size,
+                stride=1,
+                padding=(kernel_size - 1) // 2,
+                groups=d_model,
+                bias=True,
+            )
+        else:
+            self.depthwise_conv = CausalConv1D(
+                in_channels=dw_conv_input_dim,
+                out_channels=dw_conv_input_dim,
+                kernel_size=kernel_size,
+                stride=1,
+                padding=conv_context_size,
+                groups=d_model,
+                bias=True,
+            )
+
         if norm_type == 'batch_norm':
             self.batch_norm = nn.BatchNorm1d(dw_conv_input_dim)
         elif norm_type == 'layer_norm':
             self.batch_norm = nn.LayerNorm(dw_conv_input_dim)
+        elif norm_type.startswith('group_norm'):
+            num_groups = int(norm_type.replace("group_norm", ""))
+            self.batch_norm = nn.GroupNorm(num_groups=num_groups, num_channels=d_model)
         else:
             raise ValueError(f"conv_norm_type={norm_type} is not valid!")
 
@@ -182,7 +245,7 @@ class ConformerConvolution(nn.Module):
             in_channels=dw_conv_input_dim, out_channels=d_model, kernel_size=1, stride=1, padding=0, bias=True
         )
 
-    def forward(self, x, pad_mask=None):
+    def forward(self, x, pad_mask=None, cache=None, cache_next=None):
         x = x.transpose(1, 2)
         x = self.pointwise_conv1(x)
 
@@ -195,9 +258,12 @@ class ConformerConvolution(nn.Module):
         if pad_mask is not None:
             x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
 
-        x = self.depthwise_conv(x)
+        if cache is not None:
+            x = self.depthwise_conv(x, cache=cache, cache_next=cache_next)
+        else:
+            x = self.depthwise_conv(x)
 
-        if isinstance(self.batch_norm, nn.LayerNorm):
+        if self.norm_type == "layer_norm":
             x = x.transpose(1, 2)
             x = self.batch_norm(x)
             x = x.transpose(1, 2)

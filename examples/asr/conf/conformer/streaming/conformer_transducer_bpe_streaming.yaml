@@ -1,30 +1,20 @@
-# It contains the default values for training a Conformer-Transducer ASR model, large size (~120M) with Transducer loss and sub-word encoding.
-# This config file demonstrates the use of the AggregateTokenizer for multi-lingual model training
+# It contains the default values for training a streaming Conformer-Transducer ASR model, large size (~120M) with Transducer loss and sub-word encoding.
 
 # Architecture and training config:
-# Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
-# batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
-# Here are the recommended configs for different variants of Conformer-Transducer, other parameters are the same as in this config file.
-#
-#  +-------------+---------+---------+----------+--------------+--------------------------+
-#  | Model       | d_model | n_heads | n_layers | weight_decay | pred_hidden/joint_hidden |
-#  +=============+=========+========+===========+==============+==========================+
-#  | Small  (14M)|   176   |    4   |    16     |     0.0      |           320            |
-#  +-------------+---------+--------+-----------+--------------+--------------------------+
-#  | Medium (32M)|   256   |    4   |    16     |     1e-3     |           640            |
-#  +-------------+---------+--------+-----------+--------------+--------------------------+
-#  | Large (120M)|   512   |    8   |    17     |     1e-3     |           640            |
-#  +-----------------------------------------------------------+--------------------------+
-#
+# You may find more detail on the architecture and training config at NeMo/examples/asr/comf/offline/conformer_transducer_bpe.yaml
 
-# You may find more info about Conformer-Transducer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-transducer
-# Pre-trained models of Conformer-Transducer can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
-# The checkpoint of the large model trained on NeMo ASRSET with this recipe can be found here: https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_large
+# Models trained with this config have limited right context which make them efficient for streaming ASR
+# You may use NeMo/examples/asr/speech_to_text_streaming_infer.py to simulate/evaluate this model in frame-wise streaming mode
 
-name: "Conformer-Transducer-BPE-mla"
+# if loss does not go down properly or gives NAN, you may try the followings by order:
+# + using gradient clipping of 1.0
+# + increase the warmup steps from 10K to 20K
+# + use striding instead of stacking for downsampling
+
+name: "Conformer-Transducer-BPE-Streaming"
 
 model:
-  sample_rate: &sample_rate 16000
+  sample_rate: 16000
   compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
   log_prediction: true # enables logging sample predictions in the output during training
 
@@ -70,20 +60,14 @@ model:
     pin_memory: true
     use_start_end_token: false
 
-  # You may find more detail on how to train a monolingual tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
-    type: agg  # The AggregateTokenizer is an ordered dict of N monolingual tokenizers, one per language id
-    langs:
-      en: # this language id must match the 'lang' field for english samples in the manifest
-        dir: ??? # path to the en tokenizer which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
-        type: ??? # Can be either bpe or wpe
-      es: # this language id must match the 'lang' field for spanish samples in the manifest
-        dir: ??? # path to the es tokenizer which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
-        type: ??? # Can be either bpe or wpe
+    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
-    sample_rate: *sample_rate
+    sample_rate:  ${model.sample_rate}
     normalize: "per_feature"
     window_size: 0.025
     window_stride: 0.01
@@ -109,9 +93,11 @@ model:
     d_model: 512
 
     # Sub-sampling params
-    subsampling: striding # vggnet or striding
-    subsampling_factor: 4 # must be power of 2
-    subsampling_conv_channels: -1 # set to -1 to make it equal to the d_model
+    # stacking_norm and stacking can be around 25% faster than striding during inference, while they may give similar or slightly worse results in terms of accuracy for Transducer models
+    subsampling: striding # vggnet, striding, stacking or stacking_norm
+    subsampling_factor: 4 # must be power of 2 for striding and vggnet
+    subsampling_conv_channels: -1 # -1 sets it to d_model
+    causal_downsampling: true # enables causal convolutions during downsampling
 
     # Feed forward module's params
     ff_expansion_factor: 4
@@ -119,15 +105,25 @@ model:
     # Multi-headed Attention Module's params
     self_attention_model: rel_pos # rel_pos or abs_pos
     n_heads: 8 # may need to be lower for smaller d_models
+
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
-    att_context_size: [-1, -1] # -1 means unlimited context
+    # for att_context_style=regular, the right context is recommended to be a small number around 0 to 3 as multiple-layers may increase the effective right context too large
+    # for att_context_style=chunked_limited, the left context need to be dividable by the right context plus one
+    att_context_size: [102, 33] # -1 means unlimited context
+    att_context_style: chunked_limited # regular or chunked_limited
+
     xscaling: true # scales up the input embeddings by sqrt(d_model)
     untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
 
     # Convolution module's params
     conv_kernel_size: 31
-    conv_norm_type: 'batch_norm' # batch_norm or layer_norm
+    conv_norm_type: 'layer_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+
+    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
+    # Recommend to use causal convolutions as it would increase the effective right context and therefore the look-ahead significantly
+    conv_context_size: causal
 
     ### regularization
     dropout: 0.1 # The dropout used in most of the Conformer Modules
@@ -144,7 +140,7 @@ model:
       pred_hidden: ${model.model_defaults.pred_hidden}
       pred_rnn_layers: 1
       t_max: null
-      dropout: 0.1
+      dropout: 0.2
 
   joint:
     _target_: nemo.collections.asr.modules.RNNTJoint
@@ -165,18 +161,18 @@ model:
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
       activation: "relu"
-      dropout: 0.1
+      dropout: 0.2
 
   decoding:
     strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
 
     # greedy strategy config
     greedy:
-      max_symbols: 30
+      max_symbols: 10
 
     # beam strategy config
     beam:
-      beam_size: 2
+      beam_size: 5
       return_best_hypothesis: False
       score_norm: true
       tsd_max_sym_exp: 50  # for Time Synchronous Decoding
@@ -188,7 +184,8 @@ model:
     warprnnt_numba_kwargs:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
       # You may enable FastEmit to reduce the latency of the model for streaming
-      fastemit_lambda: 0.0  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      # It also helps to improve the accuracy of the model in streaming mode
+      fastemit_lambda: 1e-3  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
       clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
 
   # Adds Gaussian noise to the gradients of the decoder to avoid overfitting
@@ -208,12 +205,12 @@ model:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 10000
+      warmup_steps: 10000 # you may try larger warmup like 20K is training is not stable
       warmup_ratio: null
       min_lr: 1e-6
 
 trainer:
-  gpus: -1 # number of GPUs, -1 would use all available GPUs
+  devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
   max_epochs: 1000
   max_steps: null # computed at runtime if not set
@@ -229,9 +226,8 @@ trainer:
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
   sync_batchnorm: true
-  checkpoint_callback: false  # Provided by exp_manager
+  enable_checkpointing: False  # Provided by exp_manager
   logger: false  # Provided by exp_manager
-  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
 
 
 exp_manager:
@@ -245,9 +241,12 @@ exp_manager:
     mode: "min"
     save_top_k: 5
     always_save_nemo: True # saves the checkpoints as nemo files instead of PTL checkpoints
+
+  # you need to set these two to True to continue the training
   resume_if_exists: false
   resume_ignore_no_checkpoint: false
 
+  # You may use this section to create a W&B logger
   create_wandb_logger: false
   wandb_logger_kwargs:
     name: null

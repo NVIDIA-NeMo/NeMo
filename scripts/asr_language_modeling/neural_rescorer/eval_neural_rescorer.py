@@ -315,7 +315,7 @@ def main():
     logging.info(f"  +LM rescoring WER: {np.round(rescored_wer * 100, 2)}%")
     logging.info(f"  with alpha={coef1}, beta={coef2}")
     logging.info(f"------------------------------------------------")
-    logging.info(f"Best possible WER: {np.round(ideal_wer.item() * 100, 2)}%")
+    logging.info(f"Oracle WER: {np.round(ideal_wer.item() * 100, 2)}%")
     logging.info(f"------------------------------------------------")
 
     new_scores_flatten = new_scores.flatten()

@@ -81,9 +81,10 @@ model:
     d_model: 256
 
     # Sub-sampling params
-    subsampling: striding # vggnet or striding, vggnet may give better results but needs more memory
-    subsampling_factor: 4 # must be power of 2
+    subsampling: striding # vggnet, striding, stacking or stacking_norm, dw_striding
+    subsampling_factor: 4 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: -1 # set to -1 to make it equal to the d_model
+    causal_downsampling: false
 
     # Feed forward module's params
     ff_expansion_factor: 4
@@ -93,13 +94,17 @@ model:
     n_heads: 8 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     att_context_size: [-1, -1] # -1 means unlimited context
+    att_context_style: regular # regular or chunked_limited
     xscaling: true # scales up the input embeddings by sqrt(d_model)
     untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
 
     # Convolution module's params
     conv_kernel_size: 31
-    conv_norm_type: 'batch_norm' # batch_norm or layer_norm
+    conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
+    conv_context_size: null
 
     ### regularization
     dropout: 0.1 # The dropout used in most of the Conformer Modules

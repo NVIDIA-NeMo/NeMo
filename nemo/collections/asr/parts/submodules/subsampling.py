@@ -16,7 +16,9 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.submodules.causal_convs import CausalConv2D
 from nemo.collections.common.parts.training_utils import avoid_bfloat16_autocast_context
 
 
@@ -26,17 +28,30 @@ class StackingSubsampling(torch.nn.Module):
         subsampling_factor (int): The subsampling factor
         feat_in (int): size of the input features
         feat_out (int): size of the output features
+        norm (bool): whether to use an MLP layer after the stacking along with normalization. default is False.
     """
 
-    def __init__(self, subsampling_factor, feat_in, feat_out):
+    def __init__(self, subsampling_factor, feat_in, feat_out, norm=False):
         super(StackingSubsampling, self).__init__()
         self.subsampling_factor = subsampling_factor
         self.proj_out = torch.nn.Linear(subsampling_factor * feat_in, feat_out)
+        if norm:
+            self.pre_norm = LayerNorm(feat_in)
+        else:
+            self.pre_norm = None
+
+    def get_sampling_frames(self):
+        return self.subsampling_factor
+
+    def get_streaming_cache_size(self):
+        return 0
 
     def forward(self, x, lengths):
         b, t, h = x.size()
         pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
         x = torch.nn.functional.pad(x, (0, 0, 0, pad_size))
+        if self.pre_norm is not None:
+            x = self.pre_norm(x)
         _, t, _ = x.size()
         x = torch.reshape(x, (b, t // self.subsampling_factor, h * self.subsampling_factor))
         x = self.proj_out(x)
@@ -57,7 +72,9 @@ class ConvSubsampling(torch.nn.Module):
         activation (Module): activation function, default is nn.ReLU()
     """
 
-    def __init__(self, subsampling, subsampling_factor, feat_in, feat_out, conv_channels, activation=nn.ReLU()):
+    def __init__(
+        self, subsampling, subsampling_factor, feat_in, feat_out, conv_channels, activation=nn.ReLU(), is_causal=False
+    ):
         super(ConvSubsampling, self).__init__()
         self._subsampling = subsampling
         self._conv_channels = conv_channels
@@ -67,16 +84,19 @@ class ConvSubsampling(torch.nn.Module):
         if subsampling_factor % 2 != 0:
             raise ValueError("Sampling factor should be a multiply of 2!")
         self._sampling_num = int(math.log(subsampling_factor, 2))
+        self.subsampling_factor = subsampling_factor
+        self.is_causal = is_causal
 
         in_channels = 1
         layers = []
-        self._ceil_mode = False
 
         if subsampling == 'vggnet':
-            self._padding = 0
             self._stride = 2
             self._kernel_size = 2
             self._ceil_mode = True
+
+            self._left_padding = 0
+            self._right_padding = 0
 
             for i in range(self._sampling_num):
                 layers.append(
@@ -95,17 +115,19 @@ class ConvSubsampling(torch.nn.Module):
                     torch.nn.MaxPool2d(
                         kernel_size=self._kernel_size,
                         stride=self._stride,
-                        padding=self._padding,
+                        padding=self._left_padding,
                         ceil_mode=self._ceil_mode,
                     )
                 )
                 in_channels = conv_channels
 
         elif subsampling == 'dw_striding':
-            self._padding = 1
             self._stride = 2
             self._kernel_size = 3
             self._ceil_mode = False
+
+            self._left_padding = (self._kernel_size - 1) // 2
+            self._right_padding = (self._kernel_size - 1) // 2
 
             # Layer 1
             layers.append(
@@ -114,7 +136,7 @@ class ConvSubsampling(torch.nn.Module):
                     out_channels=conv_channels,
                     kernel_size=self._kernel_size,
                     stride=self._stride,
-                    padding=self._padding,
+                    padding=self._left_padding,
                 )
             )
             in_channels = conv_channels
@@ -128,7 +150,7 @@ class ConvSubsampling(torch.nn.Module):
                             out_channels=in_channels,
                             kernel_size=self._kernel_size,
                             stride=self._stride,
-                            padding=self._padding,
+                            padding=self._left_padding,
                             groups=in_channels,
                         ),
                         torch.nn.Conv2d(
@@ -145,21 +167,40 @@ class ConvSubsampling(torch.nn.Module):
                 in_channels = conv_channels
 
         elif subsampling == 'striding':
-            self._padding = 1
             self._stride = 2
             self._kernel_size = 3
             self._ceil_mode = False
 
+            if self.is_causal:
+                self._left_padding = self._kernel_size - 1
+                self._right_padding = self._stride - 1
+                self._max_cache_len = subsampling_factor + 1
+            else:
+                self._left_padding = (self._kernel_size - 1) // 2
+                self._right_padding = (self._kernel_size - 1) // 2
+                self._max_cache_len = 0
+
             for i in range(self._sampling_num):
-                layers.append(
-                    torch.nn.Conv2d(
-                        in_channels=in_channels,
-                        out_channels=conv_channels,
-                        kernel_size=self._kernel_size,
-                        stride=self._stride,
-                        padding=self._padding,
+                if self.is_causal:
+                    layers.append(
+                        CausalConv2D(
+                            in_channels=in_channels,
+                            out_channels=conv_channels,
+                            kernel_size=self._kernel_size,
+                            stride=self._stride,
+                            padding=None,
+                        )
                     )
-                )
+                else:
+                    layers.append(
+                        torch.nn.Conv2d(
+                            in_channels=in_channels,
+                            out_channels=conv_channels,
+                            kernel_size=self._kernel_size,
+                            stride=self._stride,
+                            padding=self._left_padding,
+                        )
+                    )
                 layers.append(activation)
                 in_channels = conv_channels
         else:
@@ -167,8 +208,8 @@ class ConvSubsampling(torch.nn.Module):
 
         in_length = torch.tensor(feat_in, dtype=torch.float)
         out_length = calc_length(
-            in_length,
-            padding=self._padding,
+            lengths=in_length,
+            all_paddings=self._left_padding + self._right_padding,
             kernel_size=self._kernel_size,
             stride=self._stride,
             ceil_mode=self._ceil_mode,
@@ -177,16 +218,23 @@ class ConvSubsampling(torch.nn.Module):
         self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
         self.conv = torch.nn.Sequential(*layers)
 
+    def get_sampling_frames(self):
+        return [1, self.subsampling_factor]
+
+    def get_streaming_cache_size(self):
+        return [0, self.subsampling_factor + 1]
+
     def forward(self, x, lengths):
         lengths = calc_length(
             lengths,
-            padding=self._padding,
+            all_paddings=self._left_padding + self._right_padding,
             kernel_size=self._kernel_size,
             stride=self._stride,
             ceil_mode=self._ceil_mode,
             repeat_num=self._sampling_num,
         )
         x = x.unsqueeze(1)
+
         if self._subsampling in ['striding', 'dw_striding']:
             # added in order to prevent slowdown in torch.nn.Conv2d with bfloat16 / CUDNN v8 API
             # to be removed once the above is fixed in cudnn
@@ -223,9 +271,9 @@ class ConvSubsampling(torch.nn.Module):
                 torch.nn.init.uniform_(self.out.bias, -fc_scale, fc_scale)
 
 
-def calc_length(lengths, padding, kernel_size, stride, ceil_mode, repeat_num=1):
+def calc_length(lengths, all_paddings, kernel_size, stride, ceil_mode, repeat_num=1):
     """ Calculates the output length of a Tensor passed through a convolution or max pooling layer"""
-    add_pad: float = (padding * 2) - kernel_size
+    add_pad: float = all_paddings - kernel_size
     one: float = 1.0
     for i in range(repeat_num):
         lengths = torch.div(lengths.to(dtype=torch.float) + add_pad, stride) + one

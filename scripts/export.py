@@ -57,6 +57,9 @@ def get_args(argv):
     parser.add_argument("--max-batch", type=int, default=None, help="Max batch size for model export")
     parser.add_argument("--max-dim", type=int, default=None, help="Max dimension(s) for model export")
     parser.add_argument("--onnx-opset", type=int, default=None, help="ONNX opset for model export")
+    parser.add_argument(
+        "--cache_support", action="store_true", help="enables caching inputs for the models support it."
+    )
     parser.add_argument("--device", default="cuda", help="Device to export for")
     args = parser.parse_args(argv)
     return args
@@ -124,6 +127,13 @@ def nemo_export(argv):
     if args.max_dim is not None:
         in_args["max_dim"] = args.max_dim
         max_dim = args.max_dim
+
+    if args.cache_support and model.hasattr("encoder") and model.encoder.hasattr("export_cache_support"):
+        export_cache_support_prev = model.encoder.export_cache_support
+        model.encoder.export_cache_support = True
+        logging.info("Caching support is enabled.")
+    else:
+        export_cache_support_prev = None
 
     autocast = nullcontext
     model.to(device=args.device).freeze()

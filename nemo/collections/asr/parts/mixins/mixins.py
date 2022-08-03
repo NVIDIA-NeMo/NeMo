@@ -16,10 +16,14 @@ import os
 from abc import ABC, abstractmethod
 from typing import List
 
+import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+import nemo.collections.asr.models as asr_models
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
+from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common import tokenizers
 from nemo.utils import logging
 
@@ -388,6 +392,112 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         """
         asr_module_utils.change_conv_asr_se_context_window(
             self, context_window=context_window, update_config=update_config
+        )
+
+    def conformer_stream_step(
+        self,
+        processed_signal: torch.Tensor,
+        processed_signal_length: torch.Tensor = None,
+        cache_last_channel: torch.Tensor = None,
+        cache_last_time: torch.Tensor = None,
+        keep_all_outputs: bool = True,
+        previous_hypotheses: List[Hypothesis] = None,
+        previous_pred_out: torch.Tensor = None,
+        drop_extra_pre_encoded: int = None,
+        return_transcription: bool = True,
+    ):
+        """
+        It simulates a forward step with caching for streaming purposes.
+        It supports the ASR models where their encoder supports streaming like Conformer.
+        Args:
+            processed_signal: the input audio signals
+            processed_signal_length: the length of the audios
+            cache_last_channel: the cache tensor for last channel layers like MHA
+            cache_last_time: the cache tensor for last time layers like convolutions
+            keep_all_outputs: if set to True, would not drop the extra outputs specified by encoder.streaming_cfg.valid_out_len
+            previous_hypotheses: the hypotheses from the previous step for RNNT models
+            previous_pred_out: the predicted outputs from the previous step for CTC models
+            drop_extra_pre_encoded: number of steps to drop from the beginning of the outputs after the downsampling module. This can be used if extra paddings are added on the left side of the input.
+            return_transcription: whether to decode and return the transcriptions. It can not get disabled for Transducer models.
+
+        Returns:
+            greedy_predictions: the greedy predictions from the decoder
+            all_hyp_or_transcribed_texts: the decoder hypotheses for Transducer models and the transcriptions for CTC models
+            cache_last_channel_next: the updated tensor cache for last channel layers to be used for next streaming step
+            cache_last_time_next: the updated tensor cache for last time layers to be used for next streaming step
+            best_hyp: the best hypotheses for the Transducer models
+        """
+        if not isinstance(self, asr_models.EncDecRNNTModel) and not isinstance(self, asr_models.EncDecCTCModel):
+            raise NotImplementedError(f"stream_step does not support {type(self)}!")
+
+        if not isinstance(self.encoder, StreamingEncoder):
+            raise NotImplementedError(f"Encoder of this model does not support streaming!")
+
+        if isinstance(self, asr_models.EncDecRNNTModel) and return_transcription is False:
+            logging.info(
+                "return_transcription can not be False for Transducer models as decoder returns the transcriptions too."
+            )
+
+        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next) = self.encoder.cache_aware_stream_step(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            keep_all_outputs=keep_all_outputs,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+        )
+
+        if isinstance(self, asr_models.EncDecCTCModel):
+            log_probs = self.decoder(encoder_output=encoded)
+            predictions_tensor = log_probs.argmax(dim=-1, keepdim=False)
+
+            # Concatenate the previous predictions with the current one to have the full predictions.
+            # We drop the extra predictions for each sample by using the lengths returned by the encoder (encoded_len)
+            # Then create a list of the predictions for the batch. The predictions can have different lengths because of the paddings.
+            greedy_predictions = []
+            if return_transcription:
+                all_hyp_or_transcribed_texts = []
+            else:
+                all_hyp_or_transcribed_texts = None
+            for preds_idx, preds in enumerate(predictions_tensor):
+                if encoded_len is None:
+                    preds_cur = predictions_tensor[preds_idx]
+                else:
+                    preds_cur = predictions_tensor[preds_idx, : encoded_len[preds_idx]]
+                if previous_pred_out is not None:
+                    greedy_predictions_concat = torch.cat((previous_pred_out[preds_idx], preds_cur), dim=-1)
+                    encoded_len[preds_idx] += len(previous_pred_out[preds_idx])
+                else:
+                    greedy_predictions_concat = preds_cur
+                greedy_predictions.append(greedy_predictions_concat)
+
+                # TODO: make decoding more efficient by avoiding the decoding process from the beginning
+                if return_transcription:
+                    decoded_out = self.decoding.ctc_decoder_predictions_tensor(
+                        decoder_outputs=greedy_predictions_concat.unsqueeze(0),
+                        decoder_lengths=encoded_len[preds_idx : preds_idx + 1],
+                        return_hypotheses=False,
+                    )
+                    all_hyp_or_transcribed_texts.append(decoded_out[0][0])
+            best_hyp = None
+        else:
+            best_hyp, all_hyp_or_transcribed_texts = self.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=encoded,
+                encoded_lengths=encoded_len,
+                return_hypotheses=True,
+                partial_hypotheses=previous_hypotheses,
+            )
+            greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
+
+            if all_hyp_or_transcribed_texts is None:
+                all_hyp_or_transcribed_texts = best_hyp
+
+        return (
+            greedy_predictions,
+            all_hyp_or_transcribed_texts,
+            cache_last_channel_next,
+            cache_last_time_next,
+            best_hyp,
         )
 
 

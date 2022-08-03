@@ -108,9 +108,12 @@ class RNNEncoder(NeuralModule, Exportable):
         if subsampling_conv_channels == -1:
             subsampling_conv_channels = proj_size
         if subsampling and subsampling_factor > 1:
-            if subsampling == 'stacking':
+            if subsampling in ['stacking', 'stacking_norm']:
                 self.pre_encode = StackingSubsampling(
-                    subsampling_factor=subsampling_factor, feat_in=feat_in, feat_out=proj_size
+                    subsampling_factor=subsampling_factor,
+                    feat_in=feat_in,
+                    feat_out=proj_size,
+                    norm=True if 'norm' in subsampling else False,
                 )
             else:
                 self.pre_encode = ConvSubsampling(

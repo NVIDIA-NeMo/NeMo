@@ -1,0 +1,116 @@
+# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+import torch
+from omegaconf.omegaconf import open_dict
+from pytorch_lightning.trainer.trainer import Trainer
+
+from nemo.collections.nlp.models.language_modeling.megatron_t5_prompt_learning_model import (
+    MegatronT5PromptLearningModel,
+)
+from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
+from nemo.core.config import hydra_runner
+from nemo.utils.app_state import AppState
+
+try:
+    from apex.transformer import parallel_state
+
+    HAVE_APEX = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_APEX = False
+
+
+if not torch.cuda.is_available():
+    raise EnvironmentError("GPU is needed for the inference")
+
+
+@hydra_runner(config_path="conf", config_name="megatron_t5_prompt_learning_inference")
+def main(cfg) -> None:
+
+    # trainer required for restoring model parallel models
+    trainer = Trainer(plugins=NLPDDPPlugin(), **cfg.trainer)
+    assert (
+        cfg.trainer.devices * cfg.trainer.num_nodes
+        == cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size
+    ), "devices * num_nodes should equal tensor_model_parallel_size * pipeline_model_parallel_size"
+
+    app_state = AppState()
+    if cfg.tensor_model_parallel_size > 1 or cfg.pipeline_model_parallel_size > 1:
+        app_state.model_parallel_size = cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size
+        (
+            app_state.tensor_model_parallel_rank,
+            app_state.pipeline_model_parallel_rank,
+            app_state.model_parallel_size,
+            app_state.data_parallel_size,
+            app_state.pipeline_model_parallel_split_rank,
+        ) = fake_initialize_model_parallel(
+            world_size=app_state.model_parallel_size,
+            rank=trainer.global_rank,
+            tensor_model_parallel_size_=cfg.tensor_model_parallel_size,
+            pipeline_model_parallel_size_=cfg.pipeline_model_parallel_size,
+            pipeline_model_parallel_split_rank_=cfg.pipeline_model_parallel_split_rank,
+        )
+
+    # Load prompt tuned model, virtual_prompt_model_file and pretrained_language_model_file must be provided in config
+    if (
+        cfg.get('virtual_prompt_model_file', None) is not None
+        and cfg.get('pretrained_language_model_file', None) is not None
+    ):
+
+        # Update frozen T5 model path in case it has changed
+        prompt_learning_cfg = MegatronT5PromptLearningModel.restore_from(
+            cfg.virtual_prompt_model_file, trainer=trainer, return_config=True
+        )
+        with open_dict(prompt_learning_cfg):
+            prompt_learning_cfg.pretrained_language_model_path = cfg.pretrained_language_model_file
+
+        # Now load prompt learning model with frozen T5 model base
+        model = MegatronT5PromptLearningModel.restore_from(
+            restore_path=cfg.virtual_prompt_model_file, trainer=trainer, override_config_path=prompt_learning_cfg
+        )
+
+    else:
+        raise ValueError("virtual_prompt_model_file and pretrained_language_model_file must be provided in config")
+
+    # check whether the DDP is initialized
+    if parallel_state.is_unitialized():
+
+        def dummy():
+            return
+
+        if model.trainer.strategy.launcher is not None:
+            model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
+        model.trainer.strategy.setup_environment()
+
+    model.freeze()
+
+    test_ds, test_dl = model.build_virtual_prompt_dataset(
+        dataset_paths=cfg.data.test_ds,
+        batch_size=cfg.data.batch_size,
+        for_train=False,
+        drop_last=False,
+        shuffle=False,
+        num_workers=cfg.data.num_workers,
+        pin_memory=True,
+    )
+
+    trainer.predict(model, test_dl)
+
+    print('test finish---------------------------------')
+
+
+if __name__ == '__main__':
+    main()  # noqa pylint: disable=no-value-for-parameter

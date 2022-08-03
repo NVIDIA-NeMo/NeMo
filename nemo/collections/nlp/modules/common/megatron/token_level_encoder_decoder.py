@@ -384,7 +384,10 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
 
         enc_output_provided = enc_output is not None
 
-        if (enc_input is None) and (enc_input_ids is not None):
+        if enc_input is not None:
+            # If enc_input is provided, we need to transpose it from [B x S x H] -> [S x B x H].
+            enc_input = enc_input.transpose(0, 1)
+        elif (enc_input is None) and (enc_input_ids is not None):
             if self.pre_process and self.add_encoder:
                 # We don't need position ids for RPE, because the embedding layer does not have position embeddings.
                 if self.encoder_cfg.get("position_embedding_type", "learned_absolute") != 'relative':

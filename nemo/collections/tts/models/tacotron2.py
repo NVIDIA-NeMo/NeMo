@@ -309,7 +309,14 @@ class Tacotron2Model(SpectrogramGenerator):
                     'text_normalizer.whitelist', cfg.text_normalizer.whitelist
                 )
 
-            self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
+            try:
+                self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
+            except Exception as e:
+                logging.error(e)
+                raise ImportError(
+                    "`pynini` not installed, please install via NeMo/nemo_text_processing/pynini_install.sh"
+                )
+
             self.text_normalizer_call = self.normalizer.normalize
             if "text_normalizer_call_kwargs" in cfg:
                 self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs

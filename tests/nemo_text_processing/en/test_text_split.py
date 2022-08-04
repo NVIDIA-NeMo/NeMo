@@ -13,18 +13,30 @@
 # limitations under the License.
 
 import pytest
-from nemo_text_processing.text_normalization.normalize import Normalizer
 
 from ..utils import CACHE_DIR
 
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+
+    PYNINI_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    PYNINI_AVAILABLE = False
+
 
 class TestTextSentenceSplit:
-    normalizer_en = Normalizer(
-        input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False, post_process=True
+    normalizer_en = (
+        Normalizer(input_case='cased', lang='en', cache_dir=CACHE_DIR, overwrite_cache=False, post_process=True)
+        if PYNINI_AVAILABLE
+        else None
     )
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    @pytest.mark.skipif(
+        not PYNINI_AVAILABLE,
+        reason="`pynini` not installed, please install via nemo_text_processing/pynini_install.sh",
+    )
     def test_text_sentence_split(self):
         text = "This happened in 1918 when Mrs. and Mr. Smith paid $111.12 in U.S.A. at 9 a.m. on Dec. 1. 2020. And Jan. 17th. This is an example. He paid $123 for this desk. 123rd, St. Patrick."
         gt_sentences = [

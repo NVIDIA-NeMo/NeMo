@@ -18,13 +18,20 @@ from typing import List
 
 import numpy as np
 import torch.nn as nn
-from nemo_text_processing.text_normalization.data_loader_utils import post_process_punct
 from tqdm import tqdm
 
 from nemo.collections.nlp.data.text_normalization import TextNormalizationTestDataset, constants
 from nemo.collections.nlp.data.text_normalization.utils import input_preprocessing
 from nemo.collections.nlp.models.duplex_text_normalization.utils import get_formatted_string
 from nemo.utils import logging
+
+try:
+    from nemo_text_processing.text_normalization.data_loader_utils import post_process_punct
+
+    PYNINI_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    PYNINI_AVAILABLE = False
+
 
 __all__ = ['DuplexTextNormalizationModel']
 
@@ -276,7 +283,12 @@ class DuplexTextNormalizationModel(nn.Module):
                     # detokenize the output with Moses and fix punctuation marks to match the input
                     # for interactive inference or inference from a file
                     cur_output_str = self.decoder.processor.detokenize(cur_words)
-                    cur_output_str = post_process_punct(input=original_sents[ix], normalized_text=cur_output_str)
+                    if PYNINI_AVAILABLE:
+                        cur_output_str = post_process_punct(input=original_sents[ix], normalized_text=cur_output_str)
+                    else:
+                        logging.warning(
+                            "`pynini` not installed, please install via nemo_text_processing/pynini_install.sh"
+                        )
                 final_outputs.append(cur_output_str)
             except IndexError:
                 logging.warning(f"Input sent is too long and will be skipped - {original_sents[ix]}")

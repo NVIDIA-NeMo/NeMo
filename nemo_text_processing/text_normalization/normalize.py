@@ -34,8 +34,12 @@ from nemo_text_processing.text_normalization.token_parser import PRESERVE_ORDER_
 from pynini.lib.rewrite import top_rewrite
 from tqdm import tqdm
 
-from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
-from nemo.utils import logging
+try:
+    from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
+
+    NLP_AVAILABLE = True
+except (ModuleNotFoundError, ImportError) as e:
+    NLP_AVAILABLE = False
 
 SPACE_DUP = re.compile(' {2,}')
 
@@ -113,7 +117,11 @@ class Normalizer:
         self.parser = TokenParser()
         self.lang = lang
 
-        self.processor = MosesProcessor(lang_id=lang)
+        if NLP_AVAILABLE:
+            self.processor = MosesProcessor(lang_id=lang)
+        else:
+            self.processor = None
+            print("NeMo NLP is not available. Moses de-tokenization will be skipped.")
 
     def normalize_list(
         self,
@@ -254,8 +262,8 @@ class Normalizer:
         Returns: spoken form
         """
         if len(text.split()) > 500:
-            logging.warning(
-                "Your input is too long, and this could take a long time to normalize."
+            print(
+                "WARNING! Your input is too long and could take a long time to normalize."
                 "Use split_text_into_sentences() to make the input shorter and then call normalize_list()."
             )
 

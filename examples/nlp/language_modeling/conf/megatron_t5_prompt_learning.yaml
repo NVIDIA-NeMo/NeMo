@@ -44,7 +44,7 @@ model:
   pipeline_model_parallel_size: 1 
   encoder_seq_length: 2048
   global_batch_size: 8
-  micro_batch_size: 4
+  micro_batch_size: 8
   
   restore_path: null # Path to an existing p-tuned/prompt tuned .nemo model you wish to add new tasks to or run inference with
   pretrained_language_model_path: ??? # Path to the pretrained T5 language model .nemo file, always required

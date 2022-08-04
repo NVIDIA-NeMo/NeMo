@@ -76,6 +76,8 @@ def main(cfg) -> None:
         )
         with open_dict(prompt_learning_cfg):
             prompt_learning_cfg.pretrained_language_model_path = cfg.pretrained_language_model_file
+            prompt_learning_cfg.micro_batch_size = cfg.data.get('micro_batch_size', 4)
+            prompt_learning_cfg.global_batch_size = cfg.data.get('global_batch_size', 4)
 
         # Now load prompt learning model with frozen T5 model base
         model = MegatronT5PromptLearningModel.restore_from(
@@ -99,7 +101,7 @@ def main(cfg) -> None:
 
     test_ds, test_dl = model.build_virtual_prompt_dataset(
         dataset_paths=cfg.data.test_ds,
-        batch_size=cfg.data.batch_size,
+        batch_size=cfg.data.global_batch_size,
         for_train=False,
         drop_last=False,
         shuffle=False,

@@ -661,8 +661,8 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                     tgt_tokenizer=self.decoder_tokenizer,
                     max_src_seq_length=cfg.max_seq_length,
                     max_tgt_seq_length=cfg.max_seq_length,
+                    max_num_samples=self.trainer.max_steps * self._cfg.global_batch_size,
                     seed=self._cfg.seed,
-                    # max_num_samples=self.trainer.max_steps * self._cfg.global_batch_size (sandeep: commenting this out till we figure out samples mapping for text memmap)
                 )
         return dataset
 

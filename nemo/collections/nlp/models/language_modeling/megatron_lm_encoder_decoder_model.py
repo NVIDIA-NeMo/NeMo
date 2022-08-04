@@ -198,6 +198,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             precision=self.cfg.get('precision', 16),
             embedding_init_method_std=embedding_init_method_std,
             embedding_dropout=embedding_dropout,
+            label_smoothing=self.cfg.get('label_smoothing', 0.0),
             add_encoder=add_encoder,
             add_decoder=add_decoder,
             share_token_embeddings=self.cfg.get('share_token_embeddings', True),

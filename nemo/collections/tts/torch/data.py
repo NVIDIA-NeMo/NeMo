@@ -637,7 +637,7 @@ class TTSDataset(Dataset):
         max_energies_len = max(energies_lengths).item() if Energy in self.sup_data_types_set else None
 
         if LogMel in self.sup_data_types_set:
-            log_mel_pad = torch.finfo(batch[0][2].dtype).tiny
+            log_mel_pad = torch.finfo(batch[0][4].dtype).tiny
 
         align_prior_matrices = (
             torch.zeros(

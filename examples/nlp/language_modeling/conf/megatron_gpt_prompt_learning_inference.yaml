@@ -20,14 +20,7 @@ trainer:
 
 tensor_model_parallel_size: 1
 pipeline_model_parallel_size: 1
-pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
 gpt_model_file: null  # GPT nemo file path
-checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
-checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
-hparams_file: null # model configuration file, only used for PTL checkpoint loading
-prompts: # prompts for GPT inference
-  - "Q: How are you?"
-  - "Q: How big is the universe?"
-server: False  # whether launch the inference server
-port: 5555 # the port number for the inference server
+virtual_prompt_model_file: null # path to a MegatronGPTPromptLearningModel model if you want to use soft prompts
+data_paths: # paths to .jsonl files you want to perform inference on
  

@@ -20,7 +20,7 @@ import torch
 
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_prompt_learning_dataset import GPTPromptLearningDataset
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model import get_pseudo_tokens
-from nemo.collections.nlp.modules.common import VirtualPromptPlaceholderToken, VirtualPromptSource
+from nemo.collections.nlp.modules.common import VirtualPromptSource
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.core import Dataset
 
@@ -29,7 +29,7 @@ def get_prompt_tuning_dataset(
     dataset_path, tokenizer, virtual_prompt_source, task_templates, pseudo_tokens,
 ):
     dataset = GPTPromptLearningDataset(
-        datasets=[dataset_path],
+        dataset_paths=[dataset_path],
         tokenizer=tokenizer,
         virtual_prompt_source=virtual_prompt_source,
         task_templates=task_templates,

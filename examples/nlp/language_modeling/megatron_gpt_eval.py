@@ -16,14 +16,10 @@ import os
 
 import torch
 from omegaconf import OmegaConf
-from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model import (
-    MegatronGPTPromptLearningModel,
-)
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
 from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
@@ -135,46 +131,6 @@ Usage:
 
         sentences = request_data(data)
         ```
-
-    f. run greedy inference from a p-tuned/prompt-tuned model's nemo file:
-        python megatron_gpt_eval.py \
-            virtual_prompt_model_file=PATH_TO_NEMO_PROMPT_LEARNING_MODEL_FILE \
-            gpt_model_file=PATH_TO_FROZEN_GPT_MODEL_FILE \
-            inference.greedy=True \
-            inference.add_BOS=False \
-            trainer.devices=1 \
-            trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
-            prompts=[prompt1,prompt2]
-
-        virtual_prompt_model_file should be a path to a .nemo file saved after p-tuning/prompt tuning and model file
-        is still the path to the gpt model's .nemo file.         
-
-        prompts in this case should be a list of .json or .jsonl files containing json objects similar to the ones 
-        used during prompt learning. They should have keys that match the fields specified in the prompt template.
-        Fields can be dropped from the prompt dict and their corresponding section of the prompt template will 
-        be automatically removed. 
-
-        For example, say the prompt template during p-tuning/prompt-tuning looked like:
-
-        '<|VIRTUAL_PROMPT_0|> Context: {context} Question: {question} Answer: {answer}'
-
-        but you don't want to include the answer field during inference. Just don't 
-        include the answer field in the prompt dict like below:
-
-        {"taskname": "squad", "context": "some paragraph", "question": "question related to paragraph"}
-        {"taskname": "squad", "context": "another paragraph", "question": "a different question related to paragraph"}
-
-        And the dataset class will automatically format your input to have the form:
-
-        [
-            '<|VIRTUAL_PROMPT_0|> Context: some paragraph Question: question related to paragraph Answer:',
-            '<|VIRTUAL_PROMPT_0|> Context: another paragraph Question: a different question related to paragraph Answer:'
-        ]
-
-        Similarly for other senarios, just add virtual_prompt_model_file=PATH_TO_NEMO_PROMPT_LEARNING_MODEL_FILE if you're using a 
-        p-tuned/prompt-tuned model. 
 """
 
 if not torch.cuda.is_available():
@@ -203,23 +159,7 @@ def main(cfg) -> None:
         == cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size
     ), "devices * num_nodes should equal tensor_model_parallel_size * pipeline_model_parallel_size"
 
-    # Load prompt tuned model, virtual_prompt_model_file must be provided in config
-    if cfg.get('virtual_prompt_model_file', None) is not None:
-
-        # Update frozen GPT model path in case it has changed
-        prompt_learning_cfg = MegatronGPTPromptLearningModel.restore_from(
-            cfg.virtual_prompt_model_file, trainer=trainer, return_config=True
-        )
-        with open_dict(prompt_learning_cfg):
-            prompt_learning_cfg.language_model_path = cfg.gpt_model_file
-
-        # Now load prompt learning model with frozen gpt model base
-        model = MegatronGPTPromptLearningModel.restore_from(
-            restore_path=cfg.virtual_prompt_model_file, trainer=trainer, override_config_path=prompt_learning_cfg
-        )
-
-    # Or load regular GPT model
-    elif cfg.gpt_model_file:
+    if cfg.gpt_model_file:
         model = MegatronGPTModel.restore_from(restore_path=cfg.gpt_model_file, trainer=trainer)
     elif cfg.checkpoint_dir:
         app_state = AppState()
@@ -251,11 +191,6 @@ def main(cfg) -> None:
     except AttributeError:
         pass
 
-    try:
-        model.frozen_model.model.language_model.encoder.activations_checkpoint_method = None
-    except AttributeError:
-        pass
-
     length_params: LengthParam = {
         "max_length": cfg.inference.tokens_to_generate,
         "min_length": cfg.inference.min_tokens_to_generate,
@@ -282,13 +217,8 @@ def main(cfg) -> None:
     print("***************************")
 
     # Second method of running text generation, call trainer.predict
-    collate_fn = None
-    if cfg.get('virtual_prompt_model', False):
-        collate_fn = lambda x: list(x)
-
     ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
-    request_dl = DataLoader(dataset=ds, collate_fn=collate_fn, batch_size=2)
-
+    request_dl = DataLoader(dataset=ds, batch_size=2)
     config = OmegaConf.to_container(cfg.inference)
     model.set_inference_config(config)
     response = trainer.predict(model, request_dl)

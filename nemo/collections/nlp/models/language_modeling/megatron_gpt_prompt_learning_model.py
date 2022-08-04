@@ -688,6 +688,10 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self._train_ds, self._train_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.train_ds,
                 batch_size=self.cfg.global_batch_size,
+                max_seq_length=self.frozen_model.cfg.encoder_seq_length,
+                min_seq_length=self.cfg.data.get('min_seq_length', 1),
+                add_bos=self.cfg.data.get('add_bos', False),
+                add_eos=self.cfg.data.get('add_eos', True),
                 for_train=True,
                 drop_last=True,
                 shuffle=True,
@@ -700,6 +704,10 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self._validation_ds, self._validation_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.validation_ds,
                 batch_size=self.cfg.global_batch_size,
+                max_seq_length=self.frozen_model.cfg.encoder_seq_length,
+                min_seq_length=self.cfg.data.get('min_seq_length', 1),
+                add_bos=self.cfg.data.get('add_bos', False),
+                add_eos=self.cfg.data.get('add_eos', True),
                 for_train=True,
                 drop_last=True,
                 shuffle=False,
@@ -712,6 +720,10 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             self._test_ds, self._test_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.test_ds,
                 batch_size=self.cfg.global_batch_size,
+                max_seq_length=self.frozen_model.cfg.encoder_seq_length,
+                min_seq_length=self.cfg.data.get('min_seq_length', 1),
+                add_bos=self.cfg.data.get('add_bos', False),
+                add_eos=self.cfg.data.get('add_eos', True),
                 for_train=False,
                 drop_last=False,
                 shuffle=False,
@@ -720,31 +732,56 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             )
 
     def build_virtual_prompt_dataset(
-        self, dataset_paths, batch_size, for_train, drop_last, shuffle, num_workers, pin_memory
+        self,
+        dataset_paths,
+        batch_size=None,
+        max_seq_length=2048,
+        min_seq_length=1,
+        add_bos=False,
+        add_eos=False,
+        for_train=True,
+        drop_last=False,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=False,
+        tokens_to_generate=None,
+        get_dataset_only=False,
     ):
         dataset = GPTPromptLearningDataset(
-            datasets=dataset_paths,
+            dataset_paths=dataset_paths,
             tokenizer=self.tokenizer,
             virtual_prompt_source=self.virtual_prompt_source,
             task_templates=self.task_templates,
             pseudo_tokens=self.pseudo_tokens,
             pad_token_id=self.pad_token_id,
-            max_seq_length=self.frozen_model.cfg.encoder_seq_length,
-            min_seq_length=self.cfg.data.get('min_seq_length', 1),
-            add_bos=self.cfg.data.get('add_bos', False),
-            add_eos=self.cfg.data.get('add_eos', True),
+            max_seq_length=max_seq_length,
+            min_seq_length=min_seq_length,
+            add_bos=add_bos,
+            add_eos=add_eos,
             for_train=for_train,
+            tokens_to_generate=tokens_to_generate,
         )
 
+        if get_dataset_only:
+            return dataset
+
+        # Make distributed dataloader
         rank = parallel_state.get_data_parallel_rank()
         data_parallel_size = parallel_state.get_data_parallel_world_size()
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, num_replicas=data_parallel_size, rank=rank, shuffle=shuffle
         )
 
+        assert batch_size % data_parallel_size == 0, "Global batch size must be evenly divisible by data parallel size"
+
+        if for_train:
+            collate_fn = dataset.collate_fn
+        else:
+            collate_fn = dataset.inference_collate_fn
+
         dataloader = torch.utils.data.DataLoader(
             dataset,
-            collate_fn=dataset.collate_fn,
+            collate_fn=collate_fn,
             sampler=sampler,
             batch_size=batch_size // data_parallel_size,
             drop_last=drop_last,
@@ -753,76 +790,6 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         )
 
         return dataset, dataloader
-
-    def generate(
-        self,
-        inputs: Union[List[str], torch.Tensor, List[dict]],
-        length_params: LengthParam,
-        sampling_params: SamplingParam = None,
-    ):
-
-        # check whether the DDP is initialized
-        if parallel_state.is_unitialized():
-
-            def dummy():
-                return
-
-            if self.trainer.strategy.launcher is not None:
-                self.trainer.strategy.launcher.launch(dummy, trainer=self.trainer)
-            self.trainer.strategy.setup_environment()
-
-        # set the default sampling params if it is None.
-        # default do greedy sampling
-        if sampling_params is None:
-            sampling_params = get_default_sampling_params()
-            sampling_params["add_BOS"] = self.cfg.data.get("add_bos", False)
-
-        if length_params is None:
-            length_params = get_default_length_params()
-
-        # Preprocess inputs to be what they need to be for the generate code
-        dataset = GPTPromptLearningDataset(
-            datasets=inputs,
-            tokenizer=self.tokenizer,
-            virtual_prompt_source=self.virtual_prompt_source,
-            task_templates=self.task_templates,
-            pseudo_tokens=self.pseudo_tokens,
-            pad_token_id=self.pad_token_id,
-            max_seq_length=self.frozen_model.cfg.encoder_seq_length,
-            min_seq_length=self.cfg.data.get('min_seq_length', 1),
-            add_bos=sampling_params["add_BOS"],
-            add_eos=False,
-            for_train=False,
-        )
-        task_ids, processed_inputs = dataset.get_all_examples(tokens_to_generate=length_params['max_length'])
-        self.frozen_model.model.parallel_output = False
-
-        # Call same generate code as in MegatronGPT
-        return megatron_gpt_generate(
-            self.cuda(), processed_inputs, self.tokenizer, length_params, sampling_params, task_ids
-        )
-
-    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
-        inference_config = self.get_inference_config()
-        if inference_config is None:
-            return None
-        else:
-            length_params: LengthParam = {
-                "max_length": inference_config["tokens_to_generate"],
-                "min_length": inference_config["min_tokens_to_generate"],
-            }
-
-            sampling_params: SamplingParam = {
-                "use_greedy": inference_config["greedy"],
-                "temperature": inference_config["temperature"],
-                "top_k": inference_config["top_k"],
-                "top_p": inference_config["top_p"],
-                "repetition_penalty": inference_config["repetition_penalty"],
-                "add_BOS": inference_config["add_BOS"],
-                "all_probs": inference_config["all_probs"],
-                "compute_logprob": inference_config["compute_logprob"],
-            }
-            return self.generate(batch, length_params, sampling_params)
 
     def set_inference_config(self, inference_config):
         self._inference_config = inference_config
@@ -889,6 +856,84 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             return output_tensor, id_func
 
         return fwd_output_only_func
+
+    def generate(
+        self,
+        inputs: Union[List[str], torch.Tensor, List[dict]],
+        length_params: LengthParam,
+        sampling_params: SamplingParam = None,
+    ):
+
+        # check whether the DDP is initialized
+        if parallel_state.is_unitialized():
+
+            def dummy():
+                return
+
+            if self.trainer.strategy.launcher is not None:
+                self.trainer.strategy.launcher.launch(dummy, trainer=self.trainer)
+            self.trainer.strategy.setup_environment()
+
+        # set the default sampling params if it is None.
+        # default do greedy sampling
+        if sampling_params is None:
+            sampling_params = get_default_sampling_params()
+            sampling_params["add_BOS"] = self.cfg.data.get("add_bos", False)
+
+        if length_params is None:
+            length_params = get_default_length_params()
+
+        max_input_length = self.frozen_model.cfg.encoder_seq_length - length_params["max_length"]
+
+        dataset_paths = [path["data_path"] for path in inputs]
+        dataset = self.build_virtual_prompt_dataset(
+            dataset_paths=dataset_paths,
+            max_seq_length=max_input_length,
+            min_seq_length=self.cfg.data.get('min_seq_length', 1),
+            add_bos=sampling_params["add_BOS"],
+            add_eos=False,
+            for_train=False,
+            tokens_to_generate=length_params["max_length"],
+            get_dataset_only=True,
+        )
+
+        full_dataset = [dataset[i] for i in range(len(dataset))]
+        task_ids, processed_inputs = dataset.inference_collate_fn(full_dataset)
+        self.frozen_model.model.parallel_output = False
+
+        # Call same generate code as in MegatronGPT
+        return megatron_gpt_generate(
+            self.cuda(), processed_inputs, self.tokenizer, length_params, sampling_params, task_ids
+        )
+
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
+        inference_config = self.get_inference_config()
+        if inference_config is None:
+            return None
+        else:
+            length_params: LengthParam = {
+                "max_length": inference_config["tokens_to_generate"],
+                "min_length": inference_config["min_tokens_to_generate"],
+            }
+
+            sampling_params: SamplingParam = {
+                "use_greedy": inference_config["greedy"],
+                "temperature": inference_config["temperature"],
+                "top_k": inference_config["top_k"],
+                "top_p": inference_config["top_p"],
+                "repetition_penalty": inference_config["repetition_penalty"],
+                "add_BOS": inference_config["add_BOS"],
+                "all_probs": inference_config["all_probs"],
+                "compute_logprob": inference_config["compute_logprob"],
+            }
+
+            task_ids, processed_inputs = batch
+            self.frozen_model.model.parallel_output = False
+
+            # Call same generate code as in MegatronGPT
+            return megatron_gpt_generate(
+                self.cuda(), processed_inputs, self.tokenizer, length_params, sampling_params, task_ids
+            )
 
     @classmethod
     def list_available_models(cls):

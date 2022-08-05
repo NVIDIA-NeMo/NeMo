@@ -33,7 +33,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from nemo.collections.tts.models import FastPitchModel
-from nemo.collections.tts.torch.helpers import BetaBinomialInterpolator
+from nemo.collections.tts.torch.helpers import BetaBinomialInterpolator, beta_binomial_prior_distribution
 from nemo.utils import logging
 
 
@@ -43,7 +43,10 @@ def get_args():
         description="Generate mel spectrograms with pretrained FastPitch model, and create manifests for finetuning Hifigan.",
     )
     parser.add_argument(
-        "--fastpitch-model-ckpt", required=True, type=Path, help="Specify a full path of a fastpitch model checkpoint."
+        "--fastpitch-model-ckpt",
+        required=True,
+        type=Path,
+        help="Specify a full path of a fastpitch model checkpoint with the suffix of either .ckpt or .nemo.",
     )
     parser.add_argument(
         "--input-json-manifests",
@@ -76,7 +79,7 @@ def __load_wav(audio_file):
     return samples.transpose()
 
 
-def __generate_mels(entry, spec_model, device, beta_binomial_interpolator, mel_root):
+def __generate_mels(entry, spec_model, device, use_beta_binomial_interpolator, mel_root):
     # Generate a spectrograms (we need to use ground truth alignment for correct matching between audio and mels)
     audio = __load_wav(entry["audio_filepath"])
     audio = torch.from_numpy(audio).unsqueeze(0).to(device)
@@ -97,11 +100,19 @@ def __generate_mels(entry, spec_model, device, beta_binomial_interpolator, mel_r
         spect, spect_len = spec_model.preprocessor(input_signal=audio, length=audio_len)
 
         # Generate attention prior and spectrogram inputs for HiFi-GAN
-        attn_prior = (
-            torch.from_numpy(beta_binomial_interpolator(spect_len.item(), text_len.item()))
-            .unsqueeze(0)
-            .to(text.device)
-        )
+        if use_beta_binomial_interpolator:
+            beta_binomial_interpolator = BetaBinomialInterpolator()
+            attn_prior = (
+                torch.from_numpy(beta_binomial_interpolator(spect_len.item(), text_len.item()))
+                .unsqueeze(0)
+                .to(text.device)
+            )
+        else:
+            attn_prior = (
+                torch.from_numpy(beta_binomial_prior_distribution(text_len.item(), spect_len.item()))
+                .unsqueeze(0)
+                .to(text.device)
+            )
 
         spectrogram = spec_model.forward(
             text=text, input_lens=text_len, spec=spect, mel_lens=spect_len, attn_prior=attn_prior, speaker=speaker,
@@ -124,15 +135,18 @@ def main():
     mel_root.mkdir(exist_ok=True, parents=True)
 
     # load pretrained FastPitch model checkpoint
-    spec_model = FastPitchModel.load_from_checkpoint(ckpt_path)
-    spec_model.eval()
-    if args.cpu:
-        spec_model.eval()
+    suffix = ckpt_path.suffix
+    if suffix == ".nemo":
+        spec_model = FastPitchModel.restore_from(ckpt_path).eval()
+    elif suffix == ".ckpt":
+        spec_model = FastPitchModel.load_from_checkpoint(ckpt_path).eval()
     else:
-        spec_model.eval().cuda()
+        raise ValueError(f"Unsupported suffix: {suffix}")
+    if not args.cpu:
+        spec_model.cuda()
     device = spec_model.device
 
-    beta_binomial_interpolator = BetaBinomialInterpolator()
+    use_beta_binomial_interpolator = spec_model.cfg.train_ds.dataset.use_beta_binomial_interpolator
 
     for manifest in input_manifest_filepaths:
         logging.info(f"Processing {manifest}.")
@@ -143,13 +157,13 @@ def main():
 
         if device == "cpu":
             new_entries = Parallel(n_jobs=args.num_workers)(
-                delayed(__generate_mels)(entry, spec_model, device, beta_binomial_interpolator, mel_root)
+                delayed(__generate_mels)(entry, spec_model, device, use_beta_binomial_interpolator, mel_root)
                 for entry in entries
             )
         else:
             new_entries = []
             for entry in tqdm(entries):
-                new_entry = __generate_mels(entry, spec_model, device, beta_binomial_interpolator, mel_root)
+                new_entry = __generate_mels(entry, spec_model, device, use_beta_binomial_interpolator, mel_root)
                 new_entries.append(new_entry)
 
         mel_manifest_path = output_json_manifest_root / f"{manifest.stem}_mel{manifest.suffix}"

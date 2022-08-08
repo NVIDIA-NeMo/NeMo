@@ -22,7 +22,7 @@ from nemo.collections.nlp.data.dialogue.dataset.dialogue_dataset import Dialogue
 from nemo.core.neural_types import ChannelType, LabelsType, MaskType, NeuralType
 from nemo.utils import logging
 
-__all__ = ['DialogueBERTDataset']
+__all__ = ['DialogueBERTDataset', 'DialogueIntentSlotInferenceDataset']
 
 
 class DialogueBERTDataset(DialogueDataset):
@@ -276,3 +276,57 @@ class DialogueBERTDataset(DialogueDataset):
                 logging.debug("slots_label: %s" % " ".join(list(map(str, all_slots[i]))))
 
         return (all_input_ids, all_segment_ids, all_input_mask, all_loss_mask, all_subtokens_mask, all_slots)
+
+
+class DialogueIntentSlotInferenceDataset(DialogueBERTDataset):
+    """
+    Creates dataset to use for the task of joint intent
+    and slot classification with pretrained model.
+    This is to be used during inference only.
+    It uses list of queries as the input.
+
+    Args:
+        queries (list): list of queries to run inference on
+        max_seq_length (int): max sequence length minus 2 for [CLS] and [SEP]
+        tokenizer (Tokenizer): such as NemoBertTokenizer
+        pad_label (int): pad value use for slot labels.
+            by default, it's the neutral label.
+
+    """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """
+            Returns definitions of module output ports.
+        """
+        return {
+            'input_ids': NeuralType(('B', 'T'), ChannelType()),
+            'segment_ids': NeuralType(('B', 'T'), ChannelType()),
+            'input_mask': NeuralType(('B', 'T'), MaskType()),
+            'loss_mask': NeuralType(('B', 'T'), MaskType()),
+            'subtokens_mask': NeuralType(('B', 'T'), MaskType()),
+        }
+
+    def __init__(self, queries, max_seq_length, tokenizer, do_lower_case):
+        if do_lower_case:
+            queries = [query.lower() for query in queries]
+
+        features = DialogueBERTDataset.get_features(queries, max_seq_length, tokenizer)
+
+        self.all_input_ids = features[0]
+        self.all_segment_ids = features[1]
+        self.all_input_mask = features[2]
+        self.all_loss_mask = features[3]
+        self.all_subtokens_mask = features[4]
+
+    def __len__(self):
+        return len(self.all_input_ids)
+
+    def __getitem__(self, idx):
+        return (
+            np.array(self.all_input_ids[idx]),
+            np.array(self.all_segment_ids[idx]),
+            np.array(self.all_input_mask[idx], dtype=np.long),
+            np.array(self.all_loss_mask[idx]),
+            np.array(self.all_subtokens_mask[idx]),
+        )

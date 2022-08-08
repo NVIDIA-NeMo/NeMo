@@ -22,8 +22,11 @@ from torch.utils.data import DataLoader
 
 from nemo.collections.common.losses import AggregatorLoss, CrossEntropyLoss
 from nemo.collections.nlp.data.dialogue.data_processor.assistant_data_processor import DialogueAssistantDataProcessor
-from nemo.collections.nlp.data.dialogue.dataset.dialogue_bert_dataset import DialogueBERTDataset
-from nemo.collections.nlp.data.intent_slot_classification import IntentSlotDataDesc, IntentSlotInferenceDataset
+from nemo.collections.nlp.data.dialogue.dataset.dialogue_bert_dataset import (
+    DialogueBERTDataset,
+    DialogueIntentSlotInferenceDataset,
+)
+from nemo.collections.nlp.data.intent_slot_classification import IntentSlotDataDesc
 from nemo.collections.nlp.metrics.classification_report import ClassificationReport
 from nemo.collections.nlp.metrics.dialogue_metrics import DialogueClassificationMetrics
 from nemo.collections.nlp.models.nlp_model import NLPModel
@@ -297,6 +300,34 @@ class IntentSlotClassificationModel(NLPModel):
 
         return slot_name_and_values
 
+    def get_utterance_tokens(self, token_ids, token_masks):
+        """
+        Get utterance tokens based on initial utterance tokenization using token_masks,
+        which shows the starting subtoken of each utterance token.
+
+        Args:
+            token_ids: IntTensor of size (max_seq_len, )
+            token_masks: BoolTensor of size (max_seq_len, )
+        
+        Returns
+            token_list: List of Str (list of tokens with len <= max_seq_len)
+        """
+        tokens_stack = []
+        tokens = self.tokenizer.tokenizer.convert_ids_to_tokens(token_ids)
+
+        for token_idx, token in enumerate(tokens):
+            if token_masks[token_idx].item():
+                tokens_stack.append([token])
+            elif tokens_stack:
+                clean_token = (
+                    token.replace("##", '')
+                    .replace(self.tokenizer.tokenizer.sep_token, '')
+                    .replace(self.tokenizer.tokenizer.pad_token, '')
+                )
+                tokens_stack[-1].append(clean_token)
+        token_list = [''.join(token) for token in tokens_stack]
+        return token_list
+
     def get_unified_metrics(self, outputs):
         slot_preds = []
         slot_labels = []
@@ -324,15 +355,9 @@ class IntentSlotClassificationModel(NLPModel):
         all_utterances = []
 
         for i in range(len(predicted_slots)):
-            utterance = self.tokenizer.tokenizer.decode(inputs[i], skip_special_tokens=True)
-            utterance_tokens = utterance.split()
+            utterance_tokens = self.get_utterance_tokens(inputs[i], subtokens_mask[i])
             ground_truth_slot_names = ground_truth_slots[i].split()
             predicted_slot_names = predicted_slots[i].split()
-            if len(utterance_tokens) != len(ground_truth_slot_names):
-                # fix the bug that abc@xyz get tokenized to 3 tokens and @xyz to 2 tokens
-                utterance_tokens = IntentSlotClassificationModel.join_tokens_containing_at_sign(
-                    utterance_tokens, ground_truth_slot_names
-                )
             processed_ground_truth_slots = IntentSlotClassificationModel.get_continuous_slots(
                 ground_truth_slot_names, utterance_tokens
             )
@@ -366,53 +391,6 @@ class IntentSlotClassificationModel(NLPModel):
         ) = DialogueClassificationMetrics.get_slot_filling_metrics(all_generated_slots, all_ground_truth_slots)
 
         return slot_precision, slot_recall, slot_f1, slot_joint_goal_accuracy
-
-    @staticmethod
-    def join_tokens_containing_at_sign(utterance_tokens, slot_names):
-        """
-        assumes utterance contains only one @ sign
-        """
-        target_length = len(slot_names)
-        current_length = len(utterance_tokens)
-        diff = current_length - target_length
-        at_sign_positions = [index for index, token in enumerate(utterance_tokens) if token == "@"]
-        if len(at_sign_positions) > 1:
-            raise ValueError(
-                "Current method does not support utterances with more than 1 @ sign ({} encountered), please extend this method for utterance {} with slot names {}".format(
-                    len(at_sign_positions), utterance_tokens, slot_names
-                )
-            )
-        elif diff == 1:
-            new_tokens = []
-            for index, token in enumerate(utterance_tokens):
-                if utterance_tokens[index - 1] == "@":
-                    new_tokens[-1] += token
-                else:
-                    new_tokens.append(token)
-
-        elif diff == 2:
-            new_tokens = []
-            for index, token in enumerate(utterance_tokens[:-1]):
-                if utterance_tokens[index - 1] == "@" or token == "@":
-                    new_tokens[-1] += token
-                else:
-                    new_tokens.append(token)
-
-        elif diff == 3:
-            new_tokens = []
-            for index, token in enumerate(utterance_tokens[:-1]):
-                if utterance_tokens[index + 1] == "@" or utterance_tokens[index - 1] == "@" or token == "@":
-                    new_tokens[-1] += token
-                else:
-                    new_tokens.append(token)
-        else:
-            raise ValueError(
-                "Difference of more than 3 ({}, utterance has {}, predicted slots has {}) encountered. please extend this method for utterance {} with slots {}".format(
-                    diff, len(utterance_tokens), len(slot_names), utterance_tokens, slot_names
-                )
-            )
-
-        return new_tokens
 
     def validation_epoch_end(self, outputs):
         """
@@ -518,7 +496,7 @@ class IntentSlotClassificationModel(NLPModel):
             A pytorch DataLoader.
         """
 
-        dataset = IntentSlotInferenceDataset(
+        dataset = DialogueIntentSlotInferenceDataset(
             tokenizer=self.tokenizer, queries=queries, max_seq_length=-1, do_lower_case=False
         )
 

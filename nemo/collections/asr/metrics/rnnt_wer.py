@@ -11,12 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import copy
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import editdistance
+import numpy as np
 import torch
 from torchmetrics import Metric
 
@@ -55,6 +56,16 @@ class AbstractRNNTDecoding(ABC):
                 The length of the list corresponds to the Acoustic Length (T).
                 Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
                 U is the number of target tokens for the current timestep Ti.
+
+            compute_timestamps: A bool flag, which determines whether to compute the character/subword, or
+                word based timestamp mapping the output log-probabilities to discrete intervals of timestamps.
+                The timestamps will be available in the returned Hypothesis.timestep as a dictionary.
+
+            rnnt_timestamp_type: A str value, which represents the types of timestamps that should be calculated.
+                Can take the following values - "char" for character/subword time stamps, "word" for word level
+                time stamps and "all" (default), for both character level and word level time stamps.
+
+            word_seperator: Str token representing the seperator between words.
 
             The config may further contain the following sub-dictionaries:
             "greedy":
@@ -121,6 +132,8 @@ class AbstractRNNTDecoding(ABC):
         self.compute_hypothesis_token_set = self.cfg.get("compute_hypothesis_token_set", False)
         self.preserve_alignments = self.cfg.get('preserve_alignments', None)
         self.joint_fused_batch_size = self.cfg.get('fused_batch_size', None)
+        self.compute_timestamps = self.cfg.get('compute_timestamps', None)
+        self.word_seperator = self.cfg.get('word_seperator', ' ')
 
         possible_strategies = ['greedy', 'greedy_batch', 'beam', 'tsd', 'alsd', 'maes']
         if self.cfg.strategy not in possible_strategies:
@@ -133,6 +146,18 @@ class AbstractRNNTDecoding(ABC):
 
             elif self.cfg.strategy in ['beam', 'tsd', 'alsd', 'maes']:
                 self.preserve_alignments = self.cfg.beam.get('preserve_alignments', False)
+
+        # Update compute timestamps
+        if self.compute_timestamps is None:
+            if self.cfg.strategy in ['greedy', 'greedy_batch']:
+                self.compute_timestamps = self.cfg.greedy.get('compute_timestamps', False)
+
+            elif self.cfg.strategy in ['beam', 'tsd', 'alsd', 'maes']:
+                self.compute_timestamps = self.cfg.beam.get('compute_timestamps', False)
+
+        # Test if alignments are being preserved for RNNT
+        if self.compute_timestamps is True and self.preserve_alignments is False:
+            raise ValueError("If `compute_timesteps` flag is set, then `preserve_alignments` flag must also be set.")
 
         if self.cfg.strategy == 'greedy':
 
@@ -256,7 +281,7 @@ class AbstractRNNTDecoding(ABC):
                     Look at rnnt_utils.NBestHypotheses for more information.
         """
         # Compute hypotheses
-        with torch.no_grad():
+        with torch.inference_mode():
             hypotheses_list = self.decoding(
                 encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses
             )  # type: [List[Hypothesis]]
@@ -269,20 +294,39 @@ class AbstractRNNTDecoding(ABC):
         if isinstance(prediction_list[0], NBestHypotheses):
             hypotheses = []
             all_hypotheses = []
+
             for nbest_hyp in prediction_list:  # type: NBestHypotheses
                 n_hyps = nbest_hyp.n_best_hypotheses  # Extract all hypotheses for this sample
                 decoded_hyps = self.decode_hypothesis(n_hyps)  # type: List[str]
+
+                # If computing timestamps
+                if self.compute_timestamps is True:
+                    timestamp_type = self.cfg.get('rnnt_timestamp_type', 'all')
+                    for hyp_idx in range(len(decoded_hyps)):
+                        decoded_hyps[hyp_idx] = self.compute_rnnt_timestamps(decoded_hyps[hyp_idx], timestamp_type)
+
                 hypotheses.append(decoded_hyps[0])  # best hypothesis
                 all_hypotheses.append(decoded_hyps)
+
             if return_hypotheses:
                 return hypotheses, all_hypotheses
+
             best_hyp_text = [h.text for h in hypotheses]
             all_hyp_text = [h.text for hh in all_hypotheses for h in hh]
             return best_hyp_text, all_hyp_text
+
         else:
             hypotheses = self.decode_hypothesis(prediction_list)  # type: List[str]
+
+            # If computing timestamps
+            if self.compute_timestamps is True:
+                timestamp_type = self.cfg.get('rnnt_timestamp_type', 'all')
+                for hyp_idx in range(len(hypotheses)):
+                    hypotheses[hyp_idx] = self.compute_rnnt_timestamps(hypotheses[hyp_idx], timestamp_type)
+
             if return_hypotheses:
                 return hypotheses, None
+
             best_hyp_text = [h.text for h in hypotheses]
             return best_hyp_text, None
 
@@ -303,16 +347,27 @@ class AbstractRNNTDecoding(ABC):
             if type(prediction) != list:
                 prediction = prediction.tolist()
 
-            # RNN-T sample level is already preprocessed by implicit CTC decoding
+            # RNN-T sample level is already preprocessed by implicit RNNT decoding
             # Simply remove any blank tokens
             prediction = [p for p in prediction if p != self.blank_id]
 
+            # De-tokenize the integer tokens; if not computing timestamps
+            if self.compute_timestamps is True:
+                # keep the original predictions, wrap with the number of repetitions per token and alignments
+                # this is done so that `rnnt_decoder_predictions_tensor()` can process this hypothesis
+                # in order to compute exact time stamps.
+                alignments = hypotheses_list[ind].alignments
+                token_repetitions = [1] * len(alignments)  # preserve number of repetitions per token
+                hypothesis = (prediction, alignments, token_repetitions)
+            else:
+                hypothesis = self.decode_tokens_to_str(prediction)
+
+                if self.compute_hypothesis_token_set:
+                    hypotheses_list[ind].tokens = self.decode_ids_to_tokens(prediction)
+
             # De-tokenize the integer tokens
-            hypothesis = self.decode_tokens_to_str(prediction)
             hypotheses_list[ind].text = hypothesis
 
-            if self.compute_hypothesis_token_set:
-                hypotheses_list[ind].tokens = self.decode_ids_to_tokens(prediction)
         return hypotheses_list
 
     @abstractmethod
@@ -367,6 +422,274 @@ class AbstractRNNTDecoding(ABC):
         else:
             logging.info("Joint fused batch size <= 0; Will temporarily disable fused batch step in the Joint.")
             self.decoding.joint.set_fuse_loss_wer(False)
+
+    def compute_rnnt_timestamps(self, hypothesis: Hypothesis, timestamp_type: str = "all"):
+        assert timestamp_type in ['char', 'word', 'all']
+
+        # Unpack the temporary storage
+        decoded_prediction, alignments, token_repetitions = hypothesis.text
+
+        # Retrieve offsets
+        char_offsets = word_offsets = None
+        char_offsets = self._compute_offsets(hypothesis, token_repetitions, self.blank_id)
+
+        # finally, set the flattened decoded predictions to text field for later text decoding
+        hypothesis.text = decoded_prediction
+
+        # Assert number of offsets and hypothesis tokens are 1:1 match.
+        num_flattened_tokens = 0
+        for t in range(len(char_offsets)):
+            # Subtract one here for the extra RNNT BLANK token emitted to designate "End of timestep"
+            num_flattened_tokens += len(char_offsets[t]['char']) - 1
+
+        if num_flattened_tokens != len(hypothesis.text):
+            raise ValueError(
+                f"`char_offsets`: {char_offsets} and `processed_tokens`: {hypothesis.text}"
+                " have to be of the same length, but are: "
+                f"`len(offsets)`: {len(char_offsets)} and `len(processed_tokens)`:"
+                f" {len(hypothesis.text)}"
+            )
+
+        encoded_char_offsets = copy.deepcopy(char_offsets)
+
+        # Correctly process the token ids to chars/subwords.
+        for i, offsets in enumerate(char_offsets):
+            decoded_chars = []
+            for char in offsets['char'][:-1]:  # ignore the RNNT Blank token at end of every timestep with -1 subset
+                decoded_chars.append(self.decode_tokens_to_str([int(char)]))
+            char_offsets[i]["char"] = decoded_chars
+
+        # detect char vs subword models
+        lens = []
+        for v in char_offsets:
+            tokens = v["char"]
+            # each token may be either 1 unicode token or multiple unicode token
+            # for character based models, only 1 token is used
+            # for subword, more than one token can be used.
+            # Computing max, then summing up total lens is a test to check for char vs subword
+            # For char models, len(lens) == sum(lens)
+            # but this is violated for subword models.
+            max_len = max(len(c) for c in tokens)
+            lens.append(max_len)
+
+        # array of one or more chars implies subword based model with multiple char emitted per TxU step (via subword)
+        if sum(lens) > len(lens):
+            text_type = 'subword'
+        else:
+            # full array of ones implies character based model with 1 char emitted per TxU step
+            text_type = 'char'
+
+        # retrieve word offsets from character offsets
+        word_offsets = None
+        if timestamp_type in ['word', 'all']:
+            if text_type == 'char':
+                word_offsets = self._get_word_offsets_chars(char_offsets, word_delimiter_char=self.word_seperator)
+            else:
+                # utilize the copy of char offsets with the correct integer ids for tokens
+                # so as to avoid tokenize -> detokenize -> compare -> merge steps.
+                word_offsets = self._get_word_offsets_subwords_sentencepiece(
+                    encoded_char_offsets,
+                    hypothesis,
+                    decode_ids_to_tokens=self.decode_ids_to_tokens,
+                    decode_tokens_to_str=self.decode_tokens_to_str,
+                )
+
+        # attach results
+        if len(hypothesis.timestep) > 0:
+            timestep_info = hypothesis.timestep
+        else:
+            timestep_info = []
+
+        # Setup defaults
+        hypothesis.timestep = {"timestep": timestep_info}
+
+        # Add char / subword time stamps
+        if char_offsets is not None and timestamp_type in ['char', 'all']:
+            hypothesis.timestep['char'] = char_offsets
+
+        # Add word time stamps
+        if word_offsets is not None and timestamp_type in ['word', 'all']:
+            hypothesis.timestep['word'] = word_offsets
+
+        # Convert the flattened token indices to text
+        hypothesis.text = self.decode_tokens_to_str(hypothesis.text)
+
+        return hypothesis
+
+    @staticmethod
+    def _compute_offsets(
+        hypothesis: Hypothesis, token_repetitions: List[int], rnnt_token: int
+    ) -> List[Dict[str, Union[str, int]]]:
+        """
+        Utility method that calculates the indidual time indices where a token starts and ends.
+
+        Args:
+            hypothesis: A Hypothesis object that contains `text` field that holds the character / subword token
+                emitted at every time step after rnnt collapse.
+            token_repetitions: A list of ints representing the number of repetitions of each emitted token.
+            rnnt_token: The integer of the rnnt blank token used during rnnt collapse.
+
+        Returns:
+
+        """
+        start_index = 0
+
+        # If the exact timestep information is available, utilize the 1st non-rnnt blank token timestep
+        # as the start index.
+        if hypothesis.timestep is not None and len(hypothesis.timestep) > 0:
+            start_index = max(0, hypothesis.timestep[0] - 1)
+
+        # Construct the start and end indices brackets
+        end_indices = np.asarray(token_repetitions).cumsum()
+        start_indices = np.concatenate(([start_index], end_indices[:-1]))
+
+        # Process the TxU dangling alignment tensor, containing pairs of (logits, label)
+        alignment_labels = [al_logits_labels for al_logits_labels in hypothesis.text[1]]
+        for t in range(len(alignment_labels)):
+            for u in range(len(alignment_labels[t])):
+                alignment_labels[t][u] = alignment_labels[t][u][1]  # pick label from (logit, label) tuple
+
+        # Merge the results per token into a list of dictionaries
+        offsets = [
+            {"char": a, "start_offset": s, "end_offset": e}
+            for a, s, e in zip(alignment_labels, start_indices, end_indices)
+        ]
+
+        # Filter out RNNT token (blank at [t][0] position). This is because blank can only occur at end of a
+        # time step for RNNT, so if 0th token is blank, then that timestep is skipped.
+        offsets = list(filter(lambda offsets: offsets["char"][0] != rnnt_token, offsets))
+        return offsets
+
+    @staticmethod
+    def _get_word_offsets_chars(
+        offsets: Dict[str, Union[str, float]], word_delimiter_char: str = " "
+    ) -> Dict[str, Union[str, float]]:
+        """
+        Utility method which constructs word time stamps out of character time stamps.
+
+        References:
+            This code is a port of the Hugging Face code for word time stamp construction.
+
+        Args:
+            offsets: A list of dictionaries, each containing "char", "start_offset" and "end_offset".
+            word_delimiter_char: Character token that represents the word delimiter. By default, " ".
+
+        Returns:
+            A list of dictionaries containing the word offsets. Each item contains "word", "start_offset" and
+            "end_offset".
+        """
+        word_offsets = []
+
+        last_state = "SPACE"
+        word = ""
+        start_offset = 0
+        end_offset = 0
+        for i, offset in enumerate(offsets):
+            chars = offset["char"]
+            for char in chars:
+                state = "SPACE" if char == word_delimiter_char else "WORD"
+
+                if state == last_state:
+                    # If we are in the same state as before, we simply repeat what we've done before
+                    end_offset = offset["end_offset"]
+                    word += char
+                else:
+                    # Switching state
+                    if state == "SPACE":
+                        # Finishing a word
+                        word_offsets.append({"word": word, "start_offset": start_offset, "end_offset": end_offset})
+                    else:
+                        # Starting a new word
+                        start_offset = offset["start_offset"]
+                        end_offset = offset["end_offset"]
+                        word = char
+
+                last_state = state
+
+        if last_state == "WORD":
+            word_offsets.append({"word": word, "start_offset": start_offset, "end_offset": end_offset})
+
+        return word_offsets
+
+    @staticmethod
+    def _get_word_offsets_subwords_sentencepiece(
+        offsets: Dict[str, Union[str, float]],
+        hypothesis: Hypothesis,
+        decode_ids_to_tokens: Callable[[List[int]], str],
+        decode_tokens_to_str: Callable[[List[int]], str],
+    ) -> Dict[str, Union[str, float]]:
+        """
+        Utility method which constructs word time stamps out of sub-word time stamps.
+
+        **Note**: Only supports Sentencepiece based tokenizers !
+
+        Args:
+            offsets: A list of dictionaries, each containing "char", "start_offset" and "end_offset".
+            hypothesis: Hypothesis object that contains `text` field, where each token is a sub-word id
+                after rnnt collapse.
+            decode_ids_to_tokens: A Callable function that accepts a list of integers and maps it to a sub-word.
+            decode_tokens_to_str: A Callable function that accepts a list of integers and maps it to text / str.
+
+        Returns:
+            A list of dictionaries containing the word offsets. Each item contains "word", "start_offset" and
+            "end_offset".
+        """
+        word_offsets = []
+        built_token = []
+        previous_token_index = 0
+        # For every offset token
+        for i, offset in enumerate(offsets):
+            # For every subword token in offset token list (ignoring the RNNT Blank token at the end)
+            for char in offset['char'][:-1]:
+                char = int(char)
+
+                # Compute the sub-word text representation, and the decoded text (stripped of sub-word markers).
+                token = decode_ids_to_tokens([char])[0]
+                token_text = decode_tokens_to_str([char])
+
+                # It is a sub-word token, or contains an identifier at the beginning such as _ or ## that was stripped
+                # after forcing partial text conversion of the token.
+                if token != token_text:
+                    # If there are any partially or fully built sub-word token ids, construct to text.
+                    # Note: This is "old" subword, that occurs *after* current sub-word has started.
+                    if len(built_token) > 0:
+                        word_offsets.append(
+                            {
+                                "word": decode_tokens_to_str(built_token),
+                                "start_offset": offsets[previous_token_index]["start_offset"],
+                                "end_offset": offsets[i]["start_offset"],
+                            }
+                        )
+
+                    # Prepare list of new sub-word ids
+                    built_token.clear()
+                    built_token.append(char)
+                    previous_token_index = i
+                else:
+                    # If the token does not contain any sub-word start mark, then the sub-word has not completed yet
+                    # Append to current sub-word list.
+                    built_token.append(char)
+
+        # Inject the start offset of the first token to word offsets
+        # This is because we always skip the delay the injection of the first sub-word due to the loop
+        # condition and check whether built token is ready or not.
+        # Therefore without this forced injection, the start_offset appears as off by 1.
+        word_offsets[0]["start_offset"] = offsets[0]["start_offset"]
+
+        # If there are any remaining tokens left, inject them all into the final word offset.
+        # Note: The start offset of this token is the start time of the first token inside build_token.
+        # Note: The end offset of this token is the end time of the last token inside build_token
+        if len(built_token) > 0:
+            word_offsets.append(
+                {
+                    "word": decode_tokens_to_str(built_token),
+                    "start_offset": offsets[-(len(built_token))]["start_offset"],
+                    "end_offset": offsets[-1]["end_offset"],
+                }
+            )
+        built_token.clear()
+
+        return word_offsets
 
 
 class RNNTDecoding(AbstractRNNTDecoding):
@@ -601,6 +924,15 @@ class RNNTDecodingConfig:
 
     # RNNT Joint fused batch size
     fused_batch_size: Optional[int] = None
+
+    # compute RNNT time stamps
+    compute_timestamps: Optional[bool] = None
+
+    # token representing word seperator
+    word_seperator: str = " "
+
+    # type of timestamps to calculate
+    rnnt_timestamp_type: str = "all"  # can be char, word or all for both
 
     # greedy decoding config
     greedy: greedy_decode.GreedyRNNTInferConfig = greedy_decode.GreedyRNNTInferConfig()

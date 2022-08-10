@@ -95,7 +95,7 @@ def split_partition(model, partitions, tp_size, write_path=None):
 
         idx = 0
         for name, param in model.named_parameters():
-            split_val = splits[idx][i]
+            split_val = splits[idx][i].clone()
 
             if param.shape != split_val.shape:
                 logging.info(
@@ -178,7 +178,7 @@ def main():
             merge_partition(model, partitions, args.target_file)
     else:
         app_state.model_parallel_size = 1
-        model = cls.restore_from(restore_path=args.model_file, trainer=trainer)
+        model = cls.restore_from(restore_path=args.model_file, trainer=trainer, map_location=torch.device("cpu"))
 
     if tgt_tp_size > 1:
         partitions = []

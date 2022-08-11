@@ -4,7 +4,7 @@ trainer:
   devices: 1
   num_nodes: 1
   max_epochs: 2
-  max_steps: null
+  max_steps: -1
   accumulate_grad_batches: 1
   precision: 16
   accelerator: gpu

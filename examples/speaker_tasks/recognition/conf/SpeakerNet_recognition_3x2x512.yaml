@@ -122,7 +122,7 @@ model:
     sched:
       name: CosineAnnealing
       iters_per_batch: 1 # computed at runtime
-      max_steps: null # computed at runtime or explicitly set here
+      max_steps: -1 # computed at runtime or explicitly set here
 
       # scheduler config override
       args:
@@ -136,7 +136,7 @@ model:
 trainer:
   devices: 1 # number of gpus
   max_epochs: 200
-  max_steps: null # computed at runtime if not set
+  max_steps: -1 # computed at runtime if not set
   num_nodes: 1
   accelerator: gpu
   strategy: ddp

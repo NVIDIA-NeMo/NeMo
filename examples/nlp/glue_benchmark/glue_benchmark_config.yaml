@@ -5,7 +5,7 @@ trainer:
   devices: 1 # the number of gpus, 0 for CPU
   num_nodes: 1
   max_epochs: 3
-  max_steps: null # precedence over max_epochs
+  max_steps: -1 # precedence over max_epochs
   accumulate_grad_batches: 1 # accumulates grads every k batches
   precision: 16
   accelerator: gpu

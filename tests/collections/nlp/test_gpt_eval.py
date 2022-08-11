@@ -20,7 +20,7 @@ from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 
 
 class TestGPTEval:
@@ -38,7 +38,7 @@ class TestGPTEval:
         model_file = '/home/TestData/nlp/megatron_gpt/125M/megatron_gpt.nemo'
 
         # trainer required for restoring model parallel models
-        trainer = Trainer(plugins=NLPDDPPlugin(), **trainer_config)
+        trainer = Trainer(strategy=NLPDDPStrategy(), **trainer_config)
         assert (
             trainer_config["devices"] * trainer_config['num_nodes']
             == tensor_model_parallel_size * pipeline_model_parallel_size

@@ -431,7 +431,7 @@ class TestRNNTLossPytorch:
         pt_cost2, _ = wrap_and_call(fn_pt, acts2, labels2, device)
         pt_grads1_p_2 = base_layer.grad.clone().cpu().numpy()
 
-        assert np.allclose(pt_grads1_p_2, np_grads1 + np_grads2, atol=1e-6)
+        assert np.allclose(pt_grads1_p_2, np_grads1 + np_grads2, atol=1e-5)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from argparse import ArgumentParser
 import torch
 from pytorch_lightning import Trainer
 
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin, NLPSaveRestoreConnector
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
 
@@ -144,7 +144,7 @@ def main():
     tgt_tp_size = args.target_tensor_model_parallel_size
     cls = model_utils.import_class_by_path(args.model_class)
 
-    trainer = Trainer(devices=1, plugins=NLPDDPPlugin(), accelerator="cpu", precision=precision)
+    trainer = Trainer(devices=1, strategy=NLPDDPStrategy(), accelerator="cpu", precision=precision)
     app_state = AppState()
     app_state.data_parallel_rank = 0
     app_state.pipeline_model_parallel_size = 1  # not supported yet in this script
@@ -168,7 +168,7 @@ def main():
 
         model.cfg.tensor_model_parallel_size = 1
         app_state.model_parallel_size = 1
-        trainer = Trainer(devices=1, plugins=NLPDDPPlugin(), accelerator="cpu", precision=precision)
+        trainer = Trainer(devices=1, strategy=NLPDDPStrategy(), accelerator="cpu", precision=precision)
         model = cls(model.cfg, trainer).to('cpu')
         model._save_restore_connector = NLPSaveRestoreConnector()
 
@@ -187,7 +187,7 @@ def main():
 
         model.cfg.tensor_model_parallel_size = tgt_tp_size
         app_state.model_parallel_size = tgt_tp_size
-        trainer = Trainer(devices=1, plugins=NLPDDPPlugin(), accelerator="cpu", precision=precision)
+        trainer = Trainer(devices=1, strategy=NLPDDPStrategy(), accelerator="cpu", precision=precision)
         model = cls(model.cfg, trainer).to('cpu')
         model._save_restore_connector = NLPSaveRestoreConnector()
 

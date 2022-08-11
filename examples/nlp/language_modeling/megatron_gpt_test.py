@@ -18,7 +18,7 @@ from pytorch_lightning import Trainer
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.megatron_utils import compute_model_parallel_rank
 from nemo.collections.nlp.parts.nlp_overrides import (
-    NLPDDPPlugin,
+    NLPDDPStrategy,
     NLPNativeMixedPrecisionPlugin,
     NLPPrecisionPlugin,
     NLPSaveRestoreConnector,
@@ -37,18 +37,18 @@ def main(cfg) -> None:
     if cfg.trainer.precision == 16:
         trainer = Trainer(
             plugins=[
-                NLPDDPPlugin(),
                 NLPNativeMixedPrecisionPlugin(
                     init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
                     growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 ),
             ],
+            strategy=NLPDDPStrategy(),
             **cfg.trainer,
         )
     elif cfg.trainer.precision == 'bf16':
-        trainer = Trainer(plugins=[NLPDDPPlugin(), NLPNativeBfloat16PrecisionPlugin(),], **cfg.trainer,)
+        trainer = Trainer(plugins=[NLPNativeBfloat16PrecisionPlugin(),], strategy=NLPDDPStrategy(), **cfg.trainer,)
     else:
-        trainer = Trainer(plugins=[NLPDDPPlugin(), NLPPrecisionPlugin()], **cfg.trainer)
+        trainer = Trainer(plugins=[NLPPrecisionPlugin()], strategy=NLPDDPStrategy(), **cfg.trainer)
 
     app_state = AppState()
     app_state.model_parallel_size = cfg.model.tensor_model_parallel_size

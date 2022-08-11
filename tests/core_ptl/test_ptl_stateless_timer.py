@@ -96,8 +96,8 @@ class TestStatelessTimer:
             accelerator='gpu',
             strategy='ddp',
             logger=None,
+            enable_checkpointing=False,
             callbacks=[StatelessTimer('00:00:00:03')],
-            checkpoint_callback=False,
         )
         exp_manager_cfg = ExpManagerConfig(
             explicit_log_dir='./ptl_stateless_timer_check/',

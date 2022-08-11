@@ -53,7 +53,7 @@ from nemo.collections.nlp.models.dialogue.dialogue_zero_shot_intent_model import
 from nemo.collections.nlp.models.dialogue.intent_slot_classification_model import IntentSlotClassificationModel
 from nemo.collections.nlp.models.dialogue.sgdqa_model import SGDQAModel
 from nemo.collections.nlp.modules.common.megatron.megatron_utils import compute_model_parallel_rank
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
@@ -66,11 +66,11 @@ def main(cfg: DictConfig) -> None:
     logging.info(f'Config: {OmegaConf.to_yaml(cfg)}')
 
     try:
-        plugins = NLPDDPPlugin()
+        strategy = NLPDDPStrategy()
     except (ImportError, ModuleNotFoundError):
-        plugins = None
+        strategy = None
 
-    trainer = pl.Trainer(**cfg.trainer, plugins=plugins)
+    trainer = pl.Trainer(**cfg.trainer, strategy=strategy)
 
     exp_manager(trainer, cfg.get("exp_manager", None))
 
@@ -139,7 +139,7 @@ def main(cfg: DictConfig) -> None:
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.ds_item is not None:
         eval_device = [cfg.trainer.devices[0]] if isinstance(cfg.trainer.devices, list) else 1
         trainer = pl.Trainer(
-            devices=eval_device, accelerator=cfg.trainer.accelerator, precision=16, plugins=NLPDDPPlugin()
+            devices=eval_device, accelerator=cfg.trainer.accelerator, precision=16, strategy=NLPDDPStrategy()
         )
         model.setup_multiple_test_data(test_data_config=cfg.model.test_ds)
         if model.prepare_test(trainer):

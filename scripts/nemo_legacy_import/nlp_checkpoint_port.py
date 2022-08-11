@@ -88,7 +88,7 @@ def nemo_convert(argv):
         num_nodes=1,
         # Need to set the following two to False as ExpManager will take care of them differently.
         logger=False,
-        checkpoint_callback=False,
+        enable_checkpointing=False,
     )
     trainer = pl.Trainer(cfg_trainer)
 

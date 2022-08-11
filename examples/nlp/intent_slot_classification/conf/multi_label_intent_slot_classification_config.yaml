@@ -4,7 +4,7 @@ trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
   max_epochs: 5
-  max_steps: null # precedence over max_epochs
+  max_steps: -1 # precedence over max_epochs
   accumulate_grad_batches: 1 # accumulates grads every k batches
   precision: 32 # Should be set to 16 for O1 and O2 amp_level to enable the AMP.
   accelerator: auto
@@ -13,7 +13,7 @@ trainer:
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
 
-  checkpoint_callback: false # Provided by exp_manager
+  enable_checkpointing: false # Provided by exp_manager
   logger: false  # Provided by exp_manager
 
 model:
@@ -83,7 +83,7 @@ model:
     sched:
       name: WarmupAnnealing
       iters_per_batch: null # computed at runtime
-      max_steps: null # computed at runtime or explicitly set here
+      max_steps: -1 # computed at runtime or explicitly set here
 
       # pytorch lightning args
       monitor: val_loss

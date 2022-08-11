@@ -37,7 +37,7 @@ import sys
 import torch
 from pytorch_lightning.trainer.trainer import Trainer
 
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin, NLPSaveRestoreConnector
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core import ModelPT
 from nemo.utils import logging, model_utils
 
@@ -71,7 +71,7 @@ def main():
 
     device = torch.device("cpu")
 
-    trainer = Trainer(plugins=NLPDDPPlugin(), devices=1, num_nodes=1, precision=16, accelerator='gpu')
+    trainer = Trainer(strategy=NLPDDPStrategy(), devices=1, num_nodes=1, precision=16, accelerator='gpu')
     # loop over all folders with .nemo files (or .nemo files)
     for model_fname_i, model_fname in enumerate(args.model_fname_list):
         if not model_fname.endswith(".nemo"):

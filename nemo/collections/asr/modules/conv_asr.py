@@ -763,7 +763,7 @@ class SpeakerDecoder(NeuralModule, Exportable):
         num_classes (int): Number of unique speakers in dataset
         emb_sizes (list) : shapes of intermediate embedding layers (we consider speaker embbeddings from 1st of this layers)
                 Defaults to [1024,1024]
-        pool_mode (str) : Pooling stratergy type. options are 'xvector','tap', 'attention'
+        pool_mode (str) : Pooling strategy type. options are 'xvector','tap', 'attention'
                 Defaults to 'xvector (mean and variance)'
                 tap (temporal average pooling: just mean)
                 attention (attention based pooling)

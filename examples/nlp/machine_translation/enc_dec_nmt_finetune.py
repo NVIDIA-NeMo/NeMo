@@ -22,7 +22,7 @@ from pytorch_lightning import Trainer
 from nemo.collections.nlp.data.machine_translation.preproc_mt_data import MTDataPreproc
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_config import MTEncDecModelConfig
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_model import MTEncDecModel
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.core.config import hydra_runner
 from nemo.core.config.modelPT import NemoConfig
 from nemo.core.config.pytorch_lightning import TrainerConfig
@@ -78,8 +78,8 @@ def main(cfg: MTFineTuneConfig) -> None:
 
     # training is managed by PyTorch Lightning
     trainer_cfg = OmegaConf.to_container(cfg.trainer)
-    trainer_cfg.pop('plugins', None)
-    trainer = Trainer(plugins=[NLPDDPPlugin()], **trainer_cfg)
+    trainer_cfg.pop('strategy', None)
+    trainer = Trainer(strategy=NLPDDPStrategy(), **trainer_cfg)
 
     # experiment logs, checkpoints, and auto-resume are managed by exp_manager and PyTorch Lightning
     exp_manager(trainer, cfg.exp_manager)

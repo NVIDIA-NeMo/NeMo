@@ -22,7 +22,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_t5_prompt_learning_m
 )
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
-    NLPDDPPlugin,
+    NLPDDPStrategy,
     NLPSaveRestoreConnector,
     PipelineMixedPrecisionPlugin,
 )
@@ -45,7 +45,8 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
-    plugins = [NLPDDPPlugin(no_ddp_communication_hook=True, find_unused_parameters=False,)]
+    plugins = []
+    strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
     if cfg.trainer.precision == 16:
         scaler = GradScaler(
             init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
@@ -57,7 +58,7 @@ def main(cfg) -> None:
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
 
-    trainer = Trainer(plugins=plugins, **cfg.trainer)
+    trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
     exp_manager(trainer, cfg.exp_manager)
 
     # Override timer callback to a stateless one

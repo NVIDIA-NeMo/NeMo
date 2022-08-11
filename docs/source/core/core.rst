@@ -399,7 +399,7 @@ configuration for a Novograd optimizer with Cosine Annealing learning rate sched
             name: CosineAnnealing
     
             # Optional arguments
-            max_steps: null # computed at runtime or explicitly set here
+            max_steps: -1 # computed at runtime or explicitly set here
             monitor: val_loss
             reduce_on_plateau: false
     

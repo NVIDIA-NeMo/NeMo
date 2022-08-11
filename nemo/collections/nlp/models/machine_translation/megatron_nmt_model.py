@@ -603,10 +603,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                 data_prefix.append(weight)
                 data_prefix.append(prefix)
 
-            if self.trainer.max_steps is None:
-                raise ValueError(
-                    f"trainer.max_steps must be set to use blendable memmap datasets. Found {self.trainer.max_steps}."
-                )
             num_train_samples = [self.trainer.max_steps * self._cfg.global_batch_size]
             _, _, num_train_samples_per_dataset = get_datasets_weights_and_num_samples(data_prefix, num_train_samples)
             num_train_samples_after_blend = sum([x[0] for x in num_train_samples_per_dataset])

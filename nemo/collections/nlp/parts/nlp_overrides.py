@@ -29,7 +29,7 @@ from pytorch_lightning.plugins.environments.cluster_environment import ClusterEn
 from pytorch_lightning.plugins.io.checkpoint_plugin import CheckpointIO
 from pytorch_lightning.plugins.precision import NativeMixedPrecisionPlugin
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
-from pytorch_lightning.plugins.training_type.ddp import DDPPlugin
+from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.trainer.trainer import Trainer
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
 from pytorch_lightning.utilities.fetching import DataFetcher
@@ -54,7 +54,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 
-class NLPDDPPlugin(DDPPlugin):
+class NLPDDPStrategy(DDPStrategy):
     """ DDP plugin for Pytorch Lightning. Needed to customize DDP for model parallel models.
 
     Args:
@@ -219,7 +219,7 @@ class NLPDDPPlugin(DDPPlugin):
             return distributed_sampler_kwargs
 
         else:
-            return super(NLPDDPPlugin, self).distributed_sampler_kwargs
+            return super(NLPDDPStrategy, self).distributed_sampler_kwargs
 
 
 class NLPSaveRestoreConnector(SaveRestoreConnector):

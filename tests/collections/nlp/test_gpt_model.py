@@ -22,7 +22,7 @@ from pytorch_lightning import Trainer
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPPlugin
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 
 DEVICE_CAPABILITY = None
 if torch.cuda.is_available():
@@ -133,9 +133,9 @@ def gpt_model(model_cfg, trainer_cfg, precision):
     model_cfg['precision'] = precision
     trainer_cfg['precision'] = precision
 
-    plugins = [NLPDDPPlugin()]
+    strategy = NLPDDPStrategy()
 
-    trainer = Trainer(plugins=plugins, **trainer_cfg)
+    trainer = Trainer(strategy=strategy, **trainer_cfg)
 
     cfg = DictConfig(model_cfg)
 

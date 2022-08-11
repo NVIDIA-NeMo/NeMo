@@ -474,7 +474,7 @@ model:
 trainer:
   devices: 1 # number of gpus
   max_epochs: 100
-  max_steps: null # computed at runtime if not set
+  max_steps: -1 # computed at runtime if not set
   num_nodes: 1  # Should be set via SLURM variable `SLURM_JOB_NUM_NODES`
   accelerator: gpu
   strategy: ddp

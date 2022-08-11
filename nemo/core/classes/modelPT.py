@@ -483,7 +483,7 @@ class ModelPT(LightningModule, Model):
 
             if not isinstance(self._trainer.accumulate_grad_batches, int):
                 raise ValueError("We do not currently support gradient acculumation that is not an integer.")
-            if self._trainer.max_steps is None or self.trainer.max_steps < 0:
+            if self.trainer.max_steps < 0:
                 # Store information needed to calculate max_steps
                 optim_config['sched']['t_max_epochs'] = self._trainer.max_epochs
                 optim_config['sched']['t_accumulate_grad_batches'] = self._trainer.accumulate_grad_batches
@@ -1355,6 +1355,10 @@ class ModelPT(LightningModule, Model):
         """
         return self._cfg
 
+    @LightningModule.trainer.getter
+    def trainer(self):
+        return self._trainer
+
     @cfg.setter
     def cfg(self, cfg):
         """
@@ -1469,3 +1473,34 @@ class ModelPT(LightningModule, Model):
                     if batch_idx == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
                         logging.info("====== End nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStop()
+
+    # TODO: Remove in PTL 1.7.2
+    def cuda(self, device=None):
+        """ PTL is overriding this method and changing the pytorch behavior of a module.
+            The PTL LightingModule override will move the module to device 0 if device is None.
+            See the PTL method here: https://github.com/Lightning-AI/lightning/blob/master/src/pytorch_lightning/core/mixins/device_dtype_mixin.py#L113
+
+            Here we are overriding this to maintain the default Pytorch nn.module behavior:
+            https://github.com/pytorch/pytorch/blob/master/torch/nn/modules/module.py#L728
+        
+        Moves all model parameters and buffers to the GPU.
+
+        This also makes associated parameters and buffers different objects. So
+        it should be called before constructing optimizer if the module will
+        live on GPU while being optimized.
+
+        .. note::
+            This method modifies the module in-place.
+
+        Args:
+            device (int, optional): if specified, all parameters will be
+                copied to that device
+
+        Returns:
+            Module: self
+        """
+        if device is None:
+            device = torch.device("cuda", torch.cuda.current_device())
+        elif isinstance(device, int):
+            device = torch.device("cuda", index=device)
+        return super().cuda(device=device)

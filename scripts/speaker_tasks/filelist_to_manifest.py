@@ -46,7 +46,7 @@ Args:
 --min_spkrs_count: min number of samples per speaker to consider and ignore otherwise, defaults to 0 (all speakers)
 """
 
-DURATIONS = sorted([1, 2, 3, 4], reverse=True)
+DURATIONS = sorted([3], reverse=True)
 MIN_ENERGY = 0.01
 CWD = os.getcwd()
 

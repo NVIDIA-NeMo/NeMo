@@ -30,15 +30,15 @@ the same features as other NeMo Models.
 Training
 ^^^^^^^^
 
-All of the necessary logic to train model parallel models in NeMo with PyTorch Lightning is contained in the ``NLPDDPPlugin``. 
-The ``NLPDDPPlugin`` subclasses the PyTorch Lightning training type plugin ``DDPPlugin``.
-See `plugins <https://pytorch-lightning.readthedocs.io/en/latest/extensions/plugins.html>`_ for more information on PyTorch Lightning Plugins.
+All of the necessary logic to train model parallel models in NeMo with PyTorch Lightning is contained in the ``NLPDDPStrategy``. 
+The ``NLPDDPStrategy`` subclasses the PyTorch Lightning strategy type ``DDPStrategy``.
+See `strategies <https://pytorch-lightning.readthedocs.io/en/latest/extensions/strategy.html>`_ for more information on PyTorch Lightning Strategies
 
 To enable model parallel training in NeMo:
 
 .. code-block:: python
 
-    trainer = Trainer(plugins=[NLPDDPPlugin()], **cfg.trainer)
+    trainer = Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
 
 Megatron-LM checkpoints have a specific format. One checkpoint is saved for each model parallel rank:
 
@@ -157,7 +157,7 @@ Since model parallel models always require more than one GPU, the ``Trainer`` is
 
 .. code-block:: python
 
-    trainer = pl.Trainer(plugins=[NLPDDPPlugin()], **cfg.trainer)
+    trainer = pl.Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
 
     model = TextClassificationModel.restore_from(cfg.model.nemo_path, trainer=trainer)
     model.setup_test_data(test_data_config=cfg.model.test_ds)

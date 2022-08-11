@@ -704,7 +704,7 @@ def prepare_lr_scheduler(
       sched:
         name: <name of scheduler>
         iters_per_batch: null # computed at runtime; mandatory to have
-        max_steps: null # computed at runtime or explicitly set here; mandatory to have
+        max_steps: -1 # computed at runtime or explicitly set here; mandatory to have
 
         # pytorch lightning args <mandatory>
         monitor: val_loss

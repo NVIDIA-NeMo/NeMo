@@ -126,7 +126,7 @@ trainer:
   devices: 1 # number of gpus
   num_nodes: 1
   max_epochs: 100
-  max_steps: null # computed at runtime if not set
+  max_steps: -1 # computed at runtime if not set
   accelerator: gpu
   strategy: ddp
   accumulate_grad_batches: 1

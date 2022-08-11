@@ -90,7 +90,7 @@ def nemo_export(argv):
         num_nodes=1,
         # Need to set the following two to False as ExpManager will take care of them differently.
         logger=False,
-        checkpoint_callback=False,
+        enable_checkpointing=False,
     )
     trainer = Trainer(cfg_trainer)
 

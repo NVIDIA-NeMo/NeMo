@@ -626,7 +626,7 @@ class RadTTSModule(NeuralModule, Exportable):
         sigma_energy=0.8,
         speaker_id_text=None,
         speaker_id_attributes=None,
-        token_dur_scaling=1.0,
+        pace=1.0,
         token_duration_max=100,
         lens=None,
         dur=None,
@@ -661,15 +661,10 @@ class RadTTSModule(NeuralModule, Exportable):
             dur = dur[:, 0]
             dur = dur.clamp(0, token_duration_max)
 
-        unscaled_dur = dur
-        dur = unscaled_dur * token_dur_scaling if token_dur_scaling > 0 else unscaled_dur
-        dur = (dur + 0.5).floor().int()
-        n_frames = dur.sum()
-        n_groups = torch.div(n_frames, self.n_group_size, rounding_mode='trunc')
-        out_lens = n_frames[None]
-
         # get attributes f0, energy, vpred, etc)
-        txt_enc_time_expanded, _ = regulate_len(dur, txt_enc.transpose(1, 2))
+        txt_enc_time_expanded, out_lens = regulate_len(dur, txt_enc.transpose(1, 2), pace)
+        n_groups = torch.div(out_lens, self.n_group_size, rounding_mode='trunc')
+
         txt_enc_time_expanded.transpose_(1, 2)
         if voiced_mask is None:
             if self.use_vpred_module:
@@ -692,14 +687,14 @@ class RadTTSModule(NeuralModule, Exportable):
 
         if f0 is None:
             n_f0_feature_channels = 2 if self.use_first_order_features else 1
-            z_f0 = txt_enc.new_empty(1, n_f0_feature_channels, n_frames).normal_() * sigma_f0
+            z_f0 = txt_enc.new_empty(1, n_f0_feature_channels, out_lens).normal_() * sigma_f0
             f0 = self.infer_f0(z_f0, ap_txt_enc_time_expanded, spk_vec_attributes, voiced_mask, out_lens)[:, 0]
 
         f0 = adjust_f0(f0, f0_mean, f0_std, voiced_mask.to(dtype=bool))
 
         if energy_avg is None:
             n_energy_feature_channels = 2 if self.use_first_order_features else 1
-            z_energy_avg = txt_enc.new_empty(1, n_energy_feature_channels, n_frames).normal_() * sigma_energy
+            z_energy_avg = txt_enc.new_empty(1, n_energy_feature_channels, out_lens).normal_() * sigma_energy
             energy_avg = self.infer_energy(z_energy_avg, ap_txt_enc_time_expanded, spk_vec, out_lens)[:, 0]
 
         # replication pad, because ungrouping with different group sizes
@@ -717,7 +712,7 @@ class RadTTSModule(NeuralModule, Exportable):
                 txt_enc_time_expanded, spk_vec, out_lens, f0 * voiced_mask, energy_avg
             )
 
-        residual = txt_enc.new_empty(1, 80 * self.n_group_size, n_frames // self.n_group_size)
+        residual = txt_enc.new_empty(1, 80 * self.n_group_size, out_lens // self.n_group_size)
         residual = residual.normal_() * sigma
 
         # map from z sample to data
@@ -738,7 +733,7 @@ class RadTTSModule(NeuralModule, Exportable):
         if self.n_group_size > 1:
             mel = self.fold(mel)
 
-        return {'mel': mel, 'dur': dur, 'f0': f0, 'energy_avg': energy_avg}
+        return {'mel': mel, 'out_lens': out_lens, 'dur': dur, 'f0': f0, 'energy_avg': energy_avg}
 
     def infer_f0(self, residual, txt_enc_time_expanded, spk_vec, voiced_mask=None, lens=None):
         print("txt_enc_time_expanded", txt_enc_time_expanded.size())
@@ -851,7 +846,7 @@ class RadTTSModule(NeuralModule, Exportable):
         """
         Runs the generator, for inputs and outputs see input_types, and output_types
         """
-        (mel, dur, _, n_frames) = self.infer(
+        (mel, n_frames, dur, _, _) = self.infer(
             speaker_id,
             text,
             speaker_id_text=speaker_id_text,

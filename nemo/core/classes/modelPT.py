@@ -431,9 +431,10 @@ class ModelPT(LightningModule, Model):
             if self._test_dl is not None and type(self._test_dl) in [list, tuple]:
                 self._test_names = ['test_{}_'.format(idx) for idx in range(len(self._test_dl))]
 
-    def setup_optimization(self, optim_config: Optional[Union[DictConfig, Dict]] = None):
-        """
-        Prepares an optimizer from a string name and its optional config parameters.
+    def setup_optimization(
+        self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        """Prepares an optimizer from a string name and its optional config parameters.
 
         Args:
             optim_config: A dictionary containing the following keys:
@@ -444,6 +445,11 @@ class ModelPT(LightningModule, Model):
                 * "opt_args": Optional list of strings, in the format "arg_name=arg_value". \
                 The list of "arg_value" will be parsed and a dictionary of optimizer kwargs \
                 will be built and supplied to instantiate the optimizer.
+
+            optim_kwargs: A dictionary with additional kwargs for the
+                optimizer. Used for non-primitive types that are not
+                compatible with OmegaConf.
+
         """
         # Setup the optimizer parameter groups (by default use all parameters that are trainable)
         self.setup_optimizer_param_groups()
@@ -542,6 +548,10 @@ class ModelPT(LightningModule, Model):
             optimizer_args.pop('cls', None)
             optimizer_args.pop('lr', None)
 
+        # Include user-provided kwargs
+        if optim_kwargs is not None:
+            optimizer_args.update(optim_kwargs)
+
         # Adaptive schedulers don't need `lr`
         if lr is not None:
             optimizer_args['lr'] = lr
@@ -608,18 +618,18 @@ class ModelPT(LightningModule, Model):
             See https://pytorch.org/docs/stable/optim.html for more information.
             By default, ModelPT will use self.parameters().
             Override this method to add custom param groups.
-            In the config file, add 'optim_param_groups' to support different LRs 
+            In the config file, add 'optim_param_groups' to support different LRs
             for different components (unspecified params will use the default LR):
             model:
                 optim_param_groups:
-                    encoder: 
+                    encoder:
                         lr: 1e-4
                         momentum: 0.8
-                    decoder: 
+                    decoder:
                         lr: 1e-3
                 optim:
                     lr: 3e-3
-                    momentum: 0.9   
+                    momentum: 0.9
         """
         if not hasattr(self, "parameters"):
             self._optimizer_param_groups = None
@@ -1245,7 +1255,7 @@ class ModelPT(LightningModule, Model):
         DDP_WARN = """\n\nDuring testing, it is currently advisable to construct a new Trainer "
                     "with single GPU and no DDP to obtain accurate results.
                     "Following pattern should be used: "
-                    "trainer = Trainer(devices=1, accelerator='gpu')" 
+                    "trainer = Trainer(devices=1, accelerator='gpu')"
                     "if model.prepare_test(trainer):"
                     "  trainer.test(model)\n\n"""
 
@@ -1447,7 +1457,7 @@ class ModelPT(LightningModule, Model):
                     raise ValueError(f'Nsys end_step must be greater than or equal to nsys start_step')
 
     def on_train_batch_start(self, batch: Any, batch_idx: int, unused: int = 0) -> Optional[int]:
-        """ PyTorch Lightning hook: 
+        """ PyTorch Lightning hook:
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start
             We use it here to enable nsys profiling.
         """
@@ -1462,7 +1472,7 @@ class ModelPT(LightningModule, Model):
                             torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
 
     def on_train_batch_end(self, outputs, batch: Any, batch_idx: int, unused: int = 0) -> None:
-        """ PyTorch Lightning hook: 
+        """ PyTorch Lightning hook:
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end
             We use it here to enable nsys profiling.
         """

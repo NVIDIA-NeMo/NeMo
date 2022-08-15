@@ -23,7 +23,10 @@ from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionP
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.nlp_model import NLPModel
-from nemo.collections.nlp.modules.common.megatron.clip_grads import clip_grad_norm_fp32
+from nemo.collections.nlp.modules.common.megatron.clip_grads import (
+    clip_grad_norm_distributed_optimizer,
+    clip_grad_norm_fp32,
+)
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
@@ -200,13 +203,16 @@ class MegatronBaseModel(NLPModel):
         if self.grad_clip_pl_default:
             # use the default behavior
             return super().configure_gradient_clipping(*args, **kwargs)
-        elif self.megatron_amp_o2:
-            # grep fp32 master parameters for gradient clipping
-            parameters = self._optimizer.get_parameters()
-        else:
-            parameters = self._get_parameters()
 
-        grad_norm = clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val)
+        if hasattr(self, 'with_distributed_adam') and self.with_distributed_adam:
+            grad_norm = clip_grad_norm_distributed_optimizer(self._optimizer, clip_val)
+        else:
+            if self.megatron_amp_o2:
+                # grep fp32 master parameters for gradient clipping
+                parameters = self._optimizer.get_parameters()
+            else:
+                parameters = self._get_parameters()
+            grad_norm = clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val)
 
         self.log('grad_norm', grad_norm, rank_zero_only=True)
 
@@ -276,7 +282,11 @@ class MegatronBaseModel(NLPModel):
         self.setup_optimization()
 
         # Wrap the baseline optimizer with the optimizer class with master parameters
-        if self.megatron_amp_o2 and self._optimizer is not None:
+        if (
+            self.megatron_amp_o2
+            and not (hasattr(self, 'with_distributed_adam') and self.with_distributed_adam)
+            and self._optimizer is not None
+        ):
             if self.cfg.precision == 'bf16':
                 fp32_grad_accum = True
                 contiguous_grad_bucket = True

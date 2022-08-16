@@ -1,0 +1,126 @@
+data_simulator:
+  manifest_filepath: ??? # Manifest file with paths to single speaker audio files
+
+  sr: 16000 # Sampling rate of the input audio files from the manifest
+  random_seed: 42
+
+  session_config:
+    num_speakers: 4 # Number of unique speakers per multispeaker audio session
+    num_sessions: 60 # Number of sessions to simulate
+    session_length: 600 # Length of each simulated multispeaker audio session (seconds)
+
+  session_params:
+    sentence_length_params: # k,p values for a negative_binomial distribution which is sampled to get the sentence length (in number of words)
+    - 0.4
+    - 0.05
+    dominance_var: 0.11 # Variance in speaker dominance (where each speaker's dominance is sampled from a normal distribution centered on 1/`num_speakers`, and then the dominance values are together normalized to 1)
+    min_dominance: 0.05 # Minimum percentage of speaking time per speaker (note that this can cause the dominance of the other speakers to be slightly reduced)
+    turn_prob: 0.875 # Probability of switching speakers after each utterance
+    mean_overlap: 0.19 # Mean proportion of overlap in the overall speaking time (overlap lengths are sampled from half normal distribution)
+    mean_silence: 0.15 # Mean proportion of silence to speaking time in the audio session (overlap lengths are sampled from half normal distribution)
+    overlap_prob: 0.5 # Proportion of overlap occurrences versus silence between utterances (used to balance the length of silence gaps and overlapping segments, so a value close to `mean_overlap`/(`mean_silence`+`mean_overlap`) is suggested)
+    start_window: true # Window the start of sentences to smooth the audio signal (and remove silence at the start of the clip)
+    window_type: hamming # Type of windowing used when segmenting utterances ("hamming", "hann", "cosine")
+    window_size: 0.05 # Length of window at the start or the end of segmented utterance (seconds)
+    start_buffer: 0.1 # Buffer of silence before the start of the sentence (to avoid cutting off speech or starting abruptly)
+    split_buffer: 0.1 # Split RTTM labels if greater than twice this amount of silence (to avoid long gaps between utterances as being labelled as speech)
+    release_buffer: 0.1 # Buffer before window at end of sentence (to avoid cutting off speech or ending abruptly)
+    normalize: true # Normalize speaker volumes 
+    normalization_type: equal # Normalizing speakers ("equal" - same volume per speaker, "var" - variable volume per speaker)
+    normalization_var: 0.1 # Variance in speaker volume (sample from standard deviation centered at 1)
+    min_volume: 0.75 # Minimum speaker volume (only used when variable normalization is used)
+    max_volume: 1.25 # Maximum speaker volume (only used when variable normalization is used)
+    end_buffer: 0.5 # Buffer at the end of the session to leave blank
+
+  outputs:
+    output_dir: ??? # Output directory for audio sessions and corresponding label files
+    output_filename: multispeaker_session # Output filename for the wav and rttm files
+    overwrite_output: true # If true, delete the output directory if it exists
+    output_precision: 3 # Number of decimal places in output files
+
+  background_noise: # If bg noise is used, a noise source position must be passed for RIR mode
+    add_bg: false # Add ambient background noise if true
+    background_manifest: null # Path to background noise manifest file
+    snr: 60 # SNR for background noise (using average speaker power)
+
+  speaker_enforcement:
+    enforce_num_speakers: false # Enforce that all requested speakers are present in the output wav file
+    enforce_time:  # Percentage of the way through the audio session that enforcement mode is triggered (sampled between time 1 and 2)
+    - 0.25
+    - 0.75
+
+  segment_manifest: # Parameters for regenerating the segment manifest file 
+    window: 0.5 # Window length for segmentation 
+    shift: 0.25 # Shift length for segmentation
+    step_count: 50 # Number of the unit segments you want to create per utterance
+    deci: 3 # Rounding decimals for segment manifest file
+
+  rir_generation: # Using synthetic RIR augmentation
+    use_rir: false # Whether to generate synthetic RIR
+    toolkit: 'pyroomacoustics' # Which toolkit to use ("pyroomacoustics", "gpuRIR")
+    room_config:
+      room_sz: # Size of the shoebox room environment (1d array for specific, 2d array for random range to be sampled from)
+      - - 2
+        - 3
+      - - 2
+        - 3
+      - - 2
+        - 3
+      pos_src: # Positions of the speakers in the simulated room environment (2d array for specific, 3d array for random ranges to be sampled from)
+      - - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+      - - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+      - - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+      - - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+      noise_src_pos: # Position in room for the ambient background noise source
+      - 1.5
+      - 1.5
+      - 2
+    mic_config:
+      num_channels: 2 # Number of output audio channels
+      pos_rcv: # Microphone positions in the simulated room environment (1d/2d array for specific, 2d/3d array for range assuming num_channels is 1/2+)
+      - - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+      - - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+        - - 0.5
+          - 1.5
+      orV_rcv: null # Microphone orientations (needed for non-omnidirectional microphones)
+      mic_pattern: omni # Microphone type ("omni" - omnidirectional) - currently only omnidirectional microphones are supported for pyroomacoustics
+
+    absorbtion_params: # Note: only `T60` is used for pyroomacoustics simulations
+      abs_weights: # Absorption coefficient ratios for each surface 
+      - 0.9
+      - 0.9
+      - 0.9
+      - 0.9
+      - 0.9
+      - 0.9
+      T60: 0.1 # Room reverberation time (`T60` is the time it takes for the RIR to decay by 60DB)
+      att_diff: 15.0 # Starting attenuation (if this is different than att_max, the diffuse reverberation model is used by gpuRIR)
+      att_max: 60.0 # End attenuation when using the diffuse reverberation model (gpuRIR)

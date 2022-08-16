@@ -465,6 +465,19 @@ pipeline {
             sh 'rm -rf examples/speaker_tasks/diarization/speaker_diarization_results'
           }
         }
+	
+        stage('Multispeaker ASR Data Simulation') {
+          steps {
+            sh 'python tools/speech_data_simulator/multispeaker_simulator.py \
+            --config-path='tools/speech_data_simulator/conf' --config-name='data_simulator.yaml' \
+            data_simulator.random_seed=42 \
+            data_simulator.manifest_path=/home/TestData/LibriSpeechShort/dev-clean-align-short.json \
+            data_simulator.outputs.output_dir=./test_simulator \
+            data_simulator.session_config.num_sessions=1 \
+            data_simulator.session_config.session_length=60
+            sh 'rm -rf ./test_simulator'
+          }
+        }
       }
     }
     // TODO: Enable test after 21.08 container is used.

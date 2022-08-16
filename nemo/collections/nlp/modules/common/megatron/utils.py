@@ -15,7 +15,7 @@
 """Utilities for models."""
 
 import math
-from typing import Dict, List, Union
+from typing import Dict, List, Tuple, Union
 
 import torch
 
@@ -331,3 +331,16 @@ def get_params_for_weight_decay_optimization(
                 )
 
     return weight_decay_params, no_weight_decay_params
+
+
+def get_all_params_for_weight_decay_optimization(
+    model: Union[torch.nn.Module, List[torch.nn.Module]],
+) -> Tuple[Dict[str, List[torch.nn.Parameter]]]:
+    """Use all params for weight decay."""
+    modules = listify_model(model)
+
+    weight_decay_params = [
+        p for module in modules for module_ in module.modules() for p in module_._parameters.values() if p is not None
+    ]
+
+    return ({'params': weight_decay_params},)

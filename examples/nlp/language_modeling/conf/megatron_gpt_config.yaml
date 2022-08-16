@@ -57,10 +57,13 @@ model:
   ffn_hidden_size: 3072 # Transformer FFN hidden size. Usually 4 * hidden_size.
   num_attention_heads: 12
   init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
+  use_scaled_init_method: True # use scaled residuals initialization
   hidden_dropout: 0.1 # Dropout probability for hidden state transformer.
   kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
   apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
+  normalization: layernorm # Type of normalization layers
   layernorm_epsilon: 1e-5
+  do_layer_norm_weight_decay: False # True means weight decay on all params
   make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
   pre_process: True # add embedding
   post_process: True # add pooler

@@ -29,6 +29,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_base_model import Me
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
+    get_all_params_for_weight_decay_optimization,
     get_params_for_weight_decay_optimization,
 )
 from nemo.collections.nlp.modules.common.text_generation_utils import (
@@ -152,6 +153,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             pre_process=pre_process,
             post_process=post_process,
             init_method_std=self.cfg.get('init_method_std', 0.02),
+            use_scaled_init_method=self.cfg.get('use_scaled_init_method', True),
             fp16_lm_cross_entropy=self.cfg.get('fp16_lm_cross_entropy', False),
             use_cpu_initialization=self.cfg.get('use_cpu_initialization', False),
             hidden_dropout=self.cfg.get('hidden_dropout', 0.1),
@@ -160,6 +162,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             activations_checkpoint_granularity=self.cfg.get('activations_checkpoint_granularity', None),
             activations_checkpoint_method=self.cfg.get('activations_checkpoint_method', None),
             activations_checkpoint_num_layers=self.cfg.get('activations_checkpoint_num_layers', 1),
+            normalization=self.cfg.get('normalization', 'layernorm'),
             layernorm_epsilon=self.cfg.get('layernorm_epsilon', 1e-5),
             onnx_safe=self.cfg.get('onnx_safe', False),
             persist_layer_norm=self.cfg.get('persist_layer_norm', False),
@@ -171,7 +174,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
     def setup_optimizer_param_groups(self):
         """ModelPT override. Optimizer will get self._optimizer_param_groups"""
-        self._optimizer_param_groups = get_params_for_weight_decay_optimization([self.model])
+        if self.cfg.get('do_layer_norm_weight_decay', False):
+            self._optimizer_param_groups = get_all_params_for_weight_decay_optimization([self.model])
+        else:
+            self._optimizer_param_groups = get_params_for_weight_decay_optimization([self.model])
 
     def setup_optimization(
         self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,

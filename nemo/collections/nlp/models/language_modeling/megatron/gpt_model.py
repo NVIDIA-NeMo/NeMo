@@ -109,6 +109,7 @@ class GPTModel(MegatronModule):
         pre_process=True,
         post_process=True,
         init_method_std=0.02,
+        use_scaled_init_method=True,
         fp16_lm_cross_entropy=False,
         use_cpu_initialization=False,
         hidden_dropout=0.1,
@@ -117,6 +118,7 @@ class GPTModel(MegatronModule):
         activations_checkpoint_granularity=None,
         activations_checkpoint_method=None,
         activations_checkpoint_num_layers=1,
+        normalization='layernorm',
         layernorm_epsilon=1e-5,
         bias_gelu_fusion=True,
         persist_layer_norm=False,
@@ -141,6 +143,11 @@ class GPTModel(MegatronModule):
             ), 'hidden_size must be divisible by num_attention_heads if kv_channels is None'
             kv_channels = hidden_size // num_attention_heads
 
+        scaled_init_method = (
+            scaled_init_method_normal(init_method_std, num_layers)
+            if use_scaled_init_method
+            else init_method_normal(init_method_std)
+        )
         self.language_model, self._language_model_key = get_language_model(
             vocab_size=vocab_size,
             hidden_size=hidden_size,
@@ -155,7 +162,7 @@ class GPTModel(MegatronModule):
             add_pooler=False,
             encoder_attn_mask_type=AttnMaskType.causal,
             init_method=init_method_normal(init_method_std),
-            scaled_init_method=scaled_init_method_normal(init_method_std, num_layers),
+            scaled_init_method=scaled_init_method,
             pre_process=self.pre_process,
             post_process=self.post_process,
             init_method_std=init_method_std,
@@ -165,6 +172,7 @@ class GPTModel(MegatronModule):
             activations_checkpoint_granularity=activations_checkpoint_granularity,
             activations_checkpoint_method=activations_checkpoint_method,
             activations_checkpoint_num_layers=activations_checkpoint_num_layers,
+            normalization=normalization,
             layernorm_epsilon=layernorm_epsilon,
             bias_gelu_fusion=bias_gelu_fusion,
             persist_layer_norm=persist_layer_norm,

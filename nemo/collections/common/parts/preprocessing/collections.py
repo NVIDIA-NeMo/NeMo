@@ -719,7 +719,7 @@ class DiarizationSpeechLabel(DiarizationLabel):
                 f"Manifest file has invalid json line " f"structure: {line} without proper audio file key."
             )
         item['audio_file'] = os.path.expanduser(item['audio_file'])
-        item['uniq_id'] = os.path.splitext(os.path.basename(item['rttm_filepath']))[0]
+        item['uniq_id'] = os.path.splitext(os.path.basename(item['audio_file']))[0]
         if 'duration' not in item:
             raise ValueError(f"Manifest file has invalid json line " f"structure: {line} without proper duration key.")
         item = dict(

@@ -20,6 +20,7 @@ import torch
 from omegaconf import open_dict
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
+from pytorch_lightning.trainer.connectors.logger_connector.fx_validator import _FxValidator
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.nlp_model import NLPModel
@@ -102,6 +103,14 @@ class MegatronBaseModel(NLPModel):
 
             # manipulate vocabulary (e.g., pad vocabulary for better efficiency)
             self._build_vocab()
+
+        # TODO: remove this when PTL 1.7.3 is released
+        _FxValidator.functions["configure_gradient_clipping"] = {
+            "allowed_on_step": (False, True),
+            "allowed_on_epoch": (False, True),
+            "default_on_step": True,
+            "default_on_epoch": False,
+        }
 
     def _enable_nvidia_optimizations(self):
         "These optimizations are present in NVIDIA NGC PyTorch Containers"

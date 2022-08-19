@@ -674,7 +674,9 @@ class AbstractRNNTDecoding(ABC):
         # This is because we always skip the delay the injection of the first sub-word due to the loop
         # condition and check whether built token is ready or not.
         # Therefore without this forced injection, the start_offset appears as off by 1.
-        word_offsets[0]["start_offset"] = offsets[0]["start_offset"]
+        # This should only be done when these arrays contain more than one element.
+        if offsets and word_offsets:
+            word_offsets[0]["start_offset"] = offsets[0]["start_offset"]
 
         # If there are any remaining tokens left, inject them all into the final word offset.
         # Note: The start offset of this token is the start time of the first token inside build_token.

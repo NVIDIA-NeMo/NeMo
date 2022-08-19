@@ -652,7 +652,7 @@ class AbstractRNNTDecoding(ABC):
                 if token != token_text:
                     # If there are any partially or fully built sub-word token ids, construct to text.
                     # Note: This is "old" subword, that occurs *after* current sub-word has started.
-                    if len(built_token) > 0:
+                    if built_token:
                         word_offsets.append(
                             {
                                 "word": decode_tokens_to_str(built_token),
@@ -679,13 +679,20 @@ class AbstractRNNTDecoding(ABC):
             word_offsets[0]["start_offset"] = offsets[0]["start_offset"]
 
         # If there are any remaining tokens left, inject them all into the final word offset.
-        # Note: The start offset of this token is the start time of the first token inside build_token.
-        # Note: The end offset of this token is the end time of the last token inside build_token
-        if len(built_token) > 0:
+        # The start offset of this token is the start time of the next token to process.
+        # The end offset of this token is the end time of the last token from offsets.
+        # Note that built_token is a flat list; but offsets contains a nested list which
+        # may have different dimensionality.
+        # As such, we can't rely on the length of the list of built_token to index offsets.
+        if built_token:
+            # start from the last processed token + (1 if anything was processed else 0)
+            start_offset = offsets[
+                previous_token_index + (1 if word_offsets else 0)
+            ]["start_offset"]
             word_offsets.append(
                 {
                     "word": decode_tokens_to_str(built_token),
-                    "start_offset": offsets[-(len(built_token))]["start_offset"],
+                    "start_offset": start_offset,
                     "end_offset": offsets[-1]["end_offset"],
                 }
             )

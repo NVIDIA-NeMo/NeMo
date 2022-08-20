@@ -685,10 +685,9 @@ class AbstractRNNTDecoding(ABC):
         # may have different dimensionality.
         # As such, we can't rely on the length of the list of built_token to index offsets.
         if built_token:
-            # start from the last processed token + (1 if anything was processed else 0)
-            start_offset = offsets[
-                previous_token_index + (1 if word_offsets else 0)
-            ]["start_offset"]
+            # start from the previous token index as this hasn't been committed to word_offsets yet
+            # if we still have content in built_token
+            start_offset = offsets[previous_token_index]["start_offset"]
             word_offsets.append(
                 {
                     "word": decode_tokens_to_str(built_token),

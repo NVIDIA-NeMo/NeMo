@@ -27,6 +27,11 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    BaseTokenizer,
+    EnglishCharsTokenizer,
+    EnglishPhonemesTokenizer,
+)
 from nemo.collections.tts.torch.helpers import (
     BetaBinomialInterpolator,
     beta_binomial_prior_distribution,
@@ -48,7 +53,6 @@ from nemo.collections.tts.torch.tts_data_types import (
     Voiced_mask,
     WithLens,
 )
-from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer, EnglishPhonemesTokenizer
 from nemo.core.classes import Dataset
 from nemo.utils import logging
 

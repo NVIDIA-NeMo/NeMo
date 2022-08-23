@@ -74,7 +74,7 @@ model:
       pitch_fmax: ${pitch_fmax} 
       
       text_tokenizer:
-        _target_: "nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer"
+        _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
         stresses: True
         chars: True
@@ -85,7 +85,7 @@ model:
         add_blank_at: null
         pad_with_space: True
         g2p:
-          _target_: "nemo.collections.tts.torch.g2ps.EnglishG2p"
+          _target_: "nemo_text_processing.g2p.modules.EnglishG2p"
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5
@@ -118,7 +118,7 @@ model:
       pitch_fmin: ${pitch_fmin}
       pitch_fmax: ${pitch_fmax}  
       text_tokenizer:
-        _target_: "nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer"
+        _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
         stresses: True
         chars: True
@@ -129,7 +129,7 @@ model:
         add_blank_at: null
         pad_with_space: True
         g2p:
-          _target_: "nemo.collections.tts.torch.g2ps.EnglishG2p"
+          _target_: "nemo_text_processing.g2p.modules.EnglishG2p"
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5

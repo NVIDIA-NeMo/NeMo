@@ -39,13 +39,13 @@ dataset:
     punct_post_process: true
 
   text_tokenizer:
-    _target_: nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer
+    _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer
     punct: true
     stresses: true
     chars: true
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo.collections.tts.torch.g2ps.EnglishG2p
+      _target_: nemo_text_processing.g2p.modules.EnglishG2p
       phoneme_dict: ${phoneme_dict_path}
       heteronyms: ${heteronyms_path}

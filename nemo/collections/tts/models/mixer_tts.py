@@ -27,6 +27,10 @@ from torch import nn
 from torch.nn import functional as F
 from transformers import AlbertTokenizer
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    EnglishCharsTokenizer,
+    EnglishPhonemesTokenizer,
+)
 from nemo.collections.tts.helpers.helpers import (
     binarize_attention_parallel,
     get_mask_from_lengths,
@@ -36,7 +40,6 @@ from nemo.collections.tts.helpers.helpers import (
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
 from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.collections.tts.modules.fastpitch import average_pitch, regulate_len
-from nemo.collections.tts.torch.tts_tokenizers import EnglishCharsTokenizer, EnglishPhonemesTokenizer
 from nemo.core import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (

@@ -21,10 +21,10 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import LoggerCollection, TensorBoardLogger
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.helpers.helpers import plot_alignment_to_numpy
 from nemo.collections.tts.losses.radttsloss import AttentionBinarizationLoss, RADTTSLoss
 from nemo.collections.tts.models.base import SpectrogramGenerator
-from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (

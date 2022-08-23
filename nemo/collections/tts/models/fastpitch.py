@@ -46,7 +46,7 @@ from nemo.utils import logging, model_utils
 
 @dataclass
 class G2PConfig:
-    _target_: str = "nemo.collections.tts.torch.g2ps.EnglishG2p"
+    _target_: str = "nemo.collections.common.tokenizers.text_to_speech.g2ps.EnglishG2p"
     phoneme_dict: str = "scripts/tts_dataset_files/cmudict-0.7b_nv22.07"
     heteronyms: str = "scripts/tts_dataset_files/heteronyms-030921"
     phoneme_probability: float = 0.5
@@ -54,7 +54,7 @@ class G2PConfig:
 
 @dataclass
 class TextTokenizer:
-    _target_: str = "nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer"
+    _target_: str = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
     punct: bool = True
     stresses: bool = True
     chars: bool = True

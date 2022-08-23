@@ -188,11 +188,18 @@ class TTSDataset(Dataset):
             self.tokens = tokens
         self.cache_text = True if self.phoneme_probability is None else False
 
-        # Initialize text normalizer is specified
+        # Initialize text normalizer if specified
         self.text_normalizer = text_normalizer
-        self.text_normalizer_call = (
-            self.text_normalizer.normalize if isinstance(self.text_normalizer, Normalizer) else self.text_normalizer
-        )
+        if self.text_normalizer is None:
+            self.text_normalizer_call = None
+        elif not PYNINI_AVAILABLE:
+            raise ImportError("pynini is not installed, please install via nemo_text_processing/install_pynini.sh")
+        else:
+            self.text_normalizer_call = (
+                self.text_normalizer.normalize
+                if isinstance(self.text_normalizer, Normalizer)
+                else self.text_normalizer
+            )
         self.text_normalizer_call_kwargs = (
             text_normalizer_call_kwargs if text_normalizer_call_kwargs is not None else {}
         )
@@ -219,15 +226,15 @@ class TTSDataset(Dataset):
                         "is_phoneme": item["is_phoneme"] if "is_phoneme" in item else None,
                     }
 
-                    if ("text_normalized" not in item) or ("normalized_text" not in item):
+                    if "normalized_text" in item:
+                        file_info["normalized_text"] = item["normalized_text"]
+                    elif "text_normalized" in item:
+                        file_info["normalized_text"] = item["text_normalized"]
+                    else:
                         text = item["text"]
                         if self.text_normalizer is not None:
                             text = self.text_normalizer_call(text, **self.text_normalizer_call_kwargs)
                         file_info["normalized_text"] = text
-                    elif "normalized_text" in item:
-                        file_info["normalized_text"] = item["normalized_text"]
-                    else:
-                        file_info["normalized_text"] = item["text_normalized"]
 
                     if self.cache_text:
                         file_info["text_tokens"] = self.text_tokenizer(file_info["normalized_text"])

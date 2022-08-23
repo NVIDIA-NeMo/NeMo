@@ -32,6 +32,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
+from nemo.collections.asr.parts.submodules import stateless_net
 from nemo.collections.asr.parts.utils import adapter_utils, rnnt_utils
 from nemo.collections.common.parts import rnn
 from nemo.core.classes import adapter_mixins, typecheck
@@ -48,6 +49,435 @@ from nemo.core.neural_types import (
     NeuralType,
 )
 from nemo.utils import logging
+
+
+class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
+    """A Stateless Neural Network Transducer Decoder / Prediction Network.
+    An RNN-T Decoder/Prediction stateless network that simply takes concatenation of embeddings of the history tokens as the output.
+
+    Args:
+        prednet: A dict-like object which contains the following key-value pairs.
+            pred_hidden: int specifying the hidden dimension of the prediction net.
+
+            dropout: float, set to 0.0 by default. Optional dropout applied at the end of the final LSTM RNN layer.
+
+        vocab_size: int, specifying the vocabulary size of the embedding layer of the Prediction network,
+            excluding the RNNT blank token.
+
+        context_size: int, specifying the size of the history context used for this decoder.
+
+        normalization_mode: Can be either None, 'layer'. By default, is set to None.
+            Defines the type of normalization applied to the RNN layer.
+
+    """
+
+    @property
+    def input_types(self):
+        """Returns definitions of module input ports.
+        """
+        return {
+            "targets": NeuralType(('B', 'T'), LabelsType()),
+            "target_length": NeuralType(tuple('B'), LengthsType()),
+            "states": [NeuralType(('B', 'T'), LabelsType(), optional=True)],
+        }
+
+    @property
+    def output_types(self):
+        """Returns definitions of module output ports.
+        """
+        return {
+            "outputs": NeuralType(('B', 'D', 'T'), EmbeddedTextType()),
+            "prednet_lengths": NeuralType(tuple('B'), LengthsType()),
+            "states": [NeuralType(('B', 'T'), LabelsType(), optional=True)],
+        }
+
+    def input_example(self, max_batch=1, max_dim=1):
+        """
+        Generates input examples for tracing etc.
+        Returns:
+            A tuple of input examples.
+        """
+        length = max_dim
+        targets = torch.full(fill_value=self.blank_idx, size=(max_batch, length), dtype=torch.int32).to(
+            next(self.parameters()).device
+        )
+        target_length = torch.randint(0, length, size=(max_batch,), dtype=torch.int32).to(
+            next(self.parameters()).device
+        )
+        states = tuple(self.initialize_state(targets.float()))
+        return (targets, target_length, states)
+
+    def _prepare_for_export(self, **kwargs):
+        self._rnnt_export = True
+        super()._prepare_for_export(**kwargs)
+
+    def __init__(
+        self,
+        prednet: Dict[str, Any],
+        vocab_size: int,
+        context_size: int = 1,
+        normalization_mode: Optional[str] = None,
+    ):
+        # Required arguments
+        self.pred_hidden = prednet['pred_hidden']
+        self.blank_idx = vocab_size
+        self.context_size = context_size
+
+        # Initialize the model (blank token increases vocab size by 1)
+        super().__init__(vocab_size=vocab_size, blank_idx=self.blank_idx, blank_as_pad=True)
+
+        # Optional arguments
+        dropout = prednet.get('dropout', 0.0)
+
+        self.prediction = self._predict_modules(
+            **{
+                "context_size": context_size,
+                "vocab_size": vocab_size,
+                "emb_dim": self.pred_hidden,
+                "blank_idx": self.blank_idx,
+                "normalization_mode": normalization_mode,
+                "dropout": dropout,
+            }
+        )
+        self._rnnt_export = False
+
+    @typecheck()
+    def forward(self, targets, target_length, states=None):
+        # y: (B, U)
+        y = rnn.label_collate(targets)
+
+        # state maintenance is unnecessary during training forward call
+        # to get state, use .predict() method.
+        if self._rnnt_export:
+            add_sos = False
+        else:
+            add_sos = True
+
+        g, state = self.predict(y, state=states, add_sos=add_sos)  # (B, U, D)
+        g = g.transpose(1, 2)  # (B, D, U)
+
+        return g, target_length, state
+
+    def predict(
+        self,
+        y: Optional[torch.Tensor] = None,
+        state: Optional[torch.Tensor] = None,
+        add_sos: bool = True,
+        batch_size: Optional[int] = None,
+    ) -> (torch.Tensor, List[torch.Tensor]):
+        """
+        Stateful prediction of scores and state for a tokenset.
+
+        Here:
+        B - batch size
+        U - label length
+        C - context size for stateless decoder
+        D - total embedding size
+
+        Args:
+            y: Optional torch tensor of shape [B, U] of dtype long which will be passed to the Embedding.
+                If None, creates a zero tensor of shape [B, 1, D] which mimics output of pad-token on Embedding.
+
+            state: An optional one-element list of one tensor. The tensor is used to store previous context labels.
+                The tensor uses type long and is of shape [B, C].
+
+            add_sos: bool flag, whether a zero vector describing a "start of signal" token should be
+                prepended to the above "y" tensor. When set, output size is (B, U + 1, D).
+
+            batch_size: An optional int, specifying the batch size of the `y` tensor.
+                Can be infered if `y` and `state` is None. But if both are None, then batch_size cannot be None.
+
+        Returns:
+            A tuple  (g, state) such that -
+
+            If add_sos is False:
+                g: (B, U, D)
+                state: [(B, C)] storing the history context including the new words in y.
+
+            If add_sos is True:
+                g: (B, U + 1, D)
+                state: [(B, C)] storing the history context including the new words in y.
+
+        """
+        # Get device and dtype of current module
+        _p = next(self.parameters())
+        device = _p.device
+        dtype = _p.dtype
+
+        # If y is not None, it is of shape [B, U] with dtype long.
+        if y is not None:
+            if y.device != device:
+                y = y.to(device)
+
+            y, state = self.prediction(y, state)
+
+        else:
+            # Y is not provided, assume zero tensor with shape [B, 1, D] is required
+            # Emulates output of embedding of pad token.
+            if batch_size is None:
+                B = 1 if state is None else state[0].size(1)
+            else:
+                B = batch_size
+
+            y = torch.zeros((B, 1, self.pred_hidden), device=device, dtype=dtype)
+
+        # Prepend blank "start of sequence" symbol (zero tensor)
+        if add_sos:
+            B, U, D = y.shape
+            start = torch.zeros((B, 1, D), device=y.device, dtype=y.dtype)
+            y = torch.cat([start, y], dim=1).contiguous()  # (B, U + 1, D)
+        else:
+            start = None  # makes del call later easier
+
+        del start
+        return y, state
+
+    def _predict_modules(self, **kwargs):
+        """
+        Prepare the trainable parameters of the Prediction Network.
+
+        Args:
+            vocab_size: Vocab size (excluding the blank token).
+            pred_n_hidden: Hidden size of the RNNs.
+            norm: Type of normalization to perform in RNN.
+            dropout: Whether to apply dropout to RNN.
+        """
+
+        net = stateless_net.StatelessNet(**kwargs)
+        return net
+
+    def score_hypothesis(
+        self, hypothesis: rnnt_utils.Hypothesis, cache: Dict[Tuple[int], Any]
+    ) -> (torch.Tensor, List[torch.Tensor], torch.Tensor):
+        """
+        Similar to the predict() method, instead this method scores a Hypothesis during beam search.
+        Hypothesis is a dataclass representing one hypothesis in a Beam Search.
+
+        Args:
+            hypothesis: Refer to rnnt_utils.Hypothesis.
+            cache: Dict which contains a cache to avoid duplicate computations.
+
+        Returns:
+            Returns a tuple (y, states, lm_token) such that:
+            y is a torch.Tensor of shape [1, 1, H] representing the score of the last token in the Hypothesis.
+            state is a list of RNN states, each of shape [L, 1, H].
+            lm_token is the final integer token of the hypothesis.
+        """
+        if hypothesis.dec_state is not None:
+            device = hypothesis.dec_state[0].device
+        else:
+            _p = next(self.parameters())
+            device = _p.device
+
+        # parse "blank" tokens in hypothesis
+        if len(hypothesis.y_sequence) > 0 and hypothesis.y_sequence[-1] == self.blank_idx:
+            blank_state = True
+        else:
+            blank_state = False
+
+        # Convert last token of hypothesis to torch.Tensor
+        target = torch.full([1, 1], fill_value=hypothesis.y_sequence[-1], device=device, dtype=torch.long)
+        lm_token = target[:, -1]  # [1]
+
+        # Convert current hypothesis into a tuple to preserve in cache
+        sequence = tuple(hypothesis.y_sequence)
+
+        if sequence in cache:
+            y, new_state = cache[sequence]
+        else:
+            # Obtain score for target token and new states
+            if blank_state:
+                y, new_state = self.predict(None, state=None, add_sos=False, batch_size=1)  # [1, 1, H]
+
+            else:
+                y, new_state = self.predict(
+                    target, state=hypothesis.dec_state, add_sos=False, batch_size=1
+                )  # [1, 1, H]
+
+            y = y[:, -1:, :]  # Extract just last state : [1, 1, H]
+            cache[sequence] = (y, new_state)
+
+        return y, new_state, lm_token
+
+    def initialize_state(self, y: torch.Tensor) -> List[torch.Tensor]:
+        batch = y.size(0)
+        state = [torch.ones([batch, self.context_size], dtype=y.dtype, device=y.device) * self.blank_idx]
+        return state
+
+    def batch_initialize_states(self, batch_states: List[torch.Tensor], decoder_states: List[List[torch.Tensor]]):
+        """
+        Create batch of decoder states.
+
+       Args:
+           batch_states (list): batch of decoder states
+              ([(B, H)])
+
+           decoder_states (list of list): list of decoder states
+               [B x ([(1, C)]]
+
+       Returns:
+           batch_states (tuple): batch of decoder states
+               ([(B, C)])
+       """
+        new_state = torch.stack([s[0] for s in decoder_states])
+
+        return [new_state]
+
+    def batch_select_state(self, batch_states: List[torch.Tensor], idx: int) -> List[List[torch.Tensor]]:
+        """Get decoder state from batch of states, for given id.
+
+        Args:
+            batch_states (list): batch of decoder states
+                [(B, C)]
+
+            idx (int): index to extract state from batch of states
+
+        Returns:
+            (tuple): decoder states for given id
+                [(C)]
+        """
+        if batch_states is not None:
+            states = batch_states[0][idx]
+            states = (
+                states.long()
+            )  # beam search code assumes the batch_states tensor is always of float type, so need conversion
+            return [states]
+        else:
+            return None
+
+    def batch_concat_states(self, batch_states: List[List[torch.Tensor]]) -> List[torch.Tensor]:
+        """Concatenate a batch of decoder state to a packed state.
+
+        Args:
+            batch_states (list): batch of decoder states
+                B x ([(C)]
+
+        Returns:
+            (tuple): decoder states
+                [(B x C)]
+        """
+        state_list = []
+        batch_list = []
+        for sample_id in range(len(batch_states)):
+            tensor = torch.stack(batch_states[sample_id])  # [1, H]
+            batch_list.append(tensor)
+
+        state_tensor = torch.cat(batch_list, 0)  # [B, H]
+        state_list.append(state_tensor)
+
+        return state_list
+
+    def batch_copy_states(
+        self,
+        old_states: List[torch.Tensor],
+        new_states: List[torch.Tensor],
+        ids: List[int],
+        value: Optional[float] = None,
+    ) -> List[torch.Tensor]:
+        """Copy states from new state to old state at certain indices.
+
+        Args:
+            old_states: packed decoder states
+                single element list of (B x C)
+
+            new_states: packed decoder states
+                single element list of (B x C)
+
+            ids (list): List of indices to copy states at.
+
+            value (optional float): If a value should be copied instead of a state slice, a float should be provided
+
+        Returns:
+            batch of decoder states with partial copy at ids (or a specific value).
+                (B x C)
+        """
+
+        if value is None:
+            old_states[0][ids, :] = new_states[0][ids, :]
+
+        return old_states
+
+    def batch_score_hypothesis(
+        self, hypotheses: List[rnnt_utils.Hypothesis], cache: Dict[Tuple[int], Any], batch_states: List[torch.Tensor]
+    ) -> (torch.Tensor, List[torch.Tensor], torch.Tensor):
+        """
+        Used for batched beam search algorithms. Similar to score_hypothesis method.
+
+        Args:
+            hypothesis: List of Hypotheses. Refer to rnnt_utils.Hypothesis.
+            cache: Dict which contains a cache to avoid duplicate computations.
+            batch_states: List of torch.Tensor which represent the states of the RNN for this batch.
+                Each state is of shape [L, B, H]
+
+        Returns:
+            Returns a tuple (b_y, b_states, lm_tokens) such that:
+            b_y is a torch.Tensor of shape [B, 1, H] representing the scores of the last tokens in the Hypotheses.
+            b_state is a list of list of RNN states, each of shape [L, B, H].
+                Represented as B x List[states].
+            lm_token is a list of the final integer tokens of the hypotheses in the batch.
+        """
+        final_batch = len(hypotheses)
+        if final_batch == 0:
+            raise ValueError("No hypotheses was provided for the batch!")
+
+        _p = next(self.parameters())
+        device = _p.device
+        dtype = _p.dtype
+
+        tokens = []
+        process = []
+        done = [None for _ in range(final_batch)]
+
+        # For each hypothesis, cache the last token of the sequence and the current states
+        for i, hyp in enumerate(hypotheses):
+            sequence = tuple(hyp.y_sequence)
+
+            if sequence in cache:
+                done[i] = cache[sequence]
+            else:
+                tokens.append(hyp.y_sequence[-1])
+                process.append((sequence, hyp.dec_state))
+
+        if process:
+            batch = len(process)
+
+            # convert list of tokens to torch.Tensor, then reshape.
+            tokens = torch.tensor(tokens, device=device, dtype=torch.long).view(batch, -1)
+            dec_states = self.initialize_state(tokens)  # [B, C]
+            dec_states = self.batch_initialize_states(dec_states, [d_state for seq, d_state in process])
+
+            y, dec_states = self.predict(
+                tokens, state=dec_states, add_sos=False, batch_size=batch
+            )  # [B, 1, H], List([L, 1, H])
+
+            dec_states = tuple(state.to(dtype=dtype) for state in dec_states)
+
+        # Update done states and cache shared by entire batch.
+        j = 0
+        for i in range(final_batch):
+            if done[i] is None:
+                # Select sample's state from the batch state list
+                new_state = self.batch_select_state(dec_states, j)
+
+                # Cache [1, H] scores of the current y_j, and its corresponding state
+                done[i] = (y[j], new_state)
+                cache[process[j][0]] = (y[j], new_state)
+
+                j += 1
+
+        # Set the incoming batch states with the new states obtained from `done`.
+        batch_states = self.batch_initialize_states(batch_states, [d_state for y_j, d_state in done])
+
+        # Create batch of all output scores
+        # List[1, 1, H] -> [B, 1, H]
+        batch_y = torch.stack([y_j for y_j, d_state in done])
+
+        # Extract the last tokens from all hypotheses and convert to a tensor
+        lm_tokens = torch.tensor([h.y_sequence[-1] for h in hypotheses], device=device, dtype=torch.long).view(
+            final_batch
+        )
+
+        return batch_y, batch_states, lm_tokens
 
 
 class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMixin):

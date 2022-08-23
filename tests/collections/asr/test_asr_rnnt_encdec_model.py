@@ -18,7 +18,7 @@ import torch
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.models import EncDecRNNTModel
-from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint
+from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint, StatelessTransducerDecoder
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
 from nemo.collections.asr.parts.utils import rnnt_utils
@@ -316,6 +316,115 @@ class TestEncDecRNNTModel:
 
         with torch.no_grad():
             _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "greedy_class", [greedy_decode.GreedyRNNTInfer],
+    )
+    def test_greedy_multi_decoding(self, greedy_class):
+        token_list = [" ", "a", "b", "c"]
+        vocab_size = len(token_list)
+
+        encoder_output_size = 4
+        decoder_output_size = 4
+        joint_output_shape = 4
+
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        jointnet_cfg = {
+            'encoder_hidden': encoder_output_size,
+            'pred_hidden': decoder_output_size,
+            'joint_hidden': joint_output_shape,
+            'activation': 'relu',
+        }
+
+        decoder = RNNTDecoder(prednet_cfg, vocab_size)
+        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+
+        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+
+        # (B, D, T)
+        enc_out = torch.randn(1, encoder_output_size, 30)
+        enc_len = torch.tensor([30], dtype=torch.int32)
+
+        with torch.no_grad():
+            (partial_hyp) = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+            partial_hyp = partial_hyp[0]
+            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+    )
+    def test_greedy_decoding_stateless_decoder(self, greedy_class):
+        token_list = [" ", "a", "b", "c"]
+        vocab_size = len(token_list)
+
+        encoder_output_size = 4
+        decoder_output_size = 4
+        joint_output_shape = 4
+
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        jointnet_cfg = {
+            'encoder_hidden': encoder_output_size,
+            'pred_hidden': decoder_output_size,
+            'joint_hidden': joint_output_shape,
+            'activation': 'relu',
+        }
+
+        decoder = StatelessTransducerDecoder(prednet_cfg, vocab_size)
+        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+
+        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+
+        # (B, D, T)
+        enc_out = torch.randn(1, encoder_output_size, 30)
+        enc_len = torch.tensor([30], dtype=torch.int32)
+
+        with torch.no_grad():
+            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "greedy_class", [greedy_decode.GreedyRNNTInfer],
+    )
+    def test_greedy_multi_decoding_stateless_decoder(self, greedy_class):
+        token_list = [" ", "a", "b", "c"]
+        vocab_size = len(token_list)
+
+        encoder_output_size = 4
+        decoder_output_size = 4
+        joint_output_shape = 4
+
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        jointnet_cfg = {
+            'encoder_hidden': encoder_output_size,
+            'pred_hidden': decoder_output_size,
+            'joint_hidden': joint_output_shape,
+            'activation': 'relu',
+        }
+
+        decoder = StatelessTransducerDecoder(prednet_cfg, vocab_size)
+        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+
+        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+
+        # (B, D, T)
+        enc_out = torch.randn(1, encoder_output_size, 30)
+        enc_len = torch.tensor([30], dtype=torch.int32)
+
+        with torch.no_grad():
+            (partial_hyp) = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+            partial_hyp = partial_hyp[0]
+            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',

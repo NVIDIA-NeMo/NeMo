@@ -287,7 +287,11 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
 
         if partial_hypotheses is not None:
             hypothesis.last_token = partial_hypotheses.last_token
-            hypothesis.y_sequence = partial_hypotheses.y_sequence.cpu().tolist()
+            hypothesis.y_sequence = (
+                partial_hypotheses.y_sequence.cpu().tolist()
+                if isinstance(partial_hypotheses.y_sequence, torch.Tensor)
+                else partial_hypotheses.y_sequence
+            )
             if partial_hypotheses.dec_state is not None:
                 hypothesis.dec_state = self.decoder.batch_concat_states([partial_hypotheses.dec_state])
                 hypothesis.dec_state = _states_to_device(hypothesis.dec_state, x.device)

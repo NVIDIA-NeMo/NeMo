@@ -47,8 +47,8 @@ from nemo.utils import logging, model_utils
 @dataclass
 class G2PConfig:
     _target_: str = "nemo.collections.common.tokenizers.text_to_speech.g2ps.EnglishG2p"
-    phoneme_dict: str = "scripts/tts_dataset_files/cmudict-0.7b_nv22.07"
-    heteronyms: str = "scripts/tts_dataset_files/heteronyms-030921"
+    phoneme_dict: str = "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
+    heteronyms: str = "scripts/tts_dataset_files/heteronyms-052722"
     phoneme_probability: float = 0.5
 
 
@@ -509,6 +509,8 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             List of available pre-trained models.
         """
         list_of_models = []
+
+        # en-US, single speaker, 22050Hz, LJSpeech.
         model = PretrainedModelInfo(
             pretrained_model_name="tts_en_fastpitch",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/1.8.1/files/tts_en_fastpitch_align.nemo",
@@ -517,10 +519,29 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         )
         list_of_models.append(model)
 
+        # en-US, multi-speaker, 44100Hz, HiFiTTS.
         model = PretrainedModelInfo(
             pretrained_model_name="tts_en_fastpitch_multispeaker",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_multispeaker_fastpitchhifigan/versions/1.10.0/files/tts_en_fastpitch_multispeaker.nemo",
             description="This model is trained on HiFITTS sampled at 44100Hz with and can be used to generate male and female English voices with an American accent.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
+        # de-DE, single speaker, 22050 Hz, OpenSLR Neutral German Dataset.
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_de_fastpitch_singlespeaker",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_de_fastpitchhifigan/versions/1.10.0/files/tts_de_fastpitch_align.nemo",
+            description="This model is trained on a single male speaker data in OpenSLR Neutral German Dataset sampled at 22050Hz and can be used to generate male German voices.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
+        # de-DE, multi-speaker, 5 speakers, 44100 Hz, HUI-Audio-Corpus-German Clean.
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_de_fastpitch_multispeaker_5",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_de_fastpitch_multispeaker_5/versions/1.11.0/files/tts_de_fastpitch_multispeaker_5.nemo",
+            description="This model is trained on 5 speakers in HUI-Audio-Corpus-German clean subset sampled at 44100Hz with and can be used to generate male and female German voices.",
             class_=cls,
         )
         list_of_models.append(model)
@@ -538,9 +559,9 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             "text": NeuralType(tensor_shape, TokenIndex()),
             "pitch": NeuralType(tensor_shape, RegressionValuesType()),
             "pace": NeuralType(tensor_shape),
-            "speaker": NeuralType(('B'), Index(), optional=True),
             "volume": NeuralType(tensor_shape, optional=True),
             "batch_lengths": NeuralType(('B'), optional=True),
+            "speaker": NeuralType(('B'), Index(), optional=True),
         }
         self._output_types = {
             "spect": NeuralType(('B', 'D', 'T'), MelSpectrogramType()),
@@ -582,7 +603,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             A tuple of input examples.
         """
         par = next(self.fastpitch.parameters())
-        sz = (max_batch * max_dim) if self.export_config["enable_ragged_batches"] else (max_batch, max_dim)
+        sz = (max_batch * max_dim,) if self.export_config["enable_ragged_batches"] else (max_batch, max_dim)
         inp = torch.randint(
             0, self.fastpitch.encoder.word_emb.num_embeddings, sz, device=par.device, dtype=torch.int64
         )
@@ -596,7 +617,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             inputs['volume'] = volume
         if self.export_config["enable_ragged_batches"]:
             batch_lengths = torch.zeros((max_batch + 1), device=par.device, dtype=torch.int32)
-            left_over_size = sz
+            left_over_size = sz[0]
             batch_lengths[0] = 0
             for i in range(1, max_batch):
                 length = torch.randint(1, left_over_size - (max_batch - i), (1,), device=par.device)
@@ -609,7 +630,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             while index < len(batch_lengths):
                 sum += batch_lengths[index] - batch_lengths[index - 1]
                 index += 1
-            assert sum == sz, f"sum: {sum}, sz: {sz}, lengths:{batch_lengths}"
+            assert sum == sz[0], f"sum: {sum}, sz: {sz[0]}, lengths:{batch_lengths}"
             inputs['batch_lengths'] = batch_lengths
 
         if self.fastpitch.speaker_emb is not None:
@@ -622,7 +643,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
     def forward_for_export(self, text, pitch, pace, volume=None, batch_lengths=None, speaker=None):
         if self.export_config["enable_ragged_batches"]:
             text, pitch, pace, volume_tensor = create_batch(
-                text, pitch, pace, volume, batch_lengths, padding_idx=self.fastpitch.encoder.padding_idx
+                text, pitch, pace, batch_lengths, padding_idx=self.fastpitch.encoder.padding_idx, volume=volume
             )
             if volume is not None:
                 volume = volume_tensor

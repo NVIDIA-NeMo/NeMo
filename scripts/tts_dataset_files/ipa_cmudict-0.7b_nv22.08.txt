@@ -57581,7 +57581,7 @@ HURRAY  həˈɹeɪ
 HURRELL  ˈhɔɹəɫ
 HURRI  ˈhɝi
 HURRICANE  ˈhɝəˌkeɪn
-HURRICANE  ˈhəɹəˌkeɪnz
+HURRICANE  ˈhəɹəˌkeɪn
 HURRICANE'S  ˈhɝəˌkeɪnz
 HURRICANES  ˈhɝəˌkeɪnz
 HURRIED  ˈhɝid
@@ -77809,7 +77809,8 @@ MERCEDESES  ˌmɝˈseɪˌdiz
 MERCENARIES  ˈmɝsəˌnɛɹiz
 MERCENARY  ˈmɝsəˌnɛɹi
 MERCER  ˈmɝsɝ
-MERCHANDISE  ˈmɝtʃənˌdaɪz
+MERCHANDISE  ˈmɝtʃənˌdaɪs
+MERCHANDISE(1)  ˈmɝtʃənˌdaɪz
 MERCHANDISER  ˈmɝtʃənˌdaɪzɝ
 MERCHANDISERS  ˈmɝtʃənˌdaɪzɝz
 MERCHANDISING  ˈmɝtʃənˌdaɪzɪŋ

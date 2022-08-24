@@ -380,6 +380,28 @@ class HifiGanModel(Vocoder, Exportable):
         )
         list_of_models.append(model)
 
+        # de-DE, single speaker, 22050 Hz, OpenSLR Neutral German Dataset.
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_de_slr_hifigan_ft_fastpitch_singlespeaker",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_de_fastpitchhifigan/versions/1.10.0/files/tts_de_hifigan.nemo",
+            description="This model is finetuned from the HiFiGAN pretrained checkpoint `tts_hifigan` "
+            "by the mel-spectrograms generated from the FastPitch checkpoint `tts_de_fastpitch_singlespeaker`. This model "
+            "has been tested on generating male German voices.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
+        # de-DE, multi-speaker, 5 speakers, 44100 Hz, HUI-Audio-Corpus-German Clean.
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_de_hui_hifigan_ft_fastpitch_multispeaker_5",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_de_fastpitch_multispeaker_5/versions/1.11.0/files/tts_de_hui_hifigan_ft_fastpitch_multispeaker_5.nemo",
+            description="This model is finetuned from the HiFiGAN pretrained checkpoint `tts_en_hifitts_hifigan_ft_fastpitch` "
+            "by the mel-spectrograms generated from the FastPitch checkpoint `tts_de_fastpitch_multispeaker_5`. This model "
+            "has been tested on generating male and female German voices.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
         return list_of_models
 
     def load_state_dict(self, state_dict, strict=True):

@@ -24,7 +24,7 @@ dataset:
   trim: false
   pitch_fmin: 65.40639132514966
   pitch_fmax: 2093.004522404789
-  use_beta_binomial_interpolator: true
+  use_beta_binomial_interpolator: false
 
   text_normalizer:
     _target_: nemo_text_processing.text_normalization.normalize.Normalizer
@@ -42,7 +42,6 @@ dataset:
     punct: true
     apostrophe: true
     pad_with_space: true
-    phonemes: true
 
 dataloader_params:
   num_workers: 12

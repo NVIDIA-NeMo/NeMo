@@ -410,7 +410,11 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
             # When pipeline parallel > 1 we need to make sure encoder exist (will be missing in decoder)
             if enc_output is None and self.enc_dec_model.encoder is not None:
                 enc_output = self.enc_dec_model.encode(
-                    enc_input=enc_input, enc_attn_mask=enc_attn_mask, enc_layer_past=None, enc_get_key_value=False,
+                    enc_input=enc_input,
+                    enc_attn_mask=enc_attn_mask,
+                    enc_layer_past=None,
+                    enc_get_key_value=False,
+                    enc_self_attention_relative_position_bias=encoder_self_attention_relative_position_bias,
                 )
             else:
                 enc_output = self.enc_dec_model.encoder_hidden_state

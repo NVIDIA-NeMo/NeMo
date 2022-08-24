@@ -69,7 +69,10 @@ CFG_NAME2FUNC = {
 def main(cfg):
     dataset = instantiate(cfg.dataset)
     dataloader = torch.utils.data.DataLoader(
-        dataset=dataset, batch_size=1, collate_fn=dataset._collate_fn, num_workers=cfg.dataloader_params.num_workers
+        dataset=dataset,
+        batch_size=1,
+        collate_fn=dataset._collate_fn,
+        num_workers=cfg.get("dataloader_params", {}).get("num_workers", 4),
     )
 
     print(f"Processing {cfg.manifest_filepath}:")

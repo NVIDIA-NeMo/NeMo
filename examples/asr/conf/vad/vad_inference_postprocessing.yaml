@@ -14,20 +14,20 @@ prepare_manifest:
     
     
 vad:
-    model_path: "vad_marblenet" #.nemo local model path or pretrained model name or none
-    parameters: # Tuned parameter for CH109! (with 11 moved multi-speech sessions as dev set) 
+    model_path: "vad_multilingual_marblenet" #.nemo local model path or pretrained model name or none
+    parameters: # Parameters were tuned on 0~20db SNR noisy and clean multilingual ASR data.  
       normalize_audio: False
-      window_length_in_sec: 0.15  # window length in sec for VAD context input 
-      shift_length_in_sec: 0.01 # shift length in sec for generate frame level VAD prediction
-      smoothing: "median" # false or type of smoothing method (eg: median)
-      overlap: 0.875 # overlap ratio for overlapped mean/median smoothing filter
-      postprocessing:
-        onset: 0.4 # onset threshold for detecting the beginning and end of a speech 
-        offset: 0.7 # offset threshold for detecting the end of a speech. 
-        pad_onset: 0.05 # adding durations before each speech segment 
-        pad_offset: -0.1 # adding durations after each speech segment 
-        min_duration_on: 0.2 # threshold for small non_speech deletion
-        min_duration_off: 0.2 # threshold for short speech segment deletion
+      window_length_in_sec: 0.63  # window length in sec for VAD context input 
+      shift_length_in_sec: 0.08 # shift length in sec for generate frame level VAD prediction, Here we use 0.08 for faster inferene
+      smoothing: False # false or type of smoothing method (eg: median, mean)
+      overlap: 0.875 # overlap ratio for overlapped mean/median smoothing filter. If smoothing=False, ignore this value.
+      postprocessing: 
+        onset: 0.5 # onset threshold for detecting the beginning and end of a speech 
+        offset: 0.3 # offset threshold for detecting the end of a speech. 
+        pad_onset: 0.2 # adding durations before each speech segment 
+        pad_offset: 0.2 # adding durations after each speech segment 
+        min_duration_on: 0.5 # threshold for small non_speech deletion
+        min_duration_off: 0.5 # threshold for short speech segment deletion
         filter_speech_first: True 
           
 prepared_manifest_vad_input: null # if not specify, it will automatically generated be "manifest_vad_input.json"

@@ -11,7 +11,7 @@ Load VAD model
 
 .. code-block:: bash
 
-  pretrained_vad_model='/path/to/vad_marblenet.nemo' # local .nemo or pretrained vad model name
+  pretrained_vad_model='/path/to/vad_multilingual_marblenet.nemo' # local .nemo or pretrained vad model name
   ...
   # pass with hydra config
   config.diarizer.vad.model_path=pretrained_vad_model
@@ -58,7 +58,7 @@ In general, you can load models with model name in the following format,
 
 .. code-block:: python
 
-  pretrained_vad_model='vad_telephony_marblenet' 
+  pretrained_vad_model='vad_multilingual_marblenet' 
   pretrained_speaker_model='titanet_large' 
   ...
   config.diarizer.vad.model_path=retrained_vad_model \

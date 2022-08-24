@@ -387,4 +387,11 @@ class DuplexTaggerModel(NLPModel):
                 description="Text Normalization model's tagger model.",
             )
         )
+        result.append(
+            PretrainedModelInfo(
+                pretrained_model_name="itn_en_t5",
+                location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/itn_en_t5/versions/1.11.0/files/itn_en_t5_tagger.nemo",
+                description="English Inverse Text Normalization model's tagger model.",
+            )
+        )
         return result

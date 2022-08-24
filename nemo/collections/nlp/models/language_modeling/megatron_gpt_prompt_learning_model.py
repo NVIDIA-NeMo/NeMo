@@ -686,7 +686,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
     def setup_training_data(self, training_data_config=None):
         if self.cfg.data.get('train_ds', None):
             self._train_ds, self._train_dl = self.build_virtual_prompt_dataset(
-                dataset_paths=self.cfg.data.train_ds,
+                data=self.cfg.data.train_ds,
                 batch_size=self.cfg.global_batch_size,
                 max_seq_length=self.frozen_model.cfg.encoder_seq_length,
                 min_seq_length=self.cfg.data.get('min_seq_length', 1),
@@ -702,7 +702,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
     def setup_validation_data(self, validation_data_config=None):
         if self.cfg.data.get('validation_ds', None):
             self._validation_ds, self._validation_dl = self.build_virtual_prompt_dataset(
-                dataset_paths=self.cfg.data.validation_ds,
+                data=self.cfg.data.validation_ds,
                 batch_size=self.cfg.global_batch_size,
                 max_seq_length=self.frozen_model.cfg.encoder_seq_length,
                 min_seq_length=self.cfg.data.get('min_seq_length', 1),
@@ -718,7 +718,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
     def setup_test_data(self, test_data_config=None):
         if self.cfg.data.get('test_ds', None):
             self._test_ds, self._test_dl = self.build_virtual_prompt_dataset(
-                dataset_paths=self.cfg.data.test_ds,
+                data=self.cfg.data.test_ds,
                 batch_size=self.cfg.global_batch_size,
                 max_seq_length=self.frozen_model.cfg.encoder_seq_length,
                 min_seq_length=self.cfg.data.get('min_seq_length', 1),
@@ -733,7 +733,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
 
     def build_virtual_prompt_dataset(
         self,
-        dataset_paths,
+        data,
         batch_size=None,
         max_seq_length=2048,
         min_seq_length=1,
@@ -748,7 +748,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         get_dataset_only=False,
     ):
         dataset = GPTPromptLearningDataset(
-            dataset_paths=dataset_paths,
+            data=data,
             tokenizer=self.tokenizer,
             virtual_prompt_source=self.virtual_prompt_source,
             task_templates=self.task_templates,
@@ -885,9 +885,14 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
 
         max_input_length = self.frozen_model.cfg.encoder_seq_length - length_params["max_length"]
 
-        dataset_paths = [path["data_path"] for path in inputs]
+        # input dicts are either dataset paths or already loaded example dicts
+        if "taskname" not in inputs[0].keys():
+            data = [path["data_path"] for path in inputs]
+        else:
+            data = inputs
+
         dataset = self.build_virtual_prompt_dataset(
-            dataset_paths=dataset_paths,
+            data=data,
             max_seq_length=max_input_length,
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=sampling_params["add_BOS"],

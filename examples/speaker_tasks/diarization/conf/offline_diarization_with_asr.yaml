@@ -19,12 +19,12 @@ diarizer:
       window_length_in_sec: 0.15  # Window length in sec for VAD context input 
       shift_length_in_sec: 0.01 # Shift length in sec for generate frame level VAD prediction
       smoothing: "median" # False or type of smoothing method (eg: median)
-      overlap: 0.875 # Overlap ratio for overlapped mean/median smoothing filter
-      onset: 0.4 # Onset threshold for detecting the beginning and end of a speech 
-      offset: 0.7 # Offset threshold for detecting the end of a speech
-      pad_onset: 0.05 # Adding durations before each speech segment 
-      pad_offset: -0.1 # Adding durations after each speech segment 
-      min_duration_on: 0.2 # Threshold for small non_speech deletion
+      overlap: 0.5 # Overlap ratio for overlapped mean/median smoothing filter
+      onset: 0.1 # Onset threshold for detecting the beginning and end of a speech 
+      offset: 0.1 # Offset threshold for detecting the end of a speech
+      pad_onset: 0.1 # Adding durations before each speech segment 
+      pad_offset: 0 # Adding durations after each speech segment 
+      min_duration_on: 0 # Threshold for small non_speech deletion
       min_duration_off: 0.2 # Threshold for short speech segment deletion
       filter_speech_first: True 
 

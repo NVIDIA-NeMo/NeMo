@@ -75,7 +75,9 @@ def transcribe_partial_audio(
                     hypotheses.append(lg.cpu().numpy())
             else:
                 current_hypotheses, _ = asr_model._wer.decoding.ctc_decoder_predictions_tensor(
-                    greedy_predictions, predictions_len=logits_len, return_hypotheses=return_hypotheses,
+                    decoder_outputs=greedy_predictions,
+                    decoder_lengths=logits_len,
+                    return_hypotheses=return_hypotheses,
                 )
 
                 if return_hypotheses:

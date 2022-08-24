@@ -17,6 +17,7 @@ Documentation section for speaker related tasks can be found at:
 - [speakerverification_speakernet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/speakerverification_speakernet)
 
 ## Supported Pretrained VAD models
+- [vad_multilingual_marblenet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_multilingual_marblenet)
 - [vad_marblenet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_marblenet)
 - [vad_telephony_marblenet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_telephony_marblenet)
 
@@ -90,14 +91,14 @@ You could also download *.nemo files from [this link](https://ngc.nvidia.com/cat
  
 - **`diarizer.vad.model_path`: voice activity detection modle name or path to the model**
 
-Specify the name of VAD model, then the script will download the model from NGC. Currently, we have 'vad_marblenet' and  'vad_telephony_marblenet' as options for VAD models.
+Specify the name of VAD model, then the script will download the model from NGC. Currently, we have 'vad_multilingual_marblenet', 'vad_marblenet' and  'vad_telephony_marblenet' as options for VAD models.
 
-`diarizer.vad.model_path='vad_telephony_marblenet'`
+`diarizer.vad.model_path='vad_multilingual_marblenet'`
 
 
-Instead, you can also download the model from [vad_marblenet](https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_marblenet) and [vad_telephony_marblenet](https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_telephony_marblenet) and specify the full path name to the model as below.
+Instead, you can also download the model from [vad_multilingual_marblenet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_multilingual_marblenet), [vad_marblenet](https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_marblenet) and [vad_telephony_marblenet](https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_telephony_marblenet) and specify the full path name to the model as below.
 
-`diarizer.vad.model_path='path/to/vad_telephony_marblenet.nemo'`
+`diarizer.vad.model_path='path/to/vad_multilingual_marblenet.nemo'`
 
 - **`diarizer.speaker_embeddings.parameters.multiscale_weights`: multiscale diarization (Experimental)**
 

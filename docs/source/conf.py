@@ -58,6 +58,7 @@ autodoc_mock_imports = [
     'joblib',
     'IPython',
     'ipadic',
+    'psutil',
 ]
 
 _skipped_autodoc_mock_imports = ['wrapt', 'numpy']

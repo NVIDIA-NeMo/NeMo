@@ -29,7 +29,7 @@ def get_prompt_tuning_dataset(
     dataset_path, tokenizer, virtual_prompt_source, task_templates, pseudo_tokens,
 ):
     dataset = GPTPromptLearningDataset(
-        dataset_paths=[dataset_path],
+        data=[dataset_path],
         tokenizer=tokenizer,
         virtual_prompt_source=virtual_prompt_source,
         task_templates=task_templates,

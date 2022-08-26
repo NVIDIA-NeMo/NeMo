@@ -693,11 +693,14 @@ def sample_sequence_batch(
 
                 # Replace special soft prompt token ids with unk token ids
                 if isinstance(model, MegatronGPTPromptLearningModel):
-                    pseudo_token_ids_start = model.pseudo_token_ids_start
-                    new_tokens[(new_tokens >= pseudo_token_ids_start)] = tokenizer.unk_id
-                    tokens[:, :context_length][
-                        (tokens[:, :context_length] >= pseudo_token_ids_start)
-                    ] = tokenizer.unk_id
+                    if (
+                        model.pseudo_token_ids_start is not None
+                    ):  # TODO: (@adithyare) prompt learning logic can be greatly simplified by removing data preparation logic from model logic.
+                        pseudo_token_ids_start = model.pseudo_token_ids_start
+                        new_tokens[(new_tokens >= pseudo_token_ids_start)] = tokenizer.unk_id
+                        tokens[:, :context_length][
+                            (tokens[:, :context_length] >= pseudo_token_ids_start)
+                        ] = tokenizer.unk_id
 
                 # Insert either new predicted or next prompt token
                 tokens[:, context_length] = new_tokens

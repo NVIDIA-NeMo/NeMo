@@ -35,6 +35,7 @@ from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.rotary_pos_embedding import apply_rotary_pos_emb
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, attention_mask_func, erf_gelu
+from nemo.core import adapter_mixins
 from nemo.utils import logging
 
 try:
@@ -1032,7 +1033,7 @@ def get_dropout_add(training):
     return _dropout_add
 
 
-class ParallelTransformerLayer_(MegatronModule):
+class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixin):
     """A single transformer layer.
 
     Transformer layer takes input with size [s, b, h] and returns an
@@ -1393,6 +1394,13 @@ class ParallelTransformerLayer_(MegatronModule):
 
             layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
 
+            if self.is_adapter_available():  # TODO: (@adithyre) need to find the correct place for this adapter
+                adapter_1 = self.adapter_layer['adapter_1']
+                strategy = adapter_1.adapter_strategy
+                layernorm_input = self.forward_single_enabled_adapter_(
+                    layernorm_input, adapter_1, adapter_name='adapter_1', adapter_strategy=strategy
+                )
+
             # Post-LN normalization after residual
             if self.transformer_block_type == 'post_ln':
                 normalization_output = self.input_layernorm(layernorm_input)
@@ -1456,6 +1464,12 @@ class ParallelTransformerLayer_(MegatronModule):
         # MLP.
         mlp_output, mlp_bias = self.mlp(normalization_output)
 
+        if self.is_adapter_available():  # TODO: (@adithyre) need to find the correct place for this adapter
+            adapter_2 = self.adapter_layer['adapter_2']
+            strategy = adapter_2.adapter_strategy
+            mlp_output = self.forward_single_enabled_adapter_(
+                mlp_output, adapter_2, adapter_name='adapter_2', adapter_strategy=strategy
+            )
         residual = layernorm_input
 
         bias_dropout_add_func = self._get_bias_droput_add_func(

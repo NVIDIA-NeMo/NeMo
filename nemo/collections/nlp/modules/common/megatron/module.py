@@ -88,6 +88,30 @@ class MegatronModule(torch.nn.Module):
             # We only need position embeddings on the encoder and decoder first stages where pre_process=True
             raise ValueError(f"Pre_process is False, there is no position embedding on this rank.")
 
+    def encoder_relative_position_embeddings_weight(self):
+        if hasattr(self, 'encoder_relative_position_embedding'):
+            return self.encoder_relative_position_embedding.relative_position_embedding.weight
+        else:
+            raise ValueError(
+                f"No encoder_relative_position_embedding found on this rank. Looking for encoder_relative_position_embedding.relative_position_embedding.weight"
+            )
+
+    def decoder_relative_position_embeddings_weight(self):
+        if hasattr(self, 'decoder_relative_position_embedding'):
+            return self.decoder_relative_position_embedding.relative_position_embedding.weight
+        else:
+            raise ValueError(
+                f"No decoder_relative_position_embedding found on this rank. Looking for decoder_relative_position_embedding.relative_position_embedding.weight"
+            )
+
+    def decoder_cross_attention_relative_position_embeddings_weight(self):
+        if hasattr(self, 'decoder_cross_attention_relative_position_embedding'):
+            return self.decoder_cross_attention_relative_position_embedding.relative_position_embedding.weight
+        else:
+            raise ValueError(
+                f"No decoder_cross_attention_relative_position_embedding found on this rank. Looking for decoder_cross_attention_relative_position_embedding.relative_position_embedding.weight"
+            )
+
     def initialize_word_embeddings(self, init_method, vocab_size, hidden_size):
         if not self.share_token_embeddings:
             raise Exception('initialize_word_embeddings() was called but ' 'share_token_embeddings is false')
@@ -162,6 +186,28 @@ class MegatronModule(torch.nn.Module):
             # self.language_model.embedding.cuda()
             position_embeddings = self.position_embeddings_weight()
             torch.distributed.all_reduce(position_embeddings.data, group=parallel_state.get_position_embedding_group())
+
+    def sync_initial_encoder_relative_position_embeddings(self):
+        # Ensure that all encoder RPE stages have the same weights.
+        if parallel_state.is_rank_in_encoder_relative_position_embedding_group():
+            position_embeddings = self.encoder_relative_position_embeddings_weight()
+            torch.distributed.all_reduce(
+                position_embeddings.data, group=parallel_state.get_encoder_relative_position_embedding_group()
+            )
+
+    def sync_initial_decoder_relative_position_embeddings(self):
+        if parallel_state.is_rank_in_decoder_relative_position_embedding_group():
+            position_embeddings = self.decoder_relative_position_embeddings_weight()
+            torch.distributed.all_reduce(
+                position_embeddings.data, group=parallel_state.get_decoder_relative_position_embedding_group()
+            )
+
+    def sync_initial_decoder_cross_attention_relative_position_embeddings(self):
+        if parallel_state.is_rank_in_decoder_relative_position_embedding_group():
+            position_embeddings = self.decoder_cross_attention_relative_position_embeddings_weight()
+            torch.distributed.all_reduce(
+                position_embeddings.data, group=parallel_state.get_decoder_relative_position_embedding_group()
+            )
 
 
 def conversion_helper(val, conversion):
@@ -285,3 +331,27 @@ class Float16Module(MegatronModule):
         else:
             # We only need position embeddings on the encoder and decoder first stages where pre_process=True
             raise ValueError(f"Pre_process is False, there is no position embedding on this rank.")
+
+    def encoder_relative_position_embeddings_weight(self):
+        if hasattr(self.module, 'encoder_relative_position_embedding'):
+            return self.module.encoder_relative_position_embedding.relative_position_embedding.weight
+        else:
+            raise ValueError(
+                f"No encoder_relative_position_embedding found on this rank. Looking for encoder_relative_position_embedding.relative_position_embedding.weight"
+            )
+
+    def decoder_relative_position_embeddings_weight(self):
+        if hasattr(self.module, 'decoder_relative_position_embedding'):
+            return self.module.decoder_relative_position_embedding.relative_position_embedding.weight
+        else:
+            raise ValueError(
+                f"No decoder_relative_position_embedding found on this rank. Looking for decoder_relative_position_embedding.relative_position_embedding.weight"
+            )
+
+    def decoder_cross_attention_relative_position_embeddings_weight(self):
+        if hasattr(self.module, 'decoder_cross_attention_relative_position_embedding'):
+            return self.module.decoder_cross_attention_relative_position_embedding.relative_position_embedding.weight
+        else:
+            raise ValueError(
+                f"No decoder_cross_attention_relative_position_embedding found on this rank. Looking for decoder_cross_attention_relative_position_embedding.relative_position_embedding.weight"
+            )

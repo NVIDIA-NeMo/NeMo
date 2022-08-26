@@ -420,9 +420,9 @@ class ASR_TIMESTAMPS:
 
         Returns:
             words_dict (dict):
-                Dictionary of the sequence of words from hypothesis.
+                Dictionary containing the sequence of words from hypothesis.
             word_ts_dict (dict):
-                Dictionary of the time-stamps of words.
+                Dictionary containing the time-stamps of words.
         """
         words_dict, word_ts_dict = {}, {}
 
@@ -475,15 +475,15 @@ class ASR_TIMESTAMPS:
 
         Args:
             trans (list):
-                List of character output (str).
+                List containing the character output (str).
             char_ts (list):
-                List of timestamps (int) for each character.
+                List containing the timestamps (int) for each character.
 
         Returns:
             trans (list):
-                List of the cleaned character output.
+                List containing the cleaned character output.
             char_ts (list):
-                List of the cleaned timestamps for each character.
+                List containing the cleaned timestamps for each character.
         """
         assert (len(trans) > 0) and (len(char_ts) > 0)
         assert len(trans) == len(char_ts)
@@ -504,33 +504,36 @@ class ASR_TIMESTAMPS:
 
         Args:
             trans (list):
-                List of character output (str).
+                List containing the character output (str).
             char_ts (list):
-                List of timestamps of the characters.
+                List containing the timestamps of the characters.
             time_stride (float):
                 The size of stride of the model in second.
 
         Returns:
             spaces_in_sec (list):
-                List of the ranges of spaces
+                List containing the ranges of spaces
             word_list (list):
-                List of the words from ASR inference.
+                List containing the words from ASR inference.
         """
+        blank = ' '
+        spaces_in_sec, word_list = [], []
+        stt_idx = 0
         assert (len(trans) > 0) and (len(char_ts) > 0), "Transcript and char_ts length should not be 0."
         assert len(trans) == len(char_ts), "Transcript and timestamp lengths do not match."
 
-        spaces_in_sec, word_list = [], []
-        stt_idx = 0
+        # If there is a blank, update the time stamps of the space and the word.
         for k, s in enumerate(trans):
-            if s == ' ':
+            if s == blank:
                 spaces_in_sec.append(
                     [round(char_ts[k] * time_stride, 2), round((char_ts[k + 1] - 1) * time_stride, 2)]
                 )
                 word_list.append(trans[stt_idx:k])
                 stt_idx = k + 1
-        if len(trans) > stt_idx and trans[stt_idx] != ' ':
-            word_list.append(trans[stt_idx:])
 
+        # Add the last word
+        if len(trans) > stt_idx and trans[stt_idx] != blank:
+            word_list.append(trans[stt_idx:])
         return spaces_in_sec, word_list
 
     def run_ASR_CitriNet_CTC(self, asr_model: Type[EncDecCTCModelBPE]) -> Tuple[Dict, Dict]:
@@ -543,9 +546,9 @@ class ASR_TIMESTAMPS:
 
         Returns:
             words_dict (dict):
-                Dictionary of the sequence of words from hypothesis.
+                Dictionary containing the sequence of words from hypothesis.
             word_ts_dict (dict):
-                Dictionary of the timestamps of hypothesis words.
+                Dictionary containing the timestamps of hypothesis words.
         """
         words_dict, word_ts_dict = {}, {}
 
@@ -623,9 +626,9 @@ class ASR_TIMESTAMPS:
 
         Returns:
             words_dict (dict):
-                Dictionary of the sequence of words from hypothesis.
+                Dictionary containing the sequence of words from hypothesis.
             word_ts_dict (dict):
-                Dictionary of the time-stamps of words.
+                Dictionary containing the time-stamps of words.
         """
         torch.manual_seed(0)
         torch.set_grad_enabled(False)
@@ -702,18 +705,26 @@ class ASR_TIMESTAMPS:
 
         Returns:
             word_timestamps (list):
-                List of the timestamps for the resulting words.
+                List containing the timestamps for the resulting words.
         """
+        end_stamp = min(end_stamp, (char_ts[-1] + 2))
         start_stamp_in_sec = round(char_ts[0] * self.model_stride_in_secs, 2)
         end_stamp_in_sec = round(end_stamp * self.model_stride_in_secs, 2)
-        word_timetamps_middle = [
-            [round(spaces_in_sec[k][1], 2), round(spaces_in_sec[k + 1][0], 2),] for k in range(len(spaces_in_sec) - 1)
-        ]
-        word_timestamps = (
-            [[start_stamp_in_sec, round(spaces_in_sec[0][0], 2)]]
-            + word_timetamps_middle
-            + [[round(spaces_in_sec[-1][1], 2), end_stamp_in_sec]]
-        )
+
+        # In case of one word output with no space information.
+        if len(spaces_in_sec) == 0:
+            word_timestamps = [[start_stamp_in_sec, end_stamp_in_sec]]
+        elif len(spaces_in_sec) > 0:
+            # word_timetamps_middle should be an empty list if len(spaces_in_sec) == 1.
+            word_timetamps_middle = [
+                [round(spaces_in_sec[k][1], 2), round(spaces_in_sec[k + 1][0], 2),]
+                for k in range(len(spaces_in_sec) - 1)
+            ]
+            word_timestamps = (
+                [[start_stamp_in_sec, round(spaces_in_sec[0][0], 2)]]
+                + word_timetamps_middle
+                + [[round(spaces_in_sec[-1][1], 2), end_stamp_in_sec]]
+            )
         return word_timestamps
 
     def run_pyctcdecode(
@@ -731,9 +742,9 @@ class ASR_TIMESTAMPS:
                 The beam width parameter for beam search decodring.
         Returns:
             hyp_words (list):
-                List of words in the hypothesis.
+                List containing the words in the hypothesis.
             word_ts (list):
-                List of word timestamps from the decoder.
+                List containing the word timestamps from the decoder.
         """
         beams = self.beam_search_decoder.decode_beams(logprob, beam_width=self.ctc_decoder_params['beam_width'])
         word_ts_beam, words_beam = [], []

@@ -165,8 +165,8 @@ class WERBPE(Metric):
             target_lengths: an integer torch.Tensor of shape ``[Batch]``
             predictions_lengths: an integer torch.Tensor of shape ``[Batch]``
         """
-        words = 0.0
-        scores = 0.0
+        words = 0
+        scores = 0
         references = []
         with torch.no_grad():
             targets_cpu_tensor = targets.long().cpu()

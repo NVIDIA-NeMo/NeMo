@@ -878,8 +878,8 @@ class RNNTWER(Metric):
         targets: torch.Tensor,
         target_lengths: torch.Tensor,
     ) -> torch.Tensor:
-        words = 0.0
-        scores = 0.0
+        words = 0
+        scores = 0
         references = []
         with torch.no_grad():
             # prediction_cpu_tensor = tensors[0].long().cpu()

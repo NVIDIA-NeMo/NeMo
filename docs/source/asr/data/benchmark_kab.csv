@@ -1,0 +1,2 @@
+Model,Model Base Class,Model Card
+stt_kab_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_kab_conformer_transducer_large"

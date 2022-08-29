@@ -156,7 +156,8 @@ class TokenParser:
 
         Returns parsed string value
         """
-        assert self.char not in string.whitespace and self.char != EOS
+        # assert self.char not in string.whitespace and self.char != EOS
+        assert self.char != EOS
         l = []
         while self.char != "\"" or self.text[self.index + 1] != " ":
             l.append(self.char)

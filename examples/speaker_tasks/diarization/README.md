@@ -1,4 +1,4 @@
-# Speaker Dirarzation
+# Speaker Diarization
 
 Documentation section for speaker related tasks can be found at:
  - [Speaker Diarization](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speaker_diarization/intro.html)

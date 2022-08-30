@@ -133,7 +133,7 @@ class GraphFst:
 
     def __init__(self, name: str, kind: str, deterministic: bool = True):
         self.name = name
-        self.kind = str
+        self.kind = kind
         self._fst = None
         self.deterministic = deterministic
 

@@ -232,6 +232,8 @@ class ConformerConvolution(nn.Module):
 
         if norm_type == 'batch_norm':
             self.batch_norm = nn.BatchNorm1d(dw_conv_input_dim)
+        elif norm_type == 'instance_norm':
+            self.batch_norm = nn.InstanceNorm1d(dw_conv_input_dim)
         elif norm_type == 'layer_norm':
             self.batch_norm = nn.LayerNorm(dw_conv_input_dim)
         elif norm_type.startswith('group_norm'):

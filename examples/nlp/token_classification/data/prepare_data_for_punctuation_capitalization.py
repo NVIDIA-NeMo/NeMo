@@ -53,9 +53,9 @@ The **labels.txt** file contains corresponding labels for each word in text.txt,
 Each label in labels.txt file consists of 2 symbols:
 
 * the first symbol of the label indicates what punctuation mark should follow the word (where O means no punctuation needed);
-* the second symbol determines if a word needs to be capitalized or not (where U indicates that the word should be upper cased, and O - no capitalization needed.)
+* the second symbol determines if a word needs to be capitalized or not (where U indicates that the word should be upper-cased, and O - no capitalization needed.)
 
-By default the following punctuation marks are considered: commas, periods, and question marks; the rest punctuation marks were removed from the data.
+By default, the following punctuation marks are considered: commas, periods, and question marks; the rest punctuation marks were removed from the data.
 This can be changed by introducing new labels in the labels.txt files
 
 Each line of the labels.txt should follow the format: [LABEL] [SPACE] [LABEL] [SPACE] [LABEL] (for labels.txt). \

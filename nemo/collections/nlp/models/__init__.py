@@ -33,5 +33,9 @@ from nemo.collections.nlp.models.question_answering.qa_model import QAModel
 from nemo.collections.nlp.models.text2sparql.text2sparql_model import Text2SparqlModel
 from nemo.collections.nlp.models.text_classification import TextClassificationModel
 from nemo.collections.nlp.models.text_normalization_as_tagging import ThutmoseTaggerModel
-from nemo.collections.nlp.models.token_classification import PunctuationCapitalizationModel, TokenClassificationModel
+from nemo.collections.nlp.models.token_classification import (
+    PunctuationCapitalizationLexicalAudioModel,
+    PunctuationCapitalizationModel,
+    TokenClassificationModel,
+)
 from nemo.collections.nlp.models.zero_shot_intent_recognition import ZeroShotIntentModel

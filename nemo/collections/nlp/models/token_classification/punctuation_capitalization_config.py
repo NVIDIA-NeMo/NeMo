@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from omegaconf.omegaconf import MISSING, DictConfig, OmegaConf, open_dict
 
+from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
 from nemo.collections.nlp.data.token_classification.punctuation_capitalization_dataset import (
     PunctuationCapitalizationEvalDataConfig,
     PunctuationCapitalizationTrainDataConfig,
@@ -25,6 +26,45 @@ from nemo.collections.nlp.data.token_classification.punctuation_capitalization_d
 from nemo.core.config import TrainerConfig
 from nemo.core.config.modelPT import NemoConfig
 from nemo.utils.exp_manager import ExpManagerConfig
+
+
+@dataclass
+class FreezeConfig:
+    is_enabled: bool = False
+    """Freeze audio encoder weight and add Conformer Layers on top of it"""
+    d_model: Optional[int] = 256
+    """`d_model` parameter of ``ConformerLayer``"""
+    d_ff: Optional[int] = 1024
+    """``d_ff`` parameter of ``ConformerLayer``"""
+    num_layers: Optional[int] = 8
+    """``num_layers`` number of ``ConformerLayer`` modules to add on top of audio encoder"""
+
+
+@dataclass
+class AdapterConfig:
+    config: Optional[LinearAdapterConfig] = None
+    """Linear adapter config see ``collections.common.parts.LinearAdapterConfig``"""
+    enable: bool = False
+    """Use adapters for audio encoder"""
+
+
+@dataclass
+class FusionConfig:
+    num_layers: Optional[int] = 4
+    """"Number of layers to use in fusion"""
+    num_attention_heads: Optional[int] = 4
+    """Number of attention heads to use in fusion"""
+    inner_size: Optional[int] = 2048
+    """Fusion inner size"""
+
+
+@dataclass
+class AudioEncoderConfig:
+    pretrained_model: str = MISSING
+    """A configuration for restoring pretrained audio encoder"""
+    freeze: Optional[FreezeConfig] = None
+    adapter: Optional[AdapterConfig] = None
+    fusion: Optional[FusionConfig] = None
 
 
 @dataclass
@@ -77,7 +117,7 @@ class LanguageModelConfig:
 class HeadConfig:
     """
     A structure and default values of configuration of capitalization or punctuation model head. This config defines a
-    multilayer perceptron which is applied to outputs of a language model. Number of units in the hidden layer is equal
+    multilayer perceptron which is applied to output of a language model. Number of units in the hidden layer is equal
     to the dimension of the language model.
 
     This config is a part of :class:`PunctuationCapitalizationModelConfig` config.
@@ -213,6 +253,40 @@ class PunctuationCapitalizationModelConfig:
 
 
 @dataclass
+class PunctuationCapitalizationLexicalAudioModelConfig(PunctuationCapitalizationModelConfig):
+    """
+    A configuration of
+    :class:`~nemo.collections.nlp.models.token_classification.punctuation_lexical_audio_capitalization_model.PunctuationCapitalizationLexicalAudioModel`
+    model.
+
+    See an example of model config in
+    `nemo/examples/nlp/token_classification/conf/punctuation_capitalization_config.yaml
+    <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/token_classification/conf/punctuation_capitalization_lexical_audio_config.yaml>`_
+
+    Audio encoder can be frozen during training with ``freeze_audio_encoder`` parameter.
+    Adapter can be added to audio encoder with ``use_adapters`` and ``adapter_config`` parameters.
+    More conformer layers can be added on top of pretrained audio encoder with ``frozen_conf_d_model``, ``frozen_conf_d_ff`` and ``frozen_conf_num_layers`` parameters.
+    """
+
+    train_ds: Optional[PunctuationCapitalizationTrainDataConfig] = None
+    """A configuration for creating training dataset and data loader."""
+
+    validation_ds: Optional[PunctuationCapitalizationEvalDataConfig] = None
+    """A configuration for creating validation datasets and data loaders."""
+
+    test_ds: Optional[PunctuationCapitalizationEvalDataConfig] = None
+    """A configuration for creating test datasets and data loaders."""
+
+    audio_encoder: Optional[AudioEncoderConfig] = None
+
+    restore_lexical_encoder_from: Optional[str] = None
+    """"Path to .nemo checkpoint to load weights from"""  # add more comments
+
+    use_weighted_loss: Optional[bool] = False
+    """If set to ``True`` CrossEntropyLoss will be weighted"""
+
+
+@dataclass
 class PunctuationCapitalizationConfig(NemoConfig):
     """
     A config for punctuation model training and testing.
@@ -248,6 +322,11 @@ class PunctuationCapitalizationConfig(NemoConfig):
     exp_manager: Optional[ExpManagerConfig] = ExpManagerConfig(name=name, files_to_copy=[])
     """A configuration with various NeMo training options such as output directories, resuming from checkpoint,
     tensorboard and W&B logging, and so on. For possible options see :ref:`exp-manager-label`."""
+
+
+@dataclass
+class PunctuationCapitalizationLexicalAudioConfig(PunctuationCapitalizationConfig):
+    model: PunctuationCapitalizationLexicalAudioModelConfig = PunctuationCapitalizationLexicalAudioModelConfig()
 
 
 def is_legacy_model_config(model_cfg: DictConfig) -> bool:

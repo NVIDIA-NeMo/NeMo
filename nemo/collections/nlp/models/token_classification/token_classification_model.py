@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -32,7 +32,6 @@ from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common import TokenClassifier
 from nemo.collections.nlp.parts.utils_funcs import get_classification_report, plot_confusion_matrix, tensor2list
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.neural_types import NeuralType
 from nemo.utils import logging
 
 __all__ = ['TokenClassificationModel']
@@ -297,7 +296,7 @@ class TokenClassificationModel(NLPModel):
 
     def _setup_infer_dataloader(self, queries: List[str], batch_size: int) -> 'torch.utils.data.DataLoader':
         """
-        Setup function for a infer data loader.
+        Setup function for an infer data loader.
 
         Args:
             queries: text
@@ -488,7 +487,7 @@ class TokenClassificationModel(NLPModel):
             raise
 
     @classmethod
-    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
         """
         This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
 

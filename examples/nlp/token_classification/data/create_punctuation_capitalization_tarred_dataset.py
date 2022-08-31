@@ -92,6 +92,25 @@ def get_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument(
+        "--audio_file",
+        type=Path,
+        required=False,
+        help="Path to source file which contains paths to audio one path per line. "
+        "Number of lines in `--audio_file` has to be equal to number of lines in `--labels` file",
+    )
+    parser.add_argument(
+        "--use_audio",
+        required=False,
+        action="store_true",
+        help="If set to `True` script creates lexical audio dataset which can be used with `PunctuationCapitalizationLexicalAudioModel`.",
+    )
+    parser.add_argument(
+        "--sample_rate",
+        type=int,
+        required=False,
+        help="Target sample rate of audios. Can be used for downsampling or upsampling.",
+    )
+    parser.add_argument(
         "--labels",
         "-L",
         type=Path,
@@ -327,6 +346,9 @@ def main() -> None:
         capit_label_vocab_file=args.capit_label_vocab_file,
         tar_file_prefix=args.tar_file_prefix,
         n_jobs=args.n_jobs,
+        audio_file=args.audio_file,
+        sample_rate=args.sample_rate,
+        use_audio=args.use_audio,
     )
 
 

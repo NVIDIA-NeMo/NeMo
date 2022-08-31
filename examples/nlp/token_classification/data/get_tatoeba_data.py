@@ -49,7 +49,7 @@ def __process_english_sentences(
 
     Expected in_file format
     that
-    contrain letters and punctuation marks (,.?).
+    contain letters and punctuation marks (,.?).
     Chop and combine sentences.
     Args:
         in_file: local filepath to the tatoeba dataset.

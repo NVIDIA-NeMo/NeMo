@@ -45,6 +45,7 @@ class EncDecClassificationDatasetConfig(nemo.core.classes.dataset.DatasetConfig)
     augmentor: Optional[Dict[str, Any]] = None
     max_duration: Optional[float] = None
     min_duration: Optional[float] = None
+    cal_labels_occurrence: Optional[bool] = False
 
     # VAD Optional
     vad_stream: Optional[bool] = None

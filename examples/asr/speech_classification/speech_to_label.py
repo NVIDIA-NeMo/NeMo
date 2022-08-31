@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-# Task 1: Speech Command
+# Task 1: Speech Command Recognition
 
 ## Preparing the dataset
 Use the `process_speech_commands_data.py` script under <NEMO_ROOT>/scripts/dataset_processing in order to prepare the dataset.
@@ -78,6 +78,33 @@ python speech_to_label.py \
     +trainer.amp_level=O1  # needed if using PyTorch < 1.6
 ```
 
+# Task 3: Language Identification
+
+## Preparing the dataset
+Use the `filelist_to_manifest.py` script under <NEMO_ROOT>/scripts/speaker_tasks in order to prepare the dataset.
+```
+
+## Train to convergence
+```sh
+python speech_to_label.py \
+    --config-path=<path to dir of configs e.g. "../conf/lang_id">
+    --config-name=<name of config without .yaml e.g. "titanet_large"> \
+    model.train_ds.manifest_filepath="<path to train manifest>" \
+    model.validation_ds.manifest_filepath="<path to val manifest>" \
+    model.train_ds.augmentor.noise.manifest_path="<path to noise manifest>" \
+    model.train_ds.augmentor.impulse.manifest_path="<path to impulse manifest>" \
+    model.decoder.num_classes=<num of languages> \
+    trainer.devices=2 \
+    trainer.max_epochs=40 \
+    exp_manager.create_wandb_logger=True \
+    exp_manager.wandb_logger_kwargs.name="titanet" \
+    exp_manager.wandb_logger_kwargs.project="langid" \
+    +exp_manager.checkpoint_callback_params.monitor="val_acc_macro" \
+    +exp_manager.checkpoint_callback_params.mode="max" \
+    +trainer.precision=16 \
+```
+
+
 # Optional: Use tarred dataset to speed up data loading. Apply to both tasks.
 ## Prepare tarred dataset. 
    Prepare ONE manifest that contains all training data you would like to include. Validation should use non-tarred dataset.
@@ -119,7 +146,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_cla
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.models import EncDecClassificationModel
+from nemo.collections.asr.models import EncDecClassificationModel, EncDecSpeakerLabelModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -127,20 +154,25 @@ from nemo.utils.exp_manager import exp_manager
 
 @hydra_runner(config_path="../conf/matchboxnet", config_name="matchboxnet_3x1x64_v1")
 def main(cfg):
+
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
-    asr_model = EncDecClassificationModel(cfg=cfg.model, trainer=trainer)
+
+    if 'titanet' in cfg.name.lower():
+        model = EncDecSpeakerLabelModel(cfg=cfg.model, trainer=trainer)
+    else:
+        model = EncDecClassificationModel(cfg=cfg.model, trainer=trainer)
 
     # Initialize the weights of the model from another model, if provided via config
-    asr_model.maybe_init_from_pretrained_checkpoint(cfg)
+    model.maybe_init_from_pretrained_checkpoint(cfg)
 
-    trainer.fit(asr_model)
+    trainer.fit(model)
 
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
-        if asr_model.prepare_test(trainer):
-            trainer.test(asr_model)
+        if model.prepare_test(trainer):
+            trainer.test(model)
 
 
 if __name__ == '__main__':

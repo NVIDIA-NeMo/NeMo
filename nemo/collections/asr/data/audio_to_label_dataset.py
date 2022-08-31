@@ -34,6 +34,7 @@ def get_classification_label_dataset(featurizer, config: dict) -> audio_to_label
         min_duration=config.get('min_duration', None),
         trim=config.get('trim_silence', False),
         is_regression_task=config.get('is_regression_task', False),
+        cal_labels_occurrence=config.get('cal_labels_occurrence', False),
     )
     return dataset
 
@@ -58,6 +59,7 @@ def get_speech_label_dataset(featurizer, config: dict) -> audio_to_label.AudioTo
         window_length_in_sec=config.get('window_length_in_sec', 0.31),
         shift_length_in_sec=config.get('shift_length_in_sec', 0.01),
         normalize_audio=config.get('normalize_audio', False),
+        cal_labels_occurrence=config.get('cal_labels_occurrence', False),
     )
     return dataset
 

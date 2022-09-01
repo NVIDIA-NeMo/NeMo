@@ -28,6 +28,7 @@ RUN apt-get update && \
     apt-get install -y \
     libsndfile1 sox \
     libfreetype6 \
+    espeak-ng \
     python-setuptools swig \
     python-dev ffmpeg && \
     rm -rf /var/lib/apt/lists/*

@@ -14,13 +14,25 @@
 # limitations under the License.
 
 import abc
+import ctypes.util
 import itertools
 import string
 from contextlib import contextmanager
+from logging import ERROR, getLogger
 from typing import List
 
-from nemo_text_processing.g2p.data.data_utils import english_text_preprocessing, german_text_preprocessing
+from nemo_text_processing.g2p.data.data_utils import (
+    english_text_preprocessing,
+    german_text_preprocessing,
+    ipa_word_tokenize,
+)
+from nemo_text_processing.g2p.modules import IPAG2P
+from phonemizer.backend import EspeakBackend
 
+from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+    get_ipa_character_list,
+    get_ipa_punctuation_list,
+)
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
@@ -145,8 +157,9 @@ class BaseCharsTokenizer(BaseTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        while cs[-1] == space:
-            cs.pop()
+        if cs:
+            while cs[-1] == space:
+                cs.pop()
 
         if self.pad_with_space:
             cs = [space] + cs + [space]
@@ -359,8 +372,9 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
                 )
 
         # Remove trailing spaces
-        while ps[-1] == space:
-            ps.pop()
+        if ps:
+            while ps[-1] == space:
+                ps.pop()
 
         if self.pad_with_space:
             ps = [space] + ps + [space]
@@ -386,6 +400,7 @@ class IPATokenizer(BaseTokenizer):
         ':', ';', '/', '"', '(',
         ')', '[', ']', '{', '}',
     )
+    # fmt: on
 
     def __init__(
         self,
@@ -443,7 +458,7 @@ class IPATokenizer(BaseTokenizer):
                     "phoneme_probability was not None, characters will be enabled even though "
                     "chars was set to False."
                 )
-            
+
             # Add uppercase chars if G2P class uses them, otherwise use lowercase ones
             if g2p.set_graphemes_upper:
                 tokens.extend(string.ascii_uppercase)
@@ -480,7 +495,7 @@ class IPATokenizer(BaseTokenizer):
         ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
 
         text = self.text_preprocessing_func(text)
-        g2p_text = self.g2p(text)   # Double-check this
+        g2p_text = self.g2p(text)  # Double-check this
 
         for p in g2p_text:
             if p == space and len(ps) > 0 and ps[-1] != space:
@@ -499,8 +514,9 @@ class IPATokenizer(BaseTokenizer):
                 )
 
         # Remove trailing spaces
-        while ps[-1] == space:
-            ps.pop()
+        if ps:
+            while ps[-1] == space:
+                ps.pop()
 
         if self.pad_with_space:
             ps = [space] + ps + [space]
@@ -517,3 +533,112 @@ class IPATokenizer(BaseTokenizer):
         finally:
             if hasattr(self.g2p, "phoneme_probability"):
                 self.g2p.phoneme_probability = self.phoneme_probability
+
+
+@experimental
+class PhonemizerTokenizer(IPATokenizer):
+    # fmt: off
+    ESPEAK_SYMBOLS = ('ˈ', 'ˌ', "'", '-', 'ː')
+    # fmt: on
+
+    def __init__(
+        self,
+        language,
+        phoneme_dict,
+        punct=True,
+        pad_with_space=False,
+        non_default_chars=None,
+        non_default_punct_list=None,
+        with_stress=True,
+        ignore_ambiguous_words=True,
+        heteronyms=None,
+        espeak_logging_level=ERROR,
+    ):
+        """IPA tokenizer using the Phonemizer library with an eSpeak backend
+
+        https://github.com/bootphon/phonemizer
+        http://espeak.sourceforge.net/
+
+        To use this class you will need to install eSpeak separately from NeMo.
+
+        For Linux: apt-get update && apt-get install espeak-ng
+        Other OS: https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md#installation
+
+        eSpeak provides out-of-the-box text normalization & g2p for a large number of languages.
+        This tokenizer incorporates that functionality with a phoneme dictionary that allows overriding
+        pronunciation for specific words that eSpeak may get wrong.
+
+        This class currently supports: English, Spanish, and German. For other languages you will have to provide
+        the character set for the language using "non_default_chars" and "non_default_punct_list".
+
+        Args:
+            language: Language string http://espeak.sourceforge.net/languages.html
+            phoneme_dict (str, Path, Dict): Path to file in CMUdict format or dictionary of CMUdict-like entries.
+                (For default behavior, provide local path to scripts/tts_dataset_files/ipa_dict-default.txt)
+            punct: Whether to keep punctuation or remove it.
+            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+            non_default_chars: List of characters which will be used instead of default.
+            non_default_punct_list: List of punctuation marks which will be used instead of default.
+            with_stress: Whether to include stresses/accents in the IPA output.
+            ignore_ambiguous_words: Whether to not handle word via phoneme_dict with ambiguous phoneme sequences.
+            heteronyms (str, Path, List): Path to file with heteronyms (every line is new word) or list of words.
+            espeak_logging_level: Logging level for eSpeak.
+                Defaults to 'logging.ERROR' (to avoid a lot of unhelpful warning logs).
+        """
+
+        if not (ctypes.util.find_library('espeak-ng') or ctypes.util.find_library('espeak')):
+            raise ImportError(
+                "PhonemizerTokenizer requires eSpeak to be installed. "
+                "Please follow the instructions at: "
+                "https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md#installation"
+            )
+
+        if non_default_chars:
+            char_list = non_default_chars
+        else:
+            char_list = get_ipa_character_list(language)
+            if with_stress:
+                char_list.extend(self.ESPEAK_SYMBOLS)
+        chars = "".join(char_list)
+
+        if not punct:
+            punct_list = []
+        elif non_default_punct_list:
+            punct_list = non_default_punct_list
+        else:
+            punct_list = get_ipa_punctuation_list(language)
+
+        espeak_logger = getLogger('espeak')
+        espeak_logger.setLevel(espeak_logging_level)
+        self.espeak_backend = EspeakBackend(
+            language=language, preserve_punctuation=punct, with_stress=with_stress, logger=espeak_logger
+        )
+
+        ipa_g2p = IPAG2P(
+            phoneme_dict=phoneme_dict,
+            apply_to_oov_word=self._text_to_phonemes_espeak,
+            word_tokenize_func=ipa_word_tokenize,
+            ignore_ambiguous_words=ignore_ambiguous_words,
+            heteronyms=heteronyms,
+        )
+        # Merge chars with all symbols found in the phoneme dictionary.
+        ipa_g2p.symbols.update(chars)
+
+        super().__init__(
+            g2p=ipa_g2p,
+            punct=punct,
+            non_default_punct_list=punct_list,
+            pad_with_space=pad_with_space,
+            text_preprocessing_func=lambda text: text,
+        )
+
+    def _text_to_phonemes_espeak(self, text):
+        phonemes = self.espeak_backend.phonemize([text])[0]
+        phonemes = phonemes.strip()
+        return phonemes
+
+    def text_to_phonemes(self, text):
+        tokens = self.encode(text)
+        phoneme_string = self.decode(tokens)
+        phonemes = phoneme_string.replace(self.sep, '')
+        return phonemes

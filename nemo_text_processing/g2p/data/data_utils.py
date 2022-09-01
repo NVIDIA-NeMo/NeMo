@@ -38,8 +38,8 @@ SYNOGLYPH2ASCII = {g: asc for asc, glyphs in _synoglyphs.items() for g in glyphs
 # Text (first line) and mask of groups for every char (second line).
 # config file must contain |EY1 EY1|, B, C, D, E, F, and G.
 # 111111311113111131111111322222222233133133133133133111313
-_WORDS_RE = re.compile("([a-zA-Z]+(?:[a-zA-Z-']*[a-zA-Z]+)*)|(\|[^|]*\|)|([^a-zA-Z|]+)")
-
+_WORDS_RE = re.compile(r"([a-zA-Z]+(?:[a-zA-Z-']*[a-zA-Z]+)*)|(\|[^|]*\|)|([^a-zA-Z|]+)")
+_WORDS_RE_IPA = re.compile(r"([a-zA-ZÀ-ÿ\d]+(?:[a-zA-ZÀ-ÿ\d\-']*[a-zA-ZÀ-ÿ\d]+)*)|(\|[^|]*\|)|([^a-zA-ZÀ-ÿ\d|]+)")
 
 # -
 
@@ -113,14 +113,13 @@ def english_text_preprocessing(text, lower=True):
     return text
 
 
-def english_word_tokenize(text):
+def _word_tokenize(words):
     """
     Convert text (str) to List[Tuple[Union[str, List[str]], bool]] where every tuple denotes word representation and flag whether to leave unchanged or not.
     Word can be one of: valid english word, any substring starts from | to | (unchangeable word) or punctuation marks.
     This function expects that unchangeable word is carefully divided by spaces (e.g. HH AH L OW).
     Unchangeable word will be splitted by space and represented as List[str], other cases are represented as str.
     """
-    words = _WORDS_RE.findall(text)
     result = []
     for word in words:
         maybe_word, maybe_without_changes, maybe_punct = word
@@ -135,6 +134,16 @@ def english_word_tokenize(text):
             without_changes = True
             result.append((maybe_without_changes[1:-1].split(" "), without_changes))
     return result
+
+
+def english_word_tokenize(text):
+    words = _WORDS_RE.findall(text)
+    return _word_tokenize(words)
+
+
+def ipa_word_tokenize(text):
+    words = _WORDS_RE_IPA.findall(text)
+    return _word_tokenize(words)
 
 
 def german_text_preprocessing(text):

@@ -180,7 +180,7 @@ class EnglishG2p(BaseG2p):
             return word, True
 
         # punctuation
-        if re.search("[a-zA-Z]", word) is None:
+        if re.search(r"[a-zA-ZÀ-ÿ\d]", word) is None:
             return list(word), True
 
         # heteronym

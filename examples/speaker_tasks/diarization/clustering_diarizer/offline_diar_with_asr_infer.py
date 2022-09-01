@@ -24,12 +24,13 @@ from nemo.utils import logging
 """
 This script demonstrates how to run offline speaker diarization with asr.
 Usage:
-python offline_diarization_with_asr.py \
+python offline_diar_with_asr_infer.py \
     diarizer.manifest_filepath=<path to manifest file> \
     diarizer.out_dir='demo_asr_output' \
     diarizer.speaker_embeddings.model_path=<pretrained modelname or path to .nemo> \
     diarizer.asr.model_path=<pretrained modelname or path to .nemo> \
-    diarizer.asr.parameters.asr_based_vad=True
+    diarizer.asr.parameters.asr_based_vad=True \
+    diarizer.speaker_embeddings.parameters.save_embeddings=False
 
 Check out whole parameters in ./conf/offline_diarization_with_asr.yaml and their meanings.
 For details, have a look at <NeMo_git_root>/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb
@@ -42,7 +43,7 @@ Currently, the following NGC models are supported:
 """
 
 
-@hydra_runner(config_path="conf", config_name="offline_diarization_with_asr.yaml")
+@hydra_runner(config_path="../conf/inference", config_name="diar_infer_telephonic.yaml")
 def main(cfg):
 
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')

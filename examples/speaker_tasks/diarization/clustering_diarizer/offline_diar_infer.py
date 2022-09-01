@@ -22,11 +22,12 @@ from nemo.utils import logging
 """
 This script demonstrates how to use run speaker diarization.
 Usage:
-  python offline_diarization.py \
+  python offline_diar_infer.py \
     diarizer.manifest_filepath=<path to manifest file> \
     diarizer.out_dir='demo_output' \
     diarizer.speaker_embeddings.model_path=<pretrained modelname or path to .nemo> \
-    diarizer.vad.model_path='vad_marblenet'
+    diarizer.vad.model_path='vad_marblenet' \
+    diarizer.speaker_embeddings.parameters.save_embeddings=False
 
 Check out whole parameters in ./conf/offline_diarization.yaml and their meanings.
 For details, have a look at <NeMo_git_root>/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb
@@ -35,7 +36,7 @@ For details, have a look at <NeMo_git_root>/tutorials/speaker_tasks/Speaker_Diar
 seed_everything(42)
 
 
-@hydra_runner(config_path="conf", config_name="offline_diarization.yaml")
+@hydra_runner(config_path="../conf/inference", config_name="diar_infer_telephonic.yaml")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     sd_model = ClusteringDiarizer(cfg=cfg)

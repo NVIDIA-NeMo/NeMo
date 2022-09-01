@@ -66,8 +66,8 @@ In general, you can load models with model name in the following format,
 
 where the model name is the value under "Model Name" entry in the tables below.
 
-Models for Speaker Diarization
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Models for Speaker Diarization Pipeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. csv-table::
    :file: data/diarization_results.csv

@@ -652,8 +652,6 @@ class ClusterEmbedding:
             This is a placeholder for class instance of `EncDecDiarLabelModel`
         self.spk_emb_state_dict (dict):
             Dictionary containing `state_dict` of speaker embedding model
-        self.run_clus_from_loaded_emb (bool):
-            If True, clustering is performed again after clustering diarizer is excuted
         self.use_speaker_model_from_ckpt (bool):
             If True, speaker embedding model included in MSDD checkpoint is used.
         self.scale_window_length_list (list):
@@ -670,9 +668,9 @@ class ClusterEmbedding:
         self.clus_diar_model = None
         self.msdd_model = None
         self.spk_emb_state_dict = {}
-
-        self.run_clus_from_loaded_emb = False
-        self.use_speaker_model_from_ckpt = True
+        self.use_speaker_model_from_ckpt = self.cfg_diar_infer.diarizer.msdd_model.parameters.get(
+            'use_speaker_model_from_ckpt', True
+        )
         self.scale_window_length_list = list(
             self.cfg_diar_infer.diarizer.speaker_embeddings.parameters.window_length_in_sec
         )

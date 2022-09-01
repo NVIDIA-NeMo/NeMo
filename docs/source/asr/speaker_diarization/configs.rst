@@ -1,12 +1,12 @@
 NeMo Speaker Diarization Configuration Files
 ============================================
 
-Since speaker diarization model here is not a fully-trainable End-to-End model but an inference pipeline, we use **diarizer** instead of **model** which is used in other tasks.
+Since speaker diarization model here is not a fully-trainable end-to-end model but an inference pipeline, we use **diarizer** instead of **model** which is used in other tasks.
 
 The diarizer section will generally require information about the dataset(s) being used, models used in this pipeline, as well as inference related parameters such as post processing of each models.
 The sections on this page cover each of these in more detail.
 
-Example configuration files for speaker diarization can be found in ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/offline_diarization.yaml``
+Example configuration files for speaker diarization inference can be found in ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/inference/``. Choose a yaml file that fits your targeted domain. For example, if you want to diarize audio recordings of telephonic speech, choose ``diar_infer_telephonic.yaml``.
 
 .. note::
   For model details and deep understanding about configs, fine-tuning, tuning threshold, and evaluation, 
@@ -14,12 +14,17 @@ Example configuration files for speaker diarization can be found in ``<NeMo_git_
   for other applications such as possible integration with ASR, have a look at ``<NeMo_git_root>/tutorials/speaker_tasks/ASR_with_SpeakerDiarization.ipynb``.
 
 
-Dataset Configuration
----------------------
+Hydra Configurations for Diarization Inference
+----------------------------------------------
 
 In contrast to other ASR related tasks or models in NeMo, speaker diarization supported in NeMo is a modular inference pipeline and training is only required for speaker embedding extractor model. Therefore, the datasets provided in manifest format denote the data that you would like to perform speaker diarization on. 
 
-An example Speaker Diarization dataset Hydra configuration could look like:
+The configurations for all the components of diarization inference are included in a single file named ``diar_infer_<domain>.yaml``. Each ``.yaml`` file has a few different sections for the following modules: VAD, Speaker Embedding, Clustering and ASR.
+
+Diarizer Configurations
+-----------------------
+
+An example ``diarizer``  Hydra configuration could look like:
 
 .. code-block:: yaml
 
@@ -29,15 +34,13 @@ An example Speaker Diarization dataset Hydra configuration could look like:
     oracle_vad: False # If True, uses RTTM files provided in manifest file to get speech activity (VAD) timestamps
     collar: 0.25 # Collar value for scoring
     ignore_overlap: True # Consider or ignore overlap segments while scoring
-    
-.. note::
-  We expect audio and the corresponding RTTM to have the same base name and the name should be unique.
 
+Under ``diarizer`` key, there are ``vad``, ``speaker_embeddings``, ``clustering`` and ``asr`` keys containing configurations for the inference of the corresponding modules.
 
-Diarizer Model Configurations
------------------------------
+Configurations for Voice Activity Detector
+-----------------------------------------
 
-Parameters for VAD model and speaker embedding model are provided in the following Hydra config example.
+Parameters for VAD model are provided as in the following Hydra config example.
 
 .. code-block:: yaml
 
@@ -58,15 +61,22 @@ Parameters for VAD model and speaker embedding model are provided in the followi
       min_duration_off: 0.2 # Threshold for short speech segment deletion
       filter_speech_first: True 
 
+Configurations for Speaker Embedding in Diarization
+--------------------------------------------------
+
+Parameters for speaker embedding model are provided in the following Hydra config example. Note that multiscale parameters either accept list or single floating point number.
+
+.. code-block:: yaml
+
   speaker_embeddings:
     model_path: ??? # .nemo local model path or pretrained model name (titanet_large, ecapa_tdnn or speakerverification_speakernet)
     parameters:
-      window_length_in_sec: 1.5 # Window length(s) in sec (floating-point number). Either a number or a list. Ex) 1.5 or [1.5,1.0,0.5]
-      shift_length_in_sec: 0.75 # Shift length(s) in sec (floating-point number). Either a number or a list. Ex) 0.75 or [0.75,0.5,0.25]
-      multiscale_weights: null # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. Ex) [0.33,0.33,0.33]
+      window_length_in_sec: 1.5 # Window length(s) in sec (floating-point number). Either a number or a list. Ex) 1.5 or [1.5,1.25,1.0,0.75,0.5]
+      shift_length_in_sec: 0.75 # Shift length(s) in sec (floating-point number). Either a number or a list. Ex) 0.75 or [0.75,0.625,0.5,0.375,0.25]
+      multiscale_weights: null # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. Ex) [1,1,1,1,1]
       save_embeddings: False # Save embeddings as pickle file for each audio input.
 
-Configuration for Clustering in Diarization
+Configurations for Clustering in Diarization
 -------------------------------------------
 
 Parameters for clustering algorithm are provided in the following Hydra config example.
@@ -81,10 +91,10 @@ Parameters for clustering algorithm are provided in the following Hydra config e
       max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold. 
       sparse_search_volume: 30 # The higher the number, the more values will be examined with more time. 
 
-Configuration for Diarization with ASR
+Configurations for Diarization with ASR
 --------------------------------------
 
-The following configuration needs to be appended under ``diarizer`` to run ASR with diarization to get a transcription with speaker labels. This configuration can be found in ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/offline_diarization_with_asr.yaml``
+The following configuration needs to be appended under ``diarizer`` to run ASR with diarization to get a transcription with speaker labels. 
 
 .. code-block:: yaml
 

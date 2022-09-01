@@ -31,12 +31,13 @@ Recommended models on NGC:
 ## Performance
 Diarization Error Rate (DER) table of `titanet_large.nemo` model on well known evaluation datasets. 
 
-|         Evaluation<br>Condition     | NIST SRE 2000 | AMI<br>(Lapel) | AMI<br>(MixHeadset) | CH109 |
-|:-----------------------------------:|:-------------:|:--------------:|:-------------------:|:-----:|
-|  Oracle VAD <br>KNOWN # of Speakers  |      6.73     |      2.03      |         1.73        |  1.19 |
-| Oracle VAD<br> UNKNOWN # of Speakers |     5.38     |      2.03      |         1.89        |  1.63 |
+|         Evaluation Condition           |   AMI(Lapel)   | AMI(MixHeadset)     |   CH109  | NIST SRE 2000 |  
+|:--------------------------------------:|:--------------:|:-------------------:|:--------:|:-------------:|
+|       Domain Configuration             |   Meeting      |        Meeting      |Telephonic| Telephonic    |
+|  Oracle VAD <br> KNOWN # of Speakers   |     1.28       |         1.07        |  0.56    |     5.62      |
+|  Oracle VAD <br> UNKNOWN # of Speakers |     1.28       |         1.4         |  0.88    |     4.33      | 
 
-* All models were tested using embedding extractor with window size 1.5s and shift length 0.75s
+* All models were tested using the domain specific `.yaml` files which can be found in `conf/inference/` folder.
 * The above result is based on the oracle Voice Activity Detection (VAD) result.
 * This result is based on [titanet_large.nemo](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_large) model.
 
@@ -46,10 +47,11 @@ Diarization Error Rate (DER) table of `titanet_large.nemo` model on well known e
 
 #### Example script
 ```bash
-  python offline_diarization.py \
+  python offline_diar_infer.py \
     diarizer.manifest_filepath=<path to manifest file> \
     diarizer.out_dir='demo_output' \
     diarizer.speaker_embeddings.model_path=<pretrained modelname or path to .nemo> \
+    diarizer.speaker_embeddings.parameters.save_embeddings=False \
     diarizer.vad.model_path=<pretrained modelname or path to .nemo>
 ```
 
@@ -57,11 +59,12 @@ If you have oracle VAD files and groundtruth RTTM files for evaluation:
 Provide rttm files in the input manifest file and enable oracle_vad as shown below. 
 
 ```bash
-python offline_diarization.py \
+python offline_diar_infer.py \
   python speaker_diarize.py \
     diarizer.manifest_filepath=<path to manifest file> \
     diarizer.out_dir='demo_output' \
     diarizer.speaker_embeddings.model_path=<pretrained modelname or path to .nemo> \
+    diarizer.speaker_embeddings.parameters.save_embeddings=False \
     diarizer.oracle_vad=True
 ```
 
@@ -107,7 +110,7 @@ Multiscale diarization system employs multiple scales at the same time to obtain
 #### Example script: single-scale and multiscale
 Single-scale setting:
 ```bash
-  python offline_diarization.py \
+  python offline_diar_infer.py \
      ... <other paramerters> ...
      parameters.window_length_in_sec=1.5 \
      parameters.shift_length_in_sec=0.75 \
@@ -115,8 +118,9 @@ Single-scale setting:
 ```
 
 Multiscale setting (base scale - window_length 0.5 s and shift_length 0.25):
+
 ```bash
-  python offline_diarization.py \
+  python offline_diar_infer.py \
      ... <other paramerters> ...
      parameters.window_length_in_sec=[1.5,1.0,0.5] \
      parameters.shift_length_in_sec=[0.75,0.5,0.25] \
@@ -127,7 +131,7 @@ Multiscale setting (base scale - window_length 0.5 s and shift_length 0.25):
 
 ## Run Speech Recognition with Speaker Diarization
 
-Using the script `offline_diarization_with_asr.py`, you can transcribe your audio recording with speaker labels as shown below:
+Using the script `offline_diar_with_asr_infer.py`, you can transcribe your audio recording with speaker labels as shown below:
 
 ```
 [00:03.34 - 00:04.46] speaker_0: back from the gym oh good how's it going 
@@ -135,26 +139,28 @@ Using the script `offline_diarization_with_asr.py`, you can transcribe your audi
 [00:12.10 - 00:13.97] speaker_0: well it's the middle of the week or whatever so
 ```
 
-Currently, offline_diarization_with_asr supports QuartzNet English model and ConformerCTC model (`QuartzNet15x5Base-En`, `stt_en_conformer_ctc_large`). 
+Currently, NeMo offline diarization inference supports QuartzNet English model and ConformerCTC ASR models (e.g.,`QuartzNet15x5Base-En`, `stt_en_conformer_ctc_large`). 
 
 #### Example script
 
 ```bash
-python offline_diarization_with_asr.py \
+python offline_diar_with_asr_infer.py \
     diarizer.manifest_filepath=<path to manifest file> \
     diarizer.out_dir='demo_asr_output' \
     diarizer.speaker_embeddings.model_path=<pretrained modelname or path to .nemo> \
     diarizer.asr.model_path=<pretrained modelname or path to .nemo> \
+    diarizer.speaker_embeddings.parameters.save_embeddings=False \
     diarizer.asr.parameters.asr_based_vad=True
 ```
 If you have reference rttm files or oracle number of speaker information, you can provide those file paths and number of speakers in the manifest file path and pass `diarizer.clustering.parameters.oracle_num_speakers=True` as shown in the following example.
 
 ```bash
-python offline_diarization_with_asr.py \
+python offline_diar_with_asr_infer.py \
     diarizer.manifest_filepath=<path to manifest file> \
     diarizer.out_dir='demo_asr_output' \
     diarizer.speaker_embeddings.model_path=<pretrained modelname or path to .nemo> \
     diarizer.asr.model_path=<pretrained modelname or path to .nemo> \
+    diarizer.speaker_embeddings.parameters.save_embeddings=False \
     diarizer.asr.parameters.asr_based_vad=True \
     diarizer.clustering.parameters.oracle_num_speakers=True
 ```
@@ -242,7 +248,7 @@ pip install https://github.com/kpu/kenlm/archive/master.zip
 You should provide a trained KenLM language model to use pyctcdecode. Binary or `.arpa` format can be provided to hydra configuration as below.
 
 ```bash
-  python offline_diarization_with_asr.py \
+  python offline_diar_with_asr_infer.py \
     ... <other paramerters> ...
     diarizer.asr.ctc_decoder_parameters.pretrained_language_model="/path/to/kenlm_language_model.binary"
 ```
@@ -265,7 +271,7 @@ pip install arpa
  
 
 ```bash
-python offline_diarization_with_asr.py \
+python offline_diar_with_asr_infer.py \
     ... <other paramerters> ...
     diarizer.asr.realigning_lm_parameters.logprob_diff_threshold=1.2 \
     diarizer.asr.realigning_lm_parameters.arpa_language_model="/path/to/4gram_big.arpa"\

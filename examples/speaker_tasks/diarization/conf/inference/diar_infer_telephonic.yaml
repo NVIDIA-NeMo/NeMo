@@ -1,3 +1,9 @@
+# This YAML file is created for all types of offline speaker diarization inference tasks in `<NeMo git root>/example/speaker_tasks/diarization` folder.
+# The inference parameters for VAD, speaker embedding extractor, clustering module, MSDD module, ASR decoder are all included in this YAML file. 
+# All the keys under `diarizer` key (`vad`, `speaker_embeddings`, `clustering`, `msdd_model`, `asr`) can be selectively used for its own purpose and also can be ignored if the module is not used.
+# The configurations in this YAML file is suitable for telephone recordings involving 2~8 speakers in a session and may not show the best performance on the other types of acoustic conditions or dialogues.
+# An example line in an input manifest file (`.json` format):
+# {"audio_filepath": "/path/to/audio_file", "offset": 0, "duration": null, "label": "infer", "text": "-", "num_speakers": null, "rttm_filepath": "/path/to/rttm/file", "uem_filepath": "/path/to/uem/file"}
 name: &name "ClusterDiarizer"
 
 num_workers: 4
@@ -12,7 +18,7 @@ diarizer:
   ignore_overlap: True # Consider or ignore overlap segments while scoring
 
   vad:
-    model_path: null # .nemo local model path or pretrained model name or none
+    model_path: ??? # .nemo local model path or pretrained VAD model name 
     external_vad_manifest: null # This option is provided to use external vad and provide its speech activity labels for speaker embeddings extraction. Only one of model_path or external_vad_manifest should be set
 
     parameters: # Tuned parameters for CH109 (using the 11 multi-speaker sessions as dev set) 
@@ -29,21 +35,32 @@ diarizer:
       filter_speech_first: True 
 
   speaker_embeddings:
-    model_path: ??? # .nemo local model path or pretrained model name (titanet_large, ecapa_tdnn or speakerverification_speakernet)
+    model_path: titanet_large # .nemo local model path or pretrained model name (titanet_large, ecapa_tdnn or speakerverification_speakernet)
     parameters:
-      window_length_in_sec: 1.5 # Window length(s) in sec (floating-point number). Either a number or a list. Ex) 1.5 or [1.5,1.0,0.5]
-      shift_length_in_sec: 0.75 # Shift length(s) in sec (floating-point number). Either a number or a list. Ex) 0.75 or [0.75,0.5,0.25]
-      multiscale_weights: null # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. Ex) [0.33,0.33,0.33]
-      save_embeddings: False # Save speaker embeddings in pickle format.
+      window_length_in_sec: [1.5,1.25,1.0,0.75,0.5] # Window length(s) in sec (floating-point number). either a number or a list. ex) 1.5 or [1.5,1.0,0.5]
+      shift_length_in_sec: [0.75,0.625,0.5,0.375,0.25] # Shift length(s) in sec (floating-point number). either a number or a list. ex) 0.75 or [0.75,0.5,0.25]
+      multiscale_weights: [1,1,1,1,1] # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. ex) [0.33,0.33,0.33]
+      save_embeddings: True # If True, save speaker embeddings in pickle format. This should be True if clustering result is used for other models, such as `msdd_model`.
   
   clustering:
     parameters:
       oracle_num_speakers: False # If True, use num of speakers value provided in manifest file.
-      max_num_speakers: 20 # Max number of speakers for each recording. If an oracle number of speakers is passed, this value is ignored.
+      max_num_speakers: 8 # Max number of speakers for each recording. If an oracle number of speakers is passed, this value is ignored.
       enhanced_count_thres: 80 # If the number of segments is lower than this number, enhanced speaker counting is activated.
       max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold. 
       sparse_search_volume: 30 # The higher the number, the more values will be examined with more time. 
       maj_vote_spk_count: False  # If True, take a majority vote on multiple p-values to estimate the number of speakers.
+  
+  msdd_model:
+    model_path: ??? # .nemo local model path or pretrained model name for multiscale diarization decoder (MSDD)
+    parameters:
+      use_speaker_model_from_ckpt: True # If True, use speaker embedding model in checkpoint. If False, the provided speaker embedding model in config will be used.
+      infer_batch_size: 25 # Batch size for MSDD inference. 
+      sigmoid_threshold: [0.7,0.85,1.0] # Sigmoid threshold for outputting 
+      seq_eval_mode: False # If True, use oracle number of speaker and evaluate F1 score for the given speaker sequences. Default is False.
+      split_infer: True # If True, break the input audio clip to short sequences and calculate cluster average embeddings for inference.
+      diar_window_length: 50 # The length of split short sequence when split_infer is True.
+      overlap_infer_spk_limit: 5 # If the estimated number of speakers are larger than this number, overlap speech is not estimated.
   
   asr:
     model_path: ??? # Provide NGC cloud ASR model name. stt_en_conformer_ctc_* models are recommended for diarization purposes.
@@ -72,5 +89,3 @@ diarizer:
       max_number_of_words: 10 # Max number of words for the right context.
       logprob_diff_threshold: 1.2  # The threshold for the difference between two log probability values from two hypotheses.
 
-# json manifest line example 
-# {"audio_filepath": "/path/to/audio_file", "offset": 0, "duration": null, "label": "infer", "text": "-", "num_speakers": null, "rttm_filepath": "/path/to/rttm/file", "uem_filepath": "/path/to/uem/file"}

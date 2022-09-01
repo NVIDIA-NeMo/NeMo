@@ -437,7 +437,7 @@ pipeline {
 
         stage('Speaker Diarization with ASR Inference') {
           steps {
-            sh 'python examples/speaker_tasks/diarization/offline_diarization_with_asr.py \
+            sh 'python examples/speaker_tasks/diarization/clustering_diarizer/offline_diar_with_asr_infer.py \
 	    diarizer.manifest_filepath=/home/TestData/an4_diarizer/an4_manifest.json \
             diarizer.speaker_embeddings.model_path=/home/TestData/an4_diarizer/spkr.nemo \
             diarizer.speaker_embeddings.parameters.save_embeddings=True \
@@ -453,7 +453,7 @@ pipeline {
 
         stage('Speaker Diarization Inference') {
           steps {
-            sh 'python examples/speaker_tasks/diarization/offline_diarization.py \
+            sh 'python examples/speaker_tasks/diarization/clustering_diarizer/offline_diar_infer.py \
 	    diarizer.manifest_filepath=/home/TestData/an4_diarizer/an4_manifest.json \
             diarizer.speaker_embeddings.model_path=/home/TestData/an4_diarizer/spkr.nemo \
             diarizer.speaker_embeddings.parameters.save_embeddings=True \

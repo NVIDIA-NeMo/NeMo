@@ -18,7 +18,7 @@ from nemo.core.config import hydra_runner
 
 """
 Run the entire speaker diarization pipeline: VAD, clustering diarizer for initializing clustering then Multi-scale Diarization Decoder (MSDD).
-python multiscale_diar_decoder_infer.py --config-path='conf' --config-name='msdd_5scl_15_05_50Povl_infer.yaml' \
+python multiscale_diar_decoder_infer.py --config-path='../conf/inference' --config-name='diar_infer_telephonic.yaml' \
     diarizer.vad.model_path=<NeMo VAD model path> \
     diarizer.msdd_model.model_path=<NeMo MSDD model path> \
     diarizer.oracle_vad=False \
@@ -27,7 +27,7 @@ python multiscale_diar_decoder_infer.py --config-path='conf' --config-name='msdd
 """
 
 
-@hydra_runner(config_path="conf", config_name="msdd_5scl_15_05_50Povl_infer.yaml")
+@hydra_runner(config_path="../conf/inference", config_name="diar_infer_telephonic.yaml")
 def main(cfg):
     diarizer_model = OverlapAwareDiarizer(cfg=cfg)
     diarizer_model.diarize()

@@ -8,7 +8,7 @@ for preparing datasets for training and validating VAD and speaker embedding mod
 Preparation of Input Data
 -------------------------
 
-Diarization inference is based on Hydra configurations which are fulfilled by ``.yaml`` files. See `NeMo Speaker Diarization Configuration Files <../configs>`_ for setting up the input Hydra configuration file for speaker diarization. Input data should be provided in line delimited JSON format as below:
+Diarization inference is based on Hydra configurations which are fulfilled by ``.yaml`` files. See :doc:`NeMo Speaker Diarization Configuration Files <./configs>` for setting up the input Hydra configuration file for speaker diarization. Input data should be provided in line delimited JSON format as below:
 	
 .. code-block:: bash
 
@@ -107,7 +107,7 @@ The following instructions can help one to reproduce the expected diarization pe
 AMI Meeting Corpus
 ~~~~~~~~~~~~~~~~~~
 
-The following are the suggested parameters for reproducing the diarization performance for AMI test set.
+The following are the suggested parameters for reproducing the diarization performance for AMI test set. This setting is based on meeting domain configuration in  ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/inference/diar_infer_meeting.yaml``
 
 .. code-block:: bash
 
@@ -117,11 +117,11 @@ The following are the suggested parameters for reproducing the diarization perfo
   diarizer.collar=0.25
   diarizer.ignore_overlap=True 
   diarizer.speaker_embeddings.model_path="titanet_large"
-  diarizer.speaker_embeddings.window_length_in_sec=[3,1.5,1.0,0.5] # Multiscale setting
-  diarizer.speaker_embeddings.shift_length_in_sec=[1.5,0.75,0.5,0.25] # Multiscale setting 
-  diarizer.speaker_embeddings.parameters.multiscale_weights=[0.4,0.3,0.2,0.1] # More weights on the longer scales
+  diarizer.speaker_embeddings.window_length_in_sec=[3.0,2.5,2.0,1.5,1.0,0.5] # Multiscale setting
+  diarizer.speaker_embeddings.shift_length_in_sec=[1.5,1.25,1.0,0.75,0.5,0.25] # Multiscale setting
+  diarizer.speaker_embeddings.parameters.multiscale_weights=[1,1,1,1,1,1] # Equal weights
 
-This setup is expected to reproduce a confusion error rate of 1.17% on AMI test set.
+This setup is expected to reproduce a confusion error rate of 1.4% on AMI MixedHeadset test set.
 
 To evaluate the performance on AMI Meeting Corpus, the following instructions can help.
   - Download AMI Meeting Corpus from `AMI website <https://groups.inf.ed.ac.uk/ami/corpus/>`_. Choose ``Headset mix`` which has a mono wav file for each session.
@@ -134,21 +134,20 @@ CallHome American English Speech (CHAES), LDC97S42
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 We use the CH109 set which is a subset of the CHAES dataset which has only two speakers in one session. 
-The following are the suggested parameters for reproducing the diarization performance for the CH109 set.
+The following are the suggested parameters for reproducing the diarization performance for the CH109 set and this setting is based on telephonic domain configuration in ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/inference/diar_infer_telephonic.yaml``
 
 .. code-block:: bash
 
   diarizer.manifest_filepath="/path/to/ch109_input_manifest.json"
-  diarizer.oracle_num_speakers=2 # Since there are exactly 2 speakers per each CH109 session
   diarizer.oracle_vad=True # Use oracle VAD extracted from RTTM files.
   diarizer.collar=0.25
   diarizer.ignore_overlap=True 
   diarizer.speaker_embeddings.model_path="titanet_large"
-  diarizer.speaker_embeddings.window_length_in_sec=[1.5,1.0,0.5] # Multiscale setting
-  diarizer.speaker_embeddings.shift_length_in_sec=[0.75,0.5,0.25] # Multiscale setting
-  diarizer.speaker_embeddings.parameters.multiscale_weights=[0.33,0.33,0.33] # Equal weights
+  diarizer.speaker_embeddings.window_length_in_sec=[1.5,1.25,1.0,0.75,0.5] # Multiscale setting
+  diarizer.speaker_embeddings.shift_length_in_sec=[0.75,0.625,0.5,0.375,0.25] # Multiscale setting 
+  diarizer.speaker_embeddings.parameters.multiscale_weights=[1,1,1,1,1] # Equal weights
 
-This setup is expected to reproduce a confusion error rate of 0.94% on CH109 set.
+This setup is expected to reproduce a confusion error rate of 0.88% on CH109 set.
 
 To evaluate the performance on AMI Meeting Corpus, the following instructions can help.
   - Download CHAES Meeting Corpus at LDC website `LDC97S42 <https://catalog.ldc.upenn.edu/LDC97S42>`_ (CHAES is not publicly available).

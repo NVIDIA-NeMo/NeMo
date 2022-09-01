@@ -1,12 +1,12 @@
 Speaker Diarization
 ==================================
 
-Speaker Diarization (SD) is the task of segmenting audio recordings by speaker labels, which is figuring out "Who spoke when?".
+Speaker Diarization (SD) is the task of segmenting audio recordings by speaker labels, which answers the question "Who spoke when?".
 
 .. image:: images/sd_pipeline.png
         :align: center
-        :scale: 75%
-        :alt: Speaker Diarization pipeline [todo]
+        :width: 800px
+        :alt: Speaker diarization pipeline- VAD, segmentation, speaker embedding extraction, clustering
 
 
 A speaker diarization system consists of a **Voice Activity Detection (VAD)** model to get the timestamps of audio where speech is being spoken while ignoring the background noise and 

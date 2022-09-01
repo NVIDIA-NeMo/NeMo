@@ -24,7 +24,7 @@ from nemo.utils.exp_manager import exp_manager
 """
 Example training session (on 1 GPU for 10 epochs on telephonic datasets)
 
-python ./multiscale_diar_decoder.py --config-path='conf' --config-name='msdd_5scl_15_05_50Povl_256x3x32x2.yaml' \
+python ./multiscale_diar_decoder.py --config-path='../conf/neural_diarizer' --config-name='msdd_5scl_15_05_50Povl_256x3x32x2.yaml' \
     trainer.gpus=1 \
     trainer.max_epochs=10  \
     model.base.diarizer.speaker_embeddings.model_path="titanet_large" \
@@ -40,7 +40,7 @@ python ./multiscale_diar_decoder.py --config-path='conf' --config-name='msdd_5sc
 seed_everything(42)
 
 
-@hydra_runner(config_path="conf", config_name="msdd_5scl_15_05_50Povl_256x3x32x2.yaml")
+@hydra_runner(config_path="../conf/neural_diarizer", config_name="msdd_5scl_15_05_50Povl_256x3x32x2.yaml")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     trainer = pl.Trainer(**cfg.trainer)

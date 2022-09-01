@@ -32,7 +32,7 @@
 # https://github.com/tango4j/Auto-Tuning-Spectral-Clustering.
 
 from collections import Counter
-from typing import Dict, List
+from typing import Dict, Optional
 
 import torch
 from torch.linalg import eigh
@@ -673,7 +673,7 @@ class SpectralClustering:
         self.cuda = cuda
         self.device = device
 
-    def predict(self, X):
+    def predict(self, X: torch.Tensor):
         """
         Call self.clusterSpectralEmbeddings() function to predict cluster labels.
 
@@ -690,7 +690,9 @@ class SpectralClustering:
         labels = self.clusterSpectralEmbeddings(X, cuda=self.cuda, device=self.device)
         return labels
 
-    def clusterSpectralEmbeddings(self, affinity, cuda: bool = False, device: torch.device = torch.device('cpu')):
+    def clusterSpectralEmbeddings(
+        self, affinity: torch.Tensor, cuda: bool = False, device: torch.device = torch.device('cpu')
+    ):
         """
         Perform k-means clustering on spectral embeddings. To alleviate the effect of randomness,
         k-means clustering is performed for (self.n_random_trials) times then the final labels are obtained
@@ -792,7 +794,7 @@ class NMESC:
 
     def __init__(
         self,
-        mat,
+        mat: torch.Tensor,
         max_num_speaker: int = 10,
         max_rp_threshold: float = 0.15,
         sparse_search: bool = True,
@@ -994,8 +996,8 @@ class NMESC:
 
 
 def COSclustering(
-    uniq_embs_and_timestamps,
-    oracle_num_speakers=None,
+    uniq_embs_and_timestamps: Dict,
+    oracle_num_speakers: Optional[int] = None,
     max_num_speaker: int = 8,
     min_samples_for_NMESC: int = 6,
     enhanced_count_thres: int = 80,
@@ -1004,7 +1006,7 @@ def COSclustering(
     sparse_search_volume: int = 30,
     maj_vote_spk_count: bool = False,
     fixed_thres: float = 0.0,
-    cuda=False,
+    cuda: bool = False,
 ):
     """
     Clustering method for speaker diarization based on cosine similarity.

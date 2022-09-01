@@ -407,12 +407,26 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
             decoder_cross_attention_relative_position_bias,
         ) = (None, None, None)
 
-        enc_output_provided = enc_output is not None
+        if enc_input is not None and enc_output is not None:
+            raise ValueError(
+                """Both enc_input and enc_output are not None.
+                You should only be passing one of them.
+                enc_input is the result of the encoder embedding layer
+                enc_output is the result of running the entire transformer encoder."""
+            )
 
-        if enc_input is not None:
+        # In order of precedence, we use enc_output, enc_input, and then enc_input_ids to determine the encoder sequence length.
+        if enc_output is not None:
+            # If enc_output is provided in `batch_for_pipeline`, we need to transpose it from [B x S x H] -> [S x B x H].
+            enc_output = enc_output.transpose(0, 1)
+            enc_seq_length = enc_output.size(0)
+        elif enc_input is not None:
             # If enc_input is provided, we need to transpose it from [B x S x H] -> [S x B x H].
             enc_input = enc_input.transpose(0, 1)
-        elif (enc_input is None) and (enc_input_ids is not None):
+            enc_seq_length = enc_input.size(0)
+        # Only need to run encoder embedding and position ids if enc_input or enc_output is not provided.
+        else:
+            enc_seq_length = enc_input_ids.size(1)
             if self.pre_process and self.add_encoder:
                 # We don't need position ids for RPE, because the embedding layer does not have position embeddings.
                 if self.encoder_cfg.get("position_embedding_type", "learned_absolute") != 'relative':
@@ -425,7 +439,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
 
         if self.encoder_cfg.get("position_embedding_type", "learned_absolute") == 'relative' and self.add_encoder:
             encoder_self_attention_relative_position_bias = self.encoder_relative_position_embedding(
-                query_seq_length=enc_input_ids.size(1), key_seq_length=enc_input_ids.size(1),
+                query_seq_length=enc_seq_length, key_seq_length=enc_seq_length,
             )
 
         if output_enc_hidden_only:
@@ -462,10 +476,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     )
                 else:
                     decoder_cross_attention_relative_position_bias = None
-
-            # If enc_output is provided in `batch_for_pipeline`, we need to transpose it from [B x S x H] -> [S x B x H].
-            if enc_output_provided:
-                enc_output = enc_output.transpose(0, 1)
 
             output = self.enc_dec_model(
                 enc_input=enc_input,

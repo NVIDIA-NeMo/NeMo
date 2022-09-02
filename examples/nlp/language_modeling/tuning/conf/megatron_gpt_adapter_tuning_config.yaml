@@ -8,8 +8,8 @@ trainer:
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   replace_sampler_ddp: False
-  max_epochs: 1
-  max_steps: 1e5 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  max_epochs: 10
+  max_steps: -1 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 0.2
   accumulate_grad_batches: 1
@@ -31,7 +31,7 @@ exp_manager:
   create_checkpoint_callback: True
   checkpoint_callback_params:
     monitor: val_loss
-    save_top_k: 2
+    save_top_k: 1
     mode: min
     save_nemo_on_train_end: True # Should be false, correct prompt learning model file is saved at model.nemo_path set below, 
     filename: 'megatron_gpt_adapter_tuning--{val_loss:.3f}-{step}'
@@ -103,9 +103,13 @@ model:
     answer_field: "target"
 
   adapter_tuning:
+    type: 'parallel_adapter' # this should be either 'parallel_adapter' or 'linear_adapter'
     adapter_dim: 50
     adapter_dropout: 0.1
     norm_position: 'pre' # This can be set to 'pre' or 'post', 'pre' is normally what is used.
+    column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+    row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+    norm_type: 'mixedfusedlayernorm' # IGNORED if layer_adapter is used,  options are ['layernorm', 'mixedfusedlayernorm']
 
   data:
     train_ds: ??? # expects a list of paths to training data files

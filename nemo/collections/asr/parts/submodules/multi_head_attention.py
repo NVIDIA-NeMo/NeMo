@@ -129,9 +129,7 @@ class MultiHeadAttention(nn.Module):
         returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
         """
-        key, value, query, cache_next = self.update_cache(
-            key=key, value=value, query=query, cache=cache, cache_next=cache_next
-        )
+        key, value, query = self.update_cache(key=key, value=value, query=query, cache=cache, cache_next=cache_next)
 
         # temporary until we solve this more gracefully
         with avoid_float16_autocast_context():

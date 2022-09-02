@@ -177,7 +177,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
             self._speaker_model = EncDecSpeakerLabelModel.load_from_checkpoint(model_path, map_location=rank_id)
             logging.info("Speaker Model restored locally from {}".format(model_path))
         else:
-            if model_path not in get_available_model_names(EncDecSpeakerLabelModel):
+            if model_path not in EncDecSpeakerLabelModel.get_available_model_names():
                 logging.warning(
                     "requested {} model name not available in pretrained models, instead".format(model_path)
                 )

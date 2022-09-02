@@ -73,7 +73,7 @@ model:
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo.collections.common.tokenizers.text_to_speech.g2ps.IPAG2P
+      _target_: nemo_text_processing.g2p.modules.IPAG2P
       phoneme_dict: ${phoneme_dict_path}
       heteronyms: ${heteronyms_path}
       phoneme_probability: 0.8

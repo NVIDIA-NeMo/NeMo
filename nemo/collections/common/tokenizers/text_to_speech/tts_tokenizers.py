@@ -19,7 +19,7 @@ import itertools
 import string
 from contextlib import contextmanager
 from logging import ERROR, getLogger
-from typing import List
+from typing import List, Optional
 
 from nemo_text_processing.g2p.data.data_utils import (
     english_text_preprocessing,
@@ -492,11 +492,22 @@ class IPATokenizer(BaseTokenizer):
 
     def encode(self, text):
         """See base class for more information."""
-        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
 
         text = self.text_preprocessing_func(text)
         g2p_text = self.g2p(text)  # Double-check this
+        return self.encode_from_g2p(g2p_text, text)
 
+    def encode_from_g2p(self, g2p_text: List[str], raw_text: Optional[str] = None):
+        """
+        Encodes text that has already been run through G2P.
+        Called for encoding to tokens after text preprocessing and G2P.
+
+        Args:
+            g2p_text: G2P's output, could be a mixture of phonemes and graphemes,
+                e.g. "see OOV" -> ['ˈ', 's', 'i', ' ', 'O', 'O', 'V']
+            raw_text: original raw input
+        """
+        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
         for p in g2p_text:
             if p == space and len(ps) > 0 and ps[-1] != space:
                 # Add space if last token isn't one
@@ -508,10 +519,10 @@ class IPATokenizer(BaseTokenizer):
                 # Add punct
                 ps.append(p)
             elif p != space:
-                logging.warning(
-                    f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
-                    f"Original text: [{text}]. Symbol will be skipped."
-                )
+                message = f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
+                if raw_text is not None:
+                    message += f"Original text: [{raw_text}]. Symbol will be skipped."
+                logging.warning(message)
 
         # Remove trailing spaces
         if ps:

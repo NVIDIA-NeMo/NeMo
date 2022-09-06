@@ -119,6 +119,7 @@ class WaveformFeaturizer(object):
         trim_frame_length=2048,
         trim_hop_length=512,
         orig_sr=None,
+        channel_selector=None,
     ):
         audio = AudioSegment.from_file(
             file_path,
@@ -132,6 +133,7 @@ class WaveformFeaturizer(object):
             trim_frame_length=trim_frame_length,
             trim_hop_length=trim_hop_length,
             orig_sr=orig_sr,
+            channel_selector=channel_selector,
         )
         return self.process_segment(audio)
 

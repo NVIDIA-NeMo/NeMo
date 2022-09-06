@@ -59,6 +59,8 @@
 ;;;   NeMo/scripts/tts_dataset_files/cmudict-arpabet_to_ipa_nv22.08.tsv
 ;;;   and NeMo/scripts/dataset_processing/g2p/convert_cmu_arpabet_to_ipa.py
 ;;;   conversion script
+;;;   Additional entries adapted from:
+;;;   https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv
 ;;;
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
@@ -1643,6 +1645,7 @@ AFFAIR  əˈfɛɹ
 AFFAIR'S  əˈfɛɹz
 AFFAIRS  əˈfɛɹz
 AFFECT  əˈfɛkt
+AFFECT(1)  ˈæˌfɛkt
 AFFECTATION  ˌæfɛkˈteɪʃən
 AFFECTED  əˈfɛktɪd
 AFFECTING  əˈfɛktɪŋ
@@ -6717,6 +6720,7 @@ ATTRACTIVENESS  əˈtɹæktɪvnəs
 ATTRACTS  əˈtɹækts
 ATTRIBUTABLE  əˈtɹɪbjətəbəl
 ATTRIBUTE  əˈtɹɪbˌjut
+ATTRIBUTE(1)  ˈætɹəbˌjut
 ATTRIBUTED  əˈtɹɪbjətəd
 ATTRIBUTES  əˈtɹɪbˌjuts
 ATTRIBUTING  əˈtɹɪbjətɪŋ
@@ -6858,6 +6862,8 @@ AUGURING  ˈɔɡɚɪŋ
 AUGURS  ˈɔɡɚz
 AUGUST  ˈɑɡəst
 AUGUST(1)  ˈɔɡəst
+AUGUST(2)  ˌɑˈɡəst
+AUGUST(3)  ˈaʊˌɡʊst
 AUGUST'S  ˈɔɡəsts
 AUGUSTA  əˈɡʌstə
 AUGUSTA'S  əˈɡʌstəz
@@ -12408,6 +12414,7 @@ BLEPHARISMA  ˌblɛfɚˈɪzmə
 BLESER  ˈblizɚ
 BLESS  ˈblɛs
 BLESSED  ˈblɛst
+BLESSED(1)  ˈblɛsəd
 BLESSEDLY  ˈblɛsədli
 BLESSEDNESS  ˈblɛsədnəs
 BLESSES  ˈblɛsɪz
@@ -24305,6 +24312,7 @@ CONGESTION  kənˈdʒɛstʃən
 CONGESTIVE  kənˈdʒɛstɪv
 CONGLETON  ˈkɑŋɡəltɑn
 CONGLOMERATE  kənˈɡlɑmɚət
+CONGLOMERATE(1)  kənˈɡlɑmɝˌeɪt
 CONGLOMERATE'S  kənˈɡlɑmɚəts
 CONGLOMERATES  kənˈɡlɑmɚəts
 CONGLOMERATION  kənˌɡlɑmɚˈeɪʃən
@@ -24610,6 +24618,7 @@ CONSONANTAL  ˌkɑnsəˈnɑntəl
 CONSONANTAL(1)  ˌkɑnsəˈnɑnəl
 CONSONANTS  ˈkɑnsənənts
 CONSORT  kənˈsɔɹt
+CONSORT(1)  ˈkɑnˌsɔɹt
 CONSORTIA  kənˈsɔɹʃə
 CONSORTING  kənˈsɔɹtɪŋ
 CONSORTIUM  kənˈsɔɹʃiəm
@@ -31425,6 +31434,7 @@ DEVIANCY(1)  ˈdivjɛnsi
 DEVIANT  ˈdiviənt
 DEVIANTS  ˈdiviənts
 DEVIATE  ˈdiviˌeɪt
+DEVIATE(1)  ˈdiˌviət
 DEVIATED  ˈdiviˌeɪtɪd
 DEVIATES  ˈdiviˌeɪts
 DEVIATING  ˈdiviˌeɪtɪŋ
@@ -31613,6 +31623,7 @@ DIADEM  ˈdaɪəˌdɛm
 DIAGNOSE  ˌdaɪəɡˈnoʊs
 DIAGNOSED  ˌdaɪəɡˈnoʊst
 DIAGNOSES  ˌdaɪəɡˈnoʊsiz
+DIAGNOSES(1)  ˌdaɪəɡˈnoʊsəz
 DIAGNOSING  ˌdaɪəɡˈnoʊsɪŋ
 DIAGNOSIS  ˌdaɪəɡˈnoʊsəs
 DIAGNOSTEK  ˌdaɪəɡˈnɑstɛk
@@ -32602,6 +32613,8 @@ DISBURSEMENTS  dɪsˈbɝsmənts
 DISBURSING  dɪsˈbɝsɪŋ
 DISC  ˈdɪsk
 DISCARD  dɪˈskɑɹd
+DISCARD(1)  ˈdɪsˌkɑɹd
+DISCARD(2)  dəsˈkɑɹd
 DISCARDED  dɪˈskɑɹdɪd
 DISCARDING  dɪˈskɑɹdɪŋ
 DISCARDS  dɪˈskɑɹdz
@@ -38407,6 +38420,7 @@ ENTOURAGES(1)  ˌɑntɚˈɑʒəz
 ENTRAIL  ˈɛntɹəl
 ENTRAILS  ˈɛntɹəlz
 ENTRANCE  ˈɛntɹəns
+ENTRANCE(1)  əˈntɹæns
 ENTRANCED  ɪnˈtɹænst
 ENTRANCES  ˈɛntɹənsəz
 ENTRANT  ˈɛntɹənt
@@ -40217,6 +40231,7 @@ EXPONENTIAL  ˌɛkspoʊˈnɛnʃəl
 EXPONENTIALLY  ˌɛkspoʊˈnɛnʃəli
 EXPONENTS  ɪkˈspoʊnənts
 EXPORT  ˈɛkspɔɹt
+EXPORT(1)  əkˈspɔɹt
 EXPORTABLE  ɛkˈspɔɹtəbəl
 EXPORTED  ɪkˈspɔɹtəd
 EXPORTER  ɪkˈspɔɹtɚ
@@ -40226,6 +40241,7 @@ EXPORTING  ɪkˈspɔɹtɪŋ
 EXPORTS  ˈɛkspɔɹts
 EXPOS  ˈɛkspoʊz
 EXPOSE  ɪkˈspoʊz
+EXPOSE(1)  ˌɛkˌspoʊˈzeɪ
 EXPOSED  ɪkˈspoʊzd
 EXPOSES  ɪkˈspoʊzɪz
 EXPOSING  ɪkˈspoʊzɪŋ
@@ -44428,6 +44444,7 @@ FRAGER  ˈfɹeɪɡɚ
 FRAGILE  ˈfɹædʒəl
 FRAGILITY  fɹəˈdʒɪləti
 FRAGMENT  ˈfɹæɡmənt
+FRAGMENT(1)  ˌfɹæɡˈmɛnt
 FRAGMENTARY  ˈfɹæɡmənˌtɛɹi
 FRAGMENTATION  ˌfɹæɡmənˈteɪʃən
 FRAGMENTED  ˈfɹæɡməntɪd
@@ -44894,6 +44911,7 @@ FREQUENCIES  ˈfɹikwənsiz
 FREQUENCY  ˈfɹikwənsi
 FREQUENT  ˈfɹikwənt
 FREQUENT(1)  ˈfɹiˌkwɛnt
+FREQUENT(2)  ˌfɹiˈkwɛnt
 FREQUENTED  ˈfɹikwəntɪd
 FREQUENTING  ˈfɹikwəntɪŋ
 FREQUENTING(1)  ˈfɹiˌkwɛntɪŋ
@@ -56752,6 +56770,7 @@ HOURS'  ˈaʊɹz
 HOUSAND  ˈhaʊsənd
 HOUSDEN  ˈhaʊsdən
 HOUSE  ˈhaʊs
+HOUSE(1)  ˈhaʊz
 HOUSE'S  ˈhaʊsɪz
 HOUSEAL  ˈhaʊsəl
 HOUSEBOAT  ˈhaʊsˌboʊt
@@ -58553,6 +58572,7 @@ IMPLANTS(1)  ˈɪmˌplænts
 IMPLAUSIBLE  ˌɪmˈplɔzəbəl
 IMPLAUSIBLY  ˌɪmˈplɔzəbli
 IMPLEMENT  ˈɪmpləmənt
+IMPLEMENT(1)  ˈɪmpləˌmɛnt
 IMPLEMENTATION  ˌɪmpləmɛnˈteɪʃən
 IMPLEMENTATIONS  ˌɪmpləmɛnˈteɪʃənz
 IMPLEMENTED  ˈɪmpləˌmɛntəd
@@ -58969,6 +58989,7 @@ INCREDIBLY  ˌɪnˈkɹɛdəbli
 INCREDULITY  ˌɪnkɹəˈdulɪti
 INCREDULOUS  ˌɪnˈkɹɛdʒələs
 INCREMENT  ˈɪnkɹəmənt
+INCREMENT(1)  ˈɪnkɹəˌmɛnt
 INCREMENTAL  ˌɪnkɹəˈmɛntəl
 INCREMENTALISM  ˌɪnkɹəˈmɛntəˌlɪzm
 INCREMENTALLY  ˌɪnkɹəˈmɛntəˌli
@@ -59564,6 +59585,7 @@ INITIALLING  ˌɪˈnɪʃəlɪŋ
 INITIALLY  ˌɪˈnɪʃəli
 INITIALS  ˌɪˈnɪʃəlz
 INITIATE  ˌɪˈnɪʃiˌeɪt
+INITIATE(1)  əˈnɪˌʃiət
 INITIATED  ˌɪˈnɪʃiˌeɪtəd
 INITIATED(1)  ˌɪˈnɪʃiˌeɪtɪd
 INITIATES  ˌɪˈnɪʃiəts
@@ -59922,6 +59944,7 @@ INSTRUCTOR  ˌɪnˈstɹʌktɚ
 INSTRUCTORS  ˌɪnˈstɹʌktɚz
 INSTRUCTS  ˌɪnˈstɹʌkts
 INSTRUMENT  ˈɪnstɹəmənt
+INSTRUMENT(1)  ˈɪnstɹəˌmɛnt
 INSTRUMENT'S  ˈɪnstɹəmənts
 INSTRUMENTAL  ˌɪnstɹəˈmɛntəl
 INSTRUMENTAL(1)  ˌɪnstɹəˈmɛnəl
@@ -60133,6 +60156,7 @@ INTERCESSION  ˌɪntɚˈsɛʃən
 INTERCESSION(1)  ˌɪnɚˈsɛʃən
 INTERCHANGE  ˌɪntɚˈtʃeɪndʒ
 INTERCHANGE(1)  ˌɪnɚˈtʃeɪndʒ
+INTERCHANGE(2)  ˈɪntɚˌtʃeɪndʒ
 INTERCHANGEABLE  ˌɪntɚˈtʃeɪndʒəbəl
 INTERCHANGEABLE(1)  ˌɪnɚˈtʃeɪndʒəbəl
 INTERCHANGEABLY  ˌɪntɚˈtʃeɪndʒəbli
@@ -60603,6 +60627,7 @@ INVERSE  ˌɪnˈvɝs
 INVERSELY  ˌɪnˈvɝsli
 INVERSION  ˌɪnˈvɝʒən
 INVERT  ˌɪnˈvɝt
+INVERT(1)  ˈɪnvɝt
 INVERTEBRATE  ˌɪnˈvɝtəbɹət
 INVERTEBRATE(1)  ˌɪnˈvɝtəˌbɹeɪt
 INVERTEBRATES  ˌɪnˈvɝtəbɹəts
@@ -60664,6 +60689,7 @@ INVITATION  ˌɪnvɪˈteɪʃən
 INVITATIONAL  ˌɪnvəˈteɪʃənəl
 INVITATIONS  ˌɪnvɪˈteɪʃənz
 INVITE  ˌɪnˈvaɪt
+INVITE(1)  ˈɪnˌvaɪt
 INVITED  ˌɪnˈvaɪtəd
 INVITED(1)  ˌɪnˈvaɪtɪd
 INVITEE  ˌɪnvaɪˈti
@@ -61056,6 +61082,7 @@ ISOETEC  ˈaɪsoʊˌtɛk
 ISOGENIC  ˌaɪsoʊˈdʒɛnək
 ISOLA  aɪˈsɑlə
 ISOLATE  ˈaɪsəˌleɪt
+ISOLATE(1)  ˈaɪsələt
 ISOLATED  ˈaɪsəˌleɪtəd
 ISOLATED(1)  ˈaɪsəˌleɪtɪd
 ISOLATES  ˈaɪsəˌleɪts
@@ -62074,6 +62101,7 @@ JESUIT  ˈdʒɛʒuɪt
 JESUITS  ˈdʒɛʒuɪts
 JESUP  ˈdʒɛsəp
 JESUS  ˈdʒizəs
+JESUS(1)  ˌheɪˈsus
 JESUS'  ˈdʒizəs
 JESUS'S  ˈdʒizəsɪz
 JET  ˈdʒɛt
@@ -75231,6 +75259,7 @@ MATCHMAKING  ˈmætʃˌmeɪkɪŋ
 MATCHUP  ˈmætʃəp
 MATCHUPS  ˈmætʃəps
 MATE  ˈmeɪt
+MATE(1)  ˈmɑˌteɪ
 MATECKI  məˈtɛki
 MATED  ˈmeɪtɪd
 MATEER  məˈtɪɹ
@@ -79842,6 +79871,8 @@ MOBERLY  ˈmoʊbɚli
 MOBIL  ˈmoʊbəl
 MOBIL'S  ˈmoʊbəlz
 MOBILE  ˈmoʊbəl
+MOBILE(1)  ˌmoʊˈbil
+MOBILE(2)  ˈmoʊˌbil
 MOBILE'S  ˈmoʊbəlz
 MOBILER  ˈmoʊbɪlɚ
 MOBILES  ˈmoʊbəlz
@@ -81288,6 +81319,7 @@ MOUSSORGSKY(1)  muˈzɔɹɡski
 MOUSTACHE  ˈmʌsˌtæʃ
 MOUSY  ˈmaʊsi
 MOUTH  ˈmaʊθ
+MOUTH(1)  ˈmaʊð
 MOUTHED  ˈmaʊðd
 MOUTHFUL  ˈmaʊθˌfʊl
 MOUTHING  ˈmaʊðɪŋ
@@ -87216,6 +87248,7 @@ ORMSBY'S  ˈɔɹmzbiz
 ORN  ˈɔɹn
 ORNA  ˈɔɹnə
 ORNAMENT  ˈɔɹnəmənt
+ORNAMENT(1)  ˌɔɹnəˈmɛnt
 ORNAMENTAL  ˌɔɹnəˈmɛntəl
 ORNAMENTALLY  ˌɔɹnəˈmɛntəli
 ORNAMENTATION  ˌɔɹnəmɛnˈteɪʃən
@@ -88230,6 +88263,7 @@ OVERTAX  ˈoʊvɚˌtæks
 OVERTAXED  ˌoʊvɚˈtækst
 OVERTHREW  ˌoʊvɚˈθɹu
 OVERTHROW  ˈoʊvɚˌθɹoʊ
+OVERTHROW(1)  ˌoʊvɚˈθɹoʊ
 OVERTHROWING  ˈoʊvɚˌθɹoʊɪŋ
 OVERTHROWN  ˌoʊvɚˈθɹoʊn
 OVERTHROWS  ˈoʊvɚˌθɹoʊz
@@ -89697,8 +89731,8 @@ PASTS  ˈpæsts
 PASTULA  pɑˈstulə
 PASTURE  ˈpæstʃɚ
 PASTURES  ˈpæstʃɚz
-PASTY  ˈpeɪsti
-PASTY(1)  ˈpæsti
+PASTY  ˈpeɪˌsti
+PASTY(1)  ˈpæsˌti
 PASZEK  ˈpɑʃɛk
 PASZKIEWICZ  ˈpɑʃkəvɪtʃ
 PASZTOR  ˈpæstɚ
@@ -90823,10 +90857,11 @@ PERFORMERS  pɚˈfɔɹmɚz
 PERFORMERS'  pɚˈfɔɹmɚz
 PERFORMING  pɚˈfɔɹmɪŋ
 PERFORMS  pɚˈfɔɹmz
-PERFUME  pɚfˈjum
-PERFUMED  pɚfˈjumd
-PERFUMES  pɚfˈjumz
-PERFUMING  pɚfˈjumɪŋ
+PERFUME  pɚˈfjum
+PERFUME(1)  ˈpɝˌfjum
+PERFUMED  pɚˈfjumd
+PERFUMES  pɚˈfjumz
+PERFUMING  pɚˈfjumɪŋ
 PERFUNCTORY  pɚˈfʌŋktɚi
 PERFUSION  pɚfˈjuzən
 PERGAMON  ˈpɝɡəmən
@@ -92125,6 +92160,7 @@ PIGLET  ˈpɪɡlɪt
 PIGLETS  ˈpɪɡlɪts
 PIGMAN  ˈpɪɡmən
 PIGMENT  ˈpɪɡmɛnt
+PIGMENT(1)  pəɡˈmɛnt
 PIGMENTATION  ˌpɪɡmənˈteɪʃən
 PIGMENTED  ˌpɪɡˈmɛtɪd
 PIGMENTS  ˈpɪɡˌmɛnts
@@ -94460,6 +94496,7 @@ PRECIOUS  ˈpɹɛʃəs
 PRECIP  ˈpɹɛsɪp
 PRECIPICE  ˈpɹɛsɪpəs
 PRECIPITATE  pɹɪˈsɪpɪˌteɪt
+PRECIPITATE(1)  pɹəˈsɪpətət
 PRECIPITATED  pɹɪˈsɪpɪˌteɪtɪd
 PRECIPITATING  pɹɪˈsɪpəˌteɪtɪŋ
 PRECIPITATION  pɹɪˌsɪpɪˈteɪʃən
@@ -98954,6 +98991,7 @@ RECORE  ɹɛˈkɔɹi
 RECOTON  ɹɪˈkɔtɪn
 RECOUNT  ɹɪˈkaʊnt
 RECOUNT(1)  ˌɹiˈkaʊnt
+RECOUNT(2)  ˈɹiˌkaʊnt
 RECOUNTED  ɹɪˈkaʊntɪd
 RECOUNTED(1)  ˌɹiˈkaʊntɪd
 RECOUNTING  ɹɪˈkaʊntɪŋ
@@ -100804,6 +100842,8 @@ REREAD  ˈɹiˈɹid
 REREADING  ˈɹiˈɹidɪŋ
 REREGULATE  ɹiˈɹɛɡjəˌleɪt
 REREGULATION  ɹiɹɛɡjəˈleɪʃən
+RERELEASE  ˈɹiɹəˌlis
+RERELEASE(1)  ˌɹiɹəˈlis
 REROUTE  ɹiˈɹut
 REROUTE(1)  ɹiˈɹaʊt
 REROUTED  ɹiˈɹutɪd
@@ -101275,6 +101315,7 @@ RETALIATORY  ɹiˈtæljəˌtɔɹi
 RETANA  ɹɛˈtænə
 RETARD  ɹɪˈtɑɹd
 RETARD(1)  ɹiˈtɑɹd
+RETARD(2)  ˈɹitɑɹd
 RETARDANT  ɹiˈtɑɹdənt
 RETARDATION  ɹitɑɹˈdeɪʃən
 RETARDED  ɹɪˈtɑɹdɪd
@@ -102858,6 +102899,7 @@ RODENT  ˈɹoʊdənt
 RODENTICIDE  ɹoʊˈdɛntɪsaɪd
 RODENTS  ˈɹoʊdənts
 RODEO  ˈɹoʊdiˌoʊ
+RODEO(1)  ˌɹoʊˈdeɪˌoʊ
 RODEOS  ˈɹoʊdiˌoʊz
 RODER  ˈɹoʊdɚ
 RODERICA  ɹoʊdɚˈikə
@@ -103757,6 +103799,7 @@ ROVIRA  ɹoʊˈvɪɹə
 ROVITO  ɹoʊˈvitoʊ
 ROVNER  ˈɹɑvnɚ
 ROW  ˈɹoʊ
+ROW(1)  ˈɹaʊ
 ROW'S  ˈɹoʊz
 ROWAINE  ɹoʊˈeɪn
 ROWAINE'S  ɹoʊˈeɪnz
@@ -104862,6 +104905,7 @@ SAKAROV  sɑˈkɑˌɹɔv
 SAKATA  sɑˈkɑtə
 SAKAU  sɑˈkɑu
 SAKE  ˈseɪk
+SAKE(1)  ˈsɑˌkeɪ
 SAKE'S  ˈseɪks
 SAKER  ˈseɪkɚ
 SAKES  ˈseɪks
@@ -122718,6 +122762,7 @@ TRANSPIRED  tɹænˈspaɪɚd
 TRANSPIRES  tɹænˈspaɪɚz
 TRANSPIRING  tɹænˈspaɪɚɪŋ
 TRANSPLANT  tɹænsˈplænt
+TRANSPLANT(1)  ˈtɹænsˌplænt
 TRANSPLANTATION  ˌtɹænzplænˈteɪʃən
 TRANSPLANTED  tɹænsˈplæntɪd
 TRANSPLANTING  tɹænsˈplæntɪŋ

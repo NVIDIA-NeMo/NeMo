@@ -1023,7 +1023,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 data_parallel_size=parallel_state.get_data_parallel_world_size(),
             )
 
-        # Return the output tensor of encoder and transpose from [batch, seq_len, hidden] to [seq_len, batch, hidden]
+        # Return the output tensor of encoder and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
         return output_tensor.transpose(1, 0)
 
     def decode(

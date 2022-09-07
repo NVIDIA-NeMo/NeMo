@@ -45,7 +45,8 @@ except (ImportError, ModuleNotFoundError):
 
 class MegatronBertModel(MegatronBaseModel):
     """
-    Megatron Bert pretraining
+    Megatron Bert pretraining.
+    Model returns [batch, seq, hidden] shape
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
@@ -96,6 +97,19 @@ class MegatronBertModel(MegatronBaseModel):
 
     def forward(self, input_ids, attention_mask, token_type_ids, lm_labels=None):
         output_tensor = self.model(input_ids, attention_mask, token_type_ids=token_type_ids, lm_labels=lm_labels)
+
+        # Return the output tensor of encoder and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
+        if torch.is_tensor(output_tensor):
+            output_tensor = output_tensor.transpose(1, 0).contiguous()
+        else:
+            lm_loss_, sop_logits = output_tensor
+
+            lm_loss_ = lm_loss_.transpose(1, 0).contiguous()
+            if sop_logits is not None:
+                sop_logits = sop_logits.transpose(1, 0).contiguous()
+
+            output_tensor = (lm_loss_, sop_logits)
+
         return output_tensor
 
     def training_step(self, batch, batch_idx):

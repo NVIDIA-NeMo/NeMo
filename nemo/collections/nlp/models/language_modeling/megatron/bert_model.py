@@ -112,13 +112,13 @@ def post_language_model_processing(
 
     binary_logits = None
     if binary_head is not None:
+        # binary_logits: [s, b, 2] or [s, b, vocab_size] if binary_head is Identity
         binary_logits = binary_head(pooled_output)
 
     if lm_labels is None:
-        # lm_logits: [s, b, vocab_size] -> [b, s, vocab_size]
-        lm_logits = lm_logits.transpose(0, 1).contiguous()
         return lm_logits, binary_logits
     else:
+        # match shape of labels to lm_logits
         # lm_labels: [b, s] -> [s, b]
         lm_labels = lm_labels.transpose(0, 1).contiguous()
         if fp16_lm_cross_entropy:
@@ -126,13 +126,15 @@ def post_language_model_processing(
             lm_loss = tensor_parallel.vocab_parallel_cross_entropy(lm_logits, lm_labels)
         else:
             lm_loss = tensor_parallel.vocab_parallel_cross_entropy(lm_logits.float(), lm_labels)
-        # lm_loss: [s, b] -> [b, s]
-        lm_loss = lm_loss.transpose(0, 1).contiguous()
+        # lm_loss: [s, b]
         return lm_loss, binary_logits
 
 
 class BertModel(MegatronModule):
-    """Bert Language model."""
+    """
+    Bert Language model.
+    Model returns [seq, batch, hidden] shape
+    """
 
     def __init__(
         self,

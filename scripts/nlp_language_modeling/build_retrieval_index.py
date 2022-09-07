@@ -17,6 +17,7 @@ For more information about Faiss, check https://faiss.ai/
 
 It requires the retrieval DB text data to be converted into `bin` and `idx` files by `preprocess_data_for_megatron.py` script.
 
+
 Here is an example to using it:
 
 ```python
@@ -34,11 +35,67 @@ python scripts/nlp_language_modeling/build_retrieval_index.py \
 It creates a index.sav which can be loaded by Faiss. It can look up the KNN chunk ids of the 
 DB dataset given the input embedding vector. 
 
+To use it in multiple stages, it follows the example as shown in  
+https://github.com/facebookresearch/faiss/blob/main/demos/demo_ondisk_ivf.py
+
+stage-0: train on the dataset, example,
+
+```python
+python scripts/nlp_language_modeling/build_retrieval_index.py \
+    --input_file=PATH_TO_DB_FILE \
+    --tokenizer-library=sentencepiece \
+    --tokenizer-model=tokenizer.model \
+    --train_index_size=128000 \
+    --train_chunk_size=51200 \
+    --workers=2 \
+    --devices=0,1,2,3 \
+    --percent=0.9 \
+    --stage=0 \
+    --output_file=index_learned.save
+```
+
+stage-1: build partial indexes, each containing a fraction of the dataset. This can be done in parallel on several machines. example,
+
+```python
+python scripts/nlp_language_modeling/build_retrieval_index.py \
+    --input_file=PATH_TO_DB_FILE \
+    --tokenizer-library=sentencepiece \
+    --tokenizer-model=tokenizer.model \
+    --train_index_size=128000 \
+    --train_chunk_size=51200 \
+    --workers=2 \
+    --devices=0,1,2,3 \
+    --percent=0.9 \
+    --stage=1 \
+    --shard_id=0 \
+    --total_shards=10 \
+    --learned_index=index_learned.save \
+    --output_file=index_shard2.save
+```
+
+stage-2: merge the shard indexes into one that is written directly to disk (needs not to fit in RAM), example
+
+```python
+python scripts/nlp_language_modeling/build_retrieval_index.py \
+    --stage=2 \
+    --learned_index=index_learned.save \
+    --shard_index_input=index_shard \
+    --output_file=index_final.save
+```
+
 """
 import argparse
 import multiprocessing
+import pathlib
+import sys
+import time
+from multiprocessing import Pool
+from typing import Union
 
 import faiss
+import numpy as np
+import torch
+from faiss.contrib.ondisk import merge_ondisk
 from sentence_transformers import SentenceTransformer
 
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_dataset import MMapRetrievalIndexedDataset
@@ -68,8 +125,22 @@ def get_tokenizer(args):
 
 
 def process_sentence_chunks(
-    ds: MMapRetrievalIndexedDataset, tokenizer, chunk_size: int, warm_up_size: int, percent: float
+    ds: MMapRetrievalIndexedDataset,
+    tokenizer,
+    chunk_size: int,
+    warm_up_size: int,
+    percent: float,
+    stage: Union[int, None],
+    workers: int,
+    shard_id: int,
+    total_shards: int,
 ):
+    """
+    This function takes chunked tokens from the retrieval dataset and map it back to text.
+    In stage 0, it only loads the first `warm_up_size` chunks that is used for building the Faiss index structure.
+    In other stages, in addition to the warm_up_size chunks, it also sends the chunked text and add their embeddings into the index.
+    In stage 1, it divides the total work into `total_shards`, and process only at the `shard_id`. If the stage is None, it process all the chunks.
+    """
     total_chunks = ds.chunks
     num_docs = len(ds._index.sizes)
     assert len(ds._index.sizes) == len(ds._index._chunk_id_start)
@@ -78,22 +149,54 @@ def process_sentence_chunks(
         logging.info(f"Use {use_num_docs} out of {num_docs} docs to build index")
         total_chunks = ds._index._chunk_id_start[min(use_num_docs, num_docs - 1)]
     logging.info(f"{total_chunks} chunks are used to build the index")
-    assert warm_up_size < total_chunks
-    warm_up_slices = ds.get_chunk(slice(0, warm_up_size), force_no_cont_ids=True)
-    sentences = [tokenizer.ids_to_text(ids) for ids in warm_up_slices]
-    queue.put(sentences)
 
-    start = warm_up_size
+    if stage is None or stage == 0:
+        beg = time.time()
+        # only prepare the warmup batch for stage None and stage 0
+        assert warm_up_size < total_chunks
+        warm_chunk_ids = np.random.randint(0, total_chunks, warm_up_size)
+        warm_up_slices = []
+        for warm_up_id in warm_chunk_ids:
+            warm_up_slices.append(ds.get_chunk(warm_up_id, force_no_cont_ids=True))
+        with Pool(workers) as p:
+            sentences = p.map(tokenizer.ids_to_text, warm_up_slices)
+        end = time.time()
+        logging.info(f"token-to-text {total_chunks} chunks takes {end-beg}")
+        queue.put((sentences, None))
+        if stage == 0:
+            # first the task for stage 0
+            queue.put((None, None))
+            return
+    elif stage == 1:
+        shard_size = total_chunks // total_shards
+        splits = list(range(0, total_chunks, shard_size))
+        if shard_id < total_shards - 1:
+            start = splits[shard_id]
+            total_chunks = splits[shard_id + 1]
+        elif shard_id == total_shards - 1:
+            start = splits[shard_id]
+            total_chunks = total_chunks
+        else:
+            raise ValueError(f'{shard_id} bigger than {total_shards}')
+        logging.info(f'shard_id {shard_id}, create index from chunk {start} to {total_chunks}')
+
     threshold = 0.1
-    while start < total_chunks:
-        if start / total_chunks > threshold:
-            logging.info(f"sentence processing {start / total_chunks} is done")
-            threshold += 0.1
-        id_slices = ds.get_chunk(slice(start, min(start + chunk_size, total_chunks)), force_no_cont_ids=True)
-        start = min(start + chunk_size, total_chunks)
-        sentences = [tokenizer.ids_to_text(ids) for ids in id_slices]
-        queue.put(sentences)
-    queue.put(None)
+    with Pool(workers) as p:
+        while start < total_chunks:
+            if start / total_chunks > threshold:
+                logging.info(f"sentence processing {start / total_chunks} is done")
+                threshold += 0.1
+            slice_id = (start, min(start + chunk_size, total_chunks))
+            beg = time.time()
+            id_slices = ds.get_chunk(slice(*slice_id), force_no_cont_ids=True)
+            end = time.time()
+            logging.info(f"load {chunk_size} chunks takes {end-beg}")
+            start = min(start + chunk_size, total_chunks)
+            sentences = p.map(tokenizer.ids_to_text, id_slices)
+            end2 = time.time()
+            logging.info(f"tokenize {chunk_size} chunks takes {end2-end}")
+            queue.put((sentences, slice_id))
+    queue.put((None, None))
 
 
 def get_sentence_chunks():
@@ -102,12 +205,15 @@ def get_sentence_chunks():
 
 def calculate_embedding(pool, batch_size):
     while True:
-        sentences = get_sentence_chunks()
+        sentences, slice_id = get_sentence_chunks()
         if sentences is None:
             break
+        beg = time.time()
         emb = model.encode_multi_process(sentences=sentences, pool=pool, batch_size=batch_size)
-        emb_queue.put(emb)
-    emb_queue.put(None)
+        end = time.time()
+        logging.info(f"one embedding {len(emb)} batch size takes {end-beg}")
+        emb_queue.put((emb, slice_id))
+    emb_queue.put((None, None))
 
 
 def get_emb():
@@ -117,10 +223,10 @@ def get_emb():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="build Faiss index",)
     parser.add_argument(
-        '--input_file', type=str, required=True, help='Input file',
+        '--input_file', type=str, required=False, help='Input file',
     )
     parser.add_argument(
-        '--train_index_size', type=int, required=True, help='The number of sentences that is used to train the index',
+        '--train_index_size', type=int, required=False, help='The number of sentences that is used to train the index',
     )
     parser.add_argument(
         '--train_chunk_size', type=int, default=10000, help='The sentences in chunks that is added to the index',
@@ -148,7 +254,7 @@ if __name__ == "__main__":
     group.add_argument(
         '--tokenizer-library',
         type=str,
-        required=True,
+        required=False,
         choices=['yttm', 'sentencepiece', 'megatron', 'huggingface', 'tabular'],
         help='What tokenizer library to use.',
     )
@@ -159,27 +265,86 @@ if __name__ == "__main__":
         '--tokenizer-model', type=str, default=None, help='Path to tokenizer model.',
     )
     group.add_argument('--vocab-file', type=str, default=None, help='Path to the vocab file')
+    group.add_argument('--workers', type=int, default=None, help='number of workers to run tokenizer')
+    group.add_argument(
+        '--stage',
+        type=int,
+        default=None,
+        help='used for building the large index in multiple stages',
+        choices=[0, 1, 2],
+    )
+    group.add_argument('--shard_id', type=int, default=None, help='run the job to create the shard_id index')
+    group.add_argument('--total_shards', type=int, default=None, help='total number of faiss index shards')
+    group.add_argument(
+        '--learned_index', type=str, default=None, help='the learned faiss index file, which is prepared at stage 0'
+    )
+    group.add_argument(
+        '--shard_index_input', type=str, default=None, help='the shard faiss index files, which are created at stage 1'
+    )
     group.add_argument('--merge-file', type=str, default=None, help='Path to the BPE merge file (if necessary).')
     group.add_argument('--delimiter', type=str, default=None, help='delimiter used for tabular tokenizer')
 
     args = parser.parse_args()
+
+    has_gpu = torch.cuda.is_available() and hasattr(faiss, "index_gpu_to_cpu")
+
+    if not hasattr(faiss, "index_gpu_to_cpu"):
+        logging.warning(
+            "faiss doesn't support gpu index. Please check https://github.com/facebookresearch/faiss/blob/main/INSTALL.md"
+        )
+
+    if args.stage == 2:
+        # combine shard index files into one
+        logging.info('loading trained index')
+        # construct the output index
+        index = faiss.read_index(args.learned_index)
+
+        input_file = pathlib.Path(args.shard_index_input)
+        path = input_file.parent
+        fname = input_file.name
+        all_files = [str(i) for i in pathlib.Path(path).glob(fname + '*')]
+        merge_ondisk(index, all_files, str(path / 'merged.index'))
+        faiss.write_index(index, args.output_file)
+        logging.info(f'Write to {args.output_file},  Size of Index : {index.ntotal}')
+        sys.exit(0)
+
     model = SentenceTransformer(args.sentence_transformer_model)
     tokenizer = get_tokenizer(args)
-    ds = MMapRetrievalIndexedDataset(args.input_file)
+    ds = MMapRetrievalIndexedDataset(args.input_file, skip_warmup=True)
     # make sure the dataset is padded as retrieval database
     assert ds._index.retrieval_db
-    if ds.chunks < args.train_index_size:
-        raise ValueError(
-            f"the train index size {args.train_index_size} is larger than the total number of chunks {ds.chunks} in the dataset"
-        )
+    if args.stage is None or args.stage == 0:
+        if ds.chunks < args.train_index_size:
+            raise ValueError(
+                f"the train index size {args.train_index_size} is larger than the total number of chunks {ds.chunks} in the dataset"
+            )
+        # Where nlist is 4*sqrt(N) to 16*sqrt(N), with N the size of the dataset.
+        # This just clusters the vectors with k-means. You will need between 30*K and 256*K vectors for training (the more the better).
+        total_chunks = ds.chunks
+        if args.percent < 1.0:
+            num_docs = len(ds._index.sizes)
+            use_num_docs = int(num_docs * args.percent)
+            total_chunks = ds._index._chunk_id_start[min(use_num_docs, num_docs - 1)]
+        nlist = int(4 * np.sqrt(total_chunks))
+        assert 30 * nlist < args.train_index_size, f"need more training samples, at least {30 * nlist}"
 
     process = multiprocessing.Process(
         target=process_sentence_chunks,
-        args=(ds, tokenizer, args.train_chunk_size, args.train_index_size, args.percent),
+        args=(
+            ds,
+            tokenizer,
+            args.train_chunk_size,
+            args.train_index_size,
+            args.percent,
+            args.stage,
+            args.workers,
+            args.shard_id,
+            args.total_shards,
+        ),
     )
     process.start()
 
-    if args.devices is None:
+    if args.devices is None or not torch.cuda.is_available():
         device_list = None
     else:
         device_list = ['cuda:' + str(device) for device in args.devices.split(',')]
@@ -191,31 +356,63 @@ if __name__ == "__main__":
 
     # get first batch of sentences to build up the index
     # sentences = get_sentence_chunks()
+    if args.stage is None or args.stage == 0:
+        emb, slice_id = get_emb()
+        # initialize the Faiss index
+        # m is number of subquantizers. So vector of size D is broken into m sub-vectors of size D/m
+        m = args.subquantizers
+        k = 4  # num_nearest neighbors to get
+        quantizer = faiss.IndexFlatIP(emb.shape[1])
+        # 8 specifies that each sub-vector is encoded as 8 bits
+        index = faiss.IndexIVFPQ(quantizer, emb.shape[1], nlist, m, 8)
+        if has_gpu:
+            co = faiss.GpuMultipleClonerOptions()
+            co.useFloat16 = True
+            co.usePrecomputed = False
+            co.shard = True
+            index = faiss.index_cpu_to_all_gpus(index, co, ngpu=len(device_list))
+    elif args.stage == 1:
+        # stage 1, need to load the index from file
+        index = faiss.read_index(args.learned_index)
+        if has_gpu:
+            co = faiss.GpuMultipleClonerOptions()
+            co.useFloat16 = True
+            co.usePrecomputed = False
+            co.shard = True
+            index = faiss.index_cpu_to_all_gpus(index, co, ngpu=len(device_list))
+    else:
+        raise ValueError(f'should not come here')
 
-    emb = get_emb()
-
-    nlist = 100
-    # m is number of subquantizers. So vector of size D is broken into m sub-vectors of size D/m
-    m = args.subquantizers
-    k = 4  # num_nearest neighbors to get
-    quantizer = faiss.IndexFlatIP(emb.shape[1])
-    index = faiss.IndexIVFPQ(quantizer, emb.shape[1], nlist, m, 8)
-    # 8 specifies that each sub-vector is encoded as 8 bits
-    # build the index
-    index.train(emb)
-    logging.info('Trained Index')
-
-    # add the first batch to the index
-    index.add(emb)
+    if args.stage is not None:
+        logging.info(f'build index at stage {args.stage}')
+    if args.stage is None or args.stage == 0:
+        # train the index
+        beg = time.time()
+        index.train(emb)
+        end = time.time()
+        logging.info(f'Trained Index takes {end-beg}')
+        # just need to have the learned index
+        if has_gpu:
+            index = faiss.index_gpu_to_cpu(index)
+        faiss.write_index(index, args.output_file)
+        model.stop_multi_process_pool(pool)
+        process.join()
+        emb_process.join()
+        sys.exit(0)
 
     while True:
-        emb = get_emb()
+        emb, slice_id = get_emb()
         if emb is None:
             break
-        index.add(emb)
+        beg = time.time()
+        index.add_with_ids(emb, np.arange(slice_id[0], slice_id[1]).astype(np.int64))
+        end = time.time()
+        logging.info(f'add index {slice_id[0]} - {slice_id[1]} takes {end-beg}')
+    model.stop_multi_process_pool(pool)
     process.join()
     emb_process.join()
     logging.info('Writing Index file')
+    if has_gpu:
+        index = faiss.index_gpu_to_cpu(index)
     faiss.write_index(index, args.output_file)
     logging.info(f'Size of Index : {index.ntotal}')
-    model.stop_multi_process_pool(pool)

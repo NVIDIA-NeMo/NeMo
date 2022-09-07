@@ -2943,7 +2943,7 @@ pipeline {
                 model.tokenizer.merge_file=/home/TestData/nlp/megatron_retro/gpt2-merges.txt \
                 model.tokenizer.vocab_file=/home/TestData/nlp/megatron_retro/gpt2-vocab.json \
                 model.data.data_prefix=[/home/TestData/nlp/megatron_retro/retro_wiki_test_text_document] \
-                model.data.knn_index=[/home/TestData/nlp/megatron_retro/knn_map_wiki_test.idx] \
+                model.data.knn_index=[/home/TestData/nlp/megatron_retro/knn2_map_wiki_test.idx] \
                 model.data.retrieval_prefix=/home/TestData/nlp/megatron_retro/retro_wiki_test_text_document \
                 model.data.index_mapping_dir=/home/TestData/nlp/megatron_retro \
                 model.data.num_workers=8 \

@@ -59,6 +59,7 @@ def get_decoder_model(
     fp32_residual_connection=False,
     activations_checkpoint_method=None,
     activations_checkpoint_num_layers=1,
+    activations_checkpoint_granularity=None,
     layernorm_epsilon=1e-5,
     bias_activation_fusion=True,
     bias_dropout_add_fusion=True,
@@ -76,6 +77,8 @@ def get_decoder_model(
     layer_type=None,
     chunk_size=64,
     layer_number_offset=0,  # this is use only for attention norm_factor scaling
+    sequence_parallel=False,
+    gradient_accumulation_fusion=False,
 ):
     """Build language model and return along with the key to save."""
 
@@ -146,6 +149,7 @@ def get_decoder_model(
             fp32_residual_connection=fp32_residual_connection,
             activations_checkpoint_method=activations_checkpoint_method,
             activations_checkpoint_num_layers=activations_checkpoint_num_layers,
+            activations_checkpoint_granularity=activations_checkpoint_granularity,
             layernorm_epsilon=layernorm_epsilon,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
@@ -160,6 +164,8 @@ def get_decoder_model(
             parent_model_type=parent_model_type,
             chunk_size=chunk_size,
             layer_number_offset=layer_number_offset,
+            sequence_parallel=sequence_parallel,
+            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
     else:
         raise ValueError(f"Unknown decoder arch = {arch}. Available decoder arch = {AVAILABLE_DECODERS}")

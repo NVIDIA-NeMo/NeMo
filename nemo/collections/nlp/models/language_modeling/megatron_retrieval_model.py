@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import re
 from typing import Optional
 
@@ -30,6 +31,8 @@ from nemo.collections.nlp.data.language_modeling.megatron.retro_dataset import (
 )
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
+from nemo.collections.nlp.modules.common.megatron.mup.init import normal_
+from nemo.collections.nlp.modules.common.megatron.mup.shape import set_base_shapes
 from nemo.collections.nlp.modules.common.megatron.retrieval_token_level_encoder_decoder import (
     MegatronRetrievalTokenLevelEncoderDecoderModule,
 )
@@ -86,7 +89,50 @@ class MegatronRetrievalModel(MegatronBaseModel):
         else:
             raise ValueError('precision must be in [32, 16, "bf16"]')
         self.model.model_type = ModelType.encoder_and_decoder
-        # self.grad_clip_pl_default = True
+
+        if hasattr(self.cfg, "shape_file"):
+            set_base_shapes(self, self.cfg.shape_file, rescale_params=False)
+            # add shape file
+            self.register_artifact("model.shape_file", self.cfg.shape_file),
+
+            # here manually initialize all the named parameters with the muTranfer normal initializer
+            for name, tensor in self.named_parameters():
+                if name.endswith('.dense_4h_to_h.weight') or name.endswith('.dense.weight'):
+                    # initialize all the output dense matrix weight
+                    # match the megatron lm model
+                    std = self.cfg.init_method_std / math.sqrt(2.0 * 12.0)
+                    normal_(tensor, 0, std)
+                elif name.endswith('layernorm.weight'):
+                    # initialize all the layer norm weight
+                    if tensor.std() != 0 and tensor.mean() != 1:
+                        raise ValueError(f'need to check {name} init')
+                    normal_(tensor, 1, 0)
+                elif name.endswith('.weight'):
+                    # initialize all the other dense matrix weight
+                    normal_(tensor, 0, self.cfg.init_method_std)
+                else:
+                    if tensor.std() != 0 and tensor.mean() != 0:
+                        raise ValueError(f'need to check {name} init')
+
+            # here manually overwrite the norm factor
+            # note, has to turn off the model.apply_query_key_layer_scaling
+            assert not self.cfg.apply_query_key_layer_scaling
+            for name, layer in self.named_modules():
+                if (
+                    name.endswith('.self_attention')
+                    or name.endswith('.inter_attention')
+                    or name.endswith('.cross_attention')
+                    or name.endswith('.core_attention')
+                ):
+                    if hasattr(layer, 'norm_factor') and hasattr(layer, 'hidden_size_per_attention_head'):
+                        layer.norm_factor = (
+                            layer.hidden_size_per_attention_head / 8.0
+                        )  # divide 8 to make it consist with ADLR setting
+                else:
+                    if hasattr(layer, 'norm_factor') or hasattr(layer, 'hidden_size_per_attention_head'):
+                        logging.error(
+                            f'module {name} has norm factor but its name is not ending with attention, need to double check'
+                        )
 
     def _build_tokenizer(self):
         self.tokenizer = get_nmt_tokenizer(
@@ -153,6 +199,7 @@ class MegatronRetrievalModel(MegatronBaseModel):
                 'add_position_embedding', False
             ),  # whether use the absolute postion encoding
             tokenizer=self.tokenizer,
+            activations_checkpoint_granularity=self.cfg.get('activations_checkpoint_granularity', None),
         )
         return model
 

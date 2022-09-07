@@ -22,6 +22,7 @@ import shutil
 import struct
 from functools import lru_cache
 from itertools import accumulate
+from typing import List
 
 import numpy as np
 import torch
@@ -62,13 +63,20 @@ class KNNIndex(object):
     It contains a big matrix of shape (chunk_id, K neighbors)
     where `chunk_id` are all the chunk ids in the RETRO training data.
     E.g. the KNN neighbor chunk ids in the retrieval data for ith chunk id in the training data
-    is self.knn_map[i]
+    is self.knn_map[i].
+    This index can hold partial maps used for building sharding index.
     """
 
     _HDR_MAGIC = b'KNNRETM\x00\x00'
 
     @classmethod
-    def writer(cls, path, K):
+    def writer(cls, path, K, offset=0):
+        """
+        path: file path of the index
+        K: number of neighbors for a chunk
+        offset: start chunk_id for shard index
+        """
+
         class _Writer(object):
             def __enter__(self):
                 self._file = open(path, 'wb')
@@ -77,6 +85,8 @@ class KNNIndex(object):
                 self._file.write(struct.pack('<Q', K))
                 # reserve the space for total number of chunks
                 self._file.write(struct.pack('<Q', 0))
+                # chunk start
+                self._file.write(struct.pack('<Q', offset))
                 self.K = K
                 self.count_chunks = 0
                 self.path = path
@@ -100,7 +110,7 @@ class KNNIndex(object):
 
         return _Writer()
 
-    def __init__(self, path, skip_warmup=False):
+    def __init__(self, path, skip_warmup=True):
         with open(path, 'rb') as stream:
             magic_test = stream.read(9)
             assert self._HDR_MAGIC == magic_test, 'Index file doesn\'t match expected format. '
@@ -109,6 +119,8 @@ class KNNIndex(object):
 
             self.K = struct.unpack('<Q', stream.read(8))[0]
             self.len = struct.unpack('<Q', stream.read(8))[0]
+            self.chunk_start_id = struct.unpack('<Q', stream.read(8))[0]
+            self.chunk_end_id = self.chunk_start_id + self.len
             offset = stream.tell()
 
         if not skip_warmup:
@@ -125,7 +137,9 @@ class KNNIndex(object):
     def get_KNN_chunk_ids(self, chunk_id):
         """ get the chunk address (in bytes) from chunk id
         """
-        return self.knn_map[chunk_id]
+        if not (self.chunk_start_id <= chunk_id < self.chunk_end_id):
+            raise ValueError(f'chunk {chunk_id} is out side the range [{self.chunk_start_id}, {self.chunk_end_id})')
+        return self.knn_map[chunk_id - self.chunk_start_id]
 
     def __del__(self):
         self._bin_buffer_mmap._mmap.close()
@@ -136,6 +150,30 @@ class KNNIndex(object):
         total number of chunks in the data
         """
         return self.len
+
+
+def merge_knn_files(knn_files: List[KNNIndex], output_file: str):
+    """
+    Merge a list of knn sharding index files into one.
+    """
+    files = [KNNIndex(f) for f in knn_files]
+    sorted_files = sorted(files, key=lambda x: x.chunk_start_id)
+    # consistence check
+    start_id = sorted_files[0].chunk_start_id
+    previous_end = sorted_files[0].chunk_end_id
+    K = sorted_files[0].K
+    for i in sorted_files[1:]:
+        assert previous_end == i.chunk_start_id
+        assert K == i.K
+        previous_end = i.chunk_end_id
+    with KNNIndex.writer(output_file, K, offset=start_id) as w:
+        for i in sorted_files:
+            w.write(i.knn_map)
+    f = KNNIndex(output_file)
+    logging.info(f'{output_file} index starts at {f.chunk_start_id}')
+    logging.info(f'{output_file} index ends at {f.chunk_end_id}')
+    logging.info(f'total len {f.len}')
+    assert f.len == (f.chunk_end_id - f.chunk_start_id)
 
 
 class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
@@ -229,7 +267,7 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
 
             return _Writer()
 
-        def __init__(self, path, skip_warmup=False):
+        def __init__(self, path, skip_warmup=True):
             with open(path, 'rb') as stream:
                 magic_test = stream.read(9)
                 assert self._HDR_MAGIC == magic_test, (
@@ -328,7 +366,7 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
         def __len__(self):
             return self._len
 
-    def __init__(self, path, skip_warmup=False):
+    def __init__(self, path, skip_warmup=True):
         super().__init__()
 
         self._path = None

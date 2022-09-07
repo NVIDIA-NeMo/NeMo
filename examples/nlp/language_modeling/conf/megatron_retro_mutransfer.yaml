@@ -161,6 +161,15 @@ model:
   megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
   grad_allreduce_chunk_size_mb: 125
 
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  # when using 'uniform' this creates groups of transformer layers to checkpoint. Usually set to 1. Increase to save more memory.
+  # when using 'block' this this will checkpoint the first activations_checkpoint_num_layers per pipeline stage.
+
   tokenizer:
     library: 'megatron'
     type: 'GPT2BPETokenizer'

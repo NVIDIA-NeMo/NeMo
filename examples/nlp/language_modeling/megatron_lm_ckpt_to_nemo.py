@@ -438,7 +438,7 @@ def convert(local_rank, rank, world_size, args):
             content['steps'] = 0
         filename = filename_str.format(**content) + suffix
         checkpoint_path_output = inject_model_parallel_rank(os.path.join(base_dir, filename))
-        trainer.accelerator.training_type_plugin.checkpoint_io.save_checkpoint(checkpoint, checkpoint_path_output)
+        trainer.training_type_plugin.checkpoint_io.save_checkpoint(checkpoint, checkpoint_path_output)
         logging.info(f'NeMo model checkpoint files saved to: {args.output_ckpt_file_path}')
 
     if args.nemo_file_path:

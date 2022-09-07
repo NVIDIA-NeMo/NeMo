@@ -18,12 +18,15 @@ import os
 import numpy as np
 import pytest
 import torch
+from numpy.testing import assert_array_equal
 from omegaconf import OmegaConf
+from scripts.nlp_language_modeling.build_knn_map_index import build_map, dedup
 
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_dataset import (
     KNNIndex,
     MMapRetrievalIndexedDataset,
     MMapRetrievalIndexedDatasetBuilder,
+    merge_knn_files,
 )
 from nemo.collections.nlp.data.language_modeling.megatron.retro_dataset import RETRODataset
 
@@ -189,6 +192,8 @@ class TestRetrievalIndexFiles:
         data_file = '/tmp/test'
         index_file = data_file + '.idx'
         K = 8
+        index_files = [f'{data_file}_{i}.idx' for i in range(3)]
+        merged_file = '/tmp/merged.idx'
         try:
             with KNNIndex.writer(index_file, K) as w:
                 map_np0 = np.random.randint(0, 100, (50, K))
@@ -204,8 +209,54 @@ class TestRetrievalIndexFiles:
             assert np.array_equal(map_np1, f.knn_map[50:100])
             assert np.array_equal(map_np2, f.knn_map[100:])
             assert np.array_equal(f.get_KNN_chunk_ids(5), map_np0[5])
+            assert f.chunk_start_id == 0
+            assert f.chunk_end_id == f.len
+
+            with KNNIndex.writer(index_file, K, 100) as w:
+                map_np0 = np.random.randint(0, 100, (50, K))
+                w.write(map_np0)
+                map_np1 = np.random.randint(0, 100, (50, K))
+                w.write(map_np1)
+                map_np2 = np.random.randint(0, 100, (50, K))
+                w.write(map_np2)
+            f = KNNIndex(index_file)
+            assert f.K == K
+            assert f.len == map_np0.shape[0] + map_np1.shape[0] + map_np2.shape[0]
+            assert np.array_equal(map_np0, f.knn_map[:50])
+            assert np.array_equal(map_np1, f.knn_map[50:100])
+            assert np.array_equal(map_np2, f.knn_map[100:])
+            assert np.array_equal(f.get_KNN_chunk_ids(5 + 100), map_np0[5])
+            assert f.chunk_start_id == 100
+            assert f.chunk_end_id == f.len + 100
+
+            # test multiple sharding indices
+            inputs = []
+            start = 0
+            for i in range(3):
+                with KNNIndex.writer(index_files[i], K, offset=start) as w:
+                    map_np0 = np.random.randint(0, 100, (50, K))
+                    inputs.append(map_np0)
+                    w.write(map_np0)
+                    map_np1 = np.random.randint(0, 100, (50, K))
+                    inputs.append(map_np1)
+                    w.write(map_np1)
+                f = KNNIndex(index_files[i])
+                start += f.len
+            merge_knn_files(index_files, merged_file)
+            f = KNNIndex(merged_file)
+            input_array = np.vstack(inputs)
+            assert f.len == 100 * 3
+            for i in range(300):
+                assert np.array_equal(f.get_KNN_chunk_ids(i), input_array[i])
+            assert f.chunk_start_id == 0
+            assert f.chunk_end_id == f.len
+            assert f.K == K
+
         finally:
             os.remove(index_file)
+            for i in range(3):
+                os.remove(index_files[i])
+            os.remove(merged_file)
 
     @pytest.mark.unit
     @pytest.mark.skipif(not HAVE_APEX, reason="apex is not installed")
@@ -366,3 +417,80 @@ class TestRetrievalIndexFiles:
             os.remove(doc_idx_filename)
             os.remove(sample_idx_filename)
             os.remove(shuffle_idx_filename)
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not HAVE_APEX, reason="apex is not installed")
+    def test_dedup(self):
+        total = 1000
+        id_start = np.array([0, 100, 200, 300, 500, 900])
+        beg = 30
+        end = 210
+        chunk_id_to_doc_id_map = np.zeros((end - beg, 2), dtype=np.int64)
+        build_map(id_start, chunk_id_to_doc_id_map, total, beg, end)
+        for i in range(30, 100):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[0:2])
+        for i in range(100, 200):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[1:3])
+        for i in range(200, 210):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[2:4])
+        beg = 5
+        end = 100
+        chunk_id_to_doc_id_map = np.zeros((end - beg, 2), dtype=np.int64)
+        build_map(id_start, chunk_id_to_doc_id_map, total, beg, end)
+        for i in range(beg, end):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[0:2])
+        beg = 100
+        end = 200
+        chunk_id_to_doc_id_map = np.zeros((end - beg, 2), dtype=np.int64)
+        build_map(id_start, chunk_id_to_doc_id_map, total, beg, end)
+        for i in range(beg, end):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[1:3])
+        beg = 900
+        end = 1000
+        chunk_id_to_doc_id_map = np.zeros((end - beg, 2), dtype=np.int64)
+        build_map(id_start, chunk_id_to_doc_id_map, total, beg, end)
+        for i in range(beg, end):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], np.array([900, 1000]))
+        beg = 150
+        end = 250
+        chunk_id_to_doc_id_map = np.zeros((end - beg, 2), dtype=np.int64)
+        build_map(id_start, chunk_id_to_doc_id_map, total, beg, end)
+        for i in range(beg, 200):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[1:3])
+        for i in range(200, end):
+            assert_array_equal(chunk_id_to_doc_id_map[i - beg], id_start[2:4])
+
+        I = np.arange(1000)[None, :]
+        tmp_neighbors = np.ones_like(I) * -1
+        with pytest.raises(ValueError):
+            dedup(chunk_id_to_doc_id_map, I, tmp_neighbors, 0, beg)
+
+        I = np.arange(1000)[None, :]
+        tmp_neighbors = np.ones_like(I) * -1
+        with pytest.raises(ValueError):
+            dedup(chunk_id_to_doc_id_map, I, tmp_neighbors, 250, beg)
+
+        for i in range(beg, 200):
+            I = np.arange(1000)[None, :]
+            tmp_neighbors = np.ones_like(I) * -1
+            dedup(chunk_id_to_doc_id_map, I, tmp_neighbors, i, beg)
+            gt = np.array(list(range(100)) + list(range(200, 1000)) + ([-1] * 100))
+            assert_array_equal(tmp_neighbors[0], gt)
+
+        for i in range(200, 250):
+            I = np.arange(1000)[None, :]
+            tmp_neighbors = np.ones_like(I) * -1
+            dedup(chunk_id_to_doc_id_map, I, tmp_neighbors, i, beg)
+            gt = np.array(list(range(200)) + list(range(300, 1000)) + ([-1] * 100))
+            assert_array_equal(tmp_neighbors[0], gt)
+
+        I = np.arange(1000)[None, :]
+        I = np.repeat(I, 70, axis=0)
+        tmp_neighbors = np.ones_like(I) * -1
+        dedup(chunk_id_to_doc_id_map, I, tmp_neighbors, 180, beg)
+        gt0 = np.array(list(range(100)) + list(range(200, 1000)) + ([-1] * 100))
+        gt1 = np.array(list(range(200)) + list(range(300, 1000)) + ([-1] * 100))
+        for i in range(20):
+            assert_array_equal(tmp_neighbors[i], gt0)
+        for i in range(20, 70):
+            assert_array_equal(tmp_neighbors[i], gt1)

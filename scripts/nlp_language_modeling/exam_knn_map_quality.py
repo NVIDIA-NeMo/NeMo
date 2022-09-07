@@ -105,7 +105,6 @@ if __name__ == "__main__":
     logging.info(f'Data index has {data_ds.chunks} chunks')
     logging.info(f'Retrieval Data index has {retrieval_ds.chunks} chunks')
     logging.info(f'KNN index has {knn_index.K} neighbors')
-    assert knn_index.knn_map.max() < retrieval_ds.chunks
     assert data_ds._index.chunk_size == retrieval_ds._index.chunk_size
     print_num_neighbors = knn_index.K
     if args.neighbors is not None:

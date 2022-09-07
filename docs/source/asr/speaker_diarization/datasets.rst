@@ -107,7 +107,7 @@ The following instructions can help one to reproduce the expected diarization pe
 AMI Meeting Corpus
 ~~~~~~~~~~~~~~~~~~
 
-The following are the suggested parameters for reproducing the diarization performance for AMI test set. This setting is based on meeting domain configuration in  ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/inference/diar_infer_meeting.yaml``
+The following are the suggested parameters for reproducing the diarization performance for `AMI <https://groups.inf.ed.ac.uk/ami/corpus/>`_ test set. This setting is based on meeting domain configuration in  ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/inference/diar_infer_meeting.yaml``
 
 .. code-block:: bash
 
@@ -123,11 +123,11 @@ The following are the suggested parameters for reproducing the diarization perfo
 
 This setup is expected to reproduce a confusion error rate of 1.4% on AMI MixedHeadset test set.
 
-To evaluate the performance on AMI Meeting Corpus, the following instructions can help.
-  - Download AMI Meeting Corpus from `AMI website <https://groups.inf.ed.ac.uk/ami/corpus/>`_. Choose ``Headset mix`` which has a mono wav file for each session.
-  - Download the test set (whitelist) from `Pyannotate AMI test set whitelist <https://raw.githubusercontent.com/pyannote/pyannote-audio/master/tutorials/data_preparation/AMI/MixHeadset.test.lst>`_.
-  - The merged RTTM file for AMI test set can be downloaded from `Pyannotate AMI test set RTTM file <https://raw.githubusercontent.com/pyannote/pyannote-audio/master/tutorials/data_preparation/AMI/MixHeadset.test.rttm>`_. Note that this file should be split into individual rttm files. Download split rttm files for AMI test set from `AMI test set split RTTM files <https://raw.githubusercontent.com/tango4j/diarization_annotation/main/AMI_corpus/test/split_rttms.tar.gz>`_.
-  - Generate an input manifest file using ``<NeMo_git_root>/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py``
+We provide a helper script to download the dataset and format it into a NeMo manifest.
+
+.. code-block:: bash
+
+    python scripts/data_processing/get_ami_data.py --manifest_filepath AMItest_input_manifest.json
 
 
 CallHome American English Speech (CHAES), LDC97S42

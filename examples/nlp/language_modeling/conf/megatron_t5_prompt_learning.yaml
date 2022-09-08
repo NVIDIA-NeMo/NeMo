@@ -9,10 +9,9 @@ trainer:
   enable_checkpointing: False
   replace_sampler_ddp: False
   max_epochs: 10
-  max_steps: -1 
+  max_steps: -1
   log_every_n_steps: 10
-  val_check_interval: 1
-  accumulate_grad_batches: 1
+  val_check_interval: 1.0
   gradient_clip_val: 1.0
   resume_from_checkpoint: null 
 
@@ -59,10 +58,10 @@ model:
     truncate_field: context
     answer_field: answer
 
-
-  p_tuning:
-    dropout: 0.0
-    num_layers: 2
+  p_tuning: # P-tuning specific params
+      encoder_type: "mlp" # Either "mlp" or "lstm", mlp is default
+      num_layers: 2 # 2 recommended for MLP, 1 recommended for LSTM, must be at least 2 for mlp
+      dropout: 0.0
 
   prompt_tuning: # Prompt tunin specific params
     new_prompt_init_methods: ['text'] # List of 'text' or 'random', should correspond to tasks listed in new tasks
@@ -91,5 +90,5 @@ model:
       min_lr: 0.0
       monitor: val_loss
       reduce_on_plateau: false
-  
+
 

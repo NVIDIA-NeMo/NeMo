@@ -27,6 +27,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_base_model import Me
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common import (
     PromptEncoder,
+    PromptEncoderType,
     PromptTable,
     VirtualPromptPlaceholderToken,
     VirtualPromptSource,
@@ -247,10 +248,12 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         total_virtual_tokens = self.task_templates[new_task]["total_virtual_tokens"]
 
         self.prompt_encoder = PromptEncoder(
+            encoder_type=PromptEncoderType(self.cfg.p_tuning.get("encoder_type", "mlp").lower()),
             total_virtual_tokens=total_virtual_tokens,
-            hidden_size=self.hidden_size,
-            lstm_dropout=self.cfg.p_tuning.dropout,
-            num_layers=self.cfg.p_tuning.num_layers,
+            token_dim=self.hidden_size,
+            hidden_size=self.cfg.p_tuning.get("encoder_hidden", self.hidden_size // 2),
+            lstm_dropout=self.cfg.p_tuning.get("dropout", 0.0),
+            num_layers=self.cfg.p_tuning.get("num_layers", 2),
         )
 
     def add_ptuned_prompts_to_prompt_table(self):

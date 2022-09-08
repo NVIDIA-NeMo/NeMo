@@ -8,11 +8,10 @@ trainer:
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   replace_sampler_ddp: False
-  max_epochs: 3
+  max_epochs: 3 # min 25 recommended
   max_steps: -1 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
-  log_every_n_steps: 10
-  val_check_interval: 1.0
-  accumulate_grad_batches: 1
+  log_every_n_steps: 10 # frequency with which training steps are logged 
+  val_check_interval: 1.0 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
   gradient_clip_val: 1.0
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
   benchmark: False
@@ -49,7 +48,7 @@ model:
   micro_batch_size: 4
 
   restore_path: null # Path to an existing p-tuned/prompt tuned .nemo model you wish to add new tasks to or run inference with
-  language_model_path: models/megatron_125M_gpt.nemo # Path to the GPT language model .nemo file, always required
+  language_model_path: ??? # Path to the GPT language model .nemo file, always required
   existing_tasks: ['boolq', 'intent_and_slot'] # List of tasks the model has already been p-tuned/prompt-tuned for, needed when a restore path is given
   new_tasks: ['rte'] # List of new tasknames to be prompt-tuned
 
@@ -82,8 +81,9 @@ model:
     new_prompt_init_text: ['some init text goes here'] # some init text if init method is text, or None if init method is random
 
   p_tuning: # P-tuning specific params
+    encoder_type: "mlp" # Either "mlp" or "lstm", mlp is default
+    num_layers: 2 # 2 recommended for MLP, 1 recommended for LSTM, must be at least 2 for mlp
     dropout: 0.0
-    num_layers: 2
 
   data:
     train_ds: [data/rte_train.jsonl,]

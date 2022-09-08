@@ -833,7 +833,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
 
-        self.log_dict({'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32)})
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
         return tensorboard_logs
 

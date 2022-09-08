@@ -638,7 +638,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         wer, wer_num, wer_denom = self._wer.compute()
         self._wer.reset()
 
-        self.log_dict({'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32)})
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
         return {
             'val_loss': loss_value,

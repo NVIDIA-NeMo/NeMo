@@ -690,14 +690,15 @@ class EncDecRegressionModel(_EncDecBaseModel):
         train_mse = self._mse(preds=logits, target=targets)
         train_mae = self._mae(preds=logits, target=targets)
 
-        tensorboard_logs = {
-            'train_loss': loss,
-            'train_mse': train_mse,
-            'train_mae': train_mae,
-            'learning_rate': self._optimizer.param_groups[0]['lr'],
-        }
+        self.log_dict(
+            {
+                'train_loss': loss,
+                'train_mse': train_mse,
+                'train_mae': train_mae,
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+            },
+        )
 
-        self.log_dict(tensorboard_logs)
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):

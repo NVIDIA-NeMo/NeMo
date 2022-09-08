@@ -29,7 +29,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     parallel_lm_logits,
     scaled_init_method_normal,
 )
-from nemo.utils import logging
 
 try:
     from apex.transformer import parallel_state, tensor_parallel

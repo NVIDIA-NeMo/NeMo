@@ -13,10 +13,10 @@
 # limitations under the License.
 import os
 from abc import ABC
-from typing import Dict, List, Optional, Type, Union
+from typing import List, Union
 
 import torch
-from torch.onnx import ExportTypes, TrainingMode
+from torch.onnx import TrainingMode
 
 from nemo.core.classes import typecheck
 from nemo.core.utils.neural_type_utils import get_dynamic_axes, get_io_names

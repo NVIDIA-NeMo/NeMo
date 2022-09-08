@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
 from torch import nn
 
 from nemo.core.classes import NeuralModule, typecheck

@@ -31,16 +31,7 @@ from nemo.collections.tts.modules.common import (
     get_mask_from_lengths,
 )
 from nemo.core.classes import Exportable, NeuralModule
-from nemo.core.neural_types.elements import (
-    Index,
-    LengthsType,
-    MelSpectrogramType,
-    ProbsType,
-    RegressionValuesType,
-    TokenDurationType,
-    TokenIndex,
-    TokenLogDurationType,
-)
+from nemo.core.neural_types.elements import Index, LengthsType, MelSpectrogramType, TokenDurationType, TokenIndex
 from nemo.core.neural_types.neural_type import NeuralType
 
 

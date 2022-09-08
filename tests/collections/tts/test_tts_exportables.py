@@ -14,11 +14,9 @@
 import os
 import tempfile
 
-import onnx
 import pytest
-from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from nemo.collections.tts.models import FastPitchModel, HifiGanModel, WaveGlowModel
+from nemo.collections.tts.models import FastPitchModel, HifiGanModel
 
 
 @pytest.fixture()

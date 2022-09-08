@@ -24,7 +24,7 @@ from nemo.collections.nlp.data import EntityLinkingDataset
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
-from nemo.core.neural_types import ChannelType, LogitsType, MaskType, NeuralType
+from nemo.core.neural_types import LogitsType, NeuralType
 from nemo.utils import logging
 
 __all__ = ['EntityLinkingModel']

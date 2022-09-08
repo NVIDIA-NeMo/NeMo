@@ -12,28 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import itertools
-import json
-import random
-from multiprocessing import Value
-from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional
 
 import numpy as np
 import torch
-import torch.distributed as dist
-import torch.utils.data as pt_data
-from omegaconf import DictConfig, ListConfig, OmegaConf
 from pytorch_lightning import Trainer
-from pytorch_lightning.utilities import rank_zero_only
-from sacrebleu import corpus_bleu
 
 from nemo.collections.common.losses import NLLLoss
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_config import MTBottleneckModelConfig
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_model import MTEncDecModel
-from nemo.collections.nlp.modules.common.transformer import AttentionBridge, TopKSequenceGenerator
 from nemo.core.classes.common import typecheck
-from nemo.utils import logging, model_utils, timers
+from nemo.utils import timers
 
 __all__ = ['MTBottleneckModel']
 

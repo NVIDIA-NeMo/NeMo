@@ -15,7 +15,6 @@
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from omegaconf.omegaconf import MISSING
 from torch import nn as nn
 
 from nemo.collections.common.parts import MultiLayerPerceptron

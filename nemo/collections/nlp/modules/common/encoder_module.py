@@ -17,7 +17,6 @@ from typing import Dict, Optional
 
 from nemo.core.classes import NeuralModule
 from nemo.core.neural_types import ChannelType, MaskType, NeuralType
-from nemo.utils import logging
 
 __all__ = ['EncoderModule']
 

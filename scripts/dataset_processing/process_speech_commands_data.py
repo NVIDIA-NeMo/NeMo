@@ -32,7 +32,7 @@ import os
 import re
 import tarfile
 import urllib.request
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 from functools import partial
 from multiprocessing import Pool
 from typing import Dict, List, Set, Tuple

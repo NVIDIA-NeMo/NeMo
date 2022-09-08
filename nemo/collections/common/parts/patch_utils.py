@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
-import torch
 from packaging import version
-
-from nemo.utils import logging
 
 # Library version globals
 TORCH_VERSION = None

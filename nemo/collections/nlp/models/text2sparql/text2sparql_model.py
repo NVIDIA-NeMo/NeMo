@@ -16,7 +16,7 @@
 # limitations under the License.
 
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -28,7 +28,7 @@ from nemo.collections.nlp.data.text2sparql import Text2SparqlDataset
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.modelPT import ModelPT
-from nemo.core.neural_types import ChannelType, LossType, MaskType, NeuralType
+from nemo.core.neural_types import ChannelType, MaskType, NeuralType
 from nemo.utils import logging
 
 __all__ = ["Text2SparqlModel"]

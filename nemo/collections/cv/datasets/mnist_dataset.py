@@ -15,7 +15,6 @@
 
 from dataclasses import dataclass
 from os.path import expanduser
-from typing import Optional
 
 from torchvision.datasets import MNIST
 from torchvision.transforms import Compose, Resize, ToTensor
@@ -25,7 +24,6 @@ from nemo.core.config import Config
 from nemo.core.neural_types.axes import AxisKind, AxisType
 from nemo.core.neural_types.elements import ClassificationTarget, Index, NormalizedImageValue, StringLabel
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.utils.decorators import add_port_docs, experimental
 
 
 @dataclass

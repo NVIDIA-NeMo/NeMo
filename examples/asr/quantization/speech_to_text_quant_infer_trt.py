@@ -16,14 +16,10 @@
 Script for inference ASR models using TensorRT
 """
 
-import collections
 import os
-import time
 from argparse import ArgumentParser
-from pprint import pprint
 
 import numpy as np
-import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 import torch

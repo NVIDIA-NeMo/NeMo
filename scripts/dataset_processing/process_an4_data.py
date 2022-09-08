@@ -17,10 +17,8 @@ import json
 import logging
 import os
 import subprocess
-import tarfile
 
 import librosa
-import wget
 
 parser = argparse.ArgumentParser(description="AN4 dataset download and processing")
 parser.add_argument("--data_root", required=True, default=None, type=str)

@@ -13,12 +13,11 @@
 # limitations under the License.
 ###############################################################################
 import torch
-import torch.nn as nn
 from torch.nn import functional as F
 
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
 from nemo.collections.tts.modules.common import get_mask_from_lengths
-from nemo.core.classes import Loss, typecheck
+from nemo.core.classes import Loss
 
 
 def compute_flow_loss(z, log_det_W_list, log_s_list, n_elements, n_dims, mask, sigma=1.0):

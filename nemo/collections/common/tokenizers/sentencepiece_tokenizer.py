@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-import re
 from typing import Dict, List, Optional, Union
 
 import numpy as np

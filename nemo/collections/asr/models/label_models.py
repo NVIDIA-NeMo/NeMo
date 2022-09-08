@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
-from torchmetrics import AUROC, Accuracy
+from torchmetrics import Accuracy
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset
@@ -130,7 +130,6 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             num_classes = cfg.decoder.params.num_classes  # to pass test
 
         self._macro_accuracy = Accuracy(num_classes=num_classes, average='macro')
-        self._auroc = AUROC(num_classes=num_classes)
 
         self.labels = None
         if hasattr(self._cfg, 'spec_augment') and self._cfg.spec_augment is not None:
@@ -319,97 +318,63 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
         return {'loss': loss}
 
-    def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):
+    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
         audio_signal, audio_signal_len, labels, _ = batch
         logits, _ = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
         loss_value = self.loss(logits=logits, labels=labels)
         acc_top_k = self._accuracy(logits=logits, labels=labels)
         correct_counts, total_counts = self._accuracy.correct_counts_k, self._accuracy.total_counts_k
         self._macro_accuracy.update(preds=logits, target=labels)
-        self._auroc.update(preds=logits, target=labels)
+        stats = self._macro_accuracy._get_final_stats()
 
         return {
-            'val_loss': loss_value,
-            'val_correct_counts': correct_counts,
-            'val_total_counts': total_counts,
-            'val_acc_top_k': acc_top_k,
+            f'{tag}_loss': loss_value,
+            f'{tag}_correct_counts': correct_counts,
+            f'{tag}_total_counts': total_counts,
+            f'{tag}_acc_micro_top_k': acc_top_k,
+            f'{tag}_acc_macro_stats': stats,
         }
+
+    def multi_evaluation_epoch_end(self, outputs, dataloader_idx: int = 0, tag: str = 'val'):
+        loss_mean = torch.stack([x[f'{tag}_loss'] for x in outputs]).mean()
+        correct_counts = torch.stack([x[f'{tag}_correct_counts'] for x in outputs]).sum(axis=0)
+        total_counts = torch.stack([x[f'{tag}_total_counts'] for x in outputs]).sum(axis=0)
+
+        self._accuracy.correct_counts_k = correct_counts
+        self._accuracy.total_counts_k = total_counts
+        topk_scores = self._accuracy.compute()
+
+        self._macro_accuracy.tp = torch.stack([x[f'{tag}_acc_macro_stats'][0] for x in outputs]).sum(axis=0)
+        self._macro_accuracy.fp = torch.stack([x[f'{tag}_acc_macro_stats'][1] for x in outputs]).sum(axis=0)
+        self._macro_accuracy.tn = torch.stack([x[f'{tag}_acc_macro_stats'][2] for x in outputs]).sum(axis=0)
+        self._macro_accuracy.fn = torch.stack([x[f'{tag}_acc_macro_stats'][3] for x in outputs]).sum(axis=0)
+        macro_accuracy_score = self._macro_accuracy.compute()
+
+        self._accuracy.reset()
+        self._macro_accuracy.reset()
+
+        self.log(f'{tag}_loss', loss_mean, sync_dist=True)
+        for top_k, score in zip(self._accuracy.top_k, topk_scores):
+            self.log(f'{tag}_acc_micro_top@{top_k}', score, sync_dist=True)
+        self.log(f'{tag}_acc_macro', macro_accuracy_score, sync_dist=True)
+
+        return {
+            f'{tag}_loss': loss_mean,
+            f'{tag}_acc_micro_top_k': topk_scores,
+            f'{tag}_acc_macro': macro_accuracy_score,
+        }
+
+    def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):
+        return self.evaluation_step(batch, batch_idx, dataloader_idx, 'val')
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
-        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        correct_counts = torch.stack([x['val_correct_counts'] for x in outputs]).sum(axis=0)
-        total_counts = torch.stack([x['val_total_counts'] for x in outputs]).sum(axis=0)
-
-        self._accuracy.correct_counts_k = correct_counts
-        self._accuracy.total_counts_k = total_counts
-        topk_scores = self._accuracy.compute()
-        macro_accuracy_score = self._macro_accuracy.compute()
-        auroc_score = self._auroc.compute()
-
-        self._accuracy.reset()
-        self._macro_accuracy.reset()
-        self._auroc.reset()
-
-        logging.info("val_loss: {:.3f}".format(val_loss_mean))
-        self.log('val_loss', val_loss_mean)
-        for top_k, score in zip(self._accuracy.top_k, topk_scores):
-            self.log('val_epoch_accuracy_top@{}'.format(top_k), score)
-
-        self.log('val_acc_macro', macro_accuracy_score, sync_dist=True)
-        self.log('val_auroc', auroc_score, sync_dist=True)
-
-        return {
-            'val_loss': val_loss_mean,
-            'val_acc_top_k': topk_scores,
-            'val_acc_macro': macro_accuracy_score,
-            'val_auroc': auroc_score,
-        }
+        return self.multi_evaluation_epoch_end(outputs, dataloader_idx, 'val')
 
     def test_step(self, batch, batch_idx, dataloader_idx: int = 0):
-        audio_signal, audio_signal_len, labels, _ = batch
-        logits, _ = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
-        loss_value = self.loss(logits=logits, labels=labels)
-        acc_top_k = self._accuracy(logits=logits, labels=labels)
-        correct_counts, total_counts = self._accuracy.correct_counts_k, self._accuracy.total_counts_k
-        self._macro_accuracy.update(preds=logits, target=labels)
-        self._auroc.update(preds=logits, target=labels)
-
-        return {
-            'test_loss': loss_value,
-            'test_correct_counts': correct_counts,
-            'test_total_counts': total_counts,
-            'test_acc_top_k': acc_top_k,
-        }
+        return self.evaluation_step(batch, batch_idx, dataloader_idx, 'test')
 
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
-        test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        correct_counts = torch.stack([x['test_correct_counts'] for x in outputs]).sum(axis=0)
-        total_counts = torch.stack([x['test_total_counts'] for x in outputs]).sum(axis=0)
-
-        self._accuracy.correct_counts_k = correct_counts
-        self._accuracy.total_counts_k = total_counts
-        topk_scores = self._accuracy.compute()
-        macro_accuracy_score = self._macro_accuracy.compute()
-        auroc_score = self._auroc.compute()
-
-        self._accuracy.reset()
-        self._macro_accuracy.reset()
-        self._auroc.reset()
-
-        logging.info("test_loss: {:.3f}".format(test_loss_mean))
-        self.log('test_loss', test_loss_mean)
-        for top_k, score in zip(self._accuracy.top_k, topk_scores):
-            self.log('test_epoch_accuracy_top@{}'.format(top_k), score)
-
-        self.log('test_acc_macro', macro_accuracy_score, sync_dist=True)
-        self.log('test_auroc', auroc_score, sync_dist=True)
-
-        return {
-            'test_loss': test_loss_mean,
-            'test_acc_top_k': topk_scores,
-            'test_acc_macro': macro_accuracy_score,
-            'test_auroc': auroc_score,
-        }
+        return self.multi_evaluation_epoch_end(outputs, dataloader_idx, 'test')
 
     @torch.no_grad()
     def get_embedding(self, path2audio_file):
@@ -420,7 +385,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             path2audio_file: path to audio wav file
 
         Returns:
-            embs: speaker embeddings 
+            embs: speaker embeddings
         """
         audio, sr = librosa.load(path2audio_file, sr=None)
         target_sr = self._cfg.train_ds.get('sample_rate', 16000)
@@ -450,11 +415,11 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         Verify if two audio files are from the same speaker or not.
 
         Args:
-            path2audio_file1: path to audio wav file of speaker 1  
-            path2audio_file2: path to audio wav file of speaker 2 
+            path2audio_file1: path to audio wav file of speaker 1
+            path2audio_file2: path to audio wav file of speaker 2
             threshold: cosine similarity score used as a threshold to distinguish two embeddings (default = 0.7)
 
-        Returns:  
+        Returns:
             True if both audio files are from same speaker, False otherwise
         """
         embs1 = self.get_embedding(path2audio_file1).squeeze()

@@ -113,8 +113,8 @@ To run a tutorial:
      - Text Classification (Sentiment Analysis) with BERT
      - `Text Classification (Sentiment Analysis) <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Text_Classification_Sentiment_Analysis.ipynb>`_
    * - NLP
-     - Question Answering with SQuAD
-     - `Question Answering Squad <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Question_Answering_Squad.ipynb>`_
+     - Question Answering
+     - `Question Answering <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Question_Answering.ipynb>`_
    * - NLP
      - Token Classification (Named Entity Recognition)
      - `Token Classification: Named Entity Recognition <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Token_Classification_Named_Entity_Recognition.ipynb>`_

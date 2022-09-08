@@ -41,6 +41,6 @@ tts_dataset:
     add_blank_at: null
     pad_with_space: True
     g2p:
-      _target_: nemo.collections.common.tokenizers.text_to_speech.g2ps.EnglishG2p
+      _target_: nemo_text_processing.g2p.modules.EnglishG2p
       phoneme_dict: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
       heteronyms: "scripts/tts_dataset_files/heteronyms-052722"

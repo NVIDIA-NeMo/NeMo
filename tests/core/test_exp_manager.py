@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
+import os
 import re
 from pathlib import Path
 
@@ -440,3 +441,24 @@ class TestExpManager:
 
         test_trainer.fit(model)
         assert math.fabs(float(model(torch.tensor([1.0, 1.0], device=model.device))) - 0.03) < 1e-5
+
+    @pytest.mark.unit
+    def test_nemo_checkpoint_make_checkpoint_dir(self, tmp_path):
+        max_steps = 64
+
+        class TestModel(ExampleModel):
+            def train_dataloader(self):
+                dataset = OnesDataset(64)
+                return torch.utils.data.DataLoader(dataset, batch_size=1)
+
+        test_trainer = pl.Trainer(
+            accelerator='cpu', enable_checkpointing=False, logger=False, max_steps=max_steps, val_check_interval=0.33
+        )
+        exp_manager(test_trainer, {"explicit_log_dir": str(tmp_path / "test")})
+        model = TestModel()
+        test_trainer.fit(model)
+
+        checkpoint_dir = Path(str(tmp_path / "test" / "checkpoints"))
+        model_path = checkpoint_dir / "default--val_loss=0.0300-epoch=1-last.ckpt"
+        last_saved_checkpoint = torch.load(model_path)
+        assert max_steps == last_saved_checkpoint['global_step']

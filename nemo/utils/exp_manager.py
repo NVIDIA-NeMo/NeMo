@@ -810,6 +810,16 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         if trainer.fast_dev_run:
             return None
 
+        # check if we need to save a last checkpoint manually as validation isn't always run based on the interval
+        if self.save_last and trainer.val_check_interval != 0:
+            should_save_last_checkpoint = False
+            if isinstance(trainer.val_check_interval, float) and trainer.val_check_interval % trainer.global_step != 0:
+                should_save_last_checkpoint = True
+            if isinstance(trainer.val_check_interval, int) and trainer.global_step % trainer.val_check_interval != 0:
+                should_save_last_checkpoint = True
+            if should_save_last_checkpoint:
+                monitor_candidates = self._monitor_candidates(trainer)
+                super()._save_last_checkpoint(trainer, monitor_candidates)
         # Call parent on_train_end() to save the -last checkpoint
         super().on_train_end(trainer, pl_module)
 

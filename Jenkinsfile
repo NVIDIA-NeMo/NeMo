@@ -212,65 +212,6 @@ pipeline {
       }
     }
 
-    stage('L0: Computer Vision Integration') {
-      when {
-        anyOf {
-          branch 'main'
-          changeRequest target: 'main'
-        }
-      }
-      failFast true
-      parallel {
-        stage ('MNIST image classification with LeNet-5 Integration Test - on CPU') {
-          steps {
-            sh 'cd examples/cv && \
-            python mnist_lenet5_image_classification_pure_lightning.py trainer.devices=1 \
-            trainer.accelerator="cpu" \
-            trainer.fast_dev_run=true model.dataset.data_folder=/home/TestData \
-            && rm -rf outputs'
-          }
-        }
-      }
-    }
-
-    // We have no integration tests, please enable this when one is added
-    // stage('L0: Integration Tests GPU') {
-    //   steps {
-    //     sh 'pytest -s -m "integration and not skipduringci and not pleasefixme"'
-    //   }
-    // }
-
-    // stage('L0: Integration Tests CPU') {
-    //   when {
-    //     anyOf{
-    //       branch 'main'
-    //       changeRequest target: 'main'
-    //     }
-    //   }
-    //   steps {
-    //     sh 'pytest -s -m "integration and not pleasefixme" --cpu'
-    //   }
-    // }
-
-    // We have no system tests, please enable this when one is added
-    // stage('L1: System Tests GPU') {
-    //   steps {
-    //     sh 'pytest -m "system and not skipduringci and not pleasefixme"'
-    //   }
-    // }
-
-    // stage('L1: System Tests CPU') {
-    //   when {
-    //     anyOf{
-    //       branch 'dev
-    //       changeRequest target: 'main'
-    //     }
-    //   }
-    //   steps {
-    //     sh 'pytest -m "system and not pleasefixme" --cpu'
-    //   }
-    // }
-
     stage('L2: ASR dev run') {
       when {
         anyOf {

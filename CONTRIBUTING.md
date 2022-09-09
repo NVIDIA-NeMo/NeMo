@@ -51,7 +51,7 @@ Your  pull requests must pass all checks and peer-review before they can be merg
 * Abstract classes in the Model hierarchy have Model postfix
 * A config class for MyModel should be called MyModelConfig
 * Leaf Neural Module classes have simple names without any postfixes (e.g. AudioPreprocess)
-* Leaf Datasets have Dataset postfix (e.g. MNISTDataset)
+* Leaf Datasets have Dataset postfix (e.g. AudioToSpeechLabelDataset)
 * Leaf Losses have Loss postfix (e.g. CTCLoss)
 * Leaf Models do not have any postfix, just name (e.g. QuartzNet)
 

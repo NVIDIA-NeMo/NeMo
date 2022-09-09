@@ -350,9 +350,9 @@ class NLPModel(ModelPT, Exportable):
                 checkpoint['state_dict'] = new_state_dict
 
             if 'cfg' in kwargs:
-                model = ptl_load_state(checkpoint, strict=strict, **kwargs)
+                model = ptl_load_state(cls, checkpoint, strict=strict, **kwargs)
             else:
-                model = ptl_load_state(checkpoint, strict=strict, cfg=cfg, **kwargs)
+                model = ptl_load_state(cls, checkpoint, strict=strict, cfg=cfg, **kwargs)
                 # cfg = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY].cfg
 
             # NMT models do not have a `tokenizer` attribute, they instead have an encoder_tokenizer and decoder_tokenizer attribute.

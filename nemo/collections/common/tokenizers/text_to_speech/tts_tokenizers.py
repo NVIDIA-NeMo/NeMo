@@ -30,7 +30,8 @@ from nemo_text_processing.g2p.modules import IPAG2P
 from phonemizer.backend import EspeakBackend
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
-    get_ipa_character_list,
+    get_grapheme_character_set,
+    get_ipa_character_set,
     get_ipa_punctuation_list,
 )
 from nemo.utils import logging
@@ -407,7 +408,6 @@ class IPATokenizer(BaseTokenizer):
         g2p,
         punct=True,
         non_default_punct_list=None,
-        chars=False,
         *,
         space=' ',
         silence=None,
@@ -423,7 +423,6 @@ class IPATokenizer(BaseTokenizer):
             g2p: Grapheme to phoneme module, should be IPAG2P or some subclass thereof.
             punct: Whether to reserve grapheme for basic punctuation or not.
             non_default_punct_list: List of punctuation marks which will be used instead default, if any.
-            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return chars too.
             space: Space token as string.
             silence: Silence token as string (will be disabled if it is None).
             apostrophe: Whether to use apostrophe or not.
@@ -450,20 +449,18 @@ class IPATokenizer(BaseTokenizer):
             self.phoneme_probability = g2p.phoneme_probability
 
         # Build tokens list
-        tokens = sorted(list(g2p.symbols))  # Sort to ensure that vocab is in the same order every time
+        tokens = set(g2p.symbols)
 
-        if chars or self.phoneme_probability is not None:
-            if not chars:
-                logging.warning(
-                    "phoneme_probability was not None, characters will be enabled even though "
-                    "chars was set to False."
-                )
+        if apostrophe:
+            tokens.add("'")
 
-            # Add uppercase chars if G2P class uses them, otherwise use lowercase ones
-            if g2p.set_graphemes_upper:
-                tokens.extend(string.ascii_uppercase)
-            else:
-                tokens.extend(string.ascii_lowercase)
+        if punct:
+            if non_default_punct_list is not None:
+                self.PUNCT_LIST = non_default_punct_list
+            tokens.update(self.PUNCT_LIST)
+
+        # Sort to ensure that vocab is in the same order every time
+        tokens = sorted(list(tokens))
 
         if space in g2p.symbols:
             self.space = tokens.index(space)
@@ -473,17 +470,8 @@ class IPATokenizer(BaseTokenizer):
         if silence is not None:
             self.silence, tokens = len(tokens), tokens + [silence]
 
-        if apostrophe:
-            tokens.append("'")
-
-        if punct:
-            if non_default_punct_list is not None:
-                self.PUNCT_LIST = non_default_punct_list
-            tokens.extend(self.PUNCT_LIST)
-
         super().__init__(tokens, oov=oov, sep=sep, add_blank_at=add_blank_at)
 
-        self.chars = chars if self.phoneme_probability is None else True
         self.punct = punct
         self.pad_with_space = pad_with_space
 
@@ -560,9 +548,10 @@ class PhonemizerTokenizer(IPATokenizer):
         pad_with_space=False,
         non_default_chars=None,
         non_default_punct_list=None,
-        with_stress=True,
+        use_stresses=True,
         ignore_ambiguous_words=True,
         heteronyms=None,
+        phoneme_probability: Optional[float] = None,
         espeak_logging_level=ERROR,
     ):
         """IPA tokenizer using the Phonemizer library with an eSpeak backend
@@ -590,9 +579,11 @@ class PhonemizerTokenizer(IPATokenizer):
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             non_default_chars: List of characters which will be used instead of default.
             non_default_punct_list: List of punctuation marks which will be used instead of default.
-            with_stress: Whether to include stresses/accents in the IPA output.
+            use_stresses: Whether to include stresses/accents in the IPA output.
             ignore_ambiguous_words: Whether to not handle word via phoneme_dict with ambiguous phoneme sequences.
             heteronyms (str, Path, List): Path to file with heteronyms (every line is new word) or list of words.
+            phoneme_probability (Optional[float]): The probability (0.<var<1.) that each word is phonemized for mixed
+                representation training. Defaults to None which is the same as 1.
             espeak_logging_level: Logging level for eSpeak.
                 Defaults to 'logging.ERROR' (to avoid a lot of unhelpful warning logs).
         """
@@ -604,25 +595,30 @@ class PhonemizerTokenizer(IPATokenizer):
                 "https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md#installation"
             )
 
+        use_chars = phoneme_probability is not None
         if non_default_chars:
-            char_list = non_default_chars
+            char_set = non_default_chars
         else:
-            char_list = get_ipa_character_list(language)
-            if with_stress:
-                char_list.extend(self.ESPEAK_SYMBOLS)
-        chars = "".join(char_list)
+            locale = self._get_locale(language)
+            char_set = get_ipa_character_set(locale)
+            if use_stresses:
+                char_set.update(self.ESPEAK_SYMBOLS)
+            if use_chars:
+                grapheme_set = get_grapheme_character_set(locale)
+                char_set.update(grapheme_set)
 
         if not punct:
             punct_list = []
         elif non_default_punct_list:
             punct_list = non_default_punct_list
         else:
-            punct_list = get_ipa_punctuation_list(language)
+            locale = self._get_locale(language)
+            punct_list = get_ipa_punctuation_list(locale)
 
         espeak_logger = getLogger('espeak')
         espeak_logger.setLevel(espeak_logging_level)
         self.espeak_backend = EspeakBackend(
-            language=language, preserve_punctuation=punct, with_stress=with_stress, logger=espeak_logger
+            language=language, preserve_punctuation=punct, with_stress=use_stresses, logger=espeak_logger
         )
 
         ipa_g2p = IPAG2P(
@@ -631,9 +627,13 @@ class PhonemizerTokenizer(IPATokenizer):
             word_tokenize_func=ipa_word_tokenize,
             ignore_ambiguous_words=ignore_ambiguous_words,
             heteronyms=heteronyms,
+            use_chars=use_chars,
+            phoneme_probability=phoneme_probability,
+            use_stresses=use_stresses,
+            set_graphemes_upper=True,
         )
         # Merge chars with all symbols found in the phoneme dictionary.
-        ipa_g2p.symbols.update(chars)
+        ipa_g2p.add_symbols(char_set)
 
         super().__init__(
             g2p=ipa_g2p,
@@ -642,6 +642,18 @@ class PhonemizerTokenizer(IPATokenizer):
             pad_with_space=pad_with_space,
             text_preprocessing_func=lambda text: text,
         )
+
+    @staticmethod
+    def _get_locale(language):
+        # Converts eSpeak language string to ISO language tag
+        if language == "en-us":
+            return "en-US"
+        elif language == "es":
+            return "es-ES"
+        elif language == "de":
+            return "de-DE"
+
+        raise ValueError(f"Language not supported {language}")
 
     def _text_to_phonemes_espeak(self, text):
         phonemes = self.espeak_backend.phonemize([text])[0]

@@ -26,9 +26,11 @@ class TestTTSTokenizers:
     ESPEAK_AVAILABLE = ctypes.util.find_library('espeak-ng') or ctypes.util.find_library('espeak')
 
     @staticmethod
-    def _create_tokenizer(language):
+    def _create_tokenizer(language, phoneme_probability=None):
         phoneme_dict_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phoneme_dict", "test_dict.txt")
-        tokenizer = PhonemizerTokenizer(language=language, phoneme_dict=phoneme_dict_path)
+        tokenizer = PhonemizerTokenizer(
+            language=language, phoneme_dict=phoneme_dict_path, phoneme_probability=phoneme_probability
+        )
         return tokenizer
 
     @pytest.mark.run_only_on('CPU')
@@ -79,6 +81,42 @@ class TestTTSTokenizers:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_phonemizer_tokenizer_with_accented_characters_and_digits(self):
+        input_text = "There is 1 é in café"
+        # E-speak converts standalone é to its formal name "e-acute"
+        expected_output = "ðˈɛɹ ɪz wˈʌn ˌiːɐkjˈuːt ˈɪn kæfˈeɪ"
+        tokenizer = self._create_tokenizer("en-us")
+
+        output = tokenizer.text_to_phonemes(input_text)
+        assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_phonemizer_tokenizer_with_graphemes(self):
+        input_text = "Hello fhwdgads."
+        expected_output = "HELLO FHWDGADS."
+        tokenizer = self._create_tokenizer("en-us", phoneme_probability=0.0)
+
+        output = tokenizer.text_to_phonemes(input_text)
+        assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_phonemizer_tokenizer_with_phoneme_probability(self):
+        input_text = "NVIDIA NeMo"
+        expected_grapheme_output = "NVIDIA NEMO"
+        expected_phoneme_output = "ɛnˈvidiə ˈnimoʊ"
+        tokenizer = self._create_tokenizer("en-us", phoneme_probability=0.0)
+
+        grapheme_output = tokenizer.text_to_phonemes(input_text)
+        with tokenizer.set_phone_prob(prob=1.0):
+            phoneme_output = tokenizer.text_to_phonemes(input_text)
+
+        assert grapheme_output == expected_grapheme_output
+        assert phoneme_output == expected_phoneme_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_phonemizer_tokenizer_with_unknown_character(self):
         input_text = "NVIDIA🙂 NeMo 🧐"
         expected_output = "ɛnˈvidiə ˈnimoʊ"
@@ -107,7 +145,7 @@ class TestTTSTokenizers:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_phonemizer_tokenizer_unsupported_language(self):
-        with pytest.raises(ValueError, match="Character set not found"):
+        with pytest.raises(ValueError, match="Language not supported"):
             self._create_tokenizer("pt-BR")
 
     @pytest.mark.skipif(

@@ -69,7 +69,6 @@ model:
   text_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
     punct: true
-    chars: true
     apostrophe: true
     pad_with_space: true
     g2p:
@@ -79,6 +78,7 @@ model:
       phoneme_probability: 0.8
       # Relies on the heteronyms list for anything that needs to be disambiguated
       ignore_ambiguous_words: false
+      use_chars: true
       use_stresses: true
   train_ds:
     dataset:

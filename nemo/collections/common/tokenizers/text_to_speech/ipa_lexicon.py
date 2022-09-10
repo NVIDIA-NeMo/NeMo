@@ -20,22 +20,41 @@ DEFAULT_PUNCTUATION = (
     ')', '[', ']', '{', '}',
 )
 
+GRAPHEME_CHARACTER_SETS = {
+    "en-US": (
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z'
+    ),
+    "es-ES": (
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'Á', 'É', 'Í', 'Ñ',
+        'Ó', 'Ú', 'Ü'
+    ),
+    "de-DE": (
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'Ä', 'É', 'Ê', 'Ñ',
+        'Ö', 'Ü'
+    ),
+}
 
-CHARACTER_SETS = {
-    "en-us": (
+IPA_CHARACTER_SETS = {
+    "en-US": (
         'a', 'b', 'd', 'e', 'f', 'h', 'i', 'j', 'k', 'l',
         'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'v', 'w',
         'x', 'z', 'æ', 'ð', 'ŋ', 'ɐ', 'ɑ', 'ɔ', 'ə', 'ɚ',
         'ɛ', 'ɜ', 'ɡ', 'ɪ', 'ɬ', 'ɹ', 'ɾ', 'ʃ', 'ʊ', 'ʌ',
         'ʒ', 'ʔ', 'ʲ', '̃', '̩', 'θ', 'ᵻ'
     ),
-    "es": (
+    "es-ES": (
         'a', 'b', 'd', 'e', 'f', 'h', 'i', 'j', 'k', 'l',
         'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'w', 'x',
         'ð', 'ŋ', 'ɛ', 'ɡ', 'ɣ', 'ɪ', 'ɲ', 'ɾ', 'ʃ', 'ʊ',
         'ʎ', 'ʒ', 'ʝ', 'β', 'θ'
     ),
-    "de": (
+    "de-DE": (
         '1', 'a', 'b', 'd', 'e', 'f', 'h', 'i', 'j', 'k',
         'l', 'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'v',
         'w', 'x', 'y', 'z', 'ç', 'ø', 'ŋ', 'œ', 'ɐ', 'ɑ',
@@ -46,21 +65,28 @@ CHARACTER_SETS = {
 # fmt: on
 
 
-def get_ipa_character_list(language):
-    if language not in CHARACTER_SETS:
-        raise ValueError(f"Character set not found for language {language}")
-    char_list = list(CHARACTER_SETS[language])
-    return char_list
+def get_grapheme_character_set(locale):
+    if locale not in GRAPHEME_CHARACTER_SETS:
+        raise ValueError(f"Grapheme character set not found for locale {locale}")
+    char_set = set(GRAPHEME_CHARACTER_SETS[locale])
+    return char_set
 
 
-def get_ipa_punctuation_list(language):
+def get_ipa_character_set(locale):
+    if locale not in IPA_CHARACTER_SETS:
+        raise ValueError(f"IPA character set not found for locale {locale}")
+    char_set = set(IPA_CHARACTER_SETS[locale])
+    return char_set
+
+
+def get_ipa_punctuation_list(locale):
     punct_list = list(DEFAULT_PUNCTUATION)
-    if language in ["de", "es"]:
+    if locale in ["de-DE", "es-ES"]:
         # https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_list.extend(['«', '»', '‹', '›'])
-    if language == "de":
+    if locale == "de-DE":
         punct_list.extend(['„', '“'])
-    elif language == "es":
+    elif locale == "es-ES":
         punct_list.extend(['¿', '¡'])
 
     return punct_list

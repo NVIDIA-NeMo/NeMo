@@ -153,7 +153,6 @@ class TTSDataset(Dataset):
             highfreq (Optional[int]): The highfreq input to the mel filter calculation. Defaults to None.
         Keyword Args:
             log_mel_folder (Optional[Union[Path, str]]): The folder that contains or will contain log mel spectrograms.
-            align_prior_matrix_folder (Optional[Union[Path, str]]): The folder that contains or will contain align prior matrices.
             pitch_folder (Optional[Union[Path, str]]): The folder that contains or will contain pitch.
             voiced_mask_folder (Optional[Union[Path, str]]): The folder that contains or will contain voiced mask of the pitch
             p_voiced_folder (Optional[Union[Path, str]]): The folder that contains or will contain p_voiced(probability) of the pitch
@@ -390,15 +389,6 @@ class TTSDataset(Dataset):
                 )
 
     def add_align_prior_matrix(self, **kwargs):
-        self.align_prior_matrix_folder = kwargs.pop('align_prior_matrix_folder', None)
-
-        if self.align_prior_matrix_folder is None:
-            self.align_prior_matrix_folder = Path(self.sup_data_path) / AlignPriorMatrix.name
-        elif isinstance(self.align_prior_matrix_folder, str):
-            self.align_prior_matrix_folder = Path(self.align_prior_matrix_folder)
-
-        self.align_prior_matrix_folder.mkdir(exist_ok=True, parents=True)
-
         self.use_beta_binomial_interpolator = kwargs.pop('use_beta_binomial_interpolator', False)
         if not self.cache_text:
             if 'use_beta_binomial_interpolator' in kwargs and not self.use_beta_binomial_interpolator:
@@ -527,19 +517,11 @@ class TTSDataset(Dataset):
         # Load alignment prior matrix if needed
         align_prior_matrix = None
         if AlignPriorMatrix in self.sup_data_types_set:
+            mel_len = self.get_log_mel(audio).shape[2]
             if self.use_beta_binomial_interpolator:
-                mel_len = self.get_log_mel(audio).shape[2]
                 align_prior_matrix = torch.from_numpy(self.beta_binomial_interpolator(mel_len, text_length.item()))
             else:
-                prior_path = self.align_prior_matrix_folder / f"{rel_audio_path_as_text_id}.pt"
-
-                if prior_path.exists():
-                    align_prior_matrix = torch.load(prior_path)
-                else:
-                    mel_len = self.get_log_mel(audio).shape[2]
-                    align_prior_matrix = beta_binomial_prior_distribution(text_length, mel_len)
-                    align_prior_matrix = torch.from_numpy(align_prior_matrix)
-                    torch.save(align_prior_matrix, prior_path)
+                align_prior_matrix = torch.from_numpy(beta_binomial_prior_distribution(text_length, mel_len))
 
         non_exist_voiced_index = []
         my_var = locals()

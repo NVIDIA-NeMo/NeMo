@@ -462,8 +462,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         return loss_mean
 
     def validation_epoch_end(self, outputs):
-        if not outputs:
-            return
         if parallel_state.is_pipeline_last_stage():
             # only the last pipeline parallel stages return loss
             averaged_loss = torch.stack(outputs).mean()

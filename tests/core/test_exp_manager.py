@@ -15,12 +15,15 @@ import math
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
+from pytorch_lightning import Callback
+from pytorch_lightning.loops import TrainingEpochLoop
 
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
@@ -443,22 +446,129 @@ class TestExpManager:
         assert math.fabs(float(model(torch.tensor([1.0, 1.0], device=model.device))) - 0.03) < 1e-5
 
     @pytest.mark.unit
-    def test_nemo_checkpoint_make_checkpoint_dir(self, tmp_path):
+    def test_last_checkpoint_saved(self, tmp_path):
         max_steps = 64
+        tmp_path = tmp_path / "test_1"
 
         class TestModel(ExampleModel):
             def train_dataloader(self):
                 dataset = OnesDataset(64)
                 return torch.utils.data.DataLoader(dataset, batch_size=1)
 
-        test_trainer = pl.Trainer(
+        trainer = pl.Trainer(
             accelerator='cpu', enable_checkpointing=False, logger=False, max_steps=max_steps, val_check_interval=0.33
         )
-        exp_manager(test_trainer, {"explicit_log_dir": str(tmp_path / "test")})
+        exp_manager(
+            trainer,
+            {
+                "explicit_log_dir": str(tmp_path),
+                "checkpoint_callback_params": {"filename": f"{{val_loss:.4f}}-{{epoch}}-{{step}}"},
+            },
+        )
         model = TestModel()
-        test_trainer.fit(model)
+        trainer.fit(model)
 
-        checkpoint_dir = Path(str(tmp_path / "test" / "checkpoints"))
-        model_path = checkpoint_dir / "default--val_loss=0.0300-epoch=1-last.ckpt"
+        checkpoint_dir = Path(str(tmp_path / "checkpoints"))
+        model_path = checkpoint_dir / "val_loss=0.0300-epoch=1-step=64-last.ckpt"
         last_saved_checkpoint = torch.load(model_path)
         assert max_steps == last_saved_checkpoint['global_step']
+        # restart training, ensure global step starts correctly
+        class AssertCallback(Callback):
+            def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+                assert trainer.global_step == max_steps
+
+            def on_train_batch_end(
+                self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs, batch: Any, batch_idx: int
+            ) -> None:
+                # we should only be running for one more step.
+                assert trainer.global_step == max_steps + 1
+
+        trainer = pl.Trainer(
+            accelerator='cpu',
+            enable_checkpointing=False,
+            logger=False,
+            max_steps=65,
+            val_check_interval=0.33,
+            callbacks=AssertCallback(),
+        )
+        exp_manager(
+            trainer,
+            {
+                "explicit_log_dir": str(tmp_path),
+                "checkpoint_callback_params": {"filename": f"{{val_loss:.4f}}-{{epoch}}-{{step}}"},
+            },
+        )
+        model = TestModel()
+        trainer.fit(model, ckpt_path=model_path)
+
+    @pytest.mark.unit
+    def test_resume_checkpoint_skip_validation(self, tmp_path):
+        """Test to ensure that when we resume from a checkpoint, we do not re-run validation unnecessarily."""
+        tmp_path = tmp_path / "test_2"
+
+        def run_training(resume_path=None):
+            class TestModel(ExampleModel):
+                def train_dataloader(self):
+                    dataset = OnesDataset(10)
+                    return torch.utils.data.DataLoader(dataset, batch_size=1)
+
+            class AssertCallback(Callback):
+                recorded_validations = 0
+                recorded_train_steps = 0
+
+                def on_validation_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+                    self.recorded_validations += 1
+
+                def on_train_batch_end(
+                    self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs, batch: Any, batch_idx: int
+                ) -> None:
+                    self.recorded_train_steps += 1
+
+                def on_train_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+                    if resume_path is not None:
+                        # we should only run validation at the end of training.
+                        assert self.recorded_validations == 1
+                        # we continue from half way
+                        assert self.recorded_train_steps == len(pl_module.train_dataloader()) // 2
+                    else:
+                        # we've run validation within the middle of training and at the end of training.
+                        assert self.recorded_validations == 2
+                        assert self.recorded_train_steps == len(pl_module.train_dataloader())
+
+            model = TestModel()
+            trainer = pl.Trainer(
+                accelerator='cpu',
+                enable_checkpointing=False,
+                logger=False,
+                callbacks=[AssertCallback()],
+                val_check_interval=0.5,
+                num_sanity_val_steps=0,
+                max_epochs=1,
+            )
+            exp_manager(
+                trainer,
+                {"explicit_log_dir": str(tmp_path), "checkpoint_callback_params": {"filename": f"{{epoch}}-{{step}}"}},
+            )
+            trainer.fit(model, ckpt_path=resume_path)
+
+        run_training()
+        resume_path = tmp_path / 'checkpoints/epoch=0-step=5.ckpt'
+        run_training(resume_path)
+
+    def test_warning_validation_skipping_when_custom_epoch_loop(self, tmp_path):
+        """When using validation skipping on restart with a custom epoch loop, we warn the user that we skip
+        support to not interfere with their custom logic.
+        """
+        tmp_path = tmp_path / "test_3"
+
+        class CustomLoop(TrainingEpochLoop):
+            ...
+
+        trainer = pl.Trainer(
+            accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1, val_check_interval=0.33
+        )
+        loop = CustomLoop()
+        loop.trainer = trainer
+        trainer.fit_loop.epoch_loop = loop
+        with pytest.warns(UserWarning, match="Detected custom epoch loop"):
+            exp_manager(trainer, {"explicit_log_dir": str(tmp_path)})

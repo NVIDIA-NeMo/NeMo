@@ -327,8 +327,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         return self.eval_epoch_end(outputs, 'test')
 
     def eval_epoch_end(self, outputs, mode):
-        if not outputs:
-            return
         if isinstance(outputs[0], dict):
             outputs = [outputs]
 

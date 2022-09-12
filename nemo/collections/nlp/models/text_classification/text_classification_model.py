@@ -129,8 +129,6 @@ class TextClassificationModel(NLPModel, Exportable):
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
-        if not outputs:
-            return {}
         if self.trainer.testing:
             prefix = 'test'
         else:

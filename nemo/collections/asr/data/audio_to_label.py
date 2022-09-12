@@ -214,7 +214,7 @@ target_label_0, "offset": offset_in_sec_0}
         {"audio_filepath": "/path/to/audio_wav_n.wav", "duration": time_in_sec_n, "label": \
 target_label_n, "offset": offset_in_sec_n}
     Args:
-        manifest_filepath (str): Dataset parameter. Path to JSON containing data.
+        manifest_filepath (Union[str, List[str]]): Dataset parameter. Path to JSON containing data.
         labels (list): Dataset parameter. List of target classes that can be output by the speaker recognition model.
         featurizer
         min_duration (float): Dataset parameter. All training files which have a duration less than min_duration
@@ -261,7 +261,7 @@ target_label_n, "offset": offset_in_sec_n}
     def __init__(
         self,
         *,
-        manifest_filepath: str,
+        manifest_filepath: Union[str, List[str]],
         labels: List[str],
         featurizer,
         min_duration: Optional[float] = 0.1,
@@ -271,8 +271,10 @@ target_label_n, "offset": offset_in_sec_n}
         cal_labels_occurrence: Optional[bool] = False,
     ):
         super().__init__()
+        if isinstance(manifest_filepath, str):
+            manifest_filepath = manifest_filepath.split(',')
         self.collection = collections.ASRSpeechLabel(
-            manifests_files=manifest_filepath.split(','),
+            manifests_files=manifest_filepath,
             min_duration=min_duration,
             max_duration=max_duration,
             is_regression_task=is_regression_task,
@@ -341,7 +343,7 @@ class AudioToClassificationLabelDataset(_AudioLabelDataset):
     {"audio_filepath": "/path/to/audio_wav_n.wav", "duration": time_in_sec_n, "label": \
         target_label_n, "offset": offset_in_sec_n}
     Args:
-        manifest_filepath: Path to manifest json as described above. Can
+        manifest_filepath (Union[str, List[str]]): Path to manifest json as described above. Can
             be comma-separated paths.
         labels (Optional[list]): String containing all the possible labels to map to
             if None then automatically picks from ASRSpeechLabel collection.
@@ -368,7 +370,7 @@ class AudioToSpeechLabelDataset(_AudioLabelDataset):
     {"audio_filepath": "/path/to/audio_wav_n.wav", "duration": time_in_sec_n, "label": \
         target_label_n, "offset": offset_in_sec_n}
     Args:
-        manifest_filepath (str): Path to manifest json as described above. Can
+        manifest_filepath (Union[str, List[str]]): Path to manifest json as described above. Can
             be comma-separated paths.
         labels (Optional[list]): String containing all the possible labels to map to
             if None then automatically picks from ASRSpeechLabel collection.
@@ -398,7 +400,7 @@ class AudioToSpeechLabelDataset(_AudioLabelDataset):
     def __init__(
         self,
         *,
-        manifest_filepath: str,
+        manifest_filepath: Union[str, List[str]],
         labels: List[str],
         featurizer,
         min_duration: Optional[float] = 0.1,

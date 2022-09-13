@@ -22,7 +22,6 @@ FROM conda/miniconda3
 WORKDIR /workspace
 
 # install dependencies
-RUN conda update -n base -c defaults conda -y
 RUN conda install conda-build -y
 RUN apt-get update &&     apt-get install -y --reinstall build-essential &&     apt-get upgrade -y &&     apt-get install -y git &&     apt-get install make
 RUN git clone https://github.com/google/re2

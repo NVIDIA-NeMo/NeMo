@@ -437,12 +437,11 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                             for pred, label, input, category in zip(
                                 batch['preds'], batch['labels'], batch['inputs'], batch['categories']
                             ):
-                                if input + label not in gt_inp_set:
-                                    gt_inp_set.add(input + label)
-                                    deduplicated_outputs['preds'].append(pred)
-                                    deduplicated_outputs['labels'].append(label)
-                                    deduplicated_outputs['categories'].append(category)
-                                    deduplicated_outputs['inputs'].append(input)
+                                gt_inp_set.add(input + label)
+                                deduplicated_outputs['preds'].append(pred)
+                                deduplicated_outputs['labels'].append(label)
+                                deduplicated_outputs['categories'].append(category)
+                                deduplicated_outputs['inputs'].append(input)
                     self.write_predictions_to_file(
                         deduplicated_outputs, f"{data_cfg.output_file_path_prefix}_{filename_log_key}"
                     )

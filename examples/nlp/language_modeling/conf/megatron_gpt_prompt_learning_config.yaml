@@ -41,7 +41,6 @@ model:
   seed: 1234
   nemo_path: ${name}.nemo # .nemo filename/absolute path to where the virtual prompt model parameters will be saved
   virtual_prompt_style: 'p-tuning' # one of 'prompt-tuning', 'p-tuning', or 'inference'
-  encoder_seq_length: 2048 
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
   global_batch_size: 8

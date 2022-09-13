@@ -14,9 +14,9 @@
 
 from nemo.collections.asr.models.configs.asr_models_config import (
     ASRDatasetConfig,
+    CacheAwareStreamingConfig,
     EncDecCTCConfig,
     EncDecCTCModelConfig,
-    FramewiseStreamingConfig,
 )
 from nemo.collections.asr.models.configs.classification_models_config import (
     EncDecClassificationConfig,

@@ -38,6 +38,8 @@ This script supports training of G2PModels
         trainer.devices=1 \
         do_training=True \
         do_testing=True
+    
+    Example of the config file: NeMo/examples/text_processing/g2p/conf/t5_g2p.yaml
         
 # Training Conformer-G2P Model and evaluation at the end of training:
     python examples/text_processing/g2p/g2p_train_and_evaluate.py \
@@ -49,6 +51,8 @@ This script supports training of G2PModels
         trainer.devices=1 \
         do_training=True \
         do_testing=True
+        
+    Example of the config file: NeMo/examples/text_processing/g2p/conf/g2p_conformer_ctc.yaml
         
 # Run evaluation of the pretrained model:
     python examples/text_processing/g2p/g2p_train_and_evaluate.py \

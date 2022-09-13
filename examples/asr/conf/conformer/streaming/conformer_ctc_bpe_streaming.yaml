@@ -4,7 +4,7 @@
 # You may find more detail on the architecture and training config at NeMo/examples/asr/comf/offline/conformer_ctc_bpe.yaml
 
 # Models trained with this config have limited right context which make them efficient for streaming ASR
-# You may use NeMo/examples/asr/speech_to_text_streaming_infer.py to simulate/evaluate this model in frame-wise streaming mode
+# You may use NeMo/examples/asr/speech_to_text_streaming_infer.py to simulate/evaluate this model in cache-aware streaming mode
 
 # if loss does not go down properly or gives NAN, you may try the followings:
 # + using gradient clipping of 1.0

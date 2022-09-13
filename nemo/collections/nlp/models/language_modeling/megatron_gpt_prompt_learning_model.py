@@ -92,9 +92,11 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         # Need to overwrite some params in frozen model's config before restoring
         with open_dict(frozen_model_cfg):
             frozen_model_cfg.megatron_amp_O2 = False
+            frozen_model_cfg.optim.name = "fused_adam"
             frozen_model_cfg.micro_batch_size = self.cfg.micro_batch_size
             frozen_model_cfg.global_batch_size = self.cfg.global_batch_size
             frozen_model_cfg.precision = trainer.precision
+            frozen_model_cfg.sequence_parallel = False
 
         # Load pretrained GPT model and tokenizer, frozen model will have lr=0.0
         if cfg.get('language_model_path', None):
@@ -138,6 +140,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
                 hidden_size=self.hidden_size,
             )
 
+        self.padded_vocab_size = self.frozen_model.padded_vocab_size
         self._prompt_table_key = VirtualPromptSource.PROMPT_TABLE.value
         self._prompt_encoder_key = VirtualPromptSource.PROMPT_ENCODER.value
 

@@ -132,15 +132,17 @@ Cache-aware Streaming Conformer
 
 Buffered streaming uses overlapping chunks to make an offline ASR model to be used for streaming with reasonable accuracy. However, it uses significant amount of duplication in computations due to the overlapping chunks.
 Also there is a accuracy gep between the offline model and the streaming one as there is inconsistency between how we train the model and how we perform inference for streaming.
-The Cache-aware Streaming Conformer models would tackle and address these disadvantages. They are variants of Conformer which are trained with limited right context and it would make it possible to match the training and inference.
+The Cache-aware Streaming Conformer models would tackle and address these disadvantages. These streaming Conformers are trained with limited right context that it would make it possible to match how the model is being used in both the training and inference.
+They also uses caching to store intermediate activations to avoid any duplication in compute.
 The cache-aware approach is supported for both the Conformer-CTC and Conformer-Transducer and enables the model to be used very efficiently for streaming.
 
-Three categories of layers in Conformer have access to right tokens: 1-depthwise convolutions 2-self-attention, and 3-convolutions in downsampling layers.
+Three categories of layers in Conformer have access to right tokens: 1-depthwise convolutions 2-self-attention, and 3-convolutions in the downsampling layers.
 Streaming Conformer models uses causal convolutions or convolutions with lower right context and also self-attention with limited right context to limit the effective right context for the input.
-The model trained with such limitations can be used in streaming mode and give the exact same output and accuracy as when the whole audio is given to the model in offline mode.
+The model trained with such limitations can be used in streaming mode and give the exact same outputs and accuracy as when the whole audio is given to the model in offline mode.
 These model can use caching mechanism to store and reuse the activations during streaming inference to avoid any duplications in the computations as much as possible.
 
 We support the following three right context modeling:
+
 *  fully causal model with zero look-ahead: tokens would not see any future tokens. convolution layers are all causal and right tokens are masked for self-attention.
 It gives zero latency but with limited accuracy.
 To train such a model, you need to set `encoder.att_context_size=[left_context, 0]` and `encoder.conv_context_size=causal` in the config.
@@ -155,9 +157,9 @@ This approach is more efficient than regular look-ahead in terms of computations
 In terms of accuracy, this approach gives similar or even better results in term of accuracy than regular look-ahead as each token in each layer have access to more tokens on average. That is why we recommend to use this approach for streaming.
 
 
-** Note: Latencies are based on the assumption that the forward time of the network is zero.
+** Note: Latencies are based on the assumption that the forward time of the network is zero and it just estimates the time needed after a frame would be available until it is passed through the model.
 
-Approaches with non-zero look-ahead can give significantly better accuracy by sacrificing latency. The latency can get controlled by the left context size.
+Approaches with non-zero look-ahead can give significantly better accuracy by sacrificing latency. The latency can get controlled by the left context size. Increasing the right context would help the accuracy to a limit but would increase the compuation time.
 
 
 In all modes, left context can be controlled by the number of tokens to be visible in the self-attention and the kernel size of the convolutions.
@@ -168,12 +170,16 @@ Left context of convolutions is dependent to the their kernel size while it can 
 Self-attention left context of around 6 secs would give close result to have unlimited left context. For a model with 4x downsampling and shift window of 10ms in the preprocessor, each token corresponds to 4*10=40ms.
 
 If striding approach is used for downsampling, all the convolutions in downsampling would be fully causal and don't see future tokens.
-It is recommended to use stacking for streaming model which is significantly faster and uses less memory.
+You may use stacking for downsampling in the streaming models which is significantly faster and uses less memory.
+It also does not some of the the limitations with striding and vggnet and you may use any downsampling rate.
 
 You may find the example config files of cache-aware streaming Conformer models at
 ``<NeMo_git_root>/examples/asr/conf/conformer/streaming/conformer_transducer_bpe_streaming.yaml`` for Transducer variant and
 at ``<NeMo_git_root>/examples/asr/conf/conformer/streaming/conformer_ctc_bpe.yaml`` for CTC variant.
 
+To simulate cache-aware stremaing, you may use the script at ``<NeMo_git_root>/examples/asr/asr_streaming/speech_to_text_streaming_infer.py``. It can simulate streaming in single stream or multi-stream mode (in batches) for an ASR model.
+This script can be used for models trained offline with full-context but the accuracy would not be great unless the chunk size is large enough which would result in high latency.
+It is recommended to train a model in streaming model with limited context for this script. More info can be found in the script.
 
 .. _LSTM-Transducer_model:
 

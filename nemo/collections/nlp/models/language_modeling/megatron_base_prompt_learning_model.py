@@ -21,6 +21,7 @@ from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
 from torch import Tensor
 
+from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.modules.common import (
     PromptEncoder,
@@ -65,7 +66,14 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
 
         self.tokenizer = self.frozen_model.tokenizer
 
-        self.hidden_size = self.frozen_model.cfg.hidden_size
+        if hasattr(self.frozen_model.cfg, "encoder") and hasattr(self.frozen_model.cfg, "decoder"):
+            self.hidden_size = (
+                self.frozen_model.cfg.encoder.hidden_size
+            )  # Encoder and decoder need to have the same hidden size and we check for this in the frozen enc-dec model.
+        else:
+            self.hidden_size = self.frozen_model.cfg.hidden_size
+
+        # TODO: Handle this when moving GPT prompt learning to the base class.
         self.word_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.word_embeddings
         self.existing_tasks = list(self.cfg.get('existing_tasks', []))
         self.new_tasks = list(self.cfg.get('new_tasks', []))
@@ -101,7 +109,10 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
 
         # Prepare pseudo token ids for virtual/virtual prompt tokens
         self.pseudo_tokens = get_pseudo_tokens(self.max_virtual_tokens)
-        self.tokenizer.add_special_tokens({'additional_special_tokens': self.pseudo_tokens})
+        if isinstance(self.tokenizer, SentencePieceTokenizer):
+            self.tokenizer.add_special_tokens(self.pseudo_tokens)
+        else:
+            self.tokenizer.add_special_tokens({'additional_special_tokens': self.pseudo_tokens})
         self.pseudo_token_ids = self.tokenizer.tokens_to_ids(self.pseudo_tokens)
         self.pseudo_token_ids_start = self.pseudo_token_ids[0]
         self.pad_token_id = self.tokenizer.pad_id if self.tokenizer.pad_id is not None else self.tokenizer.unk_id
@@ -396,8 +407,8 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
             self.cfg.virtual_prompt_style = VirtualPromptStyle.INFERENCE.value
 
         # Save the best nemo model
-        self.save_to(save_path=self.cfg.virtual_prompt_save_path)
-        logging.info(f"The final model was saved to {self.cfg.virtual_prompt_save_path}")
+        self.save_to(save_path=self.cfg.nemo_path)
+        logging.info(f"The final model was saved to {self.cfg.nemo_path}")
 
     def setup(self, stage=None):
         if stage == 'predict' or self.virtual_prompt_style == VirtualPromptStyle.INFERENCE:

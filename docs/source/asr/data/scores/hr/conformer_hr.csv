@@ -1,0 +1,3 @@
+Model Name,Language,ParlaSpeech-HR v1.0 (dev),ParlaSpeech-HR v1.0 (test)
+stt_hr_conformer_ctc_large,hr,4.43,4.70
+stt_hr_conformer_transducer_large,hr,4.56,4.69

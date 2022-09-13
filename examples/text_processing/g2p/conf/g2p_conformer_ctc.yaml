@@ -27,7 +27,7 @@ model:
     feat_in: ${model.embedding.d_model}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
     n_layers: 16
-    d_model: 256
+    d_model: 176
 
     # Sub-sampling params
     subsampling: null # vggnet or striding, vggnet may give better results but needs more memory
@@ -39,7 +39,7 @@ model:
 
     # Multi-headed Attention Module's params
     self_attention_model: rel_pos # rel_pos or abs_pos
-    n_heads: 8 # may need to be lower for smaller d_models
+    n_heads: 4 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     att_context_size: [ -1, -1 ] # -1 means unlimited context
     xscaling: true # scales up the input embeddings by sqrt(d_model)

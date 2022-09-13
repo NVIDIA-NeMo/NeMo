@@ -15,6 +15,7 @@
 """Transformer based language model."""
 
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
+from nemo.collections.nlp.modules.common.megatron.megatron_encoder_module import MegatronEncoderModule
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.transformer import ParallelTransformer
 from nemo.collections.nlp.modules.common.megatron.utils import (
@@ -22,6 +23,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     attn_mask_postprocess,
     build_attention_mask_3d,
 )
+from nemo.core.classes.exportable import Exportable
 
 try:
     from apex.transformer.enums import AttnMaskType, ModelType
@@ -36,7 +38,7 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ["MegatronTransformerEncoderModule"]
 
 
-class MegatronTransformerEncoderModule(MegatronModule):
+class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncoderModule):
     """Transformer encoder model."""
 
     def __init__(

@@ -33,4 +33,8 @@ model:
       max_seq_length: 512
       drop_last: False
       write_predictions_to_file: False
-      prediction_file_path_prefix: null # Prefix of the file to write predictions to.
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      metric:
+        name: "exact_string_match" # Name of the evaluation metric to use.
+        average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+        num_classes: null

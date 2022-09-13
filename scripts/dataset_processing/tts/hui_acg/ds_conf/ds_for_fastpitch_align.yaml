@@ -38,7 +38,7 @@ dataset:
     punct_post_process: true
 
   text_tokenizer:
-    _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.GermanCharsTokenizer
+    _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.GermanPhonemesTokenizer
     punct: true
     apostrophe: true
     pad_with_space: true

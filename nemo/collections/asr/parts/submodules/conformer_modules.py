@@ -207,28 +207,15 @@ class ConformerConvolution(nn.Module):
             in_channels=d_model, out_channels=d_model * 2, kernel_size=1, stride=1, padding=0, bias=True
         )
 
-        if conv_context_size is None or (
-            conv_context_size[0] == (kernel_size - 1) // 2 and conv_context_size[1] == (kernel_size - 1) // 2
-        ):
-            self.depthwise_conv = nn.Conv1d(
-                in_channels=dw_conv_input_dim,
-                out_channels=dw_conv_input_dim,
-                kernel_size=kernel_size,
-                stride=1,
-                padding=(kernel_size - 1) // 2,
-                groups=d_model,
-                bias=True,
-            )
-        else:
-            self.depthwise_conv = CausalConv1D(
-                in_channels=dw_conv_input_dim,
-                out_channels=dw_conv_input_dim,
-                kernel_size=kernel_size,
-                stride=1,
-                padding=conv_context_size,
-                groups=d_model,
-                bias=True,
-            )
+        self.depthwise_conv = CausalConv1D(
+            in_channels=dw_conv_input_dim,
+            out_channels=dw_conv_input_dim,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=conv_context_size,
+            groups=d_model,
+            bias=True,
+        )
 
         if norm_type == 'batch_norm':
             self.batch_norm = nn.BatchNorm1d(dw_conv_input_dim)

@@ -73,6 +73,13 @@ def get_args():
     parser.add_argument("--tensor_model_parallel_size", type=int, required=True, default=None)
     parser.add_argument("--pipeline_model_parallel_size", type=int, required=True, default=None)
     parser.add_argument(
+        "--pipeline_model_parallel_split_rank",
+        type=int,
+        required=False,
+        default=None,
+        help="If pipeline parallel size > 1, this is the rank at which the encoder ends and the decoder begins.",
+    )
+    parser.add_argument(
         "--model_type", type=str, required=True, default="gpt", choices=["gpt", "t5", "bert", "nmt", "bart", "retro"]
     )
     parser.add_argument("--local_rank", type=int, required=False, default=os.getenv('LOCAL_RANK', -1))
@@ -96,11 +103,27 @@ def convert(local_rank, rank, world_size, args):
 
     app_state.pipeline_model_parallel_size = args.pipeline_model_parallel_size
     app_state.tensor_model_parallel_size = args.tensor_model_parallel_size
+    # Auto set split rank for T5, BART, NMT if split rank is None.
+    if args.pipeline_model_parallel_size > 1 and args.model_type in ['t5', 'bart', 'nmt']:
+        if args.pipeline_model_parallel_split_rank is not None:
+            app_state.pipeline_model_parallel_split_rank = args.pipeline_model_parallel_split_rank
+        else:
+            if args.pipeline_model_parallel_size % 2 != 0:
+                raise ValueError(
+                    f"Pipeline model parallel size {args.pipeline_model_parallel_size} must be even if split rank is not specified."
+                )
+            else:
+                # If split rank is not set, then we set it to be pipeline_model_parallel_size // 2 - this is because in most cases we have the same number of enc/dec layers.
+                app_state.pipeline_model_parallel_split_rank = args.pipeline_model_parallel_size // 2
+    else:
+        app_state.pipeline_model_parallel_split_rank = None
+
     app_state.model_parallel_size = app_state.tensor_model_parallel_size * app_state.pipeline_model_parallel_size
 
     parallel_state.initialize_model_parallel(
         tensor_model_parallel_size_=app_state.tensor_model_parallel_size,
         pipeline_model_parallel_size_=app_state.pipeline_model_parallel_size,
+        pipeline_model_parallel_split_rank_=app_state.pipeline_model_parallel_split_rank,
     )
 
     app_state.pipeline_model_parallel_rank = parallel_state.get_pipeline_model_parallel_rank()

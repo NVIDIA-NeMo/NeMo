@@ -948,7 +948,7 @@ class ModelPT(LightningModule, Model):
         """
         return self._test_names[dataloader_idx]
 
-    def load_part_of_state_dict(self, state_dict, include, exclude, load_from_string):
+    def load_part_of_state_dict(self, state_dict, include, exclude, load_from_string=None):
 
         excluded_param_names = []
         # create dict
@@ -971,12 +971,18 @@ class ModelPT(LightningModule, Model):
 
         # Restore checkpoint part into current model
         self.load_state_dict(dict_to_load, strict=False)
-        logging.info(f'Model checkpoint partially restored from {load_from_string}')
-        if len(excluded_param_names) > 0:
-            logging.info(
-                f'The following parameters were excluded from loading from {load_from_string} : {excluded_param_names}'
-            )
-            logging.info(f'Make sure that this is what you wanted!')
+        if load_from_string is not None:
+            logging.info(f'Model checkpoint partially restored from {load_from_string}')
+            if len(excluded_param_names) > 0:
+                logging.info(
+                    f'The following parameters were excluded when loading from {load_from_string} : {excluded_param_names}'
+                )
+                logging.info(f'Make sure that this is what you wanted!')
+        else:
+            if len(excluded_param_names) > 0:
+                logging.info(
+                    f'The following parameters were excluded when loading checkpoint : {excluded_param_names}'
+                )
 
     @rank_zero_only
     def maybe_init_from_pretrained_checkpoint(self, cfg: OmegaConf, map_location: str = 'cpu'):
@@ -1149,7 +1155,7 @@ class ModelPT(LightningModule, Model):
                         exclude = model_load_cfg.pop('exclude', [])
 
                         self.load_part_of_state_dict(
-                            ckpt['state_dict'], include, exclude, f'nemo file with path `{model_path}`'
+                            ckpt['state_dict'], include, exclude, f'nemo file with path `{ckpt_path}`'
                         )
 
                         del ckpt

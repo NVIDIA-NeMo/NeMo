@@ -62,6 +62,10 @@ class GeLUFunction(torch.autograd.Function):
         tmp = bias_gelu_back(grad_output, bias, input)
         return tmp, tmp
 
+    @staticmethod
+    def symbolic(g, input, bias):
+        return g.op("com.microsoft::BiasGelu", input, bias)
+
 
 def fused_bias_gelu(input, bias):
     args = _cast_if_autocast_enabled(input, bias)

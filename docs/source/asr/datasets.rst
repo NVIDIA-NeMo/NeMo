@@ -171,7 +171,7 @@ The audio files can be of any format supported by `Pydub <https://github.com/jia
 WAV files as they are the default and have been most thoroughly tested.
 
 There should be one manifest file per dataset that will be passed in, therefore, if the user wants separate training and validation
-datasets, they should also have separate manifests. Otherwise, thay will be loading validation data with their training data and vice
+datasets, they should also have separate manifests. Otherwise, they will be loading validation data with their training data and vice
 versa.
 
 Each line of the manifest should be in the following format:

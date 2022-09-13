@@ -21,7 +21,7 @@ import torch.distributed
 import torch.nn as nn
 from omegaconf import DictConfig, ListConfig
 
-from nemo.collections.asr.models.configs import FramewiseStreamingConfig
+from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer
@@ -312,6 +312,19 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         self.setup_streaming_params()
         self.export_cache_support = False
 
+    def update_max_seq_length(self, seq_length: int, device):
+        # Find global max audio length across all nodes
+        if torch.distributed.is_initialized():
+            global_max_len = torch.tensor([seq_length], dtype=torch.float32, device=device)
+
+            # Update across all ranks in the distributed system
+            torch.distributed.all_reduce(global_max_len, op=torch.distributed.ReduceOp.MAX)
+
+            seq_length = global_max_len.int().item()
+
+        if seq_length > self.max_audio_length:
+            self.set_max_audio_length(seq_length)
+
     def set_max_audio_length(self, max_audio_length):
         """
         Sets maximum input length.
@@ -319,11 +332,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         """
         self.max_audio_length = max_audio_length
         device = next(self.parameters()).device
-        seq_range = torch.arange(0, self.max_audio_length, device=device)
-        if hasattr(self, 'seq_range'):
-            self.seq_range = seq_range
-        else:
-            self.register_buffer('seq_range', seq_range, persistent=False)
         self.pos_enc.extend_pe(max_audio_length, device)
 
         att_mask = torch.ones(1, max_audio_length, max_audio_length, dtype=torch.bool, device=device)
@@ -353,7 +361,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
 
         if length is None:
             length = audio_signal.new_full(
-                audio_signal.size(0), max_audio_length, dtype=torch.int32, device=self.seq_range.device
+                audio_signal.size(0), max_audio_length, dtype=torch.int32, device=audio_signal.device
             )
 
         if cache_last_channel is not None:
@@ -393,7 +401,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
             audio_signal, pos_emb = self.pos_enc(x=audio_signal)
 
         # pad_mask is the masking to be used to ignore paddings
-        pad_mask = self.make_pad_mask(max_audio_length=max_audio_length, seq_lens=padding_length)
+        pad_mask = torch.arange(0, max_audio_length, device=audio_signal.device).expand(
+            padding_length.size(0), -1
+        ) < padding_length.unsqueeze(-1)
 
         # pad_mask_for_att_mask is the mask which helps to ignore paddings
         pad_mask_for_att_mask = pad_mask.unsqueeze(1).repeat([1, max_audio_length, 1])
@@ -432,57 +442,49 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         else:
             return audio_signal, length
 
-    def update_max_seq_length(self, seq_length: int, device):
-        # Find global max audio length across all nodes
-        if torch.distributed.is_initialized():
-            global_max_len = torch.tensor([seq_length], dtype=torch.float32, device=device)
-
-            # Update across all ranks in the distributed system
-            torch.distributed.all_reduce(global_max_len, op=torch.distributed.ReduceOp.MAX)
-
-            seq_length = global_max_len.int().item()
-
-        if seq_length > self.max_audio_length:
-            self.set_max_audio_length(seq_length)
-
-    def make_pad_mask(self, max_audio_length, seq_lens):
-        """Make masking for padding."""
-        mask = self.seq_range[:max_audio_length].expand(seq_lens.size(0), -1) < seq_lens.unsqueeze(-1)
-        return mask
-
     def enable_pad_mask(self, on=True):
-        # On inference, user may chose to disable pad mask
+        # On inference, user may choose to disable pad mask
         mask = self.use_pad_mask
         self.use_pad_mask = on
         return mask
 
     def setup_streaming_params(
-        self, max_context: int = 10000,
+        self, chunk_size: int = None, shift_size: int = None, left_chunks: int = None, max_context: int = 10000
     ):
         """
             This function sets the needed values and parameters to perform streaming. The configuration would be stored in self.streaming_cfg.
             The streaming configuration is needed to simulate streaming inference.
+            Args:
+                chunk_size (int): overrides the chunk size
+                shift_size (int): overrides the shift size for chunks
+                left_chunks (int): overrides the number of left chunks visible to each chunk
+                max_context (int): the value used for the cache size of last_channel layers if left context is set to infinity (-1)
+                    Defaults to -1 (means feat_out is d_model)
         """
-        streaming_cfg = FramewiseStreamingConfig()
-        if self.att_context_style == "chunked_limited":
+        streaming_cfg = CacheAwareStreamingConfig()
+        if chunk_size is not None:
+            if chunk_size <= 1:
+                raise ValueError("chunk_size needs to be a number larger or equal to one.")
+            lookahead_steps = chunk_size - 1
+            streaming_cfg.cache_drop_size = chunk_size - shift_size
+        elif self.att_context_style == "chunked_limited":
             lookahead_steps = self.att_context_size[1]
             streaming_cfg.cache_drop_size = 0
         elif self.att_context_style == "regular":
-            lookahead_steps_att = (
-                self.att_context_size[1] * self.n_layers if self.att_context_size[1] >= 0 else max_context
-            )
-            lookahead_steps_conv = (
-                self.conv_context_size[1] * self.n_layers if self.conv_context_size[1] >= 0 else max_context
-            )
-            lookahead_steps = max(lookahead_steps_att, lookahead_steps_conv)
+            lookahead_steps = self.att_context_size[1] * self.n_layers + self.conv_context_size[1] * self.n_layers
             streaming_cfg.cache_drop_size = lookahead_steps
         else:
-            streaming_cfg.cache_drop_size = cache_drop_size
+            streaming_cfg.cache_drop_size = 0
             lookahead_steps = None
 
-        streaming_cfg.last_channel_cache_size = (
-            self.att_context_size[0] if self.att_context_size[0] >= 0 else max_context
-        )
+        if chunk_size is None:
+            streaming_cfg.last_channel_cache_size = (
+                self.att_context_size[0] if self.att_context_size[0] >= 0 else max_context
+            )
+        else:
+            if left_chunks is None:
+                raise ValueError("left_chunks can not be None when chunk_size is set.")
+            streaming_cfg.last_channel_cache_size = left_chunks * chunk_size
 
         if hasattr(self.pre_encode, "get_sampling_frames"):
             sampling_frames = self.pre_encode.get_sampling_frames()

@@ -23,7 +23,7 @@ class StreamingEncoder(ABC):
         self, max_look_ahead: int = 10000,
     ):
         """
-        This function sets the needed values and parameters to perform streaming. The configuration (FramewiseStreamingConfig) need to be stored in self.streaming_cfg.
+        This function sets the needed values and parameters to perform streaming. The configuration (CacheAwareStreamingConfig) need to be stored in self.streaming_cfg.
         The streaming configuration is needed to simulate streaming inference. It would set the following
         """
         pass
@@ -72,7 +72,12 @@ class StreamingEncoder(ABC):
             encoded, encoded_len, cache_last_channel_next, cache_last_time_next = encoder_output
 
         if cache_last_channel_next is not None and self.streaming_cfg.last_channel_cache_size >= 0:
-            cache_last_channel_next = cache_last_channel_next[:, :, -self.streaming_cfg.last_channel_cache_size :, :]
+            if self.streaming_cfg.last_channel_cache_size > 0:
+                cache_last_channel_next = cache_last_channel_next[
+                    :, :, -self.streaming_cfg.last_channel_cache_size :, :
+                ]
+            else:
+                cache_last_channel_next = cache_last_channel_next[:, :, 0:0, :]
         if not keep_all_outputs:
             encoded = encoded[:, :, : self.streaming_cfg.valid_out_len]
             encoded_len = torch.clamp(encoded_len, max=self.streaming_cfg.valid_out_len)

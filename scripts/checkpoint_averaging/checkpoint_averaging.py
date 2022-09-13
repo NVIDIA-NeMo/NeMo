@@ -35,6 +35,7 @@ import os
 import sys
 
 import torch
+from tqdm.auto import tqdm
 
 from nemo.core import ModelPT
 from nemo.utils import logging, model_utils
@@ -44,13 +45,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         'model_fname_list',
-        metavar='N',
+        metavar='NEMO_FILE_OR_FOLDER',
         type=str,
         nargs='+',
         help='Input .nemo files (or folders who contains them) to parse',
     )
     parser.add_argument(
         '--import_fname_list',
+        metavar='FILE',
         type=str,
         nargs='+',
         default=[],
@@ -59,7 +61,7 @@ def main():
     args = parser.parse_args()
 
     logging.info(
-        f"\n\nIMPORTANT: Use --import_fname_list for all files that contain missing classes (AttributeError: Can't get attribute '???' on <module '__main__' from '???'>)\n\n"
+        f"\n\nIMPORTANT:\nIf you get the following error:\n\t(AttributeError: Can't get attribute '???' on <module '__main__' from '???'>)\nuse:\n\t--import_fname_list\nfor all files that contain missing classes.\n\n"
     )
 
     for fn in args.import_fname_list:
@@ -77,7 +79,7 @@ def main():
                 filter(lambda fn: not fn.endswith("-averaged.nemo"), glob.glob(os.path.join(model_fname, "*.nemo")))
             )
             if len(nemo_files) != 1:
-                raise RuntimeError(f"Expected only a single .nemo files but discovered {len(nemo_files)} .nemo files")
+                raise RuntimeError(f"Expected exactly one .nemo file but discovered {len(nemo_files)} .nemo files")
 
             model_fname = nemo_files[0]
 
@@ -107,23 +109,25 @@ def main():
 
         logging.info(f"Averaging {n} checkpoints ...")
 
-        for ix, path in enumerate(checkpoint_paths):
+        for ix, path in enumerate(tqdm(checkpoint_paths, total=n, desc='Averaging checkpoints')):
             checkpoint = torch.load(path, map_location=device)
 
             if 'state_dict' in checkpoint:
                 checkpoint = checkpoint['state_dict']
+            else:
+                raise RuntimeError(f"Checkpoint from {path} does not include a state_dict.")
 
             if ix == 0:
                 # Initial state
                 avg_state = checkpoint
 
-                logging.info(f"Initialized average state dict with checkpoint : {path}")
+                logging.info(f"Initialized average state dict with checkpoint:\n\t{path}")
             else:
                 # Accumulated state
                 for k in avg_state:
                     avg_state[k] = avg_state[k] + checkpoint[k]
 
-                logging.info(f"Updated average state dict with state from checkpoint : {path}")
+                logging.info(f"Updated average state dict with state from checkpoint:\n\t{path}")
 
         for k in avg_state:
             if str(avg_state[k].dtype).startswith("torch.int"):
@@ -136,7 +140,7 @@ def main():
         # restore merged weights into model
         nemo_model.load_state_dict(avg_state, strict=True)
         # Save model
-        logging.info(f"Saving average mdel to: {avg_model_fname}")
+        logging.info(f"Saving average model to:\n\t{avg_model_fname}")
         nemo_model.save_to(avg_model_fname)
 
 

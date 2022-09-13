@@ -83,8 +83,12 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
         else:
             input_embeds = self.embed_input_train(input_ids, taskname_ids)
 
-        position_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.position_embeddings(position_ids)
-        encoder_input = input_embeds + position_embeddings
+        # TODO: This check needs to be revisited with PP support.
+        if hasattr(self.frozen_model.enc_dec_model.encoder_embedding, 'position_embeddings'):
+            position_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.position_embeddings(position_ids)
+            encoder_input = input_embeds + position_embeddings
+        else:
+            encoder_input = input_embeds
 
         # Call forward on T5 model with preprocessed embeddings
         if self.autocast_dtype == torch.float32:
@@ -118,12 +122,14 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
 
         # TODO: Fix this once apex patches FusedScaledMaskedSoftmax.
         # This is a workaround for the fact that `masked_softmax_fusion` has issues with certain input sizes that may be present while finetuning.
-        t5_cfg = MegatronT5Model.restore_from(
-            cfg.get('pretrained_language_model_path'), trainer=trainer, return_config=True
-        )
+        t5_cfg = MegatronT5Model.restore_from(cfg.get('language_model_path'), trainer=trainer, return_config=True)
         OmegaConf.set_struct(t5_cfg, True)
         with open_dict(t5_cfg):
-            t5_cfg.masked_softmax_fusion = False
+            if hasattr(t5_cfg, 'encoder') and hasattr(t5_cfg, 'decoder'):
+                t5_cfg.encoder.masked_softmax_fusion = False
+                t5_cfg.decoder.masked_softmax_fusion = False
+            else:
+                t5_cfg.masked_softmax_fusion = False
             t5_cfg.megatron_amp_O2 = self.megatron_amp_o2
             # hack to make the _GLOBAL_NUM_MICROBATCHES_CALCULATOR initialize
             t5_cfg.micro_batch_size = cfg.get('micro_batch_size', 4)
@@ -131,7 +137,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             t5_cfg.precision = trainer.precision
 
         self.frozen_model = MegatronT5Model.restore_from(
-            cfg.get('pretrained_language_model_path'),
+            cfg.get('language_model_path'),
             trainer=trainer,
             override_config_path=t5_cfg,
             save_restore_connector=NLPSaveRestoreConnector(),
@@ -237,8 +243,12 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
 
         input_embeds = self.embed_input_train(enc_input, taskname_ids)
 
-        position_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.position_embeddings(position_ids)
-        encoder_input = input_embeds + position_embeddings
+        # TODO: This check needs to be revisited with PP support.
+        if hasattr(self.frozen_model.enc_dec_model.encoder_embedding, 'position_embeddings'):
+            position_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.position_embeddings(position_ids)
+            encoder_input = input_embeds + position_embeddings
+        else:
+            encoder_input = input_embeds
 
         loss_mean = self.fwd_bwd_step(batch, batch_idx, forward_only=True)
 
@@ -259,9 +269,18 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 idx = pred.index(self.tokenizer.eos_id)
                 pred = pred[:idx]
 
-            pred = [id for id in pred if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
-            label = [id for id in label if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
-            enc_input = [id for id in enc_input if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
+            # Sentencepiece case
+            if hasattr(self.tokenizer, 'special_token_to_id'):
+                pred = [id for id in pred if id not in self.tokenizer.special_token_to_id.values()]
+                label = [id for id in label if id not in self.tokenizer.special_token_to_id.values()]
+                enc_input = [id for id in enc_input if id not in self.tokenizer.special_token_to_id.values()]
+            # HF Autotokenizer case.
+            else:
+                pred = [id for id in pred if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
+                label = [id for id in label if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
+                enc_input = [
+                    id for id in enc_input if id not in self.tokenizer.tokenizer.additional_special_tokens_ids
+                ]
 
             pred = self.tokenizer.ids_to_text(pred)
             label = self.tokenizer.ids_to_text(label)
@@ -374,8 +393,12 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
 
         input_embeds = self.embed_input_inference(enc_input, taskname_ids)
 
-        position_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.position_embeddings(position_ids)
-        encoder_input = input_embeds + position_embeddings
+        # TODO: This check needs to be revisited with PP support.
+        if hasattr(self.frozen_model.enc_dec_model.encoder_embedding, 'position_embeddings'):
+            position_embeddings = self.frozen_model.enc_dec_model.encoder_embedding.position_embeddings(position_ids)
+            encoder_input = input_embeds + position_embeddings
+        else:
+            encoder_input = input_embeds
 
         predicted_token_ids, log_probs = self.frozen_model.decode(
             tokens_enc=enc_input,

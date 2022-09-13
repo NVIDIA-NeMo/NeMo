@@ -798,6 +798,7 @@ class MixerTTSXDataset(TTSDataset):
         if LMTokens in self.sup_data_types_set:
             lm_tokens = torch.tensor(self.id2lm_tokens[index]).long()
 
+        # Note: Please change the indices in _collate_fn if any items are added/removed.
         return (
             audio,
             audio_length,
@@ -819,8 +820,8 @@ class MixerTTSXDataset(TTSDataset):
 
     def _collate_fn(self, batch):
         batch = list(zip(*batch))
-        data_dict = self.general_collate_fn(list(zip(*batch[:13])))
-        lm_tokens_list = batch[13]
+        data_dict = self.general_collate_fn(list(zip(*batch[:15])))
+        lm_tokens_list = batch[15]
 
         if LMTokens in self.sup_data_types_set:
             lm_tokens = torch.full(

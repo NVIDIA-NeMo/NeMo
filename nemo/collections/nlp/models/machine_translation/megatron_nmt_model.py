@@ -39,6 +39,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_lm_encoder_decoder_m
 )
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_model import MTEncDecModel
+from nemo.collections.nlp.modules.common.megatron.megatron_export import DecEmb, EncEmb, TokensHeadEmb
 from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging, timers
@@ -329,13 +330,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
     def eval_epoch_end(self, outputs, mode):
         if isinstance(outputs[0], dict):
             outputs = [outputs]
-
-        self.log(
-            'consumed_samples',
-            self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
-            rank_zero_only=True,
-        )
-        self.log('global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True)
 
         loss_list = []
         bleu_score_list = []
@@ -842,3 +836,15 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
 
     def on_test_start(self) -> None:
         self.trainer.test_loop._data_fetcher = GlobalBatchDataFetcher()
+
+    @property
+    def encoder(self):
+        return EncEmb(self.enc_dec_model.encoder_embedding, self.enc_dec_model.enc_dec_model.encoder, self.device)
+
+    @property
+    def decoder(self):
+        return DecEmb(self.enc_dec_model.decoder_embedding, self.enc_dec_model.enc_dec_model.decoder, self.device)
+
+    @property
+    def classifier(self):
+        return TokensHeadEmb(self.enc_dec_model.decoder_embedding, self.enc_dec_model.tokens_head, self.device)

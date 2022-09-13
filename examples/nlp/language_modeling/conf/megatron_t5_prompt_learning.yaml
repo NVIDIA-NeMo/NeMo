@@ -30,23 +30,22 @@ exp_manager:
     monitor: val_loss
     save_top_k: 2
     mode: min
-    save_nemo_on_train_end: False # Should be false, correct prompt learning model file is saved at model.virtual_prompt_save_path set below
+    save_nemo_on_train_end: False # Should be false, correct prompt learning model file is saved at model.nemo_path set below
     filename: "megatron_t5_prompt_tune--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}"
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
 
 model:
   seed: 1234
-  virtual_prompt_save_path: ${name}.nemo # .nemo filename/absolute path to where the virtual prompt model parameters will be saved
+  nemo_path: ${name}.nemo # .nemo filename/absolute path to where the virtual prompt model parameters will be saved
   virtual_prompt_style: "p-tuning" # one of 'prompt-tuning', 'p-tuning', or 'inference'
   tensor_model_parallel_size: 1
   pipeline_model_parallel_size: 1 
-  encoder_seq_length: 2048
-  global_batch_size: 8
-  micro_batch_size: 8
+  global_batch_size: 8 
+  micro_batch_size: 8 # micro batch size should equal global batch size when pipeline parallel = 1
   
   restore_path: null # Path to an existing p-tuned/prompt tuned .nemo model you wish to add new tasks to or run inference with
-  pretrained_language_model_path: ??? # Path to the pretrained T5 language model .nemo file, always required
+  language_model_path: ??? # Path to the pretrained T5 language model .nemo file, always required
   existing_tasks: []
   new_tasks: ["squad"] 
 

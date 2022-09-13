@@ -94,7 +94,7 @@ class EncDecCTCModelConfig(model_cfg.NemoConfig):
 
 
 @dataclass
-class FramewiseStreamingConfig:
+class CacheAwareStreamingConfig:
     chunk_size: int = 0  # the size of each chunk at each step, it can be a list of two integers to specify different chunk sizes for the first step and others
     shift_size: int = 0  # the size of the shift in each step, it can be a list of two integers to specify different shift sizes for the first step and others
 

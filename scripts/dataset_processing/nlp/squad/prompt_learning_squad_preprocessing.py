@@ -14,7 +14,6 @@
 
 import argparse
 import json
-import random
 
 from tqdm import tqdm
 
@@ -25,23 +24,16 @@ Converts the dataset into a jsonl format that can be used for p-tuning/prompt tu
 
 Inputs:
     data-dir: (str) The directory where the squad dataset was downloaded, files will be saved here
-    file-name: (str) Name of the input file you want to process
+    train-file: (str) Name of train set file, either train-v1.1.json or train-v2.0.json
+    dev-file: (str) Name of dev set file, either dev-v1.1.json or dev-v2.0.json
     save-name-base: (str) The base name for each of the train, val, and test files. If save-name-base were 'squad' for
                     example, the files would be saved as squad_train.jsonl, squad_val.jsonl, and squad_test.jsonl
-    make-ground-truth: (bool) If true, test files will include answers, if false, test files will not include answers. 
     include-topic-name: Whether to include the topic name for the paragraph in the data json. See the squad explaination
                         below for more context on what is ment by 'topic name'.
     random-seed: (int) Random seed for repeatable shuffling of train/val/test splits. 
-    train-percent: (float) Precentage of data that should be used for the train split. The val and test splits will be made
-                    by splitting the remaining data evenly. 
 
-Saves train, val, and test files for the SQuAD dataset.
-
-The SQuAD dataset consists of various topics like Beyoncé, IPod, and Symbiosis. Each topic has several paragraphs 
-associated with it, and each paragraph has several questions and answers related to it. When we separated the 
-train/validation/test splits, we separated them on the topic level. For example, if the training set contains paragraphs 
-and questions about the topic Beyoncé, neither the validation nor test sets will contain any questions on this topic. 
-All questions about a certain topic are isolated to one split of the data.
+Saves train, val, and test files for the SQuAD dataset. The val and test splits are the same data, because the given test
+split lacks ground truth answers. 
 
 An example of the processed output written to file:
     
@@ -58,54 +50,36 @@ An example of the processed output written to file:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", type=str, default="data/SQuAD")
-    parser.add_argument("--file-name", type=str, default="train-v2.0.json")
+    parser.add_argument("--data-dir", type=str, default=".")
+    parser.add_argument("--train-file", type=str, default="train-v1.1.json")
+    parser.add_argument("--dev-file", type=str, default="dev-v1.1.json")
     parser.add_argument("--save-name-base", type=str, default="squad")
-    parser.add_argument("--make-ground-truth", action='store_true')
     parser.add_argument("--include-topic-name", action='store_true')
     parser.add_argument("--random-seed", type=int, default=1234)
-    parser.add_argument("--train-percent", type=float, default=0.8)
     args = parser.parse_args()
 
-    data_dict = json.load(open(f"{args.data_dir}/{args.file_name}"))
-    data = data_dict['data']
+    train_data_dict = json.load(open(f"{args.data_dir}/{args.train_file}"))
+    dev_data_dict = json.load(open(f"{args.data_dir}/{args.dev_file}"))
+    train_data = train_data_dict['data']
+    val_data = dev_data_dict['data']
+
     save_name_base = f"{args.data_dir}/{args.save_name_base}"
 
-    process_data(
-        data, save_name_base, args.train_percent, args.random_seed, args.include_topic_name, args.make_ground_truth
-    )
+    process_data(train_data, val_data, save_name_base, args.include_topic_name)
 
 
-def process_data(data, save_name_base, train_percent, random_seed, include_topic, make_ground_truth=False):
-    data = extract_questions(data, include_topic)
-
-    # Data examples are currently grouped by topic, shuffle topic groups
-    random.seed(random_seed)
-    random.shuffle(data)
-
-    # Decide train/val/test splits on the topic level
-    data_total = len(data)
-    train_total = int(data_total * train_percent)
-    val_total = (data_total - train_total) // 2
-
-    train_set = data[0:train_total]
-    val_set = data[train_total : train_total + val_total]
-    test_set = data[train_total + val_total :]
-
-    # Flatten data for each split now that topics have been confined to one split
-    train_set = [question for topic in train_set for question in topic]
-    val_set = [question for topic in val_set for question in topic]
-    test_set = [question for topic in test_set for question in topic]
-
-    # Shuffle train set questions
-    random.shuffle(train_set)
+def process_data(train_data, val_data, save_name_base, include_topic):
+    train_set = extract_questions(train_data, include_topic, split="train")
+    val_set = extract_questions(val_data, include_topic, split="val")
+    test_set = extract_questions(val_data, include_topic, split="test")
 
     gen_file(train_set, save_name_base, 'train')
     gen_file(val_set, save_name_base, 'val')
-    gen_file(test_set, save_name_base, 'test', make_ground_truth)
+    gen_file(test_set, save_name_base, 'test', make_ground_truth=True)
+    gen_file(test_set, save_name_base, 'test', make_ground_truth=False)
 
 
-def extract_questions(data, include_topic):
+def extract_questions(data, include_topic, split):
     processed_data = []
 
     # Iterate over topics, want to keep them seprate in train/val/test splits
@@ -124,23 +98,34 @@ def extract_questions(data, include_topic):
                 question = qa['question']
 
                 try:
-                    answer = qa['answers'][0]['text']
+                    # Dev set has multiple right answers. Want all possible answers in test split ground truth
+                    if split == "test":
+                        answers = [qa['answers'][i]['text'] for i in range(len(qa['answers']))]
+
+                    # Choose one anser from dev set if making validation split, train set only has one answer
+                    else:
+                        answers = qa['answers'][0]["text"]
+
                 except IndexError:
                     continue
 
-                example_json = {"taskname": "squad", "context": context, "question": question, "answer": " " + answer}
+                example_json = {"taskname": "squad", "context": context, "question": question, "answer": answers}
 
                 if include_topic:
                     example_json["topic"] = topic
 
                 processed_topic_data.append(example_json)
-        processed_data.append(processed_topic_data)
+        processed_data.extend(processed_topic_data)
 
     return processed_data
 
 
 def gen_file(data, save_name_base, split_type, make_ground_truth=False):
     save_path = f"{save_name_base}_{split_type}.jsonl"
+
+    if make_ground_truth:
+        save_path = f"{save_name_base}_{split_type}_ground_truth.jsonl"
+
     print(f"Saving {split_type} split to {save_path}")
 
     with open(save_path, 'w') as save_file:

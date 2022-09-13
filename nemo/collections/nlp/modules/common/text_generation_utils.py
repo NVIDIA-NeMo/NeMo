@@ -616,8 +616,12 @@ def sample_sequence_batch(
         # Generate enough tokens for the longest sequence
         maxlen = tokens_to_generate + context_lengths.max().item()
 
-        if maxlen > model.cfg.encoder_seq_length + 1:
-            maxlen = model.cfg.encoder_seq_length + 1
+        if isinstance(model, MegatronGPTPromptLearningModel):
+            if maxlen > model.frozen_model.cfg.encoder_seq_length + 1:
+                maxlen = model.frozen_model.cfg.encoder_seq_length + 1
+        else:
+            if maxlen > model.cfg.encoder_seq_length + 1:
+                maxlen = model.cfg.encoder_seq_length + 1
 
         lengths = torch.ones([batch_size]).long().cuda() * maxlen
 

@@ -31,6 +31,8 @@ from nemo.utils import logging
 This script runs inference with HeteronymClassificationModel
 If the input manifest contains target "word_id", evaluation will be also performed.
 
+To prepare dataset, see NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py
+
 python heteronym_classification_inference.py \
     manifest="<Path to .json manifest>" \
     pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \

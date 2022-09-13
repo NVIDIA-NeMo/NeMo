@@ -27,11 +27,14 @@ from nemo.utils.exp_manager import exp_manager
 """
 This script runs training and evaluation of HeteronymClassificationModel
 
+To prepare dataset, see NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py
+
 To run training and testing:
 python heteronym_classification_train_and_evaluate.py \
     train_manifest=<Path to manifest file>" \
     validation_manifest=<Path to manifest file>" \
     model.encoder.pretrained="<Path to .nemo file or pretrained model name from list_available_models()>" \
+    model.wordids=<Path to wordids.tsv file, similar to https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv> \ 
     do_training=True \
     do_testing=True
 """

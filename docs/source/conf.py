@@ -120,6 +120,7 @@ bibtex_bibfiles = [
     'nlp/text_normalization/tn_itn_all.bib',
     'tools/tools_all.bib',
     'tts_all.bib',
+    'text_processing/text_processing_all.bib',
     'core/adapters/adapter_bib.bib',
 ]
 

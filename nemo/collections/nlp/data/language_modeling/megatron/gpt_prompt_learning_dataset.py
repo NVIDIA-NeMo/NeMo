@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import os
+import pickle
 
 import torch
 from tqdm.auto import tqdm
@@ -20,7 +22,7 @@ from tqdm.auto import tqdm
 from nemo.collections.nlp.modules.common import VirtualPromptSource
 from nemo.collections.nlp.modules.common.megatron.utils import build_position_ids
 from nemo.core import Dataset
-from nemo.utils import logging
+from nemo.utils import AppState, logging
 
 __all__ = ['GPTPromptLearningDataset']
 
@@ -58,6 +60,8 @@ class GPTPromptLearningDataset(Dataset):
         add_eos: bool = True,
         for_train: bool = True,
         tokens_to_generate=None,
+        cache_data_path: str = None,  # the cache file
+        load_cache: bool = True,  # whether to load from the cache if it is available
     ):
         self.tokenizer = tokenizer
         self.virtual_prompt_source = virtual_prompt_source
@@ -80,17 +84,30 @@ class GPTPromptLearningDataset(Dataset):
 
         logging.info("Loading and tokenizing dataset ... ")
 
-        # Data is just a list of dicts already loaded from a json file or passed in directly as a dict
-        if isinstance(data[0], dict):
-            self.load_data(data)
-
-        # Datasets are a list of file path strings to .json or .jsonl files
-        elif isinstance(data[0], str):
-            for path in data:
-                dataset = open(path, 'r', encoding='utf-8')
-                self.load_data(dataset)
+        if load_cache and cache_data_path is not None and os.path.exists(cache_data_path):
+            # load it from the cache
+            logging.info(f'load the data from the cache file {cache_data_path}')
+            with open(cache_data_path, 'rb') as f:
+                self.examples = pickle.load(f)
         else:
-            raise ValueError("Datasets must be a list of filepath strings or a list of data example dicts")
+            # Data is just a list of dicts already loaded from a json file or passed in directly as a dict
+            if isinstance(data[0], dict):
+                self.load_data(data)
+
+            # Datasets are a list of file path strings to .json or .jsonl files
+            elif isinstance(data[0], str):
+                for path in data:
+                    dataset = open(path, 'r', encoding='utf-8')
+                    self.load_data(dataset)
+            else:
+                raise ValueError("Datasets must be a list of filepath strings or a list of data example dicts")
+            if cache_data_path is not None:
+                # the first worker save the results into the cache file
+                app_state = AppState()
+                if app_state._global_rank == 0:
+                    with open(cache_data_path, 'wb') as f:
+                        pickle.dump(self.examples, f)
+                    logging.info(f'save the data to the cache file {cache_data_path}')
 
     def load_data(self, dataset):
         """
@@ -300,7 +317,7 @@ class GPTPromptLearningDataset(Dataset):
     def __getitem__(self, idx):
         return self.examples[idx]
 
-    def collate_fn(self, batch):
+    def collate_fn(self, batch, tp_workers=0):
         """ Prepares input_ids, labels, loss mask, attention_mask, and position ids for global batch """
         taskname_ids, input_ids, answer_starts = zip(*batch)
 
@@ -316,8 +333,14 @@ class GPTPromptLearningDataset(Dataset):
 
         # Get max sequence length of batch
         batch_max = max(len(ids) for ids in input_ids)
-        input_ids, loss_mask = self.pad_batch_and_build_loss_mask(input_ids, batch_max, answer_starts)
 
+        if tp_workers > 1:
+            # more sure the sequence length is multiply of number of tp_workers, needed for sequence parallel.
+            resi_padding = (tp_workers - (batch_max - 1) % tp_workers) % tp_workers
+        else:
+            resi_padding = 0
+        batch_max += resi_padding
+        input_ids, loss_mask = self.pad_batch_and_build_loss_mask(input_ids, batch_max, answer_starts)
         # Should be a label for every token in batch, label is the next token
         labels = input_ids[:, 1:].contiguous()
         input_ids = input_ids[:, :-1].contiguous()

@@ -85,7 +85,7 @@ def main(cfg) -> None:
 
     # Update frozen GPT model path if it is given in case it has changed
     prompt_learning_cfg = MegatronGPTPromptLearningModel.restore_from(
-        cfg.virtual_prompt_model_file, trainer=trainer, return_config=True
+        cfg.virtual_prompt_model_file, trainer=trainer, return_config=True,
     )
     if cfg.get("gpt_model_file"):
         with open_dict(prompt_learning_cfg):
@@ -94,7 +94,7 @@ def main(cfg) -> None:
     # Load prompt tuned model, virtual_prompt_model_file must be provided in config
     # Now load prompt learning model with frozen gpt model base
     model = MegatronGPTPromptLearningModel.restore_from(
-        restore_path=cfg.virtual_prompt_model_file, trainer=trainer, override_config_path=prompt_learning_cfg
+        restore_path=cfg.virtual_prompt_model_file, trainer=trainer, override_config_path=prompt_learning_cfg,
     )
     model.freeze()
 

@@ -25,7 +25,7 @@ try:
     from apex.transformer.enums import AttnMaskType
     from apex.transformer.pipeline_parallel.schedules.common import listify_model
     from apex.transformer.tensor_parallel.layers import linear_with_grad_accumulation_and_async_allreduce
-    from apex.contrib.layer_norm.layer_norm import FastLayerNorm
+    from apex.transformer.layers.layer_norm import FastLayerNorm
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):

@@ -51,6 +51,20 @@ model:
   existing_tasks: ['boolq', 'intent_and_slot'] # List of tasks the model has already been p-tuned/prompt-tuned for, needed when a restore path is given
   new_tasks: ['rte'] # List of new tasknames to be prompt-tuned
 
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
+
+  ## Activation Checkpoint 
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+
   task_templates: # Add more/replace tasks as needed, these are just examples
   - taskname: "boolq" # The task name
     prompt_template: "<|VIRTUAL_PROMPT_0|> Passage: {passage} <|VIRTUAL_PROMPT_1|> \nQuestion: {question} \nAnswer: {answer}" # Prompt template for task, specify virtual prompt positions with <|VIRTUAL_PROMPT_#|>
@@ -80,9 +94,11 @@ model:
     new_prompt_init_text: ['some init text goes here'] # some init text if init method is text, or None if init method is random
 
   p_tuning: # P-tuning specific params
-    encoder_type: "mlp" # Either "mlp" or "lstm", mlp is default
-    num_layers: 2 # 2 recommended for MLP, 1 recommended for LSTM, must be at least 2 for mlp
+    encoder_type: "tpmlp" # ['tpmlp', 'lstm', 'biglstm', 'mlp'] 
     dropout: 0.0
+    num_layers: 2  # number of layers for MLP or LSTM layers. Note, it has no effect for tpmlp currently as it always assumes it is two layers.
+    encoder_hidden: 2048 # encoder hidden for biglstm and tpmlp
+    init_std: 0.023  # init std for tpmlp layers
 
   data:
     train_ds: [data/rte_train.jsonl,]
@@ -91,6 +107,10 @@ model:
     shuffle: True
     num_workers: 8
     pin_memory: True
+    train_cache_data_path: null  # the path to the train cache data 
+    validation_cache_data_path: null  # the path to the validation cache data 
+    test_cache_data_path: null  # the path to the test cache data 
+    load_cache: False  # whether to load from the cache data
 
 
   optim:

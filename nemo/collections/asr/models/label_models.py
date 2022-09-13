@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import copy
 import itertools
 from math import ceil
 from typing import Dict, List, Optional, Union
@@ -19,7 +19,8 @@ from typing import Dict, List, Optional, Union
 import librosa
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from torchmetrics import Accuracy
 from tqdm import tqdm
@@ -27,11 +28,9 @@ from tqdm import tqdm
 from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset
 from nemo.collections.asr.data.audio_to_label_dataset import get_tarred_speech_label_dataset
 from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list
-from nemo.collections.asr.losses.angularloss import AngularSoftmaxLoss
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
-from nemo.collections.common.losses import CrossEntropyLoss as CELoss
 from nemo.collections.common.metrics import TopKClassificationAccuracy
 from nemo.collections.common.parts.preprocessing.collections import ASRSpeechLabel
 from nemo.core.classes import ModelPT
@@ -87,39 +86,64 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.world_size = 1
-        self.cal_labels_occurrence = False
+        self.cal_labels_occurrence_train = False
+        self.labels_occurrence = None
+
+        if 'loss' in cfg:
+            if 'weight' in cfg.loss:
+                if cfg.loss.weight == 'auto':
+                    self.cal_labels_occurrence_train = True
+                else:
+                    weight = cfg.loss.weight
+            else:
+                weight = None  # weight is None for angular loss and CE loss if it's not specified.
+
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
         super().__init__(cfg=cfg, trainer=trainer)
 
-        self.preprocessor = EncDecSpeakerLabelModel.from_config_dict(cfg.preprocessor)
-        self.encoder = EncDecSpeakerLabelModel.from_config_dict(cfg.encoder)
-        self.decoder = EncDecSpeakerLabelModel.from_config_dict(cfg.decoder)
+        if self.labels_occurrence:
+            # Goal is to give more weight to the classes with less samples so as to match the ones with the higher frequencies
+            weight = [sum(self.labels_occurrence) / (len(self.labels_occurrence) * i) for i in self.labels_occurrence]
 
         if 'loss' in cfg:
-            if 'angular' in cfg.decoder and cfg.decoder['angular']:
-                logging.info("loss is Angular Softmax")
-                scale = cfg.loss.scale
-                margin = cfg.loss.margin
-                self.loss = AngularSoftmaxLoss(scale=scale, margin=margin)
-            else:
-                logging.info("loss is Softmax-CrossEntropy")
-                if 'weight' in cfg.loss and cfg.loss['weight']:
-                    if cfg.loss.weight == 'auto':
-                        self.cal_labels_occurrence = True
-                        # Goal is to give more weight to the classes with less samples so as to match the ones with the higher frequencies
-                        weight = [
-                            sum(self.labels_occurrence) / (len(self.labels_occurrence) * i)
-                            for i in self.labels_occurrence
-                        ]
+            # To support older version checkpoints
+            if '_target_' not in cfg.loss:
+                logging.info(
+                    "Setting angular: true/false in decoder is deprecated and will be removed in 1.13 version, use specific loss with _target_"
+                )
+                OmegaConf.set_struct(cfg, True)
+                with open_dict(cfg):
+                    if 'angular' in cfg.decoder and cfg.decoder.angular:
+                        cfg.loss._target_ = "nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss"
                     else:
-                        weight = cfg.loss.weight
-                    self.loss = CELoss(weight=weight)
-                else:
-                    self.loss = CELoss()
+                        # in case if specified angular=False but loss contained 'scale' or 'margin'
+                        cfg.loss.pop('scale', None)
+                        cfg.loss.pop('margin', None)
+                        cfg.loss._target_ = "nemo.collections.common.losses.cross_entropy.CrossEntropyLoss"
+
+            cfg_eval_loss = copy.deepcopy(cfg.loss)
+
+            if 'angular' in cfg.loss._target_:
+                OmegaConf.set_struct(cfg, True)
+                with open_dict(cfg):
+                    cfg.decoder.angular = True
+
+            if 'weight' in cfg.loss:
+                cfg.loss.weight = weight
+                cfg_eval_loss.weight = None
+
+            # May need a general check for arguments of loss
+            self.loss = instantiate(cfg.loss)
+            self.eval_loss = instantiate(cfg_eval_loss)
+
         else:
-            self.loss = CELoss()  # default loss for this class, basically to pass test
+            tmp_loss_cfg = OmegaConf.create(
+                {"_target_": "nemo.collections.common.losses.cross_entropy.CrossEntropyLoss"}
+            )
+            self.loss = instantiate(tmp_loss_cfg)
+            self.eval_loss = instantiate(tmp_loss_cfg)
 
         self.task = None
         self._accuracy = TopKClassificationAccuracy(top_k=[1])
@@ -128,6 +152,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             num_classes = cfg.decoder.num_classes
         else:
             num_classes = cfg.decoder.params.num_classes  # to pass test
+
+        self.preprocessor = EncDecSpeakerLabelModel.from_config_dict(cfg.preprocessor)
+        self.encoder = EncDecSpeakerLabelModel.from_config_dict(cfg.encoder)
+        self.decoder = EncDecSpeakerLabelModel.from_config_dict(cfg.decoder)
 
         self._macro_accuracy = Accuracy(num_classes=num_classes, average='macro')
 
@@ -192,10 +220,6 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
                 logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
                 return None
 
-            cal_labels_occurrence = config.get('cal_labels_occurrence', False)
-            if cal_labels_occurrence or self.cal_labels_occurrence:
-                cal_labels_occurrence = True
-
             dataset = AudioToSpeechLabelDataset(
                 manifest_filepath=config['manifest_filepath'],
                 labels=config['labels'],
@@ -204,9 +228,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
                 min_duration=config.get('min_duration', None),
                 trim=config.get('trim_silence', False),
                 normalize_audio=config.get('normalize_audio', False),
-                cal_labels_occurrence=cal_labels_occurrence,
+                cal_labels_occurrence=config.get('cal_labels_occurrence', False),
             )
-            self.labels_occurrence = dataset.labels_occurrence
+            if dataset.labels_occurrence:
+                self.labels_occurrence = dataset.labels_occurrence
 
         if hasattr(dataset, 'fixed_seq_collate_fn'):
             collate_fn = dataset.fixed_seq_collate_fn
@@ -225,6 +250,13 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         )
 
     def setup_training_data(self, train_data_layer_config: Optional[Union[DictConfig, Dict]]):
+        if self.cal_labels_occurrence_train:
+            # Calculate labels occurence for weighed CE loss for train set if weight equals 'auto'
+            # Note in this case, the cal_labels_occurrence in val_data_layer_config and test_data_layer_params need to be stay as False
+            OmegaConf.set_struct(train_data_layer_config, True)
+            with open_dict(train_data_layer_config):
+                train_data_layer_config['cal_labels_occurrence'] = True
+
         self.labels = self.extract_labels(train_data_layer_config)
         train_data_layer_config['labels'] = self.labels
         if 'shuffle' not in train_data_layer_config:
@@ -321,7 +353,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
         audio_signal, audio_signal_len, labels, _ = batch
         logits, _ = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
-        loss_value = self.loss(logits=logits, labels=labels)
+        loss_value = self.eval_loss(logits=logits, labels=labels)
         acc_top_k = self._accuracy(logits=logits, labels=labels)
         correct_counts, total_counts = self._accuracy.correct_counts_k, self._accuracy.total_counts_k
         self._macro_accuracy.update(preds=logits, target=labels)

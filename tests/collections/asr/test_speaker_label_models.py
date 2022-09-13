@@ -51,7 +51,11 @@ class EncDecSpeechLabelModelTest(TestCase):
         }
 
         modelConfig = DictConfig(
-            {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
+            {
+                'preprocessor': DictConfig(preprocessor),
+                'encoder': DictConfig(encoder),
+                'decoder': DictConfig(decoder),
+            },
         )
         speaker_model = EncDecSpeakerLabelModel(cfg=modelConfig)
         speaker_model.train()
@@ -82,7 +86,7 @@ class EncDecSpeechLabelModelTest(TestCase):
         }
 
         modelConfig = DictConfig(
-            {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
+            {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder),}
         )
         speaker_model = EncDecSpeakerLabelModel(cfg=modelConfig)
         speaker_model.train()
@@ -125,7 +129,7 @@ class EncDecSpeechLabelModelTest(TestCase):
         }
 
         modelConfig = DictConfig(
-            {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
+            {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder),}
         )
         speaker_model = EncDecSpeakerLabelModel(cfg=modelConfig)
         speaker_model.train()

@@ -144,6 +144,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_cla
 
 """
 import pytorch_lightning as pl
+import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models import EncDecClassificationModel, EncDecSpeakerLabelModel
@@ -167,12 +168,14 @@ def main(cfg):
 
     # Initialize the weights of the model from another model, if provided via config
     model.maybe_init_from_pretrained_checkpoint(cfg)
-
     trainer.fit(model)
+    torch.distributed.destroy_process_group()
 
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
-        if model.prepare_test(trainer):
-            trainer.test(model)
+        if trainer.is_global_zero:
+            trainer = pl.Trainer(devices=1, accelerator=cfg.trainer.accelerator, strategy=cfg.trainer.strategy)
+            if model.prepare_test(trainer):
+                trainer.test(model)
 
 
 if __name__ == '__main__':

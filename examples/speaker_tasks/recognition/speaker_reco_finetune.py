@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import pytorch_lightning as pl
+import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 
@@ -34,10 +35,12 @@ def main(cfg):
     speaker_model.maybe_init_from_pretrained_checkpoint(cfg)
     trainer.fit(speaker_model)
 
+    torch.distributed.destroy_process_group()
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
-        trainer = pl.Trainer(devices=1, accelerator=cfg.trainer.accelerator)
-        if speaker_model.prepare_test(trainer):
-            trainer.test(speaker_model)
+        if trainer.is_global_zero:
+            trainer = pl.Trainer(devices=1, accelerator=cfg.trainer.accelerator, strategy=cfg.trainer.strategy)
+            if speaker_model.prepare_test(trainer):
+                trainer.test(speaker_model)
 
 
 if __name__ == '__main__':

@@ -93,9 +93,9 @@ model:
     num_classes: 7205
     pool_mode: 'xvector'
     emb_sizes: 256
-    angular: True # False to enable cross-entrophy loss for speaker recognition training
 
   loss:
+    _target_: nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss # you could also use cross-entrophy loss
     scale: 30
     margin: 0.2
 
@@ -124,6 +124,7 @@ trainer:
   logger: False
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  gradient_clip_val: 1.0
 
 exp_manager:
   exp_dir: null

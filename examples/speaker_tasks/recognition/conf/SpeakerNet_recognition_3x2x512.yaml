@@ -101,11 +101,9 @@ model:
     num_classes: 7205
     pool_mode: 'xvector'
     emb_sizes: [512,512]
-    angular: False
 
   loss:
-    scale: 30
-    margin: 0.2
+    _target_: from nemo.collections.common.losses.CrossEntropyLoss # you could also use AngularSoftmaxLoss
 
   optim:
     name: novograd
@@ -146,7 +144,9 @@ trainer:
   logger: False
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
-
+  gradient_clip_val: 1.0
+  
+    
 exp_manager:
   exp_dir: null
   name: *name

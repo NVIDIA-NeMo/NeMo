@@ -12,7 +12,6 @@ model:
     tarred_audio_filepaths: null
     tarred_shard_strategy: "scatter"
     num_workers: 16
-    cal_labels_occurrence: True
 
     augmentor:
       noise:
@@ -39,7 +38,6 @@ model:
     batch_size: 128
     shuffle: False
     num_workers: 16
-    cal_labels_occurrence: True
 
   test_ds:
     manifest_filepath: null
@@ -145,12 +143,10 @@ model:
     num_classes: 107
     pool_mode: 'xvector' # 'attention'
     emb_sizes: 512
-    angular: False
 
   loss:
-    weight: 'auto' # could either be 'auto' or 1D tensor
-    scale: 30 # specify this if use angular loss
-    margin: 0.2  # specify this if use angular loss
+    _target_: nemo.collections.common.losses.cross_entropy.CrossEntropyLoss
+    weight: 'auto' # could be 'auto' or 1D tensor or null
     
   optim:
     name: sgd
@@ -175,6 +171,7 @@ trainer:
   logger: False
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  gradient_clip_val: 1.0
 
 exp_manager:
   exp_dir: null

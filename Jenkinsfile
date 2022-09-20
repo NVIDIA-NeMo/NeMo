@@ -26,6 +26,12 @@ pipeline {
       }
     }
 
+    stage('Pin Transformers Version (Hotfix)') {
+      steps{
+        sh 'pip install transformers==4.21.2'
+      }
+    }
+
     stage('Transformers Offline') {
       steps{
         sh 'echo "TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE}'

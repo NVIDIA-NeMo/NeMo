@@ -1,0 +1,27 @@
+name: Create PR to main with cherry-pick from release
+
+on: 
+  pull_request_target:
+    branches:
+      - 'r*.*.*'
+
+jobs:
+  cherry-pick-release-commit:
+    name: Cherry-pick release commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: github-cherry-pick-action v1.0.3
+        uses: carloscastrojumo/github-cherry-pick-action@bb0869df47c27be4ae4c7a2d93d22827aa5a0054
+        with:
+          branch: main
+          labels: |
+            cherry-pick
+          reviewers: |
+            ${{ github.event.pull_request.user.login }}
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

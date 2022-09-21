@@ -15,7 +15,7 @@
 import math
 
 
-def get_datasets_weights_and_num_samples(data_prefix, train_valid_test_num_samples):
+def get_datasets_weights_and_num_samples(data_prefix, num_samples):
 
     # The data prefix should be in the format of:
     #   weight-1, data-prefix-1, weight-2, data-prefix-2, ..
@@ -39,9 +39,11 @@ def get_datasets_weights_and_num_samples(data_prefix, train_valid_test_num_sampl
     # TODO: check data leakage between train/val/test?
     datasets_train_valid_test_num_samples = []
     for weight in weights:
-        datasets_train_valid_test_num_samples.append(
-            [int(math.ceil(val * weight * 1.005)) for val in train_valid_test_num_samples]
-        )
+        # Comes here when we have seperate train,test and validation datasets.
+        if isinstance(num_samples, int):
+            datasets_train_valid_test_num_samples.append(int(math.ceil(num_samples * weight * 1.005)))
+        else:
+            datasets_train_valid_test_num_samples.append([int(math.ceil(val * weight * 1.005)) for val in num_samples])
 
     return prefixes, weights, datasets_train_valid_test_num_samples
 

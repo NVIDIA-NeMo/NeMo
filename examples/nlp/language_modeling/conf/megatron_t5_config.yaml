@@ -92,14 +92,18 @@ model:
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
 
   data:
-    # Path to data must be specified by the user.
-    # can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-t5_00_text_document,.5,/raid/data/pile/my-t5_01_text_document]",
-    # Or see example below:
+   # Path to data must be specified by the user.
+    # Supports List, String and Dictionary
+    # List : can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-t5_00_text_document,.5,/raid/data/pile/my-t5_01_text_document]",
+    # Or see example below: 
     # data_prefix: 
     #   - .5
     #   - /raid/data/pile/my-t5_00_text_document
     #   - .5
     #   - /raid/data/pile/my-t5_01_text_document
+    # Dictionary: can override from CLI "model.data.data_prefix"={"train":[1.0, /path/to/data], "validation":/path/to/data, "test":/path/to/test}
+    # Or see example below:
+     # "model.data.data_prefix: {train:[1.0,/path/to/data], validation:[/path/to/data], test:[/path/to/test]}"
     data_prefix: ???
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap # mmap, retmmap, text_mmap, csv_mmap

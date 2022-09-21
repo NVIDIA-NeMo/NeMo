@@ -118,14 +118,18 @@ model:
   sequence_parallel: False
 
   data:
-    # Path to data must be specified by the user.
-    # can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
+   # Path to data must be specified by the user.
+    # Supports List, String and Dictionary
+    # List : can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
     # Or see example below: 
     # data_prefix: 
     #   - .5
     #   - /raid/data/pile/my-gpt3_00_text_document
     #   - .5
     #   - /raid/data/pile/my-gpt3_01_text_document
+    # Dictionary: can override from CLI "model.data.data_prefix"={"train":[1.0, /path/to/data], "validation":/path/to/data, "test":/path/to/test}
+    # Or see example below:
+    # "model.data.data_prefix: {train:[1.0,/path/to/data], validation:[/path/to/data], test:[/path/to/test]}"
     data_prefix: ???
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap

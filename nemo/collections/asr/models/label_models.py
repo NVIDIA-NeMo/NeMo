@@ -89,9 +89,15 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         self.cal_labels_occurrence_train = False
         self.labels_occurrence = None
 
+        if 'num_classes' in cfg.decoder:
+            num_classes = cfg.decoder.num_classes
+        else:
+            num_classes = cfg.decoder.params.num_classes  # to pass test
+
         if 'loss' in cfg:
             if 'weight' in cfg.loss:
                 if cfg.loss.weight == 'auto':
+                    weight = num_classes * [1]
                     self.cal_labels_occurrence_train = True
                 else:
                     weight = cfg.loss.weight
@@ -142,16 +148,11 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             tmp_loss_cfg = OmegaConf.create(
                 {"_target_": "nemo.collections.common.losses.cross_entropy.CrossEntropyLoss"}
             )
+
             self.loss = instantiate(tmp_loss_cfg)
             self.eval_loss = instantiate(tmp_loss_cfg)
 
-        self.task = None
         self._accuracy = TopKClassificationAccuracy(top_k=[1])
-
-        if 'num_classes' in cfg.decoder:
-            num_classes = cfg.decoder.num_classes
-        else:
-            num_classes = cfg.decoder.params.num_classes  # to pass test
 
         self.preprocessor = EncDecSpeakerLabelModel.from_config_dict(cfg.preprocessor)
         self.encoder = EncDecSpeakerLabelModel.from_config_dict(cfg.encoder)

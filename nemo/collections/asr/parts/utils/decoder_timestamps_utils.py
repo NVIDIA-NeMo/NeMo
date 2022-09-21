@@ -396,12 +396,12 @@ class ASR_TIMESTAMPS:
         kenlm_model = self.ctc_decoder_params['pretrained_language_model']
         logging.info(f"Loading language model : {self.ctc_decoder_params['pretrained_language_model']}")
 
-        if 'EncDecCTCModel' in str(type(asr_model)):
-            labels = asr_model.decoder.vocabulary
-        elif 'EncDecCTCModelBPE' in str(type(asr_model)):
+        if 'EncDecCTCModelBPE' in str(type(asr_model)):
             vocab = asr_model.tokenizer.tokenizer.get_vocab()
             labels = list(vocab.keys())
             labels[0] = "<unk>"
+        elif 'EncDecCTCModel' in str(type(asr_model)):
+            labels = asr_model.decoder.vocabulary
         else:
             raise ValueError(f"Cannot find a vocabulary or tokenizer for: {self.params['self.ASR_model_name']}")
 

@@ -31,6 +31,10 @@
       {
         "title": "## Bugfixes \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
         "labels": ["bug"]
+      },
+      {
+        "title": "## Cherrypick \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "labels": ["cherrypick"]
       }
     ],
     "ignore_labels": [
@@ -93,6 +97,12 @@
         "pattern": "(.*\\[x\\] Bugfix.*)|(.*patch.*)",
         "target": "bug",
         "flags": "gmu",
+        "on_property": ["title", "body"]
+      },
+      {
+        "pattern": "(.*cherry-pick.*)|(.*cherrypick.*)",
+        "target": "cherrypick",
+        "flags": "gimu",
         "on_property": ["title", "body"]
       }
     ],

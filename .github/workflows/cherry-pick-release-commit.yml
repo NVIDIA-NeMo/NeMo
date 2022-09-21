@@ -4,6 +4,7 @@ on:
   pull_request_target:
     branches:
       - 'r*.*.*'
+    types: ["closed"]
 
 jobs:
   cherry-pick-release-commit:

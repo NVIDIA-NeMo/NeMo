@@ -139,6 +139,9 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         output_fft = instantiate(self._cfg.output_fft)
         duration_predictor = instantiate(self._cfg.duration_predictor)
         pitch_predictor = instantiate(self._cfg.pitch_predictor)
+        speaker_emb_condition_prosody = cfg.get("speaker_emb_condition_prosody", False)
+        speaker_emb_condition_decoder = cfg.get("speaker_emb_condition_decoder", False)
+        speaker_emb_condition_aligner = cfg.get("speaker_emb_condition_aligner", False)
 
         self.fastpitch = FastPitchModule(
             input_fft,
@@ -150,6 +153,10 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             cfg.symbols_embedding_dim,
             cfg.pitch_embedding_kernel_size,
             cfg.n_mel_channels,
+            cfg.max_token_duration,
+            speaker_emb_condition_prosody,
+            speaker_emb_condition_decoder,
+            speaker_emb_condition_aligner,
         )
         self._input_types = self._output_types = None
         self.export_config = {"enable_volume": False, "enable_ragged_batches": False}

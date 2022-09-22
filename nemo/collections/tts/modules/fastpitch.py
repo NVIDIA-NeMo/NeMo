@@ -141,6 +141,9 @@ class FastPitchModule(NeuralModule):
         pitch_embedding_kernel_size: int,
         n_mel_channels: int = 80,
         max_token_duration: int = 75,
+        speaker_emb_condition_prosody: bool = False,
+        speaker_emb_condition_decoder: bool = False,
+        speaker_emb_condition_aligner: bool = False,
     ):
         super().__init__()
 
@@ -152,6 +155,9 @@ class FastPitchModule(NeuralModule):
         self.learn_alignment = aligner is not None
         self.use_duration_predictor = True
         self.binarize = False
+        self.speaker_emb_condition_prosody = speaker_emb_condition_prosody
+        self.speaker_emb_condition_decoder = speaker_emb_condition_decoder
+        self.speaker_emb_condition_aligner = speaker_emb_condition_aligner
 
         if n_speakers > 1:
             self.speaker_emb = torch.nn.Embedding(n_speakers, symbols_embedding_dim)
@@ -230,19 +236,27 @@ class FastPitchModule(NeuralModule):
 
         # Input FFT
         enc_out, enc_mask = self.encoder(input=text, conditioning=spk_emb)
-
-        log_durs_predicted = self.duration_predictor(enc_out, enc_mask)
+        if self.speaker_emb_condition_prosody:
+            prosody_input = enc_out + spk_emb
+        else:
+            prosody_input = enc_out
+        log_durs_predicted = self.duration_predictor(prosody_input, enc_mask)
         durs_predicted = torch.clamp(torch.exp(log_durs_predicted) - 1, 0, self.max_token_duration)
 
         attn_soft, attn_hard, attn_hard_dur, attn_logprob = None, None, None, None
         if self.learn_alignment and spec is not None:
             text_emb = self.encoder.word_emb(text)
-            attn_soft, attn_logprob = self.aligner(spec, text_emb.permute(0, 2, 1), enc_mask == 0, attn_prior)
+            if self.speaker_emb_condition_aligner and not isinstance(spk_emb, int):
+                attn_soft, attn_logprob = self.aligner(
+                    spec, text_emb.permute(0, 2, 1), enc_mask == 0, attn_prior, conditioning=spk_emb
+                )
+            else:
+                attn_soft, attn_logprob = self.aligner(spec, text_emb.permute(0, 2, 1), enc_mask == 0, attn_prior)
             attn_hard = binarize_attention_parallel(attn_soft, input_lens, mel_lens)
             attn_hard_dur = attn_hard.sum(2)[:, 0, :]
 
         # Predict pitch
-        pitch_predicted = self.pitch_predictor(enc_out, enc_mask)
+        pitch_predicted = self.pitch_predictor(prosody_input, enc_mask)
         if pitch is not None:
             if self.learn_alignment and pitch.shape[-1] != pitch_predicted.shape[-1]:
                 # Pitch during training is per spectrogram frame, but during inference, it should be per character
@@ -262,7 +276,10 @@ class FastPitchModule(NeuralModule):
             len_regulated, dec_lens = regulate_len(durs_predicted, enc_out, pace)
 
         # Output FFT
-        dec_out, _ = self.decoder(input=len_regulated, seq_lens=dec_lens)
+        if self.speaker_emb_condition_decoder:
+            dec_out, _ = self.decoder(input=len_regulated, seq_lens=dec_lens, conditioning=spk_emb)
+        else:
+            dec_out, _ = self.decoder(input=len_regulated, seq_lens=dec_lens)
         spect = self.proj(dec_out).transpose(1, 2)
         return (
             spect,
@@ -286,13 +303,17 @@ class FastPitchModule(NeuralModule):
 
         # Input FFT
         enc_out, enc_mask = self.encoder(input=text, conditioning=spk_emb)
+        if self.speaker_emb_condition_prosody:
+            prosody_input = enc_out + spk_emb
+        else:
+            prosody_input = enc_out
 
         # Predict duration and pitch
-        log_durs_predicted = self.duration_predictor(enc_out, enc_mask)
+        log_durs_predicted = self.duration_predictor(prosody_input, enc_mask)
         durs_predicted = torch.clamp(
             torch.exp(log_durs_predicted) - 1.0, self.min_token_duration, self.max_token_duration
         )
-        pitch_predicted = self.pitch_predictor(enc_out, enc_mask) + pitch
+        pitch_predicted = self.pitch_predictor(prosody_input, enc_mask) + pitch
         pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
         enc_out = enc_out + pitch_emb.transpose(1, 2)
 
@@ -304,7 +325,10 @@ class FastPitchModule(NeuralModule):
             volume_extended = volume_extended.squeeze(-1).float()
 
         # Output FFT
-        dec_out, _ = self.decoder(input=len_regulated, seq_lens=dec_lens)
+        if self.speaker_emb_condition_decoder:
+            dec_out, _ = self.decoder(input=len_regulated, seq_lens=dec_lens, conditioning=spk_emb)
+        else:
+            dec_out, _ = self.decoder(input=len_regulated, seq_lens=dec_lens)
         spect = self.proj(dec_out).transpose(1, 2)
         return (
             spect.to(torch.float),

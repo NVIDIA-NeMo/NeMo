@@ -143,7 +143,7 @@ class AlignmentEncoder(torch.nn.Module):
 
         return dist_sum / total_frames
 
-    def forward(self, queries, keys, mask=None, attn_prior=None):
+    def forward(self, queries, keys, mask=None, attn_prior=None, conditioning=None):
         """Forward pass of the aligner encoder.
 
         Args:
@@ -151,10 +151,13 @@ class AlignmentEncoder(torch.nn.Module):
             keys (torch.tensor): B x C2 x T2 tensor (text data).
             mask (torch.tensor): B x T2 x 1 tensor, binary mask for variable length entries (True = mask element, False = leave unchanged).
             attn_prior (torch.tensor): prior for attention matrix.
+            conditioning (torch.tensor): B x T2 x 1 conditioning embedding
         Output:
             attn (torch.tensor): B x 1 x T1 x T2 attention mask. Final dim T2 should sum to 1.
             attn_logprob (torch.tensor): B x 1 x T1 x T2 log-prob attention mask.
         """
+        if conditioning is not None:
+            keys = keys + conditioning.transpose(1, 2)
         keys_enc = self.key_proj(keys)  # B x n_attn_dims x T2
         queries_enc = self.query_proj(queries)  # B x n_attn_dims x T1
 

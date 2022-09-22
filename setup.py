@@ -18,15 +18,14 @@
 """Setup for pip package."""
 
 import codecs
+import importlib.util
 import os
 import subprocess
 from distutils import cmd as distutils_cmd
 from distutils import log as distutils_log
 from itertools import chain
-import importlib.util
 
 import setuptools
-
 
 spec = importlib.util.spec_from_file_location('package_info', 'nemo/package_info.py')
 package_info = importlib.util.module_from_spec(spec)

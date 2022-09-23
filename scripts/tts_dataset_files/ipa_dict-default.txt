@@ -1,4 +1,0 @@
-;;; # This is a minimalistic phoneme dictionary template for the PhonemizerTokenizer
-;;; # which a user can add to in order to fix pronunciation for specific words.
-NEMO  ˈnimoʊ
-NVIDIA  ɛnˈvidiə

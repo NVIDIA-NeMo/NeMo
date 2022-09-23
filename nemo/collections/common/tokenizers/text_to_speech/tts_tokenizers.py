@@ -14,26 +14,13 @@
 # limitations under the License.
 
 import abc
-import ctypes.util
 import itertools
 import string
 from contextlib import contextmanager
-from logging import ERROR, getLogger
 from typing import List, Optional
 
-from nemo_text_processing.g2p.data.data_utils import (
-    english_text_preprocessing,
-    german_text_preprocessing,
-    ipa_word_tokenize,
-)
-from nemo_text_processing.g2p.modules import IPAG2P
-from phonemizer.backend import EspeakBackend
+from nemo_text_processing.g2p.data.data_utils import english_text_preprocessing, german_text_preprocessing
 
-from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
-    get_grapheme_character_set,
-    get_ipa_character_set,
-    get_ipa_punctuation_list,
-)
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
@@ -532,136 +519,3 @@ class IPATokenizer(BaseTokenizer):
         finally:
             if hasattr(self.g2p, "phoneme_probability"):
                 self.g2p.phoneme_probability = self.phoneme_probability
-
-
-@experimental
-class PhonemizerTokenizer(IPATokenizer):
-    # fmt: off
-    ESPEAK_SYMBOLS = ('ˈ', 'ˌ', "'", '-', 'ː')
-    # fmt: on
-
-    def __init__(
-        self,
-        language,
-        phoneme_dict,
-        punct=True,
-        pad_with_space=False,
-        non_default_chars=None,
-        non_default_punct_list=None,
-        use_stresses=True,
-        ignore_ambiguous_words=True,
-        heteronyms=None,
-        phoneme_probability: Optional[float] = None,
-        espeak_logging_level=ERROR,
-    ):
-        """IPA tokenizer using the Phonemizer library with an eSpeak backend
-
-        https://github.com/bootphon/phonemizer
-        http://espeak.sourceforge.net/
-
-        To use this class you will need to install eSpeak separately from NeMo.
-
-        For Linux: apt-get update && apt-get install espeak-ng
-        Other OS: https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md#installation
-
-        eSpeak provides out-of-the-box text normalization & g2p for a large number of languages.
-        This tokenizer incorporates that functionality with a phoneme dictionary that allows overriding
-        pronunciation for specific words that eSpeak may get wrong.
-
-        This class currently supports: English, Spanish, and German. For other languages you will have to provide
-        the character set for the language using "non_default_chars" and "non_default_punct_list".
-
-        Args:
-            language: Language string http://espeak.sourceforge.net/languages.html
-            phoneme_dict (str, Path, Dict): Path to file in CMUdict format or dictionary of CMUdict-like entries.
-                (For default behavior, provide local path to scripts/tts_dataset_files/ipa_dict-default.txt)
-            punct: Whether to keep punctuation or remove it.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_chars: List of characters which will be used instead of default.
-            non_default_punct_list: List of punctuation marks which will be used instead of default.
-            use_stresses: Whether to include stresses/accents in the IPA output.
-            ignore_ambiguous_words: Whether to not handle word via phoneme_dict with ambiguous phoneme sequences.
-            heteronyms (str, Path, List): Path to file with heteronyms (every line is new word) or list of words.
-            phoneme_probability (Optional[float]): The probability (0.<var<1.) that each word is phonemized for mixed
-                representation training. Defaults to None which is the same as 1.
-            espeak_logging_level: Logging level for eSpeak.
-                Defaults to 'logging.ERROR' (to avoid a lot of unhelpful warning logs).
-        """
-
-        if not (ctypes.util.find_library('espeak-ng') or ctypes.util.find_library('espeak')):
-            raise ImportError(
-                "PhonemizerTokenizer requires eSpeak to be installed. "
-                "Please follow the instructions at: "
-                "https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md#installation"
-            )
-
-        use_chars = phoneme_probability is not None
-        if non_default_chars:
-            char_set = non_default_chars
-        else:
-            locale = self._get_locale(language)
-            char_set = get_ipa_character_set(locale)
-            if use_stresses:
-                char_set.update(self.ESPEAK_SYMBOLS)
-            if use_chars:
-                grapheme_set = get_grapheme_character_set(locale)
-                char_set.update(grapheme_set)
-
-        if not punct:
-            punct_list = []
-        elif non_default_punct_list:
-            punct_list = non_default_punct_list
-        else:
-            locale = self._get_locale(language)
-            punct_list = get_ipa_punctuation_list(locale)
-
-        espeak_logger = getLogger('espeak')
-        espeak_logger.setLevel(espeak_logging_level)
-        self.espeak_backend = EspeakBackend(
-            language=language, preserve_punctuation=punct, with_stress=use_stresses, logger=espeak_logger
-        )
-
-        ipa_g2p = IPAG2P(
-            phoneme_dict=phoneme_dict,
-            apply_to_oov_word=self._text_to_phonemes_espeak,
-            word_tokenize_func=ipa_word_tokenize,
-            ignore_ambiguous_words=ignore_ambiguous_words,
-            heteronyms=heteronyms,
-            use_chars=use_chars,
-            phoneme_probability=phoneme_probability,
-            use_stresses=use_stresses,
-            set_graphemes_upper=True,
-        )
-        # Merge chars with all symbols found in the phoneme dictionary.
-        ipa_g2p.add_symbols(char_set)
-
-        super().__init__(
-            g2p=ipa_g2p,
-            punct=punct,
-            non_default_punct_list=punct_list,
-            pad_with_space=pad_with_space,
-            text_preprocessing_func=lambda text: text,
-        )
-
-    @staticmethod
-    def _get_locale(language):
-        # Converts eSpeak language string to ISO language tag
-        if language == "en-us":
-            return "en-US"
-        elif language == "es":
-            return "es-ES"
-        elif language == "de":
-            return "de-DE"
-
-        raise ValueError(f"Language not supported {language}")
-
-    def _text_to_phonemes_espeak(self, text):
-        phonemes = self.espeak_backend.phonemize([text])[0]
-        phonemes = phonemes.strip()
-        return phonemes
-
-    def text_to_phonemes(self, text):
-        tokens = self.encode(text)
-        phoneme_string = self.decode(tokens)
-        phonemes = phoneme_string.replace(self.sep, '')
-        return phonemes

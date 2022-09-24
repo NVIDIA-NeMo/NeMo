@@ -333,12 +333,23 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
         self.g2p = g2p
 
     def encode(self, text):
-        """See base class."""
-        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
+        """See base class for more information."""
 
         text = self.text_preprocessing_func(text)
         g2p_text = self.g2p(text)  # TODO: handle infer
+        return self.encode_from_g2p(g2p_text, text)
 
+    def encode_from_g2p(self, g2p_text: List[str], raw_text: Optional[str] = None):
+        """
+        Encodes text that has already been run through G2P.
+        Called for encoding to tokens after text preprocessing and G2P.
+
+        Args:
+            g2p_text: G2P's output, could be a mixture of phonemes and graphemes,
+                e.g. "see OOV" -> ['S', 'IY1', ' ', 'O', 'O', 'V']
+            raw_text: original raw input
+        """
+        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
         for p in g2p_text:  # noqa
             # Remove stress
             if p.isalnum() and len(p) == 3 and not self.stresses:
@@ -355,9 +366,10 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
                 ps.append(p)
             # Warn about unknown char/phoneme
             elif p != space:
-                logging.warning(
-                    f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]. Original text: [{text}]. Symbol will be skipped."
-                )
+                message = f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
+                if raw_text is not None:
+                    message += f"Original text: [{raw_text}]. Symbol will be skipped."
+                logging.warning(message)
 
         # Remove trailing spaces
         if ps:

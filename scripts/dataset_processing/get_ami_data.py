@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,75 +20,33 @@ import os
 
 from nemo.collections.asr.parts.utils.manifest_utils import create_manifest
 
-# todo: once https://github.com/tango4j/diarization_annotation/pull/1 merged, we can use the same repo
-test_rttm_url = (
-    "https://raw.githubusercontent.com/tango4j/diarization_annotation/main/AMI_corpus/test/split_rttms.tar.gz"
-)
-dev_rttm_url = (
-    "https://raw.githubusercontent.com/SeanNaren/diarization_annotation/dev/AMI_corpus/dev/split_rttms.tar.gz"
-)
+rttm_url = "https://raw.githubusercontent.com/BUTSpeechFIT/AMI-diarization-setup/main/only_words/rttms/{}/{}.rttm"
+uem_url = "https://raw.githubusercontent.com/BUTSpeechFIT/AMI-diarization-setup/main/uems/{}/{}.uem"
+list_url = "https://raw.githubusercontent.com/BUTSpeechFIT/AMI-diarization-setup/main/lists/{}.meetings.txt"
 
-test_set_ids = [
-    "EN2002a",
-    "EN2002b",
-    "EN2002c",
-    "EN2002d",
-    "ES2004a",
-    "ES2004b",
-    "ES2004c",
-    "ES2004d",
-    "ES2014a",
-    "ES2014b",
-    "ES2014c",
-    "ES2014d",
-    "IS1009a",
-    "IS1009b",
-    "IS1009c",
-    "IS1009d",
-    "TS3003a",
-    "TS3003b",
-    "TS3003c",
-    "TS3003d",
-    "TS3007a",
-    "TS3007b",
-    "TS3007c",
-    "TS3007d",
-]
 
-dev_set_ids = [
-    "IS1008a",
-    "IS1008b",
-    "IS1008c",
-    "IS1008d",
-    "ES2011a",
-    "ES2011b",
-    "ES2011c",
-    "ES2011d",
-    "TS3004a",
-    "TS3004b",
-    "TS3004c",
-    "TS3004d",
-    "IB4001",
-    "IB4002",
-    "IB4003",
-    "IB4004",
-    "IB4010",
-    "IB4011",
-]
+audio_types = ['Mix-Headset', 'Array1-01']
+
+# these two IDs in the train set are missing download links for Array1-01.
+# We exclude them as a result.
+not_found_ids = ['IS1007d', 'IS1003b']
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download the AMI Test Corpus Dataset for Speaker Diarization")
+    parser = argparse.ArgumentParser(description="Download the AMI Corpus Dataset for Speaker Diarization")
     parser.add_argument(
         "--test_manifest_filepath",
         help="path to output test manifest file",
         type=str,
-        default='AMItest_input_manifest.json',
+        default='AMI_test_manifest.json',
     )
     parser.add_argument(
-        "--dev_manifest_filepath",
-        help="path to output test manifest file",
+        "--dev_manifest_filepath", help="path to output dev manifest file", type=str, default='AMI_dev_manifest.json',
+    )
+    parser.add_argument(
+        "--train_manifest_filepath",
+        help="path to output train manifest file",
         type=str,
-        default='AMIdev_input_manifest.json',
+        default='AMI_train_manifest.json',
     )
     parser.add_argument("--data_root", help="path to output data directory", type=str, default="ami_dataset")
     args = parser.parse_args()
@@ -96,29 +54,44 @@ if __name__ == "__main__":
     data_path = os.path.abspath(args.data_root)
     os.makedirs(data_path, exist_ok=True)
 
-    for ids, manifest_path, split, rttm_url in (
-        (test_set_ids, args.test_manifest_filepath, 'test', test_rttm_url),
-        (dev_set_ids, args.dev_manifest_filepath, 'dev', dev_rttm_url),
+    for manifest_path, split in (
+        (args.test_manifest_filepath, 'test'),
+        (args.dev_manifest_filepath, 'dev'),
+        (args.train_manifest_filepath, 'train'),
     ):
         split_path = os.path.join(data_path, split)
         audio_path = os.path.join(split_path, "audio")
         os.makedirs(split_path, exist_ok=True)
-        rttm_path = os.path.join(split_path, "split_rttms")
+        rttm_path = os.path.join(split_path, "rttm")
+        uem_path = os.path.join(split_path, "uem")
 
-        for id in ids:
-            os.system(
-                f"wget -P {audio_path} https://groups.inf.ed.ac.uk/ami/AMICorpusMirror//amicorpus/{id}/audio/{id}.Mix-Headset.wav"
-            )
+        os.system(f"wget -P {split_path} {list_url.format(split)}")
+        with open(os.path.join(split_path, f"{split}.meetings.txt")) as f:
+            ids = f.read().strip().split('\n')
+        for id in [file_id for file_id in ids if file_id not in not_found_ids]:
+            for audio_type in audio_types:
+                audio_type_path = os.path.join(audio_path, audio_type)
+                os.makedirs(audio_type_path, exist_ok=True)
+                os.system(
+                    f"wget -P {audio_type_path} https://groups.inf.ed.ac.uk/ami/AMICorpusMirror//amicorpus/{id}/audio/{id}.{audio_type}.wav"
+                )
+            rttm_download = rttm_url.format(split, id)
+            os.system(f"wget -P {rttm_path} {rttm_download}")
+            uem_download = uem_url.format(split, id)
+            os.system(f"wget -P {uem_path} {uem_download}")
 
-        if not os.path.exists(f"{split_path}/split_rttms.tar.gz"):
-            os.system(f"wget -P {split_path} {rttm_url}")
-        os.system(f"tar -xzvf {split_path}/split_rttms.tar.gz -C {split_path}")
-
-        audio_files_path = os.path.join(split_path, 'audio_files.txt')
         rttm_files_path = os.path.join(split_path, 'rttm_files.txt')
-        with open(audio_files_path, 'w') as f:
-            f.write('\n'.join(os.path.join(audio_path, p) for p in os.listdir(audio_path)))
         with open(rttm_files_path, 'w') as f:
             f.write('\n'.join(os.path.join(rttm_path, p) for p in os.listdir(rttm_path)))
-
-        create_manifest(audio_files_path, manifest_path, rttm_path=rttm_files_path)
+        uem_files_path = os.path.join(split_path, 'uem_files.txt')
+        with open(uem_files_path, 'w') as f:
+            f.write('\n'.join(os.path.join(uem_path, p) for p in os.listdir(uem_path)))
+        for audio_type in audio_types:
+            audio_type_path = os.path.join(audio_path, audio_type)
+            audio_files_path = os.path.join(split_path, f'audio_files_{audio_type}.txt')
+            with open(audio_files_path, 'w') as f:
+                f.write('\n'.join(os.path.join(audio_type_path, p) for p in os.listdir(audio_type_path)))
+            audio_type_manifest_path = manifest_path.replace('.json', f'.{audio_type}.json')
+            create_manifest(
+                audio_files_path, audio_type_manifest_path, rttm_path=rttm_files_path, uem_path=uem_files_path
+            )

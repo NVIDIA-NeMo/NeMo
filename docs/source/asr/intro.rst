@@ -41,5 +41,6 @@ The full documentation tree is as follows:
    configs
    api
    resources
+   examples/kinyarwanda_asr.rst
 
 .. include:: resources.rst

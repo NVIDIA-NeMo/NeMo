@@ -94,11 +94,11 @@ class ExampleModel(ModelPT):
 
     def train_dataloader(self):
         dataset = OnesDataset(2)
-        return torch.utils.data.DataLoader(dataset, batch_size=2)
+        return torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=8)
 
     def val_dataloader(self):
         dataset = OnesDataset(10)
-        return torch.utils.data.DataLoader(dataset, batch_size=2)
+        return torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=8)
 
     def forward(self, batch):
         output = self.l1(batch)

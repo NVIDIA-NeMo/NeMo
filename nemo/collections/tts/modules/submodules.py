@@ -271,7 +271,7 @@ class Invertible1x1Conv(torch.nn.Module):
         self.conv = torch.nn.Conv1d(c, c, kernel_size=1, stride=1, padding=0, bias=False)
 
         # Sample a random orthonormal matrix to initialize weights
-        W = torch.qr(torch.FloatTensor(c, c).normal_())[0]
+        W = torch.linalg.qr(torch.FloatTensor(c, c).normal_())[0]
 
         # Ensure determinant is 1.0 not -1.0
         if torch.det(W) < 0:

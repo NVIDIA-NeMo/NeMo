@@ -67,6 +67,8 @@ class MultiBinaryAccuracy(Metric):
             F1 score calculated from the predicted value and binarized target values.
     """
 
+    full_state_update = False
+
     def __init__(self, dist_sync_on_step=False):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
         self.total_correct_counts = 0

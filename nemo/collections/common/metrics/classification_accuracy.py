@@ -59,6 +59,8 @@ class TopKClassificationAccuracy(Metric):
         accuracy, compute acc=correct_count/total_count
     """
 
+    full_state_update = True
+
     def __init__(self, top_k=None, dist_sync_on_step=False):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
 

@@ -156,6 +156,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "run_only_on(device): runs the test only on a given device [CPU | GPU]",
     )
+    config.addinivalue_line(
+        "markers", "with_downloads: runs the test using data present in tests/.data",
+    )
     # Test dir and archive filepath.
     test_dir = join(dirname(__file__), __TEST_DATA_SUBDIR)
     test_data_archive = join(dirname(__file__), __TEST_DATA_SUBDIR, __TEST_DATA_FILENAME)

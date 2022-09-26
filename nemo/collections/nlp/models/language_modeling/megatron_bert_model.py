@@ -346,10 +346,10 @@ class MegatronBertModel(MegatronBaseModel):
             )
             self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
 
-    def on_pretrain_routine_start(self) -> None:
+    def on_fit_start(self) -> None:
         # keep a copy of init_global_step
         self.init_global_step = self.trainer.global_step
-        return super().on_pretrain_routine_start()
+        return super().on_fit_start()
 
     def compute_consumed_samples(self, steps_since_resume=0):
         app_state = AppState()

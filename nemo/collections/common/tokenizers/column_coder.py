@@ -187,7 +187,7 @@ class FloatCode(IntCode):
         if transform == 'yeo-johnson':
             self.scaler = PowerTransformer(standardize=True)
         elif transform == 'quantile':
-            self.scaler = QuantileTransformer(output_distribution='uniform')
+            self.scaler = QuantileTransformer(output_distribution='uniform', n_quantiles=100)
         elif transform == 'robust':
             self.scaler = RobustScaler()
         else:

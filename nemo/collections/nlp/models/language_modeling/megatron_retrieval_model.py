@@ -224,10 +224,10 @@ class MegatronRetrievalModel(MegatronBaseModel):
         )
         return output_tensor
 
-    def on_pretrain_routine_start(self) -> None:
+    def on_fit_start(self) -> None:
         # keep a copy of init_global_step
         self.init_global_step = self.trainer.global_step
-        return super().on_pretrain_routine_start()
+        return super().on_fit_start()
 
     def training_step(self, batch, batch_idx):
         input_tokens_id = batch['tokens']

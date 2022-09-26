@@ -132,7 +132,7 @@ def write_longs(f, a):
     f.write(np.array(a, dtype=np.int64))
 
 
-dtypes = {1: np.uint8, 2: np.int8, 3: np.int16, 4: np.int32, 5: np.int64, 6: np.float, 7: np.double, 8: np.uint16}
+dtypes = {1: np.uint8, 2: np.int8, 3: np.int16, 4: np.int32, 5: np.int64, 6: np.float64, 7: np.double, 8: np.uint16}
 
 
 def code(dtype):
@@ -293,7 +293,7 @@ class IndexedCachedDataset(IndexedDataset):
 
 
 class IndexedDatasetBuilder(object):
-    element_sizes = {np.uint8: 1, np.int8: 1, np.int16: 2, np.int32: 4, np.int64: 8, np.float: 4, np.double: 8}
+    element_sizes = {np.uint8: 1, np.int8: 1, np.int16: 2, np.int32: 4, np.int64: 8, np.float64: 4, np.double: 8}
 
     def __init__(self, out_file, dtype=np.int32):
         self.out_file = open(out_file, 'wb')

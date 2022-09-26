@@ -60,6 +60,8 @@ class ClassificationReport(Metric):
         aggregated precision, recall, f1, report
     """
 
+    full_state_update = True
+
     def __init__(
         self,
         num_classes: int,

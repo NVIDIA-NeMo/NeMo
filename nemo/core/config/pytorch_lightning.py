@@ -61,7 +61,6 @@ class TrainerConfig:
     accelerator: Optional[str] = None
     sync_batchnorm: bool = False
     precision: Any = 32
-    weights_save_path: Optional[str] = None
     num_sanity_val_steps: int = 2
     resume_from_checkpoint: Optional[str] = None
     profiler: Optional[Any] = None

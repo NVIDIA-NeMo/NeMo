@@ -395,4 +395,4 @@ class TestParallelBlock:
         y, _ = block(([x], xlen))
 
         # Tower dropout is 1.0, meaning that all towers have to be dropped, so only residual remains.
-        torch.testing.assert_allclose(y[0], x)
+        torch.testing.assert_close(y[0], x)

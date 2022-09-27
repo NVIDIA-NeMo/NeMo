@@ -18,6 +18,7 @@ import multiprocessing
 import os
 import shutil
 from itertools import repeat
+from pathlib import Path
 from typing import Dict, Tuple
 
 import IPython.display as ipd
@@ -218,7 +219,7 @@ def load_tensor_from_file(filepath: str) -> Tuple[torch.Tensor, str]:
         for line in f.readlines():
             frame.append(float(line))
 
-    name = filepath.split("/")[-1].rsplit(".", 1)[0]
+    name = Path(filepath).stem
     return torch.tensor(frame), name
 
 

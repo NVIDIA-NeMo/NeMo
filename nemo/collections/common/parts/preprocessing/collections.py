@@ -157,7 +157,7 @@ class AudioText(_Collection):
                 text_tokens = token_labels
             else:
                 if text != '':
-                    if hasattr(parser, "is_aggregate") and parser.is_aggregate:
+                    if hasattr(parser, "is_aggregate") and parser.is_aggregate and isinstance(text, str):
                         if lang is not None:
                             text_tokens = parser(text, lang)
                         else:

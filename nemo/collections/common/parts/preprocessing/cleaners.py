@@ -15,7 +15,7 @@
 import re
 
 import inflect
-from unidecode import unidecode
+from text_unidecode import unidecode
 
 from nemo.utils import logging
 

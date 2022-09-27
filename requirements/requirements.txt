@@ -9,6 +9,5 @@ scikit-learn
 tqdm>=4.41.0
 numba
 wget
-frozendict
-unidecode
+text-unidecode
 huggingface_hub

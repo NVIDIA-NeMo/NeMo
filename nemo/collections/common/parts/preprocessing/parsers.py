@@ -20,8 +20,6 @@ We currently support English.
 import string
 from typing import List, Optional
 
-import frozendict
-
 from nemo.collections.common.parts.preprocessing import cleaners
 
 
@@ -128,7 +126,7 @@ class CharParser:
 class ENCharParser(CharParser):
     """Incorporates english-specific parsing logic."""
 
-    PUNCTUATION_TO_REPLACE = frozendict.frozendict({'+': 'plus', '&': 'and', '%': 'percent'})
+    PUNCTUATION_TO_REPLACE = {'+': 'plus', '&': 'and', '%': 'percent'}
 
     def __init__(self, abbreviation_version=None, make_table=True, *args, **kwargs):
         """Creates english-specific mapping char parser.
@@ -178,7 +176,7 @@ class ENCharParser(CharParser):
 class RUCharParser(CharParser):
     """Incorporates russian-specific parsing logic."""
 
-    PUNCTUATION_TO_REPLACE = frozendict.frozendict({'+': 'плюс', 'ё': 'е'})
+    PUNCTUATION_TO_REPLACE = {'+': 'плюс', 'ё': 'е'}
 
     def __init__(self, *args, **kwargs):
         """Creates cyrillic-specific mapping char parser.
@@ -217,7 +215,7 @@ class RUCharParser(CharParser):
         return text
 
 
-NAME_TO_PARSER = frozendict.frozendict({'base': CharParser, 'en': ENCharParser, 'ru': RUCharParser})
+NAME_TO_PARSER = {'base': CharParser, 'en': ENCharParser, 'ru': RUCharParser}
 
 
 def make_parser(labels: Optional[List[str]] = None, name: str = 'base', **kwargs,) -> CharParser:

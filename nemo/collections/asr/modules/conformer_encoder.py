@@ -97,8 +97,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         input_example_length = torch.randint(1, max_dim, (max_batch,)).to(dev)
 
         if hasattr(self, 'export_cache_support') and self.export_cache_support:
-            cache_last_channel = torch.randn(self.n_layers, max_batch, self.conv_context_size[0], self.d_model).to(dev)
-            cache_last_time = torch.randn(self.n_layers, max_batch, self.d_model, max_dim).to(dev)
+            cache_last_channel = torch.randn(self.n_layers, max_batch, max_dim, self.d_model).to(dev)
+            cache_last_time = torch.randn(self.n_layers, max_batch, self.d_model, self.conv_context_size[0]).to(dev)
         else:
             cache_last_channel = cache_last_time = None
 
@@ -364,7 +364,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
                 audio_signal.size(0), max_audio_length, dtype=torch.int32, device=audio_signal.device
             )
 
-        if cache_last_channel is not None:
+        if cache_last_time is not None:
             cache_last_time_next = torch.zeros_like(cache_last_time)
         else:
             cache_last_time_next = None

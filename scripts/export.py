@@ -128,12 +128,9 @@ def nemo_export(argv):
         in_args["max_dim"] = args.max_dim
         max_dim = args.max_dim
 
-    if args.cache_support and model.hasattr("encoder") and model.encoder.hasattr("export_cache_support"):
-        export_cache_support_prev = model.encoder.export_cache_support
+    if args.cache_support and hasattr(model, "encoder") and hasattr(model.encoder, "export_cache_support"):
         model.encoder.export_cache_support = True
         logging.info("Caching support is enabled.")
-    else:
-        export_cache_support_prev = None
 
     autocast = nullcontext
     model.to(device=args.device).freeze()

@@ -472,7 +472,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 )
                 if not self.decoder_cfg.relative_position_bias_self_attention_only:
                     decoder_cross_attention_relative_position_bias = self.decoder_cross_attention_relative_position_embedding(
-                        query_seq_length=dec_input_ids.size(1), key_seq_length=enc_input_ids.size(1),
+                        query_seq_length=dec_input_ids.size(1), key_seq_length=enc_seq_length,
                     )
                 else:
                     decoder_cross_attention_relative_position_bias = None

@@ -35,3 +35,11 @@ repos:
         name: Format imports
         args: [ --multi-line=3, --trailing-comma, --force-grid-wrap=0, --use-parentheses, --line-width=119, -rc, -ws ]
         exclude: docs/
+
+  - repo: https://github.com/psf/black
+    rev: 19.10b0
+    hooks:
+      - id: black
+        name: Format code
+        args: [--skip-string-normalization, --line-length=119]
+        additional_dependencies: ['click==8.0.2']

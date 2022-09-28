@@ -30,9 +30,9 @@ def get_attribute_prediction_model(config):
     return model
 
 
-class AttributeProcessing:
+class AttributeProcessing(nn.Module):
     def __init__(self, take_log_of_input=False):
-        super(AttributeProcessing).__init__()
+        super(AttributeProcessing, self).__init__()
         self.take_log_of_input = take_log_of_input
 
     def normalize(self, x):
@@ -73,10 +73,9 @@ class BottleneckLayerLayer(nn.Module):
         return x
 
 
-class DAP(nn.Module):
+class DAP(AttributeProcessing):
     def __init__(self, n_speaker_dim, bottleneck_hparams, take_log_of_input, arch_hparams):
-        super(DAP, self).__init__()
-        self.attribute_processing = AttributeProcessing(take_log_of_input)
+        super(DAP, self).__init__(take_log_of_input)
         self.bottleneck_layer = BottleneckLayerLayer(**bottleneck_hparams)
 
         arch_hparams['in_dim'] = self.bottleneck_layer.out_dim + n_speaker_dim
@@ -84,18 +83,16 @@ class DAP(nn.Module):
 
     def forward(self, txt_enc, spk_emb, x, lens):
         if x is not None:
-            x = self.attribute_processing.normalize(x)
+            x = self.normalize(x)
 
         txt_enc = self.bottleneck_layer(txt_enc)
         spk_emb_expanded = spk_emb[..., None].expand(-1, -1, txt_enc.shape[2])
         context = torch.cat((txt_enc, spk_emb_expanded), 1)
-
         x_hat = self.feat_pred_fn(context, lens)
-
         outputs = {'x_hat': x_hat, 'x': x}
         return outputs
 
     def infer(self, z, txt_enc, spk_emb, lens=None):
         x_hat = self.forward(txt_enc, spk_emb, x=None, lens=lens)['x_hat']
-        x_hat = self.attribute_processing.denormalize(x_hat)
+        x_hat = self.denormalize(x_hat)
         return x_hat

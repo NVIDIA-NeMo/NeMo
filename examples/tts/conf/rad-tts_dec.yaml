@@ -30,6 +30,7 @@ window: "hann"
 
 phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
+mapping_file_path: ""
 
 model:
   target: nemo.collections.tts.models.RadTTSModel
@@ -43,16 +44,30 @@ model:
   pitch_std: ${pitch_std}
   
   text_normalizer:
-      _target_: nemo_text_processing.text_normalization.normalize.Normalizer
-      lang: en
-      input_case: cased
-      whitelist: ${whitelist_path}
+    _target_: nemo_text_processing.text_normalization.normalize.Normalizer
+    lang: en
+    input_case: cased
+    whitelist: ${whitelist_path}
 
   text_normalizer_call_kwargs:
-      verbose: false
-      punct_pre_process: true
-      punct_post_process: true
-      
+    verbose: false
+    punct_pre_process: true
+    punct_post_process: true
+
+  text_tokenizer:
+    _target_: nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer
+    punct: true
+    stresses: true
+    chars: true
+    apostrophe: true
+    pad_with_space: true
+    g2p:
+      _target_: nemo.collections.tts.torch.g2ps.EnglishG2p
+      phoneme_dict: ${phoneme_dict_path}
+      heteronyms: ${heteronyms_path}
+      phoneme_probability: 0.5
+      mapping_file: ${mapping_file_path}
+
   train_ds:
     dataset:
       _target_: "nemo.collections.tts.torch.data.TTSDataset"
@@ -144,7 +159,7 @@ model:
       pin_memory: false
 
   optim:
-    name: RAdam #This code base uses pytorch implemenation of RAdam which has not been tested fully when this is released we are waiting for SWIPAT approval to use https://github.com/LiyuanLucasLiu/RAdam/blob/master/LICENSE. Until that you can integrate this and train. we will switch code to this implementation once we get SWIPAT approval which could take a couple of days. 
+    name: RAdam
     lr: 0.0001
     betas: [0.9, 0.98]
     weight_decay: 0.000001

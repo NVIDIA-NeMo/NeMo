@@ -21,30 +21,38 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 
+def freeze(model):
+    for p in model.parameters():
+        p.requires_grad = False
+
+
+def unfreeze(model):
+    for p in model.parameters():
+        p.requires_grad = True
+
+
 def prepare_model_weights(model, unfreeze_modules):
     if unfreeze_modules != 'all':
         model.freeze()  # freeze everything
-        logging.info("module frozen")
+        logging.info("module freezed, about to unfreeze modules to be trained")
         if 'dur' in unfreeze_modules and hasattr(model.model, 'dur_pred_layer'):
             logging.info("Training duration prediction")
-            model.model.dur_pred_layer.unfreeze()
+            unfreeze(model.model.dur_pred_layer)
         if 'f0' in unfreeze_modules and hasattr(model.model, 'f0_pred_module'):
             logging.info("Training F0 prediction")
-            model.model.f0_pred_module.unfreeze()
+            unfreeze(model.model.f0_pred_module)
         if 'energy' in unfreeze_modules and hasattr(model.model, 'energy_pred_module'):
             logging.info("Training energy prediction")
-            model.model.energy_pred_module.unfreeze()
+            unfreeze(model.model.energy_pred_module)
         if 'vpred' in unfreeze_modules and hasattr(model.model, 'v_pred_module'):
             logging.info("Training voiced prediction")
-            model.model.v_pred_module.unfreeze()
+            unfreeze(model.model.v_pred_module)
             if hasattr(model, 'v_embeddings'):
                 logging.info("Training voiced embeddings")
-                model.model.v_embeddings.unfreeze()
+                unfreeze(model.model.v_embeddings)
         if 'unvbias' in unfreeze_modules and hasattr(model.model, 'unvoiced_bias_module'):
             logging.info("Training unvoiced bias")
-            model.model.unvoiced_bias_module.unfreeze()
-        else:
-            logging.info("Model does not have the specified attribute.")
+            unfreeze(model.model.unvoiced_bias_module)
     else:
         logging.info("Training everything")
 

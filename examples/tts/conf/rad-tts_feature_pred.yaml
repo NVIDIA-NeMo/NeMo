@@ -29,6 +29,7 @@ window: "hann"
 
 phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722" 
+mapping_file_path: ""
 
 model:
   target: nemo.collections.tts.models.RadTTSModel
@@ -51,7 +52,21 @@ model:
       verbose: false
       punct_pre_process: true
       punct_post_process: true
-      
+  
+  text_tokenizer:
+    _target_: nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer
+    punct: true
+    stresses: true
+    chars: true
+    apostrophe: true
+    pad_with_space: true
+    g2p:
+      _target_: nemo.collections.tts.torch.g2ps.EnglishG2p
+      phoneme_dict: ${phoneme_dict_path}
+      heteronyms: ${heteronyms_path}
+      phoneme_probability: 0.5
+      mapping_file: ${mapping_file_path}
+
   train_ds:
     dataset:
       _target_: "nemo.collections.tts.torch.data.TTSDataset"
@@ -73,6 +88,8 @@ model:
       pitch_fmin: ${pitch_fmin}
       pitch_fmax: ${pitch_fmax} 
       
+      
+      
       text_tokenizer:
         _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
@@ -89,7 +106,6 @@ model:
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5
-
     dataloader_params:
       drop_last: false
       shuffle: true
@@ -116,7 +132,8 @@ model:
       ignore_file: null
       trim: False
       pitch_fmin: ${pitch_fmin}
-      pitch_fmax: ${pitch_fmax}  
+      pitch_fmax: ${pitch_fmax}
+         
       text_tokenizer:
         _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
@@ -133,7 +150,6 @@ model:
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5
-
     dataloader_params:
       drop_last: false
       shuffle: false
@@ -151,8 +167,7 @@ model:
       name: exp_decay
       warmup_steps: 40000
       last_epoch: -1 
-      d_model: 1  # Disable scaling based on model dim
-
+      d_model: 1  # Disable scaling based on model dim 
   trainerConfig:
     sigma: 1
     iters_per_checkpoint: 3000
@@ -181,7 +196,6 @@ model:
         _target_: "nemo.collections.tts.modules.radtts.RadTTSModule"
         n_speakers: 1
         n_speaker_dim: 16
-        text_encoder_name: tacotron2
         n_text: 384 #185
         n_text_dim: 512
         n_flows: 8

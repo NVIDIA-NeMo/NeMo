@@ -94,7 +94,7 @@ class Exportable(ABC):
         do_constant_folding=True,
         onnx_opset_version=None,
         training=TrainingMode.EVAL,
-        check_trace: bool = False,
+        check_trace: Union[bool, List[torch.Tensor]] = False,
         dynamic_axes=None,
         check_tolerance=0.01,
         export_modules_as_functions=False,
@@ -145,6 +145,11 @@ class Exportable(ABC):
                 output_example = tuple(self.forward(*input_list, **input_dict))
 
                 if format == ExportFormat.TORCHSCRIPT:
+                    if check_trace:
+                        if isinstance(check_trace, bool):
+                            check_trace_input = {"forward": tuple(input_list) + tuple(input_dict.values())}
+                        else:
+                            check_trace_input = check_trace
                     jitted_model = torch.jit.trace_module(
                         self,
                         {"forward": tuple(input_list) + tuple(input_dict.values())},

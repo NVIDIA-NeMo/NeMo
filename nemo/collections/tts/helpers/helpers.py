@@ -528,26 +528,26 @@ def regulate_len(durations, enc_out, pace=1.0, mel_max_len=None):
 
     dtype = enc_out.dtype
     reps = durations.float() / pace
-    reps = (reps + 0.5).long()
+    reps = (reps + 0.5).floor().long()
     dec_lens = reps.sum(dim=1)
 
     max_len = dec_lens.max()
     reps_cumsum = torch.cumsum(torch.nn.functional.pad(reps, (1, 0, 0, 0), value=0.0), dim=1)[:, None, :]
-    reps_cumsum = reps_cumsum.to(dtype)
+    reps_cumsum = reps_cumsum.to(dtype=dtype, device=enc_out.device)
 
     range_ = torch.arange(max_len).to(enc_out.device)[None, :, None]
     mult = (reps_cumsum[:, :, :-1] <= range_) & (reps_cumsum[:, :, 1:] > range_)
     mult = mult.to(dtype)
     enc_rep = torch.matmul(mult, enc_out)
 
-    if mel_max_len:
+    if mel_max_len is not None:
         enc_rep = enc_rep[:, :mel_max_len]
         dec_lens = torch.clamp_max(dec_lens, mel_max_len)
 
     return enc_rep, dec_lens
 
 
-def split_view(tensor, split_size, dim=0):
+def split_view(tensor, split_size: int, dim: int = 0):
     if dim < 0:  # Support negative indexing
         dim = len(tensor.shape) + dim
     # If not divisible by split_size, we need to pad with 0

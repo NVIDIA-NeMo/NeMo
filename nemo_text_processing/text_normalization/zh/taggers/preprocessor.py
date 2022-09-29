@@ -36,9 +36,7 @@ class PreProcessor(GraphFst):
         graph = pynini.cdrewrite('', '', '', NEMO_SIGMA)
 
         if remove_interjections:
-            remove_interjections_graph = pynutil.delete(
-                pynini.string_file(get_abs_path('data/blacklist/denylist.tsv'))
-            )
+            remove_interjections_graph = pynutil.delete(pynini.string_file(get_abs_path('data/denylist/denylist.tsv')))
             graph @= pynini.cdrewrite(remove_interjections_graph, '', '', NEMO_SIGMA)
 
         if fullwidth_to_halfwidth:

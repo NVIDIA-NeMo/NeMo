@@ -20,12 +20,12 @@ There are 3 components in TN pipeline:
 * covers English letters, digits, punctuations and some symbols
 * the complete mapping table `data/char/fullwidth_to_halfwidth.tsv`
 
-#### Blacklist (Removal)
+#### Denylist (Removal)
 Sometime you may want to remove certain things like interjections/fillers "啊", "呃" etc
 ```
 呃这个呃啊我不知道 -> 这个我不知道
 ```
-* customizable via `data/blacklist/interjections.tsv`
+* customizable via `data/denylist/denylist.tsv`
 
 
 ### 2.2 Non-Standard-Words(NSW) normalization

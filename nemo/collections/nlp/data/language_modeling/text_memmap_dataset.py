@@ -95,8 +95,8 @@ class TextMemMapDataset(Dataset):
         """
         Return a string from binary memmap
         """
-        if idx >= self.midx_bins[-1]:
-            raise IndexError(f"Index {idx} if out of dataset range with {len(self)} samples")
+        if (idx >= self.midx_bins[-1]) or (idx < 0):
+            raise IndexError(f"Index {idx} if out of dataset range with {self.midx_bins[-1]} samples")
 
         # Identify the file containing the record
         file_id = np.digitize(idx, self.midx_bins, right=False)

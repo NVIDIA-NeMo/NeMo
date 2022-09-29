@@ -12,6 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+This script converts a filelist file where each line contains
+<absolute path of wav file> to a manifest json file.
+Optionally post processes the manifest file to create dev and train split for speaker embedding
+training, also optionally segment an audio file in to segments of random DURATIONS and create those
+wav files in CWD.
+
+Args:
+--filelist: path to file containing list of audio files
+--manifest(optional): if you already have manifest file, but would like to process it for creating
+    segments and splitting then use manifest ignoring filelist
+--id: index of speaker label in filename present in filelist file that is separated by '/'
+--out: output manifest file name
+--split: if you would want to split the  manifest file for training purposes
+    you may not need this for test set. output file names is <out>_<train/dev>.json, defaults to False
+--create_segments: if you would want to segment each manifest line to segments of [1,2,3,4] sec or less
+    you may not need this for test set, defaults to False
+--min_spkrs_count: min number of samples per speaker to consider and ignore otherwise, defaults to 0 (all speakers)
+"""
+
 import argparse
 import json
 import os
@@ -25,26 +45,6 @@ from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm.contrib.concurrent import process_map
 
 random.seed(42)
-
-"""
-This scipt converts a filelist file where each line contains  
-<absolute path of wav file> to a manifest json file. 
-Optionally post processes the manifest file to create dev and train split for speaker embedding 
-training, also optionally segment an audio file in to segments of random DURATIONS and create those
-wav files in CWD. 
-
-Args: 
---filelist: path to file containing list of audio files
---manifest(optional): if you already have manifest file, but would like to process it for creating 
-    segments and splitting then use manifest ignoring filelist
---id: index of speaker label in filename present in filelist file that is separated by '/'
---out: output manifest file name
---split: if you would want to split the  manifest file for training purposes
-    you may not need this for test set. output file names is <out>_<train/dev>.json, defaults to False
---create_segments: if you would want to segment each manifest line to segments of [1,2,3,4] sec or less
-    you may not need this for test set, defaults to False
---min_spkrs_count: min number of samples per speaker to consider and ignore otherwise, defaults to 0 (all speakers)
-"""
 
 DURATIONS = sorted([3], reverse=True)
 MIN_ENERGY = 0.01

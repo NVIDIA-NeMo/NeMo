@@ -56,7 +56,7 @@ diarizer:
     parameters:
       use_speaker_model_from_ckpt: True # If True, use speaker embedding model in checkpoint. If False, the provided speaker embedding model in config will be used.
       infer_batch_size: 25 # Batch size for MSDD inference. 
-      sigmoid_threshold: [0.7,0.85,1.0] # Sigmoid threshold for outputting 
+      sigmoid_threshold: [0.7] # Sigmoid threshold for generating binarized speaker labels. The smaller the more generous on detecting overlaps.
       seq_eval_mode: False # If True, use oracle number of speaker and evaluate F1 score for the given speaker sequences. Default is False.
       split_infer: True # If True, break the input audio clip to short sequences and calculate cluster average embeddings for inference.
       diar_window_length: 50 # The length of split short sequence when split_infer is True.

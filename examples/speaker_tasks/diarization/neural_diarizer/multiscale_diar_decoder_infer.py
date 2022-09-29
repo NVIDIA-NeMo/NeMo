@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.asr.models.msdd_models import OverlapAwareDiarizer
+from nemo.collections.asr.models.msdd_models import NeuralDiarizer
 from nemo.core.config import hydra_runner
 
 
@@ -29,7 +29,7 @@ python multiscale_diar_decoder_infer.py --config-path='../conf/inference' --conf
 
 @hydra_runner(config_path="../conf/inference", config_name="diar_infer_telephonic.yaml")
 def main(cfg):
-    diarizer_model = OverlapAwareDiarizer(cfg=cfg)
+    diarizer_model = NeuralDiarizer(cfg=cfg)
     diarizer_model.diarize()
 
 

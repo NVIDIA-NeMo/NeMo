@@ -80,7 +80,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
     All the parameters are passed through config file 
     """
 
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, speaker_model=None):
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         # Convert config to support Hydra 1.0+ instantiation
         cfg = model_utils.maybe_update_config_version(cfg)
@@ -98,7 +98,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         # init speaker model
         self.multiscale_embeddings_and_timestamps = {}
-        self._init_speaker_model()
+        self._init_speaker_model(speaker_model)
         self._speaker_params = self._cfg.diarizer.speaker_embeddings.parameters
         self._speaker_dir = os.path.join(self._diarizer_params.out_dir, 'speaker_outputs')
         shutil.rmtree(self._speaker_dir, ignore_errors=True)
@@ -134,25 +134,28 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         self._vad_shift_length_in_sec = self._vad_params.shift_length_in_sec
         self.has_vad_model = True
 
-    def _init_speaker_model(self):
+    def _init_speaker_model(self, speaker_model=None):
         """
         Initialize speaker embedding model with model name or path passed through config
         """
-        model_path = self._cfg.diarizer.speaker_embeddings.model_path
-        if model_path is not None and model_path.endswith('.nemo'):
-            self._speaker_model = EncDecSpeakerLabelModel.restore_from(model_path)
-            logging.info("Speaker Model restored locally from {}".format(model_path))
-        elif model_path.endswith('.ckpt'):
-            self._speaker_model = EncDecSpeakerLabelModel.load_from_checkpoint(model_path)
-            logging.info("Speaker Model restored locally from {}".format(model_path))
+        if speaker_model is not None:
+            self._speaker_model = speaker_model
         else:
-            if model_path not in get_available_model_names(EncDecSpeakerLabelModel):
-                logging.warning(
-                    "requested {} model name not available in pretrained models, instead".format(model_path)
-                )
-                model_path = "ecapa_tdnn"
-            logging.info("Loading pretrained {} model from NGC".format(model_path))
-            self._speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name=model_path)
+            model_path = self._cfg.diarizer.speaker_embeddings.model_path
+            if model_path is not None and model_path.endswith('.nemo'):
+                self._speaker_model = EncDecSpeakerLabelModel.restore_from(model_path)
+                logging.info("Speaker Model restored locally from {}".format(model_path))
+            elif model_path.endswith('.ckpt'):
+                self._speaker_model = EncDecSpeakerLabelModel.load_from_checkpoint(model_path)
+                logging.info("Speaker Model restored locally from {}".format(model_path))
+            else:
+                if model_path not in get_available_model_names(EncDecSpeakerLabelModel):
+                    logging.warning(
+                        "requested {} model name not available in pretrained models, instead".format(model_path)
+                    )
+                    model_path = "ecapa_tdnn"
+                logging.info("Loading pretrained {} model from NGC".format(model_path))
+                self._speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name=model_path)
 
         self.multiscale_args_dict = parse_scale_configs(
             self._diarizer_params.speaker_embeddings.parameters.window_length_in_sec,
@@ -211,7 +214,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             data.append(get_uniqname_from_filepath(file))
 
         status = get_vad_stream_status(data)
-        for i, test_batch in enumerate(tqdm(self._vad_model.test_dataloader())):
+        for i, test_batch in enumerate(tqdm(self._vad_model.test_dataloader(), desc='vad', leave=False)):
             test_batch = [x.to(self._device) for x in test_batch]
             with autocast():
                 log_probs = self._vad_model(input_signal=test_batch[0], input_signal_length=test_batch[1])
@@ -326,7 +329,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             )
         validate_vad_manifest(self.AUDIO_RTTM_MAP, vad_manifest=self._speaker_manifest_path)
 
-    def _extract_embeddings(self, manifest_file: str):
+    def _extract_embeddings(self, manifest_file: str, scale_idx: int, num_scales: int):
         """
         This method extracts speaker embeddings from segments passed through manifest_file
         Optionally you may save the intermediate speaker embeddings for debugging or any use. 
@@ -339,7 +342,9 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         self.time_stamps = {}
 
         all_embs = torch.empty([0])
-        for test_batch in tqdm(self._speaker_model.test_dataloader()):
+        for test_batch in tqdm(
+            self._speaker_model.test_dataloader(), desc=f'[{scale_idx}/{num_scales}] extract embeddings', leave=False
+        ):
             test_batch = [x.to(self._device) for x in test_batch]
             audio_signal, audio_signal_len, labels, slices = test_batch
             with autocast():
@@ -417,13 +422,14 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         self._perform_speech_activity_detection()
 
         # Segmentation
-        for scale_idx, (window, shift) in self.multiscale_args_dict['scale_dict'].items():
+        scales = self.multiscale_args_dict['scale_dict'].items()
+        for scale_idx, (window, shift) in scales:
 
             # Segmentation for the current scale (scale_idx)
             self._run_segmentation(window, shift, scale_tag=f'_scale{scale_idx}')
 
             # Embedding Extraction for the current scale (scale_idx)
-            self._extract_embeddings(self.subsegments_manifest_path)
+            self._extract_embeddings(self.subsegments_manifest_path, scale_idx, len(scales))
 
             self.multiscale_embeddings_and_timestamps[scale_idx] = [self.embeddings, self.time_stamps]
 

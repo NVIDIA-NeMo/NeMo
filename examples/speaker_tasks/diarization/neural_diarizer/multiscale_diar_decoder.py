@@ -22,19 +22,17 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 """
-Example training session (on 1 GPU for 10 epochs on telephonic datasets)
+Example training session (single GPU training on telephonic datasets)
 
 python ./multiscale_diar_decoder.py --config-path='../conf/neural_diarizer' --config-name='msdd_5scl_15_05_50Povl_256x3x32x2.yaml' \
-    trainer.gpus=1 \
-    trainer.max_epochs=10  \
+    trainer.devices=1 \
     model.base.diarizer.speaker_embeddings.model_path="titanet_large" \
     model.train_ds.manifest_filepath="<train_manifest_path>" \
     model.validation_ds.manifest_filepath="<dev_manifest_path>" \
     model.train_ds.emb_dir="<train_temp_dir>" \
     model.validation_ds.emb_dir="<dev_temp_dir>" \
     exp_manager.name='sample_train' \
-    exp_manager.exp_dir='./msdd_exp' \
-    +exp_manager.use_datetime_version=False \
+    exp_manager.exp_dir='./msdd_exp'
 """
 
 seed_everything(42)

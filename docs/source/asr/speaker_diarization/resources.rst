@@ -2,10 +2,10 @@
 Resource and Documentation Guide
 --------------------------------
 
-Hands-on speaker diarization tutorial notebooks can be found under ``<NeMo_git_root>/tutorials/speaker_tasks/``.
+Hands-on speaker diarization tutorial notebooks can be found under ``<NeMo_git_root>/tutorials/speaker_tasks``.
 
-There are tutorials for performing inference using :ref:`MarbleNet_model` and :ref:`TitaNet_model`,
-and how one can get ASR transcriptions combined with Speaker labels along with voice activity time stamps with NeMo asr collections.
+There are tutorials for performing speaker diarization inference using :ref:`MarbleNet_model`, :ref:`TitaNet model`, and :ref:`Multi-scale Diarization Decoder model`.
+We also provide tutorials about getting ASR transcriptions combined with speaker labels along with voice activity timestamps with NeMo ASR collections.
 
 Most of the tutorials can be run on Google Colab by specifying the link to the notebooks' GitHub pages on Colab.
 

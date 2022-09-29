@@ -1,20 +1,32 @@
 Speaker Diarization
-==================================
+===================
 
-Speaker Diarization (SD) is the task of segmenting audio recordings by speaker labels, which answers the question "Who spoke when?".
+Speaker diarization is the process of segmenting audio recordings by speaker labels and aims to answer the question “who spoke when?”. Speaker diarization makes a clear distinction when it is compared with speech recognition. As shown in the figure below, before we perform speaker diarization, we know “what is spoken” yet we do not know “who spoke it”. Therefore, speaker diarization is an essential feature for a speech recognition system to enrich the transcription with speaker labels. 
+
+.. image:: images/asr_sd_diagram.png
+        :align: center
+        :width: 800px
+        :alt: Speaker diarization pipeline- VAD, segmentation, speaker embedding extraction, clustering
+
+To figure out "who spoke when", speaker diarization systems need to capture the characteristics of unseen speakers and tell apart which regions in the audio recording belong to which speaker. To achieve this, speaker diarization systems extract voice characteristics, count the number of speakers, then assign the audio segments to the corresponding speaker index.
+
+The following figure shows the overall data flow of the NeMo speaker diarization pipeline. 
 
 .. image:: images/sd_pipeline.png
         :align: center
         :width: 800px
         :alt: Speaker diarization pipeline- VAD, segmentation, speaker embedding extraction, clustering
 
+NeMo speaker diarization system consists of the following modules:   
 
-A speaker diarization system consists of a **Voice Activity Detection (VAD)** model to get the timestamps of audio where speech is being spoken while ignoring the background noise and 
-a **Speaker Embedding extractor** model to get speaker embeddings on speech segments obtained from VAD time stamps. 
-These speaker embeddings would then be clustered into clusters based on the number of speakers present in the audio recording.
+**Voice Activity Detection (VAD)**: A trainable model which detects the presence or absence of speech in the given audio recording.  
+**Speaker Embedding Extractor**: A trainable model that extracts speaker embedding vectors containing voice characteristics from raw audio signal.   
+**Clustering Module**: A non-trainable module that groups speaker embedding vectors into a number of clusters.   
+**Neural Diarizer**: A trainable model that estimates speaker labels from the given features.   
 
-In NeMo we support both **oracle VAD** and **non-oracle VAD** diarization. 
-
+Speaker diarization inference can be done in two different modes:   
+**oracle VAD**: Speaker diarization based on ground-truth VAD timestamps   
+**system VAD**: Speaker diarization based on the results from a VAD model    
 
 The full documentation tree is as follows:
 

@@ -100,7 +100,8 @@ model:
       min_lr: 0.00001
 
 trainer:
-  gpus: 1 # number of gpus
+  devices: 1 # number of gpus (devices)
+  accelerator: gpu 
   max_epochs: 200
   max_steps: -1 # computed at runtime if not set
   num_nodes: 1

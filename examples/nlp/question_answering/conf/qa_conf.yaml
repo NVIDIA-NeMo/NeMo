@@ -29,6 +29,7 @@ trainer:
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   enable_checkpointing: False # provided by exp_manager
   logger: False  # provided by exp_manager
+  strategy: ddp
 
 model:
   tensor_model_parallel_size: 1

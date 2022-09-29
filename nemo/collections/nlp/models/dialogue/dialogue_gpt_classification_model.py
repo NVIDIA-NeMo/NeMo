@@ -477,7 +477,6 @@ class DialogueGPTClassificationModel(NLPModel):
             for i in range(input_ids.size(0)):
                 param_dict = {
                     "input_ids": input_ids[i : i + 1, : template_length[i]],
-                    "attention_masks": attn_masks[i : i + 1, : template_length[i]],
                     "max_length": template_length[i] + tokens_to_generate,
                     "pad_token_id": self.tokenizer.tokenizer.pad_token_id,
                 }

@@ -309,11 +309,10 @@ class GPTQAModel(BaseQAModel):
             for i in range(input_ids.size(0)):
                 param_dict = {
                     "input_ids": input_ids[i : i + 1, : training_mask_end[i]],
-                    "attention_masks": input_attn_mask[i : i + 1, : training_mask_end[i]],
                     "max_length": training_mask_end[i] + num_tokens_to_generate,
                     "pad_token_id": self.tokenizer.tokenizer.pad_token_id,
                 }
-                generated_token_ids.append(self.language_model.generate(**param_dict, skip_special_tokens=True))
+                generated_token_ids.append(self.language_model.generate(**param_dict))
                 max_length = max(max_length, generated_token_ids[-1].size(1))
 
             # pad each generated to ensure they are of same length in dim 1, therefore stack-able

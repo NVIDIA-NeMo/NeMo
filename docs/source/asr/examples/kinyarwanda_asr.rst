@@ -238,6 +238,7 @@ We used the following script
 
     # Preprocessing steps
     def remove_special_characters(data):
+        chars_to_ignore_regex = "[\.\,\?\:\-!;()«»…\]\[/\*–‽+&_\\½√>€™$•¼}{~—=“\"”″‟„]"
         apostrophes_regex = "[’'‘`ʽ']"
         data["text"] = re.sub(chars_to_ignore_regex, " ", data["text"])  # replace punctuation by space
         data["text"] = re.sub(apostrophes_regex, "'", data["text"])  # replace different apostrophes by one

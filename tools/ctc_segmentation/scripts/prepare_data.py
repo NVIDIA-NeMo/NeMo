@@ -15,15 +15,14 @@
 import argparse
 import os
 import re
-from pathlib import Path
-from typing import List
+from glob import glob
+from typing import List, Optional
 
 import regex
 from joblib import Parallel, delayed
 from normalization_helpers import LATIN_TO_RU, RU_ABBREVIATIONS
 from num2words import num2words
-from pydub import AudioSegment
-from pydub.utils import mediainfo
+from sox import Transformer
 from tqdm import tqdm
 
 from nemo.collections.asr.models import ASRModel
@@ -42,6 +41,7 @@ parser.add_argument("--in_text", type=str, default=None, help="Path to a text fi
 parser.add_argument("--output_dir", type=str, required=True, help="Path to output directory")
 parser.add_argument("--audio_dir", type=str, help="Path to folder with .mp3 or .wav audio files")
 parser.add_argument("--sample_rate", type=int, default=16000, help="Sampling rate used during ASR model training, Hz")
+parser.add_argument("--bit_depth", type=int, default=16, help="Bit depth to use for processed audio files")
 parser.add_argument("--n_jobs", default=-2, type=int, help="The maximum number of concurrently running jobs")
 parser.add_argument(
     "--language",
@@ -65,16 +65,21 @@ parser.add_argument(
     default="",
     help="Additional symbols to use for \
     sentence split if eos sentence split resulted in sequence longer than --max_length. "
-    "Use '|' as a separator between symbols, for example: ';|:' ",
+    "Use '|' as a separator between symbols, for example: ';|:'. Use '\s' to split by space.",
 )
 parser.add_argument(
     "--use_nemo_normalization",
     action="store_true",
     help="Set to True to use NeMo Normalization tool to convert numbers from written to spoken format.",
 )
+parser.add_argument(
+    "--batch_size", type=int, default=100, help="Batch size for NeMo Normalization tool.",
+)
 
 
-def process_audio(in_file: str, wav_file: str = None, cut_prefix: int = 0, sample_rate: int = 16000):
+def process_audio(
+    in_file: str, wav_file: str = None, cut_prefix: int = 0, sample_rate: int = 16000, bit_depth: int = 16
+):
     """Process audio file: .mp3 to .wav conversion and cut a few seconds from the beginning of the audio
 
     Args:
@@ -82,15 +87,15 @@ def process_audio(in_file: str, wav_file: str = None, cut_prefix: int = 0, sampl
         wav_file: path to the output .wav file
         cut_prefix: number of seconds to cut from the beginning of the audio file
         sample_rate: target sampling rate
+        bit_depth: target bit_depth
     """
     try:
-        info = mediainfo(in_file)
-        sound = AudioSegment.from_file(in_file, start_second=cut_prefix)
-        if info["sample_rate"] != str(sample_rate):
-            sound = sound.set_frame_rate(sample_rate)
-        if info["channels"] != 1:
-            sound = sound.set_channels(1)
-        sound.export(wav_file, format="wav")
+        if not os.path.exists(in_file):
+            raise ValueError(f'{in_file} not found')
+        tfm = Transformer()
+        tfm.convert(samplerate=sample_rate, n_channels=1, bitdepth=bit_depth)
+        tfm.trim(cut_prefix)
+        tfm.build(input_filepath=in_file, output_filepath=wav_file)
     except Exception as e:
         print(f'{in_file} skipped - {e}')
 
@@ -100,11 +105,13 @@ def split_text(
     out_file: str,
     vocabulary: List[str],
     language="en",
-    remove_brackets=True,
-    do_lower_case=True,
-    max_length=100,
-    additional_split_symbols=None,
-    use_nemo_normalization=False,
+    remove_brackets: bool = True,
+    do_lower_case: bool = True,
+    max_length: bool = 100,
+    additional_split_symbols: bool = None,
+    use_nemo_normalization: bool = False,
+    n_jobs: Optional[int] = 1,
+    batch_size: Optional[int] = 1.0,
 ):
     """
     Breaks down the in_file roughly into sentences. Each sentence will be on a separate line.
@@ -124,6 +131,10 @@ def split_text(
         use_nemo_normalization: Set to True to use NeMo normalization tool to convert numbers from written to spoken
             format. Normalization using num2words will be applied afterwards to make sure there are no numbers present
             in the text, otherwise they will be replaced with a space and that could deteriorate segmentation results.
+        n_jobs (if use_nemo_normalization=True): the maximum number of concurrently running jobs. If -1 all CPUs are used. If 1 is given,
+                no parallel computing code is used at all, which is useful for debugging. For n_jobs below -1,
+                (n_cpus + 1 + n_jobs) are used. Thus for n_jobs = -2, all CPUs but one are used.
+        batch_size (if use_nemo_normalization=True): Number of examples for each process
     """
     print(f"Splitting text in {in_file} into sentences.")
     with open(in_file, "r") as f:
@@ -140,7 +151,6 @@ def split_text(
     )
     # remove extra space
     transcript = re.sub(r" +", " ", transcript)
-    transcript = re.sub(r"(\.+)", ". ", transcript)
 
     if remove_brackets:
         transcript = re.sub(r'(\[.*?\])', ' ', transcript)
@@ -175,7 +185,7 @@ def split_text(
     sentences = [s.strip() for s in sentences if s.strip()]
 
     # Read and split transcript by utterance (roughly, sentences)
-    split_pattern = f"(?<!\w\.\w.)(?<![A-Z{upper_case_unicode}][a-z{lower_case_unicode}]\.)(?<![A-Z{upper_case_unicode}]\.)(?<=\.|\?|\!|\.”|\?”\!”)\s"
+    split_pattern = f"(?<!\w\.\w.)(?<![A-Z{upper_case_unicode}][a-z{lower_case_unicode}]+\.)(?<![A-Z{upper_case_unicode}]\.)(?<=\.|\?|\!|\.”|\?”\!”)\s(?![0-9]+[a-z]*\.)"
 
     new_sentences = []
     for sent in sentences:
@@ -215,12 +225,15 @@ def split_text(
         for sent in sentences:
             split_sent = [sent]
             for delimiter in split_on_symbols:
-                split_sent = _split(split_sent, delimiter + " ")
+                if len(delimiter) == 0:
+                    continue
+                split_sent = _split(split_sent, delimiter + " " if delimiter != " " else delimiter)
             another_sent_split.extend(split_sent)
 
         sentences = [s.strip() for s in another_sent_split if s.strip()]
         return sentences
 
+    additional_split_symbols = additional_split_symbols.replace("/s", " ")
     sentences = additional_split(sentences, additional_split_symbols)
 
     vocabulary_symbols = []
@@ -267,7 +280,9 @@ def split_text(
 
         print("Using NeMo normalization tool...")
         normalizer = Normalizer(input_case="cased", cache_dir=os.path.join(os.path.dirname(out_file), "en_grammars"))
-        sentences_norm = normalizer.normalize_list(sentences, verbose=False, punct_post_process=True)
+        sentences_norm = normalizer.normalize_list(
+            sentences, verbose=False, punct_post_process=True, n_jobs=n_jobs, batch_size=batch_size
+        )
         if len(sentences_norm) != len(sentences):
             raise ValueError("Normalization failed, number of sentences does not match.")
         else:
@@ -338,9 +353,9 @@ if __name__ == "__main__":
         vocabulary = asr_model.cfg.decoder.vocabulary
 
         if os.path.isdir(args.in_text):
-            text_files = Path(args.in_text).glob(("*.txt"))
+            text_files = glob(f"{args.in_text}/*.txt")
         else:
-            text_files.append(Path(args.in_text))
+            text_files.append(args.in_text)
         for text in text_files:
             base_name = os.path.basename(text)[:-4]
             out_text_file = os.path.join(args.output_dir, base_name + ".txt")
@@ -353,6 +368,8 @@ if __name__ == "__main__":
                 max_length=args.max_length,
                 additional_split_symbols=args.additional_split_symbols,
                 use_nemo_normalization=args.use_nemo_normalization,
+                n_jobs=args.n_jobs,
+                batch_size=args.batch_size,
             )
         print(f"Processed text saved at {args.output_dir}")
 
@@ -360,16 +377,16 @@ if __name__ == "__main__":
         if not os.path.exists(args.audio_dir):
             raise ValueError(f"{args.audio_dir} not found. '--audio_dir' should contain .mp3 or .wav files.")
 
-        audio_paths = list(Path(args.audio_dir).glob("*"))
+        audio_paths = glob(f"{args.audio_dir}/*")
 
-        normalized_lines = Parallel(n_jobs=args.n_jobs)(
+        Parallel(n_jobs=args.n_jobs)(
             delayed(process_audio)(
                 audio_paths[i],
-                os.path.join(args.output_dir, os.path.splitext(audio_paths[i].name)[0] + ".wav"),
+                os.path.join(args.output_dir, os.path.splitext(os.path.basename(audio_paths[i]))[0] + ".wav"),
                 args.cut_prefix,
                 args.sample_rate,
+                args.bit_depth,
             )
             for i in tqdm(range(len(audio_paths)))
         )
-
     print("Data preparation is complete.")

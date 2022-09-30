@@ -111,14 +111,23 @@ if __name__ == "__main__":
     all_wav_paths = []
     segments_dir = os.path.join(args.output_dir, "segments")
     os.makedirs(segments_dir, exist_ok=True)
+
+    index_duration = None
     for path_audio in audio_paths:
         logging.info(f"Processing {path_audio.name}...")
         transcript_file = os.path.join(data_dir, path_audio.name.replace(".wav", ".txt"))
         segment_file = os.path.join(
             segments_dir, f"{args.window_len}_" + path_audio.name.replace(".wav", "_segments.txt")
         )
+        if not os.path.exists(transcript_file):
+            logging.info(f"{transcript_file} not found. Skipping {path_audio.name}")
+            continue
         try:
             sample_rate, signal = wav.read(path_audio)
+            if len(signal) == 0:
+                logging.error(f"Skipping {path_audio.name}")
+                continue
+
             assert (
                 sample_rate == args.sample_rate
             ), f"Sampling rate of the audio file {path_audio} doesn't match --sample_rate={args.sample_rate}"
@@ -136,6 +145,10 @@ if __name__ == "__main__":
             all_segment_file.append(str(segment_file))
             all_transcript_file.append(str(transcript_file))
             all_wav_paths.append(path_audio)
+
+            if index_duration is None:
+                index_duration = len(signal) / log_probs.shape[0] / sample_rate
+
         except Exception as e:
             logging.error(e)
             logging.error(f"Skipping {path_audio.name}")
@@ -147,7 +160,7 @@ if __name__ == "__main__":
 
     if len(all_log_probs) > 0:
         start_time = time.time()
-        index_duration = len(signal) / log_probs.shape[0] / sample_rate
+
         normalized_lines = Parallel(n_jobs=args.num_jobs)(
             delayed(get_segments)(
                 all_log_probs[i],

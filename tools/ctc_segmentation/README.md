@@ -29,3 +29,9 @@ abstract="Recent end-to-end Automatic Speech Recognition (ASR) systems demonstra
 isbn="978-3-030-60276-5"
 }
 ```
+Requirements
+~~~~~~~~~~~~
+The tool requires:
+- packages listed in requirements.txt
+- NeMo ASR 
+- see pysox’s documentation (https://pysox.readthedocs.io/en/latest/) if you want support for mp3, flac and ogg files

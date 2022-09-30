@@ -45,6 +45,7 @@ parser.add_argument(
 )
 parser.add_argument("--max_edge_cer", type=int, help="Threshold edge CER value, %", default=60)
 parser.add_argument("--max_duration", type=int, help="Max duration of a segment, seconds", default=-1)
+parser.add_argument("--min_duration", type=int, help="Min duration of a segment, seconds", default=1)
 parser.add_argument(
     "--num_jobs",
     default=-2,
@@ -108,7 +109,15 @@ def get_metrics(manifest, manifest_out):
 
 
 def _apply_filters(
-    manifest, manifest_out, max_cer, max_wer, max_edge_cer, max_len_diff_ratio, max_dur=-1, original_duration=0
+    manifest,
+    manifest_out,
+    max_cer,
+    max_wer,
+    max_edge_cer,
+    max_len_diff_ratio,
+    max_dur=-1,
+    min_dur=1,
+    original_duration=0,
 ):
     """ Filters out samples that do not satisfy specified threshold values and saves remaining samples to manifest_out"""
     remaining_duration = 0
@@ -128,6 +137,7 @@ def _apply_filters(
                 and item["end_CER"] <= max_edge_cer
                 and item["start_CER"] <= max_edge_cer
                 and (max_dur == -1 or (max_dur > -1 and duration < max_dur))
+                and duration > min_dur
             ):
                 remaining_duration += duration
                 f_out.write(json.dumps(item) + "\n")
@@ -180,6 +190,7 @@ def filter(manifest):
         max_edge_cer=args.max_edge_cer,
         max_len_diff_ratio=args.max_len_diff_ratio,
         max_dur=args.max_duration,
+        min_dur=args.min_duration,
         original_duration=original_duration,
     )
 

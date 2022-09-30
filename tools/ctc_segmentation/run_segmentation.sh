@@ -11,6 +11,7 @@ ADDITIONAL_SPLIT_SYMBOLS=":|;"
 USE_NEMO_NORMALIZATION='True'
 NUM_JOBS=-2 # The maximum number of concurrently running jobs, `-2` - all CPUs but one are used
 SAMPLE_RATE=16000 # Target sample rate (default for ASR data - 16000 Hz)
+MAX_DURATION=20 # Maximum audio segment duration, in seconds. Samples that are longer will be dropped.
 
 for ARG in "$@"
 do
@@ -103,4 +104,5 @@ python $SCRIPTS_DIR/cut_audio.py \
 --alignment=$OUTPUT_DIR/verified_segments \
 --threshold=$MIN_SCORE \
 --offset=$OFFSET \
---sample_rate=$SAMPLE_RATE || exit
+--sample_rate=$SAMPLE_RATE \
+--max_duration=$MAX_DURATION || exit

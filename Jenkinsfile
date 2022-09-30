@@ -760,7 +760,7 @@ pipeline {
             steps {
             sh 'cd tools/ctc_segmentation && \
             pip install -r requirements.txt && \
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg'
+            apt-get update && apt-get install libsox-fmt-all -y'
             }
         }
 

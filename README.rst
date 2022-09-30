@@ -207,6 +207,14 @@ Megatron GPT training requires NVIDIA Apex to be installed.
     git checkout nm_v1.11.0
     pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
 
+NeMo Text Processing
+~~~~~~~~~~~~~~~~~~~~
+NeMo Text Processing, specifically (Inverse) Text Normalization, requires `Pynini <https://pypi.org/project/pynini/>`_ to be installed.
+
+.. code-block:: bash
+
+    bash NeMo/nemo_text_processing/install_pynini.sh
+
 Docker containers:
 ~~~~~~~~~~~~~~~~~~
 To build a nemo container with Dockerfile from a branch, please run 

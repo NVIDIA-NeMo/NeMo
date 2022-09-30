@@ -156,7 +156,7 @@ class Normalizer:
 
         try:
             normalized_texts = Parallel(n_jobs=n_jobs)(
-                delayed(self.__process_batch)(texts[i : i + batch], verbose, punct_pre_process, punct_post_process)
+                delayed(self.process_batch)(texts[i : i + batch], verbose, punct_pre_process, punct_post_process)
                 for i in range(0, len(texts), batch)
             )
         except BaseException as e:
@@ -165,7 +165,7 @@ class Normalizer:
         normalized_texts = list(itertools.chain(*normalized_texts))
         return normalized_texts
 
-    def __process_batch(self, batch, verbose, punct_pre_process, punct_post_process):
+    def process_batch(self, batch, verbose, punct_pre_process, punct_post_process):
         """
         Normalizes batch of text sequences
         Args:

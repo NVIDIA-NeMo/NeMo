@@ -14,7 +14,7 @@
 
 import math
 import re
-from typing import Optional
+from typing import Any, List, Optional, Union
 
 import torch
 from omegaconf import DictConfig
@@ -41,7 +41,21 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     get_params_for_weight_decay_optimization,
 )
+from nemo.collections.nlp.modules.common.text_generation_strategy import model_inference_strategy_dispatcher
+from nemo.collections.nlp.modules.common.text_generation_utils import (
+    generate,
+    get_computeprob_response,
+    get_default_length_params,
+    get_default_sampling_params,
+    megatron_gpt_generate,
+)
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.collections.nlp.modules.common.transformer.text_generation import (
+    LengthParam,
+    OutputType,
+    SamplingParam,
+    TextGeneration,
+)
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.utils import AppState, logging
 
@@ -58,7 +72,7 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ["MegatronRetrievalModel"]
 
 
-class MegatronRetrievalModel(MegatronBaseModel):
+class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
     """
     Megatron Retrieval enhanced language model
     """
@@ -91,9 +105,7 @@ class MegatronRetrievalModel(MegatronBaseModel):
         self.model.model_type = ModelType.encoder_and_decoder
 
         if hasattr(self.cfg, "shape_file"):
-            set_base_shapes(self, self.cfg.shape_file, rescale_params=False)
-            # add shape file
-            self.register_artifact("model.shape_file", self.cfg.shape_file),
+            set_base_shapes(self, self.register_artifact("shape_file", self.cfg.shape_file), rescale_params=False)
 
             # here manually initialize all the named parameters with the muTranfer normal initializer
             for name, tensor in self.named_parameters():
@@ -342,11 +354,10 @@ class MegatronRetrievalModel(MegatronBaseModel):
         return self.validation_step(batch, batch_idx)
 
     def test_epoch_end(self, outputs):
-        averaged_loss = average_losses_across_data_parallel_group(outputs)
-        logging.info(f'test_loss: {averaged_loss[0]}')
-        self.log(
-            'consumed_samples', self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
-        )
+        averaged_loss = torch.stack(outputs).mean()
+        self.log('test_loss', averaged_loss, prog_bar=True)
+        logging.info(f'test_loss: {averaged_loss} ')
+        self.log('perplexity', torch.exp(averaged_loss), prog_bar=True)
         return averaged_loss
 
     def build_train_valid_test_datasets(self):
@@ -452,6 +463,100 @@ class MegatronRetrievalModel(MegatronBaseModel):
         self.setup_training_data(self._cfg.data)
         self.setup_validation_data(self._cfg.data)
         self.setup_test_data(self._cfg.data)
+
+    def set_inference_config(self, inference_config, retrieval_config):
+        self._inference_config = inference_config
+        self._inference_strategy = model_inference_strategy_dispatcher(self, **retrieval_config)
+
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
+        inference_config = self._inference_config
+        if inference_config is None:
+            return None
+        else:
+            # need to overwrite some configuration, make it immutable
+            inference_config = inference_config.copy()
+            compute_logprob = inference_config['compute_logprob']
+            if compute_logprob:
+                del inference_config['compute_logprob']
+                inference_config['inputs'] = batch
+                inference_config['tokens_to_generate'] = 1
+                inference_config['all_probs'] = True
+                inference_config["add_BOS"] = False
+                inference_config['greedy'] = True
+                response = generate(self, **inference_config, strategy=self._inference_strategy)
+                compute_prob_response = get_computeprob_response(self.tokenizer, response, batch)
+                return compute_prob_response
+            else:
+                del inference_config['compute_logprob']
+                inference_config['inputs'] = batch
+                return generate(self, **inference_config, strategy=self._inference_strategy)
+
+    def generate(
+        self,
+        inputs: Union[List[str], torch.Tensor, List[dict]],
+        length_params: LengthParam,
+        sampling_params: SamplingParam = None,
+        **args,
+    ) -> OutputType:
+
+        # check whether the DDP is initialized
+        if parallel_state.is_unitialized():
+
+            def dummy():
+                return
+
+            if self.trainer.strategy.launcher is not None:
+                self.trainer.strategy.launcher.launch(dummy, trainer=self.trainer)
+            self.trainer.strategy.setup_environment()
+
+        # set the default sampling params if it is None.
+        # default do greedy sampling
+        if sampling_params is None:
+            sampling_params = get_default_sampling_params()
+
+        # set the default length params if it is None.
+        # default do greedy sampling
+        if length_params is None:
+            length_params = get_default_length_params()
+
+        return megatron_gpt_generate(self.cuda(), inputs, self.tokenizer, length_params, sampling_params, **args)
+
+    def get_forward_output_only_func(self):
+        """
+        Used for generate method only.
+        """
+
+        def fwd_output_only_func(batch, model):
+            extra_arg = {}
+            (
+                tokens,
+                attention_mask,
+                retrieved,
+                retrieved_mask,
+                set_inference_key_value_memory,
+                inference_max_sequence_len,
+                neighbors,
+            ) = batch
+
+            if len(retrieved.shape) == 1:
+                retrieved = None
+                retrieved_mask = None
+            else:
+                retrieved = retrieved.cuda()
+                retrieved_mask = retrieved_mask.cuda()
+
+            extra_arg['set_inference_key_value_memory'] = set_inference_key_value_memory[0].item()
+            extra_arg['inference_max_sequence_len'] = inference_max_sequence_len[0].item()
+            extra_arg['neighbors'] = neighbors[0].item()
+
+            output_tensor = model(tokens, attention_mask, retrieved, retrieved_mask, **extra_arg)
+
+            def id_func(output_tensor):
+                return output_tensor, {'logits': output_tensor}
+
+            return output_tensor, id_func
+
+        return fwd_output_only_func
 
     def setup_training_data(self, cfg):
         if hasattr(self, '_train_ds'):

@@ -144,10 +144,12 @@ class MegatronGenerate(Resource):
 
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
+            extra = {}
+            if task_ids is not None:
+                extra['task_ids'] = task_ids
             output = generate(
                 self.model,
                 sentences,
-                task_ids,
                 tokens_to_generate,
                 all_probs,
                 temperature,
@@ -157,6 +159,7 @@ class MegatronGenerate(Resource):
                 greedy,
                 repetition_penalty,
                 min_tokens_to_generate,
+                **extra,
             )
             for k in output:
                 if isinstance(output[k], torch.Tensor):

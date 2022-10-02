@@ -1,0 +1,44 @@
+inference:
+  greedy: False # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  add_BOS: True # add the bos token at the begining of the prompt
+  tokens_to_generate: 30 # The minimum length of the sequence to be generated.
+  all_probs: False  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: 16 # 16, 32, or bf16
+
+inference_batch_size: 2
+tensor_model_parallel_size: 1
+pipeline_model_parallel_size: 1
+pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
+retro_model_file: null  # RETRO nemo file path
+
+use_predict_method: False  # whether to use the predict method
+
+prompts: # prompts for RETRO model inference
+  - "hello,"
+  - "good morning,"
+  - "good afternoon,"
+  - "good evening,"
+ 
+########### Faiss service parameters ########
+retrieval_service:
+  faiss_devices: '0,1,2'
+  faiss_index: null  # the faiss index file that is used to find KNN
+  nprobe: 100
+  retrieval_index: null
+  sentence_bert: 'all-mpnet-base-v2' 
+  sentence_bert_batch: 4
+  neighbors: 4
+  frequent_query: False  # for the current token generation, frequently update the retrieval context. If false, update it every 64 tokens 

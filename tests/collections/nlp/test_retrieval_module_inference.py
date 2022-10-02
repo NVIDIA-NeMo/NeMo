@@ -312,6 +312,7 @@ class TestRetrievalModuleInference:
                 hidden_size=dim,
                 precision=16,
                 chunk_size=text_chunk_size,
+                masked_softmax_fusion=False,
             )
             .cuda()
             .half()

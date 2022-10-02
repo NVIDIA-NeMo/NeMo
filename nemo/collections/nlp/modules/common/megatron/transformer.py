@@ -950,7 +950,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
             hidden_states.shape[0],
             hidden_states.shape[2],
         )
-        empty_bias = torch.zeros(dim, dtype=hidden_states.dtype, device=hidden_states.device)
+        default_bias = self.cross_attention.dense.bias
         if set_inference_key_value_memory:
             seq_index = (n // chunk_size) * chunk_size
             self.current_len = n
@@ -962,7 +962,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
             chunk_id = self.current_len // chunk_size
             if chunk_id <= 0:
                 # if sequence length less than chunk size, do an early return
-                return torch.zeros_like(hidden_states), empty_bias
+                return torch.zeros_like(hidden_states), default_bias
             causal_padding = chunk_size - 1
             # pad it as a full chunk, put it at the end of the chunk position
             hidden_states = F.pad(hidden_states, (0, 0, 0, 0, causal_padding, 0), value=0.0)
@@ -978,7 +978,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
 
         # if sequence length less than chunk size, do an early return
         if n < self.chunk_size and set_inference_key_value_memory and inference_max_sequence_len is not None:
-            return torch.zeros_like(hidden_states), empty_bias
+            return torch.zeros_like(hidden_states), default_bias
 
         num_chunks, num_retrieved = (
             context.shape[-5],

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Union
 
 import editdistance
 import torch
@@ -21,6 +21,8 @@ from torchmetrics import Metric
 
 from nemo.collections.asr.metrics.rnnt_wer import AbstractRNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.metrics.wer import move_dimension_to_the_front
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
+from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
@@ -57,6 +59,10 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
             compute_timestamps: A bool flag, which determines whether to compute the character/subword, or
                 word based timestamp mapping the output log-probabilities to discrete intervals of timestamps.
                 The timestamps will be available in the returned Hypothesis.timestep as a dictionary.
+
+            compute_langs: a bool flag, which allows to compute language id (LID) information per token,
+                word, and the entire sample (most likely language id). The LIDS will be available 
+                in the returned Hypothesis object as a dictionary
 
             rnnt_timestamp_type: A str value, which represents the types of timestamps that should be calculated.
                 Can take the following values - "char" for character/subword time stamps, "word" for word level
@@ -156,6 +162,66 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         """
         token_list = self.tokenizer.ids_to_tokens(tokens)
         return token_list
+
+    def decode_tokens_to_lang(self, tokens: List[int]) -> str:
+        """
+        Compute the most likely language ID (LID) string given the tokens.
+
+        Args:
+            tokens: List of int representing the token ids.
+
+        Returns:
+            A decoded LID string.
+        """
+        lang = self.tokenizer.ids_to_lang(tokens)
+        return lang
+
+    def decode_ids_to_langs(self, tokens: List[int]) -> List[str]:
+        """
+        Decode a token id list into language ID (LID) list.
+
+        Args:
+            tokens: List of int representing the token ids.
+
+        Returns:
+            A list of decoded LIDS.
+        """
+        lang_list = self.tokenizer.ids_to_text_and_langs(tokens)
+        return lang_list
+
+    def decode_hypothesis(self, hypotheses_list: List[Hypothesis]) -> List[Union[Hypothesis, NBestHypotheses]]:
+        """
+        Decode a list of hypotheses into a list of strings.
+        Overrides the super() method optionally adding lang information
+
+        Args:
+            hypotheses_list: List of Hypothesis.
+
+        Returns:
+            A list of strings.
+        """
+        hypotheses = super().decode_hypothesis(hypotheses_list)
+        if self.compute_langs:
+            if isinstance(self.tokenizer, AggregateTokenizer):
+                for ind in range(len(hypotheses_list)):
+                    # Extract the integer encoded hypothesis
+                    prediction = hypotheses_list[ind].y_sequence
+
+                    if type(prediction) != list:
+                        prediction = prediction.tolist()
+
+                    # RNN-T sample level is already preprocessed by implicit RNNT decoding
+                    # Simply remove any blank tokens
+                    prediction = [p for p in prediction if p != self.blank_id]
+
+                    hypotheses[ind].langs = self.decode_tokens_to_lang(prediction)
+                    hypotheses[ind].langs_chars = self.decode_ids_to_langs(prediction)
+            else:
+                logging.warning(
+                    "Ignoring request for lang output in hypotheses since the model does not use an aggregate tokenizer"
+                )
+
+        return hypotheses
 
 
 class RNNTBPEWER(Metric):

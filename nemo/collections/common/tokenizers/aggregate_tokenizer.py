@@ -76,18 +76,21 @@ class AggregateTokenizer(TokenizerSpec):
         self.tokenizer = DummyTokenizer(self.vocabulary)
 
         # lookup tables to speed up token to text operations
-        # if there are two tokenizers, [0,1] each with 128 tokens, the aggregate tokenizer
-        # token range will be [0,255]. The below method provides two look up tables:
+        # if there are two tokenizers, [0,1], ['en', 'es'], each with 128 tokens, the aggregate tokenizer
+        # token range will be [0,255]. The below method provides three look up tables:
         # one, to convert the incoming token id -- e.g. 200 into its real id (200-127 = 73)
-        # and to compute the tokenizer id that should process that token (1)
-        offset_token_ids_by_token_id, tokenizers_by_token_id = self._calculate_offsets()
+        # second, to compute the tokenizer id that should process that token (1)
+        # third, the compute the lang id for that token ('es')
+        offset_token_ids_by_token_id, tokenizers_by_token_id, langs_by_token_id = self._calculate_offsets()
 
         self.offset_token_ids_by_token_id = offset_token_ids_by_token_id
         self.tokenizers_by_token_id = tokenizers_by_token_id
+        self.langs_by_token_id = langs_by_token_id
 
     def _calculate_offsets(self):
         offsets = {}
         tokenizers = {}
+        langs = {}
         cur_num = 0
         tot = len(self.tokenizers_dict)
         for id in range(len(self.vocabulary)):
@@ -98,8 +101,9 @@ class AggregateTokenizer(TokenizerSpec):
                     off_id = id - list(self.token_id_offset.values())[cur_num]
             offsets[id] = off_id
             tokenizers[id] = list(self.tokenizers_dict.values())[cur_num]
+            langs[id] = list(self.tokenizers_dict.keys())[cur_num]
 
-        return offsets, tokenizers
+        return offsets, tokenizers, langs
 
     def text_to_tokens(self, text, lang_id):
         tokenizer = self.tokenizers_dict[lang_id]
@@ -146,6 +150,67 @@ class AggregateTokenizer(TokenizerSpec):
             tokens.append(token)
 
         return tokens
+
+    def ids_to_text_and_langs(self, ids):
+        text_and_langs = []
+
+        for id in ids:
+            offset_id = self.offset_token_ids_by_token_id[id]
+            tokenizer = self.tokenizers_by_token_id[id]
+            token = tokenizer.ids_to_tokens([offset_id])[0]
+            text = token.replace('▁', ' ')
+            text = text.strip()  # strip for display purposes
+            lang = self.langs_by_token_id[id]
+            text_and_langs.append({'char': text, 'lang': lang})
+
+        return text_and_langs
+
+    def ids_to_words_and_langs(self, ids):
+        words_and_langs = []
+
+        word_ids = []  # tokens belonging to the current word
+        for id in ids:
+            offset_id = self.offset_token_ids_by_token_id[id]
+            tokenizer = self.tokenizers_by_token_id[id]
+            token = tokenizer.ids_to_tokens([offset_id])[0]
+            if token.startswith('▁'):
+                if len(word_ids) > 0:  # if this isn't the first word
+                    word = self.ids_to_text(word_ids)
+                    word = word.strip()  # strip for display purposes
+                    lang = self.ids_to_lang(word_ids)
+                    wl = {'word': word, 'lang': lang}
+                    words_and_langs.append(wl)
+                word_ids = []
+            word_ids.append(id)
+
+        if len(word_ids) > 0:  # the last tokens
+            word = self.ids_to_text(word_ids)
+            word = word.strip()  # strip for display purposes
+            lang = self.ids_to_lang(word_ids)
+            wl = {'word': word, 'lang': lang}
+            words_and_langs.append(wl)
+
+        return words_and_langs
+
+    def ids_to_lang(self, ids):
+        lang_cnts = {}
+
+        for id in ids:
+            lang = self.langs_by_token_id[id]
+            lang_cnt = lang_cnts.get(lang)
+            if lang_cnt is not None:
+                lang_cnts[lang] = lang_cnt + 1
+            else:
+                lang_cnts[lang] = 1
+
+        max_lang = ''
+        max_lang_cnt = -1
+        for lang, lang_cnt in lang_cnts.items():
+            if lang_cnt > max_lang_cnt:
+                max_lang = lang
+                max_lang_cnt = lang_cnt
+
+        return max_lang
 
     def tokens_to_ids(self, tokens: Union[str, List[str]], langs: Union[str, List[str]]) -> Union[int, List[int]]:
         if isinstance(tokens, str):

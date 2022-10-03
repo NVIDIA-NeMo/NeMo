@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# USAGE: python get_aishell_data.py --data_root=<where to put data>
+# USAGE: python get_hi-mia_data.py --data_root=<where to put data>
 
 import argparse
 import json

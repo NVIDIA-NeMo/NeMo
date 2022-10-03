@@ -233,7 +233,7 @@ We provide a helper script to download the dataset and format it into a NeMo man
 
 .. code-block:: bash
 
-    python scripts/data_processing/get_ami_data.py --manifest_filepath AMItest_input_manifest.json
+    python scripts/data_processing/speaker_tasks/get_ami_data.py --manifest_filepath AMItest_input_manifest.json
 
 
 CallHome American English Speech (CHAES), LDC97S42

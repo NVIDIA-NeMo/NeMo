@@ -227,6 +227,8 @@ class MegatronBertModel(MegatronBaseModel):
 
     def _build_train_valid_test_datasets(self):
         logging.info('Building Bert datasets.')
+        if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
+            raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
         global_batch_size = self.trainer.world_size * self.cfg.micro_batch_size / self.cfg.tensor_model_parallel_size
         # Compute trianing micro-batch steps: total_global_batch_steps x grad_acumms_per_global_batch
         max_train_steps = self.trainer.max_steps * self.trainer.accumulate_grad_batches
@@ -238,6 +240,12 @@ class MegatronBertModel(MegatronBaseModel):
             eval_iters * global_batch_size,
             test_iters * global_batch_size,
         ]
+
+        if self.trainer.limit_val_batches <= 1.0 and isinstance(self.trainer.limit_val_batches, float):
+            train_valid_test_num_samples[
+                1
+            ] = 1  # This is to make sure we only have one epoch on every validation iteration
+
         self._train_ds, self._validation_ds, self._test_ds = build_train_valid_test_datasets(
             cfg=self.cfg,
             trainer=self.trainer,

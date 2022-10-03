@@ -70,6 +70,15 @@ class CausalConv2D(nn.Conv2d):
         return x
 
 
+@torch.jit.script
+def keep_in_cache_next(cache: torch.Tensor, cache_next: torch.Tensor, cache_keep_size: torch.Tensor, cache_id: int):
+    # Current ONNX does not support a Tensor with a dimension of zero
+    # Needed to use Torch script to skip this part when this case happens
+    if cache_keep_size < cache_next.size(-1):
+        cache_next[cache_id, :, :, :-cache_keep_size] = cache[cache_id, :, :, cache_keep_size:]
+    return cache_next
+
+
 class CausalConv1D(nn.Conv1d):
     """
     A causal version of nn.Conv1d where each step would have limited access to locations on its right or left
@@ -139,12 +148,13 @@ class CausalConv1D(nn.Conv1d):
             x = torch.cat((needed_cache, x), dim=-1)
 
         if cache_next is not None:
-            x_keep_size = input_x.size(-1) - self.cache_drop_size
-            cache_keep_size = torch.tensor(x_keep_size, dtype=torch.int64)
-            cache_keep_size = cache_keep_size.clip(min=1, max=cache_next.size(-1))
+            input_x_kept = input_x[:, :, : input_x.size(-1) - self.cache_drop_size]
 
-            cache_next[self._cache_id, :, :, :-cache_keep_size] = cache[self._cache_id, :, :, cache_keep_size:]
-            input_x_kept = input_x[:, :, :cache_keep_size]
+            cache_keep_size = torch.tensor(input_x.size(-1) - self.cache_drop_size, dtype=torch.int64)
+            cache_keep_size = cache_keep_size.clip(min=1, max=cache_next.size(-1))
+            keep_in_cache_next(
+                cache=cache, cache_next=cache_next, cache_keep_size=cache_keep_size, cache_id=self._cache_id
+            )
             cache_next[self._cache_id, :, :, -cache_keep_size:] = input_x_kept[:, :, -cache_keep_size:]
         return x
 

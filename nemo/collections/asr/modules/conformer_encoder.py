@@ -426,10 +426,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
                 att_mask=att_mask,
                 pos_emb=pos_emb,
                 pad_mask=pad_mask,
-                cache_last_time=cache_last_time,
                 cache_last_channel=cache_last_channel,
-                cache_last_time_next=cache_last_time_next,
+                cache_last_time=cache_last_time,
                 cache_last_channel_next=cache_last_channel_next,
+                cache_last_time_next=cache_last_time_next,
             )
 
         if self.out_proj is not None:

@@ -112,10 +112,10 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         att_mask=None,
         pos_emb=None,
         pad_mask=None,
-        cache_last_time=None,
         cache_last_channel=None,
-        cache_last_time_next=None,
+        cache_last_time=None,
         cache_last_channel_next=None,
+        cache_last_time_next=None,
     ):
         """
         Args:
@@ -123,10 +123,10 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             att_mask (torch.Tensor): attention masks(B, T, T)
             pos_emb (torch.Tensor): (L, 1, d_model)
             pad_mask (torch.tensor): padding mask
-            cache_last_time (torch.tensor) : cache for convolutional layers (N, B, d_model, T_cache)
-            cache_last_time_next (torch.tensor) : next cache for convolutional layers (N, B, d_model, T_cache)
             cache_last_channel (torch.tensor) : cache for MHA layers (N, B, T_cache, d_model)
+            cache_last_time (torch.tensor) : cache for convolutional layers (N, B, d_model, T_cache)
             cache_last_channel_next (torch.tensor) : next cache for MHA layers (N, B, T_cache, d_model)
+            cache_last_time_next (torch.tensor) : next cache for convolutional layers (N, B, d_model, T_cache)
         Returns:
             x (torch.Tensor): (B, T, d_model)
         """

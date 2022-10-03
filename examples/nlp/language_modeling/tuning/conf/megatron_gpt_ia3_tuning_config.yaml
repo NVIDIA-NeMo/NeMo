@@ -1,4 +1,4 @@
-name: adapter_tuning_${model.new_tasks[0]}_max_epochs${trainer.max_epochs}_adapter_dim${model.adapter_tuning.adapter_dim}
+name: ia3_tuning_${model.new_tasks[0]}_max_epochs${trainer.max_epochs}
 
 trainer:
   devices: 1
@@ -34,7 +34,7 @@ exp_manager:
     save_top_k: 1
     mode: min
     save_nemo_on_train_end: True # Should be false, correct prompt learning model file is saved at model.nemo_path set below, 
-    filename: 'megatron_gpt_adapter_tuning--{val_loss:.3f}-{step}'
+    filename: 'megatron_gpt_ia3_tuning--{val_loss:.3f}-{step}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
 
@@ -66,7 +66,7 @@ model:
   - taskname: "intent_and_slot"
     prompt_template: "intent options: {intent_options} slot options: {slot_options} {utterance} \nintent: {intent} \nslot: {slot}"
     total_virtual_tokens: 0 
-    answer_only_loss: False 
+    answer_only_loss: True 
     virtual_token_splits: []
     truncate_field: null
 
@@ -101,15 +101,6 @@ model:
     truncate_field: null
     answer_only_loss: True
     answer_field: "target"
-
-  adapter_tuning:
-    type: 'parallel_adapter' # this should be either 'parallel_adapter' or 'linear_adapter'
-    adapter_dim: 50
-    adapter_dropout: 0.1
-    norm_position: 'pre' # This can be set to 'pre' or 'post', 'pre' is normally what is used.
-    column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
-    row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
-    norm_type: 'mixedfusedlayernorm' # IGNORED if layer_adapter is used,  options are ['layernorm', 'mixedfusedlayernorm']
 
   data:
     train_ds: ??? # expects a list of paths to training data files

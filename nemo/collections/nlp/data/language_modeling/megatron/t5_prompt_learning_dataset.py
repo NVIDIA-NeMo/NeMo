@@ -94,7 +94,7 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
 
             # Try to truncate input text to fit into the max sequence length
             if len(input_ids) > self.max_seq_length:
-                input_ids = self._truncate_input(truncation_field, input_ids, taskname, doc)
+                input_ids = self._truncate_input(truncation_field, input_ids, taskname, doc, total_virtual_tokens)
 
             # get answer ids
             if answer_field in doc.keys():  # training and validation
@@ -115,6 +115,12 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
 
                 elif self.virtual_prompt_source == VirtualPromptSource.PROMPT_TABLE:
                     taskname_id = self.task_templates[taskname]["task_id_num"]
+                elif (
+                    self.virtual_prompt_source == VirtualPromptSource.NO_PROMPT
+                ):  # TODO (@adithyare) this class and GPTPromptLearningDataset should be merged.
+                    taskname_id = -1
+                else:
+                    raise ValueError("Invalid virtual prompt source specified")
 
                 dec_input = None
                 dec_labels = None

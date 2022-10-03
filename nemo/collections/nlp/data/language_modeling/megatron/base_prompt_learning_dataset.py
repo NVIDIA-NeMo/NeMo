@@ -24,6 +24,7 @@ __all__ = ['BasePromptLearningDataset']
 class BasePromptLearningDataset(Dataset):
     """
     The base dataset class for prompt-tuning or p-tuning.
+    TODO: (@adithyare) should be merged into GPTPromptLearningDataset
     """
 
     def __init__(
@@ -83,7 +84,7 @@ class BasePromptLearningDataset(Dataset):
 
         return input_example
 
-    def _truncate_input(self, truncation_field, input_ids, taskname, doc):
+    def _truncate_input(self, truncation_field, input_ids, taskname, doc, total_virtual_tokens=0):
         """ Try to truncate input text to fit into the max sequence length """
         logging.info(
             f"Input greater than max sequence length. Attempting to truncate: '{truncation_field}' in task: '{taskname}'"
@@ -102,6 +103,14 @@ class BasePromptLearningDataset(Dataset):
             # Replace original text ids with truncated text ids
             field_start, field_end = find_subsequence_location(input_ids, field_text_ids)
             input_ids = input_ids[:field_start] + truncated_text_ids + input_ids[field_end + 1 :]
+        else:
+            if not self.for_train:
+                # Hack alert! Slash and burn
+                #  @TODO (@adithyare) need a more graceful truncation here, we should not skip examples in test
+                input_ids = (
+                    input_ids[:total_virtual_tokens]
+                    + input_ids[total_virtual_tokens:][-self.max_seq_length + total_virtual_tokens :]
+                )
 
         return input_ids
 
@@ -132,7 +141,6 @@ class BasePromptLearningDataset(Dataset):
         answer_only_loss=None,
     ):
         # Sanity check amount of virtual token
-        assert total_virtual_tokens > 0, "There should be at least one virtual prompt token"
         assert (
             total_virtual_tokens < self.max_seq_length
         ), "virtual prompt tokens should not exceed max sequence length"
@@ -172,7 +180,7 @@ class BasePromptLearningDataset(Dataset):
             taskname_ids = torch.tensor(taskname_ids)
 
         # Task ids are just used for a look up embeddings for prompt-table
-        elif self.virtual_prompt_source == VirtualPromptSource.PROMPT_TABLE:
+        elif self.virtual_prompt_source in [VirtualPromptSource.PROMPT_TABLE, VirtualPromptSource.NO_PROMPT]:
             taskname_ids = torch.tensor(taskname_ids)
 
         return taskname_ids

@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
 import torch.nn as nn
 
 from nemo.collections.common.parts.adapter_modules import AbstractAdapterModule
@@ -35,6 +36,27 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
+
+
+class InfusedAdapter(AbstractAdapterModule):
+    def __init__(
+        self, in_features: int, adapter_strategy: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig = None,
+    ) -> None:
+        super().__init__()
+        self.scalers = nn.Parameter(torch.ones(in_features))
+        # Setup adapter strategy
+        self.setup_adapter_strategy(adapter_strategy)
+
+    def forward(self, x):
+        x = x * self.scalers[None, None, :]
+        return x
+
+
+@dataclass
+class InfusedAdapterConfig:
+    in_features: int
+    adapter_strategy: Optional[dict] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+    _target_: str = "{0}.{1}".format(InfusedAdapter.__module__, InfusedAdapter.__name__)
 
 
 class ParallelLinearAdapter(AbstractAdapterModule):

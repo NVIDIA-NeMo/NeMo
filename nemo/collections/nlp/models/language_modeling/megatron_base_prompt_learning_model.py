@@ -82,13 +82,18 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         # Load templates for assigning virtual prompt token positions
         self.load_task_templates(self.cfg.task_templates)
 
-        # Prompt table stores all task embeddings, p-tuning virtual prompts get added to the table after training
-        self.prompt_table = PromptTable(
-            existing_tasks=self.existing_tasks,
-            task_templates=self.task_templates,
-            task_id_num_to_name=self.task_id_num_to_name,
-            hidden_size=self.hidden_size,
-        )
+        if self.virtual_prompt_style in [
+            VirtualPromptStyle.P_TUNING,
+            VirtualPromptStyle.PROMPT_TUNING,
+            VirtualPromptStyle.INFERENCE,
+        ]:
+            # Prompt table stores all task embeddings, p-tuning virtual prompts get added to the table after training
+            self.prompt_table = PromptTable(
+                existing_tasks=self.existing_tasks,
+                task_templates=self.task_templates,
+                task_id_num_to_name=self.task_id_num_to_name,
+                hidden_size=self.hidden_size,
+            )
         self._prompt_table_key = VirtualPromptSource.PROMPT_TABLE.value
         self._prompt_encoder_key = VirtualPromptSource.PROMPT_ENCODER.value
 
@@ -99,6 +104,8 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         # P-Tuning uses an LSTM Encoder to produce virtual token embeddings
         elif self.virtual_prompt_style == VirtualPromptStyle.P_TUNING:
             self.virtual_prompt_source = VirtualPromptSource.PROMPT_ENCODER
+        elif self.virtual_prompt_style == VirtualPromptStyle.NO_PROMPT:
+            self.virtual_prompt_source = VirtualPromptSource.NO_PROMPT
         else:
             raise ValueError(
                 f"\nvirtual prompt style '{cfg.virtual_prompt_style}' not recognized, please use one of 'prompt-tuning' or 'p-tuning'"
@@ -114,7 +121,7 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         else:
             self.tokenizer.add_special_tokens({'additional_special_tokens': self.pseudo_tokens})
         self.pseudo_token_ids = self.tokenizer.tokens_to_ids(self.pseudo_tokens)
-        self.pseudo_token_ids_start = self.pseudo_token_ids[0]
+        self.pseudo_token_ids_start = self.pseudo_token_ids[0] if self.pseudo_token_ids else None
         self.pad_token_id = self.tokenizer.pad_id if self.tokenizer.pad_id is not None else self.tokenizer.unk_id
         self.decoder_seq_length = cfg.get('decoder_seq_length', 40)
 

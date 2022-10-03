@@ -27,79 +27,20 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_
     MegatronGPTPromptLearningModel,
 )
 from nemo.collections.nlp.modules.common import VirtualPromptStyle
-from nemo.collections.nlp.modules.common.megatron.parallel_adapters import ParallelLinearAdapterConfig
+from nemo.collections.nlp.modules.common.megatron.parallel_adapters import (
+    InfusedAdapterConfig,
+    ParallelLinearAdapterConfig,
+)
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging
 
 
-class MegatronGPTAdapterLearningModel(MegatronGPTPromptLearningModel):
-    """
-    MegatronGPTAdapterLearningModel is a model that combines a base model (GPTModel) with a adapters.
-    This class only supports the canonical Adapter training described in Houlsby et al. (https://arxiv.org/pdf/1902.00751.pdf)
-
-    Two adapter's are inserted into each Transformer layer in the base GPT Model.
-
-    It is assumed that these set of adapters will then be trained for a specific task.
-    Once trained, the adapter weights will be saved and can be re-loaded 
-    and infused into the same GPT Model for inference. 
-    """
-
+class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
-        assert cfg.adapter_tuning.get('adapter_dim', 0) > 0, "adapter_dim has not been set."
-        assert (
-            cfg.adapter_tuning.adapter_dim % cfg.tensor_model_parallel_size == 0
-        ), "The adapter dim should be divisible by tensor_model_parallel_size."
-        assert cfg.adapter_tuning.type in [
-            'linear_adapter',
-            'parallel_adapter',
-        ], "Adapter type should be 'linear_adapter' or 'parallel_adapter'"
-
-        self.adapter_name_keys = ['adapter_1', 'adapter_2']
-        frozen_model_cfg = MegatronGPTModel.restore_from(
-            cfg.get('language_model_path'), trainer=trainer, return_config=True
-        )
-        for _, layer in self.frozen_model.named_modules():
-            if hasattr(layer, 'activations_checkpoint_method'):
-                layer.activations_checkpoint_method = (
-                    None  # (@adithyare) adapter learning does not support activations checkpointing atm.
-                )
-
-        logging.info(f'Before adding adapters:\n{self.frozen_model.summarize()}')
-
-        if cfg.adapter_tuning.type == "parallel_adapter":
-            adapter_cfg = ParallelLinearAdapterConfig(
-                in_features=frozen_model_cfg.hidden_size,
-                dim=cfg.adapter_tuning.adapter_dim,
-                norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
-                norm_type=cfg.adapter_tuning.get('norm_type', 'mixedfusedlayernorm'),
-                column_init_method=cfg.adapter_tuning.get('column_init_method', 'xavier'),
-                row_init_method=cfg.adapter_tuning.get('row_init_method', 'zero'),
-                dropout=cfg.adapter_tuning.adapter_dropout,
-            )
-        else:
-            adapter_cfg = LinearAdapterConfig(
-                in_features=frozen_model_cfg.hidden_size,
-                dim=cfg.adapter_tuning.adapter_dim,
-                norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
-                dropout=cfg.adapter_tuning.adapter_dropout,
-            )
-
-        self.frozen_model.freeze()
-        for _, module in self.frozen_model.named_modules():
-            if isinstance(module, adapter_mixins.AdapterModuleMixin):
-                for adapter_key in self.adapter_name_keys:
-                    module.add_adapter(
-                        name=adapter_key, cfg=adapter_cfg,
-                    )
-
-        logging.info(f'After adding adapters:\n{self.frozen_model.summarize()}')
-
-    @classmethod
-    def list_available_models(cls):
-        pass
+        self.adapter_name_keys = []
 
     def forward(
         self,
@@ -273,3 +214,118 @@ class MegatronGPTAdapterLearningModel(MegatronGPTPromptLearningModel):
         # Need to make sure the frozen model param learning rate stays 0.0
         # so forceing lr to be 0.0 for gpt layers before param update
         return loss_mean
+
+
+class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
+    """
+    MegatronGPTAdapterLearningModel is a model that combines a base model (GPTModel) with a adapters.
+    This class only supports the canonical Adapter training described in Houlsby et al. (https://arxiv.org/pdf/1902.00751.pdf)
+
+    Two adapter's are inserted into each Transformer layer in the base GPT Model.
+
+    It is assumed that these set of adapters will then be trained for a specific task.
+    Once trained, the adapter weights will be saved and can be re-loaded 
+    and infused into the same GPT Model for inference. 
+    """
+
+    def __init__(self, cfg: DictConfig, trainer: Trainer):
+        super().__init__(cfg, trainer)
+        assert cfg.adapter_tuning.get('adapter_dim', 0) > 0, "adapter_dim has not been set."
+        assert (
+            cfg.adapter_tuning.adapter_dim % cfg.tensor_model_parallel_size == 0
+        ), "The adapter dim should be divisible by tensor_model_parallel_size."
+        assert cfg.adapter_tuning.type in [
+            'linear_adapter',
+            'parallel_adapter',
+        ], "Adapter type should be 'linear_adapter' or 'parallel_adapter'"
+
+        self.adapter_name_keys = ['adapter_1', 'adapter_2']
+        frozen_model_cfg = MegatronGPTModel.restore_from(
+            cfg.get('language_model_path'), trainer=trainer, return_config=True
+        )
+        for _, layer in self.frozen_model.named_modules():
+            if hasattr(layer, 'activations_checkpoint_method'):
+                layer.activations_checkpoint_method = (
+                    None  # (@adithyare) adapter learning does not support activations checkpointing atm.
+                )
+
+        logging.info(f'Before adding adapters:\n{self.frozen_model.summarize()}')
+
+        if cfg.adapter_tuning.type == "parallel_adapter":
+            adapter_cfg = ParallelLinearAdapterConfig(
+                in_features=frozen_model_cfg.hidden_size,
+                dim=cfg.adapter_tuning.adapter_dim,
+                norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
+                norm_type=cfg.adapter_tuning.get('norm_type', 'mixedfusedlayernorm'),
+                column_init_method=cfg.adapter_tuning.get('column_init_method', 'xavier'),
+                row_init_method=cfg.adapter_tuning.get('row_init_method', 'zero'),
+                dropout=cfg.adapter_tuning.adapter_dropout,
+            )
+        else:
+            adapter_cfg = LinearAdapterConfig(
+                in_features=frozen_model_cfg.hidden_size,
+                dim=cfg.adapter_tuning.adapter_dim,
+                norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
+                dropout=cfg.adapter_tuning.adapter_dropout,
+            )
+
+        self.frozen_model.freeze()
+        for _, module in self.frozen_model.named_modules():
+            if isinstance(module, adapter_mixins.AdapterModuleMixin):
+                for adapter_key in self.adapter_name_keys:
+                    module.add_adapter(
+                        name=adapter_key, cfg=adapter_cfg,
+                    )
+
+        logging.info(f'After adding adapters:\n{self.frozen_model.summarize()}')
+
+    @classmethod
+    def list_available_models(cls):
+        pass
+
+
+class MegatronGPTInfusedAdapterModel(MegatronGPTBaseAdapterModel):
+    """
+    MegatronGPTInfusedAdapterModel is a model that combines a base model (GPTModel) with a "Infused Adapter that can Inhibiting and Amplify Inner Activations", known as IA3.
+    This class supports the addition of IA3 into a transformer based LM as described in Liu et al. (https://arxiv.org/pdf/2205.05638.pdf)
+
+    Three adapter's are inserted into each Transformer layer in the base GPT Model. Each adapter is basically a vector that simply scales the key, value or ffn hidden representations.
+
+    It is assumed that these set of adapters will then be trained for a specific task.
+    Once trained, the adapter weights will be saved and can be re-loaded 
+    and infused into the same GPT Model for inference. 
+    """
+
+    def __init__(self, cfg: DictConfig, trainer: Trainer):
+        super().__init__(cfg, trainer)
+        self.adapter_name_keys = ['mlp_infused_adapter', 'key_infused_adapter', 'value_infused_adapter']
+        frozen_model_cfg = MegatronGPTModel.restore_from(
+            cfg.get('language_model_path'), trainer=trainer, return_config=True
+        )
+        for _, layer in self.frozen_model.named_modules():
+            if hasattr(layer, 'activations_checkpoint_method'):
+                layer.activations_checkpoint_method = (
+                    None  # (@adithyare) adapter learning does not support activations checkpointing atm.
+                )
+
+        logging.info(f'Before adding adapters:\n{self.frozen_model.summarize()}')
+
+        self.frozen_model.freeze()
+        for _, module in self.frozen_model.named_modules():
+            if isinstance(module, adapter_mixins.AdapterModuleMixin):
+                for adapter_key in self.adapter_name_keys:
+                    if adapter_key == 'mlp_infused_adapter':
+                        cfg = InfusedAdapterConfig(
+                            in_features=frozen_model_cfg.ffn_hidden_size // frozen_model_cfg.tensor_model_parallel_size
+                        )
+                    else:
+                        cfg = InfusedAdapterConfig(
+                            in_features=frozen_model_cfg.hidden_size // frozen_model_cfg.tensor_model_parallel_size
+                        )
+                    module.add_adapter(name=adapter_key, cfg=cfg)
+
+        logging.info(f'After adding adapters:\n{self.frozen_model.summarize()}')
+
+    @classmethod
+    def list_available_models(cls):
+        pass

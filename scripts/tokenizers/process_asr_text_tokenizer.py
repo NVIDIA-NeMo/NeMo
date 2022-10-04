@@ -128,6 +128,12 @@ parser.add_argument(
     help='Limit the maximum number of tokens in each SentencePiece subword. '
     'Must be a positive integer > 0. By default places no limit on subword length.',
 )
+parser.add_argument(
+    '--spe_no_split_by_unicode_script',
+    dest='spe_split_by_unicode_script',
+    action='store_false',
+    help="Don't use Unicode script to split sentence pieces.",
+)
 parser.add_argument('--no_lower_case', dest='lower_case', action='store_false')
 parser.add_argument("--log", action='store_true')
 parser.set_defaults(log=False, lower_case=True, spe_train_extremely_large_corpus=False)
@@ -181,6 +187,7 @@ def __process_data(
     spe_train_extremely_large_corpus: bool,
     spe_sample_size: int,
     spe_max_sentencepiece_length: int,
+    spe_split_by_unicode_script: bool,
     spe_bos: bool,
     spe_eos: bool,
     spe_pad: bool,
@@ -246,6 +253,7 @@ def __process_data(
             character_coverage=spe_character_coverage,
             train_extremely_large_corpus=spe_train_extremely_large_corpus,
             max_sentencepiece_length=spe_max_sentencepiece_length,
+            split_by_unicode_script=spe_split_by_unicode_script,
             bos=spe_bos,
             eos=spe_eos,
             pad=spe_pad,
@@ -276,6 +284,7 @@ def main():
     spe_sample_size = args.spe_sample_size
     spe_train_extremely_large_corpus = args.spe_train_extremely_large_corpus
     spe_max_sentencepiece_length = args.spe_max_sentencepiece_length
+    spe_split_by_unicode_script = args.spe_split_by_unicode_script
     spe_bos, spe_eos, spe_pad = args.spe_bos, args.spe_eos, args.spe_pad
     lower_case = args.lower_case
 
@@ -300,6 +309,7 @@ def main():
         spe_sample_size=spe_sample_size,
         spe_train_extremely_large_corpus=spe_train_extremely_large_corpus,
         spe_max_sentencepiece_length=spe_max_sentencepiece_length,
+        spe_split_by_unicode_script=spe_split_by_unicode_script,
         spe_bos=spe_bos,
         spe_eos=spe_eos,
         spe_pad=spe_pad,

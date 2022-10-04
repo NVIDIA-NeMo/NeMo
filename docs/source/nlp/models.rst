@@ -8,7 +8,7 @@ NeMo's NLP collection supports provides the following task-specific models:
 .. toctree::
    :maxdepth: 1
 
-   punctuation_and_capitalization
+   punctuation_and_capitalization_models
    token_classification
    joint_intent_slot
    text_classification

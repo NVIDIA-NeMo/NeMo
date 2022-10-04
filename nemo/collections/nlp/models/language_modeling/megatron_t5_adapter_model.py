@@ -369,9 +369,16 @@ class MegatronT5InfusedAdapterModel(MegatronT5BaseAdapterModel):
                             in_features=layer_cfg.ffn_hidden_size // layer_cfg.tensor_model_parallel_size
                         )
                     else:
-                        cfg = InfusedAdapterConfig(
-                            in_features=layer_cfg.hidden_size // layer_cfg.tensor_model_parallel_size
-                        )
+                        if layer_cfg.get('kv_channels', None):
+                            cfg = InfusedAdapterConfig(
+                                in_features=layer_cfg.kv_channels
+                                * layer_cfg.num_attention_heads
+                                // layer_cfg.tensor_model_parallel_size
+                            )
+                        else:
+                            cfg = InfusedAdapterConfig(
+                                in_features=layer_cfg.hidden_size // layer_cfg.tensor_model_parallel_size
+                            )
                     module.add_adapter(name=adapter_key, cfg=cfg)
 
     def _component_state_dict(self, component_name, component, adapter_name_keys):

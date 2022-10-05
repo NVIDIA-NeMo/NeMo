@@ -173,8 +173,8 @@ class SqueezeformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             # Call the adapters
             x = self.forward_enabled_adapters(x)
 
-        if self.is_access_enabled():
-            self.register_accessible_tensor(tensor=x)
+        if self.is_access_enabled() and self.access_cfg.get('save_encoder_tensors', False):
+            self.register_accessible_tensor(name='encoder', tensor=x)
 
         return x
 

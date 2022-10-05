@@ -88,6 +88,14 @@ def main(cfg) -> None:
             logging.info(
                 'Found validation_ds.tgt_file_name in the config file. Overriding the finetuned model config file with the values from the new config file.'
             )
+            t5_cfg.data.validation_ds.tgt_file_name = cfg.model.data.validation_ds.tgt_file_name
+
+        if "write_predictions_to_file" in cfg.model.data.validation_ds:
+            t5_cfg.data.validation_ds.write_predictions_to_file = (
+                cfg.model.data.validation_ds.write_predictions_to_file
+            )
+        if "output_file_path_prefix" in cfg.model.data.validation_ds:
+            t5_cfg.data.validation_ds.output_file_path_prefix = cfg.model.data.validation_ds.output_file_path_prefix
             t5_cfg.data.validation_ds.src_file_name = cfg.model.data.validation_ds.src_file_name
 
         t5_cfg.data.validation_ds.micro_batch_size = cfg.model.data.validation_ds.micro_batch_size

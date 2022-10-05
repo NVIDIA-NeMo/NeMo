@@ -23,7 +23,7 @@ pipeline_model_parallel_size: 1
 pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
 gpt_model_file: ??? # GPT nemo file path # used when starting from a .nemo file
 adapter_model_file: ??? # .nemo file saved during training (using megatron_gpt_adapter_tuning.py)
-output_file: null # save predictions to this file
+pred_file_path: null # save predictions to this file
 checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
 checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
 hparams_file: null # model configuration file, only used for PTL checkpoint loading

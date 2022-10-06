@@ -154,7 +154,7 @@ def launch_spec_augment_kernel(
     if time_masks > 0 or freq_masks > 0:
         # Parallelize over freq and time axis, parallel threads over batch
         # Sequential over masks (adaptive in time).
-        blocks_per_grid = [sh[1], sh[2]]
+        blocks_per_grid = tuple([sh[1], sh[2]])
         # threads_per_block = min(MAX_THREAD_BUFFER, max(freq_masks, time_masks))
         threads_per_block = min(MAX_THREAD_BUFFER, x.shape[0])
 

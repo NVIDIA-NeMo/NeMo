@@ -16,10 +16,10 @@ from typing import Optional
 
 import torch
 
-from nemo.core.classes import Loss, typecheck
+from nemo.core.classes import Exportable, Loss, NeuralModule, typecheck
 from nemo.core.neural_types import LabelsType, LogprobsType, LossType, MaskType, NeuralType
 
-__all__ = ["SmoothedCrossEntropyLoss"]
+__all__ = ["SmoothedCrossEntropyLoss", "SmoothedNLLLoss"]
 
 
 class SmoothedCrossEntropyLoss(Loss):
@@ -109,3 +109,75 @@ class SmoothedCrossEntropyLoss(Loss):
             neg_log_likelihood = -(neg_log_likelihood * output_mask)
 
         return neg_log_likelihood
+
+
+class SmoothedNLLLoss(NeuralModule, Exportable):
+    """
+    Calculate negative log likelihodd for sequence input, also applies label smoothing (if set).
+    """
+
+    @property
+    def input_types(self):
+        """Returns definitions of module input ports.
+        """
+        return {
+            "log_probs": NeuralType(("B", "T", "D"), LogprobsType()),
+            "labels": NeuralType(("B", "T"), LabelsType()),
+            "output_mask": NeuralType(("B", "T"), MaskType(), optional=True),
+            "lengths": NeuralType(("B"), LabelsType(), optional=True),
+        }
+
+    @property
+    def output_types(self):
+        """Returns definitions of module output ports.
+        """
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    def __init__(self, reduction='mean', label_smoothing=0.0, eps=1e-8, **kwargs):
+        super().__init__()
+        self.reduction = reduction
+        self.label_smoothing = label_smoothing
+        self.nll_loss = torch.nn.NLLLoss(reduction='none', **kwargs)
+        self.eps = eps  # small constant to avoid divide by zero
+
+    @typecheck()
+    def forward(self, log_probs, labels, output_mask=None, lengths=None):
+        """
+        Params:
+        -   log_probs: BxTxC
+        -   labels: B
+        -   output_mask: BxT
+        -   lengths: B
+        """
+
+        if output_mask is None and lengths is None:
+            output_mask = torch.ones_like(log_probs).float()
+        elif output_mask is None and lengths is not None:
+            output_mask = torch.arange(log_probs.size(1), device=log_probs.device)[None, :] < lengths[:, None]
+            output_mask = output_mask.float()
+
+        log_probs = log_probs.transpose(1, 2)  # BxTxC -> BxCxT
+
+        loss = output_mask * self.nll_loss(log_probs, labels)
+        batch_size = loss.size(0)
+        if self.reduction == "mean":
+            loss = loss.sum() / (torch.sum(output_mask) + self.eps)
+        elif self.reduction == "batchmean":
+            loss = loss.sum() / batch_size
+        elif self.reduction == "batch":
+            loss = loss.reshape(batch_size, -1).sum(1) / (output_mask.reshape(batch_size, -1).sum(1) + self.eps)
+
+        if self.label_smoothing == 0.0:
+            return loss
+        else:
+            # Regularizing Neural Networks by Penalizing Confident Output Distributions.
+            # https://arxiv.org/abs/1701.06548
+            loss_reg = torch.mean(log_probs, dim=1) * output_mask
+            if self.reduction == "mean":
+                loss_reg = torch.sum(loss_reg) / torch.sum(output_mask)
+            elif self.reduction == "batchmean":
+                loss_reg = torch.sum(loss_reg) / labels.shape[0]
+            elif self.reduction == "batch":
+                loss_reg = loss_reg.sum(1) / output_mask.sum(1)
+
+            return -self.label_smoothing * loss_reg + (1 - self.label_smoothing) * loss

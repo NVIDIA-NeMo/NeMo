@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.common.losses.aggregator import AggregatorLoss
-from nemo.collections.common.losses.bce_logits_loss import BCEWithLogitsLoss
-from nemo.collections.common.losses.cross_entropy import CrossEntropyLoss, NLLLoss
-from nemo.collections.common.losses.mse_loss import MSELoss
-from nemo.collections.common.losses.multi_similarity_loss import MultiSimilarityLoss
-from nemo.collections.common.losses.smoothed_cross_entropy import SmoothedCrossEntropyLoss, SmoothedNLLLoss
-from nemo.collections.common.losses.spanning_loss import SpanningLoss
+from nemo.collections.asr.modules.transformer.bridge_encoders import *
+from nemo.collections.asr.modules.transformer.perceiver_encoders import *
+from nemo.collections.asr.modules.transformer.transformer_bottleneck import *
+from nemo.collections.asr.modules.transformer.transformer_decoders import *
+from nemo.collections.asr.modules.transformer.transformer_encoders import *
+from nemo.collections.asr.modules.transformer.transformer_generators import *
+from nemo.collections.asr.modules.transformer.transformer_modules import *

@@ -979,6 +979,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         forward_step_func = self._get_forward_output_only_func(
             arg_names=arg_names, output_name="hiddens", output_enc_hidden_only=True
         )
+
+        # Counter intuitively, we need to set decoder_sequence_length=encoder_seq_length because while running `.enocde()`, the last hidden states from encoder are passed through as identity through the pipeline. Setting it to anything else will cause hanging due to tensor shape mismatches.
         if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
             output_tensor = forward_backward_pipelining_without_interleaving(
                 forward_step_func=forward_step_func,
@@ -986,7 +988,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 model=self.enc_dec_model,
                 forward_only=True,
                 tensor_shape=tensor_shape,
-                decoder_sequence_length=1,
+                decoder_sequence_length=encoder_seq_length,
                 dtype=self.autocast_dtype,
             )
         else:
@@ -996,12 +998,11 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 model=self.enc_dec_model,
                 forward_only=True,
                 tensor_shape=tensor_shape,
-                decoder_sequence_length=1,
+                decoder_sequence_length=encoder_seq_length,
                 dtype=self.autocast_dtype,
             )
 
-        # get output tensor of encoder [seq_len, batch, hidden]
-        if parallel_state.is_pipeline_last_stage():
+        if output_tensor:
             output_tensor = output_tensor[0]['hiddens']
         else:
             output_tensor = torch.zeros(tensor_shape, dtype=self.autocast_dtype).cuda()
@@ -1087,6 +1088,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # get encoder hiddens (output)
         if enc_output is None:
             # Encode returns a tensr of shape [batch, seq_len, hidden]
+            # All ranks will call `.encode()`, but only the last rank will have a non-empty output tensor.
             enc_output = self.encode(
                 tokens_enc=tokens_enc, enc_mask=enc_mask, encoder_input=encoder_input, reconfigure_microbatch=False
             )
@@ -1134,6 +1136,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                         dim=-1, index=torch.tensor(ignore_ids, device=device), value=-float('Inf')
                     )
 
+                # TODO: do log_softmax in fp32?
                 log_probs, token_ids = torch.max(torch.nn.functional.log_softmax(output_tensor, dim=-1), dim=-1)
                 predicted_tokens_dec = torch.cat(
                     [predicted_tokens_dec.to(token_ids.device), token_ids[:, -1].unsqueeze(1)], dim=1

@@ -52,6 +52,9 @@ def main(cfg) -> None:
             init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
             growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
             hysteresis=cfg.model.get('hysteresis', 2),
+            enabled=False
+            if cfg.model.pipeline_model_parallel_size > 1
+            else True,  # turn off the grad scale for pipeline parallel LM model
         )
         plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
 

@@ -3561,6 +3561,36 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
             sh "rm -rf /home/TestData/nlp/prompt_learning/t5_p_tuning_test_tp2_preds.txt"
           }
         }
+        stage('T5 Prompt Learning TP=1 PP=2') {
+          steps {
+            sh "python examples/nlp/language_modeling/megatron_t5_prompt_learning.py \
+                --config-name=megatron_t5_prompt_learning \
+                name='/home/TestData/nlp/prompt_learning/t5_p_tuning_test_pp2' \
+                trainer.devices=2 \
+                trainer.max_steps=6 \
+                trainer.max_epochs=null \
+                model.pipeline_model_parallel_size=2 \
+                model.language_model_path='/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m_tp1_pp2.nemo' \
+                model.existing_tasks=[] \
+                model.new_tasks=['squad'] \
+                model.data.train_ds=['/home/TestData/nlp/prompt_learning/squad_CI_test.jsonl'] \
+                model.data.validation_ds=['/home/TestData/nlp/prompt_learning/squad_CI_test.jsonl'] \
+                model.global_batch_size=8 \
+                model.micro_batch_size=8"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/t5_p_tuning_test_pp2"
+            sh "python examples/nlp/language_modeling/megatron_t5_prompt_learning_eval.py \
+                virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/t5_p_tuning_test_pp2.nemo' \
+                language_model_path='/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m_tp1_pp2.nemo' \
+                data.test_ds=['/home/TestData/nlp/prompt_learning/squad_CI_test.jsonl'] \
+                pred_file_path='/home/TestData/nlp/prompt_learning/t5_p_tuning_test_pp2_preds.txt' \
+                tensor_model_parallel_size=2 \
+                trainer.devices=2 \
+                data.global_batch_size=8 \
+                data.micro_batch_size=8"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/t5_p_tuning_test_pp2.nemo"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/t5_p_tuning_test_pp2_preds.txt"
+          }
+        }
       }
     }
     stage('L2: Megatron UL2 Pretraining and Resume Training TP=2') {

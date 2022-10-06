@@ -91,7 +91,7 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         # Save the best nemo model
         self.save_to(save_path=self.cfg.nemo_path)
 
-    def inference_step(self, batch, batch_idx, inference=False):
+    def validation_step(self, batch, batch_idx, inference=False):
         enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids = batch
 
         mode = self.training

@@ -167,12 +167,14 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         and/or prompt table will use the learning rate set by the user. 
         """
         self.frozen_model.freeze()  # Freeze the entire model
-        param_groups = {'params': [p for p in self.frozen_model.parameters()]}
+        opt_params = []
         for _, module in self.frozen_model.named_modules():
             if isinstance(module, adapter_mixins.AdapterModuleMixin):
                 module.set_enabled_adapters(enabled=True)
                 module.unfreeze_enabled_adapters()  # selectively unfreeze the adapter modules.
-        self._optimizer_param_groups = [param_groups]
+                opt_params += [p for p in module.parameters()]
+
+        self._optimizer_param_groups = [{'params': opt_params}]
         logging.info(f'Optimizer groups set:\n{self.frozen_model.summarize()}')
 
     def get_forward_output_and_loss_func(self):

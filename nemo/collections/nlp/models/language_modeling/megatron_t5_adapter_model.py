@@ -199,6 +199,27 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             'labels': processed_labels,
         }
 
+    def setup_optimizer_param_groups(self):
+        """
+        ModelPT override. Optimizer will get self._optimizer_param_groups. 
+        Makes two optimizer param groups, one for the frozen model params
+        and one for the prompt-table/prompt-encoder params. The learning 
+        rate for the frozen model's params will always be zero effectively
+        freezing the model's params but still allowing for the needed gradients
+        to be passed around in pipeline parallel models. The prompt-encoder 
+        and/or prompt table will use the learning rate set by the user. 
+        """
+        self.frozen_model.freeze()  # Freeze the entire model
+        opt_params = []
+        for _, module in self.frozen_model.named_modules():
+            if isinstance(module, adapter_mixins.AdapterModuleMixin):
+                module.set_enabled_adapters(enabled=True)
+                module.unfreeze_enabled_adapters()  # selectively unfreeze the adapter modules.
+                opt_params += [p for p in module.parameters()]
+
+        self._optimizer_param_groups = [{'params': opt_params}]
+        logging.info(f'Optimizer groups set:\n{self.frozen_model.summarize()}')
+
     def get_forward_output_only_func(self):
         """
         Used for generate method only for now.

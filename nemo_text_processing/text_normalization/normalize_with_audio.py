@@ -17,7 +17,7 @@ import os
 import time
 from argparse import ArgumentParser
 from glob import glob
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pynini
 from joblib import Parallel, delayed
@@ -336,6 +336,13 @@ def parse_args():
     )
     parser.add_argument("--audio_data", default=None, help="path to an audio file or .json manifest")
     parser.add_argument(
+        "--output_filename",
+        default=None,
+        help="Path of where to save .json manifest with normalization outputs."
+        " It will only be saved if --audio_data is a .json manifest.",
+        type=str,
+    )
+    parser.add_argument(
         '--model', type=str, default='QuartzNet15x5Base-En', help='Pre-trained model name or path to model checkpoint'
     )
     parser.add_argument(
@@ -408,6 +415,7 @@ def normalize_manifest(
     punct_post_process: bool,
     batch_size: int,
     cer_threshold: int,
+    output_filename: Optional[str] = None,
 ):
     """
     Args:
@@ -441,7 +449,9 @@ def normalize_manifest(
 
         print(f"Batch -- {batch_idx} -- is complete")
 
-    manifest_out = audio_data.replace('.json', '_normalized.json')
+    if output_filename is None:
+        output_filename = audio_data.replace('.json', '_normalized.json')
+
     with open(audio_data, 'r') as f:
         lines = f.readlines()
 
@@ -450,7 +460,7 @@ def normalize_manifest(
     # to save intermediate results to a file
     batch = min(len(lines), batch_size)
 
-    tmp_dir = manifest_out.replace(".json", "_parts")
+    tmp_dir = output_filename.replace(".json", "_parts")
     os.makedirs(tmp_dir, exist_ok=True)
 
     Parallel(n_jobs=n_jobs)(
@@ -459,13 +469,13 @@ def normalize_manifest(
     )
 
     # aggregate all intermediate files
-    with open(manifest_out, "w") as f_out:
+    with open(output_filename, "w") as f_out:
         for batch_f in sorted(glob(f"{tmp_dir}/*.json")):
             with open(batch_f, "r") as f_in:
                 lines = f_in.read()
             f_out.write(lines)
 
-    print(f'Normalized version saved at {manifest_out}')
+    print(f'Normalized version saved at {output_filename}')
 
 
 if __name__ == "__main__":
@@ -533,6 +543,7 @@ if __name__ == "__main__":
             punct_post_process=not args.no_punct_post_process,
             batch_size=args.batch_size,
             cer_threshold=args.cer_threshold,
+            output_filename=args.output_filename,
         )
     else:
         raise ValueError(

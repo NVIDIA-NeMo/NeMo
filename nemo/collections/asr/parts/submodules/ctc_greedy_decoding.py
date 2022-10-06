@@ -13,11 +13,13 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import torch
+from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeasureMixin, ConfidenceMethodConfig
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 
@@ -52,7 +54,7 @@ def _states_to_device(dec_state, device='cpu'):
     return dec_state
 
 
-class GreedyCTCInfer(Typing):
+class GreedyCTCInfer(Typing, ConfidenceMeasureMixin):
     """A greedy CTC decoder.
 
     Provides a common abstraction for sample level and batch level greedy decoding.
@@ -65,6 +67,40 @@ class GreedyCTCInfer(Typing):
         compute_timestamps: A bool flag, which determines whether to compute the character/subword, or
                 word based timestamp mapping the output log-probabilities to discrite intervals of timestamps.
                 The timestamps will be available in the returned Hypothesis.timestep as a dictionary.
+        preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
+            generated during decoding. When set to true, the Hypothesis will contain
+            the non-null value for `frame_confidence` in it. Here, `frame_confidence` is a List of floats.
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+            confidence scores.
+
+            name: The method name (str).
+                Supported values:
+                    - 'max_prob' for using the maximum token probability as a confidence.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                Supported values:
+                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                        Note that for this entropy, the temperature should comply the following inequality:
+                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                    - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                        Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                    - 'renui' for the Rényi entropy.
+                        Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+
+            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the temperature equals one, scaling is not applied to 'max_prob',
+                and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
+            entropy_norm: A mapping of the entropy value to the interval [0,1].
+                Supported values:
+                    - 'lin' for using the linear mapping.
+                    - 'exp' for using exponential mapping with linear shift.
 
     """
 
@@ -87,13 +123,23 @@ class GreedyCTCInfer(Typing):
         return {"predictions": [NeuralType(elements_type=HypothesisType())]}
 
     def __init__(
-        self, blank_id: int, preserve_alignments: bool = False, compute_timestamps: bool = False,
+        self,
+        blank_id: int,
+        preserve_alignments: bool = False,
+        compute_timestamps: bool = False,
+        preserve_frame_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
 
         self.blank_id = blank_id
         self.preserve_alignments = preserve_alignments
-        self.compute_timestamps = compute_timestamps
+        # we need timestamps to extract non-blank per-frame confidence
+        self.compute_timestamps = compute_timestamps | preserve_frame_confidence
+        self.preserve_frame_confidence = preserve_frame_confidence
+
+        # set confidence calculation method
+        self._init_confidence_measure(confidence_method_cfg)
 
     @typecheck()
     def forward(
@@ -162,6 +208,9 @@ class GreedyCTCInfer(Typing):
         if self.compute_timestamps:
             hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].numpy().tolist()
 
+        if self.preserve_frame_confidence:
+            hypothesis.frame_confidence = self._get_confidence(prediction)
+
         return hypothesis
 
     @torch.no_grad()
@@ -186,6 +235,11 @@ class GreedyCTCInfer(Typing):
         if self.compute_timestamps:
             hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].numpy().tolist()
 
+        if self.preserve_frame_confidence:
+            raise ValueError(
+                "Requested for per-frame confidence, but predictions provided were labels, not log probabilities."
+            )
+
         return hypothesis
 
     def __call__(self, *args, **kwargs):
@@ -196,3 +250,5 @@ class GreedyCTCInfer(Typing):
 class GreedyCTCInferConfig:
     preserve_alignments: bool = False
     compute_timestamps: bool = False
+    preserve_frame_confidence: bool = False
+    confidence_method_cfg: Optional[ConfidenceMethodConfig] = None

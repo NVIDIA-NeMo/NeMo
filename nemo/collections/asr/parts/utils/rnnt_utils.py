@@ -57,6 +57,20 @@ class Hypothesis:
         Outer list represents Time dimension (T), inner list represents Target dimension (U).
         The set of valid indices **includes** the CTC / RNNT blank token in order to represent alignments.
 
+    frame_confidence: (Optional) Represents the CTC / RNNT per-frame confidence scores as token probabilities
+        along an axis of time T (for CTC) or Time x Target (TxU).
+        For CTC, represented as a single list of float indices.
+        For RNNT, represented as a dangling list of list of float indices.
+        Outer list represents Time dimension (T), inner list represents Target dimension (U).
+
+    token_confidence: (Optional) Represents the CTC / RNNT per-token confidence scores as token probabilities
+        along an axis of Target U.
+        Represented as a single list of float indices.
+
+    word_confidence: (Optional) Represents the CTC / RNNT per-word confidence scores as token probabilities
+        along an axis of Target U.
+        Represented as a single list of float indices.
+
     length: Represents the length of the sequence (the original length without padding), otherwise
         defaults to 0.
 
@@ -78,12 +92,49 @@ class Hypothesis:
     dec_state: Optional[Union[List[List[torch.Tensor]], List[torch.Tensor]]] = None
     timestep: Union[List[int], torch.Tensor] = field(default_factory=list)
     alignments: Optional[Union[List[int], List[List[int]]]] = None
+    frame_confidence: Optional[Union[List[float], List[List[float]]]] = None
+    token_confidence: Optional[List[float]] = None
+    word_confidence: Optional[List[float]] = None
     length: Union[int, torch.Tensor] = 0
     y: List[torch.tensor] = None
     lm_state: Optional[Union[Dict[str, Any], List[Any]]] = None
     lm_scores: Optional[torch.Tensor] = None
     tokens: Optional[Union[List[int], torch.Tensor]] = None
     last_token: Optional[torch.Tensor] = None
+
+    @property
+    def non_blank_frame_confidence(self) -> List[float]:
+        """Get per-frame confidence for non-blank tokens according to self.timestep
+
+        Returns:
+            List with confidence scores. The length of the list is the same as `timestep`.
+        """
+        non_blank_frame_confidence = []
+        # self.timestep can be a dict for RNNT
+        timestep = self.timestep['timestep'] if isinstance(self.timestep, dict) else self.timestep
+        if len(self.timestep) != 0 and self.frame_confidence is not None:
+            if any(isinstance(i, list) for i in self.frame_confidence):  # rnnt
+                t_prev = -1
+                offset = 0
+                for t in timestep:
+                    if t != t_prev:
+                        t_prev = t
+                        offset = 0
+                    else:
+                        offset += 1
+                    non_blank_frame_confidence.append(self.frame_confidence[t][offset])
+            else:  # ctc
+                non_blank_frame_confidence = [self.frame_confidence[t] for t in timestep]
+        return non_blank_frame_confidence
+
+    @property
+    def words(self) -> List[str]:
+        """Get words from self.text
+
+        Returns:
+            List with words (str).
+        """
+        return [] if self.text is None else self.text.split()
 
 
 @dataclass

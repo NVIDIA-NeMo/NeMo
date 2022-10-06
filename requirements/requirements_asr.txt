@@ -16,3 +16,4 @@ pyannote.core
 pyannote.metrics
 ipywidgets
 matplotlib
+texterrors

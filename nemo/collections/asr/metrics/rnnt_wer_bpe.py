@@ -70,11 +70,75 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
 
             word_seperator: Str token representing the seperator between words.
 
+            preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
+                generated during decoding (sample / batched). When set to true, the Hypothesis will contain
+                the non-null value for `frame_confidence` in it. Here, `alignments` is a List of List of ints.
+
+            confidence_cfg: A dict-like object which contains the following key-value pairs related to confidence
+                scores. In order to obtain hypotheses with confidence scores, please utilize
+                `rnnt_decoder_predictions_tensor` function with the `preserve_frame_confidence` flag set to True.
+
+                preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
+                    generated during decoding (sample / batched). When set to true, the Hypothesis will contain
+                    the non-null value for `frame_confidence` in it. Here, `alignments` is a List of List of floats.
+
+                    The length of the list corresponds to the Acoustic Length (T).
+                    Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
+                    U is the number of target tokens for the current timestep Ti.
+                preserve_token_confidence: Bool flag which preserves the history of per-token confidence scores
+                    generated during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+                    the non-null value for `token_confidence` in it. Here, `token_confidence` is a List of floats.
+
+                    The length of the list corresponds to the number of recognized tokens.
+                preserve_word_confidence: Bool flag which preserves the history of per-word confidence scores
+                    generated during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+                    the non-null value for `word_confidence` in it. Here, `word_confidence` is a List of floats.
+
+                    The length of the list corresponds to the number of recognized words.
+                exclude_blank: Bool flag indicating that blank token confidence scores are to be excluded
+                    from the `token_confidence`.
+                reduction: Which reduction type to use for collapsing per-token confidence into per-word confidence.
+                    Valid options are `mean`, `min`, `max`, `prod`.
+                method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+                    confidence scores.
+
+                    name: The method name (str).
+                        Supported values:
+                            - 'max_prob' for using the maximum token probability as a confidence.
+                            - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+                    entropy_type: Which type of entropy to use (str).
+                        Used if confidence_method_cfg.name is set to `entropy`.
+                        Supported values:
+                            - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                                the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                                Note that for this entropy, the temperature should comply the following inequality:
+                                1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                            - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                                Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                                where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                                More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                            - 'renui' for the Rényi entropy.
+                                Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                                where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                                More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+
+                    temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                        When the temperature equals one, scaling is not applied to 'max_prob',
+                        and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
+                    entropy_norm: A mapping of the entropy value to the interval [0,1].
+                        Supported values:
+                            - 'lin' for using the linear mapping.
+                            - 'exp' for using exponential mapping with linear shift.
+
             The config may further contain the following sub-dictionaries:
             "greedy":
                 max_symbols: int, describing the maximum number of target tokens to decode per
                     timestep during greedy decoding. Setting to larger values allows longer sentences
                     to be decoded, at the cost of increased execution time.
+                preserve_frame_confidence: Same as above, overrides above value.
+                confidence_method: Same as above, overrides confidence_cfg.method.
 
             "beam":
                 beam_size: int, defining the beam size for beam search. Must be >= 1.
@@ -134,6 +198,22 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
 
         super(RNNTBPEDecoding, self).__init__(
             decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id
+        )
+
+    def _aggregate_token_confidence(self, hypothesis: Hypothesis) -> List[float]:
+        """
+        Implemented by subclass in order to reduce token confidence to a word-level confidence.
+
+        **Note**: Only supports Sentencepiece based tokenizers!
+
+        Args:
+            hypothesis: Hypothesis
+
+        Returns:
+            A list of word-level confidence scores.
+        """
+        return self._aggregate_token_confidence_subwords_sentencepiece(
+            hypothesis.words, hypothesis.token_confidence, hypothesis.y_sequence
         )
 
     def decode_tokens_to_str(self, tokens: List[int]) -> str:

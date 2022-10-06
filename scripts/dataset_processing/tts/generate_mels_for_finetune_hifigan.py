@@ -17,7 +17,7 @@ This script is to generate mel spectrograms from a Fastpitch model checkpoint. P
 on GPUs by default, but you can add `--num-workers 5 --cpu` as an option to run on CPUs.
 
 $ python scripts/dataset_processing/tts/generate_mels_for_finetune_hifigan.py \
-    --fastpitch-model-ckpt ./models/fastpitch/multi_spk/FastPitch--v_loss\=1.4473-epoch\=209.ckpt \
+    --fastpitch-model-ckpt ./models/fastpitch/multi_spk/FastPitch--val_loss\=1.4473-epoch\=209.ckpt \
     --input-json-manifests /home/xueyang/HUI-Audio-Corpus-German-clean/test_manifest_text_normed_phonemes.json
     --output-json-manifest-root /home/xueyang/experiments/multi_spk_tts_de
 """

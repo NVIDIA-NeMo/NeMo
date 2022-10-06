@@ -243,6 +243,6 @@ exp_manager:
   create_tensorboard_logger: true
   create_checkpoint_callback: true
   checkpoint_callback_params:
-    monitor: v_loss
+    monitor: val_loss
   resume_if_exists: false
   resume_ignore_no_checkpoint: false

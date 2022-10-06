@@ -17,8 +17,6 @@ import logging as pylogger
 import operator
 import os
 
-import numba
-
 from nemo.utils import model_utils
 
 # Prevent Numba CUDA logs from showing at info level
@@ -161,6 +159,4 @@ def skip_numba_cuda_test_if_unsupported(min_version: str):
     if not numba_cuda_support:
         import pytest
 
-        pytest.skip(
-            f"Numba cuda test is being skipped. Minimum version required : {min_version}, found {numba.version_info}"
-        )
+        pytest.skip(f"Numba cuda test is being skipped. Minimum version required : {min_version}")

@@ -103,7 +103,7 @@ model:
     max_seq_length: 512
 
     sample_rate: 16000 # Target sample rate of audios can be used for downsampling or upsamling.
-    num_workers: 8
+    num_workers: 0
 
     # Number of jobs for tokenization and labels encoding. If 0, then multiprocessing is not used. If null,
     # number of jobs is equal to the number of CPU cores.
@@ -149,7 +149,7 @@ model:
     tar_metadata_file: null
 
     sample_rate: 16000
-    num_workers: 8
+    num_workers: 0
 
   test_ds:
     # if evaluation data is not in the model.train_ds.ds_item as the training data or multiple datasets are used for
@@ -180,7 +180,7 @@ model:
     tar_metadata_file: null
 
     sample_rate: 16000
-    num_workers: 8
+    num_workers: 0
 
   tokenizer:
     tokenizer_name: ${model.language_model.pretrained_model_name} # or sentencepiece

@@ -889,7 +889,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
             drop_last=cfg.drop_last,
-            persistent_workers=cfg.persistent_workers,
+            persistent_workers=cfg.persistent_workers if cfg.num_workers > 0 else False,
         )
 
     def _setup_infer_dataloader(

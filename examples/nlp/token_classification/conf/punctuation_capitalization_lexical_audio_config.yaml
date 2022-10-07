@@ -108,7 +108,7 @@ model:
     # Number of jobs for tokenization and labels encoding. If 0, then multiprocessing is not used. If null,
     # number of jobs is equal to the number of CPU cores.
     # WARNING: can cause deadlocks with tokenizers, which use multiprocessing (e.g. SentencePiece)
-    n_jobs: null
+    n_jobs: 0
 
     # Path to tarred dataset metadata file. Required if tarred dataset is used. Metadata file is a JSON file which
     # contains total number of batches in the dataset, a list of paths to tar files and paths to label vocabularies.
@@ -143,7 +143,7 @@ model:
     # Number of jobs for tokenization and labels encoding. If 0, then multiprocessing is not used. If null,
     # number of jobs is equal to the number of CPU cores.
     # WARNING: can cause deadlocks with tokenizers, which use multiprocessing (e.g. SentencePiece)
-    n_jobs: null
+    n_jobs: 0
 
     # For more details see `train_ds` section.
     tar_metadata_file: null
@@ -174,7 +174,7 @@ model:
     # Number of jobs for tokenization and labels encoding. If 0, then multiprocessing is not used. If null,
     # number of jobs is equal to the number of CPU cores.
     # WARNING: can cause deadlocks with tokenizers, which use multiprocessing (e.g. SentencePiece)
-    n_jobs: null
+    n_jobs: 0
 
     # For more details see `train_ds` section.
     tar_metadata_file: null

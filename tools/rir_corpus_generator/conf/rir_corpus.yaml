@@ -1,0 +1,56 @@
+output_dir: ${hydra:job.config_name}
+num_workers: 8
+random_seed: 42
+
+sample_rate: 16000
+
+room:
+  # number of generated rooms per subset
+  num:
+    train: 2000
+    dev: 200
+    test: 200
+  # room dimensions
+  dim:
+    width: [3, 7] # range (meters)
+    length: [3, 9] # range (meters)
+    height: [2.3, 3.5] # range (meters)
+  rt60: [0.15, 0.60] # range (seconds)
+
+mic_array:
+  # 3D Cartesian coordinates per mic [x, y, z],
+  # relative to the center of the array (meters)
+  positions:
+    - [-0.10,  0.095, 0.00]
+    - [ 0.00,  0.095, 0.00]
+    - [ 0.10,  0.095, 0.00]
+    - [-0.10, -0.095, 0.00]
+    - [ 0.00, -0.095, 0.00]
+    - [ 0.10, -0.095, 0.00]
+  placement:
+    # placement of the mic array center
+    x: null # constrained by room dimensions
+    y: null # constrained by room dimensions
+    height: [1.0, 1.5] # range (meters)
+    min_to_wall: 0.5 # min distance to wall (meters)
+  orientation:
+    # orientation of the mic array
+    yaw: [-180, 180] # randomize (degrees)
+    pitch: 0 # keep fixed (degrees)
+    roll: 0 # keep fixed (degrees)
+
+source:
+  # number of sources per room
+  # total number of RIRs is num_rooms x num_sources
+  num: 20
+  # placement of a source inside a room
+  placement:
+    x: null # constrained by room dimensions
+    y: null # constrained by room dimensions
+    height: [1.4, 1.8] # range (meters)
+    min_to_wall: 0.5 # min distance to wall (meters)
+
+anechoic:
+  # parameters for generating the ideal anechoic RIR
+  max_order: 0
+  absorption: 0.999

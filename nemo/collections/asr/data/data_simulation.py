@@ -12,18 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing
 import os
 import shutil
 import warnings
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
+import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 import torch
+from numpy.random import default_rng
+from omegaconf import DictConfig, OmegaConf
 from scipy.signal import convolve
 from scipy.signal.windows import cosine, hamming, hann
+from scipy.spatial.transform import Rotation
 from scipy.stats import halfnorm
-from tqdm import trange
+from tqdm import tqdm, trange
 
 from nemo.collections.asr.parts.utils.manifest_utils import (
     create_manifest,
@@ -1460,3 +1466,977 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
         write_manifest(os.path.join(basepath, filename + '.json'), json_list)
         write_ctm(os.path.join(basepath, filename + '.ctm'), ctm_list)
         write_text(os.path.join(basepath, filename + '.txt'), ctm_list)
+
+
+def check_angle(key: str, val: Union[float, Iterable[float]]) -> bool:
+    """Check if the angle value is within the expected range. Input
+    values are in degrees.
+
+    Note:
+        azimuth: angle between a projection on the horizontal (xy) plane and
+                positive x axis. Increases counter-clockwise. Range: [-180, 180].
+        elevation: angle between a vector an its projection on the horizontal (xy) plane.
+                Positive above, negative below, i.e., north=+90, south=-90. Range: [-90, 90]
+        yaw: rotation around the z axis. Defined accoding to right-hand rule.
+            Range: [-180, 180]
+        pitch: rotation around the yʹ axis. Defined accoding to right-hand rule.
+            Range: [-90, 90]
+        roll: rotation around the xʺ axis. Defined accoding to right-hand rule.
+            Range: [-180, 180]
+
+    Args:
+        key: angle type
+        val: values in degrees
+
+    Returns:
+        True if all values are within the expected range.
+    """
+    if np.isscalar(val):
+        min_val = max_val = val
+    else:
+        min_val = min(val)
+        max_val = max(val)
+
+    if key == 'azimuth' and -180 <= min_val <= max_val <= 180:
+        return True
+    if key == 'elevation' and -90 <= min_val <= max_val <= 90:
+        return True
+    if key == 'yaw' and -180 <= min_val <= max_val <= 180:
+        return True
+    if key == 'pitch' and -90 <= min_val <= max_val <= 90:
+        return True
+    if key == 'roll' and -180 <= min_val <= max_val <= 180:
+        return True
+
+    raise ValueError(f'Invalid value for angle {key} = {val}')
+
+
+def wrap_to_180(angle: float) -> float:
+    """Wrap an angle to range ±180 degrees.
+
+    Args:
+        angle: angle in degrees
+
+    Returns:
+        Angle in degrees wrapped to ±180 degrees.
+    """
+    return angle - np.floor(angle / 360 + 1 / 2) * 360
+
+
+class ArrayGeometry(object):
+    """A class to simplify handling of array geometry.
+    
+    Supports translation and rotation of the array and calculation of
+    spherical coordinates of a given point relative to the internal
+    coordinate system of the array.
+
+    Args:
+        mic_positions: 3D coordinates, with shape (num_mics, 3)
+        center: optional position of the center of the array. Defaults to the average of the coordinates.
+        internal_cs: internal coordinate system for the array relative to the global coordinate system.
+                    Defaults to (x, y, z), and is rotated with the array.
+    """
+
+    def __init__(
+        self,
+        mic_positions: Union[np.ndarray, List],
+        center: Optional[np.ndarray] = None,
+        internal_cs: Optional[np.ndarray] = None,
+    ):
+        if isinstance(mic_positions, Iterable):
+            mic_positions = np.array(mic_positions)
+
+        if not mic_positions.ndim == 2:
+            raise ValueError(
+                f'Expecting a 2D array specifying mic positions, but received {mic_positions.ndim}-dim array'
+            )
+
+        if not mic_positions.shape[1] == 3:
+            raise ValueError(f'Expecting 3D positions, but received {mic_positions.shape[1]}-dim positions')
+
+        mic_positions_center = np.mean(mic_positions, axis=0)
+        self.centered_positions = mic_positions - mic_positions_center
+        self.center = mic_positions_center if center is None else center
+
+        # Internal coordinate system
+        if internal_cs is None:
+            # Initially aligned with the global
+            self.internal_cs = np.eye(3)
+        else:
+            self.internal_cs = internal_cs
+
+    @property
+    def num_mics(self):
+        """Return the number of microphones for the current array.
+        """
+        return self.centered_positions.shape[0]
+
+    @property
+    def positions(self):
+        """Absolute positions of the microphones.
+        """
+        return self.centered_positions + self.center
+
+    @property
+    def internal_positions(self):
+        """Positions in the internal coordinate system.
+        """
+        return np.matmul(self.centered_positions, self.internal_cs.T)
+
+    @property
+    def radius(self):
+        """Radius of the array, relative to the center.
+        """
+        return max(np.linalg.norm(self.centered_positions, axis=1))
+
+    @staticmethod
+    def get_rotation(yaw: float = 0, pitch: float = 0, roll: float = 0) -> Rotation:
+        """Get a Rotation object for given angles.
+
+        All angles are defined according to the right-hand rule.
+
+        Args:
+            yaw: rotation around the z axis
+            pitch: rotation around the yʹ axis
+            roll: rotation around the xʺ axis
+
+        Returns:
+            A rotation object constructed using the provided angles.
+        """
+        check_angle('yaw', yaw)
+        check_angle('pitch', pitch)
+        check_angle('roll', roll)
+
+        return Rotation.from_euler('ZYX', [yaw, pitch, roll], degrees=True)
+
+    def translate(self, to: np.ndarray):
+        """Translate the array center to a new point.
+
+        Translation does not change the centered positions or the internal coordinate system.
+
+        Args:
+            to: 3D point, shape (3,)
+        """
+        self.center = to
+
+    def rotate(self, yaw: float = 0, pitch: float = 0, roll: float = 0):
+        """Apply rotation on the mic array.
+
+        This rotates the centered microphone positions and the internal
+        coordinate system, it doesn't change the center of the array.
+
+        All angles are defined according to the right-hand rule.
+        For example, this means that a positive pitch will result in a rotation from z
+        to x axis, which will result in a reduced elevation with respect to the global
+        horizontal plane.
+
+        Args:
+            yaw: rotation around the z axis
+            pitch: rotation around the yʹ axis
+            roll: rotation around the xʺ axis
+        """
+        # construct rotation using TB angles
+        rotation = self.get_rotation(yaw=yaw, pitch=pitch, roll=roll)
+
+        # rotate centered positions
+        self.centered_positions = rotation.apply(self.centered_positions)
+
+        # apply the same transformation on the internal coordinate system
+        self.internal_cs = rotation.apply(self.internal_cs)
+
+    def new_rotated_array(self, yaw: float = 0, pitch: float = 0, roll: float = 0):
+        """Create a new array by rotating this array.
+
+        Args:
+            yaw: rotation around the z axis
+            pitch: rotation around the yʹ axis
+            roll: rotation around the xʺ axis
+
+        Returns:
+            A new ArrayGeometry object constructed using the provided angles.
+        """
+        new_array = ArrayGeometry(mic_positions=self.positions, center=self.center, internal_cs=self.internal_cs)
+        new_array.rotate(yaw=yaw, pitch=pitch, roll=roll)
+        return new_array
+
+    def spherical_relative_to_array(
+        self, point: np.ndarray, use_internal_cs: bool = True
+    ) -> Tuple[float, float, float]:
+        """Return spherical coordinates of a point relative to the internal coordinate system.
+
+        Args:
+            point: 3D coordinate, shape (3,)
+            use_internal_cs: Calculate position relative to the internal coordinate system.
+                            If `False`, the positions will be calculated relative to the
+                            external coordinate system centered at `self.center`.
+
+        Returns:
+            A tuple (distance, azimuth, elevation) relative to the mic array.
+        """
+        rel_position = point - self.center
+        distance = np.linalg.norm(rel_position)
+
+        if use_internal_cs:
+            # transform from the absolute coordinate system to the internal coordinate system
+            rel_position = np.matmul(self.internal_cs, rel_position)
+
+        # get azimuth
+        azimuth = np.arctan2(rel_position[1], rel_position[0]) / np.pi * 180
+        # get elevation
+        elevation = np.arcsin(rel_position[2] / distance) / np.pi * 180
+
+        return distance, azimuth, elevation
+
+    def __str__(self):
+        with np.printoptions(precision=3, suppress=True):
+            desc = f"{type(self)}:\ncenter =\n{self.center}\ncentered positions =\n{self.centered_positions}\nradius = \n{self.radius:.3}\nabsolute positions =\n{self.positions}\ninternal coordinate system =\n{self.internal_cs}\n\n"
+        return desc
+
+    def plot(self, elev=30, azim=-55, mic_size=25):
+        """Plot microphone positions.
+
+        Args:
+            elev: elevation for the view of the plot
+            azim: azimuth for the view of the plot
+            mic_size: size of the microphone marker in the plot
+        """
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+
+        # show mic positions
+        for m in range(self.num_mics):
+            # show mic
+            ax.scatter(
+                self.positions[m, 0],
+                self.positions[m, 1],
+                self.positions[m, 2],
+                marker='o',
+                c='black',
+                s=mic_size,
+                depthshade=False,
+            )
+            # add label
+            ax.text(self.positions[m, 0], self.positions[m, 1], self.positions[m, 2], str(m), c='red', zorder=10)
+
+        # show the internal coordinate system
+        ax.quiver(
+            self.center[0],
+            self.center[1],
+            self.center[2],
+            self.internal_cs[:, 0],
+            self.internal_cs[:, 1],
+            self.internal_cs[:, 2],
+            length=self.radius,
+            label='internal cs',
+            normalize=False,
+            linestyle=':',
+            linewidth=1.0,
+        )
+        for dim, label in enumerate(['x′', 'y′', 'z′']):
+            label_pos = self.center + self.radius * self.internal_cs[dim]
+            ax.text(label_pos[0], label_pos[1], label_pos[2], label, tuple(self.internal_cs[dim]), c='blue')
+        try:
+            # Unfortunately, equal aspect ratio has been added very recently to Axes3D
+            ax.set_aspect('equal')
+        except NotImplementedError:
+            logging.warning('Equal aspect ratio not supported by Axes3D')
+        # Set view
+        ax.view_init(elev=elev, azim=azim)
+        # Set reasonable limits for all axes, even for the case of an unequal aspect ratio
+        ax.set_xlim([self.center[0] - self.radius, self.center[0] + self.radius])
+        ax.set_ylim([self.center[1] - self.radius, self.center[1] + self.radius])
+        ax.set_zlim([self.center[2] - self.radius, self.center[2] + self.radius])
+
+        ax.set_xlabel('x/m')
+        ax.set_ylabel('y/m')
+        ax.set_zlabel('z/m')
+        ax.set_title('Microphone positions')
+        ax.legend()
+        plt.show()
+
+
+def convert_placement_to_range(
+    placement: Dict, room_dim: Iterable[float], object_radius: float = 0
+) -> List[List[float]]:
+    """Given a placement dictionary, return ranges for each dimension.
+
+    Args:
+        placement: dictionary containing x, y, height, and min_to_wall
+        room_dim: dimensions of the room, shape (3,)
+        object_radius: radius of the object to be placed
+
+    Returns
+        List with a range of values for each dimensions.
+    """
+    if not np.all(np.array(room_dim) > 0):
+        raise ValueError(f'Room dimensions must be positive: {room_dim}')
+
+    placement_range = [None] * 3
+    min_to_wall = placement.get('min_to_wall', 0)
+
+    if min_to_wall < 0:
+        raise ValueError(f'Min distance to wall must be positive: {min_to_wall}')
+
+    for idx, key in enumerate(['x', 'y', 'height']):
+        # Room dimension
+        dim = room_dim[idx]
+        # Construct the range
+        val = placement.get(key)
+        if val is None:
+            # No constrained specified on the coordinate of the mic center
+            min_val, max_val = 0, dim
+        elif np.isscalar(val):
+            min_val = max_val = val
+        else:
+            if len(val) != 2:
+                raise ValueError(f'Invalid value for placement for dim {idx}/{key}: {str(placement)}')
+            min_val, max_val = val
+
+        # Make sure the array is not too close to a wall
+        min_val = max(min_val, min_to_wall + object_radius)
+        max_val = min(max_val, dim - min_to_wall - object_radius)
+
+        if min_val > max_val or min(min_val, max_val) < 0:
+            raise ValueError(f'Invalid range dim {idx}/{key}: min={min_val}, max={max_val}')
+
+        placement_range[idx] = [min_val, max_val]
+
+    return placement_range
+
+
+class RIRCorpusGenerator(object):
+    """Creates a corpus of RIRs based on a defined configuration of rooms and microphone array.
+
+    RIRs are generated using `generate` method.
+    """
+
+    def __init__(self, cfg: DictConfig):
+        """
+        Args:
+            cfg: dictionary with parameters of the simulation
+        """
+        logging.info("Initialize RIRCorpusGenerator")
+        self._cfg = cfg
+        self.check_cfg()
+
+    @property
+    def cfg(self):
+        """Property holding the internal config of the object.
+
+        Note:
+            Changes to this config are not reflected in the state of the object.
+            Please create a new model with the updated config.
+        """
+        return self._cfg
+
+    @property
+    def sample_rate(self):
+        return self._cfg.sample_rate
+
+    @cfg.setter
+    def cfg(self, cfg):
+        """Property holding the internal config of the object.
+
+        Note:
+            Changes to this config are not reflected in the state of the object.
+            Please create a new model with the updated config.
+        """
+        self._cfg = cfg
+
+    def check_cfg(self):
+        """
+        Checks provided configuration to ensure it has the minimal required
+        configuration the values are in a reasonable range.
+        """
+        # sample rate
+        sample_rate = self.cfg.get('sample_rate')
+        if sample_rate is None:
+            raise ValueError('Sample rate not provided.')
+        elif sample_rate < 0:
+            raise ValueError(f'Sample rate must to be positive: {sample_rate}')
+
+        # room configuration
+        room_cfg = self.cfg.get('room')
+        if room_cfg is None:
+            raise ValueError('Room configuration not provided')
+
+        if room_cfg.get('num') is None:
+            raise ValueError('Number of rooms per subset not provided')
+
+        if room_cfg.get('dim') is None:
+            raise ValueError('Room dimensions not provided')
+
+        for idx, key in enumerate(['width', 'length', 'height']):
+            dim = room_cfg.dim.get(key)
+
+            if dim is None:
+                # not provided
+                raise ValueError(f'Room {key} needs to be a scalar or a range, currently it is None')
+            elif np.isscalar(dim) and dim <= 0:
+                # fixed dimension
+                raise ValueError(f'A fixed dimension must be positive for {key}: {dim}')
+            elif len(dim) != 2 or not 0 < dim[0] < dim[1]:
+                # not a valid range
+                raise ValueError(f'Range must be specified with two positive increasing elements for {key}: {dim}')
+
+        rt60 = room_cfg.get('rt60')
+        if rt60 is None:
+            # not provided
+            raise ValueError(f'RT60 needs to be a scalar or a range, currently it is None')
+        elif np.isscalar(rt60) and rt60 <= 0:
+            # fixed dimension
+            raise ValueError(f'RT60 must be positive: {rt60}')
+        elif len(rt60) != 2 or not 0 < rt60[0] < rt60[1]:
+            # not a valid range
+            raise ValueError(f'RT60 range must be specified with two positive increasing elements: {rt60}')
+
+        # mic array
+        mic_cfg = self.cfg.get('mic_array')
+        if mic_cfg is None:
+            raise ValueError('Mic configuration not provided')
+
+        for key in ['positions', 'placement', 'orientation']:
+            if key not in mic_cfg:
+                raise ValueError(f'Mic array {key} not provided')
+
+        # source
+        source_cfg = self.cfg.get('source')
+        if source_cfg is None:
+            raise ValueError('Source configuration not provided')
+
+        if source_cfg.get('num') is None:
+            raise ValueError('Number of sources per room not provided')
+        elif source_cfg.num <= 0:
+            raise ValueError(f'Number of sources must be positive: {source_cfg.num}')
+
+        if 'placement' not in source_cfg:
+            raise ValueError('Source placement dictionary not provided')
+
+        # anechoic
+        if self.cfg.get('anechoic') is None:
+            raise ValueError(f'Anechoic configuratio not provided.')
+
+    def generate_room_params(self) -> dict:
+        """Generate randomized room parameters based on the provided
+        configuration.
+        """
+        # Prepare room sim parameters
+        if not PRA:
+            raise ImportError('pyroomacoustics is required for room simulation')
+
+        room_cfg = self.cfg.room
+
+        # width, length, height
+        room_dim = np.zeros(3)
+
+        # prepare dimensions
+        for idx, key in enumerate(['width', 'length', 'height']):
+            # get configured dimension
+            dim = room_cfg.dim[key]
+
+            # set a value
+            if dim is None:
+                raise ValueError(f'Room {key} needs to be a scalar or a range, currently it is None')
+            elif np.isscalar(dim):
+                assert dim > 0, f'Dimension should be positive for {key}: {dim}'
+                room_dim[idx] = dim
+            else:
+                assert (
+                    len(dim) == 2 and 0 < dim[0] <= dim[1]
+                ), f'Range should be specified with exactly 2 non-decreasing values for {key}, received {dim}'
+                room_dim[idx] = self.random.uniform(low=dim[0], high=dim[1])
+
+        # prepare rt60
+        if room_cfg.rt60 is None:
+            raise ValueError(f'Room RT60 needs to be a scalar or a range, currently it is None')
+
+        if np.isscalar(room_cfg.rt60):
+            assert room_cfg.rt60 > 0, f'RT60 should be positive: {room_cfg.rt60}'
+            rt60 = room_cfg.rt60
+        else:
+            assert (
+                len(room_cfg.rt60) == 2
+            ), f"Room RT60 range should be specified with exactly 2 values, received {room_cfg.rt60}"
+            rt60 = self.random.uniform(low=room_cfg.rt60[0], high=room_cfg.rt60[1])
+
+        # Get parameters from size and RT60
+        room_absorption, room_max_order = pra.inverse_sabine(rt60, room_dim)
+
+        # Return the required values
+        room_params = {
+            'dim': room_dim,
+            'absorption': room_absorption,
+            'max_order': room_max_order,
+            'rt60_theoretical': rt60,
+            'anechoic_absorption': self.cfg.anechoic.absorption,
+            'anechoic_max_order': self.cfg.anechoic.max_order,
+            'sample_rate': self.cfg.sample_rate,
+        }
+        return room_params
+
+    def generate_array(self, room_dim: Iterable[float]) -> ArrayGeometry:
+        """Generate array placement for the current room and config.
+
+        Args:
+            room_dim: dimensions of the room, [width, length, height]
+
+        Returns:
+            Randomly placed microphone array.
+        """
+        mic_cfg = self.cfg.mic_array
+        mic_array = ArrayGeometry(mic_cfg.positions)
+
+        # Randomize center placement
+        center = np.zeros(3)
+        placement_range = convert_placement_to_range(
+            placement=mic_cfg.placement, room_dim=room_dim, object_radius=mic_array.radius
+        )
+
+        for idx in range(len(center)):
+            center[idx] = self.random.uniform(low=placement_range[idx][0], high=placement_range[idx][1])
+
+        # Place the array at the configured center point
+        mic_array.translate(to=center)
+
+        # Randomize orientation
+        orientation = dict()
+        for key in ['yaw', 'roll', 'pitch']:
+            # angle for current orientation
+            angle = mic_cfg.orientation[key]
+
+            if angle is None:
+                raise ValueError(f'Mic array {key} should be a scalar or a range, currently it is set to None.')
+
+            # check it's within the expected range
+            check_angle(key, angle)
+
+            if np.isscalar(angle):
+                orientation[key] = angle
+            else:
+                assert (
+                    len(angle) == 2 and angle[0] <= angle[1]
+                ), f"Range should be specified with exactly 2 non-decreasing values for {key}, received {angle}"
+                # generate integer values, for easier bucketing, if necessary
+                orientation[key] = self.random.uniform(low=angle[0], high=angle[1])
+
+        # Rotate the array to match the selected orientation
+        mic_array.rotate(**orientation)
+
+        return mic_array
+
+    def generate_source_position(self, room_dim: Iterable[float]) -> List[List[float]]:
+        """Generate position for all sources in a room.
+
+        Args:
+            room_dim: dimensions of a 3D shoebox room
+
+        Returns:
+            List of source positions, with each position characterized with a 3D coordinate
+        """
+        source_cfg = self.cfg.source
+        placement_range = convert_placement_to_range(placement=source_cfg.placement, room_dim=room_dim)
+        source_position = []
+
+        for n in range(source_cfg.num):
+            # generate a random point withing the range
+            s_pos = [None] * 3
+            for idx in range(len(s_pos)):
+                s_pos[idx] = self.random.uniform(low=placement_range[idx][0], high=placement_range[idx][1])
+            source_position.append(s_pos)
+
+        return source_position
+
+    def generate(self):
+        """Generate RIR corpus.
+        
+        This method will prepare randomized examples based on the current configuration,
+        run room simulations and save results to output_dir.
+        """
+        logging.info("Generate RIR corpus")
+
+        # Initialize
+        self.random = default_rng(seed=self.cfg.random_seed)
+
+        # Prepare output dir
+        output_dir = self.cfg.output_dir
+        if output_dir.endswith('.yaml'):
+            output_dir = output_dir[:-5]
+
+        # Create absolute path
+        logging.info('Output dir set to: %s', output_dir)
+
+        # Generate all cases
+        for subset, num_rooms in self.cfg.room.num.items():
+
+            output_dir_subset = os.path.join(output_dir, subset)
+            examples = []
+
+            if not os.path.exists(output_dir_subset):
+                logging.info('Creating output directory: %s', output_dir_subset)
+                os.makedirs(output_dir_subset)
+            elif os.path.isdir(output_dir_subset) and len(os.listdir(output_dir_subset)) > 0:
+                raise RuntimeError(f'Output directory {output_dir_subset} is not empty.')
+
+            # Generate examples
+            for n_room in range(num_rooms):
+
+                # room info
+                room_params = self.generate_room_params()
+
+                # array placement
+                mic_array = self.generate_array(room_params['dim'])
+
+                # source placement
+                source_position = self.generate_source_position(room_params['dim'])
+
+                # file name for the file
+                room_filepath = os.path.join(output_dir_subset, f'{subset}_room_{n_room:06d}.h5')
+
+                # prepare example
+                example = {
+                    'room_params': room_params,
+                    'mic_array': mic_array,
+                    'source_position': source_position,
+                    'room_filepath': room_filepath,
+                }
+                examples.append(example)
+
+            # Simulation
+            num_workers = self.cfg.num_workers
+            if num_workers is not None and num_workers > 1:
+                logging.info(f'Simulate using {num_workers} workers')
+                with multiprocessing.Pool(processes=num_workers) as pool:
+                    metadata = list(tqdm(pool.imap(simulate_room_kwargs, examples), total=len(examples)))
+
+            else:
+                logging.info('Simulate using a single worker')
+                metadata = []
+                for example in tqdm(examples, total=len(examples)):
+                    metadata.append(simulate_room(**example))
+
+            # Save manifest
+            manifest_filepath = os.path.join(output_dir, f'{subset}_manifest.json')
+
+            if os.path.exists(manifest_filepath) and os.path.isfile(manifest_filepath):
+                raise RuntimeError(f'Manifest config file exists: {manifest_filepath}')
+
+            # Make all paths in the manifest relative to the output dir
+            for data in metadata:
+                data['room_filepath'] = os.path.relpath(data['room_filepath'], start=output_dir)
+
+            write_manifest(manifest_filepath, metadata)
+
+            # Generate plots with information about generated data
+            plot_filepath = os.path.join(output_dir, f'{subset}_info.png')
+
+            if os.path.exists(plot_filepath) and os.path.isfile(plot_filepath):
+                raise RuntimeError(f'Manifest config file exists: {plot_filepath}')
+
+            plot_rir_manifest_info(manifest_filepath, plot_filepath=plot_filepath)
+
+        # Save used configuration for reference
+        config_filepath = os.path.join(output_dir, 'config.yaml')
+        if os.path.exists(config_filepath) and os.path.isfile(config_filepath):
+            raise RuntimeError(f'Output config file exists: {config_filepath}')
+
+        OmegaConf.save(self.cfg, config_filepath, resolve=True)
+
+
+def simulate_room_kwargs(kwargs: dict) -> dict:
+    """Wrapper around `simulate_room` to deal with kwargs.
+    
+    `pool.map(simulate_room_kwargs, examples)` would be
+    equivalent to `pool.starstarmap(simulate_room, examples)`
+    if `starstarmap` would exist.
+
+    Args:
+        kwargs: kwargs that are forwarded to `simulate_room`
+
+    Returns:
+        Dictionary with metadata, see `simulate_room`
+    """
+    return simulate_room(**kwargs)
+
+
+def simulate_room(
+    room_params: dict, mic_array: ArrayGeometry, source_position: Iterable[Iterable[float]], room_filepath: str,
+) -> dict:
+    """Simulate room
+
+    Args:
+        room_params: parameters of the room to be simulated
+        mic_array: defines positions of the microphones
+        source_positions: positions for all sources to be simulated
+        room_filepath: results are saved to this path
+
+    Returns:
+        Dictionary with metadata based on simulation setup
+        and simulation results. Used to create the corresponding
+        manifest file.
+    """
+    # room with the selected parameters
+    room_sim = pra.ShoeBox(
+        room_params['dim'],
+        fs=room_params['sample_rate'],
+        materials=pra.Material(room_params['absorption']),
+        max_order=room_params['max_order'],
+    )
+
+    # same geometry for generating anechoic responses
+    room_anechoic = pra.ShoeBox(
+        room_params['dim'],
+        fs=room_params['sample_rate'],
+        materials=pra.Material(room_params['anechoic_absorption']),
+        max_order=room_params['anechoic_max_order'],
+    )
+
+    # Compute RIRs
+    for room in [room_sim, room_anechoic]:
+        # place the array
+        room.add_microphone_array(mic_array.positions.T)
+
+        # place the sources
+        for s_pos in source_position:
+            room.add_source(s_pos)
+
+        # generate RIRs
+        room.compute_rir()
+
+    # Get metadata for sources
+    source_distance = []
+    source_azimuth = []
+    source_elevation = []
+    for s_pos in source_position:
+        distance, azimuth, elevation = mic_array.spherical_relative_to_array(s_pos)
+        source_distance.append(distance)
+        source_azimuth.append(azimuth)
+        source_elevation.append(elevation)
+
+    # RIRs
+    rir_dataset = {
+        'rir': convert_rir_to_multichannel(room_sim.rir),
+        'anechoic': convert_rir_to_multichannel(room_anechoic.rir),
+    }
+
+    # Prepare metadata dict and return
+    metadata = {
+        'room_filepath': room_filepath,
+        'sample_rate': room_params['sample_rate'],
+        'dim': room_params['dim'],
+        'rir_absorption': room_params['absorption'],
+        'rir_max_order': room_params['max_order'],
+        'rir_rt60_theory': room_sim.rt60_theory(),
+        'rir_rt60_measured': room_sim.measure_rt60().mean(axis=0),  # average across mics for each source
+        'anechoic_rt60_theory': room_anechoic.rt60_theory(),
+        'anechoic_rt60_measured': room_anechoic.measure_rt60().mean(axis=0),  # average across mics for each source
+        'anechoic_absorption': room_params['anechoic_absorption'],
+        'anechoic_max_order': room_params['anechoic_max_order'],
+        'mic_positions': mic_array.positions,
+        'mic_center': mic_array.center,
+        'source_position': source_position,
+        'source_distance': source_distance,
+        'source_azimuth': source_azimuth,
+        'source_elevation': source_elevation,
+        'num_sources': len(source_position),
+    }
+
+    # Save simulated RIR
+    save_rir_simulation(room_filepath, rir_dataset, metadata)
+
+    return convert_numpy_to_list(metadata)
+
+
+def save_rir_simulation(filepath: str, rir_dataset: Dict[str, List[np.array]], metadata: dict):
+    """Save simulated RIRs and metadata.
+
+    Args:
+        filepath: Path to the file where the data will be saved.
+        rir_dataset: Dictionary with RIR data. Each item is a set of multi-channel RIRs.
+        metadata: Dictionary with related metadata.
+    """
+    if os.path.exists(filepath):
+        raise RuntimeError(f'Output file exists: {room_filepath}')
+
+    num_sources = metadata['num_sources']
+
+    with h5py.File(filepath, 'w') as h5f:
+        # Save RIRs, each RIR set in a separate group
+        for rir_key, rir_value in rir_dataset.items():
+            if len(rir_value) != num_sources:
+                raise ValueError(
+                    f'Each RIR dataset should have exactly {num_sources} elements. Current RIR {key} has {len(rir_value)} elements'
+                )
+
+            rir_group = h5f.create_group(rir_key)
+
+            # RIRs for different sources are saved under [group]['idx']
+            for idx, rir in enumerate(rir_value):
+                rir_group.create_dataset(f'{idx}', data=rir_value[idx])
+
+        # Save metadata
+        metadata_group = h5f.create_group('metadata')
+        for key, value in metadata.items():
+            metadata_group.create_dataset(key, data=value)
+
+
+def load_rir_simulation(filepath: str, source: int = 0, rir_key: str = 'rir') -> Tuple[np.ndarray, float]:
+    """Load simulated RIRs and metadata.
+
+    Args:
+        filepath: Path to simulated RIR data
+        source: Index of a source.
+        rir_key: String to denote which RIR to load, if there are multiple available.
+
+    Returns:
+        Multichannel RIR as ndarray with shape (num_samples, num_channels) and scalar sample rate.
+    """
+    with h5py.File(filepath, 'r') as h5f:
+        # Load RIR
+        rir = h5f[rir_key][f'{source}'][:]
+
+        # Load metadata
+        sample_rate = h5f['metadata']['sample_rate'][()]
+
+    return rir, sample_rate
+
+
+def convert_numpy_to_list(data: Union[dict, float, np.ndarray]) -> Union[dict, float, np.ndarray]:
+    """Convert all numpy estries to list.
+    Can be used to preprocess data before writing to a JSON file.
+
+    Args:
+        data: Dictionary, array or scalar.
+
+    Returns:
+        The same structure, but converted to list if
+        the input is np.ndarray, so `data` can be seralized.
+    """
+    if isinstance(data, dict):
+        for key, val in data.items():
+            data[key] = convert_numpy_to_list(val)
+    elif isinstance(data, np.ndarray):
+        data = data.tolist()
+
+    return data
+
+
+def convert_rir_to_multichannel(rir: List[List[np.ndarray]]) -> List[np.ndarray]:
+    """Convert RIR to a list of arrays.
+
+    Args:
+        rir: list of lists, each element is a single-channel RIR
+
+    Returns:
+        List of multichannel RIRs
+    """
+    num_mics = len(rir)
+    num_sources = len(rir[0])
+
+    mc_rir = [None] * num_sources
+
+    for n_source in range(num_sources):
+        rir_len = [len(rir[m][n_source]) for m in range(num_mics)]
+        max_len = max(rir_len)
+        mc_rir[n_source] = np.zeros((max_len, num_mics))
+        for n_mic, len_mic in enumerate(rir_len):
+            mc_rir[n_source][:len_mic, n_mic] = rir[n_mic][n_source]
+
+    return mc_rir
+
+
+def plot_rir_manifest_info(filepath: str, plot_filepath: str = None):
+    """Plot distribution of parameters from manifest file.
+
+    Args:
+        filepath: path to a RIR corpus manifest file
+    """
+    metadata = read_manifest(filepath)
+
+    # source placement
+    source_distance = []
+    source_azimuth = []
+    source_elevation = []
+    source_height = []
+
+    # room config
+    rir_rt60_theory = []
+    rir_rt60_measured = []
+    anechoic_rt60_theory = []
+    anechoic_rt60_measured = []
+
+    # get the required data
+    for data in metadata:
+        # source config
+        source_distance += data['source_distance']
+        source_azimuth += data['source_azimuth']
+        source_elevation += data['source_elevation']
+        source_height += [s_pos[2] for s_pos in data['source_position']]
+
+        # room config
+        rir_rt60_theory.append(data['rir_rt60_theory'])
+        rir_rt60_measured += data['rir_rt60_measured']
+        anechoic_rt60_theory.append(data['anechoic_rt60_theory'])
+        anechoic_rt60_measured += data['anechoic_rt60_measured']
+
+    # plot
+    plt.figure(figsize=(12, 6))
+
+    plt.subplot(2, 4, 1)
+    plt.hist(source_distance, label='distance')
+    plt.xlabel('distance / m')
+    plt.ylabel('# examples')
+    plt.title('Source-to-array center distance')
+
+    plt.subplot(2, 4, 2)
+    plt.hist(source_azimuth, label='azimuth')
+    plt.xlabel('azimuth / deg')
+    plt.ylabel('# examples')
+    plt.title('Source-to-array center azimuth')
+
+    plt.subplot(2, 4, 3)
+    plt.hist(source_elevation, label='elevation')
+    plt.xlabel('elevation / deg')
+    plt.ylabel('# examples')
+    plt.title('Source-to-array center elevation')
+
+    plt.subplot(2, 4, 4)
+    plt.hist(source_height, label='source height')
+    plt.xlabel('height / m')
+    plt.ylabel('# examples')
+    plt.title('Source height')
+
+    plt.subplot(2, 4, 5)
+    plt.hist(rir_rt60_theory, label='theory')
+    plt.xlabel('RT60 / s')
+    plt.ylabel('# examples')
+    plt.title('RT60 theory')
+
+    plt.subplot(2, 4, 6)
+    plt.hist(rir_rt60_measured, label='measured')
+    plt.xlabel('RT60 / s')
+    plt.ylabel('# examples')
+    plt.title('RT60 measured')
+
+    plt.subplot(2, 4, 7)
+    plt.hist(anechoic_rt60_theory, label='theory')
+    plt.xlabel('RT60 / s')
+    plt.ylabel('# examples')
+    plt.title('RT60 theory (anechoic)')
+
+    plt.subplot(2, 4, 8)
+    plt.hist(anechoic_rt60_measured, label='measured')
+    plt.xlabel('RT60 / s')
+    plt.ylabel('# examples')
+    plt.title('RT60 measured (anechoic)')
+
+    for n in range(8):
+        plt.subplot(2, 4, n + 1)
+        plt.grid()
+        plt.legend(loc='lower left')
+
+    plt.tight_layout()
+
+    if plot_filepath is not None:
+        plt.savefig(plot_filepath)
+        plt.close()
+        logging.info('Plot saved at %s', plot_filepath)

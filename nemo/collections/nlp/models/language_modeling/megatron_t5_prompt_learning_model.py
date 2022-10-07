@@ -511,11 +511,15 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 idx = pred.index(self.tokenizer.eos_id)
                 pred = pred[:idx]
 
+            special_token_ids = (
+                self.tokenizer.special_token_to_id.values()
+                if hasattr(self.tokenizer, 'special_token_to_id')
+                else self.tokenizer.tokenizer.additional_special_tokens_ids
+            )
             pred = [
                 id
                 for id in pred
-                if id not in self.tokenizer.tokenizer.additional_special_tokens_ids
-                and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
+                if id not in special_token_ids and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
             ]  # delete the sentinel token at the beginning of prediction
 
             pred = self.tokenizer.ids_to_text(pred)
@@ -532,8 +536,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 label = [
                     id
                     for id in label
-                    if id not in self.tokenizer.tokenizer.additional_special_tokens_ids
-                    and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
+                    if id not in special_token_ids and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
                 ]  # delete the sentinel token at the beginning of label
 
                 label = self.tokenizer.ids_to_text(label)

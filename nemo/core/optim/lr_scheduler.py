@@ -14,6 +14,7 @@
 
 import copy
 import dataclasses
+import inspect
 import math
 import warnings
 from functools import partial
@@ -676,6 +677,9 @@ def get_scheduler(name: str, **kwargs: Optional[Dict[str, Any]]) -> _LRScheduler
         )
 
     scheduler_cls = AVAILABLE_SCHEDULERS[name]
+    # Pop 'max_steps' if it's not required by the scheduler
+    if 'max_steps' in kwargs and 'max_steps' not in inspect.signature(scheduler_cls).parameters:
+        kwargs.pop('max_steps')
     scheduler = partial(scheduler_cls, **kwargs)
     return scheduler
 
@@ -743,8 +747,6 @@ def prepare_lr_scheduler(
         scheduler_config = OmegaConf.to_container(scheduler_config, resolve=True)
 
     # Test to see if config follows above schema
-
-    add_max_args_flag = True
     interval = 'step'
     if scheduler_config is not None:
         if 'args' in scheduler_config:
@@ -754,11 +756,6 @@ def prepare_lr_scheduler(
 
             # Remove extra parameters from scheduler_args nest
             # Assume all other parameters are to be passed into scheduler constructor
-
-            if 'name' in scheduler_args and scheduler_args['name'] == 'ReduceLROnPlateau':
-                add_max_args_flag = False
-                interval = 'epoch'
-
             scheduler_args.pop('name', None)
             scheduler_args.pop('t_max_epochs', None)
             scheduler_args.pop('t_accumulate_grad_batches', None)
@@ -766,6 +763,9 @@ def prepare_lr_scheduler(
             scheduler_args.pop('t_num_workers', None)
             scheduler_args.pop('monitor', None)
             scheduler_args.pop('reduce_on_plateau', None)
+
+        if 'name' in scheduler_config and scheduler_config['name'] in EPOCH_SCHEDULERS:
+            interval = 'epoch'
 
     else:
         # Return gracefully in case `sched` was not supplied; inform user
@@ -895,14 +895,14 @@ def prepare_lr_scheduler(
         return None
 
     # Inject max_steps (effective or provided) into the scheduler config
-    if add_max_args_flag and scheduler_config.get('name', '') != "ExponentialLR":
-        scheduler_args['max_steps'] = max_steps
-
-    if scheduler_config.get('name', '') == "CyclicLR":
-        del scheduler_args['max_steps']
+    scheduler_args['max_steps'] = max_steps
 
     # Get the scheduler class from the config
     scheduler_cls = get_scheduler(scheduler_name, **scheduler_args)
+
+    # Pop 'max_steps' if it's not required by the scheduler
+    if 'max_steps' not in inspect.signature(scheduler_cls).parameters:
+        scheduler_args.pop('max_steps')
 
     # Instantiate the LR schedule
     schedule = scheduler_cls(optimizer, **scheduler_args)
@@ -972,4 +972,8 @@ AVAILABLE_SCHEDULERS = {
     'ExponentialLR': pt_scheduler.ExponentialLR,
     'ReduceLROnPlateau': pt_scheduler.ReduceLROnPlateau,
     'CyclicLR': pt_scheduler.CyclicLR,
+}
+
+EPOCH_SCHEDULERS = {
+    'ReduceLROnPlateau': pt_scheduler.ReduceLROnPlateau,
 }

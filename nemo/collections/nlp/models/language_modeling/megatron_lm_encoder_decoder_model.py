@@ -15,7 +15,6 @@
 import copy
 import functools
 import inspect
-import re
 from typing import Any, Dict, Optional
 
 import torch
@@ -829,16 +828,11 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
     def setup(self, stage=None):
         resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
         if resume_checkpoint_path:
-            try:
-                init_consumed_samples = int(
-                    float(re.findall(r"consumed_samples\=([0-9]+.[0-9]+)", resume_checkpoint_path)[0])
-                )
-            except (ValueError, TypeError, IndexError):
-                logging.warning("Cannot parse the checkpoint file to get the consumed samples. assume it is zero.")
-                init_consumed_samples = 0
+            init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:
             init_consumed_samples = 0
         self.init_consumed_samples = init_consumed_samples
+        self.init_global_step = self.trainer.global_step
 
         """A PTL method to setup the training, validation and test datasets."""
         if stage == 'predict':
@@ -882,11 +876,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 self._train_ds, consumed_samples, num_workers=self._cfg.data.num_workers
             )
 
-    def on_fit_start(self) -> None:
-        # keep a copy of init_global_step
-        self.init_global_step = self.trainer.global_step
-        return super().on_fit_start()
-
     def setup_validation_data(self, cfg):
         if hasattr(self, '_validation_ds'):
             consumed_samples = 0
@@ -898,14 +887,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         if hasattr(self, '_test_ds'):
             consumed_samples = 0
             self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples, num_workers=0)
-
-    def compute_consumed_samples(self, steps_since_resume=0):
-        app_state = AppState()
-        consumed_samples = (
-            self.init_consumed_samples
-            + steps_since_resume * app_state.data_parallel_size * self.cfg.micro_batch_size * get_num_microbatches()
-        )
-        return int(consumed_samples)
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: Optional[int] = None) -> Any:
         request = batch

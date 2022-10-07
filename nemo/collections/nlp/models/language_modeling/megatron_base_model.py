@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import os
+import re
 from typing import Optional
 
 import torch
@@ -32,10 +32,11 @@ from nemo.collections.nlp.modules.common.megatron.megatron_init import initializ
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
-from nemo.utils import logging
+from nemo.utils import AppState, logging
 
 try:
     from apex.transformer import parallel_state
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -344,6 +345,23 @@ class MegatronBaseModel(NLPModel):
             return self._optimizer
         else:
             return [self._optimizer], [self._scheduler]
+
+    def compute_consumed_samples(self, steps_since_resume=0):
+        app_state = AppState()
+        consumed_samples = (
+            self.init_consumed_samples
+            + steps_since_resume * app_state.data_parallel_size * self.cfg.micro_batch_size * get_num_microbatches()
+        )
+        return int(consumed_samples)
+
+    def _extract_consumed_samples_from_ckpt(self, ckpt_path):
+        try:
+            init_consumed_samples = int(float(re.findall(r"consumed_samples\=([0-9]+.[0-9]+)", ckpt_path)[0]))
+        except (ValueError, TypeError, IndexError):
+            logging.warning("Cannot parse the checkpoint file to get the consumed samples. assume it is zero.")
+            init_consumed_samples = 0
+
+        return init_consumed_samples
 
     def _validate_config(self):
         """ Certain configurations might be incompatible or discouraged. We can check for them here."""

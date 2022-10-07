@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import itertools
 import random
-import re
 from typing import List, Optional
 
 import numpy as np
@@ -95,18 +95,12 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         # We then set things up for real only once setup() of this class is called.
         resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
         if resume_checkpoint_path:
-            try:
-                init_consumed_samples = int(
-                    float(re.findall(r"consumed_samples\=([0-9]+.[0-9]+)", resume_checkpoint_path)[0])
-                )
-            except (ValueError, TypeError):
-                logging.warning(
-                    "Cannot parse the checkpoint file to get the consumed samples. This is expected if you are not using memmap datasets."
-                )
-                init_consumed_samples = 0
+            init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:
             init_consumed_samples = 0
         self.init_consumed_samples = init_consumed_samples
+        self.init_global_step = self.trainer.global_step
+
         if stage == 'predict':
             return
 

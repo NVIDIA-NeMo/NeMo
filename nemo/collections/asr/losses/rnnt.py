@@ -29,7 +29,7 @@
 
 import operator
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -232,8 +232,12 @@ class RNNTLoss(Loss):
             num_classes: Number of target classes for the joint network to predict.
                 (Excluding the RNN-T blank token).
 
-            reduction: Type of reduction to perform on loss. Possibly values are `mean`, `sum` or None.
-                None will return a torch vector comprising the individual loss values of the batch.
+            reduction: Type of reduction to perform on loss. Possible values are 
+                `mean_batch`, 'mean_volume`, `mean`, `sum` or None.
+                `None` will return a torch vector comprising the individual loss values of the batch.
+                `mean_batch` will average the losses in the batch
+                `mean` will divide each loss by the target length and then average
+                `mean_volume` will add up all the losses and divide by sum of target lengths
 
             loss_name: String that is resolved into an RNNT loss function. Available list of losses
                 is ininitialized in `RNNT_LOSS_RESOLVER` dictionary.
@@ -243,12 +247,29 @@ class RNNTLoss(Loss):
         """
         super(RNNTLoss, self).__init__()
 
-        if reduction not in [None, 'mean', 'sum', 'mean_batch']:
-            raise ValueError('`reduction` must be one of [mean, sum, mean_batch]')
+        if reduction not in [None, 'mean', 'sum', 'mean_batch', 'mean_volume']:
+            raise ValueError('`reduction` must be one of [mean, sum, mean_batch, mean_volume]')
 
         self._blank = num_classes
         self.reduction = reduction
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
+
+    def reduce(self, losses, target_lengths):
+
+        if isinstance(losses, List):
+            losses = torch.cat(losses, 0)
+            target_lengths = torch.cat(target_lengths, 0)
+
+        if self.reduction == 'mean_batch':
+            losses = losses.mean()  # global batch size average
+        elif self.reduction == 'mean':
+            losses = torch.div(losses, target_lengths).mean()
+        elif self.reduction == 'sum':
+            losses = losses.sum()
+        elif self.reduction == 'mean_volume':
+            losses = losses.sum() / target_lengths.sum()  # same as above but longer samples weigh more
+
+        return losses
 
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):
@@ -280,20 +301,19 @@ class RNNTLoss(Loss):
         if targets.shape[1] != max_targets_len:
             targets = targets.narrow(dim=1, start=0, length=max_targets_len)
 
-        # Loss reduction can be dynamic, so set it prior to call
-        if self.reduction != 'mean_batch':
-            self._loss.reduction = self.reduction
+        # Temporarily override loss reduction
+        loss_reduction = self._loss.reduction
+        self._loss.reduction = None
 
         # Compute RNNT loss
         loss = self._loss(acts=log_probs, labels=targets, act_lens=input_lengths, label_lens=target_lengths)
 
         # Loss reduction can be dynamic, so reset it after call
-        if self.reduction != 'mean_batch':
-            self._loss.reduction = 'none'
+        self._loss.reduction = loss_reduction
 
-        # Loss reduction only for mean_batch mode
-        if self.reduction == 'mean_batch':
-            loss = torch.mean(loss)
+        # reduce here using our own reduction function
+        if self.reduction is not None:
+            loss = self.reduce(loss, target_lengths)
 
         # del new variables that may have been created
         del (

@@ -36,7 +36,7 @@ Quick Start Guide
 Model Description
 -----------------
 In addition to `Punctuation And Capitalization model <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/punctuation_and_capitalization.html>`_ we add audio encoder (e.g. Conformer's encoder) and attention based fusion of lexical and audio features.
-This model architecture is based on `Multimodal Semi-supervised Learning Framework for Punctuation Prediction in Conversational Speech <https://arxiv.org/pdf/2008.00702.pdf>`__ :cite:`nlp-punct-sunkara2020multimodal`.
+This model architecture is based on `Multimodal Semi-supervised Learning Framework for Punctuation Prediction in Conversational Speech <https://arxiv.org/pdf/2008.00702.pdf>`__ :cite:`nlp-punct-sunkara20_interspeech`.
 
 .. note::
 

@@ -1,3 +1,4 @@
+click==8.0.2
 black==19.10b0
 isort[requirements] < 5
 parameterized

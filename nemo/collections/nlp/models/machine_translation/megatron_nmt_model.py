@@ -191,40 +191,20 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             tensor_model_parallel_size=self._cfg.get('tensor_model_parallel_size', 1),
         )
 
-    def training_step(self, batch, batch_idx):
-        # Need to squeze dim 0 for tarred datasets since things are pre-batched and we ask the dataloader for batch size 1.
-        if self._cfg.train_ds.dataset_type in ['tarred', 'text']:
-            batch = [[x.squeeze(dim=0) if x.ndim == 3 else x for x in microbatch] for microbatch in batch]
-            batch = self.process_global_batch_for_tarred_datasets(batch)
-        elif (
-            self._cfg.train_ds.dataset_type in ['bin_memmap', 'text_memmap']
-            and self._cfg.train_ds.get("sampler", "distributed") == 'distributed'
-        ):
-            batch = self._process_global_batch_without_megatron_batch_sampler(batch, tokenizer=self.encoder_tokenizer)
-        if self._cfg.train_ds.dataset_type in ['tarred', 'text']:
-            app_state = AppState()
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=batch['text_enc'].size(0) * parallel_state.get_data_parallel_world_size(),
-                micro_batch_size=batch['text_enc'].size(0),
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
-        return super().training_step(batch, batch_idx)
+    def eval_step(self, batch, batch_idx, dataloader_idx):
+        # Need to squeze dim 0 for old NMT datasets since things are pre-batched and we ask the dataloader for batch size 1.
+        batch = [x.squeeze(dim=0) if x.ndim == 3 else x for x in batch]
+        batch = self.process_global_batch_for_text_translation_datasets(batch)
 
-    def eval_step(self, batch, batch_idx, dataloader_idx, data_cfg):
-        # Need to squeze dim 0 for tarred datasets since things are pre-batched and we ask the dataloader for batch size 1.
-        batch = [[x.squeeze(dim=0) if x.ndim == 3 else x for x in microbatch] for microbatch in batch]
-        batch = self.process_global_batch_for_tarred_datasets(batch)
-        if data_cfg.dataset_type in ['tarred', 'text']:
-            app_state = AppState()
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=batch['text_enc'].size(0) * parallel_state.get_data_parallel_world_size(),
-                micro_batch_size=batch['text_enc'].size(0),
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
+        # Eval step requires text datasets so we need to reconfigure MBS on each batch.
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=batch['text_enc'].size(0) * parallel_state.get_data_parallel_world_size(),
+            micro_batch_size=batch['text_enc'].size(0),
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
+        )
         # This returns the averaged loss across data-parallel groups.
         reduced_loss = super().validation_step(batch, batch_idx)
         tokens_enc, labels, enc_mask = batch['text_enc'], batch['labels'], batch['enc_mask']
@@ -290,7 +270,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
         """
-        return self.eval_step(batch, batch_idx, dataloader_idx, self._cfg.validation_ds)
+        return self.eval_step(batch, batch_idx, dataloader_idx)
 
     def _setup_eval_dataloader_from_config(self, cfg: DictConfig, dataset):
 
@@ -448,93 +428,56 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
             self._test_dl = self._setup_eval_dataloader_from_config(cfg=test_data_config, dataset=self._test_ds)
 
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
-        # TODO: Figure out how to set global rank and world size for model parallel.
         if hasattr(self, '_train_ds'):
-            if train_data_config.dataset_type in ['tarred', 'text']:
-                self._train_dl = MTEncDecModel._setup_dataloader_from_config(
-                    cfg=train_data_config, dataset=self._train_ds
-                )
-            elif train_data_config.dataset_type in ['bin_memmap', 'text_memmap']:
-                consumed_samples = self.compute_consumed_samples(0)
-                self._train_dl = self._setup_megatron_dataloader_from_config(
-                    cfg=train_data_config, dataset=self._train_ds, consumed_samples=consumed_samples
-                )
+            consumed_samples = self.compute_consumed_samples(0)
+            self._train_dl = self._setup_megatron_dataloader_from_config(
+                cfg=train_data_config, dataset=self._train_ds, consumed_samples=consumed_samples
+            )
 
     def _setup_megatron_dataloader_from_config(self, cfg, dataset, consumed_samples):
         logging.info(f'Building dataloader with consumed samples: {consumed_samples}')
-        rank = parallel_state.get_data_parallel_rank()
-        world_size = parallel_state.get_data_parallel_world_size()
         if isinstance(dataset, BlendableDataset):
             collate_fn = dataset.datasets[0].collate_fn
         else:
             collate_fn = dataset.collate_fn
 
-        if cfg.get("sampler", "distributed") == 'distributed':
-            sampler = torch.utils.data.distributed.DistributedSampler(
-                dataset,
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=True,
-                seed=consumed_samples,  # Ensures that each time the model is restored, a new seed is used to see examples in a different order.
-            )
-            return torch.utils.data.DataLoader(
-                dataset,
-                collate_fn=collate_fn,
-                sampler=sampler,
-                batch_size=cfg.micro_batch_size,
-                num_workers=cfg.num_workers,
-                pin_memory=cfg.pin_memory,
-                drop_last=cfg.drop_last,
-            )
-        elif cfg.get("sampler", "distributed") == 'megatron':
-            batch_sampler = MegatronPretrainingBatchSampler(
-                total_samples=len(dataset),
-                consumed_samples=consumed_samples,
-                micro_batch_size=cfg.micro_batch_size,
-                global_batch_size=cfg.global_batch_size,
-                data_parallel_rank=parallel_state.get_data_parallel_rank(),
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-                drop_last=True,
-            )
-            return torch.utils.data.DataLoader(
-                dataset,
-                batch_sampler=batch_sampler,
-                collate_fn=collate_fn,
-                num_workers=cfg.num_workers,
-                pin_memory=cfg.pin_memory,
-            )
-        else:
-            raise ValueError(f"Invalid sampler {cfg.sampler}. Options: ['distributed', 'megatron']")
+        batch_sampler = MegatronPretrainingBatchSampler(
+            total_samples=len(dataset),
+            consumed_samples=consumed_samples,
+            micro_batch_size=cfg.micro_batch_size,
+            global_batch_size=cfg.global_batch_size,
+            data_parallel_rank=parallel_state.get_data_parallel_rank(),
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            drop_last=True,
+        )
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=collate_fn,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
+        )
 
-    def process_global_batch_for_tarred_datasets(self, batch):
+    def process_global_batch_for_text_translation_datasets(self, batch):
         """Override parent process_batch since TranslationDataset does not return dictionaries."""
-        global_batch = []
-        for microbatch in batch:
-            # Convert each microbatch into a dictionary.
-            src_ids, src_mask, tgt_ids, tgt_mask, labels = microbatch
-            batch = {
-                'text_enc': src_ids,
-                'text_dec': tgt_ids,
-                'labels': labels,
-                'enc_mask': src_mask.long(),  # super().process_batch() expects torch.int64
-                'dec_mask': tgt_mask.long(),  # super().process_batch() expects torch.int64
-                'loss_mask': tgt_mask.long(),  # super().process_batch() expects torch.int64
-            }
-            global_batch.append(batch)
+        # Convert each microbatch into a dictionary.
+        src_ids, src_mask, tgt_ids, tgt_mask, labels = batch
+        batch = {
+            'text_enc': src_ids,
+            'text_dec': tgt_ids,
+            'labels': labels,
+            'enc_mask': src_mask.long(),  # super().process_batch() expects torch.int64
+            'dec_mask': tgt_mask.long(),  # super().process_batch() expects torch.int64
+            'loss_mask': tgt_mask.long(),  # super().process_batch() expects torch.int64
+        }
 
         # Parent function will pad microbatches to the same length.
-        return self._process_global_batch_without_megatron_batch_sampler(
-            global_batch, tokenizer=self.encoder_tokenizer
-        )
+        return self._process_global_batch_without_megatron_batch_sampler([batch], tokenizer=self.encoder_tokenizer)
 
     def build_train_valid_test_datasets(self):
         """Builds the train, validation, and test datasets."""
 
-        # Builds datasets if the type is tarred or from raw text without memmap.
-        if self._cfg.train_ds.dataset_type in ['tarred', 'text']:
-            self._train_ds = self.build_tarred_train_dataset()
-        elif self._cfg.train_ds.dataset_type in ['bin_memmap', 'text_memmap']:
-            self._train_ds = self.build_memmap_dataset_from_config(self._cfg.train_ds)
+        self._train_ds = self.build_memmap_dataset_from_config(self._cfg.train_ds)
 
         if self._cfg.validation_ds.get("dataset_type", "text") != "text":
             raise ValueError(f"Validation dataset type must be 'text', found {self._cfg.validation_ds.dataset_type}")
@@ -652,17 +595,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
                     seed=self._cfg.seed,
                 )
         return dataset
-
-    def build_tarred_train_dataset(self):
-        return MTEncDecModel._setup_dataset_from_config(
-            cfg=self._cfg.train_ds,
-            encoder_tokenizer=self.encoder_tokenizer,
-            decoder_tokenizer=self.decoder_tokenizer,
-            global_rank=parallel_state.get_data_parallel_rank(),
-            world_size=parallel_state.get_data_parallel_world_size(),
-            multilingual=self.multilingual,
-            multilingual_ids=self.multilingual_ids,
-        )
 
     def list_available_models(self):
         pass
@@ -816,17 +748,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         if normalizer is not None:
             translations = [normalizer.normalize(example) for example in translations]
         return translations
-
-    def on_train_start(self) -> None:
-        """PTL hook used to override DataFetcher with GlobalBatchDataFetcher """
-        if self._cfg.train_ds.get("sampler", "distributed") == 'distributed':
-            self.trainer.fit_loop._data_fetcher = GlobalBatchDataFetcher()
-
-    def on_validation_start(self) -> None:
-        """PTL hook used to override DataFetcher with GlobalBatchDataFetcher """
-        logging.info('Validation start ...')
-        self.trainer.fit_loop.epoch_loop.val_loop._data_fetcher = GlobalBatchDataFetcher()
-        self.trainer.validate_loop._data_fetcher = GlobalBatchDataFetcher()
 
     def on_test_start(self) -> None:
         self.trainer.test_loop._data_fetcher = GlobalBatchDataFetcher()

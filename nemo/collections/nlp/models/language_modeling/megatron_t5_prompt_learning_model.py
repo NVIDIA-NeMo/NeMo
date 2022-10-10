@@ -581,4 +581,4 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             acc = correct / len(gather_results_dedup) if all_labels[0] else None
 
             logging.info(f'Prediction results: {acc}')
-            logging.info(f'Test finish---------------------------------')
+            logging.info(f'Test finish')

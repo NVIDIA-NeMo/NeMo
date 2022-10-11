@@ -533,7 +533,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
             # map batch and shared args into forward args
             args = self._build_forward_args_from_kwargs(args_name=arg_names, args=batch, **kwargs)
-            output = model(*args)
+            output = model(*args).contiguous()
 
             def id_func(output_tensor):
                 return output_tensor, {output_name: output_tensor}

@@ -46,8 +46,10 @@ model:
   
   restore_path: null # Path to an existing p-tuned/prompt tuned .nemo model you wish to add new tasks to or run inference with
   language_model_path: ??? # Path to the pretrained T5 language model .nemo file, always required
+  save_nemo_on_validation_end: True # Saves an inference ready .nemo file every time a checkpoint is saved during training. 
   existing_tasks: []
   new_tasks: ["squad"] 
+
 
   task_templates: 
   - taskname: "squad" 

@@ -138,6 +138,7 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
             raise ValueError('precision must be in [32, 16, "bf16"]')
         # make sure the default pytorch lightning gradient clipping in the basemodel
         self.grad_clip_pl_default = True
+        self.lowest_val_loss = None
 
     def load_task_templates(self, task_templates):
         """
@@ -229,18 +230,16 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         weights during inference or future p-tuning/prompt-tuning.
         """
         # Save p-tuned prompts to prompt table
-        for taskname in self.new_tasks:
-            device = next(self.word_embeddings.parameters()).device
-            tokenized_taskname = torch.tensor(self.tokenizer.text_to_ids(taskname)).to(device)
-            taskname_embeddings = self.word_embeddings(tokenized_taskname).unsqueeze(0)
-            virtual_prompt_embeddings = self.prompt_encoder(taskname_embeddings=taskname_embeddings).squeeze(0)
-            total_virtual_tokens = self.task_templates[taskname]["total_virtual_tokens"]
-            self.prompt_table.add_prompt_from_p_tuning_encoder(
-                taskname, virtual_prompt_embeddings, total_virtual_tokens
-            )
-
-        # Remove prompt encoder from model
-        self.prompt_encoder = None
+        if self.virtual_prompt_style == VirtualPromptStyle.P_TUNING and self.first_stage_of_pipeline():
+            for taskname in self.new_tasks:
+                device = next(self.word_embeddings.parameters()).device
+                tokenized_taskname = torch.tensor(self.tokenizer.text_to_ids(taskname)).to(device)
+                taskname_embeddings = self.word_embeddings(tokenized_taskname).unsqueeze(0)
+                virtual_prompt_embeddings = self.prompt_encoder(taskname_embeddings=taskname_embeddings).squeeze(0)
+                total_virtual_tokens = self.task_templates[taskname]["total_virtual_tokens"]
+                self.prompt_table.add_prompt_from_p_tuning_encoder(
+                    taskname, virtual_prompt_embeddings, total_virtual_tokens
+                )
 
     def freeze_existing_virtual_prompt_params(self):
         """Freeze params of existing virtual prompts that should not be tuned further
@@ -407,17 +406,7 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         input_embeds = torch.where(virtual_token_locations, virtual_token_embeds, discrete_token_embeds)
         return input_embeds
 
-    def first_stage_of_pipeline(self):
-        if self.frozen_model.enc_dec_model.pre_process and parallel_state.get_pipeline_model_parallel_rank() == 0:
-            return True
-        return False
-
-    def on_train_end(self):
-        # Save p-tuned prompts to prompt table for inference or future task training
-        if self.virtual_prompt_style == VirtualPromptStyle.P_TUNING and self.first_stage_of_pipeline():
-            self.add_ptuned_prompts_to_prompt_table()
-            logging.info(f"All p-tuned prompts where moved to the prompt table.")
-
+    def update_config_for_inference_and_save(self):
         self.virtual_prompt_style = VirtualPromptStyle.INFERENCE
         self.virtual_prompt_source = VirtualPromptSource.PROMPT_TABLE
 
@@ -429,7 +418,40 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
 
         # Save the best nemo model
         self.save_to(save_path=self.cfg.nemo_path)
-        logging.info(f"The final model was saved to {self.cfg.nemo_path}")
+        logging.info(f"An inference ready model was saved to {self.cfg.nemo_path}")
+
+    def save_checkpoint_as_nemo_file(self):
+        self.add_ptuned_prompts_to_prompt_table()
+
+        # Save current config and state dict params in temp values
+        current_virtual_prompt_style = self.virtual_prompt_style
+        current_virtual_prompt_source = self.virtual_prompt_source
+        current_existing_tasks = self.cfg.existing_tasks
+        current_new_tasks = self.cfg.new_tasks
+
+        # Temporarily overwrite params to save an inference ready .nemo checkpoint
+        self.update_config_for_inference_and_save()
+
+        # Set values back to their training state to continue training
+        self.virtual_prompt_style = current_virtual_prompt_style
+        self.virtual_prompt_source = current_virtual_prompt_source
+
+        with open_dict(self.cfg):
+            self.cfg.existing_tasks = current_existing_tasks
+            self.cfg.new_tasks = current_new_tasks
+            self.cfg.virtual_prompt_style = current_virtual_prompt_style.value
+
+    def on_train_end(self):
+        # Save p-tuned prompts to prompt table for inference or future task training
+        if self.virtual_prompt_style == VirtualPromptStyle.P_TUNING:
+            self.add_ptuned_prompts_to_prompt_table()
+            logging.info(f"All p-tuned prompts where moved to the prompt table.")
+
+            # Remove prompt encoder from model
+            self.prompt_encoder = None
+            logging.info(f"Prompt encoder deleted")
+
+        self.update_config_for_inference_and_save()
 
     def setup(self, stage=None):
         if (
@@ -495,6 +517,9 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         return self._inference_config
 
     def set_input_tensor(self, input_tensor):
+        pass
+
+    def first_stage_of_pipeline(self):
         pass
 
     @classmethod

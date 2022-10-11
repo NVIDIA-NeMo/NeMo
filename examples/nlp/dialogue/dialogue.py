@@ -66,7 +66,7 @@ def main(cfg: DictConfig) -> None:
     logging.info(f'Config: {OmegaConf.to_yaml(cfg)}')
 
     try:
-        strategy = NLPDDPStrategy()
+        strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
     except (ImportError, ModuleNotFoundError):
         strategy = None
 
@@ -75,9 +75,12 @@ def main(cfg: DictConfig) -> None:
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     app_state = AppState()
+    app_state.data_parallel_size = cfg.model.data_parallel_size
     if cfg.model.tensor_model_parallel_size > 1:
         app_state.model_parallel_size = cfg.model.tensor_model_parallel_size
-        app_state.model_parallel_rank = compute_model_parallel_rank(trainer.local_rank, app_state.model_parallel_size)
+        app_state.tensor_model_parallel_rank = compute_model_parallel_rank(
+            trainer.local_rank, app_state.model_parallel_size
+        )
 
     if 'bert' in cfg.model.language_model.pretrained_model_name:
         if cfg.model.dataset.task == 'sgd':
@@ -110,7 +113,7 @@ def main(cfg: DictConfig) -> None:
             model = model_class.from_pretrained(cfg.pretrained_model)
         else:
             logging.info(f'Restoring model from {cfg.model.nemo_path}')
-            model = model_class.restore_from(cfg.model.nemo_path)
+            model = model_class.restore_from(cfg.model.nemo_path, trainer=trainer)
 
         if cfg.do_training:
             model.setup_training_data(train_data_config=cfg.model.train_ds)
@@ -122,7 +125,13 @@ def main(cfg: DictConfig) -> None:
     if cfg.do_training:
         trainer.fit(model)
         if cfg.model.nemo_path:
-            model.save_to(cfg.model.nemo_path)
+            if not os.path.exists(cfg.model.nemo_path):
+                model.save_to(cfg.model.nemo_path)
+            else:
+                updated_nemo_path = cfg.model.nemo_path.replace(".nemo", "_new.nemo")
+                logging.warning("nemo path exists, saving at {} instead".format(updated_nemo_path))
+                model.save_to(updated_nemo_path)
+
     else:
         data_dir = cfg.model.dataset.get('data_dir', None)
         dialogues_example_dir = cfg.model.dataset.get('dialogues_example_dir', None)
@@ -137,13 +146,8 @@ def main(cfg: DictConfig) -> None:
                 model._cfg.dataset = cfg.model.dataset
 
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.ds_item is not None:
-        eval_device = [cfg.trainer.devices[0]] if isinstance(cfg.trainer.devices, list) else 1
-        trainer = pl.Trainer(
-            devices=eval_device, accelerator=cfg.trainer.accelerator, precision=16, strategy=NLPDDPStrategy()
-        )
         model.setup_multiple_test_data(test_data_config=cfg.model.test_ds)
-        if model.prepare_test(trainer):
-            trainer.test(model)
+        trainer.test(model)
 
 
 if __name__ == '__main__':

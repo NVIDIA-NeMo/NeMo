@@ -108,7 +108,7 @@ class DialogueGPTClassificationDataset(DialogueDataset):
             self.label_to_description[label] = description
         for candidate in candidates:
             self.all_possible_labels.add(candidate)
-        self.max_candidates = max(self.max_candidates, len(candidates) * 2)
+        self.max_candidates = max(self.max_candidates, len(candidates))
 
     def default_encode(self, sentence):
         encodings_dict = self.tokenizer.tokenizer(
@@ -200,6 +200,33 @@ class DialogueGPTClassificationDataset(DialogueDataset):
                 + base_template
             )
         return base_template
+
+    def collate_fn(self, batch):
+        """
+        Truncates elements to max length in batch
+        """
+        _, _, _, _, candidate_attn_masks, _, _, _ = zip(*batch)
+        # determine max length in batch
+        batch_max_length = 0
+        for candidate_attn_mask in candidate_attn_masks:
+            for one_attn_mask in candidate_attn_mask:
+                batch_max_length = max(batch_max_length, torch.sum(one_attn_mask).item())
+        # padding for tp=2 situation
+        if batch_max_length % 2:
+            batch_max_length += 1
+
+        all_items = []
+        for item in zip(*batch):
+            if isinstance(item[0], int):
+                item = [torch.tensor(i) for i in item]
+            item_stack = torch.stack(item)
+            # if item_stack is 1d, elements refers to indexes and there is no need to truncate
+            if len(item_stack.size()) == 1:
+                all_items.append(item_stack)
+            # otherwise, truncate last dimension to max length in batch
+            else:
+                all_items.append(item_stack[..., :batch_max_length])
+        return all_items
 
     def __getitem__(self, idx: int):
 

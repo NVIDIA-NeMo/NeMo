@@ -60,17 +60,22 @@ model:
     num_output_layers: 2
     fc_dropout: 0.1
   
-  # Dialogue GPT Classification Magetron Prompt Learning model args
+  # Dialogue GPT Classification Megatron Prompt Learning model args
   prompt_learning: false # please change to true to activate prompt learning
   language_model_path: ${model.language_model.lm_checkpoint}
   new_tasks: ['intent_and_slot']
   prompt_tuning:
     new_prompt_init_methods: ['text']
-    new_prompt_init_text: ['intent classification and slot filling']
+    new_prompt_init_text: ['intent_and_slot']
+  p_tuning: # P-tuning specific params
+    dropout: 0.0
+    num_layers: 2
+  prompt_learning_nemo_path: prompt_learning.nemo
   data: {}
-  virtual_prompt_style: 'prompt-tuning' #'p-tuning'
+  virtual_prompt_style: 'p-tuning' # 'prompt-tuning'
   encoder_seq_length: 2048
   pipeline_model_parallel_size: 1
+  data_parallel_size: 1
   global_batch_size: 8
   micro_batch_size: 8
 

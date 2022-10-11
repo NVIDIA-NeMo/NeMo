@@ -36,6 +36,13 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_
     MegatronGPTPromptLearningModel,
 )
 from nemo.collections.nlp.models.nlp_model import NLPModel
+from nemo.collections.nlp.modules.common import VirtualPromptSource, VirtualPromptStyle
+from nemo.collections.nlp.modules.common.text_generation_utils import (
+    get_default_sampling_params,
+    megatron_gpt_generate,
+)
+from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
@@ -51,18 +58,27 @@ class DialogueGPTClassificationModel(NLPModel):
         self.eval_mode = cfg.dataset.eval_mode
         self.data_prepared = False
         self.epoch_number = 0
+        self.prompt_learning = self.cfg.prompt_learning
         super().__init__(cfg=cfg, trainer=trainer, no_lm_init=True)
 
         if self.cfg.library == "huggingface":
             self.language_model = AutoModelWithLMHead.from_pretrained(cfg.language_model.pretrained_model_name)
             self.language_model.resize_token_embeddings(len(self.tokenizer.tokenizer))
+            self.unreduced_loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
         elif self.cfg.library == "megatron":
-            self.prompt_learning = self.cfg.prompt_learning
             if self.prompt_learning:
-                # removing tokenizer cfg as this triggers tokenizer construction which is not helpful here as we have a separate tokenizer
-                new_cfg = copy.copy(cfg)
-                del new_cfg.tokenizer
-                self.language_model = MegatronGPTPromptLearningModel(new_cfg, trainer)
+                if os.path.exists(cfg.prompt_learning_nemo_path):
+                    self.language_model = MegatronGPTPromptLearningModel.restore_from(
+                        cfg.prompt_learning_nemo_path,
+                        trainer=trainer,
+                        save_restore_connector=NLPSaveRestoreConnector(),
+                    )
+                else:
+                    # removing tokenizer cfg as this triggers tokenizer construction which is not helpful here as we have a separate tokenizer
+                    new_cfg = copy.copy(cfg)
+                    del new_cfg.tokenizer
+                    new_cfg.nemo_path = cfg.prompt_learning_nemo_path
+                    self.language_model = MegatronGPTPromptLearningModel(new_cfg, trainer)
             else:
                 self.language_model = MegatronGPTModel.restore_from(cfg.language_model.lm_checkpoint, trainer=trainer)
 
@@ -83,8 +99,36 @@ class DialogueGPTClassificationModel(NLPModel):
             num_classes=len(self.label_to_ids) + 1, mode='micro', label_ids=self.label_to_ids, dist_sync_on_step=True
         )
 
-    def training_step(self, batch, batch_idx):
+    def setup_optimizer_param_groups(self):
+        """
+        ModelPT override for prompt learning. 
+        Optimizer will get self._optimizer_param_groups. 
+        Makes two optimizer param groups, one for the frozen model params
+        and one for the prompt-table/prompt-encoder params. The learning 
+        rate for the frozen model's params will always be zero effectively
+        freezing the model's params but still allowing for the needed gradients
+        to be passed around in pipeline parallel models. The prompt-encoder 
+        and/or prompt table will use the learning rate set by the user. 
+        """
+        if not self.prompt_learning:
+            super().setup_optimizer_param_groups()
+            return
+        # Freeze frozen model
+        for param in self.language_model.frozen_model.parameters():
+            param.requires_grad = False
 
+        virtual_prompt_params = {'params': []}
+
+        if self.language_model.frozen_model.model.pre_process:
+            virtual_prompt_params['params'].extend([param for param in self.language_model.prompt_table.parameters()])
+
+            if self.language_model.virtual_prompt_source == VirtualPromptSource.PROMPT_ENCODER:
+                virtual_prompt_params['params'].extend(
+                    [param for param in self.language_model.prompt_encoder.parameters()]
+                )
+        self._optimizer_param_groups = (virtual_prompt_params,)
+
+    def training_step(self, batch, batch_idx):
         (
             input_ids,
             attn_masks,
@@ -129,7 +173,7 @@ class DialogueGPTClassificationModel(NLPModel):
             attn_masks = torch.stack(new_attn_masks)
             labels = self.get_binary_score_labels(input_ids)
 
-        loss = self(input_ids, attn_masks, labels, inference=False)
+        loss, _ = self(input_ids, attn_masks, labels, inference=False)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return {'loss': loss}
 
@@ -224,24 +268,64 @@ class DialogueGPTClassificationModel(NLPModel):
         # return self(batch)
         raise NotImplementedError()
 
+    def on_train_end(self):
+        if self.prompt_learning:
+            self.language_model.on_train_end()
+
+    def get_prompt_token_labels_for_megatron_gpt(self, input_ids, num_prompt_tokens):
+
+        prompt_token_labels = torch.full(
+            size=(input_ids.size(0), num_prompt_tokens),
+            fill_value=self.tokenizer.tokenizer.pad_token_id,
+            dtype=torch.long,
+        )
+
+        if self.prompt_learning:
+            prompt_token_labels.data = torch.LongTensor(
+                np.tile(np.array(self.language_model.pseudo_token_ids), (input_ids.size(0), 1))
+            )
+
+        prompt_token_labels = prompt_token_labels.to(input_ids.device)
+
+        return prompt_token_labels
+
+    def get_virtual_prompt_ids_for_megatron_gpt(self, input_ids):
+        if (
+            self.cfg.virtual_prompt_style == VirtualPromptStyle.PROMPT_TUNING
+            or not self.prompt_learning
+            or self.trainer.testing
+        ):
+            prompt_ids = torch.tensor([0] * input_ids.size(0)).to(input_ids.device) if self.prompt_learning else None
+        else:
+            total_virtual_tokens = self.cfg.task_templates[0].total_virtual_tokens
+            init_text = self.cfg.task_templates[0].taskname
+            init_text_ids = self.tokenizer.text_to_ids(init_text)
+            init_text_ids = torch.tensor(init_text_ids).to(input_ids.device)
+            prompt_ids = init_text_ids.repeat(input_ids.size(0), 1)[:, :total_virtual_tokens]
+        return prompt_ids
+
     def forward(self, input_ids, attention_mask, labels, inference=True):
 
         if self.cfg.library == "huggingface":
             output = self.language_model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = output['loss']
-
+            # calculate loss per sample
+            b_logits = output['logits']
+            shift_logits = b_logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            unreduced_loss = self.unreduced_loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+            )
+            loss_per_sample = torch.mean(unreduced_loss.view(shift_labels.size()), dim=-1)
         elif self.cfg.library == "megatron":
             num_prompt_tokens = (
                 len(self.language_model.pseudo_token_ids) if hasattr(self.language_model, 'pseudo_token_ids') else 0
             )
-
             position_ids = torch.arange(
                 start=0, end=num_prompt_tokens + input_ids.size(1), dtype=torch.long, device=input_ids.device,
             )
 
-            position_ids = position_ids.unsqueeze(0).repeat(input_ids.size(0), 1)
-
-            prompt_ids = torch.tensor([0] * input_ids.size(0)) if self.prompt_learning else None
+            prompt_ids = self.get_virtual_prompt_ids_for_megatron_gpt(input_ids)
 
             attn_mask_add_on = torch.ones((attention_mask.size(0), num_prompt_tokens), device=attention_mask.device)
             full_attention_mask = torch.cat([attn_mask_add_on, attention_mask], axis=-1)
@@ -249,22 +333,11 @@ class DialogueGPTClassificationModel(NLPModel):
                 full_attention_mask.unsqueeze(2).tile(full_attention_mask.size(1))
             ).unsqueeze(1)
 
-            attn_mask = full_attention_mask_expand > 0
+            attn_mask = full_attention_mask_expand <= 0
 
-            prompt_token_labels = torch.full(
-                size=(input_ids.size(0), num_prompt_tokens),
-                fill_value=self.tokenizer.tokenizer.pad_token_id,
-                dtype=torch.long,
-            )
+            prompt_token_labels = self.get_prompt_token_labels_for_megatron_gpt(input_ids, num_prompt_tokens)
 
-            if self.prompt_learning:
-                prompt_token_labels.data = torch.LongTensor(
-                    np.tile(np.array(self.language_model.pseudo_token_ids), (input_ids.size(0), 1))
-                )
-
-            prompt_token_labels = prompt_token_labels.to(input_ids.device)
-
-            input_ids_new = torch.cat([torch.zeros_like(prompt_token_labels), input_ids], axis=1)
+            input_ids_new = torch.cat([prompt_token_labels, input_ids], axis=1)
             make_up_last_column_input_ids = (
                 torch.ones_like(input_ids_new[:, -1:]) * self.tokenizer.tokenizer.pad_token_id
             )
@@ -294,7 +367,20 @@ class DialogueGPTClassificationModel(NLPModel):
             labels_mask = labels_mask_0 > 0
 
             loss = self.mask_and_reduce_loss(labels_mask, unmasked_unreduced_loss)
-        return loss
+            loss_per_sample = self.mask_and_reduce_loss_per_sample(labels_mask, unmasked_unreduced_loss)
+
+        return loss, loss_per_sample
+
+    def mask_and_reduce_loss_per_sample(self, loss_mask, unmasked_unreduced_loss):
+        """
+        Mask and reduce loss based on each sample in batch
+        Useful for ranking candidates with the same prompt in batch based on loss
+        """
+        losses = unmasked_unreduced_loss.float()
+        loss_mask = loss_mask.view(-1).float()
+        masked_loss = losses.view(-1) * loss_mask
+        loss_per_sample = torch.mean(masked_loss.view(unmasked_unreduced_loss.size()), dim=-1)
+        return loss_per_sample
 
     def mask_and_reduce_loss(self, loss_mask, output_tensor):
         losses = output_tensor.float()
@@ -316,6 +402,7 @@ class DialogueGPTClassificationModel(NLPModel):
         template_length,
         correct_candidate,
         minus_negative=True,
+        inference=False,
     ):
         best_candidate_input_ids = []
 
@@ -335,6 +422,7 @@ class DialogueGPTClassificationModel(NLPModel):
                     candidate_input_ids[i, start_yes : start_yes + 1, :],
                     candidate_attn_masks[i, start_yes : start_yes + 1, :],
                     self.get_binary_score_labels(candidate_input_ids[i, start_yes : start_yes + 1, :]),
+                    inference=inference,
                 )
 
                 considered_loss = cand_loss.item()
@@ -346,6 +434,7 @@ class DialogueGPTClassificationModel(NLPModel):
                         candidate_input_ids[i, start_no : start_no + 1, :],
                         candidate_attn_masks[i, start_no : start_no + 1, :],
                         self.get_binary_score_labels(candidate_input_ids[i, start_no : start_no + 1, :]),
+                        inference=inference,
                     )
                     considered_loss -= negative_cand_loss.item()
 
@@ -376,43 +465,47 @@ class DialogueGPTClassificationModel(NLPModel):
         return labels
 
     def rank_candidates(
-        self, candidate_input_ids, candidate_attn_masks, utterance_length, labels, template_length, minus_prior=True
+        self,
+        candidate_input_ids,
+        candidate_attn_masks,
+        utterance_length,
+        labels,
+        template_length,
+        minus_prior=True,
+        inference=False,
     ):
         best_candidate_input_ids = []
 
         for i in range(candidate_input_ids.size(0)):
-            best_j = 0
-
-            lowest_loss = float("inf")
-
-            utterance_end = utterance_length[i].item()
-            for j in range(candidate_input_ids.size(1)):
-
-                if 0 < j < candidate_input_ids.size(1) and torch.equal(
-                    candidate_input_ids[i, j, :], candidate_input_ids[i, 0, :]
-                ):
+            # candidates are padded with first candidate to ensure equal number of candidates in batch
+            # run for loop to strip redundant candidates
+            last_j = candidate_input_ids.size(1)
+            for j in range(1, candidate_input_ids.size(1)):
+                if torch.equal(candidate_input_ids[i, j, :], candidate_input_ids[i, 0, :]):
+                    last_j = j
                     break
 
-                cand_loss = self(
-                    candidate_input_ids[i, j : j + 1, :],
-                    candidate_attn_masks[i, j : j + 1, :],
-                    candidate_input_ids[i, j : j + 1, :],
+            utterance_end = utterance_length[i].item()
+            # this might cause GPU memory pressure there are many candidates
+            # if OOM, re-write to do this in a for loop with as many as train_ds.batch_size
+            _, loss_per_sample = self(
+                candidate_input_ids[i, :last_j, :],
+                candidate_attn_masks[i, :last_j, :],
+                candidate_input_ids[i, :last_j, :],
+                inference=inference,
+            )
+
+            if minus_prior:
+                _, utterance_free_cand_loss_per_sample = self(
+                    candidate_input_ids[i, :last_j, utterance_end:],
+                    candidate_attn_masks[i, :last_j, utterance_end:],
+                    candidate_input_ids[i, :last_j, utterance_end:],
+                    inference=inference,
                 )
-
-                considered_loss = cand_loss.item()
-
-                if minus_prior:
-                    utterance_free_cand_loss = self(
-                        candidate_input_ids[i, j : j + 1, utterance_end:],
-                        candidate_attn_masks[i, j : j + 1, utterance_end:],
-                        candidate_input_ids[i, j : j + 1, utterance_end:],
-                    )
-                    considered_loss -= utterance_free_cand_loss.item()
-
-                if considered_loss < lowest_loss:
-                    best_j = j
-                    lowest_loss = considered_loss
-
+                considered_loss = loss_per_sample - utterance_free_cand_loss_per_sample
+            else:
+                considered_loss = loss_per_sample
+            best_j = torch.argmin(considered_loss)
             best_candidate_input_ids.append(candidate_input_ids[i, best_j, :])
 
         candidate_tokens = torch.stack(best_candidate_input_ids)
@@ -420,52 +513,6 @@ class DialogueGPTClassificationModel(NLPModel):
             candidate_tokens, labels, template_length=template_length
         )
         return generated_field, ground_truth_field
-
-    def prepare_megatron_generation(self, labels, input_ids, template_length):
-        """
-        # adapted from MegatronGPTModel._bucketize_gpt_inference 
-        """
-        batch_size = labels.size(0)
-        prompt_tags = [self.prompt_tags[0]] * batch_size if self.prompt_learning else None
-        batch_tokens = input_ids.tolist()
-
-        # unpad tokens
-        lens = template_length
-        indxs = [index for index in range(batch_size)]
-        for lenn, index in zip(lens, indxs):
-            batch_tokens[index] = batch_tokens[index][:lenn]
-
-        # chunk tokens by same length
-        pre_buckets, lens = [], list(set(lens.tolist()))
-        for lenn in lens:
-            pre_buckets.append([(tokens, index) for index, tokens in enumerate(batch_tokens) if len(tokens) == lenn])
-
-        buckets, positions, bucket_prompt_tags = [], [], []
-
-        # get buckets and prompts initial positions
-        for bucket in pre_buckets:
-            buckets.append(torch.tensor([item[0] for item in bucket]).to(device=labels.device))
-            positions.append([item[1] for item in bucket])
-
-            # bucket prompt tags identically to their corresponding examples
-            if prompt_tags:
-                bucket_prompt_tags.append([prompt_tags[item[1]] for item in bucket])
-
-        # Flatten position list
-        positions = [item for sublist in positions for item in sublist]
-
-        # Flatten buckets and bucket_prompt_tags # temp fix for megatron complete issue. However, this is also slower than bucketized inference
-        buckets = [item.unsqueeze(0) for sublist in buckets for item in sublist]
-        bucket_prompt_tags = [[item] for sublist in bucket_prompt_tags for item in sublist]
-
-        request = {"tokens": buckets, "prompt_tags": bucket_prompt_tags}
-
-        return positions, request
-
-    def post_process_megatron_generation(self, outputs):
-        text_outputs = [output[0] for output in outputs]
-        generated_tokens = self.tokenizer.tokenizer(text_outputs, padding=True, return_tensors="pt").data["input_ids"]
-        return generated_tokens
 
     def generate_candidates(self, labels, template_length, input_ids, attn_masks):
 
@@ -494,14 +541,53 @@ class DialogueGPTClassificationModel(NLPModel):
             generated_tokens = torch.cat(generated_tokens, axis=0)
 
         elif self.cfg.library == "megatron":
-            positions, request = self.prepare_megatron_generation(labels, input_ids, template_length)
-            outputs = self.language_model.complete(request, positions, tokens_to_generate)
-            generated_tokens = self.post_process_megatron_generation(outputs)
+
+            prompt_ids = self.get_virtual_prompt_ids_for_megatron_gpt(input_ids)
+
+            num_prompt_tokens = (
+                len(self.language_model.pseudo_token_ids) if hasattr(self.language_model, 'pseudo_token_ids') else 0
+            )
+
+            prompt_token_labels = self.get_prompt_token_labels_for_megatron_gpt(input_ids, num_prompt_tokens)
+            input_ids_without_answers = [
+                torch.cat(
+                    [
+                        input_ids[i, : template_length[i]],
+                        torch.ones((input_ids.size(1) - template_length[i].item(),)).to(input_ids.device)
+                        * self.tokenizer.tokenizer.pad_token_id,
+                    ],
+                    axis=-1,
+                ).type(input_ids.dtype)
+                for i in range(input_ids.size(0))
+            ]
+            input_ids_without_answers = torch.stack(input_ids_without_answers)
+            input_ids_new = torch.cat(
+                [
+                    prompt_token_labels,
+                    input_ids_without_answers,
+                    torch.ones((input_ids.size(0), tokens_to_generate)).to(input_ids.device)
+                    * self.tokenizer.tokenizer.pad_token_id,
+                ],
+                axis=1,
+            ).type(input_ids.dtype)
+
+            tokens_for_generation = (input_ids_new, template_length + num_prompt_tokens)
+
+            length_param: LengthParam = {"min_length": 0, "max_length": tokens_to_generate}
+
+            generated_dict = megatron_gpt_generate(
+                self.language_model,
+                tokens_for_generation,
+                self.tokenizer,
+                length_param,
+                get_default_sampling_params(),
+                task_ids=prompt_ids,
+            )
+            generated_tokens = torch.LongTensor(generated_dict['token_ids'])
 
         generated_field, ground_truth_field = self.process_into_structured_fields(
-            generated_tokens, labels, template_length=template_length
+            generated_tokens, labels, template_length=template_length + num_prompt_tokens
         )
-
         return generated_field, ground_truth_field
 
     def eval_step_helper(self, batch, mode='val'):
@@ -516,13 +602,19 @@ class DialogueGPTClassificationModel(NLPModel):
             correct_candidate,
         ) = batch
 
-        loss = self(input_ids, attn_masks, labels)
+        inference = mode == 'test'
+        loss, _ = self(input_ids, attn_masks, labels, inference=inference)
         self.log("{}_loss".format(mode), loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
         # ranking using perplexity of candidates following the "<utterance> <label_type>:"
         if self.eval_mode == "ranking":
             generated_field, ground_truth_field = self.rank_candidates(
-                candidate_input_ids, candidate_attn_masks, utterance_length, labels, template_length
+                candidate_input_ids,
+                candidate_attn_masks,
+                utterance_length,
+                labels,
+                template_length,
+                inference=inference,
             )
         # autoregressively generate candidates (possibly with constraint)
         elif self.eval_mode == "generation":
@@ -533,7 +625,13 @@ class DialogueGPTClassificationModel(NLPModel):
         # (optionally, the difference of that with " Answer: no" using the flag minus_negative=True)
         elif self.eval_mode == "binary_score":
             generated_field, ground_truth_field = self.binary_score_candidates(
-                candidate_input_ids, candidate_attn_masks, utterance_length, labels, template_length, correct_candidate
+                candidate_input_ids,
+                candidate_attn_masks,
+                utterance_length,
+                labels,
+                template_length,
+                correct_candidate,
+                inference=inference,
             )
 
         else:
@@ -612,8 +710,11 @@ class DialogueGPTClassificationModel(NLPModel):
 
     def setup(self, stage=None):
         super().setup()
-        if self.cfg.library == "megatron" and self.prompt_learning:
-            self.language_model.init_new_prompts()
+        if self.cfg.library == "megatron" and self.prompt_learning and stage == "fit":
+            if self.cfg.virtual_prompt_style == VirtualPromptStyle.PROMPT_TUNING:
+                self.language_model.init_new_prompts()
+            else:
+                self.language_model.init_prompt_encoder()
 
     def update_data_dirs(self, data_dir: str, dialogues_example_dir: str):
         """

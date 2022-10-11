@@ -2,7 +2,7 @@ pipeline {
   agent {
         docker {
       image 'nvcr.io/nvidia/pytorch:22.09-py3'
-      args '--device=/dev/nvidia0 --gpus all -e TRANSFORMERS_OFFLINE=1 --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
+      args '--device=/dev/nvidia0 --gpus all -e TRANSFORMERS_OFFLINE=0 --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
         }
   }
   options {
@@ -24,13 +24,6 @@ pipeline {
         sh 'nvidia-smi'
       }
     }
-
-    stage('Pin Transformers Version (Hotfix)') {
-      steps{
-        sh 'pip install transformers==4.21.2'
-      }
-    }
-
 
     stage('Transformers Offline') {
       steps{

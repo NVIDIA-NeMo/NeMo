@@ -1,4 +1,5 @@
 Model Name,Model Base Class,Model Card
+langid_ambernet,EncDecSpeakerLabelModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/langid_ambernet"
 vad_multilingual_marblenet,EncDecClassificationModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_multilingual_marblenet"
 vad_marblenet,EncDecClassificationModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_marblenet"
 vad_telephony_marblenet,EncDecClassificationModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_telephony_marblenet"

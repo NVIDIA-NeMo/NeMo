@@ -1,6 +1,6 @@
 pytorch-lightning>=1.7.0
 torchmetrics>=0.4.1rc0
-transformers>=4.0.1
+transformers>=4.0.1,<=4.21.2
 webdataset>=0.1.48,<=0.1.62
 omegaconf>=2.1.2,<2.2
 hydra-core>=1.1.0,<1.2

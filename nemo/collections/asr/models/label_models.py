@@ -82,6 +82,13 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         )
         result.append(model)
 
+        model = PretrainedModelInfo(
+            pretrained_model_name="langid_ambernet",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/langid_ambernet/versions/1.12.0/files/ambernet.nemo",
+            description="For details about this model, please visit https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/langid_ambernet",
+        )
+        result.append(model)
+
         return result
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):

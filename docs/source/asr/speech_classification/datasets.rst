@@ -114,6 +114,24 @@ Each line is a training example. `audio_filepath` contains path to the wav file,
     {"audio_filepath": "<absolute path to dataset>/Emergency_vehicle/id_58368 simambulance.wav", "duration": 0.63, "label": "background", "offset": 4.0}
 
 
+.. _Voxlingua107:
+
+Voxlingua107
+------------------------------
+
+VoxLingua107 consists of short speech segments automatically extracted from YouTube videos. 
+It contains 107 languages. The total amount of speech in the training set is 6628 hours, and 62 hours per language on average but it's highly imbalanced. 
+It also includes seperate evaluation set containing 1609 speech segments from 33 languages, validated by at least two volunteers.
+
+You could download dataset from its `official website <http://bark.phon.ioc.ee/voxlingua107/>`_.
+
+Each line is a training example.
+
+.. code-block:: bash
+
+  {"audio_filepath": "<absolute path to dataset>/ln/lFpWXQYseo4__U__S113---0400.650-0410.420.wav", "offset": 0, "duration": 3.0, "label": "ln"}
+  {"audio_filepath": "<absolute path to dataset>/lt/w0lp3mGUN8s__U__S28---0352.170-0364.770.wav", "offset": 8, "duration": 4.0, "label": "lt"}
+
 
 Preparing Custom Speech Classification Data
 --------------------------------------------

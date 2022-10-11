@@ -9,7 +9,7 @@ Pretrained checkpoints for all of these models, as well as instructions on how t
 You can use the available checkpoints for immediate inference, or fine-tune them on your own datasets.
 The Checkpoints page also contains benchmark results for the available speaker recognition models.
 
-
+.. _TitaNet_model:
 TitaNet
 -----------
 

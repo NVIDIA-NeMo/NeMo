@@ -148,3 +148,7 @@ def ipa_word_tokenize(text):
 
 def german_text_preprocessing(text):
     return text.lower()
+
+
+def spanish_text_preprocessing(text):
+    return text.lower()

@@ -914,13 +914,13 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
 
     @classmethod
     def _setup_eval_dataloader_from_config(cls, cfg, datasets):
-        if cfg.shuffle:
-            sampler = pt_data.RandomSampler(datasets[0])
-        else:
-            sampler = pt_data.SequentialSampler(datasets[0])
-
         dataloaders = []
         for dataset in datasets:
+            if cfg.shuffle:
+                sampler = pt_data.RandomSampler(dataset)
+            else:
+                sampler = pt_data.SequentialSampler(dataset)
+
             dataloaders.append(
                 torch.utils.data.DataLoader(
                     dataset=dataset,

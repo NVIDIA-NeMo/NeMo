@@ -348,10 +348,10 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
                 the multi-scale input matrix during forward propagating.
 
 		Example: `batch_size=3, scale_n=6, emb_dim=192`
-                    ms_seg_counts =
-                     [[8,  9, 12, 16, 25, 51],
-                      [11, 13, 14, 17, 25, 51],
-                      [ 9,  9, 11, 16, 23, 50]]
+                    ms_seg_counts =  
+                     [[8,  9, 12, 16, 25, 51],  
+                      [11, 13, 14, 17, 25, 51],  
+                      [ 9,  9, 11, 16, 23, 50]]  
 
 		In this function, `ms_seg_counts` is used to get the actual length of each embedding sequence without
 		zero-padding.
@@ -395,13 +395,13 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
                 multi-scale input tensors during forward propagating.
 
                 Example: `batch_size=3, scale_n=6, emb_dim=192`
-                    ms_seg_counts =
-                     [[8,  9, 12, 16, 25, 51],
-                      [11, 13, 14, 17, 25, 51],
-                      [ 9,  9, 11, 16, 23, 50]]
-                    Counts of merged segments: (121, 131, 118)
-                    embs has shape of (370, 192)
-                    clus_label_index has shape of (3, 131)
+                    ms_seg_counts =  
+                     [[8,  9, 12, 16, 25, 51],  
+                      [11, 13, 14, 17, 25, 51],  
+                      [ 9,  9, 11, 16, 23, 50]]  
+                    Counts of merged segments: (121, 131, 118)  
+                    embs has shape of (370, 192)  
+                    clus_label_index has shape of (3, 131)  
 
                 Shape: (batch_size, scale_n)
 
@@ -459,31 +459,31 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         `self.emb_batch_size` is 0.
 
         Args:
-            processed_signal: (Tensor)
+            processed_signal (Tensor):
                 Zero-padded Feature input.
                 Shape: (batch_size, feat_dim, the longest feature sequence length)
-            processed_signal_len: (Tensor)
+            processed_signal_len (Tensor):
                 The actual legnth of feature input without zero-padding.
                 Shape: (batch_size,)
-            ms_seg_timestamps: (Tensor)
+            ms_seg_timestamps (Tensor):
                 Timestamps of the base-scale segments.
                 Shape: (batch_size, scale_n, number of base-scale segments, self.num_spks_per_model)
-            ms_seg_counts: (Tensor)
+            ms_seg_counts (Tensor):
                 Cumulative sum of the number of segments in each scale. This information is needed to reconstruct
                 the multi-scale input matrix during forward propagating.
                 Shape: (batch_size, scale_n)
 
         Returns:
-            ms_mel_feat: (Tensor)
+            ms_mel_feat (Tensor):
                 Feature input stream split into the same length.
                 Shape: (total number of segments, feat_dim, self.frame_per_sec * the-longest-scale-length)
-            ms_mel_feat_len: (Tensor)
+            ms_mel_feat_len (Tensor):
                 The actual length of feature without zero-padding.
                 Shape: (total number of segments,)
-            seq_len: (Tensor)
+            seq_len (Tensor):
                 The length of the input embedding sequences.
                 Shape: (total number of segments,)
-            detach_ids: (tuple)
+            detach_ids (tuple):
                 Tuple containing both detached embeding indices and attached embedding indices
         """
         device = processed_signal.device

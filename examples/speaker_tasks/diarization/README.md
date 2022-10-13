@@ -36,8 +36,8 @@ Diarization Error Rate (DER) table of `titanet_large.nemo` model on well known e
 |         Evaluation Condition           |   AMI(Lapel)   | AMI(MixHeadset)     |   CH109  | NIST SRE 2000 |  
 |:--------------------------------------:|:--------------:|:-------------------:|:--------:|:-------------:|
 |       Domain Configuration             |   Meeting      |        Meeting      |Telephonic| Telephonic    |
-|  Oracle VAD <br> KNOWN # of Speakers   |     1.28       |         1.07        |  0.56    |     5.62      |
-|  Oracle VAD <br> UNKNOWN # of Speakers |     1.28       |         1.4         |  0.88    |     4.33      | 
+|  Oracle VAD <br> Known # of Speakers   |     1.28       |         1.07        |  0.56    |     5.62      |
+|  Oracle VAD <br> Unknown # of Speakers |     1.28       |         1.4         |  0.88    |     4.33      | 
 
 * All models were tested using the domain specific `.yaml` files which can be found in `conf/inference/` folder.
 * The above result is based on the oracle Voice Activity Detection (VAD) result.
@@ -56,7 +56,7 @@ Diarization Error Rate (DER) table of [diar_msdd_telephonic.nemo](https://catalo
 |                                  DER | **0.58%**                       | **3.52%**                        | **9.86%**                       |
 
 
-|               NIST-SRE-2000 CallHome | Forgiving                       | Fair                             | Full                            |
+|                             CALLHOME | Forgiving                       | Fair                             | Full                            |
 |-------------------------------------:|---------------------------------|----------------------------------|---------------------------------|
 |              (collar, ignore_overlap)|  (0.25, True)                   |  (0.25, True)                    |   (0.0, False)                  |
 |                          False Alarm | -                               | 1.05%                            | 2.24%                           |
@@ -64,8 +64,7 @@ Diarization Error Rate (DER) table of [diar_msdd_telephonic.nemo](https://catalo
 |                            Confusion | -                               | 4.06%                            | 6.03%                           |
 |                                  DER | **4.15%**                       | **12.73%**                       | **19.37%**                      |
 
-* Evaluation setting: Oracle VAD <br> UNKNOWN # of Speakers   
-* Speaker numbers known (max. 8)
+* Evaluation setting: Oracle VAD <br> Unknown number of speakers (max. 8)
 * Clustering parameter: `max_rp_threshold=0.15` 
 * All models were tested using the domain specific `.yaml` files which can be found in `conf/inference/` folder.
 * The above result is based on the oracle Voice Activity Detection (VAD) result.

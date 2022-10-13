@@ -33,6 +33,7 @@ from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenize
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
 from nemo.utils import AppState, logging
+from nemo.utils.get_rank import is_global_rank_zero
 
 try:
     from apex.transformer import parallel_state
@@ -87,6 +88,7 @@ class MegatronBaseModel(NLPModel):
             local_rank=trainer.local_rank,
             tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
             pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
+            virtual_pipeline_model_parallel_size=cfg.get('virtual_pipeline_model_parallel_size', None),
             pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),
             micro_batch_size=cfg.get('micro_batch_size'),
             global_batch_size=cfg.get('global_batch_size'),
@@ -389,3 +391,17 @@ class MegatronBaseModel(NLPModel):
             logging.info("Gradient accumulation fusion can only be used with megatron amp O2 mixed precision.")
             with open_dict(self.cfg):
                 self.cfg.gradient_accumulation_fusion = False
+
+    def is_data_parallel_rank_zero(self):
+        if is_global_rank_zero():
+            return True
+        else:
+            try:
+                data_parallel_rank = parallel_state.get_data_parallel_rank()
+            except:
+                data_parallel_rank = None
+
+            if data_parallel_rank is not None and data_parallel_rank == 0:
+                return True
+            else:
+                return False

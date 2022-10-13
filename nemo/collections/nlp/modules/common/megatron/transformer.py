@@ -1763,7 +1763,9 @@ class ParallelTransformer(MegatronModule):
             assert num_layers % parallel_state.get_virtual_pipeline_model_parallel_world_size() == 0, (
                 'num_layers_per_stage must be divisible by ' 'virtual_pipeline_model_parallel_size'
             )
-            assert self.model_type != ModelType.encoder_or_decoder
+
+            assert self.model_type.value != 2, f'virtual pipeline parallel currently only supported for GPT'
+
             # Number of layers in each model chunk is the number of layers in the stage,
             # divided by the number of model chunks in a stage.
             self.num_layers = self.num_layers // parallel_state.get_virtual_pipeline_model_parallel_world_size()

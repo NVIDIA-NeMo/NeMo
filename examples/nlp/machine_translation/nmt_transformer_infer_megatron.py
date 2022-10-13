@@ -62,6 +62,7 @@ def main(cfg) -> None:
         app_state.model_parallel_size,
         app_state.data_parallel_size,
         app_state.pipeline_model_parallel_split_rank,
+        app_state.virtual_pipeline_model_parallel_rank,
     ) = fake_initialize_model_parallel(
         world_size=app_state.model_parallel_size,
         rank=trainer.global_rank,

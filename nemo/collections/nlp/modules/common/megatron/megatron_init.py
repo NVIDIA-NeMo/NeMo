@@ -25,6 +25,7 @@ try:
     from apex.transformer.parallel_state import (
         get_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_rank,
+        set_virtual_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_split_rank,
         set_pipeline_model_parallel_world_size,
         set_tensor_model_parallel_rank,
@@ -32,11 +33,20 @@ try:
     )
     from apex.transformer.microbatches import ConstantNumMicroBatches
     from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
-    from apex.transformer.utils import ensure_divisibility
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
+
+try:
+    # TODO: remove when apex is updated
+    from apex.transformer.parallel_state import set_virtual_pipeline_model_parallel_world_size
+
+    HAVE_INTERLEAVED = True
+
+except:
+
+    HAVE_INTERLEAVED = False
 
 
 def initialize_model_parallel_for_nemo(
@@ -45,12 +55,16 @@ def initialize_model_parallel_for_nemo(
     local_rank,
     tensor_model_parallel_size=1,
     pipeline_model_parallel_size=1,
+    virtual_pipeline_model_parallel_size=None,
     pipeline_model_parallel_split_rank=None,
     micro_batch_size=None,
     global_batch_size=None,
     seed=1234,
     apex_transformer_log_level=30,
 ):
+
+    if virtual_pipeline_model_parallel_size is not None and not HAVE_INTERLEAVED:
+        raise ValueError("set_virtual_pipeline_model_parallel_world_size is needed in Apex for interleaved.")
 
     # updating NeMo globals
     app_state = AppState()
@@ -59,17 +73,20 @@ def initialize_model_parallel_for_nemo(
     app_state.local_rank = local_rank
     app_state.tensor_model_parallel_size = tensor_model_parallel_size
     app_state.pipeline_model_parallel_size = pipeline_model_parallel_size
+    app_state.virtual_pipeline_model_parallel_size = virtual_pipeline_model_parallel_size
     (
         app_state.tensor_model_parallel_rank,
         app_state.pipeline_model_parallel_rank,
         app_state.model_parallel_size,
         app_state.data_parallel_size,
         app_state.pipeline_model_parallel_split_rank,
+        app_state.virtual_pipeline_model_parallel_rank,
     ) = fake_initialize_model_parallel(
         world_size=world_size,
         rank=global_rank,
         tensor_model_parallel_size_=tensor_model_parallel_size,
         pipeline_model_parallel_size_=pipeline_model_parallel_size,
+        virtual_pipeline_model_parallel_size_=virtual_pipeline_model_parallel_size,
         pipeline_model_parallel_split_rank_=pipeline_model_parallel_split_rank,
     )
 
@@ -78,6 +95,9 @@ def initialize_model_parallel_for_nemo(
     set_tensor_model_parallel_rank(app_state.tensor_model_parallel_rank)
 
     set_pipeline_model_parallel_rank(app_state.pipeline_model_parallel_rank)
+    if HAVE_INTERLEAVED:
+        set_virtual_pipeline_model_parallel_world_size(app_state.virtual_pipeline_model_parallel_size)
+    set_virtual_pipeline_model_parallel_rank(app_state.virtual_pipeline_model_parallel_rank)
     set_pipeline_model_parallel_world_size(app_state.pipeline_model_parallel_size)
     set_pipeline_model_parallel_split_rank(app_state.pipeline_model_parallel_split_rank)
 
@@ -178,18 +198,17 @@ def fake_initialize_model_parallel(
     pipeline_model_parallel_size = min(pipeline_model_parallel_size_, world_size)
     model_parallel_size = tensor_model_parallel_size * pipeline_model_parallel_size
 
-    ensure_divisibility(world_size, tensor_model_parallel_size * pipeline_model_parallel_size)
+    assert (
+        world_size % tensor_model_parallel_size * pipeline_model_parallel_size == 0
+    ), f'world_size: {world_size} must be divisible by tensor_model_parallel_size: {tensor_model_parallel_size} times pipeline_model_parallel_size {pipeline_model_parallel_size}'
     data_parallel_size = world_size // (tensor_model_parallel_size * pipeline_model_parallel_size)
 
     num_tensor_model_parallel_groups = world_size // tensor_model_parallel_size
     num_pipeline_model_parallel_groups = world_size // pipeline_model_parallel_size
 
-    # TODO: virtual pipeline model parallelism is not yet implemented in NeMo. This is needed for interleaved pipelining.
-    # if virtual_pipeline_model_parallel_size_ is not None:
-    #     global _VIRTUAL_PIPELINE_MODEL_PARALLEL_RANK
-    #     global _VIRTUAL_PIPELINE_MODEL_PARALLEL_WORLD_SIZE
-    #     _VIRTUAL_PIPELINE_MODEL_PARALLEL_RANK = 0
-    #     _VIRTUAL_PIPELINE_MODEL_PARALLEL_WORLD_SIZE = virtual_pipeline_model_parallel_size_
+    virtual_pipeline_model_parallel_rank = None
+    if virtual_pipeline_model_parallel_size_ is not None:
+        virtual_pipeline_model_parallel_rank = 0
 
     # Build the data-parallel groups.
     all_data_parallel_group_ranks = []
@@ -272,4 +291,5 @@ def fake_initialize_model_parallel(
         model_parallel_size,
         data_parallel_size,
         pipeline_model_parallel_split_rank_,
+        virtual_pipeline_model_parallel_rank,
     )

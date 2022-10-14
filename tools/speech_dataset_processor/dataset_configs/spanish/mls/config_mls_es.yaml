@@ -1,0 +1,295 @@
+# user can specify which processors should be run
+# can be either "all" to run all processors,
+# or any Python "slice" object, e.g.,
+# ":3" (to select first 3 objects),
+# ":-1" (to select all but last)
+# "2:5" (to select 3rd to 5th)
+# "0" (to select only the first processor)
+processors_to_run: ???
+data_split: ???
+workspace_dir: ???
+final_manifest: ???
+
+processors:
+  - _target_: sdp.processors.CreateInitialManifestMLS
+    output_manifest_file: "${workspace_dir}/mls_spanish_processed/${data_split}_manifest.json"
+    language: spanish
+    download_dir: ${workspace_dir}
+    resampled_audio_dir: "${workspace_dir}/mls_spanish_processed/${data_split}/audio/"
+    data_split: "${data_split}"
+
+  - _target_: sdp.processors.ASRInference
+    input_manifest_file: "${workspace_dir}/mls_spanish_processed/${data_split}_manifest.json"
+    output_manifest_file: "${workspace_dir}/processed_manifests/stt_es_quartznet15x5_${data_split}.json"
+    pretrained_model: "stt_es_quartznet15x5"
+
+  - _target_: sdp.processors.SubSubstringToSubstring
+    input_manifest_file: "${workspace_dir}/processed_manifests/stt_es_quartznet15x5_${data_split}.json"
+
+    substring_pairs: {
+
+      "'" : "", # so that e.g. "d'artagnan" becomes "dartagnan", not "d artagnan"
+
+      ' sr ': ' señor ',
+      ' vd ': ' usted ',
+      ' vds ': ' ustedes ',
+      ' vdes ': ' ustedes ',
+      ' v md ': ' vuestra merced ',
+      ' mr ': ' mister ',
+      ' ud ': ' un ', # technically can be ustedes, but I have only seen it being 'un'
+
+      ' guando ': ' cuando ',
+      ' magestad ': ' majestad ',
+
+      ' á ': ' a ',
+      ' ó ': ' o ',
+      ' é ': ' e ',
+      ' ú ': ' u ',
+      ' fué ': ' fue ',
+      ' sólo ': ' solo ',
+      ' dió ': ' dio ',
+      ' hácia ': ' hacia ',
+      ' jóven ': ' joven ',
+
+      # tried to make reasonable approximations:
+      ' dixo ' : ' dijo ',
+      ' dixe ' : ' dije ',
+      ' dixéramos ' : ' dijéramos ',
+
+      ' dixeron ' : ' dijeron ',
+      ' dixéron ': ' dijéron ',
+      ' dixese ': ' dijese ',
+      ' dixesen ':' dijesen',   ### bug
+      ' dixesemos ':' dijesemos', ### bug
+      ' diximos ':' dijimos ',
+      ' dixere ':' dijere ',
+      ' dixera ':' dijera ',
+
+      ' algun ':' algún ',
+      ' alli ':' allí ',
+      ' aqui ':' aquí ',
+      ' asi ':' así ',
+      ' atencion ':' atención ',
+      ' capitan ':' capitán ',
+      ' corazon ':' corazón ',
+      ' debia ':' debía ',
+      ' decia ':' decía ',
+      ' decian ':' decían ',
+      ' demas ':' demás ',
+      ' despues ':' después ',
+      ' dia ':' día ',
+      ' dias ':' días ',
+      ' habeis ':' habéis ',
+      ' habia ':' había ',
+      ' habian ':' habían ',
+      ' habitacion ':' habitación ',
+      ' habria ':' habría ',
+      ' hacian ':' hacían ',
+      ' mio ':' mío ',
+      ' ningun ':' ningún ',
+      ' ocasion ':' ocasión ',
+      ' oir ':' oír ',
+      ' pais ':' país ',
+      ' parecia ':' parecía ',
+      ' podia ':' podía ',
+      ' podian ':' podían ',
+      ' podria ':' podría ',
+      ' queria ':' quería ',
+      ' razon ':' razón ',
+      ' segun ':' según ',
+      ' tambien ':' también ',
+      ' tenia ':' tenía ',
+      ' tenian ':' tenían ',
+      ' velazquez ':' velázquez ',
+      ' venian ':' venían '
+    }
+
+    test_cases:
+      - {input: {text: "á las dos"}, output: {text: "a las dos"}}
+
+  - _target_: sdp.processors.SubSubstringToSpace
+    substrings: [
+                '.', '-', '‐', '‑', '–', '—', '―',
+                '"', '$', '&', "'", ',', ',',
+                ':', "'", '=', '?', '_', '`',
+                '{', '|', '}', '~', '¨', 'ª',
+                '«', '°', '´', '·', '»', '¿',
+                '‘', '’', '“', '”', '„', '…',
+                '‧', '‹', '›', '≪', '≫', '!',
+                ':', ';', '`', 'ʻ',
+                'ː', '‘', '’', '“', '→',
+                '"', '%', '‘', '”', '�',
+                'ʽ', 'ʿ',
+                '́', #used for putting stress on Russian letters
+                '̇',
+                'content from google book search google book search generated at ',
+                'content from google book search generated at ',
+                'content from ',
+                'google book search generated at ',
+                'search generated at ',
+                'content from google ',
+                'content from google book search ',
+                'content from google book search generated at content from google book search generated at ',
+                'book search generated at ',
+                'content from google book ',
+                'generated at ',
+                'generated at content from google book search generated at ',
+                'at content from google book search generated at ',
+                'from google book search generated at ',
+                'content from google book search content from google book search generated at ',
+                'content from google book search generated at content from google book search generated at content from google book search generated at ',
+            ]
+
+    test_cases:
+      - {input: {text: "abc, def."}, output: {text: "abc def"}}
+      - {input: {text: "abc! def."}, output: {text: "abc def"}}
+
+  - _target_: sdp.processors.DropNonAlphabet
+    alphabet: " abcdefghijklmnopqrstuvwxyzáéíñóúü"
+    test_cases:
+      - {input: {text: "test тест 测试"}, output: null}
+      - {input: {text: "test"}, output: {text: "test"}}
+
+  - _target_: dataset_configs.spanish.mls.unique_processors.clean_roman_numerals.CleanRomanNumerals
+    king_triggers: [
+      "alfonso",
+      "benedicto",
+      "carlos",
+      "clemente",
+      "enrique",
+      "federico",
+      "felipe",
+      "fernando",
+      "filipo",
+      "gregorio",
+      "guillermo",
+      "jaime",
+      "jorge",
+      "león",
+      "luis",
+      "pie",
+      "tomo",
+    ]
+    queen_triggers: ["isabel"]
+    ordinal_masc_triggers: ["capítulo"]
+    ordinal_fem_triggers: [
+      "parte",
+      "escena",
+    ]
+    cardinal_triggers: [
+      "siglo",
+      "carta",
+      "libro",
+      "número",
+    ]
+    test_cases:
+      - {input: {text: "número i"}, output: {text: "número uno"}}
+
+  - _target_: sdp.processors.DropIfRegexInAttribute
+    attribute_to_regex:
+      "text" : ["(\\D ){5,20}"] # looks for between 4 and 19 characters surrounded by spaces
+
+    test_cases:
+      - {input: {text: "some s p a c e d out letters"}, output: null}
+      - {input: {text: "normal words only"}, output: {text: "normal words only"}}
+      - {input: {text: "three a b c spaced out letters"}, output: {text: "three a b c spaced out letters"}}
+      - {input: {text: "four a b c d spaced out letters"}, output: null}
+
+  - _target_: sdp.processors.DropIfSubstringInAttribute
+    attribute_to_substring:
+      "audio_filepath" : [
+            # books with lots of OCR errors etc.
+            "8882/10372",
+            "8882/11576",
+            "10246/11643",
+            "9972/11767",
+            "9972/12090",
+            "9972/12260",
+            "10246/12300",
+            "10246/12585",
+            "12689/12700",
+            "12341/12700",
+            "8882/12700",
+            "12953/12700",
+            "12428/12700",
+            "12921/12700",
+            "11797/12700",
+            "9972/12705",
+            "11797/13121",
+            "11797/13497",
+            "10246/13672",
+            "12367/14286",
+            "10246/14708",
+            "11048/9310",
+            "6447/9310",
+            "11040/9310",
+            "9063/9310",
+            "9972/9503",
+            "8060/9503",
+      ]
+
+    test_cases:
+      - {input: {audio_filepath: "/path/10246/12585/abc.wav"}, output: null}
+      - {input: {audio_filepath: "/path/1/1/abc.wav"}, output: {audio_filepath: "/path/1/1/abc.wav"}}
+
+  - _target_: sdp.processors.DropHighLowCharrate
+    high_charrate_threshold: 20
+    low_charrate_threshold: 5
+    test_cases:
+      - {input: {text: "buenos dias", duration: 0.1}, output: null}
+      - {input: {text: "buenos dias", duration: 30}, output: null}
+      - {input: {text: "buenos dias", duration: 1}, output: {text: "buenos dias", duration: 1}}
+
+
+  - _target_: sdp.processors.DropIfSubstringInInsertion
+    substrings_in_insertion: [
+      "uno ",  "dos ", "tres ", "cuatro ", "cinco ",
+      "seis ", "siete ", "ocho ", "nueve ", "diez ",
+      "once ", "doce ", "trece ", "catorce ", "quince ",
+      "veinte ", "treinta ", "cuarenta ", "cincuenta ",
+      "sesenta ", "setenta ", "ochenta ", "noventa ",
+      "cien ", "ciento", "cientos ", "mil "
+    ]
+    test_cases:
+      - {input: {text: "el de junio", pred_text: "el diez de junio"}, output: null}
+      - {input: {text: "el diez de junio", pred_text: "el diez de junio"}, output: {text: "el diez de junio", pred_text: "el diez de junio"}}
+
+  - _target_: sdp.processors.DropIfSubstringInAttribute
+    attribute_to_substring:
+      "pred_text" : [
+        'librewox', 'librevox', 'librivox', 'libribox', 'libriebox', 'libriboux',
+        ' grabado por ',
+      ]
+    test_cases:
+      - {input: {pred_text: "librivox recording"}, output: null}
+      - {input: {pred_text: "abcdef"}, output: {pred_text: "abcdef"}}
+
+  - _target_: sdp.processors.DropASRErrorBeginningEnd
+    beginning_error_char_threshold: 10
+    end_error_char_threshold: 10
+    test_cases:
+      - {input: {text: "sí hola", pred_text: "abcdefabcdef sí hola"}, output: null}
+      - {input: {text: "abcdefabcdef sí hola", pred_text: "sí hola"}, output: null}
+      - { input: {text: "abcdefabcdef sí hola", pred_text: "uvwxyzuvwxyz sí hola"},
+         output: {text: "abcdefabcdef sí hola", pred_text: "uvwxyzuvwxyz sí hola"}}
+
+  - _target_: sdp.processors.DropHighWER
+    wer_threshold: 90
+    test_cases:
+      - {input: {text: "sí hola", pred_text: "abcdefgh abcdefgh"}, output: null}
+      - {input: {text: "sí hola", pred_text: "sí hola"}, output: {text: "sí hola", pred_text: "sí hola"}}
+
+  - _target_: sdp.processors.DropHighCER
+    output_manifest_file: "${workspace_dir}/processed_manifests/processed_${data_split}.json"
+    cer_threshold: 90
+    test_cases:
+      - {input: {text: "sí hola", pred_text: "abcdefgh abcdefgh"}, output: null}
+      - {input: {text: "sí hola", pred_text: "sí hola"}, output: {text: "sí hola", pred_text: "sí hola"}}
+
+  - _target_: sdp.processors.WriteManifest
+    input_manifest_file: "${workspace_dir}/processed_manifests/processed_${data_split}.json"
+    output_manifest_file: ${final_manifest}
+    fields_to_save:
+      - "audio_filepath"
+      - "text"
+      - "duration"

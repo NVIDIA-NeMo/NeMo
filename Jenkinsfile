@@ -126,6 +126,19 @@ pipeline {
       }
     }
 
+    stage('L0: Unit Tests Speech Dataset Processor') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      steps {
+        sh 'pip install -r tools/speech_dataset_processor/requirements.txt'
+        sh 'cd tools/speech_dataset_processor && CUDA_VISIBLE_DEVICES="" pytest tests -m "not pleasefixme"'
+      }
+    }
+
     stage('L0: TN/ITN Tests CPU') {
       when {
         anyOf {
@@ -366,7 +379,7 @@ pipeline {
             sh 'rm -rf examples/speaker_tasks/recognition/speaker_recognition_results'
           }
         }
-        
+
         stage('Speaker Diarization') {
           steps {
             sh 'python examples/speaker_tasks/diarization/neural_diarizer/multiscale_diar_decoder.py \
@@ -436,7 +449,7 @@ pipeline {
             sh 'rm -rf examples/speaker_tasks/diarization/clustering_diarizer_results'
           }
         }
-	
+
         stage('Neural Diarizer Inference') {
           steps {
             sh 'python examples/speaker_tasks/diarization/neural_diarizer/multiscale_diar_decoder_infer.py \
@@ -448,7 +461,7 @@ pipeline {
             sh 'rm -rf examples/speaker_tasks/diarization/neural_diarizer_results'
           }
         }
-	
+
         stage('Multispeaker ASR Data Simulation') {
           steps {
             sh 'python tools/speech_data_simulator/multispeaker_simulator.py \
@@ -2175,7 +2188,7 @@ pipeline {
         }
       }
     }
-    
+
     stage('L2: Parallel Pretraining BERT pretraining from Text/Preprocessed') {
       when {
         anyOf {
@@ -3389,8 +3402,8 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         }
       }
     }
-    
-    
+
+
 
     // TODO: Add this test back. Test was failing on CI machines due to HW error
     // stage('L2: Megatron GPT Convert from Megatron-LM checkpoing and Eval') {

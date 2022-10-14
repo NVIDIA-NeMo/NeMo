@@ -1,5 +1,19 @@
 #!/bin/bash
 
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 SCRIPTS_DIR="scripts" # /<PATH TO>/NeMo/tools/ctc_segmentation/tools/scripts/ directory
 MODEL_NAME_OR_PATH="" # ASR model to use for transcribing the segmented audio files
 INPUT_AUDIO_DIR="" # Path to original directory with audio files
@@ -14,6 +28,7 @@ CER_EDGE_THRESHOLD=60
 LEN_DIFF_RATIO_THRESHOLD=0.3
 MIN_DURATION=1 # in seconds
 MAX_DURATION=20 # in seconds
+EDGE_LEN=5 # number of characters for calculating edge cer
 
 for ARG in "$@"
 do
@@ -64,5 +79,7 @@ python ${SCRIPTS_DIR}/get_metrics_and_filter.py \
 --max_wer=${WER_THRESHOLD} \
 --max_len_diff_ratio=${LEN_DIFF_RATIO_THRESHOLD} \
 --max_edge_cer=${CER_EDGE_THRESHOLD} \
---min_duration=${MIN_DURATION}
---max_duration=${MAX_DURATION}
+--min_duration=${MIN_DURATION} \
+--max_duration=${MAX_DURATION} \
+--edge_len=${EDGE_LEN}
+

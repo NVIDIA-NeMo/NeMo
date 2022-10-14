@@ -149,6 +149,10 @@ def split_text(
         .replace("--", " -- ")
         .replace(". . .", "...")
     )
+
+    # end of quoted speech - to be able to split sentences by full stop
+    transcript = re.sub(r"([\.\?\!])([\"\'])", r"\g<2>\g<1> ", transcript)
+
     # remove extra space
     transcript = re.sub(r" +", " ", transcript)
 
@@ -185,7 +189,7 @@ def split_text(
     sentences = [s.strip() for s in sentences if s.strip()]
 
     # Read and split transcript by utterance (roughly, sentences)
-    split_pattern = f"(?<!\w\.\w.)(?<![A-Z{upper_case_unicode}][a-z{lower_case_unicode}]+\.)(?<![A-Z{upper_case_unicode}]\.)(?<=\.|\?|\!|\.”|\?”\!”)\s(?![0-9]+[a-z]*\.)"
+    split_pattern = f"(?<!\w\.\w.)(?<![A-Z{upper_case_unicode}][a-z{lower_case_unicode}]\.)(?<![A-Z{upper_case_unicode}]\.)(?<=\.|\?|\!|\.”|\?”\!”)\s"
 
     new_sentences = []
     for sent in sentences:

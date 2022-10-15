@@ -81,6 +81,7 @@ class T5RequestDataset(Dataset):
         super().__init__()
         self.request = request
         self.tokenizer = tokenizer
+        self.add_eos_to_encoder_input = self.request['add_eos_to_encoder_input']
 
         # tokenize prompt
         self.request['tokenized_prompt'] = ' '.join(self.tokenizer.text_to_tokens(request['prompt']))
@@ -96,7 +97,10 @@ class T5RequestDataset(Dataset):
                 sample[i] = f'<extra_id_{sentinel_idx}>'
                 sentinel_idx += 1
         sample = ' '.join(sample)
-        sample = torch.LongTensor(self.tokenizer.text_to_ids(sample))
+        sample = self.tokenizer.text_to_ids(sample)
+        if self.add_eos_to_encoder_input:
+            sample = sample + [self.tokenizer.eos_id]
+        sample = torch.LongTensor(sample)
         self.request['masked_sample'] = sample
 
     def __len__(self):

@@ -19,6 +19,7 @@ import torch
 from tqdm.auto import tqdm
 
 from nemo.collections.nlp.data.language_modeling.megatron.base_prompt_learning_dataset import BasePromptLearningDataset
+from nemo.collections.nlp.models.language_modeling.megatron_t5_model import T5Sentinel
 from nemo.collections.nlp.modules.common import VirtualPromptSource
 from nemo.collections.nlp.modules.common.megatron.utils import build_position_ids
 from nemo.utils import logging
@@ -26,17 +27,47 @@ from nemo.utils import logging
 __all__ = ['T5PromptLearningDataset']
 
 
-class T5Sentinel(enum.Enum):
-    FIRST = '<extra_id_0>'
-
-
 class T5PromptLearningDataset(BasePromptLearningDataset):
     """
     The dataset class for prompt-tuning or p-tuning pretrained T5 models.
     """
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(
+        self,
+        datasets,
+        tokenizer,
+        virtual_prompt_source: VirtualPromptSource,
+        task_templates: dict,
+        pseudo_tokens,
+        pad_token_id: str,
+        max_seq_length: int,
+        min_seq_length: int = 1,
+        add_bos: bool = False,
+        add_eos: bool = True,
+        for_train: bool = True,
+        decoder_starts_with_pad: bool = False,
+        add_eos_to_decoder_output: bool = True,
+        add_sentinel_to_input: bool = True,
+        ul2_prompt_token: str = None,
+    ):
+        # These two variables need to be set before calling super().__init__() because the parent class calls `load_data()` which requires these attributes.
+        self.decoder_starts_with_pad = decoder_starts_with_pad
+        self.add_eos_to_decoder_output = add_eos_to_decoder_output
+        self.add_sentinel_to_input = add_sentinel_to_input
+        self.ul2_prompt_token = ul2_prompt_token
+        super().__init__(
+            datasets=datasets,
+            tokenizer=tokenizer,
+            virtual_prompt_source=virtual_prompt_source,
+            task_templates=task_templates,
+            pseudo_tokens=pseudo_tokens,
+            pad_token_id=pad_token_id,
+            max_seq_length=max_seq_length,
+            min_seq_length=min_seq_length,
+            add_bos=add_bos,
+            add_eos=add_eos,
+            for_train=for_train,
+        )
 
     def load_data(self, dataset):
         """
@@ -50,7 +81,6 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
                      containing the information needed for a training example
         """
         skipped = 0
-
         for json_line in tqdm(dataset):
 
             # Read example dict or load the information for a single example from .json file
@@ -84,9 +114,15 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
             input_example = self._insert_virtual_token_placeholders(input_example, virtual_token_splits)
 
             # a trick to align with the data format in t5 pretraining
-            input_ids = self.tokenizer.text_to_ids(input_example) + self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
+            input_ids = self.tokenizer.text_to_ids(input_example)
+            if self.add_sentinel_to_input:
+                input_ids = input_ids + self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
 
             # Add BOS/EOS to the input of encoder if desired, adds EOS by default
+            if self.ul2_prompt_token is not None:
+                ul2_prompt_token_id = self.tokenizer.text_to_ids(self.ul2_prompt_token)
+                assert len(ul2_prompt_token_id) == 1
+                input_ids = ul2_prompt_token_id + input_ids
             if self.add_bos:
                 input_ids = [self.tokenizer.bos_id] + input_ids
             if self.add_eos:
@@ -100,13 +136,18 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
             if answer_field in doc.keys():  # training and validation
                 answer_text = doc[answer_field]
 
+                if self.decoder_starts_with_pad:
+                    answer_text_ids = [self.tokenizer.pad_id]
+                else:
+                    answer_text_ids = [self.tokenizer.bos_id]
                 # a trick to align with the data format in t5 pretraining
-                answer_text_ids = (
-                    [self.tokenizer.bos_id]
-                    + self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-                    + self.tokenizer.text_to_ids(answer_text)
-                    + [self.tokenizer.eos_id]
-                )
+                if self.add_sentinel_to_input:
+                    answer_text_ids += self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
+                answer_text_ids += self.tokenizer.text_to_ids(answer_text)
+                if self.add_eos_to_decoder_output:
+                    answer_text_ids += [self.tokenizer.eos_id]
+                else:
+                    answer_text_ids += self.tokenizer.text_to_ids(T5Sentinel.END.value)
 
             # Skip example if the final length doesn't fit length requirements even after truncation
             if self.min_seq_length <= len(input_ids) <= self.max_seq_length:

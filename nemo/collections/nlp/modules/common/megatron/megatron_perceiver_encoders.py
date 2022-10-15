@@ -59,6 +59,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         encoder_attn_mask_type=AttnMaskType.padding,
         hidden_dropout=0.1,
         attention_dropout=0.1,
+        ffn_dropout=0.0,
         precision=16,
         fp32_residual_connection=False,
         activations_checkpoint_method=None,
@@ -78,6 +79,8 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         parent_model_type=ModelType.encoder_or_decoder,
         hidden_steps=32,
         num_self_attention_per_cross_attention=1,
+        normalize_attention_scores=True,
+        megatron_legacy=False,
     ):
         super(MegatronPerceiverEncoderModule, self).__init__()
 
@@ -118,6 +121,9 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         self.normalization = normalization
         self.parent_model_type = parent_model_type
         self.transformer_block_type = transformer_block_type
+        self.ffn_dropout = ffn_dropout
+        self.normalize_attention_scores = normalize_attention_scores
+        self.megatron_legacy = megatron_legacy
 
         assert self.num_self_attention_per_cross_attention >= 1
         assert self.hidden_steps >= 1
@@ -157,6 +163,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             layernorm_epsilon=self.layernorm_epsilon,
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
+            ffn_dropout=self.ffn_dropout,
             use_cpu_initialization=self.use_cpu_initialization,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_fusion=self.bias_dropout_add_fusion,
@@ -170,6 +177,8 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             model_type=self.parent_model_type,
             transformer_block_type=self.transformer_block_type,
             headscale=self.headscale,
+            normalize_attention_scores=self.normalize_attention_scores,
+            megatron_legacy=self.megatron_legacy,
         )
 
     def _build_self_attn_layer(self):
@@ -193,6 +202,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             layernorm_epsilon=self.layernorm_epsilon,
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
+            ffn_dropout=self.ffn_dropout,
             use_cpu_initialization=self.use_cpu_initialization,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_fusion=self.bias_dropout_add_fusion,
@@ -206,6 +216,8 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             model_type=self.parent_model_type,
             transformer_block_type=self.transformer_block_type,
             headscale=self.headscale,
+            normalize_attention_scores=self.normalize_attention_scores,
+            megatron_legacy=self.megatron_legacy,
         )
 
     def set_input_tensor(self, input_tensor):

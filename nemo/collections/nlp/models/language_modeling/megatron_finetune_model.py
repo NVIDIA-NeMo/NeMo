@@ -21,7 +21,7 @@ from nemo.collections.common.data import ConcatMapDataset
 from nemo.collections.common.metrics import MetricStringToTorchMetric
 from nemo.collections.common.metrics.classification_accuracy import ExactStringPerCategoryMatchMetric
 from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import SequenceToSequenceDataset
-from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
+from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model, T5Sentinel
 from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
 from nemo.utils import AppState, logging
 
@@ -289,9 +289,9 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         )
 
         # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
-        preds_text = self.ids_to_text(predicted_token_ids)
-        labels_text = self.ids_to_text(processed_batch['labels'])
-        input_text = self.ids_to_text(processed_batch['text_enc'])
+        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
+        labels_text = MegatronT5FinetuneModel.ids_to_text(processed_batch['labels'], self.tokenizer)
+        input_text = MegatronT5FinetuneModel.ids_to_text(processed_batch['text_enc'], self.tokenizer)
 
         if not batch_has_lang_information:
             categories = [None] * len(preds_text)
@@ -322,18 +322,26 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             'inputs': input_text,
         }
 
-    def ids_to_text(self, batch_ids):
+    @classmethod
+    def ids_to_text(cls, batch_ids, tokenizer):
         batch_ids = batch_ids.cpu().numpy().tolist()
         texts = []
         for ids in batch_ids:
-            if self.tokenizer.eos_id in ids:
-                idx = ids.index(self.tokenizer.eos_id)
+            if tokenizer.eos_id in ids:
+                idx = ids.index(tokenizer.eos_id)
+                ids = ids[:idx]
+
+            if (
+                len(tokenizer.text_to_ids(T5Sentinel.END.value)) == 1
+                and tokenizer.text_to_ids(T5Sentinel.END.value)[0] in ids
+            ):
+                idx = ids.index(tokenizer.text_to_ids(T5Sentinel.END.value)[0])
                 ids = ids[:idx]
 
             # Legacy sentencepiece detokenization still preserves special tokens which messes up exact string match.
-            if hasattr(self.tokenizer, 'special_token_to_id'):
-                ids = [id for id in ids if id not in self.tokenizer.special_token_to_id.values()]
-            text = self.tokenizer.ids_to_text(ids)
+            if hasattr(tokenizer, 'special_token_to_id'):
+                ids = [id for id in ids if id not in tokenizer.special_token_to_id.values()]
+            text = tokenizer.ids_to_text(ids)
             texts.append(text)
 
         return texts

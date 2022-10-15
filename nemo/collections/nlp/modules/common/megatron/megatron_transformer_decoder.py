@@ -60,6 +60,7 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
         decoder_attn_mask_type=AttnMaskType.causal,
         hidden_dropout=0.1,
         attention_dropout=0.1,
+        ffn_dropout=0.0,
         precision=16,
         fp32_residual_connection=False,
         activations_checkpoint_method=None,
@@ -77,6 +78,8 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
         transformer_block_type='pre_ln',
         headscale=False,
         parent_model_type=ModelType.encoder_or_decoder,
+        megatron_legacy=False,
+        normalize_attention_scores=True,
     ):
         super(MegatronTransformerDecoderModule, self).__init__()
 
@@ -119,6 +122,7 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
             layernorm_epsilon=layernorm_epsilon,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
+            ffn_dropout=ffn_dropout,
             use_cpu_initialization=use_cpu_initialization,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_fusion=bias_dropout_add_fusion,
@@ -133,6 +137,8 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
             transformer_block_type=transformer_block_type,
             headscale=headscale,
             gradient_accumulation_fusion=False,  # TODO: This has to be False for enc-dec models for now.
+            megatron_legacy=megatron_legacy,
+            normalize_attention_scores=normalize_attention_scores,
         )
         self._model_key = 'model'
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
 import math
 
 from omegaconf.dictconfig import DictConfig
@@ -24,6 +25,11 @@ from nemo.collections.nlp.models.language_modeling.megatron_lm_encoder_decoder_m
 from nemo.utils import logging
 
 __all__ = ["MegatronT5Model"]
+
+
+class T5Sentinel(enum.Enum):
+    FIRST = '<extra_id_0>'
+    END = '<extra_id_1>'
 
 
 class MegatronT5Model(MegatronLMEncoderDecoderModel):
@@ -81,11 +87,76 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
             tokenizer=self.tokenizer,
             tokenizer_cfg=self._cfg.tokenizer,
             dataset_type=self._cfg.data.get("dataset_type", "t5"),
+            add_sentinel_tokens_in_reverse_order=self._cfg.tokenizer.get(
+                "add_sentinel_tokens_in_reverse_order", False
+            ),
+            add_sentinel_tokens_first=self._cfg.tokenizer.get("add_sentinel_tokens_first", False),
         )
         super()._build_vocab()
 
     @classmethod
-    def add_special_tokens_to_tokenizer(cls, tokenizer, tokenizer_cfg, dataset_type="t5"):
+    def _add_sentinel_tokens(cls, tokenizer, num_sentinel_tokens, add_sentinel_tokens_in_reverse_order):
+        # Special check to see if <extra_id_{}> is already present in the tokenizer. If it is, only modify the additional_special_tokens function.
+        for i in range(num_sentinel_tokens):
+            if add_sentinel_tokens_in_reverse_order:
+                i = num_sentinel_tokens - i - 1
+            if len(tokenizer.text_to_ids(f'<extra_id_{i}>')) == 1:
+                tokenizer.special_token_to_id[f'<extra_id_{i}>'] = tokenizer.text_to_ids(f'<extra_id_{i}>')[0]
+            else:
+                tokenizer.add_special_tokens([f'<extra_id_{i}>'])
+
+    @classmethod
+    def _add_base_special_tokens(cls, tokenizer, is_huggingface_converted_model):
+        # Need to add cls, sep, mask tokens to the tokenizer if they don't exist.
+        # If cls, sep and mask are not attributes of the tokenizer, add it.
+        if not hasattr(tokenizer, 'cls_token'):
+            tokenizer.add_special_tokens({'cls_token': '<cls>'})
+        if not hasattr(tokenizer.tokenizer, 'sep_id'):
+            tokenizer.add_special_tokens({'sep_token': '<sep>'})
+        if not hasattr(tokenizer.tokenizer, 'mask_id'):
+            tokenizer.add_special_tokens({'mask_token': '<mask>'})
+
+        # bos, eos, pad and unk may be present in the provided spm .model file, if they are, use it.
+        if not hasattr(tokenizer, 'pad_token'):
+            # TODO: Figure out how to do backward compat with pad_id > 0 and >= 0.
+            if is_huggingface_converted_model:
+                if hasattr(tokenizer.tokenizer, 'pad_id') and tokenizer.tokenizer.pad_id() >= 0:
+                    tokenizer.pad_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.pad_id())
+                else:
+                    tokenizer.add_special_tokens({'pad_token': '<pad>'})
+            else:
+                if hasattr(tokenizer.tokenizer, 'pad_id') and tokenizer.tokenizer.pad_id() > 0:
+                    tokenizer.pad_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.pad_id())
+                else:
+                    tokenizer.add_special_tokens({'pad_token': '<pad>'})
+        else:
+            tokenizer.add_special_tokens({'pad_token': '<pad>'})
+
+        if not hasattr(tokenizer, 'bos_token'):
+            if hasattr(tokenizer.tokenizer, 'bos_id') and tokenizer.tokenizer.bos_id() > 0:
+                tokenizer.bos_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.bos_id())
+            else:
+                tokenizer.add_special_tokens({'bos_token': '<bos>'})
+        else:
+            tokenizer.add_special_tokens({'bos_token': '<s>'})
+
+        if not hasattr(tokenizer, 'eos_token'):
+            if hasattr(tokenizer.tokenizer, 'eos_id') and tokenizer.tokenizer.eos_id() > 0:
+                tokenizer.eos_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.eos_id())
+            else:
+                tokenizer.add_special_tokens({'eos_token': '<eos>'})
+        else:
+            tokenizer.add_special_tokens({'eos_token': '</s>'})
+
+    @classmethod
+    def add_special_tokens_to_tokenizer(
+        cls,
+        tokenizer,
+        tokenizer_cfg,
+        dataset_type="t5",
+        add_sentinel_tokens_in_reverse_order=False,
+        add_sentinel_tokens_first=False,
+    ):
         # T5-related construction
         if tokenizer_cfg.library == 'huggingface' or tokenizer_cfg.library == 'megatron':
             additional_tokens = {
@@ -97,51 +168,25 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
             tokenizer.add_special_tokens(additional_tokens)
 
         if tokenizer_cfg.library == 'sentencepiece':
-            # Need to add cls, sep, mask tokens to the tokenizer if they don't exist.
-            # If cls, sep and mask are not attributes of the tokenizer, add it.
-            if not hasattr(tokenizer, 'cls_token'):
-                tokenizer.add_special_tokens({'cls_token': '<cls>'})
-            if not hasattr(tokenizer.tokenizer, 'sep_id'):
-                tokenizer.add_special_tokens({'sep_token': '<sep>'})
-            if not hasattr(tokenizer.tokenizer, 'mask_id'):
-                tokenizer.add_special_tokens({'mask_token': '<mask>'})
-
-            # bos, eos, pad and unk may be present in the provided spm .model file, if they are, use it.
-            if not hasattr(tokenizer, 'pad_token'):
-                if hasattr(tokenizer.tokenizer, 'pad_id') and tokenizer.tokenizer.pad_id() > 0:
-                    tokenizer.pad_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.pad_id())
-                else:
-                    tokenizer.add_special_tokens({'pad_token': '<pad>'})
+            # NOTE: This is an ugly way to support both NeMo-Megatron trained checkpoints and huggingface checkpoints.
+            # Huggingface and Google checkpoints will add sentinel tokens first (right after the base vocabulary), but in NeMo-Megatron, we add <cls>, <sep>, <mask>, <pad>, <bos> etc. beofore sentinel tokens <extra_id_xx>.
+            if add_sentinel_tokens_first:
+                cls._add_sentinel_tokens(
+                    tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
+                )
+                cls._add_base_special_tokens(tokenizer, is_huggingface_converted_model=True)
             else:
-                tokenizer.add_special_tokens({'pad_token': '<pad>'})
-
-            if not hasattr(tokenizer, 'bos_token'):
-                if hasattr(tokenizer.tokenizer, 'bos_id') and tokenizer.tokenizer.bos_id() > 0:
-                    tokenizer.bos_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.bos_id())
-                else:
-                    tokenizer.add_special_tokens({'bos_token': '<bos>'})
-            else:
-                tokenizer.add_special_tokens({'bos_token': '<s>'})
-
-            if not hasattr(tokenizer, 'eos_token'):
-                if hasattr(tokenizer.tokenizer, 'eos_id') and tokenizer.tokenizer.eos_id() > 0:
-                    tokenizer.eos_token = tokenizer.tokenizer.id_to_piece(tokenizer.tokenizer.eos_id())
-                else:
-                    tokenizer.add_special_tokens({'eos_token': '<eos>'})
-            else:
-                tokenizer.add_special_tokens({'eos_token': '</s>'})
-
-            # Special check to see if <extra_id_{}> is already present in the tokenizer. If it is, only modify the additional_special_tokens function.
-            for i in range(tokenizer_cfg.num_sentinel_tokens):
-                if f'▁<extra_id_{i}>' in tokenizer.vocab:
-                    tokenizer.special_token_to_id[f'<extra_id_{i}>'] = tokenizer.text_to_ids(f'<extra_id_{i}>')[0]
-                else:
-                    tokenizer.add_special_tokens([f'<extra_id_{i}>'])
+                cls._add_base_special_tokens(tokenizer, is_huggingface_converted_model=False)
+                cls._add_sentinel_tokens(
+                    tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
+                )
 
             if dataset_type == "ul2":
                 for mask_type in ['r', 's', 'x']:
-                    if f'▁<extra_id_{mask_type}>' in tokenizer.vocab:
-                        tokenizer.special_token_to_id[f'<extra_id_{i}>'] = tokenizer.text_to_ids(f'<extra_id_{i}>')[0]
+                    if len(tokenizer.text_to_ids(f'▁<extra_id_{mask_type}>')) == 1:
+                        tokenizer.special_token_to_id[f'<extra_id_{mask_type}>'] = tokenizer.text_to_ids(
+                            f'<extra_id_{mask_type}>'
+                        )[0]
                     else:
                         tokenizer.add_special_tokens([f'<extra_id_{mask_type}>'])
 

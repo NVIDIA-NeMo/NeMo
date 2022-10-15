@@ -21,13 +21,11 @@ from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
 
-from nemo.collections.nlp.data.language_modeling.megatron.t5_prompt_learning_dataset import (
-    T5PromptLearningDataset,
-    T5Sentinel,
-)
+from nemo.collections.nlp.data.language_modeling.megatron.t5_prompt_learning_dataset import T5PromptLearningDataset
 from nemo.collections.nlp.models.language_modeling.megatron_base_prompt_learning_model import (
     MegatronBasePromptLearningModel,
 )
+from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.modules.common import VirtualPromptSource
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
@@ -107,6 +105,10 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 encoder_input = input_embeds
         else:
             encoder_input = None
+
+        # If the decoder input starts with <pad> instead of <bos>, which is the case for huggingface T5 models, we don't want to mask the first token.
+        # For NeMo-Megatron, the sequence starts with <bos>, which is never masked so we can always set index 0 to be unmasked.
+        dec_mask[:, 0] = 1
 
         # Call forward on T5 model with preprocessed embeddings
         if self.autocast_dtype == torch.float32:
@@ -316,43 +318,22 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             enc_mask=enc_mask,
             num_tokens_to_generate=self.decoder_seq_length,
             encoder_input=encoder_input,
+            bos_id=self.tokenizer.pad_id
+            if self.cfg.data.get('decoder_starts_with_pad', False)
+            else self.tokenizer.bos_id,
         )
-
-        processed_inputs, processed_preds, processed_labels = [], [], []
-        preds = predicted_token_ids.cpu().numpy().tolist()
-        labels = labels.cpu().numpy().tolist()
-        input_ids = input_ids.cpu().numpy().tolist()
-
-        for i, (input_id, pred, label) in enumerate(zip(input_ids, preds, labels)):
-            if self.tokenizer.eos_id in pred:
-                idx = pred.index(self.tokenizer.eos_id)
-                pred = pred[:idx]
-
-            # Sentencepiece case
-            if hasattr(self.tokenizer, 'special_token_to_id'):
-                pred = [id for id in pred if id not in self.tokenizer.special_token_to_id.values()]
-                label = [id for id in label if id not in self.tokenizer.special_token_to_id.values()]
-                input_id = [id for id in input_id if id not in self.tokenizer.special_token_to_id.values()]
-            # HF Autotokenizer case.
-            else:
-                pred = [id for id in pred if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
-                label = [id for id in label if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
-                input_id = [id for id in input_id if id not in self.tokenizer.tokenizer.additional_special_tokens_ids]
-
-            pred = self.tokenizer.ids_to_text(pred)
-            label = self.tokenizer.ids_to_text(label)
-            input_id = self.tokenizer.ids_to_text(input_id)
-
-            processed_preds.append(pred)
-            processed_labels.append(label)
-            processed_inputs.append(input_id)
+        # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
+        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
+        labels_text = MegatronT5FinetuneModel.ids_to_text(labels, self.tokenizer)
+        input_text = MegatronT5FinetuneModel.ids_to_text(input_ids, self.tokenizer)
 
         self.train(mode=mode)
+        self.frozen_model.eval()
         return {
             'loss': loss_mean,
-            'predicted_token_ids': processed_preds,
-            'labels': processed_labels,
-            'enc_inputs': processed_inputs,
+            'predicted_token_ids': preds_text,
+            'labels': labels_text,
+            'enc_inputs': input_text,
         }
 
     def validation_epoch_end(self, outputs):
@@ -436,6 +417,10 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=self.cfg.data.get('add_bos', False),
             add_eos=self.cfg.data.get('add_eos', True),
+            decoder_starts_with_pad=self.cfg.data.get('decoder_starts_with_pad', False),
+            add_eos_to_decoder_output=self.cfg.data.get('add_eos_to_decoder_output', True),
+            add_sentinel_to_input=self.cfg.data.get('add_sentinel_to_input', True),
+            ul2_prompt_token=self.cfg.data.get('ul2_prompt_token', None),
             for_train=for_train,
         )
 
@@ -491,69 +476,31 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             enc_mask=enc_mask,
             num_tokens_to_generate=self.decoder_seq_length,
             encoder_input=encoder_input,
+            bos_id=self.tokenizer.pad_id
+            if self.cfg.data.get('decoder_starts_with_pad', False)
+            else self.tokenizer.bos_id,
         )
-
-        processed_preds = []
-        processed_labels = []
-        processed_inputs = []
-
-        preds = predicted_token_ids.cpu().numpy().tolist()
-        input_ids = input_ids.cpu().numpy().tolist()
+        # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
+        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
+        input_text = MegatronT5FinetuneModel.ids_to_text(input_ids, self.tokenizer)
 
         if labels is not None:
-            labels = labels.cpu().numpy().tolist()
+            labels_text = MegatronT5FinetuneModel.ids_to_text(labels, self.tokenizer)
         else:
-            labels = [None] * len(preds)
-
-        for i, (input_id, pred, label) in enumerate(zip(input_ids, preds, labels)):
-            if self.tokenizer.eos_id in pred:
-                idx = pred.index(self.tokenizer.eos_id)
-                pred = pred[:idx]
-
-            special_token_ids = (
-                self.tokenizer.special_token_to_id.values()
-                if hasattr(self.tokenizer, 'special_token_to_id')
-                else self.tokenizer.tokenizer.additional_special_tokens_ids
-            )
-            pred = [
-                id
-                for id in pred
-                if id not in special_token_ids and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-            ]  # delete the sentinel token at the beginning of prediction
-
-            pred = self.tokenizer.ids_to_text(pred)
-            processed_preds.append(pred)
-
-            input_id = [
-                id for id in input_id if id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-            ]  # delete the sentinel token added to the end of input
-
-            input = self.tokenizer.ids_to_text(input_id)
-            processed_inputs.append(input)
-
-            if label:
-                label = [
-                    id
-                    for id in label
-                    if id not in special_token_ids and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-                ]  # delete the sentinel token at the beginning of label
-
-                label = self.tokenizer.ids_to_text(label)
-            processed_labels.append(label)
+            labels_text = [None] * len(preds_text)
 
         return {
-            'enc_input': processed_inputs,
-            'predicted_token_ids': processed_preds,
-            'log_probs': log_probs,
-            'labels': processed_labels,
+            'input_text': input_text,
+            'preds_text': preds_text,
+            'labels_text': labels_text,
         }
 
     def on_predict_epoch_end(self, outputs: List[Any]) -> None:
 
         gather_results = [None for _ in range(parallel_state.get_data_parallel_world_size())]
-        all_preds = list(itertools.chain(*[item['predicted_token_ids'] for item in outputs[0]]))
-        all_labels = list(itertools.chain(*[item['labels'] for item in outputs[0]]))
-        all_inputs = list(itertools.chain(*[item['enc_input'] for item in outputs[0]]))
+        all_preds = list(itertools.chain(*[item['preds_text'] for item in outputs[0]]))
+        all_labels = list(itertools.chain(*[item['labels_text'] for item in outputs[0]]))
+        all_inputs = list(itertools.chain(*[item['input_text'] for item in outputs[0]]))
 
         assert len(all_preds) == len(all_labels)
         assert len(all_preds) == len(all_inputs)
@@ -578,6 +525,5 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                         correct += 1
 
             acc = correct / len(gather_results_dedup) if all_labels[0] else None
-
             logging.info(f'Prediction results: {acc}')
             logging.info(f'Test finish')

@@ -115,7 +115,7 @@ def main(cfg) -> None:
     outputs = trainer.predict(model, test_dl)
     with open(cfg.pred_file_path, "w", encoding="utf-8") as pred_file:
         for batch in outputs:
-            preds = batch["predicted_token_ids"]
+            preds = batch["preds_text"]
             for pred in preds:
                 pred = pred.strip().replace("\n", " ")
                 pred_file.write(pred + "\n")

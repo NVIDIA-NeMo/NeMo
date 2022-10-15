@@ -56,6 +56,7 @@ def get_encoder_model(
     use_cpu_initialization=False,
     hidden_dropout=0.1,
     attention_dropout=0.1,
+    ffn_dropout=0.0,
     precision=16,
     fp32_residual_connection=False,
     activations_checkpoint_method=None,
@@ -79,6 +80,8 @@ def get_encoder_model(
     chunk_size=64,
     num_self_attention_per_cross_attention=1,
     layer_number_offset=0,  # this is use only for attention norm_factor scaling
+    megatron_legacy=False,
+    normalize_attention_scores=True,
     sequence_parallel=False,
     gradient_accumulation_fusion=False,
 ):
@@ -113,6 +116,7 @@ def get_encoder_model(
             use_cpu_initialization=use_cpu_initialization,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
+            ffn_dropout=ffn_dropout,
             precision=precision,
             fp32_residual_connection=fp32_residual_connection,
             activations_checkpoint_method=activations_checkpoint_method,
@@ -130,6 +134,8 @@ def get_encoder_model(
             transformer_block_type=transformer_block_type,
             headscale=headscale,
             parent_model_type=parent_model_type,
+            megatron_legacy=megatron_legacy,
+            normalize_attention_scores=normalize_attention_scores,
         )
     elif arch == "retro":
         encoder = MegatronRetrievalTransformerEncoderModule(
@@ -166,6 +172,8 @@ def get_encoder_model(
             parent_model_type=parent_model_type,
             chunk_size=chunk_size,
             layer_number_offset=layer_number_offset,
+            megatron_legacy=megatron_legacy,
+            normalize_attention_scores=normalize_attention_scores,
             sequence_parallel=sequence_parallel,
             gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
@@ -185,6 +193,7 @@ def get_encoder_model(
             use_cpu_initialization=use_cpu_initialization,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
+            ffn_dropout=ffn_dropout,
             precision=precision,
             fp32_residual_connection=fp32_residual_connection,
             activations_checkpoint_method=activations_checkpoint_method,
@@ -204,6 +213,8 @@ def get_encoder_model(
             parent_model_type=parent_model_type,
             hidden_steps=hidden_steps,
             num_self_attention_per_cross_attention=num_self_attention_per_cross_attention,
+            megatron_legacy=megatron_legacy,
+            normalize_attention_scores=normalize_attention_scores,
         )
     else:
         raise ValueError(f"Unknown encoder arch = {arch}. Available encoder arch = {AVAILABLE_ENCODERS}")

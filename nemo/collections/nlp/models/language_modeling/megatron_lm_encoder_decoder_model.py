@@ -157,6 +157,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             cfg.encoder = encoder_cfg
             cfg.decoder = decoder_cfg
 
+            # NOTE: For old models there are two scenarios:
+            # 1. If we share decoder embeddings with the output layer, we would always set tokens_head_bias=True
+            # 2. If we do not share decoder embeddings with the output layer, we would always set tokens_head_bias=False
+            cfg.tokens_head_bias = (
+                True if cfg.get('share_decoder_tokens_head_embeddings', True) else False
+            )  # For models before separate encoder/decoder configs, tokens_head_bias was always True.
+
     def model_provider_func(self, pre_process, post_process, add_encoder, add_decoder):
         # TODO: create get_encoder_decoder_model()here for different losses (e..g, nll, vae, mim)
         if not hasattr(self.cfg, 'encoder') or not hasattr(self.cfg, 'decoder'):
@@ -198,6 +205,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             add_decoder=add_decoder,
             share_token_embeddings=self.cfg.get('share_token_embeddings', True),
             share_decoder_tokens_head_embeddings=self.cfg.get('share_decoder_tokens_head_embeddings', True),
+            tokens_head_bias=self.cfg.get('tokens_head_bias', True),
         )
         return model
 
@@ -914,8 +922,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             global_batch_per_gpu = tokens_enc.size(0)
             encoder_seq_length = tokens_enc.size(1)
         else:
-            global_batch_per_gpu = encoder_input.size(0)
-            encoder_seq_length = encoder_input.size(1)
+            global_batch_per_gpu = encoder_input.size(1)
+            encoder_seq_length = encoder_input.size(0)
 
         num_micro_batches_before_decode = get_num_microbatches()
         # Reconfigure microbatch calculator here to set num microbatches to 1 while decoding since its not clear how to decode with "grad acc".
@@ -1007,6 +1015,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         enc_output=None,
         enc_output_attn_mask=None,
         ignore_ids=[],
+        bos_id=None,  # If bos=None, will use tokenizer.bos_id unless explicitly set to something else.
     ):
         # Check whether the DDP is initialized. This is needed when running inference outside of training loop.
         if parallel_state.is_unitialized():
@@ -1050,7 +1059,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             micro_batch_size=global_batch_per_gpu,  # Make sure that there is no "grad acc" while decoding.
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
-        predicted_tokens_dec = torch.LongTensor([tokenizer.bos_id] * global_batch_per_gpu).unsqueeze(1).to(device)
+        # TODO: Figure out how to handle bos being either <bos> for NeMo-Megatron and <pad> for Huggingface/Google.
+        bos_id = tokenizer.bos_id if bos_id is None else bos_id
+        predicted_tokens_dec = torch.LongTensor([bos_id] * global_batch_per_gpu).unsqueeze(1).to(device)
         tensor_shape = [encoder_seq_length, global_batch_per_gpu, self.cfg.encoder.hidden_size]
         assert predicted_tokens_dec.size(0) == global_batch_per_gpu
 
@@ -1068,6 +1079,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             # No microbatches in decoding. Just the global batch.
             decoder_seq_length = predicted_tokens_dec.size(1)
             dec_mask = predicted_tokens_dec != tokenizer.pad_id
+            dec_mask[:, 0] = 1  # Make sure you never mask the first token even if it is <pad>.
 
             batch_for_pipeline = [enc_output, enc_output_attn_mask, predicted_tokens_dec, dec_mask]
             arg_names = ['enc_output', 'enc_output_attn_mask', 'dec_input_ids', 'dec_attn_mask']
@@ -1177,12 +1189,15 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         response['prompt'] = request['prompt'][0]
         response['completion'] = {}
+        bos_id = request['bos_id']
         tokens_enc = request['masked_sample']
 
         response['masked_input'] = ' '.join(self.tokenizer.ids_to_tokens(tokens_enc[0].cpu().numpy().tolist()))
         enc_mask = tokens_enc != self.tokenizer.pad_id
 
-        predicted_tokens_ids, log_probs = self.decode(tokens_enc, enc_mask, int(request['tokens_to_generate']))
+        predicted_tokens_ids, log_probs = self.decode(
+            tokens_enc, enc_mask, int(request['tokens_to_generate']), bos_id=bos_id
+        )
         predicted_tokens_ids = predicted_tokens_ids.cpu().numpy()[0].tolist()
         log_probs = log_probs.cpu().numpy()[0].tolist()
         if self.tokenizer.eos_id in predicted_tokens_ids:

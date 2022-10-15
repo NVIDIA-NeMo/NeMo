@@ -258,10 +258,11 @@ class Embedding(MegatronModule):
         # Initialize the token-type embeddings.
         self.init_method(self.tokentype_embeddings.weight)
 
-    def forward(self, input_ids, position_ids, token_type_ids=None):
+    def forward(self, input_ids, position_ids=None, token_type_ids=None):
         # Embeddings.
         words_embeddings = self.word_embeddings(input_ids)
         if self.position_embedding_type == 'learned_absolute':
+            assert position_ids is not None
             position_embeddings = self.position_embeddings(position_ids)
             embeddings = words_embeddings + position_embeddings
         else:

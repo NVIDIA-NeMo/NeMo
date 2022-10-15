@@ -58,7 +58,6 @@ class T5Dataset(Dataset):
         documents=None,
     ):
         super().__init__()
-
         # Params to store.
         self.name = name
         self.seed = seed

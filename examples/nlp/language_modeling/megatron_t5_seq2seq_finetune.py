@@ -86,10 +86,20 @@ def main(cfg) -> None:
     # Override the T5 configuration with the one from the config file.
     OmegaConf.set_struct(t5_cfg, True)
     with open_dict(t5_cfg):
-        t5_cfg.masked_softmax_fusion = False
         t5_cfg.megatron_amp_O2 = cfg.model.get('megatron_amp_O2', False)
-        t5_cfg.hidden_dropout = cfg.model.get('hidden_dropout', 0.1)
-        t5_cfg.attention_dropout = cfg.model.get('attention_dropout', 0.1)
+        if hasattr(t5_cfg, 'encoder') and hasattr(t5_cfg, 'decoder'):
+            t5_cfg.encoder.masked_softmax_fusion = False
+            t5_cfg.decoder.masked_softmax_fusion = False
+            t5_cfg.encoder.hidden_dropout = cfg.model.get('hidden_dropout', 0.1)
+            t5_cfg.decoder.hidden_dropout = cfg.model.get('hidden_dropout', 0.1)
+            if hasattr(t5_cfg.encoder, 'ffn_dropout'):
+                t5_cfg.encoder.ffn_dropout = cfg.model.get('ffn_dropout', 0.1)
+            if hasattr(t5_cfg.decoder, 'ffn_dropout'):
+                t5_cfg.decoder.ffn_dropout = cfg.model.get('ffn_dropout', 0.1)
+        else:
+            t5_cfg.hidden_dropout = cfg.model.get('hidden_dropout', 0.1)
+            t5_cfg.attention_dropout = cfg.model.get('attention_dropout', 0.1)
+            t5_cfg.masked_softmax_fusion = False
         t5_cfg.data = cfg.model.data
         t5_cfg.precision = cfg.trainer.precision
         t5_cfg.optim = cfg.model.optim

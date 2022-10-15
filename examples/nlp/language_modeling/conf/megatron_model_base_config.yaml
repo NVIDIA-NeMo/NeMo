@@ -5,6 +5,7 @@ num_attention_heads: 12
 init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
 hidden_dropout: 0.1 # Dropout probability for hidden state transformer.
 attention_dropout: 0.1 # Dropout probability in the attention layer.
+ffn_dropout: 0.0 # Dropout probability in the feed-forward layer.
 position_embedding_type: 'learned_absolute' # Position embedding type. Options ['learned_absolute', 'relative']
 relative_attention_num_buckets: 32 # Relative position number of buckets for computing the bias
 relative_attention_max_distance: 128 # max_distance to keep relative distance in the attention_num_buckets.
@@ -30,3 +31,5 @@ onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
 fp32_residual_connection: False # Use FP32 for residual connections.
 activations_checkpoint_method: null # 'uniform', 'block'
 activations_checkpoint_num_layers: 1 
+megatron_legacy: False # Whether to use the legacy Megatron model. This affects the way q,k,v is partitioned from the mixed q,k,v layer in ParallelAttention. This needs to be True for models converted from HF.
+normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sqrt(hidden_size_per_head). This arg is provided as a configuration option mostly for compatibility with models that have been weight-converted from HF. You almost always want to se this to True.

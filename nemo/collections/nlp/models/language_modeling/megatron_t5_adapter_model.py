@@ -18,7 +18,6 @@
 
 
 import itertools
-from tokenize import group
 from typing import Any
 
 import torch
@@ -27,7 +26,7 @@ from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
-from nemo.collections.nlp.data.language_modeling.megatron.t5_prompt_learning_dataset import T5Sentinel
+from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.language_modeling.megatron_t5_prompt_learning_model import (
     MegatronT5PromptLearningModel,
@@ -37,7 +36,6 @@ from nemo.collections.nlp.modules.common.megatron.parallel_adapters import (
     InfusedAdapterConfig,
     ParallelLinearAdapterConfig,
 )
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging
@@ -159,56 +157,19 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             encoder_input=None,
         )
 
-        processed_preds = []
-        processed_labels = []
-        processed_inputs = []
-
-        preds = predicted_token_ids.cpu().numpy().tolist()
-        enc_inputs = enc_input.cpu().numpy().tolist()
+        # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
+        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
+        input_text = MegatronT5FinetuneModel.ids_to_text(enc_input, self.tokenizer)
 
         if labels is not None:
-            labels = labels.cpu().numpy().tolist()
+            labels_text = MegatronT5FinetuneModel.ids_to_text(labels, self.tokenizer)
         else:
-            labels = [None] * len(preds)
-
-        for i, (enc_input, pred, label) in enumerate(zip(enc_inputs, preds, labels)):
-            if self.tokenizer.eos_id in pred:
-                idx = pred.index(self.tokenizer.eos_id)
-                pred = pred[:idx]
-
-            pred = [
-                id
-                for id in pred
-                if id not in self.tokenizer.tokenizer.additional_special_tokens_ids
-                and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-            ]  # delete the sentinel token at the beginning of prediction
-
-            pred = self.tokenizer.ids_to_text(pred)
-            processed_preds.append(pred)
-
-            enc_input = [
-                id for id in enc_input if id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-            ]  # delete the sentinel token added to the end of input
-
-            input = self.tokenizer.ids_to_text(enc_input)
-            processed_inputs.append(input)
-
-            if label:
-                label = [
-                    id
-                    for id in label
-                    if id not in self.tokenizer.tokenizer.additional_special_tokens_ids
-                    and id not in self.tokenizer.text_to_ids(T5Sentinel.FIRST.value)
-                ]  # delete the sentinel token at the beginning of label
-
-                label = self.tokenizer.ids_to_text(label)
-            processed_labels.append(label)
+            labels_text = [None] * len(preds_text)
 
         return {
-            'enc_input': processed_inputs,
-            'predicted_token_ids': processed_preds,
-            'log_probs': log_probs,
-            'labels': processed_labels,
+            'input_text': input_text,
+            'preds_text': preds_text,
+            'labels_text': labels_text,
         }
 
     def setup_optimizer_param_groups(self):

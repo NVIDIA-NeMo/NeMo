@@ -71,11 +71,15 @@ model:
   data:
     train_ds: ["data/squad_train.jsonl"]
     validation_ds: ["data/squad_val.jsonl"]
-    add_eos: True
-    shuffle: True
-    num_workers: 8
-    pin_memory: True
-
+    add_eos: true
+    add_bos: false
+    decoder_starts_with_pad: False
+    add_eos_to_decoder_output: True
+    add_sentinel_to_input: True
+    ul2_prompt_token: null # <extra_id_s>, <extra_id_r>, <extra_id_x>
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
 
   optim:
     name: fused_adam
@@ -91,5 +95,3 @@ model:
       min_lr: 0.0
       monitor: val_loss
       reduce_on_plateau: false
-
-

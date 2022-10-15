@@ -21,6 +21,7 @@ import torch
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm  # NOQA
+    from apex.normalization import MixedFusedRMSNorm
     from apex.transformer import parallel_state, tensor_parallel
     from apex.transformer.enums import AttnMaskType
     from apex.transformer.pipeline_parallel.schedules.common import listify_model
@@ -325,7 +326,7 @@ def get_params_for_weight_decay_optimization(
     no_weight_decay_params = {'params': [], 'weight_decay': 0.0}
     for module in modules:
         for module_ in module.modules():
-            if isinstance(module_, (FusedLayerNorm, FastLayerNorm)):
+            if isinstance(module_, (FusedLayerNorm, FastLayerNorm, MixedFusedRMSNorm)):
                 no_weight_decay_params['params'].extend(
                     [p for p in list(module_._parameters.values()) if p is not None]
                 )

@@ -80,6 +80,9 @@ model:
   share_token_embeddings: True # If True share encoder/decoder embeddings
   share_decoder_tokens_head_embeddings: True # If True share decoder embeddings and decoder projection to logits
 
+  # token head
+  tokens_head_bias: True
+
   # precision
   native_amp_init_scale: 4294967296 # 2 ** 32
   native_amp_growth_interval: 1000

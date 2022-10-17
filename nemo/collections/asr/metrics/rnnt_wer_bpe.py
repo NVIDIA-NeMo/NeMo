@@ -97,7 +97,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                     The length of the list corresponds to the number of recognized words.
                 exclude_blank: Bool flag indicating that blank token confidence scores are to be excluded
                     from the `token_confidence`.
-                reduction: Which reduction type to use for collapsing per-token confidence into per-word confidence.
+                aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
                 method_cfg: A dict-like object which contains the method name and settings to compute per-frame
                     confidence scores.

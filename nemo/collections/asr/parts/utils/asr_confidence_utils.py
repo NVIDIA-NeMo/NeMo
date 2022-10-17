@@ -142,7 +142,16 @@ def get_confidence_aggregation_bank():
     Returns:
         dictionary with functions.
     """
-    return {"mean": (lambda x: sum(x) / len(x)), "min": min, "max": max, "prod": math.prod}
+    confidence_aggregation_bank = {"mean": lambda x: sum(x) / len(x), "min": min, "max": max}
+    # python 3.7 and earlier do not have math.prod
+    if hasattr(math, "prod"):
+        confidence_aggregation_bank["prod"] = math.prod
+    else:
+        from functools import reduce
+        import operator
+
+        confidence_aggregation_bank["prod"] = lambda x: reduce(operator.mul, x, 1)
+    return confidence_aggregation_bank
 
 
 class ConfidenceMeasureMixin(ABC):

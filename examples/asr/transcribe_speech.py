@@ -44,23 +44,23 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   dataset_manifest: path to dataset JSON manifest file (in NeMo format)
 
   compute_langs: Bool to request language ID information (if the model supports it)
-  
+
   output_filename: Output filename where the transcriptions will be written
   batch_size: batch size during inference
-  
+
   cuda: Optional int to enable or disable execution of model on certain CUDA device.
   amp: Bool to decide if Automatic Mixed Precision should be used during inference
   audio_type: Str filetype of the audio. Supported = wav, flac, mp3
-  
+
   overwrite_transcripts: Bool which when set allowes repeated transcriptions to overwrite previous results.
-  
+
   rnnt_decoding: Decoding sub-config for RNNT. Refer to documentation for specific values.
 
 # Usage
 ASR model can be specified by either "model_path" or "pretrained_name".
 Data for transcription can be defined with either "audio_dir" or "dataset_manifest".
 append_pred - optional. Allows you to add more than one prediction to an existing .json
-pred_name_postfix - optional. The name you want to be written for the current model 
+pred_name_postfix - optional. The name you want to be written for the current model
 Results are returned in a JSON manifest file.
 
 python transcribe_speech.py \
@@ -172,8 +172,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     if hasattr(asr_model, 'change_decoding_strategy'):
         # Check if ctc or rnnt model
         if hasattr(asr_model, 'joint'):  # RNNT model
-            rnnt_decoding = RNNTDecodingConfig(fused_batch_size=-1, compute_langs=cfg.compute_langs)
-            asr_model.change_decoding_strategy(rnnt_decoding)
+            cfg.rnnt_decoding.fused_batch_size = -1
+            cfg.rnnt_decoding.compute_langs = cfg.compute_langs
+            asr_model.change_decoding_strategy(cfg.rnnt_decoding)
         else:
             asr_model.change_decoding_strategy(cfg.ctc_decoding)
 

@@ -33,12 +33,29 @@
 Introduction
 ------------
 
-NVIDIA NeMo is a conversational AI toolkit built for researchers working on automatic speech recognition (ASR), natural language processing (NLP), and text-to-speech synthesis (TTS).
-The primary objective of NeMo is to help researchers from industry and academia to reuse prior work (code and pretrained models) and make it easier to create new `conversational AI models <https://developer.nvidia.com/conversational-ai#started>`_.
+NVIDIA NeMo is a conversational AI toolkit built for researchers working on automatic speech recognition (ASR), 
+text-to-speech synthesis (TTS), large language models (LLMs), and 
+natural language processing (NLP).
+The primary objective of NeMo is to help researchers from industry and academia to reuse prior work (code and pretrained models) 
+and make it easier to create new `conversational AI models <https://developer.nvidia.com/conversational-ai#started>`_.
 
-`Pre-trained NeMo models. <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ 
+All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_ and 
+training is automatically scalable to 1000s of GPUs. 
+Additionally, NeMo Megatron LLM models can be trained up to 1 trillion parameters using tensor and pipeline model parallelism.
+NeMo models can be optimized for inference and deployed for production use-cases with `NVIDIA Riva <https://developer.nvidia.com/riva>`_.
 
-`Introductory video. <https://www.youtube.com/embed/wBgpMf_KQVw>`_
+Getting started with NeMo is simple.
+State of the Art pretrained NeMo models are freely available on `HuggingFace Hub <https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia>`_ and
+`NVIDIA NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_.
+These models can be used to transcribe audio, synthesize speech, or translate text in a just a few lines of code.
+
+We have have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that 
+can all be run on `Google Colab <https://colab.research.google.com>`_.
+
+For advanced users that want to train NeMo models from scratch or finetune existing NeMo models 
+we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/update_readme_into/examples>`_ that support multi-GPU/multi-node training.
+
+Also see our `introductory video <https://www.youtube.com/embed/wBgpMf_KQVw>`_ for a high level overview of NeMo.
 
 Key Features
 ------------

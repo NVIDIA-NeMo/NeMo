@@ -16,6 +16,7 @@ pipeline {
       steps{
         sh 'git config --global --add safe.directory /var/lib/jenkins/workspace/NeMo_$GIT_BRANCH'
         sh 'git config --global --add safe.directory /raid/JenkinsWorkDir/workspace/NeMo_$GIT_BRANCH'
+        sh 'git config --global --add safe.directory /mnt/D3/JenkinsWorkDir/workspace/NeMo_$GIT_BRANCH'
       }
     }
 

@@ -58,3 +58,9 @@ graph TD
 ```
 
 **Note**: If you with to evaluate the base model (with all adapters disabled), simply pass `model.adapter.adapter_name=null` to the config of this script to disable all adapters and evaluate just the base model.
+
+# Scoring and Analysis of Results
+
+The script `scoring_and_analysis.py` can be used to calculate the scoring metric for selecting hyperparameters for constrained and unconstrained adaptation experiments as outlined in [Damage Control During Domain Adaptation for Transducer Based Automatic Speech Recognition](https://arxiv.org/abs/2210.03255).
+
+The script takes in as input a csv file containing all the hyperparameters and their corresponding WERs. Currently, it shows how it can be used to perform analysis on the [Crowdsourced high-quality UK and Ireland English Dialect speech data set](http://www.openslr.org/83/). To use it for other experiments, please updated the global variables outlined in the beginning of the script accordingly. These global variables correspond to the column names within the input csv file.

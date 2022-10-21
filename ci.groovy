@@ -14,7 +14,7 @@ spec:
       server: ipp1-cdot01-col01
       path: /vol/scratch1/scratch.okuchaiev_blossom
   containers:
-  - name: latestDLFW
+  - name: latestdlfw
     image: nvcr.io/nvidia/pytorch:22.09-py3
     command:
     - cat
@@ -47,7 +47,7 @@ spec:
           def stageName = '' 
           try {
               currentBuild.description = githubHelper.getBuildDescription()
-              container('latestDLFW') {
+              container('latestdlfw') {
 
                 stageName = 'Code checkout'
                 stage(stageName) {

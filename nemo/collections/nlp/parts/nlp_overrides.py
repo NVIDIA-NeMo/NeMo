@@ -92,8 +92,10 @@ class NLPDDPStrategy(DDPStrategy):
             Sets find_unused_parameters to False to use activation-checkpoint-recomputation.
         """
 
-        if hasattr(self.model, 'megatron_amp_o2') and self.model.megatron_amp_o2:
-            # do not use DDP if using megatron amp O2
+        if (hasattr(self.model, 'megatron_amp_o2') and self.model.megatron_amp_o2) or (
+            hasattr(self.model, 'with_distributed_adam') and self.model.with_distributed_adam
+        ):
+            # do not use DDP if using megatron amp O2 or distributed optimizer
             self._model = LightningDistributedModule(self.model)
         else:
             app_state = AppState()
@@ -418,6 +420,12 @@ class GradScaler(torch.cuda.amp.GradScaler):
         self.optimizer_update_skipped: Optional[bool] = None
         self.hysteresis = hysteresis
         self._hysteresis_tracker = self.hysteresis
+
+    def _unscale_grads_(self, optimizer, *args):
+        if getattr(optimizer, "_custom_amp_unscale_grads", False):
+            return optimizer.unscale_grads(*args)
+        else:
+            return super()._unscale_grads_(optimizer, *args)
 
     def _maybe_opt_step(self, optimizer, optimizer_state, *args, **kwargs):
         retval = None

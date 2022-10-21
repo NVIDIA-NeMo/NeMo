@@ -57,22 +57,12 @@ except ModuleNotFoundError:
 HAVE_APEX_DISTRIBUTED_ADAM = False
 if HAVE_APEX:
     try:
-
-        # Try importing Apex distributed Adam optimizer
-        from apex.contrib.optimizers.distributed_fused_adam import DistributedFusedAdam
-        import fused_adam_cuda, distributed_adam_cuda  # Required kernels
+        # Try importing wrapper for Apex distributed Adam optimizer
+        from nemo.core.optim.distributed_adam import MegatronDistributedFusedAdam
 
         HAVE_APEX_DISTRIBUTED_ADAM = True
 
-        # Wrapper class that supports main_grad buffer
-        # Note: main_grad buffer is used for O2-style optimizations
-        class MegatronDistributedFusedAdam(DistributedFusedAdam):
-            def _init_param_state(self, param, param_group_id, param_id):
-                super()._init_param_state(param, param_group_id, param_id)
-                param.main_grad = self.grad_buffer_view(param)
-
         AVAILABLE_OPTIMIZERS['distributed_fused_adam'] = MegatronDistributedFusedAdam
-
     except (ImportError, ModuleNotFoundError):
         logging.warning("Could not import distributed_fused_adam optimizer from Apex")
 

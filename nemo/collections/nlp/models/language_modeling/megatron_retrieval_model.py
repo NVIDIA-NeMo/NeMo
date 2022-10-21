@@ -86,8 +86,9 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
 
         if self.megatron_amp_o2:
 
-            # Pre-allocate the model on GPU to have master parameters allocated on the same device with matching data type
-            self.model.cuda(torch.cuda.current_device())
+            if not self.with_distributed_adam:
+                # Pre-allocate the model on GPU to have master parameters allocated on the same device with matching data type
+                self.model.cuda(torch.cuda.current_device())
 
             # Model wrapper to convert both model and inputs to half precision
             self.model = Float16Module(module=self.model, precision=self.cfg.precision)
@@ -253,13 +254,16 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
                 self.log('loss_scale', loss_scale)
-        # while async grad allreduce is enabled, bprop will keep moving forward without waiting for
-        # the finish of async grad AR works. Hence, to guarantee the correctness of grads reduction,
-        # we cannot start weight update until all async grad AR works are done.
-        if self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) == 1:
-            torch.cuda.synchronize()
 
-        if self.megatron_amp_o2:
+        if self.with_distributed_adam:
+            # gradients are reduced internally in distributed optimizer
+            pass
+        elif self.megatron_amp_o2:
+            # while async grad allreduce is enabled, bprop will keep moving forward without waiting for
+            # the finish of async grad AR works. Hence, to guarantee the correctness of grads reduction,
+            # we cannot start weight update until all async grad AR works are done.
+            if self.cfg.get('pipeline_model_parallel_size', 1) == 1:
+                torch.cuda.synchronize()
             # when using pipeline parallelism grads must be reduced after the pipeline (not asynchronously)
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
                 # main grads are stored in the MainParamsOptimizer wrapper

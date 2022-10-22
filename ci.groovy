@@ -22,8 +22,6 @@ spec:
     - name: scratch
       mountPath: /testdata
     resources:
-          requests:
-             nvidia.com/gpu: 2
           limits:
              nvidia.com/gpu: 2
     restartPolicy: Never
@@ -31,7 +29,8 @@ spec:
     tty: true
   nodeSelector:
     kubernetes.io/os: linux
-    nvidia.com/gpu_type: "A100_PCIE_40GB"
+    nvidia.com/gpu_type: "Tesla_T4x4"
+    nvidia.com/node_type: gpu_tester
 """
 )   {
       node(POD_LABEL) {

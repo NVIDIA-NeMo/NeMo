@@ -78,7 +78,7 @@ spec:
                 //             sh "pytest --cpu"         
                 // }
                 stage('Parallel stage') {
-                parallel{
+                parallel('parallel'){
                   stage('L1: NMT Training Pre-LN') {
                               sh 'cd examples/nlp/machine_translation && \
                               CUDA_VISIBLE_DEVICES=0 python enc_dec_nmt.py \

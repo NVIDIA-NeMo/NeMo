@@ -47,9 +47,7 @@ spec:
           try {
               currentBuild.description = githubHelper.getBuildDescription()
               container('latestdlfw') {
-
-                stageName = 'Code checkout'
-                stage(stageName) {
+                stage('Code checkout') {
                     // update status on github
                     githubHelper.updateCommitStatus("$BUILD_URL", "$stageName Running", GitHubCommitState.PENDING)
                     checkout changelog: true, poll: true, scm: [$class: 'GitSCM', branches: [[name: "pr/"+githubHelper.getPRNumber()]],
@@ -58,8 +56,7 @@ spec:
                     userRemoteConfigs: [[credentialsId: 'github-token', url: githubHelper.getCloneUrl(), refspec: '+refs/pull/*/head:refs/remotes/origin/pr/*']]]              
                 }
 
-                stageName = "Code Style"
-                stage(stageName) {
+                stage('Code Style') {
                         sh "apt-get update && \
                             apt-get install -y bc && \
                             pip install -r requirements/requirements_test.txt && \
@@ -74,59 +71,29 @@ spec:
                             sh "NEMO_NUMBA_MINVER=0.53 pytest -m 'not pleasefixme and not torch_tts'"         
                 }
 
-                // stage('L0: CPU unit tests') {
-                //             sh "pytest --cpu"         
-                // }
-                stage('Parallel stage') {
-                parallel('parallel'){
-                  stage('L1: NMT Training Pre-LN') {
-                              sh 'cd examples/nlp/machine_translation && \
-                              CUDA_VISIBLE_DEVICES=0 python enc_dec_nmt.py \
-                              --config-path=conf \
-                              --config-name=aayn_base \
-                              do_testing=true \
-                              model.train_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.train_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
-                              model.validation_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.validation_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.test_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.test_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.encoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-                              model.decoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-                              model.encoder.pre_ln=true \
-                              model.decoder.pre_ln=true \
-                              trainer.devices=[0] \
-                              trainer.accelerator="gpu" \
-                              +trainer.fast_dev_run=true \
-                              +trainer.limit_test_batches=2 \
-                              exp_manager=null \
-                              '        
-                            }
-                  stage('L1: NMT Training Pre-LN 2') {
-                              sh 'cd examples/nlp/machine_translation && \
-                              CUDA_VISIBLE_DEVICES=1 python enc_dec_nmt.py \
-                              --config-path=conf \
-                              --config-name=aayn_base \
-                              do_testing=true \
-                              model.train_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.train_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
-                              model.validation_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.validation_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.test_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.test_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
-                              model.encoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-                              model.decoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-                              model.encoder.pre_ln=true \
-                              model.decoder.pre_ln=true \
-                              trainer.devices=[0] \
-                              trainer.accelerator="gpu" \
-                              +trainer.fast_dev_run=true \
-                              +trainer.limit_test_batches=2 \
-                              exp_manager=null \
-                              '        
-                            }
-                }
-                }
+                stage('L1: NMT Training Pre-LN') {
+                            sh 'cd examples/nlp/machine_translation && \
+                            CUDA_VISIBLE_DEVICES=0 python enc_dec_nmt.py \
+                            --config-path=conf \
+                            --config-name=aayn_base \
+                            do_testing=true \
+                            model.train_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.train_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
+                            model.validation_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.validation_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.test_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.test_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.encoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
+                            model.decoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
+                            model.encoder.pre_ln=true \
+                            model.decoder.pre_ln=true \
+                            trainer.devices=[0] \
+                            trainer.accelerator="gpu" \
+                            +trainer.fast_dev_run=true \
+                            +trainer.limit_test_batches=2 \
+                            exp_manager=null \
+                            '        
+                          }
               }
               githubHelper.updateCommitStatus("$BUILD_URL", "Complete", GitHubCommitState.SUCCESS)
           }

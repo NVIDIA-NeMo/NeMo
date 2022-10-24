@@ -214,9 +214,10 @@ Note that RNNT requires numba to be installed from conda.
   pip uninstall numba
   conda install -c conda-forge numba
 
-Megatron GPT
-~~~~~~~~~~~~
-Megatron GPT training requires NVIDIA Apex to be installed.
+NeMo Megatron
+~~~~~~~~~~~~~
+NeMo Megatron training requires NVIDIA Apex to be installed.
+Install it manually if not using the NVIDIA PyTorch container.
 
 .. code-block:: bash
 
@@ -224,6 +225,16 @@ Megatron GPT training requires NVIDIA Apex to be installed.
     cd apex
     git checkout nm_v1.11.0
     pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
+
+Transformer Engine
+~~~~~~~~~~~~~~~~~~
+NeMo Megatron GPT has been integrated with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_ 
+Transformer Engine enables FP8 training on NVIDIA Hopper GPUs.
+`Install <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_ it manually if not using the NVIDIA PyTorch container.
+
+.. note::
+
+  Transformer Engine requires PyTorch to be built with CUDA 11.8.
 
 NeMo Text Processing
 ~~~~~~~~~~~~~~~~~~~~

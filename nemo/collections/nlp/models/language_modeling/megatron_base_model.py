@@ -75,8 +75,6 @@ class MegatronBaseModel(NLPModel):
 
         super().__init__(cfg, trainer=trainer, no_lm_init=no_lm_init)
 
-        self._validate_config()
-
         self.with_distributed_adam = cfg.optim.get('name') == 'distributed_fused_adam'
 
         # used in NVIDIA NGC PyTorch containers
@@ -101,6 +99,9 @@ class MegatronBaseModel(NLPModel):
             seed=self.cfg.get('seed', 1234),
             apex_transformer_log_level=self.cfg.get('apex_transformer_log_level', 30),
         )
+
+        # This must be called after initialize model parallel since it needs to know the data parallel size
+        self._validate_and_override_config()
 
         self.grad_clip_pl_default = False  # use pytorch default for gradient clipping. Default False
 
@@ -127,17 +128,23 @@ class MegatronBaseModel(NLPModel):
         # NVIDIA container version check
         nvidia_torch_version = os.getenv('NVIDIA_PYTORCH_VERSION', None)
         if nvidia_torch_version is not None:
-            NVIDIA_TORCH_MAJOR = int(nvidia_torch_version.split('.')[0])
+            try:
+                NVIDIA_TORCH_MAJOR = int(nvidia_torch_version.split('.')[0])
+            except Exception:
+                NVIDIA_TORCH_MAJOR = 0
             try:
                 NVIDIA_TORCH_MINOR = int(nvidia_torch_version.split('.')[1])
             except Exception:
                 NVIDIA_TORCH_MINOR = 0
 
             # Apex Persistent layer norm is supported from Nvidia PyTorch container v21.11
+            # This only depends on Apex version?
             if NVIDIA_TORCH_MAJOR < 21 or (NVIDIA_TORCH_MAJOR == 21 and NVIDIA_TORCH_MINOR < 11):
                 self.cfg.persist_layer_norm = False
 
+            # NVFUSER available starting with 21.11
             if NVIDIA_TORCH_MAJOR >= 21 or (NVIDIA_TORCH_MAJOR == 21 and NVIDIA_TORCH_MINOR >= 11):
+
                 # NVFUSER
                 torch._C._jit_set_profiling_executor(True)
                 torch._C._jit_set_profiling_mode(True)
@@ -146,7 +153,6 @@ class MegatronBaseModel(NLPModel):
                 torch._C._jit_set_texpr_fuser_enabled(False)
                 torch._C._jit_set_nvfuser_enabled(True)
                 torch._C._debug_set_autodiff_subgraph_inlining(False)
-
         else:
             # Not a Nvidia container. NVFUSER Dependency check is on users
             pass
@@ -421,8 +427,11 @@ class MegatronBaseModel(NLPModel):
 
         return init_consumed_samples
 
-    def _validate_config(self):
-        """ Certain configurations might be incompatible or discouraged. We can check for them here."""
+    def _validate_and_override_config(self):
+        """ Certain configurations might be incompatible or discouraged. 
+            We can check for them here and override if necessary.
+        """
+        app_state = AppState()
 
         if self.cfg.get('sequence_parallel', False) and self.cfg.get('tensor_model_parallel_size', 1) == 1:
             logging.info(
@@ -431,18 +440,36 @@ class MegatronBaseModel(NLPModel):
             with open_dict(self.cfg):
                 self.cfg.sequence_parallel = False
 
-        if (
-            self.cfg.get('gradient_accumulation_fusion', False)
-            and self.cfg.get('pipeline_model_parallel_size', 1) == 1
-        ):
-            logging.info("Gradient accumulation fusion can only be used with pipeline parallel size > 1.")
-            with open_dict(self.cfg):
-                self.cfg.gradient_accumulation_fusion = False
+        # Gradient accumulation fusion does not work with our baseline implementaiton of
+        # async grad allreduce. This should be fixed!
+        # For now we must disable it whenever using the baseline implementaion.
+        # The distributed adam from apex does work with gradient accumulation fusion.
+        distributed_fused_adam = self.cfg.optim.get('name', 'fused_adam') == 'distributed_fused_adam'
+        pipeline_model_parallel_size = self.cfg.get('pipeline_model_parallel_size', 1)
+        data_parallel_size = app_state.data_parallel_size
+
+        if self.cfg.get('gradient_accumulation_fusion', False):
+            if data_parallel_size > 1 and pipeline_model_parallel_size == 1 and not distributed_fused_adam:
+                logging.info(
+                    "When not using pipeline model parallel, gradient accumulation fusion can only be used with distributed_fused_adam."
+                )
+                with open_dict(self.cfg):
+                    self.cfg.gradient_accumulation_fusion = False
 
         if self.cfg.get('gradient_accumulation_fusion', False) and not self.cfg.get('megatron_amp_O2', False):
             logging.info("Gradient accumulation fusion can only be used with megatron amp O2 mixed precision.")
             with open_dict(self.cfg):
                 self.cfg.gradient_accumulation_fusion = False
+
+        if self.cfg.get('use_emha', False):
+            raise ValueError('use_emha is not yet supported please set to False')
+
+        if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
+            assert (
+                self.cfg.num_layers // self.cfg.pipeline_model_parallel_size
+            ) % self.cfg.virtual_pipeline_model_parallel_size == 0, (
+                'Make sure the number of model chunks is the same across all pipeline stages.'
+            )
 
     def is_data_parallel_rank_zero(self):
         if is_global_rank_zero():

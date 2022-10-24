@@ -201,7 +201,7 @@ class BertModel(MegatronModule):
             activations_checkpoint_num_layers=activations_checkpoint_num_layers,
             layernorm_epsilon=layernorm_epsilon,
             masked_softmax_fusion=masked_softmax_fusion,
-            bias_gelu_fusion=bias_gelu_fusion,
+            bias_activation_fusion=bias_gelu_fusion,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
             megatron_legacy=megatron_legacy,

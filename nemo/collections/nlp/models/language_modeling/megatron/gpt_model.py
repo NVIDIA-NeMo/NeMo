@@ -118,14 +118,26 @@ class GPTModel(MegatronModule):
         activations_checkpoint_granularity=None,
         activations_checkpoint_method=None,
         activations_checkpoint_num_layers=1,
+        activations_checkpoint_layers_per_pipeline=None,
         normalization='layernorm',
         layernorm_epsilon=1e-5,
-        bias_gelu_fusion=True,
+        bias_activation_fusion=True,
+        bias_dropout_add_fusion=True,
+        masked_softmax_fusion=True,
+        gradient_accumulation_fusion=False,
         persist_layer_norm=False,
         openai_gelu=False,
         onnx_safe=False,
         sequence_parallel=False,
-        gradient_accumulation_fusion=False,
+        transformer_engine=False,
+        fp8=False,
+        fp8_e4m3=False,
+        fp8_hybrid=False,
+        fp8_margin=0,
+        fp8_interval=1,
+        fp8_amax_history_len=1,
+        fp8_amax_compute_algo='most_recent',
+        use_emha=False,
     ):
 
         super(GPTModel, self).__init__()
@@ -172,14 +184,26 @@ class GPTModel(MegatronModule):
             activations_checkpoint_granularity=activations_checkpoint_granularity,
             activations_checkpoint_method=activations_checkpoint_method,
             activations_checkpoint_num_layers=activations_checkpoint_num_layers,
+            activations_checkpoint_layers_per_pipeline=activations_checkpoint_layers_per_pipeline,
             normalization=normalization,
             layernorm_epsilon=layernorm_epsilon,
-            bias_gelu_fusion=bias_gelu_fusion,
+            bias_activation_fusion=bias_activation_fusion,
+            bias_dropout_add_fusion=bias_dropout_add_fusion,
+            masked_softmax_fusion=masked_softmax_fusion,
+            gradient_accumulation_fusion=gradient_accumulation_fusion,
             persist_layer_norm=persist_layer_norm,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
             sequence_parallel=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
+            transformer_engine=transformer_engine,
+            fp8=fp8,
+            fp8_e4m3=fp8_e4m3,
+            fp8_hybrid=fp8_hybrid,
+            fp8_margin=fp8_margin,
+            fp8_interval=fp8_interval,
+            fp8_amax_history_len=fp8_amax_history_len,
+            fp8_amax_compute_algo=fp8_amax_compute_algo,
+            use_emha=use_emha,
         )
 
         self.initialize_word_embeddings(
@@ -203,6 +227,7 @@ class GPTModel(MegatronModule):
         encoder_input=None,
         set_inference_key_value_memory=False,
         inference_max_sequence_len=None,
+        checkpoint_activations_all_layers=None,
     ):
         # input_ids: [b, s]
         # position_ids: [b, s]
@@ -217,6 +242,7 @@ class GPTModel(MegatronModule):
             encoder_input=encoder_input,
             set_inference_key_value_memory=set_inference_key_value_memory,
             inference_max_sequence_len=inference_max_sequence_len,
+            checkpoint_activations_all_layers=checkpoint_activations_all_layers,
         )
 
         if self.post_process:

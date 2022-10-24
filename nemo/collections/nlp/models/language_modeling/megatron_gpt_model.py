@@ -65,6 +65,14 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
+try:
+    import transformer_engine
+
+    HAVE_TE = True
+
+except (ImportError, ModuleNotFoundError):
+    HAVE_TE = False
+
 
 class MegatronGPTModel(MegatronBaseModel, TextGeneration):
     """
@@ -126,6 +134,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         else:
             raise ValueError('precision must be in [32, 16, "bf16"]')
 
+        self.transformer_engine = cfg.get('transformer_engine', False)
+
         # configuration used for inference
         self._inference_config = None
 
@@ -160,12 +170,27 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             activations_checkpoint_granularity=self.cfg.get('activations_checkpoint_granularity', None),
             activations_checkpoint_method=self.cfg.get('activations_checkpoint_method', None),
             activations_checkpoint_num_layers=self.cfg.get('activations_checkpoint_num_layers', 1),
+            activations_checkpoint_layers_per_pipeline=self.cfg.get(
+                'activations_checkpoint_layers_per_pipeline', None
+            ),
             normalization=self.cfg.get('normalization', 'layernorm'),
             layernorm_epsilon=self.cfg.get('layernorm_epsilon', 1e-5),
             onnx_safe=self.cfg.get('onnx_safe', False),
+            bias_activation_fusion=self.cfg.get('bias_activation_fusion', True),
+            bias_dropout_add_fusion=self.cfg.get('bias_dropout_add_fusion', True),
+            masked_softmax_fusion=self.cfg.get('masked_softmax_fusion', True),
+            gradient_accumulation_fusion=self.cfg.get('gradient_accumulation_fusion', False),
             persist_layer_norm=self.cfg.get('persist_layer_norm', False),
             sequence_parallel=self.cfg.get('sequence_parallel', False),
-            gradient_accumulation_fusion=self.cfg.get('gradient_accumulation_fusion', False),
+            transformer_engine=self.cfg.get('transformer_engine', False),
+            fp8=self.cfg.get('fp8', False),
+            fp8_e4m3=self.cfg.get('fp8_e4m3', False),
+            fp8_hybrid=self.cfg.get('fp8_hybrid', False),
+            fp8_margin=self.cfg.get('fp8_margin', 0),
+            fp8_interval=self.cfg.get('fp8_interval', 1),
+            fp8_amax_history_len=self.cfg.get('fp8_amax_history_len', 1),
+            fp8_amax_compute_algo=self.cfg.get('fp8_amax_compute_algo', 'most_recent'),
+            use_emha=self.cfg.get('use_emha', False),
         )
 
         return model
@@ -285,6 +310,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
             custom_sync_context_handler=custom_sync_context_handler,
             sequence_parallel_enabled=self.cfg.get('sequence_parallel', False),
+            sync_batch_comm=self.cfg.get('sync_batch_comm', True),
+            num_micro_batches_with_partial_activation_checkpoints=self.cfg.get(
+                'num_micro_batches_with_partial_activation_checkpoints', None
+            ),
         )
 
         # only the last stages of the pipeline return losses
@@ -357,9 +386,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         """
         return
 
-    def _append_module_grads(self, module, grads):
+    def _append_sequence_parallel_module_grads(self, module, grads):
+        """ Helper method for allreduce_sequence_parallel_gradients"""
+
         for param in module.parameters():
-            if getattr(param, 'sequence_parallel_enabled', False):
+            if getattr(self, 'transformer_engine', False):
+                sequence_parallel_param = getattr(param, 'sequence_parallel', False)
+            else:
+                sequence_parallel_param = getattr(param, 'sequence_parallel_enabled', False)
+            if sequence_parallel_param:
                 if self.megatron_amp_o2:
                     grad = param.main_grad
                 else:
@@ -375,9 +410,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         grads = []
         if isinstance(self.model, list):
             for module in self.model:
-                self._append_module_grads(module, grads)
+                self._append_sequence_parallel_module_grads(module, grads)
         else:
-            self._append_module_grads(self.model, grads)
+            self._append_sequence_parallel_module_grads(self.model, grads)
 
         coalesced = torch._utils._flatten_dense_tensors(grads)
         torch.distributed.all_reduce(coalesced, group=parallel_state.get_tensor_model_parallel_group())
@@ -415,7 +450,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 torch.distributed.all_reduce(grad, group=parallel_state.get_embedding_group())
 
     def get_forward_output_and_loss_func(self):
-        def fwd_output_and_loss_func(batch, model):
+        def fwd_output_and_loss_func(batch, model, checkpoint_activations_all_layers=None):
             if parallel_state.get_pipeline_model_parallel_world_size() == 1:
                 batch = [x.cuda(non_blocking=True) for x in batch]
                 tokens, labels, loss_mask, attention_mask, position_ids = batch
@@ -436,7 +471,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     # Intermediate pipeline stage doesn't need any inputs
                     tokens, labels, loss_mask, attention_mask, position_ids = None, None, None, None, None
 
-            output_tensor = model(tokens, position_ids, attention_mask, labels)
+            output_tensor = model(
+                tokens,
+                position_ids,
+                attention_mask,
+                labels,
+                checkpoint_activations_all_layers=checkpoint_activations_all_layers,
+            )
 
             def loss_func(output_tensor):
                 loss = self.loss_func(loss_mask, output_tensor)
@@ -500,6 +541,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             tensor_shape=tensor_shape,
             dtype=self.autocast_dtype,
             sequence_parallel_enabled=self.cfg.get('sequence_parallel', False),
+            sync_batch_comm=self.cfg.get('sync_batch_comm', True),
         )
 
         # only the last stage of the pipeline returns losses
@@ -750,6 +792,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             else:
                 self.model.sync_initial_word_embeddings()
 
+        self.setup_transformer_engine_tp_groups()
+
     def setup_training_data(self, cfg):
         if hasattr(self, '_train_ds'):
             consumed_samples = self.compute_consumed_samples(0)
@@ -796,6 +840,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             if self.trainer.strategy.launcher is not None:
                 self.trainer.strategy.launcher.launch(dummy, trainer=self.trainer)
             self.trainer.strategy.setup_environment()
+
+            self.setup_transformer_engine_tp_groups()
 
         # set the default sampling params if it is None.
         # default do greedy sampling
@@ -868,6 +914,30 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             )
         )
         return result
+
+    def _set_tp_groups(self, module):
+        """ Helper method to set tp groups for transformer engine"""
+
+        if self.cfg.get('transformer_engine', False):
+            logging.info(f'Setting up transformer engine modules for tensor parallelism.')
+            if self.cfg.get('megatron_amp_O2', 'False'):
+                # when using O2 additional module key is added that casts the weights
+                for layer in module.module.language_model.encoder.layers:
+                    layer.set_tensor_parallel_group(parallel_state.get_tensor_model_parallel_group())
+
+            else:
+                for layer in module.language_model.encoder.layers:
+                    layer.set_tensor_parallel_group(parallel_state.get_tensor_model_parallel_group())
+
+    def setup_transformer_engine_tp_groups(self):
+        """ This should be called after model parallel groups have been initialized
+            and only needs to be called when using Transformer Engine.
+        """
+        if isinstance(self.model, list):
+            for module in self.model:
+                self._set_tp_groups(module)
+        else:
+            self._set_tp_groups(self.model)
 
     def on_save_checkpoint(self, checkpoint) -> None:
         """LightningModule hook:

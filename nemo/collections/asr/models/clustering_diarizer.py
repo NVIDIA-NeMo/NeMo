@@ -106,7 +106,6 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         # Clustering params
         self._cluster_params = self._diarizer_params.clustering.parameters
-
         self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     @classmethod
@@ -367,8 +366,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                     self.time_stamps[uniq_name] = []
                 start = dic['offset']
                 end = start + dic['duration']
-                stamp = '{:.3f} {:.3f} '.format(start, end)
-                self.time_stamps[uniq_name].append(stamp)
+                self.time_stamps[uniq_name].append([start, end])
 
         if self._speaker_params.save_embeddings:
             embedding_dir = os.path.join(self._speaker_dir, 'embeddings')
@@ -444,8 +442,6 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             out_rttm_dir=out_rttm_dir,
             clustering_params=self._cluster_params,
         )
-
-        # TODO Resegmentation -> Coming Soon
 
         # Scoring
         score = score_labels(

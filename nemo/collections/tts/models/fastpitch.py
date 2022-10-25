@@ -527,11 +527,20 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         """
         list_of_models = []
 
-        # en-US, single speaker, 22050Hz, LJSpeech.
+        # en-US, single speaker, 22050Hz, LJSpeech (ARPABET).
         model = PretrainedModelInfo(
             pretrained_model_name="tts_en_fastpitch",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/1.8.1/files/tts_en_fastpitch_align.nemo",
-            description="This model is trained on LJSpeech sampled at 22050Hz with and can be used to generate female English voices with an American accent.",
+            description="This model is trained on LJSpeech sampled at 22050Hz with and can be used to generate female English voices with an American accent. It is ARPABET-based.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
+        # en-US, single speaker, 22050Hz, LJSpeech (IPA).
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_en_fastpitch_ipa",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/IPA_1.13.0/files/tts_en_fastpitch_align_ipa.nemo",
+            description="This model is trained on LJSpeech sampled at 22050Hz with and can be used to generate female English voices with an American accent. It is IPA-based.",
             class_=cls,
         )
         list_of_models.append(model)

@@ -55,14 +55,13 @@ spec:
                     submoduleCfg: [],
                     userRemoteConfigs: [[credentialsId: 'github-token', url: githubHelper.getCloneUrl(), refspec: '+refs/pull/*/head:refs/remotes/origin/pr/*']]]              
                 }
-
-                stage('Parallel Stage') {
+                
                 parallel(
                 [
                     "foo": stage('A') { sh "nvidia-smi" },
                     "bar": stage('B') { sh "ls -l" }
                 ]
-                )}
+                )
 
                 stage('Code Style') {
                         sh "apt-get update && \

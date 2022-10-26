@@ -244,6 +244,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                         path2manifest=cfg.dataset_manifest,
                         batch_size=cfg.batch_size,
                         num_workers=cfg.num_workers,
+                        return_hypotheses=return_hypotheses,
                     )
                 else:
                     logging.warning(

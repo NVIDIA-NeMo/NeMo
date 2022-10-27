@@ -120,6 +120,37 @@ class PitchLoss(Loss):
         return pitch_loss
 
 
+class EnergyLoss(Loss):
+    def __init__(self, loss_scale=0.1):
+        super().__init__()
+        self.loss_scale = loss_scale
+
+    @property
+    def input_types(self):
+        return {
+            "energy_predicted": NeuralType(('B', 'T'), RegressionValuesType()),
+            "energy_tgt": NeuralType(('B', 'T'), RegressionValuesType()),
+            "length": NeuralType(('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "loss": NeuralType(elements_type=LossType()),
+        }
+
+    @typecheck()
+    def forward(self, energy_predicted, energy_tgt, length):
+        if energy_tgt is None:
+            return 0.0
+        dur_mask = mask_from_lens(length, max_len=energy_tgt.size(1))
+        energy_loss = F.mse_loss(energy_tgt, energy_predicted, reduction='none')
+        energy_loss = (energy_loss * dur_mask).sum() / dur_mask.sum()
+        energy_loss *= self.loss_scale
+
+        return energy_loss
+
+
 class MelLoss(Loss):
     @property
     def input_types(self):

@@ -61,7 +61,7 @@ from nemo.core.neural_types.elements import (
 from nemo.core.neural_types.neural_type import NeuralType
 
 
-def average_pitch(pitch, durs):
+def average_features(pitch, durs):
     durs_cums_ends = torch.cumsum(durs, dim=1).long()
     durs_cums_starts = torch.nn.functional.pad(durs_cums_ends[:, :-1], (1, 0))
     pitch_nonzero_cums = torch.nn.functional.pad(torch.cumsum(pitch != 0.0, dim=2), (1, 0))
@@ -135,10 +135,12 @@ class FastPitchModule(NeuralModule):
         decoder_module: NeuralModule,
         duration_predictor: NeuralModule,
         pitch_predictor: NeuralModule,
+        energy_predictor: NeuralModule,
         aligner: NeuralModule,
         n_speakers: int,
         symbols_embedding_dim: int,
         pitch_embedding_kernel_size: int,
+        energy_embedding_kernel_size: int,
         n_mel_channels: int = 80,
         max_token_duration: int = 75,
         speaker_emb_condition_prosody: bool = False,
@@ -151,6 +153,7 @@ class FastPitchModule(NeuralModule):
         self.decoder = decoder_module
         self.duration_predictor = duration_predictor
         self.pitch_predictor = pitch_predictor
+        self.energy_predictor = energy_predictor
         self.aligner = aligner
         self.learn_alignment = aligner is not None
         self.use_duration_predictor = True
@@ -174,6 +177,14 @@ class FastPitchModule(NeuralModule):
             padding=int((pitch_embedding_kernel_size - 1) / 2),
         )
 
+        if self.energy_predictor is not None:
+            self.energy_emb = torch.nn.Conv1d(
+                1,
+                symbols_embedding_dim,
+                kernel_size=energy_embedding_kernel_size,
+                padding=int((energy_embedding_kernel_size - 1) / 2),
+            )
+
         # Store values precomputed from training data for convenience
         self.register_buffer('pitch_mean', torch.zeros(1))
         self.register_buffer('pitch_std', torch.zeros(1))
@@ -186,6 +197,7 @@ class FastPitchModule(NeuralModule):
             "text": NeuralType(('B', 'T_text'), TokenIndex()),
             "durs": NeuralType(('B', 'T_text'), TokenDurationType()),
             "pitch": NeuralType(('B', 'T_audio'), RegressionValuesType()),
+            "energy": NeuralType(('B', 'T_audio'), RegressionValuesType(), optional=True),
             "speaker": NeuralType(('B'), Index(), optional=True),
             "pace": NeuralType(optional=True),
             "spec": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType(), optional=True),
@@ -207,6 +219,8 @@ class FastPitchModule(NeuralModule):
             "attn_hard": NeuralType(('B', 'S', 'T_spec', 'T_text'), ProbsType()),
             "attn_hard_dur": NeuralType(('B', 'T_text'), TokenDurationType()),
             "pitch": NeuralType(('B', 'T_audio'), RegressionValuesType()),
+            "energy_pred": NeuralType(('B', 'T_text'), RegressionValuesType()),
+            "energy_tgt": NeuralType(('B', 'T_audio'), RegressionValuesType()),
         }
 
     @typecheck()
@@ -216,6 +230,7 @@ class FastPitchModule(NeuralModule):
         text,
         durs=None,
         pitch=None,
+        energy=None,
         speaker=None,
         pace=1.0,
         spec=None,
@@ -260,12 +275,37 @@ class FastPitchModule(NeuralModule):
         if pitch is not None:
             if self.learn_alignment and pitch.shape[-1] != pitch_predicted.shape[-1]:
                 # Pitch during training is per spectrogram frame, but during inference, it should be per character
-                pitch = average_pitch(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
+                pitch = average_features(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
+            elif not self.learn_alignment:
+                # If alignment is not learnt attn_hard_dur is None, hence durs_predicted
+                pitch = average_features(pitch.unsqueeze(1), durs_predicted).squeeze(1)
             pitch_emb = self.pitch_emb(pitch.unsqueeze(1))
         else:
             pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
 
         enc_out = enc_out + pitch_emb.transpose(1, 2)
+
+        # Predict energy
+        if self.energy_predictor is not None:
+            energy_pred = self.energy_predictor(enc_out, enc_mask).squeeze(-1)
+
+            if energy is not None:
+                # Average energy over characters
+                if self.learn_alignment:
+                    energy_tgt = average_features(energy.unsqueeze(1), attn_hard_dur)
+                else:
+                    energy_tgt = average_features(energy.unsqueeze(1), durs_predicted)
+                energy_tgt = torch.log(1.0 + energy_tgt)
+                energy_emb = self.energy_emb(energy_tgt)
+                energy_tgt = energy_tgt.squeeze(1)
+            else:
+                energy_emb = self.energy_emb(energy_pred.unsqueeze(1))
+                energy_tgt = None
+
+            enc_out = enc_out + energy_emb.transpose(1, 2)
+        else:
+            energy_pred = None
+            energy_tgt = None
 
         if self.learn_alignment and spec is not None:
             len_regulated, dec_lens = regulate_len(attn_hard_dur, enc_out, pace)
@@ -292,9 +332,11 @@ class FastPitchModule(NeuralModule):
             attn_hard,
             attn_hard_dur,
             pitch,
+            energy_pred,
+            energy_tgt,
         )
 
-    def infer(self, *, text, pitch=None, speaker=None, pace=1.0, volume=None):
+    def infer(self, *, text, pitch=None, speaker=None, energy=None, pace=1.0, volume=None):
         # Calculate speaker embedding
         if self.speaker_emb is None or speaker is None:
             spk_emb = 0
@@ -315,6 +357,14 @@ class FastPitchModule(NeuralModule):
         )
         pitch_predicted = self.pitch_predictor(prosody_input, enc_mask) + pitch
         pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
+        if self.energy_predictor is not None:
+            if energy is not None:
+                assert energy.shape[-1] == text.shape[-1], f"energy.shape[-1]: {energy.shape[-1]} != len(text)"
+                energy_emb = self.energy_emb(energy)
+            else:
+                energy_pred = self.energy_predictor(prosody_input, enc_mask).squeeze(-1)
+                energy_emb = self.energy_emb(energy_pred.unsqueeze(1))
+            enc_out = enc_out + energy_emb.transpose(1, 2)
         enc_out = enc_out + pitch_emb.transpose(1, 2)
 
         # Expand to decoder time dimension

@@ -54,6 +54,7 @@ from numpy import ndarray
 from pesq import pesq
 from pystoi import stoi
 
+from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
 
 HAVE_WANDB = True
@@ -560,3 +561,16 @@ def split_view(tensor, split_size: int, dim: int = 0):
     cur_shape = tensor.shape
     new_shape = cur_shape[:dim] + (tensor.shape[dim] // split_size, split_size) + cur_shape[dim + 1 :]
     return tensor.reshape(*new_shape)
+
+
+def process_batch(batch_data, sup_data_types_set):
+    batch_dict = {}
+    batch_index = 0
+    for name, datatype in DATA_STR2DATA_CLASS.items():
+        if datatype in MAIN_DATA_TYPES or datatype in sup_data_types_set:
+            batch_dict[name] = batch_data[batch_index]
+            batch_index = batch_index + 1
+            if issubclass(datatype, WithLens):
+                batch_dict[name + "_lens"] = batch_data[batch_index]
+                batch_index = batch_index + 1
+    return batch_dict

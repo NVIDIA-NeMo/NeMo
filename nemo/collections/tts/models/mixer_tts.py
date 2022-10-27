@@ -39,7 +39,7 @@ from nemo.collections.tts.helpers.helpers import (
 )
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
 from nemo.collections.tts.models.base import SpectrogramGenerator
-from nemo.collections.tts.modules.fastpitch import average_pitch, regulate_len
+from nemo.collections.tts.modules.fastpitch import average_features, regulate_len
 from nemo.core import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (
@@ -242,7 +242,7 @@ class MixerTTSModel(SpectrogramGenerator, Exportable):
         if self.add_bin_loss:
             bin_loss = self.bin_loss(hard_attention=attn_hard, soft_attention=attn_soft)
             loss = loss + self.bin_loss_scale * bin_loss
-        true_avg_pitch = average_pitch(true_pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
+        true_avg_pitch = average_features(true_pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
 
         # Pitch loss
         pitch_loss = F.mse_loss(pred_pitch, true_avg_pitch, reduction='none')  # noqa
@@ -315,12 +315,12 @@ class MixerTTSModel(SpectrogramGenerator, Exportable):
         # Avg pitch, add pitch_emb
         if not self.training:
             if pitch is not None:
-                pitch = average_pitch(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
+                pitch = average_features(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
                 pitch_emb = self.pitch_emb(pitch.unsqueeze(1))
             else:
                 pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
         else:
-            pitch = average_pitch(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
+            pitch = average_features(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
             pitch_emb = self.pitch_emb(pitch.unsqueeze(1))
 
         enc_out = enc_out + pitch_emb.transpose(1, 2)
@@ -381,7 +381,7 @@ class MixerTTSModel(SpectrogramGenerator, Exportable):
 
         # Avg pitch, pitch predictor
         if use_gt_durs and pitch is not None:
-            pitch = average_pitch(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
+            pitch = average_features(pitch.unsqueeze(1), attn_hard_dur).squeeze(1)
             pitch_emb = self.pitch_emb(pitch.unsqueeze(1))
         else:
             pitch_predicted = self.pitch_predictor(enc_out, enc_mask)
@@ -565,7 +565,7 @@ class MixerTTSModel(SpectrogramGenerator, Exportable):
                 pitches += [
                     wandb.Image(
                         plot_pitch_to_numpy(
-                            average_pitch(pitch.unsqueeze(1), attn_hard_dur)
+                            average_features(pitch.unsqueeze(1), attn_hard_dur)
                             .squeeze(1)[i, : text_len[i]]
                             .data.cpu()
                             .numpy(),

@@ -27,6 +27,7 @@ spec:
     restartPolicy: Never
     backoffLimit: 4
     tty: true
+    shm-size: 8g
   nodeSelector:
     kubernetes.io/os: linux
     nvidia.com/gpu_type: "Tesla_T4x4"

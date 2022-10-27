@@ -43,7 +43,7 @@ Currently, the following NGC models are supported:
 """
 
 
-@hydra_runner(config_path="../conf/inference", config_name="diar_infer_telephonic.yaml")
+@hydra_runner(config_path="../conf/inference", config_name="diar_infer_meeting.yaml")
 def main(cfg):
 
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')

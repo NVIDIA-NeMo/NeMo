@@ -6,7 +6,7 @@
 # {"audio_filepath": "/path/to/audio_file", "offset": 0, "duration": null, "label": "infer", "text": "-", "num_speakers": null, "rttm_filepath": "/path/to/rttm/file", "uem_filepath": "/path/to/uem/file"}
 name: &name "ClusterDiarizer"
 
-num_workers: 4
+num_workers: 1
 sample_rate: 16000
 batch_size: 64
 
@@ -18,7 +18,7 @@ diarizer:
   ignore_overlap: True # Consider or ignore overlap segments while scoring
 
   vad:
-    model_path: ??? # .nemo local model path or pretrained VAD model name 
+    model_path: vad_multilingual_marblenet # .nemo local model path or pretrained VAD model name 
     external_vad_manifest: null # This option is provided to use external vad and provide its speech activity labels for speaker embeddings extraction. Only one of model_path or external_vad_manifest should be set
 
     parameters: # Tuned parameters for CH109 (using the 11 multi-speaker sessions as dev set) 
@@ -52,7 +52,7 @@ diarizer:
       maj_vote_spk_count: False  # If True, take a majority vote on multiple p-values to estimate the number of speakers.
   
   msdd_model:
-    model_path: ??? # .nemo local model path or pretrained model name for multiscale diarization decoder (MSDD)
+    model_path: diar_msdd_telephonic # .nemo local model path or pretrained model name for multiscale diarization decoder (MSDD)
     parameters:
       use_speaker_model_from_ckpt: True # If True, use speaker embedding model in checkpoint. If False, the provided speaker embedding model in config will be used.
       infer_batch_size: 25 # Batch size for MSDD inference. 
@@ -63,10 +63,10 @@ diarizer:
       overlap_infer_spk_limit: 5 # If the estimated number of speakers are larger than this number, overlap speech is not estimated.
   
   asr:
-    model_path: ??? # Provide NGC cloud ASR model name. stt_en_conformer_ctc_* models are recommended for diarization purposes.
+    model_path: stt_en_conformer_ctc_large # Provide NGC cloud ASR model name. stt_en_conformer_ctc_* models are recommended for diarization purposes.
     parameters:
       asr_based_vad: False # if True, speech segmentation for diarization is based on word-timestamps from ASR inference.
-      asr_based_vad_threshold: 0.05 # Threshold (in sec) that caps the gap between two words when generating VAD timestamps using ASR based VAD.
+      asr_based_vad_threshold: 1.0 # Threshold (in sec) that caps the gap between two words when generating VAD timestamps using ASR based VAD.
       asr_batch_size: null # Batch size can be dependent on each ASR model. Default batch sizes are applied if set to null.
       lenient_overlap_WDER: True # If true, when a word falls into  speaker-overlappedregions, consider the word as a correctly diarized word.
       decoder_delay_in_sec: null # Native decoder delay. null is recommended to use the default values for each ASR model.

@@ -1,3 +1,5 @@
-Model Name,Language,Fisher-Dev-Es,Librispeech Dev-Clean,Librispeech Dev-Other,Librispeech Test-Clean,Librispeech Test-Other,MCV Dev-Set v7.0 (en),MLS Dev (es),VoxPopuli Dev (es)
-stt_enes_conformer_ctc_large,enes,16.7 %,2.2 %,5.5 %,2.6 %,5.5 %,5.8 %,3.5 %,5.7 %
-stt_enes_conformer_transducer_large,enes,16.2 %,2.0 %,4.6 %,2.2 %,4.6 %,5.0 %,3.3 %,5.3 %
+Model Name,Language,Fisher-Dev-En,Fisher-Dev-Es,Fisher-Test-En,Fisher-Test-Es,Librispeech Dev-Clean,Librispeech Dev-Other,Librispeech Test-Clean,Librispeech Test-Other,MCV Dev-Set v7.0 (en),MCV Dev-Set v7.0 (es),MCV Test-Set v7.0 (en),MCV Test-Set v7.0 (es),MLS Dev (en),MLS Dev (es),MLS Test (en),MLS Test (es),VoxPopuli Dev (en),VoxPopuli Dev (es),VoxPopuli Test (en),VoxPopuli Test (es)
+stt_enes_conformer_ctc_large,enes,,16.7 %,,,2.2 %,5.5 %,2.6 %,5.5 %,5.8 %,,,,,3.5 %,,,,5.7 %,,
+stt_enes_conformer_ctc_large_codesw,enes,,16.51 %,,16.31 %,2.22 %,5.36 %,2.55 %,5.38 %,,5.00 %,,5.51 %,,3.46 %,,3.73 %,,5.58 %,,6.63 %
+stt_enes_conformer_transducer_large,enes,,16.2 %,,,2.0 %,4.6 %,2.2 %,4.6 %,5.0 %,,,,,3.3 %,,,,5.3 %,,
+stt_enes_conformer_transducer_large_codesw,enes,15.70 %,,15.66 %,,1.97 %,4.54 %,2.17 %,4.53 %,4.51 %,,5.06 %,,3.27 %,,3.67 %,,5.28 %,,6.54 %,

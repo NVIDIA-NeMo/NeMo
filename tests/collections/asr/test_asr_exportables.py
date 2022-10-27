@@ -177,7 +177,7 @@ class TestExportable:
 
             if num_states > 0:
                 for idx, ip in enumerate(onnx_model.graph.input[3:]):
-                    assert ip.name == "input-" + state_name + '-' + str(idx + 1)
+                    assert ip.name == "input_" + state_name + '_' + str(idx + 1)
 
             assert len(onnx_model.graph.output) == (len(input_examples) - 1) + num_states
             assert onnx_model.graph.output[0].name == 'outputs'
@@ -185,7 +185,53 @@ class TestExportable:
 
             if num_states > 0:
                 for idx, op in enumerate(onnx_model.graph.output[2:]):
-                    assert op.name == "output-" + state_name + '-' + str(idx + 1)
+                    assert op.name == "output_" + state_name + '_' + str(idx + 1)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_EncDecRNNTModel_export_to_ts(self, citrinet_rnnt_model):
+        model = citrinet_rnnt_model.cuda()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fn = 'citri_rnnt.ts'
+            filename = os.path.join(tmpdir, fn)
+            # Perform export + test with the input examples of the RNNT model.
+            files, descr = model.export(output=filename, verbose=False, check_trace=True)
+
+            encoder_filename = os.path.join(tmpdir, 'encoder-' + fn)
+            assert files[0] == encoder_filename
+            assert os.path.exists(encoder_filename)
+
+            ts_encoder = torch.jit.load(encoder_filename)
+            assert ts_encoder is not None
+
+            arguments = ts_encoder.forward.schema.arguments[1:]  # First value is `self`
+            assert arguments[0].name == 'audio_signal'
+            assert arguments[1].name == 'length'
+
+            decoder_joint_filename = os.path.join(tmpdir, 'decoder_joint-' + fn)
+            assert files[1] == decoder_joint_filename
+            assert os.path.exists(decoder_joint_filename)
+
+            ts_decoder_joint = torch.jit.load(decoder_joint_filename)
+            assert ts_decoder_joint is not None
+
+            ts_decoder_joint_args = ts_decoder_joint.forward.schema.arguments[1:]  # First value is self
+
+            input_examples = model.decoder.input_example()
+            assert type(input_examples[-1]) == tuple
+            num_states = len(input_examples[-1])
+            state_name = list(model.decoder.output_types.keys())[-1]
+
+            # enc_logits + (all decoder inputs - state tuple) + flattened state list
+            assert len(ts_decoder_joint_args) == (1 + (len(input_examples) - 1) + num_states)
+            assert ts_decoder_joint_args[0].name == 'encoder_outputs'
+            assert ts_decoder_joint_args[1].name == 'targets'
+            assert ts_decoder_joint_args[2].name == 'target_length'
+
+            if num_states > 0:
+                for idx, ip in enumerate(ts_decoder_joint_args[3:]):
+                    assert ip.name == "input_" + state_name + '_' + str(idx + 1)
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

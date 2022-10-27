@@ -19,32 +19,34 @@ import tempfile
 from argparse import ArgumentParser
 
 import torch
+from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import ONNXGreedyBatchedRNNTInfer
+from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import TorchscriptGreedyBatchedRNNTInfer
 from nemo.utils import logging
 
 
 """
-Script to compare the outputs of a NeMo Pytorch based RNNT Model and its ONNX exported representation.
+Script to compare the outputs of a NeMo Pytorch based RNNT Model and its Torchscript exported representation.
 
-# Compare a NeMo and ONNX model
-python infer_transducer_onnx.py \
+# Compare a NeMo and Torchscript model
+python infer_transducer_ts.py \
     --nemo_model="<path to a .nemo file>" \
     OR
     --pretrained_model="<name of a pretrained model>" \
-    --onnx_encoder="<path to onnx encoder file>" \
-    --onnx_decoder="<path to onnx decoder-joint file>" \
+    --ts_encoder="<path to ts encoder file>" \
+    --ts_decoder="<path to ts decoder-joint file>" \
+    --ts_cfg="<path to a export ts model's config file>" \
     --dataset_manifest="<Either pass a manifest file path here>" \
     --audio_dir="<Or pass a directory containing preprocessed monochannel audio files>" \
     --max_symbold_per_step=5 \
     --batch_size=32 \
     --log
     
-# Export and compare a NeMo and ONNX model
-python infer_transducer_onnx.py \
+# Export and compare a NeMo and Torchscript model
+python infer_transducer_ts.py \
     --nemo_model="<path to a .nemo file>" \
     OR
     --pretrained_model="<name of a pretrained model>" \
@@ -54,6 +56,7 @@ python infer_transducer_onnx.py \
     --max_symbold_per_step=5 \
     --batch_size=32 \
     --log
+
 """
 
 
@@ -65,9 +68,12 @@ def parse_arguments():
     parser.add_argument(
         '--pretrained_model', type=str, default=None, required=False, help='Name of a pretrained NeMo file'
     )
-    parser.add_argument('--onnx_encoder', type=str, default=None, required=False, help="Path to onnx encoder model")
+    parser.add_argument('--ts_encoder', type=str, default=None, required=False, help="Path to ts encoder model")
     parser.add_argument(
-        '--onnx_decoder', type=str, default=None, required=False, help="Path to onnx decoder + joint model"
+        '--ts_decoder', type=str, default=None, required=False, help="Path to ts decoder + joint model"
+    )
+    parser.add_argument(
+        '--ts_cfg', type=str, default=None, required=False, help='Path to the yaml config of the exported model'
     )
     parser.add_argument('--threshold', type=float, default=0.01, required=False)
 
@@ -75,10 +81,12 @@ def parse_arguments():
     parser.add_argument('--audio_dir', type=str, default=None, required=False, help='Path to directory of audio files')
     parser.add_argument('--audio_type', type=str, default='wav', help='File format of audio')
 
-    parser.add_argument('--export', action='store_true', help="Whether to export the model into onnx prior to eval")
+    parser.add_argument(
+        '--export', action='store_true', help="Whether to export the model into torchscript prior to eval"
+    )
     parser.add_argument('--max_symbold_per_step', type=int, default=5, required=False, help='Number of decoding steps')
     parser.add_argument('--batch_size', type=int, default=32, help='Batchsize')
-    parser.add_argument('--log', action='store_true', help='Log the predictions between pytorch and onnx')
+    parser.add_argument('--log', action='store_true', help='Log the predictions between pytorch and torchscript')
 
     args = parser.parse_args()
     return args
@@ -88,7 +96,7 @@ def assert_args(args):
     if args.nemo_model is None and args.pretrained_model is None:
         raise ValueError(
             "`nemo_model` or `pretrained_model` must be passed ! It is required for decoding the RNNT tokens "
-            "and ensuring predictions match between Torch and ONNX."
+            "and ensuring predictions match between Torch and Torchscript."
         )
 
     if args.nemo_model is not None and args.pretrained_model is not None:
@@ -96,8 +104,14 @@ def assert_args(args):
             "`nemo_model` and `pretrained_model` cannot both be passed ! Only one can be passed to this script."
         )
 
-    if args.export and (args.onnx_encoder is not None or args.onnx_decoder is not None):
-        raise ValueError("If `export` is set, then `onnx_encoder` and `onnx_decoder` arguments must be None")
+    if args.ts_cfg is None:
+        raise ValueError(
+            "Must provide the yaml config of the exported model. You can obtain it by loading the "
+            "nemo model and then using OmegaConf.save(model.cfg, 'cfg.yaml')"
+        )
+
+    if args.export and (args.ts_encoder is not None or args.ts_decoder is not None):
+        raise ValueError("If `export` is set, then `ts_encoder` and `ts_decoder` arguments must be None")
 
     if args.audio_dir is None and args.dataset_manifest is None:
         raise ValueError("Both `dataset_manifest` and `audio_dir` cannot be None!")
@@ -111,9 +125,12 @@ def assert_args(args):
 
 def export_model_if_required(args, nemo_model):
     if args.export:
-        nemo_model.export("temp_rnnt.onnx")
-        args.onnx_encoder = "encoder-temp_rnnt.onnx"
-        args.onnx_decoder = "decoder_joint-temp_rnnt.onnx"
+        nemo_model.export(output="temp_rnnt.ts", check_trace=True)
+        OmegaConf.save(nemo_model.cfg, "ts_cfg.yaml")
+
+        args.ts_encoder = "encoder-temp_rnnt.ts"
+        args.ts_decoder = "decoder_joint-temp_rnnt.ts"
+        args.ts_cfg = "ts_cfg.yaml"
 
 
 def resolve_audio_filepaths(args):
@@ -156,17 +173,18 @@ def main():
     export_model_if_required(args, nemo_model)
 
     # Instantiate RNNT Decoding loop
-    encoder_model = args.onnx_encoder
-    decoder_model = args.onnx_decoder
+    encoder_model = args.ts_encoder
+    decoder_model = args.ts_decoder
+    ts_cfg = OmegaConf.load(args.ts_cfg)
     max_symbols_per_step = args.max_symbold_per_step
-    decoding = ONNXGreedyBatchedRNNTInfer(encoder_model, decoder_model, max_symbols_per_step)
+    decoding = TorchscriptGreedyBatchedRNNTInfer(encoder_model, decoder_model, ts_cfg, device, max_symbols_per_step)
 
     audio_filepath = resolve_audio_filepaths(args)
 
     # Evaluate Pytorch Model (CPU/GPU)
     actual_transcripts = nemo_model.transcribe(audio_filepath, batch_size=args.batch_size)[0]
 
-    # Evaluate ONNX model
+    # Evaluate Torchscript model
     with tempfile.TemporaryDirectory() as tmpdir:
         with open(os.path.join(tmpdir, 'manifest.json'), 'w', encoding='utf-8') as fp:
             for audio_file in audio_filepath:
@@ -181,7 +199,7 @@ def main():
         temporary_datalayer = nemo_model._setup_transcribe_dataloader(config)
 
         all_hypothesis = []
-        for test_batch in tqdm(temporary_datalayer, desc="ONNX Transcribing"):
+        for test_batch in tqdm(temporary_datalayer, desc="Torchscript Transcribing"):
             input_signal, input_signal_length = test_batch[0], test_batch[1]
             input_signal = input_signal.to(device)
             input_signal_length = input_signal_length.to(device)
@@ -204,16 +222,16 @@ def main():
             del test_batch
 
     if args.log:
-        for pt_transcript, onnx_transcript in zip(actual_transcripts, all_hypothesis):
-            print(f"Pytorch Transcripts : {pt_transcript}")
-            print(f"ONNX Transcripts    : {onnx_transcript}")
+        for pt_transcript, ts_transcript in zip(actual_transcripts, all_hypothesis):
+            print(f"Pytorch Transcripts        : {pt_transcript}")
+            print(f"Torchscript Transcripts    : {ts_transcript}")
         print()
 
-    # Measure error rate between onnx and pytorch transcipts
-    pt_onnx_cer = word_error_rate(all_hypothesis, actual_transcripts, use_cer=True)
-    assert pt_onnx_cer < args.threshold, "Threshold violation !"
+    # Measure error rate between torchscript and pytorch transcipts
+    pt_ts_cer = word_error_rate(all_hypothesis, actual_transcripts, use_cer=True)
+    assert pt_ts_cer < args.threshold, "Threshold violation !"
 
-    print("Character error rate between Pytorch and ONNX :", pt_onnx_cer)
+    print("Character error rate between Pytorch and Torchscript :", pt_ts_cer)
 
 
 if __name__ == '__main__':

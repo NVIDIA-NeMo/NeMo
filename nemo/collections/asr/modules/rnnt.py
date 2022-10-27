@@ -1538,8 +1538,8 @@ class RNNTDecoderJoint(torch.nn.Module, Exportable):
             'encoder_outputs': NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "targets": NeuralType(('B', 'T'), LabelsType()),
             "target_length": NeuralType(tuple('B'), LengthsType()),
-            'input-states-1': state_type,
-            'input-states-2': state_type,
+            'input_states_1': state_type,
+            'input_states_2': state_type,
         }
 
         return mytypes
@@ -1554,17 +1554,17 @@ class RNNTDecoderJoint(torch.nn.Module, Exportable):
         return {
             "outputs": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
             "prednet_lengths": NeuralType(tuple('B'), LengthsType()),
-            "output-states-1": NeuralType((('D', 'B', 'D')), ElementType()),
-            "output-states-2": NeuralType((('D', 'B', 'D')), ElementType()),
+            "output_states_1": NeuralType((('D', 'B', 'D')), ElementType()),
+            "output_states_2": NeuralType((('D', 'B', 'D')), ElementType()),
         }
 
-    def forward(self, encoder_outputs, decoder_inputs, decoder_lengths, state_h, state_c):
-        decoder_outputs = self.decoder(decoder_inputs, decoder_lengths, (state_h, state_c))
+    def forward(self, encoder_outputs, targets, target_length, input_states_1, input_states_2):
+        decoder_outputs = self.decoder(targets, target_length, (input_states_1, input_states_2))
         decoder_output = decoder_outputs[0]
         decoder_length = decoder_outputs[1]
-        state_h, state_c = decoder_outputs[2][0], decoder_outputs[2][1]
+        input_states_1, input_states_2 = decoder_outputs[2][0], decoder_outputs[2][1]
         joint_output = self.joint(encoder_outputs, decoder_output)
-        return (joint_output, decoder_length, state_h, state_c)
+        return (joint_output, decoder_length, input_states_1, input_states_2)
 
 
 class RNNTDecoderJointSSL(torch.nn.Module):

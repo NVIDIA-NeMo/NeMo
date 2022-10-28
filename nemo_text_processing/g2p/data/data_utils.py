@@ -152,3 +152,7 @@ def german_text_preprocessing(text):
 
 def spanish_text_preprocessing(text):
     return text.lower()
+
+
+def chinese_text_preprocessing(text):
+    return text.lower()

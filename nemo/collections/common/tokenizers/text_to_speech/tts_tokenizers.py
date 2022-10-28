@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from typing import List, Optional
 
 from nemo_text_processing.g2p.data.data_utils import (
+    chinese_text_preprocessing,
     english_text_preprocessing,
     german_text_preprocessing,
     spanish_text_preprocessing,
@@ -636,3 +637,123 @@ class IPATokenizer(BaseTokenizer):
         finally:
             if hasattr(self.g2p, "phoneme_probability"):
                 self.g2p.phoneme_probability = self.phoneme_probability
+
+
+class ChinesePhonemesTokenizer(BaseTokenizer):
+    # fmt: off
+    PRONUNCIATION_LIST = ['#' + i for i in ['^', 'A', 'AI', 'AN', 'ANG', 'AO', 'B', 'C', 'CH', 'D', 
+                    'E', 'EI', 'EN', 'ENG', 'ER', 'F', 'G', 'H', 'I', 'IE', 
+                    'IN', 'ING', 'IU', 'J', 'K', 'L', 'M', 'N', 'O', 'ONG', 
+                    'OU', 'P', 'Q', 'R', 'S', 'SH', 'T', 'U', 'UI', 'UN', 
+                    'V', 'VE', 'VN', 'W', 'X', 'Y', 'Z', 'ZH']]
+    TONES_LIST = ['#1', '#2', '#3', '#4', '#5']
+    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
+        ',', '.', '!', '?', '-',
+        ':', ';', '/', '"', '(',
+        ')', '[', ']', '{', '}',
+    )
+    ZH_PUNCT_LIST = list("，。？！；：、‘’“”（）【】「」《》") + list(PUNCT_LIST)
+
+    def __init__(
+        self,
+        g2p,
+        punct=True,
+        non_default_punct_list=None,
+        chars=False,
+        *,
+        space=' ',
+        silence=None,
+        apostrophe=True,
+        sep='|',  # To be able to distinguish between 2/3 letters codes.
+        add_blank_at=None,
+        pad_with_space=False,
+        text_preprocessing_func=lambda text: chinese_text_preprocessing(text),
+    ):
+        """Chinese phoneme-based tokenizer.
+        Args:
+            g2p: Grapheme to phoneme module.
+            punct: Whether to reserve grapheme for basic punctuation or not.
+            non_default_punct_list: List of punctuation marks which will be used instead default.
+            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return chars too.
+            space: Space token as string.
+            silence: Silence token as string (will be disabled if it is None).
+            apostrophe: Whether to use apostrophe or not.
+            sep: Separation token as string.
+            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+             if None then no blank in labels.
+            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+             Basically, it replaces all non-unicode characters with unicode ones.
+             Note that lower() function shouldn't applied here, in case the text contains phonemes (it will be handled by g2p).
+        """
+        tokens = []
+        self.space, tokens = len(tokens), tokens + [space]  # Space
+
+        if silence is not None:
+            self.silence, tokens = len(tokens), tokens + [silence]  # Silence
+
+        tokens.extend(self.PRONUNCIATION_LIST)
+        tokens.extend(self.TONES_LIST)
+        tokens.extend(string.ascii_lowercase)
+
+        if apostrophe:
+            tokens.append("'")  # Apostrophe
+
+        if punct:
+            if non_default_punct_list is not None:
+                self.PUNCT_LIST = non_default_punct_list
+            else:
+                self.PUNCT_LIST = list(self.ZH_PUNCT_LIST)
+            tokens.extend(self.PUNCT_LIST)
+
+        super().__init__(tokens, sep=sep, add_blank_at=add_blank_at)
+
+        self.punct = punct
+        self.pad_with_space = pad_with_space
+
+        self.text_preprocessing_func = text_preprocessing_func
+        self.g2p = g2p
+
+    def encode(self, text):
+        """See base class for more information."""
+
+        text = self.text_preprocessing_func(text)
+        g2p_text = self.g2p(text)  # TODO: handle infer
+        return self.encode_from_g2p(g2p_text, text)
+
+    def encode_from_g2p(self, g2p_text: List[str], raw_text: Optional[str] = None):
+        """
+        Encodes text that has already been run through G2P.
+        Called for encoding to tokens after text preprocessing and G2P.
+
+        Args:
+            g2p_text: G2P's output, could be a mixture of Chinese phonemes and English letters.
+            raw_text: original raw input
+        """
+        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
+        for p in g2p_text:  # noqa
+            # Add space if last one isn't one
+            if p == space and len(ps) > 0 and ps[-1] != space:
+                ps.append(p)
+            # Add next phoneme or char (if chars=True)
+            elif (p.isalnum() or p == "'" or p in self.PRONUNCIATION_LIST or p in self.TONES_LIST) and p in tokens:
+                ps.append(p)
+            # Add punct
+            elif (p in self.PUNCT_LIST) and self.punct:
+                ps.append(p)
+            # Warn about unknown char/phoneme
+            elif p != space:
+                message = f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
+                if raw_text is not None:
+                    message += f"Original text: [{raw_text}]. Symbol will be skipped."
+                logging.warning(message)
+
+        # Remove trailing spaces
+        if ps:
+            while ps[-1] == space:
+                ps.pop()
+
+        if self.pad_with_space:
+            ps = [space] + ps + [space]
+
+        return [self._token2id[p] for p in ps]

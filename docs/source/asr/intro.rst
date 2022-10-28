@@ -28,6 +28,18 @@ we could integrate a language model that would improve our predictions, as well.
 
 And the entire end-to-end ASR model can be trained at once--a much easier pipeline to handle!
 
+A demo below allows evaluation of NeMo ASR models in multiple langauges from the browser:
+
+.. raw:: html
+
+    <iframe src="https://hf.space/embed/smajumdar/nemo_multilingual_language_id/+"
+    width="100%" class="gradio-asr"></iframe>
+
+    <script type="text/javascript" language="javascript">
+        $('.gradio-asr').css('height', $(window).height()+'px');
+    </script>
+
+
 The full documentation tree is as follows:
 
 .. toctree::

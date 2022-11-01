@@ -1,4 +1,4 @@
-pytorch-lightning>=1.7.0
+pytorch-lightning>=1.7.0,<1.8
 torchmetrics>=0.4.1rc0
 transformers>=4.0.1,<=4.21.2
 webdataset>=0.1.48,<=0.1.62

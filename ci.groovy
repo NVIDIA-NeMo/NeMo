@@ -27,11 +27,12 @@ spec:
     restartPolicy: Never
     backoffLimit: 4
     tty: true
-    shm-size: 8g
+    shm-size: 32g
   nodeSelector:
     kubernetes.io/os: linux
     nvidia.com/gpu_type: "Tesla_T4x4"
     nvidia.com/node_type: gpu_tester
+    nvidia.com/driver_version: "510.20"
 """
 )   {
       node(POD_LABEL) {
@@ -59,6 +60,7 @@ spec:
                 stage('Code Style') {
                         sh "apt-get update && \
                             apt-get install -y bc && \
+                            nvidia-smi && \
                             pip install -r requirements/requirements_test.txt && \
                             python setup.py style && ls -l /testdata/TestData && ln -s /testdata/TestData /home/TestData && \
                             ls -l /home && ls -l /home/TestData"

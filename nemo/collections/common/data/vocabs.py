@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import abc
 import itertools
 import re
 import string
 import time
 import unicodedata
+from abc import ABC, abstractmethod
 from builtins import str as unicode
 from contextlib import contextmanager
 from typing import List
@@ -166,7 +166,7 @@ class G2p:
         return prons
 
 
-class Base(abc.ABC):
+class Base(ABC):
     """Vocabulary for turning str text to list of int tokens."""
 
     # fmt: off
@@ -206,7 +206,7 @@ class Base(abc.ABC):
     def __call__(self, text: str) -> List[int]:
         return self.encode(text)
 
-    @abc.abstractmethod
+    @abstractmethod
     def encode(self, text: str) -> List[int]:
         """Turns str text into int tokens."""
 

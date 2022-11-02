@@ -1,9 +1,8 @@
 # Torch TTS Collection
 
-This section of code can be used by installing the requirements inside our *requirements.txt* and *requirements_torch_tts.txt*.
+This section of code can be used by installing the requirements inside our *requirements.txt* and *requirements_tts.txt*.
 
-Note: As of NeMo 1.8.0, we have removed the ability to install the `torch_tts` collection by itself. Please install
-NeMo using the TTS option:
+Please install NeMo using the TTS option:
 
  - `pip install nemo_toolkit[tts]`
  - `pip install git+https://github.com/nvidia/NeMo.git#egg=nemo_toolkit[tts]`

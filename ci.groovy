@@ -71,7 +71,7 @@ spec:
                 }
 
                 stage('L0: GPU unit tests') {
-                            sh "NEMO_NUMBA_MINVER=0.53 pytest -m 'not pleasefixme and not torch_tts'"         
+                            sh "NEMO_NUMBA_MINVER=0.53 pytest -m 'not pleasefixme'"
                 }
 
                 parallel( //USE CUDA_VISIBLE_DEVICES to execute 2 single GPU tests in parallel here

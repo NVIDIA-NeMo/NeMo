@@ -47,6 +47,7 @@ from nemo.core.neural_types import (
     LogprobsType,
     LossType,
     NeuralType,
+    SpectrogramType,
 )
 from nemo.utils import logging
 
@@ -1579,17 +1580,15 @@ class RNNTDecoderJointSSL(torch.nn.Module):
 
     @property
     def input_types(self):
-        return OrderedDict(
-            {
-                "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
-                "targets": NeuralType(('B', 'T'), LabelsType()),
-                "target_lengths": NeuralType(tuple('B'), LengthsType()),
-            }
-        )
+        return {
+            "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            "targets": NeuralType(('B', 'T'), LabelsType()),
+            "target_lengths": NeuralType(tuple('B'), LengthsType()),
+        }
 
     @property
     def output_types(self):
-        return OrderedDict({"log_probs": NeuralType(('B', 'T', 'D'), SpectrogramType())})
+        return {"log_probs": NeuralType(('B', 'T', 'D'), SpectrogramType())}
 
     def forward(self, encoder_output, targets, target_lengths):
 
@@ -1599,7 +1598,439 @@ class RNNTDecoderJointSSL(torch.nn.Module):
         return log_probs
 
 
+class SampledRNNTJoint(RNNTJoint):
+    """A Sampled Recurrent Neural Network Transducer Joint Network (RNN-T Joint Network).
+    An RNN-T Joint network, comprised of a feedforward model, where the vocab size will be sampled instead
+    of computing the full vocabulary joint.
+
+    Args:
+        jointnet: A dict-like object which contains the following key-value pairs.
+            encoder_hidden: int specifying the hidden dimension of the encoder net.
+            pred_hidden: int specifying the hidden dimension of the prediction net.
+            joint_hidden: int specifying the hidden dimension of the joint net
+            activation: Activation function used in the joint step. Can be one of
+                ['relu', 'tanh', 'sigmoid'].
+
+            Optionally, it may also contain the following:
+            dropout: float, set to 0.0 by default. Optional dropout applied at the end of the joint net.
+
+        num_classes: int, specifying the vocabulary size that the joint network must predict,
+            excluding the RNNT blank token.
+
+        n_samples: int, specifies the number of tokens to sample from the vocabulary space,
+            excluding the RNNT blank token. If a given value is larger than the entire vocabulary size,
+            then the full vocabulary will be used.
+
+        vocabulary: Optional list of strings/tokens that comprise the vocabulary of the joint network.
+            Unused and kept only for easy access for character based encoding RNNT models.
+
+        log_softmax: Optional bool, set to None by default. If set as None, will compute the log_softmax()
+            based on the value provided.
+
+        preserve_memory: Optional bool, set to False by default. If the model crashes due to the memory
+            intensive joint step, one might try this flag to empty the tensor cache in pytorch.
+
+            Warning: This will make the forward-backward pass much slower than normal.
+            It also might not fix the OOM if the GPU simply does not have enough memory to compute the joint.
+
+        fuse_loss_wer: Optional bool, set to False by default.
+
+            Fuses the joint forward, loss forward and
+            wer forward steps. In doing so, it trades of speed for memory conservation by creating sub-batches
+            of the provided batch of inputs, and performs Joint forward, loss forward and wer forward (optional),
+            all on sub-batches, then collates results to be exactly equal to results from the entire batch.
+
+            When this flag is set, prior to calling forward, the fields `loss` and `wer` (either one) *must*
+            be set using the `RNNTJoint.set_loss()` or `RNNTJoint.set_wer()` methods.
+
+            Further, when this flag is set, the following argument `fused_batch_size` *must* be provided
+            as a non negative integer. This value refers to the size of the sub-batch.
+
+            When the flag is set, the input and output signature of `forward()` of this method changes.
+            Input - in addition to `encoder_outputs` (mandatory argument), the following arguments can be provided.
+                - decoder_outputs (optional). Required if loss computation is required.
+                - encoder_lengths (required)
+                - transcripts (optional). Required for wer calculation.
+                - transcript_lengths (optional). Required for wer calculation.
+                - compute_wer (bool, default false). Whether to compute WER or not for the fused batch.
+
+            Output - instead of the usual `joint` log prob tensor, the following results can be returned.
+                - loss (optional). Returned if decoder_outputs, transcripts and transript_lengths are not None.
+                - wer_numerator + wer_denominator (optional). Returned if transcripts, transcripts_lengths are provided
+                    and compute_wer is set.
+
+        fused_batch_size: Optional int, required if `fuse_loss_wer` flag is set. Determines the size of the
+            sub-batches. Should be any value below the actual batch size per GPU.
+    """
+
+    def __init__(
+        self,
+        jointnet: Dict[str, Any],
+        num_classes: int,
+        n_samples: int,
+        vocabulary: Optional[List] = None,
+        log_softmax: Optional[bool] = None,
+        preserve_memory: bool = False,
+        fuse_loss_wer: bool = False,
+        fused_batch_size: Optional[int] = None,
+    ):
+        super().__init__(
+            jointnet=jointnet,
+            num_classes=num_classes,
+            vocabulary=vocabulary,
+            log_softmax=log_softmax,
+            preserve_memory=preserve_memory,
+            fuse_loss_wer=fuse_loss_wer,
+            fused_batch_size=fused_batch_size,
+        )
+        self.n_samples = n_samples
+        self.register_buffer('blank_id', torch.tensor([self.num_classes_with_blank - 1]), persistent=False)
+
+    @typecheck()
+    def forward(
+        self,
+        encoder_outputs: torch.Tensor,
+        decoder_outputs: Optional[torch.Tensor],
+        encoder_lengths: Optional[torch.Tensor] = None,
+        transcripts: Optional[torch.Tensor] = None,
+        transcript_lengths: Optional[torch.Tensor] = None,
+        compute_wer: bool = False,
+    ) -> Union[torch.Tensor, List[Optional[torch.Tensor]]]:
+        # If in inference mode, revert to basic RNNT Joint behaviour.
+        # Sampled RNNT is only used for training.
+        if not torch.is_grad_enabled() or torch.is_inference_mode_enabled():
+            # Simply call full tensor joint
+            return super().forward(
+                encoder_outputs=encoder_outputs,
+                decoder_outputs=decoder_outputs,
+                encoder_lengths=encoder_lengths,
+                transcripts=transcripts,
+                transcript_lengths=transcript_lengths,
+                compute_wer=compute_wer,
+            )
+
+        if transcripts is None or transcript_lengths is None:
+            logging.warning(
+                "Sampled RNNT Joint currently only works with `fuse_loss_wer` set to True, "
+                "and when `fused_batch_size` is a positive integer."
+            )
+            raise ValueError(
+                "Sampled RNNT loss only works when the transcripts are provided during training."
+                "Please ensure that you correctly pass the `transcripts` and `transcript_lengths`."
+            )
+
+        # encoder = (B, D, T)
+        # decoder = (B, D, U) if passed, else None
+        encoder_outputs = encoder_outputs.transpose(1, 2)  # (B, T, D)
+
+        if decoder_outputs is not None:
+            decoder_outputs = decoder_outputs.transpose(1, 2)  # (B, U, D)
+
+        # At least the loss module must be supplied during fused joint
+        if self._loss is None or self._wer is None:
+            raise ValueError("`fuse_loss_wer` flag is set, but `loss` and `wer` modules were not provided! ")
+
+        # If fused joint step is required, fused batch size is required as well
+        if self._fused_batch_size is None:
+            raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
+
+        # When using fused joint step, both encoder and transcript lengths must be provided
+        if (encoder_lengths is None) or (transcript_lengths is None):
+            raise ValueError(
+                "`fuse_loss_wer` is set, therefore encoder and target lengths " "must be provided as well!"
+            )
+
+        losses = []
+        target_lengths = []
+        batch_size = int(encoder_outputs.size(0))  # actual batch size
+
+        # Iterate over batch using fused_batch_size steps
+        for batch_idx in range(0, batch_size, self._fused_batch_size):
+            begin = batch_idx
+            end = min(begin + self._fused_batch_size, batch_size)
+
+            # Extract the sub batch inputs
+            # sub_enc = encoder_outputs[begin:end, ...]
+            # sub_transcripts = transcripts[begin:end, ...]
+            sub_enc = encoder_outputs.narrow(dim=0, start=begin, length=end - begin)
+            sub_transcripts = transcripts.narrow(dim=0, start=begin, length=end - begin)
+
+            sub_enc_lens = encoder_lengths[begin:end]
+            sub_transcript_lens = transcript_lengths[begin:end]
+
+            # Sub transcripts does not need the full padding of the entire batch
+            # Therefore reduce the decoder time steps to match
+            max_sub_enc_length = sub_enc_lens.max()
+            max_sub_transcript_length = sub_transcript_lens.max()
+
+            if decoder_outputs is not None:
+                # Reduce encoder length to preserve computation
+                # Encoder: [sub-batch, T, D] -> [sub-batch, T', D]; T' < T
+                if sub_enc.shape[1] != max_sub_enc_length:
+                    sub_enc = sub_enc.narrow(dim=1, start=0, length=max_sub_enc_length)
+
+                # sub_dec = decoder_outputs[begin:end, ...]  # [sub-batch, U, D]
+                sub_dec = decoder_outputs.narrow(dim=0, start=begin, length=end - begin)  # [sub-batch, U, D]
+
+                # Reduce decoder length to preserve computation
+                # Decoder: [sub-batch, U, D] -> [sub-batch, U', D]; U' < U
+                if sub_dec.shape[1] != max_sub_transcript_length + 1:
+                    sub_dec = sub_dec.narrow(dim=1, start=0, length=max_sub_transcript_length + 1)
+
+                # Reduce transcript length to correct alignment
+                # Transcript: [sub-batch, L] -> [sub-batch, L']; L' <= L
+                if sub_transcripts.shape[1] != max_sub_transcript_length:
+                    sub_transcripts = sub_transcripts.narrow(dim=1, start=0, length=max_sub_transcript_length)
+
+                # Perform sampled joint => [sub-batch, T', U', {V' < V} + 1}]
+                sub_joint, sub_transcripts_remapped = self.sampled_joint(
+                    sub_enc, sub_dec, transcript=sub_transcripts, transcript_lengths=sub_transcript_lens
+                )
+
+                del sub_dec
+
+                # Compute sub batch loss
+                # preserve loss reduction type
+                loss_reduction = self.loss.reduction
+
+                # override loss reduction to sum
+                self.loss.reduction = None
+
+                # override blank idx in order to map to new vocabulary space
+                # in the new vocabulary space, we set the mapping of the RNNT Blank from index V+1 to 0
+                # So the loss here needs to be updated accordingly.
+                # TODO: See if we can have some formal API for rnnt loss to update inner blank index.
+                cached_blank_id = self.loss._loss.blank
+                self.loss._loss.blank = 0
+
+                # compute and preserve loss
+                loss_batch = self.loss(
+                    log_probs=sub_joint,
+                    targets=sub_transcripts_remapped,  # Note: We have to use remapped transcripts here !
+                    input_lengths=sub_enc_lens,
+                    target_lengths=sub_transcript_lens,  # Note: Even after remap, the transcript lengths remain intact.
+                )
+                losses.append(loss_batch)
+                target_lengths.append(sub_transcript_lens)
+
+                # reset loss reduction type and blank id
+                self.loss.reduction = loss_reduction
+                self.loss._loss.blank = cached_blank_id
+
+            else:
+                losses = None
+
+            # Update WER for sub batch
+            if compute_wer:
+                sub_enc = sub_enc.transpose(1, 2)  # [B, T, D] -> [B, D, T]
+                sub_enc = sub_enc.detach()
+                sub_transcripts = sub_transcripts.detach()
+
+                # Update WER on each process without syncing
+                self.wer.update(sub_enc, sub_enc_lens, sub_transcripts, sub_transcript_lens)
+
+            del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
+
+        # Reduce over sub batches
+        if losses is not None:
+            losses = self.loss.reduce(losses, target_lengths)
+
+        # Collect sub batch wer results
+        if compute_wer:
+            # Sync and all_reduce on all processes, compute global WER
+            wer, wer_num, wer_denom = self.wer.compute()
+            self.wer.reset()
+        else:
+            wer = None
+            wer_num = None
+            wer_denom = None
+
+        return losses, wer, wer_num, wer_denom
+
+    def sampled_joint(
+        self, f: torch.Tensor, g: torch.Tensor, transcript: torch.Tensor, transcript_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute the sampled joint step of the network.
+
+        # Reference
+        - [Memory-Efficient Training of RNN-Transducer with Sampled Softmax](https://arxiv.org/abs/2203.16868)
+
+        Here,
+        B = Batch size
+        T = Acoustic model timesteps
+        U = Target sequence length
+        H1, H2 = Hidden dimensions of the Encoder / Decoder respectively
+        H = Hidden dimension of the Joint hidden step.
+        V = Vocabulary size of the Decoder (excluding the RNNT blank token).
+        S = Sample size of vocabulary.
+
+        NOTE:
+            The implementation of this joint model is slightly modified from the original paper.
+            The original paper proposes the following steps :
+            (enc, dec) -> Expand + Concat + Sum [B, T, U, H1+H2] -> Forward through joint hidden [B, T, U, H] -- *1
+            *1 -> Forward through joint final [B, T, U, V + 1].
+
+            We instead split the joint hidden into joint_hidden_enc and joint_hidden_dec and act as follows:
+            enc -> Forward through joint_hidden_enc -> Expand [B, T, 1, H] -- *1
+            dec -> Forward through joint_hidden_dec -> Expand [B, 1, U, H] -- *2
+            (*1, *2) -> Sum [B, T, U, H] -> Sample Vocab V_Pos (for target tokens) and V_Neg ->
+            (V_Neg is sampled not uniformly by as a rand permutation of all vocab tokens, then eliminate
+            all Intersection(V_Pos, V_Neg) common tokens to avoid duplication of loss) ->
+            Concat new Vocab V_Sampled = Union(V_Pos, V_Neg)
+            -> Forward partially through the joint final to create [B, T, U, V_Sampled]
+
+        Args:
+            f: Output of the Encoder model. A torch.Tensor of shape [B, T, H1]
+            g: Output of the Decoder model. A torch.Tensor of shape [B, U, H2]
+            transcript: Batch of transcripts. A torch.Tensor of shape [B, U]
+            transcript_lengths: Batch of lengths of the transcripts. A torch.Tensor of shape [B]
+
+        Returns:
+            Logits / log softmaxed tensor of shape (B, T, U, V + 1).
+        """
+        # If under inference mode, ignore sampled joint and compute full joint.
+        if self.training is False or torch.is_grad_enabled() is False or torch.is_inference_mode_enabled():
+            # Simply call full tensor joint
+            return super().joint(f=f, g=g)
+
+        # Compute sampled softmax
+        # f = [B, T, H1]
+        f = self.enc(f)
+        f.unsqueeze_(dim=2)  # (B, T, 1, H)
+
+        # g = [B, U, H2]
+        g = self.pred(g)
+        g.unsqueeze_(dim=1)  # (B, 1, U, H)
+
+        inp = f + g  # [B, T, U, H]
+
+        del f, g
+
+        # Forward adapter modules on joint hidden
+        if self.is_adapter_available():
+            inp = self.forward_enabled_adapters(inp)
+
+        # Do partial forward of joint net (skipping the final linear)
+        for module in self.joint_net[:-1]:
+            inp = module(inp)  # [B, T, U, H]
+
+        # Begin compute of sampled RNNT joint
+        with torch.no_grad():
+            # gather true labels
+            transcript_vocab_ids = torch.unique(transcript)
+
+            # augment with blank token id
+            transcript_vocab_ids = torch.cat([self.blank_id, transcript_vocab_ids])
+
+            # Remap the transcript label ids to new positions of label ids (in the transcript_vocab_ids)
+            # This is necessary cause the RNNT loss doesnt care about the value, only the position of the ids
+            # of the transcript tokens. We can skip this step for noise samples cause those are only used for softmax
+            # estimation, not for computing actual label.
+            # From `https://stackoverflow.com/a/68969697` - bucketize algo.
+            t_ids = torch.arange(transcript_vocab_ids.size(0), device='cpu')
+            mapping = {k: v for k, v in zip(transcript_vocab_ids.to('cpu'), t_ids)}
+
+            # From `https://stackoverflow.com/questions/13572448`.
+            palette, key = zip(*mapping.items())
+
+            t_device = transcript.device
+            key = torch.tensor(key, device=t_device)
+            palette = torch.tensor(palette, device=t_device)
+
+            # This step maps old token id to new token id in broadcasted manner.
+            # For example, if original transcript tokens were [2, 1, 4, 5, 4, 1]
+            # But after computing the unique token set of above we get
+            # transcript_vocab_ids = [1, 2, 4, 5]  # note: pytorch returns sorted unique values thankfully
+            # Then we get the index map of the new vocab ids as:
+            # {0: 1, 1: 2, 2: 4, 3: 5}
+            # Now we need to map the original transcript tokens to new vocab id space
+            # So we construct the inverted map as follow :
+            # {1: 0, 2: 1, 4: 2, 5: 3}
+            # Then remap the original transcript tokens to new token ids
+            # new_transcript = [1, 0, 2, 3, 2, 0]
+            index = torch.bucketize(transcript.ravel(), palette)
+            transcript = key[index].reshape(transcript.shape)
+            transcript = transcript.to(t_device)
+
+        # Extract out partial weight tensor and bias tensor of just the V_Pos vocabulary from the full joint.
+        true_weights = self.joint_net[-1].weight[transcript_vocab_ids, :]
+        true_bias = self.joint_net[-1].bias[transcript_vocab_ids]
+
+        # Compute the transcript joint scores (only of vocab V_Pos)
+        transcript_scores = torch.matmul(inp, true_weights.transpose(0, 1)) + true_bias
+
+        # Construct acceptance criteria in vocab space, reject all tokens in Intersection(V_Pos, V_Neg)
+        with torch.no_grad():
+            # Instead of uniform sample, first we create arange V (ignoring blank), then randomly shuffle
+            # this range of ids, then subset `n_samples` amount of vocab tokens out of the permuted tensor.
+            # This is good because it guarentees that no token will ever be repeated in V_Neg;
+            # which dramatically complicates loss calculation.
+            # Further more, with this strategy, given a `n_samples` > V + 1; we are guarenteed to get the
+            # V_Samples = V (i.e., full vocabulary will be used in such a case).
+            # Useful to debug cases where you expect sampled vocab to get exact same training curve as
+            # full vocab.
+            sample_ids = torch.randperm(n=self.num_classes_with_blank - 1, device=transcript_scores.device)[
+                : self.n_samples
+            ]
+
+            # We need to compute the intersection(V_Pos, V_Neg), then eliminate the intersection arguments
+            # from inside V_Neg.
+
+            # First, compute the pairwise commonality to find index inside `sample_ids` which match the token id
+            # inside transcript_vocab_ids.
+            # Note: It is important to ignore the hardcoded RNNT Blank token injected at id 0 of the transcript
+            # vocab ids, otherwise the blank may occur twice, once for RNNT blank and once as negative sample,
+            # doubling the gradient of the RNNT blank token.
+            reject_samples = torch.where(transcript_vocab_ids[1:, None] == sample_ids[None, :])
+
+            # Let accept samples be a set of ids which is a subset of sample_ids
+            # such that intersection(V_Pos, accept_samples) is a null set.
+            accept_samples = sample_ids.clone()
+
+            # In order to construct such an accept_samples tensor, first we construct a bool map
+            # and fill all the indices where there is a match inside of sample_ids.
+            # reject_samples is a tuple (transcript_vocab_position, sample_position) which gives a
+            # many to many map between N values of transript and M values of sample_ids.
+            # We dont care about transcript side matches, only the ids inside of sample_ids that matched.
+            sample_mask = torch.ones_like(accept_samples, dtype=torch.bool)
+            sample_mask[reject_samples[1]] = False
+
+            # Finally, compute the subset of tokens by selecting only those sample_ids which had no matches
+            accept_samples = accept_samples[sample_mask]
+
+        # Extract out partial weight tensor and bias tensor of just the V_Neg vocabulary from the full joint.
+        sample_weights = self.joint_net[-1].weight[accept_samples, :]
+        sample_bias = self.joint_net[-1].bias[accept_samples]
+
+        # Compute the noise joint scores (only of vocab V_Neg) to be used for softmax
+        # The quality of this sample determines the quality of the softmax gradient.
+        # We use naive algo broadcasted over batch, but it is more efficient than sample level computation.
+        # One can increase `n_samples` for better estimation of rejection samples and its gradient.
+        noise_scores = torch.matmul(inp, sample_weights.transpose(0, 1)) + sample_bias
+
+        # Finally, construct the sampled joint as the V_Sampled = Union(V_Pos, V_Neg)
+        # Here, we simply concatenate the two tensors to construct the joint with V_Sampled vocab
+        # because before we have properly asserted that Intersection(V_Pos, V_Neg) is a null set.
+        res = torch.cat([transcript_scores, noise_scores], dim=-1)
+
+        del inp
+
+        if self.preserve_memory:
+            torch.cuda.empty_cache()
+
+        # If log_softmax is automatic
+        if self.log_softmax is None:
+            if not res.is_cuda:  # Use log softmax only if on CPU
+                res = res.log_softmax(dim=-1)
+        else:
+            if self.log_softmax:
+                res = res.log_softmax(dim=-1)
+
+        return res, transcript
+
+
 # Add the adapter compatible modules to the registry
-for cls in [RNNTDecoder, RNNTJoint]:
+for cls in [RNNTDecoder, RNNTJoint, SampledRNNTJoint]:
     if adapter_mixins.get_registered_adapter(cls) is None:
         adapter_mixins.register_adapter(cls, cls)  # base class is adapter compatible itself

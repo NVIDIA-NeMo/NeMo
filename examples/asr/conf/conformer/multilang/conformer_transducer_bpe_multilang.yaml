@@ -155,6 +155,10 @@ model:
       dropout: 0.1
 
   joint:
+    # If the vocabulary size is large, replace below _target_ with following lines
+    # _target_: nemo.collections.asr.modules.SampledRNNTJoint
+    # n_samples: 500
+
     _target_: nemo.collections.asr.modules.RNNTJoint
     log_softmax: null  # 'null' would set it automatically according to CPU/GPU device
     preserve_memory: false  # dramatically slows down training, but might preserve some memory

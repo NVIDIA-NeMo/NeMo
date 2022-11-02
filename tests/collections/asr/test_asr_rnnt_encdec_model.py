@@ -18,7 +18,7 @@ import torch
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.models import EncDecRNNTModel
-from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint, StatelessTransducerDecoder
+from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint, SampledRNNTJoint, StatelessTransducerDecoder
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
 from nemo.collections.asr.parts.utils import rnnt_utils
@@ -563,3 +563,82 @@ class TestEncDecRNNTModel:
                     logp, label = hyp.alignments[t][u]
                     assert torch.is_tensor(logp)
                     assert torch.is_tensor(label)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+    )
+    def test_greedy_decoding_SampledRNNTJoint(self, greedy_class):
+        token_list = [" ", "a", "b", "c"]
+        vocab_size = len(token_list)
+
+        encoder_output_size = 4
+        decoder_output_size = 4
+        joint_output_shape = 4
+
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        jointnet_cfg = {
+            'encoder_hidden': encoder_output_size,
+            'pred_hidden': decoder_output_size,
+            'joint_hidden': joint_output_shape,
+            'activation': 'relu',
+        }
+
+        decoder = RNNTDecoder(prednet_cfg, vocab_size)
+        joint_net = SampledRNNTJoint(jointnet_cfg, vocab_size, n_samples=2, vocabulary=token_list)
+
+        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+
+        # (B, D, T)
+        enc_out = torch.randn(1, encoder_output_size, 30)
+        enc_len = torch.tensor([30], dtype=torch.int32)
+
+        with torch.no_grad():
+            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "beam_config",
+        [
+            {"search_type": "greedy"},
+            {"search_type": "default", "score_norm": False, "return_best_hypothesis": False},
+            {"search_type": "alsd", "alsd_max_target_len": 20, "return_best_hypothesis": False},
+            {"search_type": "tsd", "tsd_max_sym_exp_per_step": 3, "return_best_hypothesis": False},
+            {"search_type": "maes", "maes_num_steps": 2, "maes_expansion_beta": 2, "return_best_hypothesis": False},
+            {"search_type": "maes", "maes_num_steps": 3, "maes_expansion_beta": 1, "return_best_hypothesis": False},
+        ],
+    )
+    def test_beam_decoding_SampledRNNTJoint(self, beam_config):
+        token_list = [" ", "a", "b", "c"]
+        vocab_size = len(token_list)
+        beam_size = 1 if beam_config["search_type"] == "greedy" else 2
+
+        encoder_output_size = 4
+        decoder_output_size = 4
+        joint_output_shape = 4
+
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        jointnet_cfg = {
+            'encoder_hidden': encoder_output_size,
+            'pred_hidden': decoder_output_size,
+            'joint_hidden': joint_output_shape,
+            'activation': 'relu',
+        }
+
+        decoder = RNNTDecoder(prednet_cfg, vocab_size)
+        joint_net = SampledRNNTJoint(jointnet_cfg, vocab_size, n_samples=2, vocabulary=token_list)
+
+        beam = beam_decode.BeamRNNTInfer(decoder, joint_net, beam_size=beam_size, **beam_config,)
+
+        # (B, D, T)
+        enc_out = torch.randn(1, encoder_output_size, 30)
+        enc_len = torch.tensor([30], dtype=torch.int32)
+
+        with torch.no_grad():
+            _ = beam(encoder_output=enc_out, encoded_lengths=enc_len)

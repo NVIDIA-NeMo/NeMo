@@ -72,6 +72,27 @@ Modules
     :show-inheritance:
     :members:
 
+.. _rnnt-decoder-api:
+
+.. autoclass:: nemo.collections.asr.modules.RNNTDecoder
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.asr.modules.StatelessTransducerDecoder
+    :show-inheritance:
+    :members:
+
+.. _rnnt-joint-api:
+
+.. autoclass:: nemo.collections.asr.modules.RNNTJoint
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.asr.modules.SampledRNNTJoint
+    :show-inheritance:
+    :members:
+
+
 
 Parts
 -----

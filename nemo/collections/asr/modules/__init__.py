@@ -35,5 +35,11 @@ from nemo.collections.asr.modules.graph_decoder import ViterbiDecoderWithGraph
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder
 from nemo.collections.asr.modules.msdd_diarizer import MSDD_module
 from nemo.collections.asr.modules.rnn_encoder import RNNEncoder
-from nemo.collections.asr.modules.rnnt import RNNTDecoder, RNNTDecoderJointSSL, RNNTJoint, StatelessTransducerDecoder
+from nemo.collections.asr.modules.rnnt import (
+    RNNTDecoder,
+    RNNTDecoderJointSSL,
+    RNNTJoint,
+    SampledRNNTJoint,
+    StatelessTransducerDecoder,
+)
 from nemo.collections.asr.modules.squeezeformer_encoder import SqueezeformerEncoder, SqueezeformerEncoderAdapter

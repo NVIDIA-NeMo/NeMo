@@ -9,7 +9,7 @@ validation_datasets: ???
 sup_data_path: null
 sup_data_types: null
 
-phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
+phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 
@@ -79,7 +79,7 @@ model:
       batch_size: 48
       num_workers: 4
       pin_memory: true
-  
+
   validation_ds:
     dataset:
       _target_: "nemo.collections.tts.torch.data.TTSDataset"

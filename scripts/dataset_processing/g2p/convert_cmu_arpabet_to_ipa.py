@@ -32,14 +32,14 @@ def parse_args():
         '--cmu_arpabet',
         help="Path to CMU ARPABET dictionary file",
         type=str,
-        default="tts_dataset_files/cmudict-0.7b_nv22.08",
+        default="tts_dataset_files/cmudict-0.7b_nv22.10",
     )
     parser.add_argument("--ipa_out", help="Path to save IPA version of the dictionary", type=str, required=True)
     parser.add_argument(
         "--mapping",
         help="ARPABET to IPA phoneme mapping file",
         type=str,
-        default="tts_dataset_files/cmudict-arpabet_to_ipa_nv22.08.tsv",
+        default="tts_dataset_files/cmudict-arpabet_to_ipa_nv22.10.tsv",
     )
     return parser.parse_args()
 

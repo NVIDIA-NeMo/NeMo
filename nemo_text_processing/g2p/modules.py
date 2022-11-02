@@ -150,7 +150,7 @@ class EnglishG2p(BaseG2p):
                 f"English g2p_dict will be used from nltk.corpus.cmudict.dict(), because phoneme_dict_path=None. "
                 "Note that nltk.corpus.cmudict.dict() has old version (0.6) of CMUDict. "
                 "You can use the latest official version of CMUDict (0.7b) with additional changes from NVIDIA directly from NeMo "
-                "using the path scripts/tts_dataset_files/cmudict-0.7b_nv22.07."
+                "using the path scripts/tts_dataset_files/cmudict-0.7b_nv22.10."
             )
 
             return nltk.corpus.cmudict.dict()
@@ -276,10 +276,10 @@ class IPAG2P(BaseG2p):
         """Generic IPA G2P module. This module converts words from grapheme to International Phonetic Alphabet representations.
         Optionally, it can ignore heteronyms, ambiguous words, or words marked as unchangeable by word_tokenize_func (see code for details).
         Ignored words are left unchanged or passed through apply_to_oov_word for handling.
-        
+
         Args:
             phoneme_dict (str, Path, Dict): Path to file in CMUdict format or dictionary of CMUdict-like entries.
-                Must be given for IPA G2P. (Consider using scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt.)
+                Must be given for IPA G2P. (Consider using scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.10.txt.)
             word_tokenize_func: Function for tokenizing text to words.
                 It has to return List[Tuple[Union[str, List[str]], bool]] where every tuple denotes word
                 representation and flag whether to leave unchanged or not.
@@ -502,7 +502,7 @@ class ChineseG2p(BaseG2p):
     def __init__(
         self, phoneme_dict=None, word_tokenize_func=None, apply_to_oov_word=None, mapping_file: Optional[str] = None,
     ):
-        """Chinese G2P module. This module first converts Chinese characters into pinyin sequences using pypinyin, then pinyin sequences would 
+        """Chinese G2P module. This module first converts Chinese characters into pinyin sequences using pypinyin, then pinyin sequences would
            be further converted into phoneme sequences using pinyin_dict_nv_22.10.txt dict file. For Chinese and English bilingual sentences, the English words
            would be converted into letters.
         Args:
@@ -560,8 +560,8 @@ class ChineseG2p(BaseG2p):
         where English words would be split into letters.
         e.g. 我今天去了Apple Store, 买了一个iPhone。
         would return a list
-        ['wo3', 'jin1', 'tian1', 'qu4', 'le5', 'A', 'p', 'p', 'l', 'e', 
-        ' ', 'S', 't', 'o', 'r', 'e', ',', ' ', 'mai3', 'le5', 'yi2', 
+        ['wo3', 'jin1', 'tian1', 'qu4', 'le5', 'A', 'p', 'p', 'l', 'e',
+        ' ', 'S', 't', 'o', 'r', 'e', ',', ' ', 'mai3', 'le5', 'yi2',
         'ge4', 'i', 'P', 'h', 'o', 'n', 'e', '。']
         """
         pinyin_seq = self._lazy_pinyin(

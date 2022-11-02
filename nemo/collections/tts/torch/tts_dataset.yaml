@@ -42,5 +42,5 @@ tts_dataset:
     pad_with_space: True
     g2p:
       _target_: nemo_text_processing.g2p.modules.EnglishG2p
-      phoneme_dict: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
+      phoneme_dict: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
       heteronyms: "scripts/tts_dataset_files/heteronyms-052722"

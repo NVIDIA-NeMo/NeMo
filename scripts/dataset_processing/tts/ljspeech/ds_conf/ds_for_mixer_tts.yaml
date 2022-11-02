@@ -4,7 +4,7 @@ manifest_filepath: "train_manifest.json"
 sup_data_path: "sup_data"
 sup_data_types: [ "align_prior_matrix", "pitch" ]
 whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
-phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
+phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 
 dataset:

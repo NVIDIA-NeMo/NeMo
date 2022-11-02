@@ -1,5 +1,5 @@
-# This config contains the default values for training FastPitch model with aligner using 44.1KHz sampling 
-# rate. If you want to train model on other dataset, you can change config values according to your dataset. 
+# This config contains the default values for training FastPitch model with aligner using 44.1KHz sampling
+# rate. If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
 
@@ -27,7 +27,7 @@ lowfreq: 0
 highfreq: null
 window: hann
 
-phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
+phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 
@@ -60,12 +60,12 @@ model:
     lang: en
     input_case: cased
     whitelist: ${whitelist_path}
-  
+
   text_normalizer_call_kwargs:
     verbose: false
     punct_pre_process: true
     punct_post_process: true
-  
+
   text_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer
     punct: true

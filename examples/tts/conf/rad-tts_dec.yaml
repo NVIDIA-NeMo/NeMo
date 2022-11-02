@@ -6,7 +6,7 @@ validation_datasets: ???
 ckpt_path: None
 export_dir: ???
 sup_data_path: ???
-sup_data_types: ["log_mel", "align_prior_matrix", "pitch", "voiced_mask", "p_voiced", "energy"] 
+sup_data_types: ["log_mel", "align_prior_matrix", "pitch", "voiced_mask", "p_voiced", "energy"]
 
 whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/tts.tsv"
 
@@ -28,7 +28,7 @@ highfreq: 8000
 window: "hann"
 
 
-phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
+phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 mapping_file_path: ""
 
@@ -42,7 +42,7 @@ model:
 
   pitch_mean: ${pitch_mean}
   pitch_std: ${pitch_std}
-  
+
   text_normalizer:
     _target_: nemo_text_processing.text_normalization.normalize.Normalizer
     lang: en
@@ -75,7 +75,7 @@ model:
       sample_rate: ${sample_rate}
       sup_data_path: ${sup_data_path}
       sup_data_types: ${sup_data_types}
-      n_fft: ${n_fft} 
+      n_fft: ${n_fft}
       win_length: ${n_window_size}
       hop_length: ${n_window_stride}
       window: ${window}
@@ -87,10 +87,10 @@ model:
       ignore_file: null
       trim: False
       pitch_fmin: ${pitch_fmin}
-      pitch_fmax: ${pitch_fmax} 
-      
-      
-      
+      pitch_fmax: ${pitch_fmax}
+
+
+
       text_tokenizer:
         _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
@@ -134,7 +134,7 @@ model:
       trim: False
       pitch_fmin: ${pitch_fmin}
       pitch_fmax: ${pitch_fmax}
-         
+
       text_tokenizer:
         _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
@@ -167,8 +167,8 @@ model:
     sched:
       name: exp_decay
       warmup_steps: 40000
-      last_epoch: -1 
-      d_model: 1  # Disable scaling based on model dim 
+      last_epoch: -1
+      d_model: 1  # Disable scaling based on model dim
   trainerConfig:
     sigma: 1
     iters_per_checkpoint: 3000
@@ -190,7 +190,7 @@ model:
         energy_loss_weight: 1.0
         vpred_loss_weight: 1.0
     unfreeze_modules: "all"
-        
+
   load_from_checkpoint: False
   init_from_ptl_ckpt: ${ckpt_path}
   modelConfig:
@@ -229,17 +229,17 @@ model:
         dur_model_config: null
         f0_model_config: null
         energy_model_config: null
-        v_model_config : 
+        v_model_config :
              name : dap
-             hparams : 
-                n_speaker_dim : 16 
+             hparams :
+                n_speaker_dim : 16
                 take_log_of_input: false
-                bottleneck_hparams: 
+                bottleneck_hparams:
                     in_dim: 512
                     reduction_factor: 16
                     norm: weightnorm
                     non_linearity: relu
-                arch_hparams: 
+                arch_hparams:
                     out_dim: 1
                     n_layers: 2
                     n_channels: 256
@@ -256,7 +256,7 @@ trainer:
   accumulate_grad_batches: 1
   enable_checkpointing: False
   logger: False
-  gradient_clip_val: 1 
+  gradient_clip_val: 1
   log_every_n_steps: 100
   check_val_every_n_epoch: 5
 

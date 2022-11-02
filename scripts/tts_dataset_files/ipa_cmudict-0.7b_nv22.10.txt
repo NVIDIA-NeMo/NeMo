@@ -60203,9 +60203,7 @@ INTERESTS(1)  ˈɪntɹɪsts
 INTERESTS(2)  ˈɪntɚəsts
 INTERESTS(3)  ˈɪntɚɪsts
 INTERFACE  ˈɪntɚˌfeɪs
-INTERFACE(1)  ˈɪnɚˌfeɪs
 INTERFACES  ˈɪntɚˌfeɪsɪz
-INTERFACES(1)  ˈɪnɚˌfeɪsɪz
 INTERFAITH  ˌɪntɚˈfeɪθ
 INTERFAX  ˈɪntɚˌfæks
 INTERFERE  ˌɪntɚˈfɪɹ

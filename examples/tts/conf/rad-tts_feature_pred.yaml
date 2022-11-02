@@ -6,7 +6,7 @@ validation_datasets: ???
 ckpt_path: ???
 export_dir: ???
 sup_data_path: ???
-sup_data_types: ["log_mel", "align_prior_matrix", "pitch", "voiced_mask", "p_voiced", "energy"] 
+sup_data_types: ["log_mel", "align_prior_matrix", "pitch", "voiced_mask", "p_voiced", "energy"]
 
 whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/tts.tsv"
 
@@ -27,8 +27,8 @@ lowfreq: 0
 highfreq: 8000
 window: "hann"
 
-phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.08"
-heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722" 
+phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
+heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 mapping_file_path: ""
 
 model:
@@ -41,7 +41,7 @@ model:
 
   pitch_mean: ${pitch_mean}
   pitch_std: ${pitch_std}
-  
+
   text_normalizer:
       _target_: nemo_text_processing.text_normalization.normalize.Normalizer
       lang: en
@@ -52,7 +52,7 @@ model:
       verbose: false
       punct_pre_process: true
       punct_post_process: true
-  
+
   text_tokenizer:
     _target_: nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer
     punct: true
@@ -86,10 +86,10 @@ model:
       ignore_file: null
       trim: False
       pitch_fmin: ${pitch_fmin}
-      pitch_fmax: ${pitch_fmax} 
-      
-      
-      
+      pitch_fmax: ${pitch_fmax}
+
+
+
       text_tokenizer:
         _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
@@ -133,7 +133,7 @@ model:
       trim: False
       pitch_fmin: ${pitch_fmin}
       pitch_fmax: ${pitch_fmax}
-         
+
       text_tokenizer:
         _target_: "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishPhonemesTokenizer"
         punct: True
@@ -166,8 +166,8 @@ model:
     sched:
       name: exp_decay
       warmup_steps: 40000
-      last_epoch: -1 
-      d_model: 1  # Disable scaling based on model dim 
+      last_epoch: -1
+      d_model: 1  # Disable scaling based on model dim
   trainerConfig:
     sigma: 1
     iters_per_checkpoint: 3000
@@ -189,7 +189,7 @@ model:
         energy_loss_weight: 1.0
         vpred_loss_weight: 1.0
     unfreeze_modules: "durf0energyvpred"
-        
+
   load_from_checkpoint: True
   init_from_ptl_ckpt: ${ckpt_path}
   modelConfig:
@@ -241,66 +241,66 @@ model:
         p_dropout: 0.1
         noise_to_unvoiced_in_f0: 0
         noise_to_pvoiced: 0
-        dur_model_config: 
-            name: dap 
-            hparams: 
-                n_speaker_dim: 16 
-                bottleneck_hparams: 
+        dur_model_config:
+            name: dap
+            hparams:
+                n_speaker_dim: 16
+                bottleneck_hparams:
                     in_dim: 512
                     reduction_factor: 16
                     norm: weightnorm
                     non_linearity: relu
                 take_log_of_input: true
-                arch_hparams: 
+                arch_hparams:
                     out_dim: 1
                     n_layers: 2
                     n_channels: 256
                     kernel_size: 3
                     p_dropout: 0.1
-        f0_model_config: 
+        f0_model_config:
             name: dap
             hparams:
                 n_speaker_dim: 16
-                bottleneck_hparams: 
+                bottleneck_hparams:
                     in_dim: 512
                     reduction_factor: 16
                     norm: weightnorm
                     non_linearity: relu
                 take_log_of_input: false
-                arch_hparams: 
+                arch_hparams:
                     out_dim: 1
                     n_layers: 2
                     n_channels: 256
                     kernel_size: 11
                     p_dropout: 0.5
 
-        energy_model_config: 
+        energy_model_config:
             name: dap
             hparams:
                 n_speaker_dim: 16
-                bottleneck_hparams: 
+                bottleneck_hparams:
                     in_dim: 512
                     reduction_factor: 16
                     norm: weightnorm
                     non_linearity: relu
                 take_log_of_input: false
-                arch_hparams: 
+                arch_hparams:
                     out_dim: 1
                     n_layers: 2
                     n_channels: 256
                     kernel_size: 3
                     p_dropout: 0.5
-        v_model_config : 
+        v_model_config :
             name: dap
             hparams:
                 n_speaker_dim: 16
                 take_log_of_input: false
-                bottleneck_hparams: 
+                bottleneck_hparams:
                     in_dim: 512
                     reduction_factor: 16
                     norm: weightnorm
                     non_linearity: relu
-                arch_hparams: 
+                arch_hparams:
                     out_dim: 1
                     n_layers: 2
                     n_channels: 256

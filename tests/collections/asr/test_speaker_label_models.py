@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from unittest import TestCase
 
 import pytest
@@ -139,3 +140,33 @@ class EncDecSpeechLabelModelTest(TestCase):
         confdict = speaker_model.to_config_dict()
         instance2 = EncDecSpeakerLabelModel.from_config_dict(confdict)
         self.assertTrue(isinstance(instance2, EncDecSpeakerLabelModel))
+
+
+class TestEncDecSpeechLabelModel:
+    @pytest.mark.unit
+    def test_pretrained_titanet_embeddings(self, test_data_dir):
+        model_name = 'titanet_large'
+        speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name)
+        assert isinstance(speaker_model, EncDecSpeakerLabelModel)
+        relative_filepath = "an4_speaker/an4/wav/an4_clstk/fash/an251-fash-b.wav"
+        filename = os.path.join(test_data_dir, relative_filepath)
+
+        emb, logits = speaker_model.infer_file(filename)
+
+        class_id = logits.argmax(axis=-1)
+        emb_sum = emb.sum()
+
+        assert 11144 == class_id
+        assert (emb_sum + 0.2575) <= 1e-2
+
+    @pytest.mark.unit
+    def test_pretrained_ambernet_logits(self, test_data_dir):
+        model_name = 'langid_ambernet'
+        lang_model = EncDecSpeakerLabelModel.from_pretrained(model_name)
+        assert isinstance(lang_model, EncDecSpeakerLabelModel)
+        relative_filepath = "an4_speaker/an4/wav/an4_clstk/fash/an255-fash-b.wav"
+        filename = os.path.join(test_data_dir, relative_filepath)
+
+        label = lang_model.get_label(filename)
+
+        assert label == "en"

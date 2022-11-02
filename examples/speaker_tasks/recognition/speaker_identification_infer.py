@@ -42,6 +42,10 @@ def main(cfg):
 
     backend = cfg.backend.backend_model.lower()
 
+    featurizer = WaveformFeaturizer(sample_rate=sample_rate)
+    dataset = AudioToSpeechLabelDataset(manifest_filepath=enrollment_manifest, labels=None, featurizer=featurizer)
+    enroll_id2label = dataset.id2label
+
     if backend == 'cosine_similarity':
         model_path = cfg.backend.cosine_similarity.model_path
         batch_size = cfg.backend.cosine_similarity.batch_size
@@ -50,13 +54,11 @@ def main(cfg):
         else:
             speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_path)
 
-        enroll_embs, _, enroll_truelabels, enroll_id2label = EncDecSpeakerLabelModel.get_batch_embeddings(
-            speaker_model, enrollment_manifest, batch_size, sample_rate, device=device,
+        enroll_embs, _, enroll_truelabels, _ = speaker_model.batch_inference(
+            enrollment_manifest, batch_size, sample_rate, device=device,
         )
 
-        test_embs, _, _, _ = EncDecSpeakerLabelModel.get_batch_embeddings(
-            speaker_model, test_manifest, batch_size, sample_rate, device=device,
-        )
+        test_embs, _, _, _ = speaker_model.batch_inference(test_manifest, batch_size, sample_rate, device=device,)
 
         # length normalize
         enroll_embs = enroll_embs / (np.linalg.norm(enroll_embs, ord=2, axis=-1, keepdims=True))
@@ -84,18 +86,12 @@ def main(cfg):
         else:
             speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_path)
 
-        featurizer = WaveformFeaturizer(sample_rate=sample_rate)
-        dataset = AudioToSpeechLabelDataset(manifest_filepath=enrollment_manifest, labels=None, featurizer=featurizer)
-        enroll_id2label = dataset.id2label
-
         if speaker_model.decoder.final.out_features != len(enroll_id2label):
             raise ValueError(
                 "number of labels mis match. Make sure you trained or finetuned neural classifier with labels from enrollement manifest_filepath"
             )
 
-        _, test_logits, _, _ = EncDecSpeakerLabelModel.get_batch_embeddings(
-            speaker_model, test_manifest, batch_size, sample_rate, device=device,
-        )
+        _, test_logits, _, _ = speaker_model.batch_inference(test_manifest, batch_size, sample_rate, device=device,)
         matched_labels = test_logits.argmax(axis=-1)
 
     with open(test_manifest, 'rb') as f1, open(out_manifest, 'w', encoding='utf-8') as f2:

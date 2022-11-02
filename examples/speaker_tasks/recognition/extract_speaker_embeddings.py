@@ -35,47 +35,29 @@ from argparse import ArgumentParser
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
-from tqdm import tqdm
 
 from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel
 from nemo.collections.asr.parts.utils.speaker_utils import embedding_normalize
 from nemo.utils import logging
 
-try:
-    from torch.cuda.amp import autocast
-except ImportError:
-    from contextlib import contextmanager
-
-    @contextmanager
-    def autocast(enabled=None):
-        yield
-
 
 def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./', device='cuda'):
-    test_config = OmegaConf.create(
-        dict(manifest_filepath=manifest_file, sample_rate=16000, labels=None, batch_size=batch_size, shuffle=False,)
-    )
+    """
+    save embeddings to pickle file
+    Args:
+        speaker_model: NeMo <EncDecSpeakerLabel> model 
+        manifest_file: path to the manifest file containing the audio file path from which the 
+                       embeddings should be extracted
+        batch_size: batch_size for inference
+        embedding_dir: path to directory to store embeddings file
+        device: compute device to perform operations
+    """
 
-    speaker_model.setup_test_data(test_config)
-    speaker_model = speaker_model.to(device)
-    speaker_model.eval()
-
-    all_embs = []
-    out_embeddings = {}
-
-    for test_batch in tqdm(speaker_model.test_dataloader()):
-        test_batch = [x.to(device) for x in test_batch]
-        audio_signal, audio_signal_len, labels, slices = test_batch
-        with autocast():
-            _, embs = speaker_model.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
-            emb_shape = embs.shape[-1]
-            embs = embs.view(-1, emb_shape)
-            all_embs.extend(embs.cpu().detach().numpy())
-        del test_batch
-
+    all_embs, _, _, _ = speaker_model.batch_inference(manifest_file, batch_size=batch_size, device=device)
     all_embs = np.asarray(all_embs)
     all_embs = embedding_normalize(all_embs)
+    out_embeddings = {}
+
     with open(manifest_file, 'r', encoding='utf-8') as manifest:
         for i, line in enumerate(manifest.readlines()):
             line = line.strip()
@@ -108,6 +90,9 @@ def main():
         help="path to .nemo speaker verification model file to extract embeddings, if not passed SpeakerNet-M model would be downloaded from NGC and used to extract embeddings",
     )
     parser.add_argument(
+        "--batch_size", type=int, default=1, required=False, help="batch size",
+    )
+    parser.add_argument(
         "--embedding_dir",
         type=str,
         default='./',
@@ -131,7 +116,9 @@ def main():
         device = 'cpu'
         logging.warning("Running model on CPU, for faster performance it is adviced to use atleast one NVIDIA GPUs")
 
-    get_embeddings(speaker_model, args.manifest, batch_size=1, embedding_dir=args.embedding_dir, device=device)
+    get_embeddings(
+        speaker_model, args.manifest, batch_size=args.batch_size, embedding_dir=args.embedding_dir, device=device
+    )
 
 
 if __name__ == '__main__':

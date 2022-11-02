@@ -417,15 +417,14 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         return self.multi_evaluation_epoch_end(outputs, dataloader_idx, 'test')
 
     @torch.no_grad()
-    def get_embedding(self, path2audio_file):
+    def infer_file(self, path2audio_file):
         """
-        Returns the speaker embeddings for a provided audio file.
-
         Args:
-            path2audio_file: path to audio wav file
+            path2audio_file: path to an audio wav file
 
         Returns:
-            embs: speaker embeddings
+            emb: speaker embeddings (Audio representations)
+            logits: logits corresponding of final layer
         """
         audio, sr = librosa.load(path2audio_file, sr=None)
         target_sr = self._cfg.train_ds.get('sample_rate', 16000)
@@ -441,13 +440,48 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         mode = self.training
         self.freeze()
 
-        _, embs = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+        logits, emb = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
 
         self.train(mode=mode)
         if mode is True:
             self.unfreeze()
         del audio_signal, audio_signal_len
-        return embs
+        return emb, logits
+
+    def get_label(self, path2audio_file):
+        """
+        Returns label of path2audio_file from classes the model was trained on. 
+        Args:
+            path2audio_file: path to audio wav file
+
+        Returns:
+            label: label corresponding to the trained model        
+        """
+        _, logits = self.infer_file(path2audio_file=path2audio_file)
+        mapped_labels = list(self._cfg['train_ds']['labels'])
+        if mapped_labels is not None:
+            label_id = logits.argmax(axis=1)
+            label = mapped_labels[int(label_id[0])]
+        else:
+            logging.info("labels are not saved to model, hence only outputting the label id index")
+            label = logits.argmax(axis=1)
+
+        return label
+
+    def get_embedding(self, path2audio_file):
+        """
+        Returns the speaker embeddings for a provided audio file.
+
+        Args:
+            path2audio_file: path to an audio wav file
+
+        Returns:
+            emb: speaker embeddings (Audio representations)
+        """
+
+        emb, _ = self.infer_file(path2audio_file=path2audio_file)
+
+        return emb
 
     @torch.no_grad()
     def verify_speakers(self, path2audio_file1, path2audio_file2, threshold=0.7):
@@ -478,13 +512,37 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             logging.info(" two audio files are from different speakers")
             return False
 
-    @staticmethod
     @torch.no_grad()
-    def get_batch_embeddings(speaker_model, manifest_filepath, batch_size=32, sample_rate=16000, device='cuda'):
+    def batch_inference(self, manifest_filepath, batch_size=32, sample_rate=16000, device='cuda'):
+        """
+        Perform batch inference on EncDecSpeakerLabelModel. 
+        To perform inference on single audio file, once can use infer_model, get_label or get_embedding
 
-        speaker_model.eval()
-        if device == 'cuda':
-            speaker_model.to(device)
+        To map predicted labels, one can do 
+            `arg_values = logits.argmax(axis=1)`
+            `pred_labels = list(map(lambda t : pred_labels[t], arg_values))`
+
+        Args:
+            manifest_filepath: Path to manifest file
+            batch_size: batch size to perform batch inference
+            sample_rate: sample rate of audio files in manifest file
+            device: compute device to perform operations.
+
+        Returns:
+            The variables below all follow the audio file order in the manifest file.
+            embs: embeddings of files provided in manifest file
+            logits: logits of final layer of EncDecSpeakerLabel Model
+            gt_labels: labels from manifest file (needed for speaker enrollment and testing)
+            mapped_labels: Classification labels sorted in the order that they are mapped by the trained model
+
+        """
+        mode = self.training
+        self.freeze()
+        self.eval()
+        self.to(device)
+        mapped_labels = self._cfg['train_ds']['labels']
+        if mapped_labels is not None:
+            mapped_labels = list(mapped_labels)
 
         featurizer = WaveformFeaturizer(sample_rate=sample_rate)
         dataset = AudioToSpeechLabelDataset(manifest_filepath=manifest_filepath, labels=None, featurizer=featurizer)
@@ -493,20 +551,24 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             dataset=dataset, batch_size=batch_size, collate_fn=dataset.fixed_seq_collate_fn,
         )
 
-        all_logits = []
-        all_labels = []
-        all_embs = []
+        logits = []
+        embs = []
+        gt_labels = []
 
         for test_batch in tqdm(dataloader):
             if device == 'cuda':
                 test_batch = [x.to(device) for x in test_batch]
             audio_signal, audio_signal_len, labels, _ = test_batch
-            logits, embs = speaker_model.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+            logit, emb = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
 
-            all_logits.extend(logits.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            all_embs.extend(embs.cpu().numpy())
+            logits.extend(logit.cpu().numpy())
+            gt_labels.extend(labels.cpu().numpy())
+            embs.extend(emb.cpu().numpy())
 
-        all_logits, true_labels, all_embs = np.asarray(all_logits), np.asarray(all_labels), np.asarray(all_embs)
+        self.train(mode=mode)
+        if mode is True:
+            self.unfreeze()
 
-        return all_embs, all_logits, true_labels, dataset.id2label
+        logits, embs, gt_labels = np.asarray(logits), np.asarray(embs), np.asarray(gt_labels)
+
+        return embs, logits, gt_labels, mapped_labels

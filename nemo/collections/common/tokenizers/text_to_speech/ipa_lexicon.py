@@ -14,6 +14,9 @@
 
 
 # fmt: off
+
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES"]
+
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
     ':', ';', '/', '"', '(',
@@ -62,31 +65,48 @@ IPA_CHARACTER_SETS = {
         'ʊ', 'ʌ', 'ʒ', '̃', 'θ'
     )
 }
+
 # fmt: on
+
+
+def validate_locale(locale):
+    if locale not in SUPPORTED_LOCALES:
+        raise ValueError(f"Unsupported locale '{locale}'. " f"Supported locales {SUPPORTED_LOCALES}")
 
 
 def get_grapheme_character_set(locale):
     if locale not in GRAPHEME_CHARACTER_SETS:
-        raise ValueError(f"Grapheme character set not found for locale {locale}")
+        raise ValueError(
+            f"Grapheme character set not found for locale '{locale}'. "
+            f"Supported locales {GRAPHEME_CHARACTER_SETS.keys()}"
+        )
     char_set = set(GRAPHEME_CHARACTER_SETS[locale])
     return char_set
 
 
 def get_ipa_character_set(locale):
     if locale not in IPA_CHARACTER_SETS:
-        raise ValueError(f"IPA character set not found for locale {locale}")
+        raise ValueError(
+            f"IPA character set not found for locale '{locale}'. " f"Supported locales {IPA_CHARACTER_SETS.keys()}"
+        )
     char_set = set(IPA_CHARACTER_SETS[locale])
     return char_set
 
 
 def get_ipa_punctuation_list(locale):
-    punct_list = list(DEFAULT_PUNCTUATION)
+    if locale is None:
+        return sorted(list(DEFAULT_PUNCTUATION))
+
+    validate_locale(locale)
+
+    punct_set = set(DEFAULT_PUNCTUATION)
     if locale in ["de-DE", "es-ES"]:
         # https://en.wikipedia.org/wiki/Guillemet#Uses
-        punct_list.extend(['«', '»', '‹', '›'])
+        punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
-        punct_list.extend(['„', '“'])
+        punct_set.update(['„', '“'])
     elif locale == "es-ES":
-        punct_list.extend(['¿', '¡'])
+        punct_set.update(['¿', '¡'])
 
+    punct_list = sorted(list(punct_set))
     return punct_list

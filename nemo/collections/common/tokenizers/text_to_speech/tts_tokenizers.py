@@ -23,10 +23,11 @@ from nemo_text_processing.g2p.data.data_utils import (
     chinese_text_preprocessing,
     english_text_preprocessing,
     german_text_preprocessing,
+    ipa_text_preprocessing,
     spanish_text_preprocessing,
 )
 
-from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import get_ipa_punctuation_list
+from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import get_ipa_punctuation_list, validate_locale
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
@@ -500,17 +501,10 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
 
 @experimental
 class IPATokenizer(BaseTokenizer):
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
-
     def __init__(
         self,
         g2p,
+        locale="en-US",
         punct=True,
         non_default_punct_list=None,
         *,
@@ -521,11 +515,13 @@ class IPATokenizer(BaseTokenizer):
         sep='|',  # To be able to distinguish between symbols
         add_blank_at=None,
         pad_with_space=False,
-        text_preprocessing_func=lambda text: english_text_preprocessing(text, lower=False),
     ):
         """General-purpose IPA-based tokenizer.
         Args:
             g2p: Grapheme to phoneme module, should be IPAG2P or some subclass thereof.
+            locale: Locale used to determine default text processing logic and punctuation.
+                Supports ["en-US", "de-DE", "es-ES"]. Defaults to "en-US".
+                Specify None if implementing custom logic for a new locale.
             punct: Whether to reserve grapheme for basic punctuation or not.
             non_default_punct_list: List of punctuation marks which will be used instead default, if any.
             space: Space token as string.
@@ -534,12 +530,8 @@ class IPATokenizer(BaseTokenizer):
             oov: OOV token as string.
             sep: Separation token as string.
             add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
+                if None then no blank in labels.
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't applied here, in case the text contains phonemes (it will be handled by g2p).
-             Defaults to English text preprocessing.
         """
         if not hasattr(g2p, "symbols"):
             logging.error(
@@ -548,6 +540,9 @@ class IPATokenizer(BaseTokenizer):
                 f"Expected e.g. IPAG2P, found {type(g2p)}"
             )
             raise ValueError("G2P modules passed into the IPATokenizer must have `symbols` defined.")
+
+        if locale is not None:
+            validate_locale(locale)
 
         self.phoneme_probability = None
         if hasattr(g2p, "phoneme_probability"):
@@ -561,8 +556,11 @@ class IPATokenizer(BaseTokenizer):
 
         if punct:
             if non_default_punct_list is not None:
-                self.PUNCT_LIST = non_default_punct_list
-            tokens.update(self.PUNCT_LIST)
+                self.punct_list = non_default_punct_list
+            else:
+                self.punct_list = get_ipa_punctuation_list(locale)
+
+            tokens.update(self.punct_list)
 
         # Sort to ensure that vocab is in the same order every time
         tokens = sorted(list(tokens))
@@ -580,8 +578,12 @@ class IPATokenizer(BaseTokenizer):
         self.punct = punct
         self.pad_with_space = pad_with_space
 
-        self.text_preprocessing_func = text_preprocessing_func
         self.g2p = g2p
+
+        if locale == "en-US":
+            self.text_preprocessing_func = lambda text: english_text_preprocessing(text, lower=False)
+        else:
+            self.text_preprocessing_func = ipa_text_preprocessing
 
     def encode(self, text):
         """See base class for more information."""
@@ -608,7 +610,7 @@ class IPATokenizer(BaseTokenizer):
             elif p in tokens:
                 # Add next phoneme or char (if chars=True)
                 ps.append(p)
-            elif (p in self.PUNCT_LIST) and self.punct:
+            elif (p in self.punct_list) and self.punct:
                 # Add punct
                 ps.append(p)
             elif p != space:

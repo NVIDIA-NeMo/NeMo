@@ -23,8 +23,9 @@ from typing import Callable, DefaultDict, List, Optional, Set, Tuple, Union
 
 import nltk
 import torch
-from nemo_text_processing.g2p.data.data_utils import english_word_tokenize
+from nemo_text_processing.g2p.data.data_utils import english_word_tokenize, ipa_word_tokenize
 
+from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 from nemo.utils.get_rank import is_global_rank_zero
@@ -263,7 +264,7 @@ class IPAG2P(BaseG2p):
     def __init__(
         self,
         phoneme_dict: Union[str, pathlib.Path, dict],
-        word_tokenize_func: Callable[[str], List[Tuple[Union[str, List[str]], bool]]] = english_word_tokenize,
+        locale: str = "en-US",
         apply_to_oov_word: Optional[Callable[[str], str]] = None,
         ignore_ambiguous_words: bool = True,
         heteronyms: Optional[Union[str, pathlib.Path, List[str]]] = None,
@@ -281,13 +282,9 @@ class IPAG2P(BaseG2p):
             phoneme_dict (str, Path, Dict): Path to file in CMUdict format or a IPA dict object with CMUdict-like entries.
                 a dictionary file example: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
                 a dictionary object example: {..., "WIRE": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}
-            word_tokenize_func: Function for tokenizing text to words.
-                It has to return List[Tuple[Union[str, List[str]], bool]] where every tuple denotes word
-                representation and flag whether to leave unchanged or not.
-                It is expected that unchangeable word representation will be represented as List[str], other
-                cases are represented as str.
-                It is useful to mark word as unchangeable which is already in phoneme representation.
-                Defaults to the English word tokenizer.
+            locale: Locale used to determine default tokenization logic.
+                Supports ["en-US", "de-DE", "es-ES"]. Defaults to "en-US".
+                Specify None if implementing custom logic for a new locale.
             apply_to_oov_word: Function that will be applied to out of phoneme_dict word.
             ignore_ambiguous_words: Whether to not handle word via phoneme_dict with ambiguous phoneme sequences.
                 Defaults to True.
@@ -306,6 +303,9 @@ class IPAG2P(BaseG2p):
         self.set_graphemes_upper = set_graphemes_upper
         self.phoneme_probability = phoneme_probability
         self._rng = random.Random()
+
+        if locale is not None:
+            validate_locale(locale)
 
         if not use_chars and self.phoneme_probability is not None:
             self.use_chars = True
@@ -347,6 +347,14 @@ class IPAG2P(BaseG2p):
                 "This may be intended if phonemes and chars are both valid inputs, otherwise, "
                 "you may see unexpected deletions in your input."
             )
+
+        # word_tokenize_func returns a List[Tuple[Union[str, List[str]], bool]] where every tuple denotes
+        # a word representation (word or list tokens) and a flag indicating whether to process the word or
+        # leave it unchanged.
+        if locale == "en-US":
+            word_tokenize_func = english_word_tokenize
+        else:
+            word_tokenize_func = ipa_word_tokenize
 
         super().__init__(
             phoneme_dict=self.phoneme_dict,

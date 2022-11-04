@@ -74,16 +74,16 @@ def transcribe_partial_audio(
                     lg = logits[idx][: logits_len[idx]]
                     hypotheses.append(lg.cpu().numpy())
             else:
-                current_hypotheses, _ = asr_model._wer.decoding.ctc_decoder_predictions_tensor(
-                    decoder_outputs=greedy_predictions,
-                    decoder_lengths=logits_len,
-                    return_hypotheses=return_hypotheses,
+                current_hypotheses, all_hyp = asr_model.decoding.ctc_decoder_predictions_tensor(
+                    logits, decoder_lengths=logits_len, return_hypotheses=return_hypotheses,
                 )
 
                 if return_hypotheses:
                     # dump log probs per file
                     for idx in range(logits.shape[0]):
                         current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
+                        if current_hypotheses[idx].alignments is None:
+                            current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
 
                 hypotheses += current_hypotheses
 

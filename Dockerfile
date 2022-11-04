@@ -46,14 +46,6 @@ WORKDIR /tmp/torchaudio_build
 COPY scripts/installers /tmp/torchaudio_build/scripts/installers/
 RUN /bin/bash /tmp/torchaudio_build/scripts/installers/install_torchaudio_latest.sh
 
-#install TRT tools: PT quantization support and ONNX graph optimizer
-WORKDIR /tmp/trt_build
-RUN git clone https://github.com/NVIDIA/TensorRT.git && \
-    cd TensorRT/tools/onnx-graphsurgeon && python setup.py install && \
-    cd ../pytorch-quantization && \
-    python setup.py install && \
-    rm -fr  /tmp/trt_build
-
 # install nemo dependencies
 WORKDIR /tmp/nemo
 COPY requirements .

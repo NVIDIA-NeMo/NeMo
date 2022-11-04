@@ -14,7 +14,7 @@
 import os
 
 import pynini
-from nemo_text_processing.text_normalization.zh.graph_utils import NEMO_SIGMA, GraphFst
+from nemo_text_processing.text_normalization.zh.graph_utils import GraphFst
 from nemo_text_processing.text_normalization.zh.taggers.cardinal import Cardinal
 from nemo_text_processing.text_normalization.zh.taggers.char import Char
 from nemo_text_processing.text_normalization.zh.taggers.date import Date

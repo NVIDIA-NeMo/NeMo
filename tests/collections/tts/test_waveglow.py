@@ -14,15 +14,12 @@
 
 import os
 import tempfile
-from unittest import TestCase
 
-import onnx
 import pytest
 import torch
 from omegaconf import DictConfig
 
 from nemo.collections.tts.models import WaveGlowModel
-from nemo.collections.tts.modules import WaveGlowModule
 from nemo.core.classes import typecheck
 
 mcfg = DictConfig(

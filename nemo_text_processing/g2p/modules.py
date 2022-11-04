@@ -321,14 +321,14 @@ class IPAG2P(BaseG2p):
             # load the dictionary file where there may exist a digit suffix after a word, which
             # represents the pronunciation variant of that word.
             phoneme_dict_obj = defaultdict(list)
-            _alt_re = re.compile(r'\([0-9]+\)')
+            _alt_re = re.compile(r"\([0-9]+\)")
             with open(phoneme_dict, "r") as fdict:
                 for line in fdict:
                     if len(line) and ('A' <= line[0] <= 'Z' or line[0] == "'"):
-                        parts = line.strip().split("  ")
-                        assert len(parts) == 2, f"Wrong format for the entry: {line.strip()}."
-                        word = re.sub(_alt_re, '', parts[0])
-                        phoneme_dict_obj[word].append(list(parts[1]))
+                        parts = line.strip().split(maxsplit=1)
+                        word = re.sub(_alt_re, "", parts[0])
+                        prons = re.sub(r"\s+", "", parts[1])
+                        phoneme_dict_obj[word].append(list(prons))
         else:
             # Load phoneme_dict as dictionary object
             logging.info("Loading phoneme_dict as a Dict object.")

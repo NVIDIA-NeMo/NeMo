@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pdb
 
 ###############################################################################
 import torch
@@ -32,7 +31,6 @@ from nemo.collections.tts.modules.common import (
     LinearNorm,
     get_mask_from_lengths,
     getRadTTSEncoder,
-    sort_tensor,
 )
 from nemo.collections.tts.modules.submodules import PartialConv1d
 from nemo.core.classes import Exportable, NeuralModule

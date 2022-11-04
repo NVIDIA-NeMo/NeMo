@@ -8,8 +8,8 @@ trainer:
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   replace_sampler_ddp: False
-  max_epochs: 10
-  max_steps: -1 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
+  max_steps: 100000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 300
   accumulate_grad_batches: 1
@@ -31,7 +31,7 @@ exp_manager:
     save_top_k: 10
     mode: max
     always_save_nemo: False # TODO: add support
-    filename: 'megatron_t0--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}'
+    filename: 'megatron_t0--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{consumed_samples}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True
 
@@ -50,22 +50,24 @@ model:
     train_ds:
       file_names: ??? # Path to a list of JSONL files corresponding to the source data.
       global_batch_size: 128
-      micro_batch_size: 64
+      micro_batch_size: 16
       shuffle: True
       num_workers: 8
       pin_memory: True
       max_src_seq_length: 512
       max_tgt_seq_length: 512
       drop_last: True
-      concat_sampling_technique: temperature # When providing a list of datasets, this arg defines the sampling strategy. Options: ['temperature', 'random']
-      concat_sampling_temperature: 5 # When providing a list of datasets, this arg defines the sampling temperature when strategy='temperature'
-      concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
+      concat_sampling_probabilities: ??? # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
+      replace_bos_with_pad: True # Replaces bos with pad for both the encoder and decoder. This is necessary when using Google's T5 checkpoints.
+      add_bos_to_input: False # Adds bos to the input sequence.
+      add_eos_to_input: False # Adds eos to the input sequence.
+      seed: 1234
 
     validation_ds:
       file_names: ??? # Path to a list of JSONL files corresponding to the source data.
       names: null # Names of the corresponding datasets used to log metrics.
-      global_batch_size: 64
-      micro_batch_size: 64
+      global_batch_size: 16
+      micro_batch_size: 16
       shuffle: False
       num_workers: 0
       pin_memory: True
@@ -78,6 +80,10 @@ model:
         name: "exact_string_match" # Name of the evaluation metric to use.
         average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
         num_classes: null
+      replace_bos_with_pad: ${data.train_ds.replace_bos_with_pad}
+      add_bos_to_input: ${data.train_ds.add_bos_to_input}
+      add_eos_to_input: ${data.train_ds.replace_bos_with_pad}
+      seed: 1234
 
   optim:
     name: fused_adam

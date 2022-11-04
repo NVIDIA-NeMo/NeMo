@@ -267,8 +267,12 @@ class TextMemmapSequenceToSequenceDataset(IndexedSequenceToSequenceDataset):
         )
 
     def _get_examples(self):
-        self.src_indexed_dataset = TextMemMapDataset(dataset_paths=[self.src_file_name], tokenizer=self.src_tokenizer)
-        self.tgt_indexed_dataset = TextMemMapDataset(dataset_paths=[self.tgt_file_name], tokenizer=self.tgt_tokenizer)
+        self.src_indexed_dataset = TextMemMapDataset(
+            dataset_paths=[self.src_file_name], tokenizer=self.src_tokenizer, header_lines=0
+        )
+        self.tgt_indexed_dataset = TextMemMapDataset(
+            dataset_paths=[self.tgt_file_name], tokenizer=self.tgt_tokenizer, header_lines=0
+        )
 
         assert len(self.src_indexed_dataset) == len(
             self.tgt_indexed_dataset

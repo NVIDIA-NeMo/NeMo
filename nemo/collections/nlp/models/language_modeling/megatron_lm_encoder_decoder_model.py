@@ -846,6 +846,10 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         }
 
     def process_global_batch(self, global_batch):
+        # If the decoder input starts with <pad> instead of <bos>, which is the case for huggingface T5 models, we don't want to mask the first token.
+        # For NeMo-Megatron, the sequence starts with <bos>, which is never masked so we can always set index 0 to be unmasked.
+        global_batch['dec_mask'][:, 0] = 1
+
         return [
             global_batch["text_enc"],
             global_batch["text_dec"],

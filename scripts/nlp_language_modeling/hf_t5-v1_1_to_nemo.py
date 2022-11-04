@@ -34,6 +34,11 @@ List of Huggingface models that this script can covert:
 16. google/t5-large-lm-adapt
 17. google/t5-xl-lm-adapt
 18. google/t5-xxl-lm-adapt
+19. google/flan-t5-small
+20. google/flan-t5-base
+21. google/flan-t5-large
+22. google/flan-t5-xl
+23. google/flan-t5-xxl
 
 Use instructions:
 
@@ -298,6 +303,9 @@ def package_into_nemo_file(
     if hf_model_config.dense_act_fn == "silu":
         act_fn = "swiglu"
     elif hf_model_config.dense_act_fn == "gelu_new":
+        act_fn = "geglu"
+    # FLAN-T5 models have things configured this way.
+    elif hf_model_config.dense_act_fn == "gelu" and hf_model_config.is_gated_act:
         act_fn = "geglu"
     else:
         raise ValueError(f"Unknown dense_act_fn: {hf_model_config.dense_act_fn}")

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import datetime
+import json
 import multiprocessing as mp
 import os
 import pickle
@@ -256,6 +257,28 @@ class CSVMemMapDataset(TextMemMapDataset):
         text = text.split(self._data_sep)[self._data_col]
         # tokenize
         return super()._build_data_from_text(text)
+
+
+class JSONLMemMapDataset(TextMemMapDataset):
+    """
+    Memory-mapped iteration over a JSONL file.
+    """
+
+    def __init__(
+        self, dataset_paths, newline_int=10, header_lines=1, workers=None, tokenizer=None, sort_dataset_paths=True,
+    ):
+        super().__init__(
+            dataset_paths=dataset_paths,
+            newline_int=newline_int,
+            header_lines=header_lines,
+            workers=workers,
+            tokenizer=tokenizer,
+            sort_dataset_paths=sort_dataset_paths,
+        )
+
+    def _build_data_from_text(self, text):
+        """Return a dictionary of data based on a single JSON line."""
+        return json.loads(text)
 
 
 def _build_memmap_index_files(newline_int, build_index_fn, fn):

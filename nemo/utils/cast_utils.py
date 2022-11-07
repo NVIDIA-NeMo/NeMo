@@ -16,8 +16,6 @@ from contextlib import nullcontext
 
 import torch
 
-__all__ = ['avoid_bfloat16_autocast_context', 'avoid_float16_autocast_context']
-
 
 def avoid_bfloat16_autocast_context():
     """
@@ -47,3 +45,34 @@ def avoid_float16_autocast_context():
             return torch.cuda.amp.autocast(dtype=torch.float32)
     else:
         return nullcontext()
+
+
+def cast_tensor(x, from_dtype=torch.float16, to_dtype=torch.float32):
+    return x.to(dtype=to_dtype) if x.dtype == from_dtype else x
+
+
+def cast_all(x, from_dtype=torch.float16, to_dtype=torch.float32):
+    if isinstance(x, torch.Tensor):
+        return cast_tensor(x, from_dtype=from_dtype, to_dtype=to_dtype)
+    else:
+        if isinstance(x, dict):
+            new_dict = {}
+            for k in x.keys():
+                new_dict[k] = cast_all(x[k], from_dtype=from_dtype, to_dtype=to_dtype)
+            return new_dict
+        elif isinstance(x, tuple):
+            return tuple(cast_all(y, from_dtype=from_dtype, to_dtype=to_dtype) for y in x)
+
+
+class CastToFloat(torch.nn.Module):
+    def __init__(self, mod):
+        super(CastToFloat, self).__init__()
+        self.mod = mod
+
+    def forward(self, x):
+        if torch.is_autocast_enabled():
+            with avoid_float16_autocast_context():
+                ret = self.mod.forward(x.to(torch.float32)).to(x.dtype)
+        else:
+            ret = self.mod.forward(x)
+        return ret

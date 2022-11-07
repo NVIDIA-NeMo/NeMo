@@ -19,7 +19,7 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv2D
-from nemo.collections.common.parts.training_utils import avoid_bfloat16_autocast_context
+from nemo.utils import avoid_bfloat16_autocast_context
 
 
 class StackingSubsampling(torch.nn.Module):

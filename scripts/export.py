@@ -133,22 +133,20 @@ def nemo_export(argv):
         logging.info("Caching support is enabled.")
 
     autocast = nullcontext
-    model.to(device=args.device).freeze()
-    model.eval()
-    with torch.inference_mode():
-        input_example = model.input_module.input_example(**in_args)
-    if check_trace:
-        check_trace = [input_example]
-        if max_dim:
-            in_args["max_dim"] = (max_dim + 1) // 2
-            in_args["max_batch"] = (max_batch + 1) // 2
-            input_example2 = model.input_module.input_example(**in_args)
-            check_trace.append(input_example2)
-
     if args.autocast:
         autocast = torch.cuda.amp.autocast
     try:
-        with autocast(), torch.inference_mode():
+        with autocast(), torch.no_grad(), torch.inference_mode():
+            model.to(device=args.device).freeze()
+            model.eval()
+            input_example = model.input_module.input_example(**in_args)
+            if check_trace and len(in_args) > 0:
+                check_trace = [input_example]
+                for key, arg in in_args:
+                    in_args[key] = (arg + 1) // 2
+                input_example2 = model.input_module.input_example(**in_args)
+                check_trace.append(input_example2)
+
             _, descriptions = model.export(
                 out,
                 input_example=input_example,

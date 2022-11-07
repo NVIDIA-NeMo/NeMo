@@ -16,7 +16,7 @@
 This script is to generate mel spectrograms from a Fastpitch model checkpoint. Please see general usage below. It runs
 on GPUs by default, but you can add `--num-workers 5 --cpu` as an option to run on CPUs.
 
-$ python scripts/dataset_processing/tts/generate_mels_for_finetune_hifigan.py \
+$ python scripts/dataset_processing/tts/generate_mels.py \
     --fastpitch-model-ckpt ./models/fastpitch/multi_spk/FastPitch--val_loss\=1.4473-epoch\=209.ckpt \
     --input-json-manifests /home/xueyang/HUI-Audio-Corpus-German-clean/test_manifest_text_normed_phonemes.json
     --output-json-manifest-root /home/xueyang/experiments/multi_spk_tts_de
@@ -146,7 +146,7 @@ def main():
         spec_model.cuda()
     device = spec_model.device
 
-    use_beta_binomial_interpolator = spec_model.cfg.train_ds.dataset.use_beta_binomial_interpolator
+    use_beta_binomial_interpolator = spec_model.cfg.train_ds.dataset.get("use_beta_binomial_interpolator", False)
 
     for manifest in input_manifest_filepaths:
         logging.info(f"Processing {manifest}.")

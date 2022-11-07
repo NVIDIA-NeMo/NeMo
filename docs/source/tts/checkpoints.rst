@@ -34,7 +34,46 @@ The models can be accessed via the :code:`from_pretrained()` method inside the T
     import nemo.collections.tts as nemo_tts
     model = nemo_tts.models.<MODEL_BASE_CLASS>.from_pretrained(model_name="<MODEL_NAME>")
 
-where ``<MODEL_NAME>`` is generally the basename of the "Model Card" entry in the tables in :ref:`Checkpoints<NGC TTS Models>`. For example, the basename of the English FastPitch mel-generator model from https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_fastpitch is :code:`"tts_en_fastpitch"`. You could load this model by running,
+where ``<MODEL_NAME>`` is the value in ``Model Name`` column in the tables in :ref:`Checkpoints<NGC TTS Models>`. These names are predefined in the each model's member function ``self.list_available_models()``. For example, the available NGC FastPitch model names can be found,
+
+.. ipython::
+
+    In [1]: import nemo.collections.tts as nemo_tts
+
+    In [2]: nemo_tts.models.FastPitchModel.list_available_models()
+    Out[2]:
+    [PretrainedModelInfo(
+        pretrained_model_name=tts_en_fastpitch,
+        description=This model is trained on LJSpeech sampled at 22050Hz with and can be used to generate female English voices with an American accent. It is ARPABET-based.,
+        location=https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/1.8.1/files/tts_en_fastpitch_align.nemo,
+        class_=<class 'nemo.collections.tts.models.fastpitch.FastPitchModel'>
+     ),
+     PretrainedModelInfo(
+        pretrained_model_name=tts_en_fastpitch_ipa,
+        description=This model is trained on LJSpeech sampled at 22050Hz with and can be used to generate female English voices with an American accent. It is IPA-based.,
+        location=https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/IPA_1.13.0/files/tts_en_fastpitch_align_ipa.nemo,
+        class_=<class 'nemo.collections.tts.models.fastpitch.FastPitchModel'>
+     ),
+     PretrainedModelInfo(
+        pretrained_model_name=tts_en_fastpitch_multispeaker,
+        description=This model is trained on HiFITTS sampled at 44100Hz with and can be used to generate male and female English voices with an American accent.,
+        location=https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_multispeaker_fastpitchhifigan/versions/1.10.0/files/tts_en_fastpitch_multispeaker.nemo,
+        class_=<class 'nemo.collections.tts.models.fastpitch.FastPitchModel'>
+     ),
+     PretrainedModelInfo(
+        pretrained_model_name=tts_de_fastpitch_singlespeaker,
+        description=This model is trained on a single male speaker data in OpenSLR Neutral German Dataset sampled at 22050Hz and can be used to generate male German voices.,
+        location=https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_de_fastpitchhifigan/versions/1.10.0/files/tts_de_fastpitch_align.nemo,
+        class_=<class 'nemo.collections.tts.models.fastpitch.FastPitchModel'>
+     ),
+     PretrainedModelInfo(
+        pretrained_model_name=tts_de_fastpitch_multispeaker_5,
+        description=This model is trained on 5 speakers in HUI-Audio-Corpus-German clean subset sampled at 44100Hz with and can be used to generate male and female German voices.,
+        location=https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_de_fastpitch_multispeaker_5/versions/1.11.0/files/tts_de_fastpitch_multispeaker_5.nemo,
+        class_=<class 'nemo.collections.tts.models.fastpitch.FastPitchModel'>
+     )]
+
+From the above key-value pair ``pretrained_model_name=tts_en_fastpitch``, you could get the model name ``tts_en_fastpitch`` and load it by running,
 
 .. code-block:: python
 
@@ -79,7 +118,11 @@ There are multiple TTS tutorials provided in the directory of `tutorials/tts/ <h
 NGC TTS Models
 -----------------------------------
 
-Below summarizes a full list of available NeMo TTS models that have been released in `NGC NeMo Text to Speech Collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_tts/entities>`_.
+This section summarizes a full list of available NeMo TTS models that have been released in `NGC NeMo Text to Speech Collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_tts/entities>`_. You can download model checkpoints of your interest via either way below,
+
+* :code:`wget '<CHECKPOINT_URL_IN_THE_TABLE>'`
+* :code:`curl -LO '<CHECKPOINT_URL_IN_THE_TABLE>'`
+
 
 Speech/Text Aligners
 ^^^^^^^^^^^^^^^^^^^^

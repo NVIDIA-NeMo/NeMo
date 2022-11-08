@@ -36,7 +36,7 @@ The models can be accessed via the :code:`from_pretrained()` method inside the T
 
 where ``<MODEL_NAME>`` is the value in ``Model Name`` column in the tables in :ref:`Checkpoints<NGC TTS Models>`. These names are predefined in the each model's member function ``self.list_available_models()``. For example, the available NGC FastPitch model names can be found,
 
-.. ipython::
+.. code-block:: shell-session
 
     In [1]: import nemo.collections.tts as nemo_tts
 

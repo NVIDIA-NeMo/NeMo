@@ -430,17 +430,6 @@ class MegatronBertModel(MegatronBaseModel):
             )
             self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
 
-    def compute_consumed_samples(self, steps_since_resume=0):
-        app_state = AppState()
-        consumed_samples = (
-            self.init_consumed_samples
-            + steps_since_resume
-            * app_state.data_parallel_size
-            * self.cfg.micro_batch_size
-            * self.trainer.accumulate_grad_batches
-        )
-        return int(consumed_samples)
-
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """

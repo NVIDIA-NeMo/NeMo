@@ -14,7 +14,7 @@
 
 from abc import abstractmethod
 from dataclasses import dataclass, is_dataclass
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import editdistance
 import numpy as np
@@ -228,7 +228,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         decoder_lengths: torch.Tensor = None,
         fold_consecutive: bool = True,
         return_hypotheses: bool = False,
-    ) -> (List[str], Optional[List[List[str]]], Optional[Union[Hypothesis, NBestHypotheses]]):
+    ) -> Tuple[List[str], Optional[List[List[str]]], Optional[Union[Hypothesis, NBestHypotheses]]]:
         """
         Decodes a sequence of labels to words
 

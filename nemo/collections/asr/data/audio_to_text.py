@@ -14,7 +14,7 @@
 import io
 import math
 import os
-from typing import Callable, Dict, Iterable, List, Optional, Union
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import braceexpand
 import numpy as np
@@ -138,16 +138,16 @@ class ASRManifestProcessor:
         self.bos_id = bos_id
         self.pad_id = pad_id
 
-    def process_text_by_id(self, index: int) -> (List[int], int):
+    def process_text_by_id(self, index: int) -> Tuple[List[int], int]:
         sample = self.collection[index]
         return self.process_text_by_sample(sample)
 
-    def process_text_by_file_id(self, file_id: str) -> (List[int], int):
+    def process_text_by_file_id(self, file_id: str) -> Tuple[List[int], int]:
         manifest_idx = self.collection.mapping[file_id][0]
         sample = self.collection[manifest_idx]
         return self.process_text_by_sample(sample)
 
-    def process_text_by_sample(self, sample: collections.ASRAudioText.OUTPUT_TYPE) -> (List[int], int):
+    def process_text_by_sample(self, sample: collections.ASRAudioText.OUTPUT_TYPE) -> Tuple[List[int], int]:
         t, tl = sample.text_tokens, len(sample.text_tokens)
 
         if self.bos_id is not None:

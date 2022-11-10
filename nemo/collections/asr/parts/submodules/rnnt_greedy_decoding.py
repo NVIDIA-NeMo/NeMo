@@ -27,7 +27,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -181,7 +181,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
         hidden: Optional[torch.Tensor],
         add_sos: bool = False,
         batch_size: Optional[int] = None,
-    ) -> (torch.Tensor, torch.Tensor):
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Common prediction step based on the AbstractRNNTDecoder implementation.
 

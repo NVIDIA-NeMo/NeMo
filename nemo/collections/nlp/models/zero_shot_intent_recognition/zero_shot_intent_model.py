@@ -262,7 +262,7 @@ class ZeroShotIntentModel(TextClassificationModel):
         return result
 
     @classmethod
-    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
         """
         This method returns a list of pre-trained models which can be instantiated directly from NVIDIA's NGC cloud.
 

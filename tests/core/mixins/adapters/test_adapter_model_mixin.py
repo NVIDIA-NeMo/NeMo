@@ -14,6 +14,7 @@
 import os
 import shutil
 import tempfile
+from typing import Tuple
 
 import pytest
 import torch
@@ -176,7 +177,7 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
         elif decoder_adapter and not isinstance(self.decoder, AdapterModuleMixin):
             logging.warning("Decoder does not support adapters !", mode=logging_mode.ONCE)
 
-    def resolve_adapter_module_name_(self, name: str) -> (str, str):
+    def resolve_adapter_module_name_(self, name: str) -> Tuple[str, str]:
         # resolve name and module
         valid_module_names = self.adapter_module_names
         module_name, adapter_name = super().resolve_adapter_module_name_(name)

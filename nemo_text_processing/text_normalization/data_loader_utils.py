@@ -16,6 +16,7 @@
 import json
 import re
 import string
+import sys
 from collections import defaultdict, namedtuple
 from typing import Dict, List, Optional, Set, Tuple
 from unicodedata import category

@@ -14,7 +14,7 @@
 
 from abc import ABC
 from dataclasses import dataclass, is_dataclass
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -420,7 +420,7 @@ class AdapterModuleMixin(ABC):
 
     # Utility methods
 
-    def resolve_adapter_module_name_(self, name: str) -> (str, str):
+    def resolve_adapter_module_name_(self, name: str) -> Tuple[str, str]:
         """
         Utility method to resolve a given global/module adapter name to its components.
         Always returns a tuple representing (module_name, adapter_name). ":" is used as the

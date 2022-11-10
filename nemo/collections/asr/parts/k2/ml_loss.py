@@ -26,7 +26,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import torch
 from omegaconf import DictConfig
@@ -105,7 +105,7 @@ class MLLoss(torch.nn.Module):
         targets: torch.Tensor,
         input_lengths: torch.Tensor,
         target_lengths: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.blank != 0:
             # rearrange log_probs to put blank at the first place
             # and shift targets to emulate blank = 0

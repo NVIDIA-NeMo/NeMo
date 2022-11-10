@@ -16,7 +16,7 @@ import csv
 import json
 from argparse import ArgumentParser
 from glob import glob
-from typing import List
+from typing import List, Tuple
 
 from tqdm import tqdm
 
@@ -36,7 +36,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def read_wikihomograph_file(file: str) -> (List[str], List[List[int]], List[str], List[str]):
+def read_wikihomograph_file(file: str) -> Tuple[List[str], List[List[int]], List[str], List[str]]:
     """
     Reads .tsv file from WikiHomograph dataset,
     e.g. https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/eval/live.tsv

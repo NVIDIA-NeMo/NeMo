@@ -14,12 +14,12 @@
 # limitations under the License.
 
 import ast
-from typing import Dict, List, Union
+from typing import Dict, List, Tuple, Union
 
 from .evaluation.metrics.metrics import ErrorMetric
 
 
-def parse_semantics_str2dict(semantics_str: Union[List[str], str, Dict]) -> Dict:
+def parse_semantics_str2dict(semantics_str: Union[List[str], str, Dict]) -> Tuple[Dict, bool]:
     """
     This function parse the input string to a valid python dictionary for later evaluation.
     Part of this function is adapted from

@@ -261,7 +261,7 @@ class GPURNNT:
 
         return self.compute_cost_and_score(acts, None, costs, pad_labels, label_lengths, input_lengths)
 
-    def _prepare_workspace(self) -> (int, Tuple[torch.Tensor]):
+    def _prepare_workspace(self) -> Tuple[int, Tuple[torch.Tensor, ...]]:
         """
         Helper method that uses the workspace and constructs slices of it that can be used.
 

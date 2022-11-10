@@ -13,7 +13,7 @@
 # limitations under the License.
 import contextlib
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from hydra.utils import instantiate

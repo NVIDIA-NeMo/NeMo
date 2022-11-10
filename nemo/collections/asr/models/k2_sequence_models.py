@@ -32,7 +32,7 @@ class EncDecK2SeqModel(EncDecCTCModel, ASRK2Mixin):
         self._init_k2()
 
     @classmethod
-    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+    def list_available_models(cls) -> Optional[List[PretrainedModelInfo]]:
         """
         This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
 
@@ -112,7 +112,7 @@ class EncDecK2SeqModelBPE(EncDecCTCModelBPE, ASRK2Mixin):
         self._init_k2()
 
     @classmethod
-    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+    def list_available_models(cls) -> Optional[List[PretrainedModelInfo]]:
         """
         This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
 

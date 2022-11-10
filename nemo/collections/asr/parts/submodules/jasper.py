@@ -971,7 +971,7 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
         layers = [activation, nn.Dropout(p=drop_prob)]
         return layers
 
-    def forward(self, input_: Tuple[List[Tensor], Optional[Tensor]]):
+    def forward(self, input_: Tuple[List[Tensor], Optional[Tensor]]) -> Tuple[List[Tensor], Optional[Tensor]]:
         """
         Forward pass of the module.
 
@@ -984,7 +984,6 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
             The output of the block after processing the input through `repeat` number of sub-blocks,
             as well as the lengths of the encoded audio after padding/striding.
         """
-        # type: (Tuple[List[Tensor], Optional[Tensor]]) -> Tuple[List[Tensor], Optional[Tensor]] # nopep8
         lens_orig = None
         xs = input_[0]
         if len(input_) == 2:

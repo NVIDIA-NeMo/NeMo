@@ -392,7 +392,7 @@ class StackTime(torch.nn.Module):
         super().__init__()
         self.factor = int(factor)
 
-    def forward(self, x: List[Tuple[torch.Tensor]]) -> (torch.Tensor, torch.Tensor):
+    def forward(self, x: List[Tuple[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
         # T, B, U
         x, x_lens = x
         seq = [x]

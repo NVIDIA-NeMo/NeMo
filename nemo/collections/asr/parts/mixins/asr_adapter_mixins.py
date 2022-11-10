@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from omegaconf import DictConfig, open_dict
 
@@ -247,7 +247,7 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
                     f'{self.joint.__class__.__name__} does not implement `AdapterModuleMixin`', mode=logging_mode.ONCE
                 )
 
-    def resolve_adapter_module_name_(self, name: str) -> (str, str):
+    def resolve_adapter_module_name_(self, name: str) -> Tuple[str, str]:
         """
         Utility method to resolve a given global/module adapter name to its components.
         Always returns a tuple representing (module_name, adapter_name). ":" is used as the

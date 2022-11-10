@@ -99,7 +99,7 @@ class AbstractRNNTDecoder(NeuralModule, ABC):
         state: Optional[torch.Tensor] = None,
         add_sos: bool = False,
         batch_size: Optional[int] = None,
-    ) -> (torch.Tensor, List[torch.Tensor]):
+    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """
         Stateful prediction of scores and state for a (possibly null) tokenset.
         This method takes various cases into consideration :
@@ -165,7 +165,7 @@ class AbstractRNNTDecoder(NeuralModule, ABC):
     @abstractmethod
     def score_hypothesis(
         self, hypothesis: Hypothesis, cache: Dict[Tuple[int], Any]
-    ) -> (torch.Tensor, List[torch.Tensor], torch.Tensor):
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         """
         Similar to the predict() method, instead this method scores a Hypothesis during beam search.
         Hypothesis is a dataclass representing one hypothesis in a Beam Search.
@@ -184,7 +184,7 @@ class AbstractRNNTDecoder(NeuralModule, ABC):
 
     def batch_score_hypothesis(
         self, hypotheses: List[Hypothesis], cache: Dict[Tuple[int], Any], batch_states: List[torch.Tensor]
-    ) -> (torch.Tensor, List[torch.Tensor], torch.Tensor):
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         """
         Used for batched beam search algorithms. Similar to score_hypothesis method.
 

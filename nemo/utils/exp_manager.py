@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from shutil import copy, move
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytorch_lightning
 import torch
@@ -199,7 +199,7 @@ class TimingCallback(Callback):
         self._on_batch_end("train_backward_timing", pl_module)
 
 
-def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None) -> Path:
+def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None) -> Optional[Path]:
     """
     exp_manager is a helper function used to manage folders for experiments. It follows the pytorch lightning paradigm
     of exp_dir/model_or_experiment_name/version. If the lightning trainer has a logger, exp_manager will get exp_dir,
@@ -553,8 +553,8 @@ def check_resume(
 
 
 def check_explicit_log_dir(
-    trainer: 'pytorch_lightning.Trainer', explicit_log_dir: [Path, str], exp_dir: str, name: str, version: str
-) -> (Path, str, str, str):
+    trainer: 'pytorch_lightning.Trainer', explicit_log_dir: Union[Path, str], exp_dir: str, name: str, version: str
+) -> Tuple[Path, str, str, str]:
     """ Checks that the passed arguments are compatible with explicit_log_dir.
 
     Returns:
@@ -591,7 +591,7 @@ def get_log_dir(
     explicit_log_dir: str = None,
     use_datetime_version: bool = True,
     resume_if_exists: bool = False,
-) -> (Path, str, str, str):
+) -> Tuple[Path, str, str, str]:
     """
     Obtains the log_dir used for exp_manager.
 

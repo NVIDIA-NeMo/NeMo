@@ -31,6 +31,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechMSDDInferDataset, AudioToSpeechMSDDTrainDataset
+from nemo.collections.asr.metrics.der import score_labels
 from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
 from nemo.collections.asr.models import ClusteringDiarizer
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
@@ -50,7 +51,6 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     get_uniq_id_list_from_manifest,
     make_rttm_with_overlap,
     parse_scale_configs,
-    score_labels,
 )
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -858,7 +858,7 @@ class ClusterEmbedding:
 
         # If RTTM (ground-truth diarization annotation) files do not exist, scores is None.
         if scores is not None:
-            metric, speaker_mapping_dict = scores
+            metric, speaker_mapping_dict, _ = scores
         else:
             metric, speaker_mapping_dict = None, None
 
@@ -1100,9 +1100,9 @@ class NeuralDiarizer:
                     Examples: (0, 1, 2)
                 data[1]: Tensor containing estimaged sigmoid values.
                    [[0.0264, 0.9995],
-		            [0.0112, 1.0000],
-		            ...,
-		            [1.0000, 0.0512]]
+                    [0.0112, 1.0000],
+                    ...,
+                    [1.0000, 0.0512]]
 
         Returns:
             sum_pred (Tensor):

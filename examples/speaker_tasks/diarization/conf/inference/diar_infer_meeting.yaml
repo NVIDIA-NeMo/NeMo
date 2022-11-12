@@ -68,7 +68,6 @@ diarizer:
       asr_based_vad: False # if True, speech segmentation for diarization is based on word-timestamps from ASR inference.
       asr_based_vad_threshold: 1.0 # Threshold (in sec) that caps the gap between two words when generating VAD timestamps using ASR based VAD.
       asr_batch_size: null # Batch size can be dependent on each ASR model. Default batch sizes are applied if set to null.
-      lenient_overlap_WDER: True # If true, when a word falls into  speaker-overlappedregions, consider the word as a correctly diarized word.
       decoder_delay_in_sec: null # Native decoder delay. null is recommended to use the default values for each ASR model.
       word_ts_anchor_offset: null # Offset to set a reference point from the start of the word. Recommended range of values is [-0.05  0.2]. 
       word_ts_anchor_pos: "start" # Select which part of the word timestamp we want to use. The options are: 'start', 'end', 'mid'.

@@ -15,8 +15,8 @@
 
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.parts.utils.decoder_timestamps_utils import ASR_TIMESTAMPS
-from nemo.collections.asr.parts.utils.diarization_utils import ASR_DIAR_OFFLINE
+from nemo.collections.asr.parts.utils.decoder_timestamps_utils import ASRDecoderTimeStamps
+from nemo.collections.asr.parts.utils.diarization_utils import OfflineDiarWithASR
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -49,24 +49,24 @@ def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
     # ASR inference for words and word timestamps
-    asr_ts_decoder = ASR_TIMESTAMPS(**cfg.diarizer)
-    asr_model = asr_ts_decoder.set_asr_model()
-    word_hyp, word_ts_hyp = asr_ts_decoder.run_ASR(asr_model)
+    asr_decoder_ts = ASRDecoderTimeStamps(cfg.diarizer)
+    asr_model = asr_decoder_ts.set_asr_model()
+    word_hyp, word_ts_hyp = asr_decoder_ts.run_ASR(asr_model)
 
     # Create a class instance for matching ASR and diarization results
-    asr_diar_offline = ASR_DIAR_OFFLINE(**cfg.diarizer)
-    asr_diar_offline.word_ts_anchor_offset = asr_ts_decoder.word_ts_anchor_offset
+    asr_diar_offline = OfflineDiarWithASR(cfg.diarizer)
+    asr_diar_offline.word_ts_anchor_offset = asr_decoder_ts.word_ts_anchor_offset
 
     # Diarization inference for speaker labels
     diar_hyp, diar_score = asr_diar_offline.run_diarization(cfg, word_ts_hyp)
-    total_riva_dict = asr_diar_offline.get_transcript_with_speaker_labels(diar_hyp, word_hyp, word_ts_hyp)
+    trans_info_dict = asr_diar_offline.get_transcript_with_speaker_labels(diar_hyp, word_hyp, word_ts_hyp)
 
+    # If RTTM is provided and DER evaluation
     if diar_score is not None:
-
-        metric, mapping_dict = diar_score
-        DER_result_dict = asr_diar_offline.gather_eval_results(metric, mapping_dict, total_riva_dict)
-        WDER_dict = asr_diar_offline.get_WDER(total_riva_dict, DER_result_dict)
-        asr_diar_offline.print_errors(DER_result_dict, WDER_dict)
+        metric, mapping_dict, _ = diar_score
+        der_results = asr_diar_offline.gather_eval_results(metric, mapping_dict, trans_info_dict)
+        wer_results = asr_diar_offline.evaluate(trans_info_dict)
+        asr_diar_offline.print_errors(der_results, wer_results)
 
 
 if __name__ == '__main__':

@@ -89,7 +89,8 @@ class MegatronBertModel(MegatronBaseModel):
         self.model = build_model(model_provider_func=self.model_provider_func, wrap_with_ddp=False,)[0]
 
         if self.megatron_amp_o2:
-            self.model.cuda(torch.cuda.current_device())
+            if not self.with_distributed_adam:
+                self.model.cuda(torch.cuda.current_device())
             self.model = Float16Module(module=self.model, precision=cfg.precision)
 
     def model_provider_func(self, pre_process, post_process):
@@ -210,11 +211,23 @@ class MegatronBertModel(MegatronBaseModel):
         batch_for_pipeline = self.process_batch(batch)
         tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
 
-        if self.megatron_amp_o2:
-            custom_sync_context_handler = self._optimizer.no_sync
+        # handle asynchronous grad reduction
+        custom_sync_context_handler = None
+        custom_grad_sync_func = None
+        if self.with_distributed_adam:
+            if self.megatron_amp_o2:
+                # copy grads to main grad
+                custom_sync_context_handler = lambda: self._optimizer.no_sync(greedy_grad_copy=True)
+            else:
+                # keep grad tensors around
+                custom_sync_context_handler = lambda: self._optimizer.no_sync(greedy_grad_copy=False)
+            custom_grad_sync_func = self.reduce_overlap_gradients
         else:
-            # TODO: enable async grad all reduce for O1/autocast mixed precision training
-            custom_sync_context_handler = None
+            if self.megatron_amp_o2:
+                custom_sync_context_handler = self._optimizer.no_sync
+            else:
+                # TODO: enable async grad all reduce for O1/autocast mixed precision training
+                custom_sync_context_handler = None
 
         # run forward and backwards passes for an entire global batch
         # we do this inside training_step to support pipeline parallelism
@@ -229,6 +242,7 @@ class MegatronBertModel(MegatronBaseModel):
             dtype=self.autocast_dtype,
             grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
             custom_sync_context_handler=custom_sync_context_handler,
+            custom_grad_sync_func=custom_grad_sync_func,
         )
 
         if losses_reduced_per_micro_batch:
@@ -238,7 +252,10 @@ class MegatronBertModel(MegatronBaseModel):
         else:
             loss_mean = torch.tensor([0.0, 0.0]).cuda()
 
-        if self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+        if self.with_distributed_adam:
+            # gradients are reduced internally in distributed optimizer
+            pass
+        elif self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) > 1:
             # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
             self._optimizer.allreduce_main_grads()
         else:
@@ -587,6 +604,25 @@ class MegatronBertModel(MegatronBaseModel):
     def setup_optimizer_param_groups(self):
         """ModelPT override. Optimizer will get self._optimizer_param_groups"""
         self._optimizer_param_groups = get_params_for_weight_decay_optimization(self.model)
+
+    def configure_optimizers(self):
+
+        if self.with_distributed_adam:
+
+            # Disable overlapped grad sync for embedding grad when
+            # pipeline parallelism is enabled
+            # See: allreduce_first_last_embeddings
+            if parallel_state.get_pipeline_model_parallel_world_size() > 1 and (
+                parallel_state.is_pipeline_first_stage(ignore_virtual=True)
+                or parallel_state.is_pipeline_last_stage(ignore_virtual=True)
+            ):
+                module = self.model
+                if module.share_token_embeddings:
+                    word_embeddings_weight = module.word_embeddings_weight()
+                    word_embeddings_weight._disable_greedy_grad_copy = not self.megatron_amp_o2
+                    word_embeddings_weight._disable_overlap_grad_sync = True
+
+        return super().configure_optimizers()
 
     # Required for ONNX export
     @property

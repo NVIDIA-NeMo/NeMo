@@ -36,6 +36,7 @@ def main(cfg) -> None:
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
     megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
+    with_distributed_adam = cfg.model.optim.get('name') == 'distributed_fused_adam'
 
     plugins = []
     strategy = NLPDDPStrategy(
@@ -51,7 +52,7 @@ def main(cfg) -> None:
                 init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
                 growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
             )
-        if megatron_amp_o2:
+        if megatron_amp_o2 and not with_distributed_adam:
             plugins.append(MegatronHalfPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
         else:
             plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))

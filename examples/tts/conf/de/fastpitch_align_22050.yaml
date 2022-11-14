@@ -13,10 +13,10 @@ sup_data_types: [ "align_prior_matrix", "pitch" ]
 pitch_fmin: 65.40639132514966
 pitch_fmax: 2093.004522404789
 
-# Stats (per frame), train (these values depend on pitch_fmin and pitch_fmax)
-# For example, on Thorsten Muller (German Neutral-TTS dataset): http://www.openslr.org/95/
-pitch_mean: 132.524658203125
-pitch_std: 37.389366149902344
+# these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
+# by running `scripts/dataset_processing/tts/extract_sup_data.py`
+pitch_mean: ???  # e.g. 132.524658203125 for http://www.openslr.org/95/
+pitch_std: ???   # e.g.  37.389366149902 for http://www.openslr.org/95/
 
 # Default values for dataset with sample_rate=22050
 sample_rate: 22050

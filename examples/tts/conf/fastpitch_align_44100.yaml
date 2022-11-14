@@ -2,7 +2,6 @@
 # rate. If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
-
 name: FastPitch
 
 train_dataset: ???
@@ -14,9 +13,10 @@ sup_data_types: [ "align_prior_matrix", "pitch" ]
 pitch_fmin: 65.40639132514966
 pitch_fmax: 2093.004522404789
 
-# Stats (per frame), train (these values depend on pitch_fmin and pitch_fmax)
-pitch_mean: 212.35873413085938
-pitch_std: 68.52806091308594
+# these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
+# by running `scripts/dataset_processing/tts/extract_sup_data.py`
+pitch_mean: ???  # e.g. 212.35873413085938 for LJSpeech
+pitch_std:  ???  # e.g.  68.52806091308594 for LJSpeech
 
 sample_rate: 44100
 n_mel_channels: 80

@@ -2,7 +2,6 @@
 # rate. If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
-
 name: FastPitch
 
 train_dataset: ???
@@ -14,10 +13,10 @@ sup_data_types: [ "align_prior_matrix", "pitch", "speaker_id" ]
 pitch_fmin: 65.40639132514966
 pitch_fmax: 2093.004522404789
 
-# Stats (per frame), train (these values depend on pitch_fmin and pitch_fmax)
-# For example, on HUI-Audio-Corpus-German (speaker: Friedrich): https://github.com/iisys-hof/HUI-Audio-Corpus-German
-pitch_mean: 119.04859924316406
-pitch_std: 95.5344009399414
+# these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
+# by running `scripts/dataset_processing/tts/extract_sup_data.py`
+pitch_mean: ???  # e.g. 151.9578857421875 for top-5 speakers in https://github.com/iisys-hof/HUI-Audio-Corpus-German
+pitch_std: ???   # e.g.  87.1997680664063 for top-5 speakers in https://github.com/iisys-hof/HUI-Audio-Corpus-German
 
 # Default values for dataset with sample_rate=44100
 sample_rate: 44100

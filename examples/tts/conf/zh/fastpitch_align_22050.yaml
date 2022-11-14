@@ -13,10 +13,10 @@ sup_data_types: [ "align_prior_matrix", "pitch" ]
 pitch_fmin: 65.40639132514966
 pitch_fmax: 1986.977294921875
 
-# Stats (per frame), train (these values depend on pitch_fmin and pitch_fmax)
-# For example, on SFbilingual dataset (Chinese and English Neutral-TTS dataset)
-pitch_mean: 221.4948272705078
-pitch_std: 64.65289306640625
+# these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
+# by running `scripts/dataset_processing/tts/extract_sup_data.py`
+pitch_mean: ???  # e.g. 221.4948272705078 for SFbilingual dataset.
+pitch_std:  ???  # e.g.  64.6528930664063 for SFbilingual dataset.
 
 # Default values for dataset with sample_rate=22050
 sample_rate: 22050

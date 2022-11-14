@@ -13,8 +13,6 @@ phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 
-
-
 model:
   pitch_fmin: 65.40639132514966
   pitch_fmax: 2093.004522404789
@@ -28,7 +26,6 @@ model:
   highfreq: 8000
   window: hann
   pad_value: -11.52
-
 
   text_normalizer:
     _target_: nemo_text_processing.text_normalization.normalize.Normalizer
@@ -176,7 +173,6 @@ model:
       name: CosineAnnealing
       min_lr: 1e-5
 
-
 trainer:
   devices: 1 # number of gpus
   max_epochs: ???
@@ -190,7 +186,6 @@ trainer:
   log_every_n_steps: 60
   check_val_every_n_epoch: 2
   benchmark: false
-
 
 exp_manager:
   exp_dir: null

@@ -4164,6 +4164,8 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
             trainer.devices="[0]" \
             +trainer.limit_train_batches=1 +trainer.limit_val_batches=1 trainer.max_epochs=1 \
             trainer.strategy=null \
+            model.pitch_mean=212.35873413085938 \
+            model.pitch_std=68.52806091308594 \
             model.train_ds.dataloader_params.batch_size=4 \
             model.train_ds.dataloader_params.num_workers=0 \
             model.validation_ds.dataloader_params.batch_size=4 \
@@ -4187,6 +4189,8 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
             trainer.devices="[0]" \
             +trainer.limit_train_batches=1 +trainer.limit_val_batches=1 trainer.max_epochs=1 \
             trainer.strategy=null \
+            model.pitch_mean=212.35873413085938 \
+            model.pitch_std=68.52806091308594 \
             model.train_ds.dataloader_params.batch_size=4 \
             model.train_ds.dataloader_params.num_workers=0 \
             model.validation_ds.dataloader_params.batch_size=4 \

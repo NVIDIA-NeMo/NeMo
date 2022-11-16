@@ -24,7 +24,7 @@ from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_init
 from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
 from nemo.utils.app_state import AppState
 from nemo.utils.model_utils import inject_model_parallel_rank
@@ -160,8 +160,15 @@ def main(cfg) -> None:
     ), "devices * num_nodes should equal tensor_model_parallel_size * pipeline_model_parallel_size"
 
     if cfg.gpt_model_file:
+        save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(cfg.gpt_model_file):
+            save_restore_connector.model_extracted_dir = cfg.gpt_model_file
+
         pretrained_cfg = MegatronGPTModel.restore_from(
-            restore_path=cfg.gpt_model_file, trainer=trainer, return_config=True
+            restore_path=cfg.gpt_model_file,
+            trainer=trainer,
+            return_config=True,
+            save_restore_connector=save_restore_connector,
         )
         OmegaConf.set_struct(pretrained_cfg, True)
         with open_dict(pretrained_cfg):
@@ -169,7 +176,10 @@ def main(cfg) -> None:
             pretrained_cfg.activations_checkpoint_granularity = None
             pretrained_cfg.activations_checkpoint_method = None
         model = MegatronGPTModel.restore_from(
-            restore_path=cfg.gpt_model_file, trainer=trainer, override_config_path=pretrained_cfg
+            restore_path=cfg.gpt_model_file,
+            trainer=trainer,
+            override_config_path=pretrained_cfg,
+            save_restore_connector=save_restore_connector,
         )
     elif cfg.checkpoint_dir:
         app_state = AppState()

@@ -234,6 +234,10 @@ def create_masked_lm_predictions(
         return (output_tokens, masked_lm_positions, masked_lm_labels, token_boundary)
 
     num_to_predict = min(max_predictions_per_seq, max(1, int(round(len(tokens) * masked_lm_prob))))
+    if num_to_predict < 1:
+        logging.warning(
+            F'Number of tokens is : {len(tokens)} and mask_probability is {masked_lm_prob}. None of the tokens will be masked'
+        )
 
     ngrams = np.arange(1, max_ngram_size + 1, dtype=np.int64)
     if not geometric_dist:

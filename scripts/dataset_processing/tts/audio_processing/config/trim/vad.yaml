@@ -1,0 +1,10 @@
+_target_: nemo.collections.tts.data.audio_trimming.VadAudioTrimmer
+
+model_name: "vad_multilingual_marblenet"
+vad_sample_rate: 16000
+vad_threshold: 0.5
+device: "cpu"
+speech_frame_threshold: 3
+trim_win_length: 4096
+trim_hop_length: 1024
+pad_seconds: 0.2

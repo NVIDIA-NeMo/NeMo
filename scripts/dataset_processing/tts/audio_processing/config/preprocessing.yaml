@@ -1,0 +1,19 @@
+name: "preprocessing"
+
+data_base_dir: ???
+
+defaults:
+  - trim: energy
+
+config:
+  _target_: scripts.dataset_processing.tts.audio_processing.preprocess_audio.AudioPreprocessingConfig
+  input_manifest: ${data_base_dir}/manifest.json
+  output_manifest: ${data_base_dir}/manifest_processed.json
+  output_dir: ${data_base_dir}/audio_processed
+  num_workers: -1
+  max_entries: 0
+  output_sample_rate: 0
+  volume_level: 0.95
+  min_duration: 0.5
+  max_duration: 10.0
+  filter_file: ${data_base_dir}/filtered_utts.json

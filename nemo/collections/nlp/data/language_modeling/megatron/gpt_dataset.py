@@ -307,6 +307,10 @@ class GPTDataset(Dataset):
         self.reset_attention_mask = cfg.data.get('reset_attention_mask', False)
         self.eod_mask_loss = cfg.data.get('eod_mask_loss', False)
         self.eos_id = tokenizer.eos_id
+        self.no_seqlen_plus_one_input_tokens = cfg.data.get('no_seqlen_plus_one_input_tokens', False)
+        self.add_extra_token = 1
+        if self.no_seqlen_plus_one_input_tokens:
+            self.add_extra_token = 0
 
         # save index mappings to a configurable dir
         self.index_mapping_dir = cfg.data.get('index_mapping_dir', None)
@@ -329,6 +333,7 @@ class GPTDataset(Dataset):
             seed,
             index_mapping_dir=self.index_mapping_dir,
             drop_last=drop_last,
+            add_extra_token=self.add_extra_token,
         )
         deallocate_indexed_dataset_memory(self.indexed_dataset)
 
@@ -349,7 +354,7 @@ class GPTDataset(Dataset):
         # If we are within the same document, just extract the chunk.
         if doc_index_f == doc_index_l:
             sample = self.indexed_dataset.get(
-                self.doc_idx[doc_index_f], offset=offset_f, length=offset_l - offset_f + 1
+                self.doc_idx[doc_index_f], offset=offset_f, length=offset_l - offset_f + self.add_extra_token
             )
         else:
             # Otherwise, get the rest of the initial document.
@@ -358,20 +363,29 @@ class GPTDataset(Dataset):
             for i in range(doc_index_f + 1, doc_index_l):
                 sample_list.append(self.indexed_dataset.get(self.doc_idx[i]))
             # And finally add the relevant portion of last document.
-            sample_list.append(self.indexed_dataset.get(self.doc_idx[doc_index_l], length=offset_l + 1))
+            sample_list.append(
+                self.indexed_dataset.get(self.doc_idx[doc_index_l], length=offset_l + self.add_extra_token)
+            )
             sample = np.concatenate(sample_list)
-        if len(sample) != (self.seq_length + 1):
+        if len(sample) != (self.seq_length + self.add_extra_token):
             logging.info(
-                F' > WARNING: Got sample of length: {len(sample)} for sequence length={self.seq_length+1}, padding the sample to match sequence length'
+                F' > WARNING: Got sample of length: {len(sample)} for sequence length={self.seq_length+self.add_extra_token}, padding the sample to match sequence length'
             )
             sample = np.array(sample, dtype=np.int64)
-            sample = np.pad(sample, (0, self.seq_length + 1 - len(sample)), mode='constant', constant_values=-1)
+            sample = np.pad(
+                sample, (0, self.seq_length + self.add_extra_token - len(sample)), mode='constant', constant_values=-1
+            )
         return sample.astype(np.int64)
 
     def __getitem__(self, idx):
         text = torch.from_numpy(self._get_text(idx))
-        tokens = text[:-1].contiguous()
-        labels = text[1:].contiguous()
+        if self.add_extra_token:
+            tokens = text[:-1].contiguous()
+            labels = text[1:].contiguous()
+        else:
+            tokens = text
+            labels = torch.roll(text, shifts=-1, dims=0)
+            labels[-1] = -1
         attention_mask, loss_mask, position_ids = _create_ltor_masks_and_position_ids(
             tokens, self.eos_id, self.reset_position_ids, self.reset_attention_mask, self.eod_mask_loss,
         )
@@ -453,6 +467,7 @@ def _build_index_mappings(
     seed,
     index_mapping_dir: str = None,
     drop_last: bool = True,
+    add_extra_token: int = 1,
 ):
     """Build doc-idx, sample-idx, and shuffle-idx.
     doc-idx: is an array (ordered) of documents to be used in training.
@@ -462,7 +477,7 @@ def _build_index_mappings(
     """
     # Number of tokens in each epoch and number of required epochs.
     tokens_per_epoch = _num_tokens(documents, sizes)
-    num_epochs = _num_epochs(tokens_per_epoch, seq_length, num_samples)
+    num_epochs = _num_epochs(tokens_per_epoch, seq_length, num_samples, add_extra_token)
     # rng state
     np_rng = np.random.RandomState(seed=seed)
 
@@ -500,10 +515,12 @@ def _build_index_mappings(
 
             else:
                 # Get the number of samples for the last epoch
-                num_samples_from_epochs_minus_one = ((num_epochs - 1) * tokens_per_epoch - 1) // seq_length
+                num_samples_from_epochs_minus_one = (
+                    (num_epochs - 1) * tokens_per_epoch - add_extra_token
+                ) // seq_length
                 last_epoch_num_samples = num_samples - num_samples_from_epochs_minus_one
                 assert last_epoch_num_samples >= 0, 'last epoch number of samples should be non-negative.'
-                num_samples_per_epoch = (tokens_per_epoch - 1) // seq_length
+                num_samples_per_epoch = (tokens_per_epoch - add_extra_token) // seq_length
                 assert last_epoch_num_samples < (
                     num_samples_per_epoch + 1
                 ), 'last epoch number of samples exceeded max value.'
@@ -550,9 +567,11 @@ def _build_index_mappings(
                     f'Could not compile megatron dataset C++ helper functions and therefore cannot import helpers python file.'
                 )
 
-            sample_idx = helpers.build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, drop_last)
+            sample_idx = helpers.build_sample_idx(
+                sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, drop_last, add_extra_token
+            )
             # sample_idx = _build_sample_idx(sizes, doc_idx, seq_length,
-            #                              num_epochs, tokens_per_epoch, drop_last)
+            #                              num_epochs, tokens_per_epoch, drop_last, add_extra_token)
             np.save(sample_idx_filename, sample_idx, allow_pickle=True)
             logging.info(
                 ' > elasped time to build and save sample-idx mapping '
@@ -602,7 +621,7 @@ def _num_tokens(documents, sizes):
     return np.sum(sizes[documents])
 
 
-def _num_epochs(tokens_per_epoch, seq_length, num_samples):
+def _num_epochs(tokens_per_epoch, seq_length, num_samples, add_extra_token=1):
     """Based on number of samples and sequence lenght, calculate how many
     epochs will be needed."""
     num_epochs = 0
@@ -613,7 +632,7 @@ def _num_epochs(tokens_per_epoch, seq_length, num_samples):
         # -1 is because we need to retrieve seq_length + 1 token each time
         # but the last token will overlap with the first token of the next
         # sample except for the last sample.
-        if ((total_tokens - 1) // seq_length) >= num_samples:
+        if ((total_tokens - add_extra_token) // seq_length) >= num_samples:
             return num_epochs
 
 
@@ -633,7 +652,7 @@ def _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch):
     return np.concatenate((doc_idx_first, doc_idx_last))
 
 
-def _build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, drop_last=True):
+def _build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, drop_last=True, add_extra_token=1):
     """Sample index mapping is a 2D array with sizes
     [number-of-samples + 1, 2] where [..., 0] contains
     the index into `doc_idx` and [..., 1] is the
@@ -641,9 +660,9 @@ def _build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, 
 
     # Total number of samples. For -1 see comments in `_num_epochs`.
     if not drop_last:
-        num_samples = -(-(num_epochs * tokens_per_epoch - 1) // seq_length)
+        num_samples = -(-(num_epochs * tokens_per_epoch - add_extra_token) // seq_length)
     else:
-        num_samples = (num_epochs * tokens_per_epoch - 1) // seq_length
+        num_samples = (num_epochs * tokens_per_epoch - add_extra_token) // seq_length
     sample_idx = np.zeros([num_samples + 1, 2], dtype=np.int32)
 
     # Index into sample_idx.
@@ -658,7 +677,7 @@ def _build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, 
     sample_index += 1
     while sample_index <= num_samples:
         # Start with a fresh sequence.
-        remaining_seq_length = seq_length + 1
+        remaining_seq_length = seq_length + add_extra_token
         while remaining_seq_length != 0:
             # Get the document length.
             doc_id = doc_idx[doc_idx_index]
@@ -670,7 +689,7 @@ def _build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, 
             # Note that -1 here is for the same reason we have -1 in
             # `_num_epochs` calculations.
             if remaining_seq_length <= 0:
-                doc_offset += remaining_seq_length + doc_length - 1
+                doc_offset += remaining_seq_length + doc_length - add_extra_token
                 remaining_seq_length = 0
             else:
                 # Otherwise, start from the begining of the next document.
@@ -678,7 +697,7 @@ def _build_sample_idx(sizes, doc_idx, seq_length, num_epochs, tokens_per_epoch, 
                     assert (
                         sample_index == num_samples
                     ), F"sample_index={sample_index} and num_samples={num_samples} should be the same"
-                    doc_offset = sizes[doc_idx[doc_idx_index]] - 1
+                    doc_offset = sizes[doc_idx[doc_idx_index]] - add_extra_token
                     break
                 doc_idx_index += 1
                 doc_offset = 0

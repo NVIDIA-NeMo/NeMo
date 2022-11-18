@@ -203,6 +203,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 dtype=self.autocast_dtype,
                 grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
                 sequence_parallel_enabled=False,
+                sync_batch_comm=self.frozen_model.cfg.get('sync_batch_comm', False),
             )
         else:
             losses_reduced_per_micro_batch = forward_backward_no_pipelining(
@@ -214,6 +215,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 decoder_sequence_length=dec_seq_length,
                 dtype=self.autocast_dtype,
                 grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
+                sync_batch_comm=self.frozen_model.cfg.get('sync_batch_comm', False),
             )
 
         # only the last stages of the pipeline return losses

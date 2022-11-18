@@ -61,6 +61,7 @@ class TextGenerationStrategy:
                 forward_only=True,
                 tensor_shape=tensor_shape,
                 dtype=self.model.autocast_dtype,
+                sync_batch_comm=self.model.cfg.get('sync_batch_comm', False),
             )
         else:
             output_tensor = forward_backward_no_pipelining(
@@ -70,6 +71,7 @@ class TextGenerationStrategy:
                 forward_only=True,
                 tensor_shape=tensor_shape,
                 dtype=self.model.autocast_dtype,
+                sync_batch_comm=self.model.cfg.get('sync_batch_comm', False),
             )
         return output_tensor
 

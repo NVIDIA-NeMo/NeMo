@@ -178,6 +178,8 @@ class MTDataPreproc:
                 decoder_tokenizer_model=getattr(self, "decoder_tokenizer_model", None),
                 decoder_bpe_dropout=cfg.decoder_tokenizer.get('bpe_dropout', 0.0),
                 decoder_r2l=cfg.decoder_tokenizer.get('r2l', False),
+                encoder_tokenizer_legacy=cfg.encoder_tokenizer.get('sentencepiece_legacy', False),
+                decoder_tokenizer_legacy=cfg.decoder_tokenizer.get('sentencepiece_legacy', False),
             )
 
             # If using tarred dataset for training, automatically create it if needed
@@ -228,11 +230,13 @@ class MTDataPreproc:
                             encoder_tokenizer_model=getattr(self, "encoder_tokenizer_model", None),
                             encoder_bpe_dropout=cfg.encoder_tokenizer.get('bpe_dropout', 0.0),
                             encoder_tokenizer_r2l=cfg.encoder_tokenizer.get('r2l', False),
+                            encoder_tokenizer_legacy=cfg.encoder_tokenizer.get('sentencepiece_legacy', False),
                             decoder_tokenizer_name=cfg.decoder_tokenizer.get('library'),
                             decoder_model_name=cfg.decoder.get('model_name'),
                             decoder_tokenizer_model=getattr(self, "decoder_tokenizer_model", None),
                             decoder_bpe_dropout=cfg.decoder_tokenizer.get('bpe_dropout', 0.0),
                             decoder_tokenizer_r2l=cfg.decoder_tokenizer.get('r2l', False),
+                            decoder_tokenizer_legacy=cfg.decoder_tokenizer.get('sentencepiece_legacy', False),
                             max_seq_length=cfg.train_ds.get('max_seq_length', 512),
                             tokens_in_batch=cfg.train_ds.get('tokens_in_batch', 8192),
                             lines_per_dataset_fragment=cfg.train_ds.get('lines_per_dataset_fragment', 1000000),

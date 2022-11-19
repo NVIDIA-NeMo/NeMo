@@ -13,11 +13,8 @@
 # limitations under the License.
 
 import contextlib
-import glob
-import json
 import os
 from dataclasses import dataclass, is_dataclass
-from pathlib import Path
 from typing import Optional
 
 import pytorch_lightning as pl
@@ -26,12 +23,17 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
 from nemo.collections.asr.metrics.wer import CTCDecodingConfig
-from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
-from nemo.collections.asr.parts.utils.transcribe_utils import transcribe_partial_audio
+from nemo.collections.asr.parts.utils.transcribe_utils import (
+    compute_output_filename,
+    prepare_audio_data,
+    setup_model,
+    transcribe_partial_audio,
+    write_transcription,
+)
 from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.core.config import hydra_runner
-from nemo.utils import logging, model_utils
+from nemo.utils import logging
 
 
 """
@@ -66,15 +68,15 @@ Results are returned in a JSON manifest file.
 python transcribe_speech.py \
     model_path=null \
     pretrained_name=null \
-    audio_dir="" \
-    dataset_manifest="" \
-    output_filename="" \
+    audio_dir="<remove or path to folder of audio files>" \
+    dataset_manifest="<remove or path to manifest>" \
+    output_filename="<remove or specify output filename>" \
     batch_size=32 \
     compute_langs=False \
     cuda=0 \
     amp=True \
     append_pred=False \
-    pred_name_postfix=""
+    pred_name_postfix="<remove or use another model name for output filename>"
 """
 
 
@@ -136,31 +138,14 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     else:
         device = [cfg.cuda]
         accelerator = 'gpu'
-
     map_location = torch.device('cuda:{}'.format(device[0]) if accelerator == 'gpu' else 'cpu')
+    logging.info(f"Inference will be done on device : {device}")
 
-    # setup model
-    if cfg.model_path is not None:
-        # restore model from .nemo file path
-        model_cfg = ASRModel.restore_from(restore_path=cfg.model_path, return_config=True)
-        classpath = model_cfg.target  # original class path
-        imported_class = model_utils.import_class_by_path(classpath)  # type: ASRModel
-        logging.info(f"Restoring model : {imported_class.__name__}")
-        asr_model = imported_class.restore_from(
-            restore_path=cfg.model_path, map_location=map_location
-        )  # type: ASRModel
-        model_name = os.path.splitext(os.path.basename(cfg.model_path))[0]
-    else:
-        # restore model by name
-        asr_model = ASRModel.from_pretrained(
-            model_name=cfg.pretrained_name, map_location=map_location
-        )  # type: ASRModel
-        model_name = cfg.pretrained_name
+    asr_model, model_name = setup_model(cfg, map_location)
 
     trainer = pl.Trainer(devices=device, accelerator=accelerator)
     asr_model.set_trainer(trainer)
     asr_model = asr_model.eval()
-    partial_audio = False
 
     # collect additional transcription information
     return_hypotheses = True
@@ -178,31 +163,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         else:
             asr_model.change_decoding_strategy(cfg.ctc_decoding)
 
-    if cfg.audio_dir is not None and not cfg.append_pred:
-        filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True))
-    else:
-        # get filenames from manifest
-        filepaths = []
-        if os.stat(cfg.dataset_manifest).st_size == 0:
-            logging.error(f"The input dataset_manifest {cfg.dataset_manifest} is empty. Exiting!")
-            return None
-
-        manifest_dir = Path(cfg.dataset_manifest).parent
-        with open(cfg.dataset_manifest, 'r') as f:
-            has_two_fields = []
-            for line in f:
-                item = json.loads(line)
-                if "offset" in item and "duration" in item:
-                    has_two_fields.append(True)
-                else:
-                    has_two_fields.append(False)
-                audio_file = Path(item['audio_filepath'])
-                if not audio_file.is_file() and not audio_file.is_absolute():
-                    audio_file = manifest_dir / audio_file
-                filepaths.append(str(audio_file.absolute()))
-        partial_audio = all(has_two_fields)
-
-    logging.info(f"\nTranscribing {len(filepaths)} files...\n")
+    # prepare audio filepaths and decide wether it's partical audio
+    filepaths, partial_audio = prepare_audio_data(cfg)
 
     # setup AMP (optional)
     if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
@@ -215,14 +177,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             yield
 
     # Compute output filename
-    if cfg.output_filename is None:
-        # create default output filename
-        if cfg.audio_dir is not None:
-            cfg.output_filename = os.path.dirname(os.path.join(cfg.audio_dir, '.')) + '.json'
-        elif cfg.pred_name_postfix is not None:
-            cfg.output_filename = cfg.dataset_manifest.replace('.json', f'_{cfg.pred_name_postfix}.json')
-        else:
-            cfg.output_filename = cfg.dataset_manifest.replace('.json', f'_{model_name}.json')
+    cfg = compute_output_filename(cfg, model_name)
 
     # if transcripts should not be overwritten, and already exists, skip re-transcription step and return
     if not cfg.overwrite_transcripts and os.path.exists(cfg.output_filename):
@@ -230,11 +185,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             f"Previous transcripts found at {cfg.output_filename}, and flag `overwrite_transcripts`"
             f"is {cfg.overwrite_transcripts}. Returning without re-transcribing text."
         )
-
         return cfg
 
     # transcribe audio
-
     with autocast():
         with torch.no_grad():
             if partial_audio:
@@ -265,7 +218,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 )
 
     logging.info(f"Finished transcribing {len(filepaths)} files !")
-
     logging.info(f"Writing transcriptions into file: {cfg.output_filename}")
 
     # if transcriptions form a tuple (from RNNT), extract just "best" hypothesis
@@ -273,36 +225,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         transcriptions = transcriptions[0]
 
     # write audio transcriptions
+    output_filename = write_transcription(transcriptions, cfg, model_name, filepaths, compute_langs)
+    logging.info(f"Finished writing predictions to {output_filename}!")
 
-    if cfg.append_pred:
-        logging.info(f'Transcripts will be written in "{cfg.output_filename}" file')
-        if cfg.pred_name_postfix is not None:
-            pred_by_model_name = cfg.pred_name_postfix
-        else:
-            pred_by_model_name = model_name
-        pred_text_attr_name = 'pred_text_' + pred_by_model_name
-    else:
-        pred_text_attr_name = 'pred_text'
-    with open(cfg.output_filename, 'w', encoding='utf-8') as f:
-        if cfg.audio_dir is not None:
-            for idx, transcription in enumerate(transcriptions):
-                item = {'audio_filepath': filepaths[idx], pred_text_attr_name: transcription.text}
-                if compute_langs:
-                    item['pred_lang'] = transcription.langs
-                    item['pred_lang_chars'] = transcription.langs_chars
-                f.write(json.dumps(item) + "\n")
-        else:
-            with open(cfg.dataset_manifest, 'r') as fr:
-                for idx, line in enumerate(fr):
-                    item = json.loads(line)
-                    item[pred_text_attr_name] = transcriptions[idx].text
-
-                    if compute_langs:
-                        item['pred_lang'] = transcriptions[idx].langs
-                        item['pred_lang_chars'] = transcriptions[idx].langs_chars
-                    f.write(json.dumps(item) + "\n")
-
-    logging.info("Finished writing predictions !")
     return cfg
 
 

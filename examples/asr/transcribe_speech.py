@@ -87,6 +87,8 @@ class TranscriptionConfig:
     pretrained_name: Optional[str] = None  # Name of a pretrained model
     audio_dir: Optional[str] = None  # Path to a directory which contains audio files
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
+    channel_selector: Optional[int] = None  # Used to select a single channel from multi-channel files
+    audio_key: str = 'audio_filepath'  # Used to override the default audio key in dataset_manifest
 
     # General configs
     output_filename: Optional[str] = None
@@ -198,6 +200,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                         batch_size=cfg.batch_size,
                         num_workers=cfg.num_workers,
                         return_hypotheses=return_hypotheses,
+                        channel_selector=cfg.channel_selector,
                     )
                 else:
                     logging.warning(
@@ -208,6 +211,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                         batch_size=cfg.batch_size,
                         num_workers=cfg.num_workers,
                         return_hypotheses=return_hypotheses,
+                        channel_selector=cfg.channel_selector,
                     )
             else:
                 transcriptions = asr_model.transcribe(
@@ -215,6 +219,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     batch_size=cfg.batch_size,
                     num_workers=cfg.num_workers,
                     return_hypotheses=return_hypotheses,
+                    channel_selector=cfg.channel_selector,
                 )
 
     logging.info(f"Finished transcribing {len(filepaths)} files !")

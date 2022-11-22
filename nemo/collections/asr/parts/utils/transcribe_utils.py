@@ -15,7 +15,7 @@ import glob
 import json
 import os
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 from omegaconf import DictConfig
@@ -220,7 +220,8 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
                     has_two_fields.append(True)
                 else:
                     has_two_fields.append(False)
-                audio_file = Path(item['audio_filepath'])
+                audio_key = cfg.get('audio_key', 'audio_filepath')
+                audio_file = Path(item[audio_key])
                 if not audio_file.is_file() and not audio_file.is_absolute():
                     audio_file = manifest_dir / audio_file
                 filepaths.append(str(audio_file.absolute()))
@@ -290,6 +291,7 @@ def transcribe_partial_audio(
     logprobs: bool = False,
     return_hypotheses: bool = False,
     num_workers: int = 0,
+    channel_selector: Optional[int] = None,
 ) -> List[str]:
 
     assert isinstance(asr_model, EncDecCTCModel), "Currently support CTC model only."
@@ -325,6 +327,7 @@ def transcribe_partial_audio(
             'manifest_filepath': path2manifest,
             'batch_size': batch_size,
             'num_workers': num_workers,
+            'channel_selector': channel_selector,
         }
 
         temporary_datalayer = asr_model._setup_transcribe_dataloader(config)

@@ -49,21 +49,23 @@ class TokensHeadEmb(torch.nn.Module, Exportable):
         if isinstance(dec_output, list):
             dec_output = dec_output[0]
 
-        dec_output = torch.permute(dec_output, (1, 0, 2))
-
         if self.tokens_head_bias is not None:
             return F.linear(dec_output, self.decoder_embedding.word_embeddings.weight, self.tokens_head_bias)
         return F.linear(dec_output, self.decoder_embedding.word_embeddings.weight)
 
-    def input_example(self, max_batch=1, max_dim=1024, seq_len=6):
+    def input_example(self, max_batch=1, max_dim=768, seq_len=6):
         return [
-            torch.randint(low=-3, high=3, size=(seq_len, max_batch, max_dim), device=self.device, dtype=torch.float32)
+            torch.randint(low=-3, high=3, size=(max_batch, seq_len, max_dim), device=self.device, dtype=torch.float32)
         ]
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
         return {
-            "hidden_states": NeuralType(('T', 'B', 'D'), ChannelType()),
+            "hidden_states": NeuralType(('B', 'T', 'D'), ChannelType()),
         }
 
     @property
@@ -107,18 +109,28 @@ class DecEmb(torch.nn.Module, Exportable):
         # dec_input, dec_attn_mask, enc_output, enc_attn_mask | dec_input, dec_attn_mask, enc_output, enc_attn_mask
         _ = dec_mems
 
-        return self.decoder(dec_input, decoder_mask, encoder_embeddings, encoder_mask).float()
+        return (
+            self.decoder(dec_input, decoder_mask, encoder_embeddings.permute(1, 0, 2), encoder_mask)
+            .float()
+            .permute(1, 0, 2)
+        )
 
-    def input_example(self, max_batch=1, max_dim=1024, seq_len=6):
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def input_example(self, max_batch=1, max_dim=768, seq_len=6):
         enc_output = torch.randint(
-            low=-3, high=3, size=(seq_len, max_batch, max_dim), device=self.device, dtype=torch.float32
+            low=-3, high=3, size=(max_batch, seq_len, max_dim), device=self.device, dtype=torch.float32
         )
         enc_attn_mask = torch.tensor([[1 for _ in range(seq_len)]]).to(self.device)
 
         dec_len = random.randint(10, 128)
         dec_input = torch.randint(low=0, high=1000, size=(max_batch, dec_len), device=self.device)
         dec_attn_mask = torch.tensor([[1 for _ in range(dec_len)]]).to(self.device)
-        decoder_mems = torch.zeros([8, 6, 1024], dtype=torch.float32).to(self.device)
+
+        # constant decoder_mems as placeholder for now
+        decoder_mems = torch.zeros([8, 6, max_dim], dtype=torch.float32).to(self.device)
 
         # input_ids, decoder_mask, encoder_mask, encoder_embeddings
         return (dec_input, dec_attn_mask, enc_attn_mask, enc_output, decoder_mems)
@@ -128,14 +140,14 @@ class DecEmb(torch.nn.Module, Exportable):
         return {
             "input_ids": NeuralType(('B', 'T', 'D'), ChannelType()),
             "decoder_mask": NeuralType(('B', 'T'), MaskType()),
-            "encoder_mask": NeuralType(('T', 'B', 'D'), ChannelType()),
+            "encoder_mask": NeuralType(('B', 'T', 'D'), ChannelType()),
             "encoder_embeddings": NeuralType(('B', 'T'), MaskType()),
-            "decoder_mems": NeuralType(('T', 'B', 'D'), ChannelType()),
+            "decoder_mems": NeuralType(('B', 'T', 'D'), ChannelType()),
         }
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        return {"last_hidden_states": NeuralType(('T', 'B', 'D'), ChannelType())}
+        return {"last_hidden_states": NeuralType(('B', 'T', 'D'), ChannelType())}
 
     @property
     def input_names(self) -> List[str]:
@@ -172,14 +184,18 @@ class EncEmb(torch.nn.Module, Exportable):
         enc_input = self.encoder_embedding(input_ids, position_ids, token_type_ids=None)
 
         # pass input through the encoder
-        return self.encoder(enc_input=enc_input, enc_attn_mask=encoder_mask,).type(torch.float32)
+        return self.encoder(enc_input=enc_input, enc_attn_mask=encoder_mask,).permute(1, 0, 2)
 
-    def input_example(self):
+    def input_example(self, max_batch=1, max_dim=30000, seq_len=6):
         seq_len = random.randint(0, 128)
         return (
-            torch.randint(0, 30000, (1, seq_len)).to(self.device),
-            torch.ones((1, seq_len), dtype=int).to(self.device),
+            torch.randint(0, max_dim, (max_batch, seq_len)).to(self.device),
+            torch.ones((max_batch, seq_len), dtype=int).to(self.device),
         )
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
@@ -190,7 +206,7 @@ class EncEmb(torch.nn.Module, Exportable):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        return {"last_hidden_states": NeuralType(('T', 'B', 'D'), ChannelType())}
+        return {"last_hidden_states": NeuralType(('B', 'T', 'D'), ChannelType())}
 
     @property
     def input_names(self) -> List[str]:

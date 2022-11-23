@@ -59,21 +59,40 @@ class LinearWithBiasSkip(nn.Module):
         return F.linear(x, self.weight, self.bias), None
 
 
-# ScaledMaskedSoftmax replacement
-def mask_func(attention_scores, attention_mask):
-    attention_scores.masked_fill_(attention_mask, -10000.0)
-    return attention_scores
+class ExportableMatchedScaleMaskSoftmax(nn.Module):
+    def __init__(self, mod):
+        super(ExportableMatchedScaleMaskSoftmax, self).__init__()
+        self.init_module(mod.input_in_fp16, mod.input_in_bf16, mod.mask_func, mod.softmax_in_fp32, mod.scale)
 
+    def init_module(
+        self, input_in_fp16, input_in_bf16, mask_func, softmax_in_fp32, scale,
+    ):
+        self.input_in_fp16 = input_in_fp16
+        self.input_in_bf16 = input_in_bf16
+        self.softmax_in_fp32 = softmax_in_fp32
+        self.mask_func = mask_func
+        self.scale = scale
 
-def exportable_ScaledMaskedSoftmax(input, mask, scale):
-    if scale is not None:
-        input = input * scale
+        self.input_in_float16 = self.input_in_fp16 or self.input_in_bf16
 
-    mask_output = mask_func(input, mask) if mask is not None else input
-    probs = torch.nn.Softmax(dim=-1)(mask_output)
+    def forward(self, input, mask):
+        if self.input_in_float16 and self.softmax_in_fp32:
+            input = input.float()
 
-    probs = probs.half()
-    return probs
+        if self.scale is not None:
+            input = input * self.scale
+        mask_output = self.mask_func(input, mask) if mask is not None else input
+        probs = torch.nn.Softmax(dim=-1)(mask_output)
+        all_k_masked = mask.all(axis=-1)
+        zero_attention_mask = (1.0 - all_k_masked.float())[:, :, :, None]
+        probs = probs * zero_attention_mask
+
+        if self.input_in_float16 and self.softmax_in_fp32:
+            if self.input_in_fp16:
+                probs = probs.half()
+            else:
+                probs = probs.bfloat16()
+        return probs
 
 
 def get_export_format(filename: str):
@@ -159,10 +178,12 @@ def verify_runtime(model, output, input_examples, input_names, check_tolerance=0
         logging.warning(f"ONNX generated at {output}, not verified - please install onnxruntime_gpu package.\n")
         onnx.checker.check_model(onnx_model, full_check=True)
         return
-    del onnx_model
     onnx_session_opt = onnxruntime.SessionOptions()
-    onnx_session_opt.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess = onnxruntime.InferenceSession(output, sess_options=onnx_session_opt, providers=['CUDAExecutionProvider'])
+    onnx_session_opt.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_BASIC
+    sess = onnxruntime.InferenceSession(
+        onnx_model.SerializeToString(), sess_options=onnx_session_opt, providers=['CUDAExecutionProvider']
+    )
+    del onnx_model
     all_good = True
     for input_example in input_examples:
         input_list, input_dict = parse_input_example(input_example)
@@ -227,7 +248,7 @@ try:
     from apex.transformer.tensor_parallel.layers import RowParallelLinear, ColumnParallelLinear
     from apex.transformer.functional.fused_softmax import FusedScaleMaskSoftmax
 
-    def replace_FusedLayerNorm(n: nn.Module) -> Optional[nn.BatchNorm2d]:
+    def replace_FusedLayerNorm(n: nn.Module) -> Optional[nn.LayerNorm]:
         """
         Replaces Apex's FusedLayerNorm with nn.LayerNorm. This is required for ONNX export.
         Args:
@@ -235,19 +256,16 @@ try:
         Returns:
            Equivalent LayerNorm module
         """
-        if (
-            not isinstance(n, FusedLayerNorm)
-            and not isinstance(n, FastLayerNorm)
-            and not isinstance(n, MixedFusedLayerNorm)
-        ):
+
+        p = next(n.parameters())
+        if isinstance(n, FusedLayerNorm) or isinstance(n, MixedFusedLayerNorm):
+            shape, eps, affine = n.normalized_shape, n.eps, n.elementwise_affine
+        elif isinstance(n, FastLayerNorm):
+            shape, eps, affine = n.weight.shape, n.epsilon, True
+        else:
             return None
 
-        dev = next(n.parameters()).device
-        if isinstance(n, FusedLayerNorm) or isinstance(n, MixedFusedLayerNorm):
-            mod = nn.LayerNorm(n.normalized_shape, eps=n.eps, elementwise_affine=n.elementwise_affine,).to(dev)
-        elif isinstance(n, FastLayerNorm):
-            mod = nn.LayerNorm(n.weight.shape, eps=n.epsilon, elementwise_affine=True, dtype=torch.float16,).to(dev)
-
+        mod = nn.LayerNorm(shape, eps=eps, elementwise_affine=affine, device=p.device, dtype=p.dtype)
         n_state = n.state_dict()
         mod.load_state_dict(n_state)
         return mod
@@ -264,7 +282,7 @@ try:
             raise ValueError("This function can only change the RowParallelLinear module.")
 
         dev = next(n.parameters()).device
-        mod = LinearWithBiasSkip(n.weight, n.bias, n.skip_bias_add).to(dev)
+        mod = LinearWithBiasSkip(n.weight, n.bias, n.skip_bias_add).to(device=dev)
 
         n_state = n.state_dict()
         mod.load_state_dict(n_state)
@@ -340,6 +358,20 @@ def simple_replace(BaseT: Type[nn.Module], DestT: Type[nn.Module]) -> Callable[[
     return expansion_fn
 
 
+def replace_MatchedScaleMaskSoftmax(n: nn.Module) -> Optional[nn.Linear]:
+    """
+    Replaces MatchedScaleMaskSoftmax with exportable softmax layer
+    Args:
+        n: module to replace
+    Returns:
+        exportable module
+    """
+
+    mod = ExportableMatchedScaleMaskSoftmax(n.input_in_fp16, n.input_in_bf16, n.mask_func, n.softmax_in_fp32, n.scale)
+
+    return mod
+
+
 def wrap_module(BaseT: Type[nn.Module], DestT: Type[nn.Module]) -> Callable[[nn.Module], Optional[nn.Module]]:
     """
     Generic function generator to replace BaseT module with DestT wrapper. 
@@ -408,6 +440,7 @@ default_replacements = {
     "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
     "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),
     "LayerNorm": wrap_module(nn.LayerNorm, CastToFloat),
+    "MatchedScaleMaskSoftmax": wrap_module(nn.Softmax, ExportableMatchedScaleMaskSoftmax),
 }
 
 script_replacements = {

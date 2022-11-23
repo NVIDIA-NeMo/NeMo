@@ -42,6 +42,7 @@ from nemo.collections.nlp.models.machine_translation.mt_enc_dec_model import MTE
 from nemo.collections.nlp.modules.common.megatron.megatron_export import DecEmb, EncEmb, TokensHeadEmb
 from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
+from nemo.core.classes import Exportable
 from nemo.utils import AppState, logging, timers
 
 try:
@@ -56,7 +57,7 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ["MegatronNMTModel"]
 
 
-class MegatronNMTModel(MegatronLMEncoderDecoderModel):
+class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
     """
     Megatron NMT training
     """
@@ -750,5 +751,12 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         return DecEmb(self.enc_dec_model.decoder_embedding, self.enc_dec_model.enc_dec_model.decoder, self.device)
 
     @property
-    def classifier(self):
+    def log_softmax(self):
         return TokensHeadEmb(self.enc_dec_model.decoder_embedding, self.enc_dec_model.tokens_head, self.device)
+
+    @property
+    def input_module(self):
+        return self.encoder
+
+    def list_export_subnets(self):
+        return ['encoder', 'log_softmax', 'decoder']

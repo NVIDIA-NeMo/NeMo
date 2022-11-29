@@ -3389,6 +3389,37 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
             trainer.num_nodes=1"
       }
     }
+    stage('L2: Megatron GPT Prompt Tuning') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel{
+        stage('GPT Prompt Learning TP=1 PP=1') {
+          steps {
+            sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
+                --config-name=megatron_gpt_prompt_learning_config \
+                name='/home/TestData/nlp/prompt_learning/prompt_tuning_test' \
+                trainer.devices=1 \
+                trainer.max_steps=6 \
+                trainer.max_epochs=null \
+                model.tensor_model_parallel_size=1 \
+                model.virtual_prompt_style='prompt-tuning' \
+                model.language_model_path='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp1.nemo' \
+                model.existing_tasks=[] \
+                model.new_tasks=['rte'] \
+                model.data.train_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                model.data.validation_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                model.global_batch_size=4"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/prompt_tuning_test"
+            sh "rm -rf /home/TestData/nlp/prompt_learning/prompt_tuning_test.nemo"
+          }
+        }
+      }
+    }
     stage('L2: Megatron GPT Prompt Learning') {
       when {
         anyOf {

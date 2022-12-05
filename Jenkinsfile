@@ -1122,24 +1122,24 @@ pipeline {
             rm -rf "${data_dir}"'
           }
         }
-        stage('Test Restore Punctuation & Capitalization with RoBERTa') {
-          steps {
-            sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
-            cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
-            python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
-              +do_training=false \
-              +do_testing=true \
-              pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_and_Capitalization_roberta.nemo \
-              +model.test_ds.use_cache=false \
-              ~model.train_ds \
-              ~model.validation_ds \
-              model.test_ds.ds_item="${data_dir}" \
-              trainer.devices=[1] \
-              trainer.accelerator="gpu" \
-              exp_manager=null && \
-            rm -rf "${data_dir}"'
-          }
-        }
+//         stage('Test Restore Punctuation & Capitalization with RoBERTa') {
+//           steps {
+//             sh 'data_dir="$(mktemp -d -p "$(pwd)")" && \
+//             cp /home/TestData/nlp/token_classification_punctuation/*.txt "${data_dir}"/ && \
+//             python examples/nlp/token_classification/punctuation_capitalization_train_evaluate.py \
+//               +do_training=false \
+//               +do_testing=true \
+//               pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_and_Capitalization_roberta.nemo \
+//               +model.test_ds.use_cache=false \
+//               ~model.train_ds \
+//               ~model.validation_ds \
+//               model.test_ds.ds_item="${data_dir}" \
+//               trainer.devices=[1] \
+//               trainer.accelerator="gpu" \
+//               exp_manager=null && \
+//             rm -rf "${data_dir}"'
+//           }
+//         }
       }
     }
     stage('L2: Dialogue Classification') {

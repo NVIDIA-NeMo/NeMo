@@ -2990,6 +2990,7 @@ pipeline {
         model.tensor_model_parallel_size=2 \
         model.optim.name=fused_adam \
         model.optim.lr=2e-4 \
+        model.sequence_parallel=True \
         model.optim.sched.warmup_steps=2 \
         model.optim.sched.constant_steps=2 \
         model.optim.sched.min_lr=8e-5 \

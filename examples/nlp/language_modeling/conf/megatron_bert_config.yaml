@@ -87,10 +87,35 @@ model:
   onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
   gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   
-  # not implemented in NeMo yet
+  ## Activation Checkpointing
+  # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.
+  # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  # 'full' will checkpoint the entire transformer layer.
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
   activations_checkpoint_method: null # 'uniform', 'block'
-  activations_checkpoint_num_layers: 1 
-
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity. When used with 'selective', 'uniform' checkpoints all attention blocks in the model.
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null
+  # when using 'uniform' this creates groups of transformer layers to checkpoint. Usually set to 1. Increase to save more memory.
+  # when using 'block' this this will checkpoint the first activations_checkpoint_num_layers per pipeline stage.
+  num_micro_batches_with_partial_activation_checkpoints: null
+  # This feature is valid only when used with pipeline-model-parallelism.
+  # When an integer value is provided, it sets the number of micro-batches where only a partial number of Transformer layers get checkpointed
+  # and recomputed within a window of micro-batches. The rest of micro-batches in the window checkpoint all Transformer layers. The size of window is
+  # set by the maximum outstanding micro-batch backpropagations, which varies at different pipeline stages. The number of partial layers to checkpoint
+  # per micro-batch is set by 'activations_checkpoint_num_layers' with 'activations_checkpoint_method' of 'block'.
+  # This feature enables using activation checkpoint at a fraction of micro-batches up to the point of full GPU memory usage.
+  activations_checkpoint_layers_per_pipeline: null
+  # This feature is valid only when used with pipeline-model-parallelism.
+  # When an integer value (rounded down when float is given) is provided, it sets the number of Transformer layers to skip checkpointing at later
+  # pipeline stages. For example, 'activations_checkpoint_layers_per_pipeline' of 3 makes pipeline stage 1 to checkpoint 3 layers less than
+  # stage 0 and stage 2 to checkpoint 6 layers less stage 0, and so on. This is possible because later pipeline stage
+  # uses less GPU memory with fewer outstanding micro-batch backpropagations. Used with 'num_micro_batches_with_partial_activation_checkpoints',
+  # this feature removes most of activation checkpoints at the last pipeline stage, which is the critical execution path.
+  sequence_parallel: False
+  
   data:
     # Path to data must be specified by the user.
     # can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",

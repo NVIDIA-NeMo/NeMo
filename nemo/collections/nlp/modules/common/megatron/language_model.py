@@ -178,7 +178,7 @@ class Pooler(MegatronModule):
         # gather data along sequence dimensions
         # same pooler is run on all tensor parallel nodes
         if self.sequence_parallel:
-            hidden_states = tensor_parallel.gather_from_sequence_parallel_region()
+            hidden_states = tensor_parallel.mappings.gather_from_sequence_parallel_region(hidden_states)
 
         pooled = hidden_states[sequence_index, :, :]
         pooled = self.dense(pooled)

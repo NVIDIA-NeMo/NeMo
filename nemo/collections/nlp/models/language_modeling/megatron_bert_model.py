@@ -116,14 +116,19 @@ class MegatronBertModel(MegatronBaseModel):
             hidden_dropout=cfg.get('hidden_dropout', 0.1),
             precision=cfg.get('precision', 16),
             fp32_residual_connection=cfg.get('fp32_residual_connection', False),
-            activations_checkpoint_method=cfg.get('activations_checkpoint_method', None),
-            activations_checkpoint_num_layers=cfg.get('activations_checkpoint_num_layers', 1),
+            activations_checkpoint_granularity=self.cfg.get('activations_checkpoint_granularity', None),
+            activations_checkpoint_method=self.cfg.get('activations_checkpoint_method', None),
+            activations_checkpoint_num_layers=self.cfg.get('activations_checkpoint_num_layers', 1),
+            activations_checkpoint_layers_per_pipeline=self.cfg.get(
+                'activations_checkpoint_layers_per_pipeline', None
+            ),
             layernorm_epsilon=cfg.get('layernorm_epsilon', 1e-5),
             masked_softmax_fusion=cfg.get('masked_softmax_fusion', True),
             bias_gelu_fusion=cfg.get('bias_gelu_fusion', True),
             onnx_safe=cfg.get('onnx_safe', False),
             add_binary_head=cfg.bert_binary_head,
             megatron_legacy=cfg.get('megatron_legacy', False),
+            sequence_parallel=self.cfg.get('sequence_parallel', False),
         )
 
         return model
@@ -146,7 +151,7 @@ class MegatronBertModel(MegatronBaseModel):
         return fwd_bwd_function
 
     def get_forward_output_and_loss_func(self):
-        def fwd_output_and_loss_func(batch, model):
+        def fwd_output_and_loss_func(batch, model, checkpoint_activations_all_layers=None):
             if parallel_state.get_pipeline_model_parallel_world_size() == 1:
                 batch = [x.cuda(non_blocking=True) for x in batch]
                 tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = batch
@@ -170,7 +175,13 @@ class MegatronBertModel(MegatronBaseModel):
 
             if not self.cfg.bert_binary_head:
                 types = None
-            output_tensor = self.forward(tokens, padding_mask, types, lm_labels)
+            output_tensor = self.forward(
+                tokens,
+                padding_mask,
+                types,
+                lm_labels,
+                checkpoint_activations_all_layers=checkpoint_activations_all_layers,
+            )
 
             def loss_func(output_tensor):
                 loss_dict = self.loss_func(loss_mask, sentence_order, output_tensor)
@@ -189,8 +200,16 @@ class MegatronBertModel(MegatronBaseModel):
 
         return fwd_output_and_loss_func
 
-    def forward(self, input_ids, attention_mask, token_type_ids, lm_labels=None):
-        output_tensor = self.model(input_ids, attention_mask, token_type_ids=token_type_ids, lm_labels=lm_labels)
+    def forward(
+        self, input_ids, attention_mask, token_type_ids, lm_labels=None, checkpoint_activations_all_layers=None
+    ):
+        output_tensor = self.model(
+            input_ids,
+            attention_mask,
+            token_type_ids=token_type_ids,
+            lm_labels=lm_labels,
+            checkpoint_activations_all_layers=checkpoint_activations_all_layers,
+        )
         if parallel_state.is_pipeline_last_stage():
             # Return the output tensor of encoder and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
             if torch.is_tensor(output_tensor):
@@ -223,7 +242,7 @@ class MegatronBertModel(MegatronBaseModel):
                 custom_sync_context_handler = lambda: self._optimizer.no_sync(greedy_grad_copy=False)
             custom_grad_sync_func = self.reduce_overlap_gradients
         else:
-            if self.megatron_amp_o2:
+            if self.megatron_amp_o2 and not self.cfg.get('sequence_parallel', False):
                 custom_sync_context_handler = self._optimizer.no_sync
             else:
                 # TODO: enable async grad all reduce for O1/autocast mixed precision training
@@ -243,6 +262,10 @@ class MegatronBertModel(MegatronBaseModel):
             grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
             custom_sync_context_handler=custom_sync_context_handler,
             custom_grad_sync_func=custom_grad_sync_func,
+            sequence_parallel_enabled=self.cfg.get('sequence_parallel', False),
+            num_micro_batches_with_partial_activation_checkpoints=self.cfg.get(
+                'num_micro_batches_with_partial_activation_checkpoints', None
+            ),
         )
 
         if losses_reduced_per_micro_batch:
@@ -252,12 +275,17 @@ class MegatronBertModel(MegatronBaseModel):
         else:
             loss_mean = torch.tensor([0.0, 0.0]).cuda()
 
+        # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
+        if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
+            self.allreduce_sequence_parallel_gradients()
+
         if self.with_distributed_adam:
             # gradients are reduced internally in distributed optimizer
             pass
-        elif self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) > 1:
-            # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
-            self._optimizer.allreduce_main_grads()
+        elif self.megatron_amp_o2:
+            if self.cfg.get('pipeline_model_parallel_size', 1) > 1 or self.cfg.get('sequence_parallel', False):
+                # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
+                self._optimizer.allreduce_main_grads()
         else:
             # async grad allreduce is not currently implemented for O1/autocasting mixed precision training
             # so we all-reduce gradients after the pipeline
@@ -325,6 +353,7 @@ class MegatronBertModel(MegatronBaseModel):
             forward_only=True,
             tensor_shape=tensor_shape,
             dtype=self.autocast_dtype,
+            sequence_parallel_enabled=self.cfg.get('sequence_parallel', False),
         )
 
         if losses_reduced_per_micro_batch:
@@ -454,6 +483,27 @@ class MegatronBertModel(MegatronBaseModel):
             We want this to do nothing as we are zeroing grads during the training_step.
         """
         return
+
+    def _append_sequence_parallel_module_grads(self, module, grads):
+        """ Helper method for allreduce_sequence_parallel_gradients"""
+
+        for param in module.parameters():
+            sequence_parallel_param = getattr(param, 'sequence_parallel_enabled', False)
+            if sequence_parallel_param:
+                if self.megatron_amp_o2:
+                    grad = param.main_grad
+                else:
+                    grad = param.grad
+                grads.append(grad.data)
+
+    def allreduce_sequence_parallel_gradients(self):
+        """ All-reduce layernorm parameters across model parallel nodes when sequence parallelism is used.
+            Modified from megatron-lm:
+            https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/blob/3f91f09bb2ab32f9904b47f46f19d2fc3f518ed8/megatron/training.py#L425
+        """
+
+        grads = []
+        self._append_sequence_parallel_module_grads(self.model, grads)
 
     def build_pretraining_data_loader(self, dataset, consumed_samples):
         """Buld dataloader given an input dataset."""
@@ -627,6 +677,12 @@ class MegatronBertModel(MegatronBaseModel):
                     word_embeddings_weight = module.word_embeddings_weight()
                     word_embeddings_weight._disable_greedy_grad_copy = not self.megatron_amp_o2
                     word_embeddings_weight._disable_overlap_grad_sync = True
+
+            # sequence parallelism is enabled
+            for param in self.parameters():
+                if getattr(param, 'sequence_parallel_enabled', False):
+                    param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                    param._disable_overlap_grad_sync = True
 
         return super().configure_optimizers()
 

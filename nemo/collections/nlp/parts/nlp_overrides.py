@@ -590,8 +590,8 @@ class MegatronHalfPrecisionPlugin(NativeMixedPrecisionPlugin):
 
     def optimizer_step(
         self,
-        model: Union["pl.LightningModule", torch.nn.Module],
         optimizer: torch.optim.Optimizer,
+        model: Union["pl.LightningModule", torch.nn.Module],
         optimizer_idx: int,
         closure: Callable[[], Any],
         **kwargs: Any,

@@ -244,12 +244,34 @@ def compute_output_filename(cfg: DictConfig, model_name: str) -> DictConfig:
     return cfg
 
 
+def normalize_timestamp_output(timestamps: dict):
+    """
+    Normalize the dictionary of timestamp values to JSON serializable values.
+    Expects the following keys to exist -
+        "start_offset": int-like object that represents the starting index of the token
+            in the full audio after downsampling.
+        "end_offset": int-like object that represents the ending index of the token
+            in the full audio after downsampling.
+
+    Args:
+        timestamps: Nested dict.
+
+    Returns:
+        Normalized `timestamps` dictionary (in-place normalized)
+    """
+    for val_idx in range(len(timestamps)):
+        timestamps[val_idx]['start_offset'] = int(timestamps[val_idx]['start_offset'])
+        timestamps[val_idx]['end_offset'] = int(timestamps[val_idx]['end_offset'])
+    return timestamps
+
+
 def write_transcription(
-    transcriptions: List[str],
+    transcriptions: List[rnnt_utils.Hypothesis],
     cfg: DictConfig,
     model_name: str,
     filepaths: List[str] = None,
     compute_langs: bool = False,
+    compute_timestamps: bool = False,
 ) -> str:
     """ Write generated transcription to output file. """
     if cfg.append_pred:
@@ -264,11 +286,21 @@ def write_transcription(
 
     with open(cfg.output_filename, 'w', encoding='utf-8') as f:
         if cfg.audio_dir is not None:
-            for idx, transcription in enumerate(transcriptions):
+            for idx, transcription in enumerate(transcriptions):  # type: rnnt_utils.Hypothesis
                 item = {'audio_filepath': filepaths[idx], pred_text_attr_name: transcription.text}
+
+                if compute_timestamps:
+                    timestamps = transcription.timestep
+                    if timestamps is not None and isinstance(timestamps, dict):
+                        timestamps.pop('timestep', None)  # Pytorch tensor calculating index of each token, not needed.
+                        for key in timestamps.keys():
+                            values = normalize_timestamp_output(timestamps[key])
+                            item[f'timestamps_{key}'] = values
+
                 if compute_langs:
                     item['pred_lang'] = transcription.langs
                     item['pred_lang_chars'] = transcription.langs_chars
+
                 f.write(json.dumps(item) + "\n")
         else:
             with open(cfg.dataset_manifest, 'r') as fr:
@@ -276,9 +308,20 @@ def write_transcription(
                     item = json.loads(line)
                     item[pred_text_attr_name] = transcriptions[idx].text
 
+                    if compute_timestamps:
+                        timestamps = transcriptions[idx].timestep
+                        if timestamps is not None and isinstance(timestamps, dict):
+                            timestamps.pop(
+                                'timestep', None
+                            )  # Pytorch tensor calculating index of each token, not needed.
+                            for key in timestamps.keys():
+                                values = normalize_timestamp_output(timestamps[key])
+                                item[f'timestamps_{key}'] = values
+
                     if compute_langs:
                         item['pred_lang'] = transcriptions[idx].langs
                         item['pred_lang_chars'] = transcriptions[idx].langs_chars
+
                     f.write(json.dumps(item) + "\n")
 
     return cfg.output_filename

@@ -237,7 +237,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         filepaths=filepaths,
     )
 
-    output_filename = write_transcription(hyps, cfg, model_name, filepaths=filepaths, compute_langs=False)
+    output_filename = write_transcription(
+        hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, compute_timestamps=False
+    )
     logging.info(f"Finished writing predictions to {output_filename}!")
 
     return cfg

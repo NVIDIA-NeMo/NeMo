@@ -128,13 +128,27 @@ class ModelPT(LightningModule, Model):
             app_state.device_id = torch.cuda.current_device()
 
         if self._cfg is not None and not self._is_model_being_restored():
-            if 'train_ds' in self._cfg and self._cfg.train_ds is not None:
+            # Setup data loaders now (default) or defer setup to `self.setup()`
+            # if `defer_setup` is set in the config of the corresponding dataloader.
+            if (
+                'train_ds' in self._cfg
+                and self._cfg.train_ds is not None
+                and not self._cfg.train_ds.get('defer_setup', False)
+            ):
                 self.setup_training_data(self._cfg.train_ds)
 
-            if 'validation_ds' in self._cfg and self._cfg.validation_ds is not None:
+            if (
+                'validation_ds' in self._cfg
+                and self._cfg.validation_ds is not None
+                and not self._cfg.validation_ds.get('defer_setup', False)
+            ):
                 self.setup_multiple_validation_data(val_data_config=cfg.validation_ds)
 
-            if 'test_ds' in self._cfg and self._cfg.test_ds is not None:
+            if (
+                'test_ds' in self._cfg
+                and self._cfg.test_ds is not None
+                and not self._cfg.test_ds.get('defer_setup', False)
+            ):
                 self.setup_multiple_test_data(test_data_config=cfg.test_ds)
 
         else:
@@ -683,6 +697,40 @@ class ModelPT(LightningModule, Model):
             return self._optimizer
         else:
             return [self._optimizer], [self._scheduler]
+
+    def setup(self, stage: Optional[str] = None):
+        """Called at the beginning of fit, validate, test, or predict.
+        This is called on every process when using DDP.
+
+        Args:
+            stage: fit, validate, test or predict
+        """
+        if stage == 'fit':
+            train_deferred_setup = (
+                'train_ds' in self._cfg
+                and self._cfg.train_ds is not None
+                and self._cfg.train_ds.get('defer_setup', False)
+            )
+            if self.train_dataloader() is None and train_deferred_setup:
+                self.setup_training_data(self._cfg.train_ds)
+
+        if stage in ('fit', 'validate'):
+            val_deferred_setup = (
+                'validation_ds' in self._cfg
+                and self._cfg.validation_ds is not None
+                and self._cfg.validation_ds.get('defer_setup', False)
+            )
+            if self.val_dataloader() is None and val_deferred_setup:
+                self.setup_validation_data(self._cfg.validation_ds)
+
+        if stage == 'test':
+            test_deferred_setup = (
+                'test_ds' in self._cfg
+                and self._cfg.test_ds is not None
+                and self._cfg.test_ds.get('defer_setup', False)
+            )
+            if self.test_dataloader() is None and test_deferred_setup:
+                self.setup_test_data(self._cfg.test_ds)
 
     def train_dataloader(self):
         if self._train_dl is not None:

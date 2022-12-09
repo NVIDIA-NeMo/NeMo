@@ -1,11 +1,11 @@
-NeMo ASR Configuration Files
-============================
+NeMo Speaker Recognition Configuration Files
+============================================
 
 This page covers NeMo configuration file setup that is specific to speaker recognition models.
 For general information about how to set up and run experiments that is common to all NeMo models (e.g.
 experiment manager and PyTorch Lightning trainer parameters), see the :doc:`../../core/core` page.
 
-The model section of NeMo ASR configuration files will generally require information about the dataset(s) being
+The model section of NeMo speaker recognition configuration files will generally require information about the dataset(s) being
 used, the preprocessor for audio files, parameters for any augmentation being performed, as well as the
 model architecture specification.
 The sections on this page cover each of these in more detail.

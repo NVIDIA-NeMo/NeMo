@@ -61,6 +61,20 @@ An example ASR train and validation configuration should look similar to the fol
       num_workers: 8
       pin_memory: true
 
+By default, dataloaders are set up when the model is instantiated. However, dataloader setup can be deferred to
+model's `setup()` method by setting ``defer_setup`` in the configuration.
+
+For example, training data setup can be deferred as follows:
+
+.. code-block:: yaml
+
+  model:
+    train_ds:
+      # Configure training data as usual
+      ...
+      # Defer train dataloader setup from `__init__` to `setup`
+      defer_setup: true
+
 
 Preprocessor Configuration
 --------------------------

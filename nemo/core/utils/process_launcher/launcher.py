@@ -279,8 +279,15 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
                         finished_processes[proc_idx] = 1
 
                         # Join this thread and merge its stderror buffer
+                        proc.wait()
                         std_error_threads[proc_idx].join()
-                        std_error_buffers[proc_idx] = b''.join(std_error_buffers[proc_idx])
+                        error_data = std_error_buffers[proc_idx]
+                        error_data = [
+                            str(data, encoding='utf-8').encode('utf-8').decode('utf-8').encode('utf-8')
+                            for data in error_data
+                        ]
+
+                        std_error_buffers[proc_idx] = error_data
 
                 time.sleep(1.0)
 

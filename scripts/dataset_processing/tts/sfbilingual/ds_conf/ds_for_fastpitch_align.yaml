@@ -48,3 +48,4 @@ dataset:
     g2p:
       _target_: nemo_text_processing.g2p.modules.ChineseG2p
       phoneme_dict: ${phoneme_dict_path}
+      word_segmenter: jieba # Only jieba is supported now.

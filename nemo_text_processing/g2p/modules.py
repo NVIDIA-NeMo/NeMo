@@ -516,7 +516,12 @@ class IPAG2P(BaseG2p):
 
 class ChineseG2p(BaseG2p):
     def __init__(
-        self, phoneme_dict=None, word_tokenize_func=None, apply_to_oov_word=None, mapping_file: Optional[str] = None,
+        self,
+        phoneme_dict=None,
+        word_tokenize_func=None,
+        apply_to_oov_word=None,
+        mapping_file: Optional[str] = None,
+        word_segmenter: Optional[str] = None,
     ):
         """Chinese G2P module. This module first converts Chinese characters into pinyin sequences using pypinyin, then pinyin sequences would
            be further converted into phoneme sequences using pinyin_dict_nv_22.10.txt dict file. For Chinese and English bilingual sentences, the English words
@@ -528,8 +533,13 @@ class ChineseG2p(BaseG2p):
                 It is expected that unchangeable word representation will be represented as List[str], other cases are represented as str.
                 It is useful to mark word as unchangeable which is already in phoneme representation.
             apply_to_oov_word: Function that will be applied to out of phoneme_dict word.
+            word_segmenter: method that will be applied to segment utterances into words for better polyphone disambiguation.
         """
         assert phoneme_dict is not None, "Please set the phoneme_dict path."
+        assert word_segmenter in [
+            None,
+            'jieba',
+        ], f"{word_segmenter} is not supported now. Please choose correct word_segmenter."
         phoneme_dict = (
             self._parse_as_pinyin_dict(phoneme_dict)
             if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path)
@@ -551,7 +561,17 @@ class ChineseG2p(BaseG2p):
             mapping_file=mapping_file,
         )
         self.tones = {'1': '#1', '2': '#2', '3': '#3', '4': '#4', '5': '#5'}
-        from pypinyin import lazy_pinyin, Style
+        self.word_segmenter = word_segmenter
+
+        try:
+            from pypinyin import lazy_pinyin, Style
+            from pypinyin_dict.pinyin_data import cc_cedict
+            import jieba
+        except ImportError as e:
+            logging.error(e)
+
+        # replace pypinyin default dict with cc_cedict.txt for polyphone disambiguation
+        cc_cedict.load()
 
         self._lazy_pinyin = lazy_pinyin
         self._Style = Style
@@ -580,12 +600,22 @@ class ChineseG2p(BaseG2p):
         ' ', 'S', 't', 'o', 'r', 'e', ',', ' ', 'mai3', 'le5', 'yi2',
         'ge4', 'i', 'P', 'h', 'o', 'n', 'e', '。']
         """
-        pinyin_seq = self._lazy_pinyin(
-            text,
-            style=self._Style.TONE3,
-            neutral_tone_with_five=True,
-            errors=lambda en_words: [letter for letter in en_words],
-        )
+        pinyin_seq = []
+        if self.word_segmenter == 'jieba':
+            # Cut sentences into words to improve polyphone disambiguation
+            words_list = list(jieba.cut(text))
+        elif self.word_segmenter is None:
+            words_list = [text]
+        else:
+            raise NotImplementedError
+
+        for word in words_list:
+            pinyin_seq += self._lazy_pinyin(
+                word,
+                style=self._Style.TONE3,
+                neutral_tone_with_five=True,
+                errors=lambda en_words: [letter for letter in en_words],
+            )
         phoneme_seq = []
         for pinyin in pinyin_seq:
             if pinyin[-1] in self.tones:

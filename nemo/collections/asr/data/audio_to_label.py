@@ -30,20 +30,25 @@ from nemo.utils import logging
 VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac'] + [fmt.lower() for fmt in valid_sf_formats.keys()])
 
 
-def repeat_signal(signal, sig_len, required_length):
+def repeat_signal(signal: torch.Tensor, sig_len: int, required_length: int) -> torch.Tensor:
     """repeat signal to make short signal to have required_length
     Args:
-        signal (FloatTensor): input signal
-        sig_len (LongTensor): length of input signal
-        required_length(float) : length of generated signal
+        signal (Tensor): input signal
+        sig_len (int): length of input signal
+        required_length (int): length of generated signal
     Returns:
-        signal (FloatTensor): generated signal of required_length by repeating itself.
+        signal (Tensor): generated signal of required_length by repeating itself.
     """
+    sub: torch.Tensor = torch.tensor([])
     repeat = int(required_length // sig_len)
     rem = int(required_length % sig_len)
-    sub = signal[-rem:] if rem > 0 else torch.tensor([])
-    rep_sig = torch.cat(repeat * [signal])
-    signal = torch.cat((rep_sig, sub))
+    sub: torch.Tensor = torch.tensor([])
+    rep_sig: torch.Tensor = torch.cat(repeat * [signal])
+    if rem > 0:
+        sub = signal[-rem:]
+        signal = torch.cat((rep_sig, sub))
+    else:
+        signal = rep_sig
     return signal
 
 

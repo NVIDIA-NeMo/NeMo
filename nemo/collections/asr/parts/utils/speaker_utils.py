@@ -27,7 +27,7 @@ import torch
 from pyannote.core import Annotation, Segment
 from tqdm import tqdm
 
-from nemo.collections.asr.parts.utils.nmesc_clustering import SpeakerClustering, get_argmin_mat, split_input_data
+from nemo.collections.asr.parts.utils.offline_clustering import SpeakerClustering, get_argmin_mat, split_input_data
 from nemo.utils import logging
 
 

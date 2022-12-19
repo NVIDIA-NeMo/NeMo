@@ -12,3 +12,9 @@ NeMo provides a set of tools useful for developing Automatic Speech Recognitions
    comparison_tool
 
 
+There are also additional NeMo-related tools hosted in separate github repositories:
+
+.. toctree::
+   :maxdepth: 1
+
+   speech_data_processor

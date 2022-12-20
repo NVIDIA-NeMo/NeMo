@@ -1,0 +1,341 @@
+# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import numpy as np
+import pytest
+import torch
+
+from nemo.collections.asr.losses.audio_losses import SDRLoss, calculate_sdr_batch
+from nemo.collections.asr.parts.utils.audio_utils import calculate_sdr_numpy
+
+
+class TestAudioLosses:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_sdr(self, num_channels: int):
+        """Test SDR calculation
+        """
+        test_eps = [0, 1e-16, 1e-1]
+        batch_size = 8
+        num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for remove_mean in [True, False]:
+            for eps in test_eps:
+
+                sdr_loss = SDRLoss(eps=eps, remove_mean=remove_mean)
+
+                for n in range(num_batches):
+
+                    # Generate random signal
+                    target = _rng.normal(size=(batch_size, num_channels, num_samples))
+                    # Random noise + scaling
+                    noise = _rng.uniform(low=0.01, high=1) * _rng.normal(size=(batch_size, num_channels, num_samples))
+                    # Estimate
+                    estimate = target + noise
+
+                    # DC bias for both
+                    target += _rng.uniform(low=-1, high=1)
+                    estimate += _rng.uniform(low=-1, high=1)
+
+                    # Tensors for testing the loss
+                    tensor_estimate = torch.tensor(estimate)
+                    tensor_target = torch.tensor(target)
+
+                    # Reference SDR
+                    golden_sdr = np.zeros((batch_size, num_channels))
+                    for b in range(batch_size):
+                        for m in range(num_channels):
+                            golden_sdr[b, m] = calculate_sdr_numpy(
+                                estimate=estimate[b, m, :], target=target[b, m, :], remove_mean=remove_mean, eps=eps,
+                            )
+
+                    # Calculate SDR in torch
+                    uut_sdr = calculate_sdr_batch(
+                        estimate=tensor_estimate, target=tensor_target, remove_mean=remove_mean, eps=eps,
+                    )
+
+                    # Calculate SDR loss
+                    uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target)
+
+                    # Compare torch SDR vs numpy
+                    assert np.allclose(
+                        uut_sdr.cpu().detach().numpy(), golden_sdr, atol=atol
+                    ), f'SDR not matching for example {n}, eps={eps}, remove_mean={remove_mean}'
+
+                    # Compare SDR loss vs average of torch SDR
+                    assert np.isclose(
+                        uut_sdr_loss, -uut_sdr.mean(), atol=atol
+                    ), f'SDRLoss not matching for example {n}, eps={eps}, remove_mean={remove_mean}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_sdr_weighted(self, num_channels: int):
+        """Test SDR calculation with weighting for channels
+        """
+        batch_size = 8
+        num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        channel_weight = _rng.uniform(low=0.01, high=1.0, size=num_channels)
+        channel_weight = channel_weight / np.sum(channel_weight)
+        sdr_loss = SDRLoss(weight=channel_weight)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+
+            # Reference SDR
+            golden_sdr = 0
+            for b in range(batch_size):
+                sdr = [
+                    calculate_sdr_numpy(estimate=estimate[b, m, :], target=target[b, m, :])
+                    for m in range(num_channels)
+                ]
+                # weighted sum
+                sdr = np.sum(np.array(sdr) * channel_weight)
+                golden_sdr += sdr
+            golden_sdr /= batch_size  # average over batch
+
+            # Calculate SDR
+            uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target)
+
+            # Compare
+            assert np.allclose(
+                uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
+            ), f'SDRLoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_sdr_input_length(self, num_channels):
+        """Test SDR calculation with input length.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        sdr_loss = SDRLoss()
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, max_num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=1, high=max_num_samples, size=batch_size)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+            tensor_input_length = torch.tensor(input_length)
+
+            # Reference SDR
+            golden_sdr = 0
+            for b, b_len in enumerate(input_length):
+                sdr = [
+                    calculate_sdr_numpy(estimate=estimate[b, m, :b_len], target=target[b, m, :b_len])
+                    for m in range(num_channels)
+                ]
+                sdr = np.mean(np.array(sdr))
+                golden_sdr += sdr
+            golden_sdr /= batch_size  # average over batch
+
+            # Calculate SDR
+            uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target, input_length=tensor_input_length)
+
+            # Compare
+            assert np.allclose(
+                uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
+            ), f'SDRLoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_sdr_scale_invariant(self, num_channels: int):
+        """Test SDR calculation with scale invariant option.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        sdr_loss = SDRLoss(scale_invariant=True)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, max_num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=1, high=max_num_samples, size=batch_size)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+            tensor_input_length = torch.tensor(input_length)
+
+            # Reference SDR
+            golden_sdr = 0
+            for b, b_len in enumerate(input_length):
+                sdr = [
+                    calculate_sdr_numpy(
+                        estimate=estimate[b, m, :b_len], target=target[b, m, :b_len], scale_invariant=True
+                    )
+                    for m in range(num_channels)
+                ]
+                sdr = np.mean(np.array(sdr))
+                golden_sdr += sdr
+            golden_sdr /= batch_size  # average over batch
+
+            # Calculate SDR loss
+            uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target, input_length=tensor_input_length)
+
+            # Compare
+            assert np.allclose(
+                uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
+            ), f'SDRLoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_sdr_binary_mask(self, num_channels):
+        """Test SDR calculation with temporal mask.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        sdr_loss = SDRLoss()
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, max_num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to masked samples
+            mask = _rng.integers(low=0, high=2, size=(batch_size, max_num_samples))
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+            tensor_mask = torch.tensor(mask)
+
+            # Reference SDR
+            golden_sdr = 0
+            for b in range(batch_size):
+                sdr = [
+                    calculate_sdr_numpy(estimate=estimate[b, m, mask[b, :] > 0], target=target[b, m, mask[b, :] > 0])
+                    for m in range(num_channels)
+                ]
+                sdr = np.mean(np.array(sdr))
+                golden_sdr += sdr
+            golden_sdr /= batch_size  # average over batch
+
+            # Calculate SDR loss
+            uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target, mask=tensor_mask)
+
+            # Compare
+            assert np.allclose(
+                uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
+            ), f'SDRLoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1])
+    @pytest.mark.parametrize('sdr_max', [10, 0])
+    def test_sdr_max(self, num_channels: int, sdr_max: float):
+        """Test SDR calculation with soft max threshold.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        sdr_loss = SDRLoss(sdr_max=sdr_max)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, max_num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=1, high=max_num_samples, size=batch_size)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+            tensor_input_length = torch.tensor(input_length)
+
+            # Reference SDR
+            golden_sdr = 0
+            for b, b_len in enumerate(input_length):
+                sdr = [
+                    calculate_sdr_numpy(estimate=estimate[b, m, :b_len], target=target[b, m, :b_len], sdr_max=sdr_max)
+                    for m in range(num_channels)
+                ]
+                sdr = np.mean(np.array(sdr))
+                golden_sdr += sdr
+            golden_sdr /= batch_size  # average over batch
+
+            # Calculate SDR loss
+            uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target, input_length=tensor_input_length)
+
+            # Compare
+            assert np.allclose(
+                uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
+            ), f'SDRLoss not matching for example {n}'

@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.collections.asr.modules.audio_modules import MaskBasedBeamformer, MaskEstimatorRNN, MaskReferenceChannel
 from nemo.collections.asr.modules.audio_preprocessing import (
     AudioToMelSpectrogramPreprocessor,
     AudioToMFCCPreprocessor,
+    AudioToSpectrogram,
     CropOrPadSpectrogramAugmentation,
     MaskedPatchAugmentation,
     SpectrogramAugmentation,
+    SpectrogramToAudio,
 )
 from nemo.collections.asr.modules.beam_search_decoder import BeamSearchDecoderWithLM
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder, ConformerEncoderAdapter

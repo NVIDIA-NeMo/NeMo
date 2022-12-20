@@ -15,9 +15,9 @@
 import abc
 import math
 import random
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Type, Union
 
 import librosa
 import numpy as np
@@ -57,7 +57,7 @@ def _audio_collate_fn(batch: List[dict]) -> Tuple[torch.Tensor]:
             }
             ```
             1D tensors have shape (num_samples,) and 2D tensors
-            have shape (num_samples, num_channels)
+            have shape (num_channels, num_samples)
 
     Returns:
         A tuple containing signal tensor and signal length tensor (in samples)
@@ -73,7 +73,7 @@ def _audio_collate_fn(batch: List[dict]) -> Tuple[torch.Tensor]:
     batched = tuple()
 
     for signal in signals:
-        signal_length = [b[signal].shape[0] for b in batch]
+        signal_length = [b[signal].shape[-1] for b in batch]
         # Batch length is determined by the longest signal in the batch
         batch_length = max(signal_length)
         b_signal = []
@@ -85,7 +85,7 @@ def _audio_collate_fn(batch: List[dict]) -> Tuple[torch.Tensor]:
                     pad = (0, batch_length - s_len)
                 elif b[signal].ndim == 2:
                     # multi-channel signal
-                    pad = (0, 0, 0, batch_length - s_len)
+                    pad = (0, batch_length - s_len, 0, 0)
                 else:
                     raise RuntimeError(
                         f'Signal {signal} has unsuported dimensions {signal.shape}. Currently, only 1D and 2D arrays are supported.'
@@ -396,7 +396,7 @@ class ASRAudioProcessor:
         Returns:
             Numpy array with samples from audio file.
             The array has shape (num_samples,) for a single-channel signal
-            or (num_samples, num_channels) for a multi-channel signal.
+            or (num_channels, num_samples) for a multi-channel signal.
         """
         output = cls.get_samples_synchronized(
             audio_files=[audio_file],
@@ -439,7 +439,7 @@ class ASRAudioProcessor:
         Returns:
             List with the same size as `audio_files` but containing numpy arrays
             with samples from each audio file.
-            Each array has shape (num_samples, ) or (num_samples, num_channels), for single-
+            Each array has shape (num_samples,) or (num_channels, num_samples), for single-
             or multi-channel signal, respectively.
             For example, if `audio_files = [path/to/file_1.wav, path/to/file_2.wav]`,
             the output will be a list `output = [samples_file_1, samples_file_2]`.
@@ -516,7 +516,7 @@ class ASRAudioProcessor:
             channel_selector: Select a subset of available channels.
 
         Returns:
-            An array with shape (samples,) or (samples, channels)
+            An array with shape (samples,) or (channels, samples)
         """
         if isinstance(audio_file, str):
             # Load samples from a single file
@@ -566,7 +566,7 @@ class ASRAudioProcessor:
             channel_selector: Select a subset of available channels.
 
         Returns:
-           An array with shape (samples,) or (samples, channels) 
+           An array with shape (samples,) or (channels, samples) 
         """
         if num_samples is None:
             segment = AudioSegment.from_file(
@@ -581,7 +581,15 @@ class ASRAudioProcessor:
                 offset=offset,
                 channel_selector=channel_selector,
             )
-        return segment.samples
+
+        if segment.samples.ndim == 1:
+            # Single-channel signal
+            return segment.samples
+        elif segment.samples.ndim == 2:
+            # Use multi-channel format as (channels, samples)
+            return segment.samples.T
+        else:
+            raise RuntimeError(f'Unexpected samples shape: {segment.samples.shape}')
 
     @staticmethod
     def list_to_multichannel(signal: Union[np.ndarray, List[np.ndarray]]) -> np.ndarray:
@@ -595,7 +603,7 @@ class ASRAudioProcessor:
 
         Returns:
             Numpy array obtained by concatenating the elements of the list
-            along the channel dimension (axis=1).
+            along the channel dimension (axis=0).
         """
         if not isinstance(signal, list):
             # Nothing to do there
@@ -610,10 +618,10 @@ class ASRAudioProcessor:
         # If multiple signals are provided in a list, we concatenate them along the channel dimension
         if signal[0].ndim == 1:
             # Single-channel individual files
-            mc_signal = np.stack(signal, axis=1)
+            mc_signal = np.stack(signal, axis=0)
         elif signal[0].ndim == 2:
             # Multi-channel individual files
-            mc_signal = np.concatenate(signal, axis=1)
+            mc_signal = np.concatenate(signal, axis=0)
         else:
             raise RuntimeError(f'Unexpected target with {signal[0].ndim} dimensions.')
 
@@ -687,15 +695,14 @@ class BaseAudioDataset(Dataset):
         """Returns definitions of module output ports.
         """
 
-    def __init__(
-        self, collection: collections.Audio, audio_processor: Callable,
-    ):
+    def __init__(self, collection: collections.Audio, audio_processor: Callable, output_type: Type[namedtuple]):
         """Instantiates an audio dataset.
         """
         super().__init__()
 
         self.collection = collection
         self.audio_processor = audio_processor
+        self.output_type = output_type
 
     def num_channels(self, signal_key) -> int:
         """Returns the number of channels for a particular signal in
@@ -704,7 +711,7 @@ class BaseAudioDataset(Dataset):
         More specifically, this will get the tensor from the first
         item in the dataset, check if it's a one- or two-dimensional
         tensor, and return the number of channels based on the size
-        of the second axis (shape[1]).
+        of the first axis (shape[0]).
 
         NOTE:
         This assumes that all examples have the same number of channels.
@@ -722,7 +729,7 @@ class BaseAudioDataset(Dataset):
         if item[signal_key].ndim == 1:
             return 1
         elif item[signal_key].ndim == 2:
-            return item[signal_key].shape[1]
+            return item[signal_key].shape[0]
         else:
             raise RuntimeError(
                 f'Unexpected number of dimension for signal {signal_key} with shape {item[signal_key].shape}'
@@ -757,7 +764,12 @@ class BaseAudioDataset(Dataset):
     def _collate_fn(self, batch) -> Tuple[torch.Tensor]:
         """Collate items in a batch.
         """
-        return _audio_collate_fn(batch)
+        return self.output_type(*_audio_collate_fn(batch))
+
+
+AudioToTargetExample = namedtuple(
+    typename='AudioToTargetExample', field_names='input_signal input_length target_signal target_length'
+)
 
 
 @experimental
@@ -839,9 +851,7 @@ class AudioToTargetDataset(BaseAudioDataset):
             channel_selectors=[input_channel_selector, target_channel_selector],
         )
 
-        super().__init__(
-            collection=collection, audio_processor=audio_processor,
-        )
+        super().__init__(collection=collection, audio_processor=audio_processor, output_type=AudioToTargetExample)
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
@@ -859,7 +869,7 @@ class AudioToTargetDataset(BaseAudioDataset):
             ```
         """
         sc_audio_type = NeuralType(('B', 'T'), AudioSignal())
-        mc_audio_type = NeuralType(('B', 'T', 'C'), AudioSignal())
+        mc_audio_type = NeuralType(('B', 'C', 'T'), AudioSignal())
 
         return OrderedDict(
             input_signal=sc_audio_type if self.num_channels('input_signal') == 1 else mc_audio_type,
@@ -867,6 +877,12 @@ class AudioToTargetDataset(BaseAudioDataset):
             target_signal=sc_audio_type if self.num_channels('target_signal') == 1 else mc_audio_type,
             target_length=NeuralType(('B',), LengthsType()),
         )
+
+
+AudioToTargetWithReferenceExample = namedtuple(
+    typename='AudioToTargetWithReferenceExample',
+    field_names='input_signal input_length target_signal target_length reference_signal reference_length',
+)
 
 
 @experimental
@@ -975,7 +991,7 @@ class AudioToTargetWithReferenceDataset(BaseAudioDataset):
             )
 
         super().__init__(
-            collection=collection, audio_processor=audio_processor,
+            collection=collection, audio_processor=audio_processor, output_type=AudioToTargetWithReferenceExample
         )
 
     @property
@@ -996,7 +1012,7 @@ class AudioToTargetWithReferenceDataset(BaseAudioDataset):
             ```
         """
         sc_audio_type = NeuralType(('B', 'T'), AudioSignal())
-        mc_audio_type = NeuralType(('B', 'T', 'C'), AudioSignal())
+        mc_audio_type = NeuralType(('B', 'C', 'T'), AudioSignal())
 
         return OrderedDict(
             input_signal=sc_audio_type if self.num_channels('input_signal') == 1 else mc_audio_type,
@@ -1006,6 +1022,12 @@ class AudioToTargetWithReferenceDataset(BaseAudioDataset):
             reference_signal=sc_audio_type if self.num_channels('reference_signal') == 1 else mc_audio_type,
             reference_length=NeuralType(('B',), LengthsType()),
         )
+
+
+AudioToTargetWithEmbeddingExample = namedtuple(
+    typename='AudioToTargetWithEmbeddingExample',
+    field_names='input_signal input_length target_signal target_length embedding_vector embedding_length',
+)
 
 
 @experimental
@@ -1086,7 +1108,7 @@ class AudioToTargetWithEmbeddingDataset(BaseAudioDataset):
         audio_processor.embedding_setup = SignalSetup(signals=['embedding_vector'])
 
         super().__init__(
-            collection=collection, audio_processor=audio_processor,
+            collection=collection, audio_processor=audio_processor, output_type=AudioToTargetWithEmbeddingExample
         )
 
     @property
@@ -1107,7 +1129,7 @@ class AudioToTargetWithEmbeddingDataset(BaseAudioDataset):
             ```
         """
         sc_audio_type = NeuralType(('B', 'T'), AudioSignal())
-        mc_audio_type = NeuralType(('B', 'T', 'C'), AudioSignal())
+        mc_audio_type = NeuralType(('B', 'C', 'T'), AudioSignal())
 
         return OrderedDict(
             input_signal=sc_audio_type if self.num_channels('input_signal') == 1 else mc_audio_type,

@@ -204,13 +204,10 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                                 if current_hypotheses[idx].alignments is None:
                                     current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
 
-                        hypotheses += current_hypotheses
-
-                        # Keep following for beam search integration
-                        # if all_hyp is not None:
-                        #     all_hypotheses += all_hyp
-                        # else:
-                        #     all_hypotheses += current_hypotheses
+                        if all_hyp is None:
+                            hypotheses += current_hypotheses
+                        else:
+                            hypotheses += all_hyp
 
                     del greedy_predictions
                     del logits

@@ -133,37 +133,43 @@ can get skipped.
 
 The following is the list of the arguments for the evaluation script:
 
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| **Argument**        |**Type**| **Default**      | **Description**                                                         |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| nemo_model_file     | str    | Required         | The path of the `.nemo` file of the ASR model to extract the tokenizer. |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| input_manifest      | str    | Required         | Path to the training file, it can be a text file or JSON manifest.      |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| kenlm_model_file    | str    | Required         | The path to store the KenLM binary model file.                          |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| preds_output_folder | str    | None             | The path to an optional folder to store the predictions.                |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| probs_cache_file    | str    | None             | The cache file for storing the outputs of the model.                    |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| acoustic_batch_size | int    | 16               | The batch size to calculate log probabilities.                          |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| use_amp             | bool   | ``False``        | Whether to use AMP if available to calculate log probabilities.         |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| device              | str    | cuda             | The device to load the model onto to calculate log probabilities.       |
-|                     |        |                  | It can `cpu`, `cuda`, `cuda:0`, `cuda:1`, ...                           |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| decoding_mode       | str    | beamsearch_ngram | The decoding scheme to be used for evaluation.                          |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| beam_width          | float  | Required         | The width or list of the widths of the beam search decoding.            |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| beam_alpha          | float  | Required         | The alpha parameter or list of the alphas for the beam search decoding. |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| beam_beta           | float  | Required         | The beta parameter or list of the betas for the beam search decoding.   |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
-| beam_batch_size     | int    | 128              | The batch size to be used for beam search decoding.                     |
-|                     |        |                  | Larger batch size can be a little faster, but uses larger memory.       |
-+---------------------+--------+------------------+-------------------------------------------------------------------------+
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| **Argument**        | **Type** | **Default**      | **Description**                                                         |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| nemo_model_file     | str      | Required         | The path of the `.nemo` file of the ASR model to extract the tokenizer. |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| input_manifest      | str      | Required         | Path to the training file, it can be a text file or JSON manifest.      |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| kenlm_model_file    | str      | Required         | The path to store the KenLM binary model file.                          |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| preds_output_folder | str      | None             | The path to an optional folder to store the predictions.                |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| probs_cache_file    | str      | None             | The cache file for storing the outputs of the model.                    |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| acoustic_batch_size | int      | 16               | The batch size to calculate log probabilities.                          |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| use_amp             | bool     | False            | Whether to use AMP if available to calculate log probabilities.         |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| device              | str      | cuda             | The device to load the model onto to calculate log probabilities.       |
+|                     |          |                  | It can `cpu`, `cuda`, `cuda:0`, `cuda:1`, ...                           |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| decoding_mode       | str      | beamsearch_ngram | The decoding scheme to be used for evaluation.                          |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| beam_width          | float    | Required         | List of the width or list of the widths of the beam search decoding.    |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| beam_alpha          | float    | Required         | List of the alpha parameter for the beam search decoding.               |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| beam_beta           | float    | Required         | List of the beta parameter for the beam search decoding.                |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| beam_batch_size     | int      | 128              | The batch size to be used for beam search decoding.                     |
+|                     |          |                  | Larger batch size can be a little faster, but uses larger memory.       |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| decoding_strategy   | str      | beam             | String argument for type of decoding strategy for the model.            |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| decoding            | Dict     | BeamCTC          | Subdict of beam search configs. Values found via                        |
+|                     | Config   | InferConfig      | python eval_beamsearch_ngram.py --help                                  |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+
 
 Width of the beam search (`--beam_width`) specifies the number of top candidates/predictions the beam search decoder
 would search for. Larger beams result in more accurate but slower predictions.
@@ -183,9 +189,9 @@ For instance, the following set of parameters would results in 2*1*2=4 beam sear
 .. code-block::
 
     python eval_beamsearch_ngram.py ... \
-                        --beam_width 64 128 \
-                        --beam_alpha 1.0 \
-                        --beam_beta 1.0 0.5
+                        beam_width=[64,128] \
+                        beam_alpha=[1.0] \
+                        beam_beta=[1.0,0.5]
 
 
 .. _neural_rescoring:

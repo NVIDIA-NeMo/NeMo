@@ -27,7 +27,8 @@
 #                              --train_file <path to the training text or JSON manifest file \
 #                              --kenlm_bin_path <path to the bin folder of KenLM library> \
 #                              --kenlm_model_file <path to store the binary KenLM model> \
-#                              --ngram_length <order of N-gram model>
+#                              --ngram_length <order of N-gram model> \
+#                              --preserve_arpa
 #
 # After training is done, the binary LM model is stored at the path specified by '--kenlm_model_file'.
 # You may find more info on how to use this script at:
@@ -80,6 +81,9 @@ def main():
     parser.add_argument("--kenlm_bin_path", required=True, type=str, help="The path to the bin folder of KenLM")
     parser.add_argument(
         "--do_lowercase", action='store_true', help="Whether to apply lower case conversion on the training text"
+    )
+    parser.add_argument(
+        '--preserve_arpa', required=False, action='store_true', help='Whether to preserve the intermediate ARPA file.'
     )
     args = parser.parse_args()
 
@@ -156,8 +160,10 @@ def main():
 
     os.remove(encoded_train_file)
     logging.info(f"Deleted the temporary encoded training file '{encoded_train_file}'.")
-    os.remove(arpa_file)
-    logging.info(f"Deleted the arpa file '{arpa_file}'.")
+
+    if not args.preserve_arpa:
+        os.remove(arpa_file)
+        logging.info(f"Deleted the arpa file '{arpa_file}'.")
 
 
 if __name__ == '__main__':

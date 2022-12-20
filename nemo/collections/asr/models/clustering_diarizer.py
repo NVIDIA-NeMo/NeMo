@@ -106,7 +106,8 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         # Clustering params
         self._cluster_params = self._diarizer_params.clustering.parameters
-        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        default_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = torch.device(cfg.device if cfg.device else default_device)
 
     @classmethod
     def list_available_models(cls):

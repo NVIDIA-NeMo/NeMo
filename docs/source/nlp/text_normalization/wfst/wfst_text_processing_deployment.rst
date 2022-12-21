@@ -90,6 +90,8 @@ Go to script folder:
 
 This returns "ITN result: $2.50. TN result: two dollars fifty cents"
 
+See :doc:`WFST Resources <wfst_resources>` for more details.
+
 References
 ----------
 

@@ -162,19 +162,12 @@ Language Support Matrix
 | Chinese          | zh       | x        |          |                    |                      |
 +------------------+----------+----------+----------+--------------------+----------------------+
 
-Grammar customization
----------------------
 
-.. note::
+See :doc:`Grammar customization <wfst_customization>` for grammar customization details.
 
-    In-depth walk through `NeMo/tutorials/text_processing/WFST_tutorial.ipynb <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/text_processing/WFST_Tutorial.ipynb>`__ in `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/text_processing/WFST_Tutorial.ipynb>`_.
+See :doc:`Text Processing Deployment <wfst_text_processing_deployment>` for deployment in C++ details.
 
-
-Deploy to C++
------------------
-See :doc:`Text Procesing Deployment <wfst_text_processing_deployment>` for details.
-
-
+WFST TN/ITN resources could be found in :doc:`here <wfst_resources>`.
 
 References
 ----------

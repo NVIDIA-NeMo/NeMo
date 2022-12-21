@@ -203,7 +203,7 @@ G2P requires NeMo NLP and ASR collections installed. See `Installation instructi
 References
 ----------
 
-.. bibliography:: ../text_processing_all.bib ../../tts/tts_all.bib ../../nlp/nlp_all.bib
+.. bibliography:: tts_all.bib
     :style: plain
     :labelprefix: g2p-
     :keyprefix: g2p--

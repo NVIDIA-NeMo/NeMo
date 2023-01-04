@@ -953,8 +953,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             ), "share_decoder_tokens_head_embeddings must be True when using pipeline model parallel > 1"
             self.enc_dec_model.sync_initial_word_embeddings()
             if (
-                self.cfg.encoder.get('position_embedding_type') != 'relative'
-                and self.cfg.decoder.get('position_embedding_type') != 'relative'
+                self.cfg.encoder.get('position_embedding_type') == 'learned_absolute'
+                and self.cfg.decoder.get('position_embedding_type') == 'learned_absolute'
             ):
                 self.enc_dec_model.sync_initial_position_embeddings()
             # Synchronize RPE embeddings across pipeline parallel ranks.

@@ -219,6 +219,9 @@ class AudioSegment(object):
                     f"NeMo will fallback to loading via pydub."
                 )
 
+                if hasattr(audio_file, "seek"):
+                    audio_file.seek(0)
+
         if HAVE_PYDUB and samples is None:
             try:
                 samples = Audio.from_file(audio_file)

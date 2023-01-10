@@ -40,6 +40,9 @@ class SequenceToSequenceDataset(Dataset):
         tgt_tokenizer: TokenizerSpec,
         max_src_seq_length: int,
         max_tgt_seq_length: int,
+        add_bos_to_input: bool = True,
+        add_eos_to_input: bool = True,
+        replace_bos_with_pad: bool = False,
     ):
         super().__init__()
         self.src_file_name = src_file_name
@@ -48,6 +51,9 @@ class SequenceToSequenceDataset(Dataset):
         self.tgt_tokenizer = tgt_tokenizer
         self.max_src_seq_length = max_src_seq_length
         self.max_tgt_seq_length = max_tgt_seq_length
+        self.add_bos_to_input = add_bos_to_input
+        self.add_eos_to_input = add_eos_to_input
+        self.replace_bos_with_pad = replace_bos_with_pad
         assert self.max_src_seq_length > 0
         assert self.max_tgt_seq_length > 0
         self._check_files_exist()
@@ -75,13 +81,14 @@ class SequenceToSequenceDataset(Dataset):
             for i, (src, tgt) in enumerate(zip(f_src, f_tgt)):
                 if i % 10000 == 0 and i != 0:
                     logging.info(f"Read {i} lines from {self.src_file_name} & {self.tgt_file_name}")
-                src = (
-                    [self.src_tokenizer.bos_id]
-                    + self.src_tokenizer.text_to_ids(src.strip())
-                    + [self.src_tokenizer.eos_id]
-                )
+                src = self.src_tokenizer.text_to_ids(src.strip())
+                if self.add_bos_to_input:
+                    src = [self.src_tokenizer.pad_id if self.replace_bos_with_pad else self.src_tokenizer.bos_id] + src
+                if self.add_eos_to_input:
+                    src = src + [self.src_tokenizer.eos_id]
+
                 tgt = (
-                    [self.tgt_tokenizer.bos_id]
+                    [self.tgt_tokenizer.pad_id if self.replace_bos_with_pad else self.tgt_tokenizer.bos_id]
                     + self.tgt_tokenizer.text_to_ids(tgt.strip())
                     + [self.tgt_tokenizer.eos_id]
                 )

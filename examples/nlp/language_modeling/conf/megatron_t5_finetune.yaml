@@ -65,6 +65,9 @@ model:
       concat_sampling_technique: temperature # When providing a list of datasets, this arg defines the sampling strategy. Options: ['temperature', 'random']
       concat_sampling_temperature: 5 # When providing a list of datasets, this arg defines the sampling temperature when strategy='temperature'
       concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
+      replace_bos_with_pad: False # Replaces bos with pad for both the encoder and decoder. This is necessary when using Google's T5 checkpoints.
+      add_bos_to_input: False # Adds bos to the input sequence.
+      add_eos_to_input: False # Adds eos to the input sequence.
 
     validation_ds:
       src_file_name: ??? # Path to the txt file corresponding to the source data.
@@ -80,6 +83,9 @@ model:
       drop_last: False # TODO: Figure out if there is a way to avoid dropping last.
       write_predictions_to_file: False
       output_file_path_prefix: null # Prefix of the file to write predictions to.
+      replace_bos_with_pad: ${data.train_ds.replace_bos_with_pad}
+      add_bos_to_input: ${data.train_ds.add_bos_to_input}
+      add_eos_to_input: ${data.train_ds.add_eos_to_input}
       metric:
         name: "exact_string_match" # Name of the evaluation metric to use.
         average: micro # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.

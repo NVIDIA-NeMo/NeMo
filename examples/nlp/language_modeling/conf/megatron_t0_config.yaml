@@ -62,7 +62,7 @@ model:
       max_tgt_seq_length: 512
       drop_last: True
       concat_sampling_probabilities: ??? # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
-      replace_bos_with_pad: True # Replaces bos with pad for both the encoder and decoder. This is necessary when using Google's T5 checkpoints.
+      replace_bos_with_pad: False # Replaces bos with pad for both the encoder and decoder. This is necessary when using Google's T5 checkpoints.
       add_bos_to_input: False # Adds bos to the input sequence.
       add_eos_to_input: False # Adds eos to the input sequence.
       seed: 1234

@@ -598,6 +598,9 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                 tgt_tokenizer=self.tokenizer,
                 max_src_seq_length=data_cfg.max_src_seq_length,
                 max_tgt_seq_length=data_cfg.max_tgt_seq_length,
+                add_bos_to_input=data_cfg.get('add_bos_to_input', True),
+                add_eos_to_input=data_cfg.get('add_eos_to_input', True),
+                replace_bos_with_pad=data_cfg.get('replace_bos_with_pad', False),
             )
             datasets.append(dataset)
 
@@ -650,6 +653,9 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                 tgt_tokenizer=self.tokenizer,
                 max_src_seq_length=data_cfg.max_src_seq_length,
                 max_tgt_seq_length=data_cfg.max_tgt_seq_length,
+                add_bos_to_input=data_cfg.get('add_bos_to_input', True),
+                add_eos_to_input=data_cfg.get('add_eos_to_input', True),
+                replace_bos_with_pad=data_cfg.get('replace_bos_with_pad', False),
             )
             datasets.append(dataset)
 

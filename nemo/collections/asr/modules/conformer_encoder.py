@@ -414,7 +414,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
 
         if length is None:
             length = audio_signal.new_full(
-                audio_signal.size(0), max_audio_length, dtype=torch.int32, device=audio_signal.device
+                (audio_signal.size(0),), max_audio_length, dtype=torch.int32, device=audio_signal.device
             )
 
         if cache_last_time is not None:

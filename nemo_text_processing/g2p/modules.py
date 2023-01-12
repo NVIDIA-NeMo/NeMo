@@ -551,6 +551,7 @@ class ChineseG2p(BaseG2p):
             None,
             'jieba',
         ], f"{word_segmenter} is not supported now. Please choose correct word_segmenter."
+
         phoneme_dict = (
             self._parse_as_pinyin_dict(phoneme_dict)
             if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path)
@@ -572,12 +573,21 @@ class ChineseG2p(BaseG2p):
             mapping_file=mapping_file,
         )
         self.tones = {'1': '#1', '2': '#2', '3': '#3', '4': '#4', '5': '#5'}
-        self.word_segmenter = word_segmenter
+
+        if word_segmenter == "jieba":
+            try:
+                import jieba
+            except ImportError as e:
+                logging.error(e)
+
+            # Cut sentences into words to improve polyphone disambiguation
+            self.word_segmenter = jieba.cut
+        else:
+            self.word_segmenter = lambda x: [x]
 
         try:
             from pypinyin import lazy_pinyin, Style
             from pypinyin_dict.pinyin_data import cc_cedict
-            import jieba
         except ImportError as e:
             logging.error(e)
 
@@ -612,13 +622,7 @@ class ChineseG2p(BaseG2p):
         'ge4', 'i', 'P', 'h', 'o', 'n', 'e', '。']
         """
         pinyin_seq = []
-        if self.word_segmenter == 'jieba':
-            # Cut sentences into words to improve polyphone disambiguation
-            words_list = list(jieba.cut(text))
-        elif self.word_segmenter is None:
-            words_list = [text]
-        else:
-            raise NotImplementedError
+        words_list = self.word_segmenter(text)
 
         for word in words_list:
             pinyin_seq += self._lazy_pinyin(

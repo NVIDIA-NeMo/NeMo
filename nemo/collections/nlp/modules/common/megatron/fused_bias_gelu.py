@@ -63,8 +63,22 @@ class GeLUFunction(torch.autograd.Function):
         return tmp, tmp
 
     @staticmethod
-    def symbolic(g, input, bias):
-        return g.op("com.microsoft::BiasGelu", input, bias)
+    def symbolic(g: torch.Graph, input: torch.Value, bias: torch.Value):
+        # define constants and variables
+        x = g.op("Add", input, bias)
+        const_1 = g.op("Constant", value_t=torch.tensor(0.5, dtype=torch.float16))
+        const_2 = g.op("Constant", value_t=torch.tensor(1.0, dtype=torch.float16))
+        const_3 = g.op("Constant", value_t=torch.tensor(0.79788456, dtype=torch.float16))
+        const_4 = g.op("Constant", value_t=torch.tensor(0.044715, dtype=torch.float16))
+
+        # calculates (1 + 0.044715 * x * x)
+        p_1 = g.op("Add", const_2, g.op("Mul", x, g.op("Mul", const_4, x)))
+
+        # calculates torch.tanh(0.79788456 * x * (1 + 0.044715 * x * x))
+        p_2 = g.op("Tanh", g.op("Mul", const_3, g.op("Mul", x, p_1)))
+
+        # calculates x * 0.5 * (1.0 + torch.tanh(0.79788456 * x * (1 + 0.044715 * x * x)))
+        return g.op("Mul", const_1, g.op("Mul", x, g.op("Add", const_2, p_2)))
 
 
 def fused_bias_gelu(input, bias):

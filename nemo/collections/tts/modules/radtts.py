@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
-###############################################################################
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -599,9 +596,13 @@ class RadTTSModule(NeuralModule, Exportable):
         f0_std=0.0,
         energy_avg=None,
         voiced_mask=None,
+        pitch_shift=None,
     ):
 
         batch_size = text.shape[0]
+        n_tokens = text.shape[1]
+        if in_lens is None:
+            in_lens = text.new_ones((batch_size,), dtype=torch.int) * n_tokens
         spk_vec = self.encode_speaker(speaker_id)
         if speaker_id_text is None:
             speaker_id_text = speaker_id
@@ -617,6 +618,11 @@ class RadTTSModule(NeuralModule, Exportable):
             dur = pad_dur(dur, txt_enc)
             dur = dur[:, 0]
             dur = dur.clamp(0, token_duration_max)
+        # text encoded removes padding tokens so shape of text_enc is changed
+        # need to adjust pace, pitch_shift to account for this
+        txt_len_pad_removed = torch.max(in_lens)
+        pace = pace[:, :txt_len_pad_removed]
+        pitch_shift = pitch_shift[:, :txt_len_pad_removed].unsqueeze(-1)
 
         txt_enc_time_expanded, out_lens = regulate_len(
             dur,
@@ -665,8 +671,25 @@ class RadTTSModule(NeuralModule, Exportable):
         # FIXME: use replication pad
         (energy_avg, f0) = pad_energy_avg_and_f0(energy_avg, f0, max_out_len)
 
+        pitch_shift_spec_len = 0
+        if pitch_shift is not None:
+            pitch_shift_spec_len, _ = regulate_len(
+                dur,
+                pitch_shift,
+                pace,
+                replicate_to_nearest_multiple=True,
+                group_size=self.n_group_size,
+                in_lens=in_lens,
+            )
+            pitch_shift_spec_len = pitch_shift_spec_len.squeeze(-1)
+
         context_w_spkvec = self.preprocess_context(
-            txt_enc_time_expanded, spk_vec, out_lens, (f0 + f0_bias) * voiced_mask, energy_avg, assume_padded=True
+            txt_enc_time_expanded,
+            spk_vec,
+            out_lens,
+            (f0 + f0_bias + pitch_shift_spec_len) * voiced_mask,
+            energy_avg,
+            assume_padded=True,
         )
 
         residual = txt_enc.new_zeros(batch_size, 80 * self.n_group_size, torch.max(n_groups))
@@ -691,7 +714,7 @@ class RadTTSModule(NeuralModule, Exportable):
         if self.n_group_size > 1:
             mel = self.fold(mel)
 
-        return mel, out_lens, dur, f0, energy_avg
+        return {'mel': mel, 'out_lens': out_lens, 'dur': dur, 'f0': f0, 'energy_avg': energy_avg}
 
     def infer_f0(self, txt_enc_time_expanded, spk_vec, voiced_mask=None, lens=None):
         f0 = self.f0_pred_module.infer(txt_enc_time_expanded, spk_vec, lens)
@@ -771,49 +794,3 @@ class RadTTSModule(NeuralModule, Exportable):
             "num_frames": NeuralType(('B'), TokenDurationType()),
             "durs_predicted": NeuralType(('B', 'T_text'), TokenDurationType()),
         }
-
-    # Methods for model exportability
-    def _prepare_for_export(self, **kwargs):
-        self.remove_norms()
-        super()._prepare_for_export(**kwargs)
-
-    def input_example(self, max_batch=1, max_dim=256):
-        """
-        Generates input examples for tracing etc.
-        Returns:
-            A tuple of input examples.
-        """
-        par = next(self.parameters())
-        sz = (max_batch, max_dim)
-        inp = torch.randint(16, 32, sz, device=par.device, dtype=torch.int64)
-        lens = torch.randint(max_dim // 8, max_dim // 4, (max_batch,), device=par.device, dtype=torch.int)
-        zeros_src = torch.zeros_like(inp)
-        inp.scatter_(1, lens.long().unsqueeze(-1) - 1, zeros_src)  # set the inp[i, lens[i]-1] elt to zero
-        speaker = torch.randint(0, 1, (max_batch,), device=par.device, dtype=torch.int64)
-        inputs = {
-            'text': inp,
-            'lens': lens,
-            'speaker_id': speaker,
-            'speaker_id_text': speaker,
-            'speaker_id_attributes': speaker,
-        }
-        return (inputs,)
-
-    def forward_for_export(self, text, lens, speaker_id, speaker_id_text, speaker_id_attributes):
-        """
-        Runs the generator, for inputs and outputs see input_types, and output_types
-        """
-        mel, n_frames, dur, _, _ = self.infer(
-            speaker_id,
-            text,
-            speaker_id_text=speaker_id_text,
-            speaker_id_attributes=speaker_id_attributes,
-            sigma=0.0,
-            sigma_txt=0.0,
-            sigma_f0=1.0,
-            sigma_energy=1.0,
-            f0_mean=145.0,
-            f0_std=30.0,
-            in_lens=lens,
-        )
-        return mel.float(), n_frames, dur.float()

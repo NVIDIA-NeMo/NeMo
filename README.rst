@@ -251,6 +251,14 @@ NeMo Text Processing, specifically (Inverse) Text Normalization, requires `Pynin
 
 Docker containers:
 ~~~~~~~~~~~~~~~~~~
+We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.14.0`` comes with container ``nemo:22.11``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_. 
+
+To use built container, please run
+
+.. code-block:: bash
+
+    docker pull nvcr.io/nvidia/nemo:22.11
+
 To build a nemo container with Dockerfile from a branch, please run 
 
 .. code-block:: bash

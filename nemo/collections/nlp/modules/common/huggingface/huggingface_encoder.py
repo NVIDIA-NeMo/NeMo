@@ -62,7 +62,7 @@ class HuggingFaceEncoderModule(EncoderModule):
 
         model = None
         if model_name is not None:
-            if model_name in get_huggingface_pretrained_lm_models_list(include_external=True):
+            if model_name in get_huggingface_pretrained_lm_models_list(include_external=False):
                 if pretrained:
                     config_dict.pop('vocab_size')
                     if config_dict:

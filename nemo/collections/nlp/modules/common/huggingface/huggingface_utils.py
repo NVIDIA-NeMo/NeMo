@@ -17,7 +17,6 @@ from typing import List, Optional
 
 from transformers import (
     ALBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
-    ALL_PRETRAINED_CONFIG_ARCHIVE_MAP,
     BERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     DISTILBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
@@ -147,10 +146,7 @@ def get_huggingface_pretrained_lm_models_list(include_external: bool = False,) -
     """
 
     huggingface_models = []
-    if include_external:
-        huggingface_models = list(ALL_PRETRAINED_CONFIG_ARCHIVE_MAP.keys())
-    else:
-        for model in HUGGINGFACE_MODELS:
-            model_names = HUGGINGFACE_MODELS[model]["pretrained_model_list"]
-            huggingface_models.extend(model_names)
+    for model in HUGGINGFACE_MODELS:
+        model_names = HUGGINGFACE_MODELS[model]["pretrained_model_list"]
+        huggingface_models.extend(model_names)
     return huggingface_models

@@ -14,6 +14,7 @@
 
 from typing import Dict, Optional, Tuple
 
+import numpy as np
 import torch
 
 from nemo.collections.asr.parts.preprocessing.features import make_seq_mask_like
@@ -35,6 +36,7 @@ __all__ = [
     'MaskEstimatorRNN',
     'MaskReferenceChannel',
     'MaskBasedBeamformer',
+    'MaskBasedDereverbWPE',
 ]
 
 
@@ -490,3 +492,386 @@ class MaskBasedBeamformer(NeuralModule):
         output = torch.stack(output, axis=1)
 
         return output, input_length
+
+
+class WPEFilter(NeuralModule):
+    """A weighted prediction error filter.
+    Given input signal, and expected power of the desired signal, this
+    class estimates a multiple-input multiple-output prediction filter
+    and returns the filtered signal. Currently, estimation of statistics
+    and processing is performed in batch mode.
+
+    Args:
+        filter_length: Length of the prediction filter in frames, per channel
+        prediction_delay: Prediction delay in frames
+        diag_reg: Diagonal regularization for the correlation matrix Q, applied as diag_reg * trace(Q) + eps
+        eps: Small positive constant for regularization
+
+    References:
+        - Yoshioka and Nakatani, Generalization of Multi-Channel Linear Prediction
+            Methods for Blind MIMO Impulse Response Shortening, 2012
+        - Jukić et al, Group sparsity for MIMO speech dereverberation, 2015
+    """
+
+    def __init__(
+        self, filter_length: int, prediction_delay: int, diag_reg: Optional[float] = 1e-8, eps: float = 1e-10
+    ):
+        super().__init__()
+        self.filter_length = filter_length
+        self.prediction_delay = prediction_delay
+        self.diag_reg = diag_reg
+        self.eps = eps
+
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        """Returns definitions of module output ports.
+        """
+        return {
+            "input": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            "power": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            "input_length": NeuralType(('B',), LengthsType(), optional=True),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        """Returns definitions of module output ports.
+        """
+        return {
+            "output": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            "output_length": NeuralType(('B',), LengthsType(), optional=True),
+        }
+
+    @typecheck()
+    def forward(
+        self, input: torch.Tensor, power: torch.Tensor, input_length: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Given input and the predicted power for the desired signal, estimate
+        the WPE filter and return the processed signal.
+
+        Args:
+            input: Input signal, shape (B, C, F, N)
+            power: Predicted power of the desired signal, shape (B, C, F, N)
+            input_length: Optional, length of valid frames in `input`. Defaults to `None`
+
+        Returns:
+            Tuple of (processed_signal, output_length). Processed signal has the same
+            shape as the input signal (B, C, F, N), and the output length is the same
+            as the input length.
+        """
+        # Temporal weighting: average power over channels, shape (B, F, N)
+        weight = torch.mean(power, dim=1)
+        # Use inverse power as the weight
+        weight = 1 / (weight + self.eps)
+
+        # Multi-channel convolution matrix for each subband
+        tilde_input = self.convtensor(input, filter_length=self.filter_length, delay=self.prediction_delay)
+
+        # Estimate correlation matrices
+        Q, R = self.estimate_correlations(
+            input=input, weight=weight, tilde_input=tilde_input, input_length=input_length
+        )
+
+        # Estimate prediction filter
+        G = self.estimate_filter(Q=Q, R=R)
+
+        # Apply prediction filter
+        undesired_signal = self.apply_filter(filter=G, tilde_input=tilde_input)
+
+        # Dereverberation
+        desired_signal = input - undesired_signal
+
+        if input_length is not None:
+            # Mask padded frames
+            length_mask: torch.Tensor = make_seq_mask_like(
+                lengths=input_length, like=desired_signal, time_dim=-1, valid_ones=False
+            )
+            desired_signal = desired_signal.masked_fill(length_mask, 0.0)
+
+        return desired_signal, input_length
+
+    @classmethod
+    def convtensor(
+        cls, x: torch.Tensor, filter_length: int, delay: int = 0, n_steps: Optional[int] = None
+    ) -> torch.Tensor:
+        """Create a tensor equivalent of convmtx_mc for each example in the batch.
+        The input signal tensor `x` has shape (B, C, F, N).
+        Convtensor returns a view of the input signal `x`.
+
+        Note: We avoid reshaping the output to collapse channels and filter taps into
+        a single dimension, e.g., (B, F, N, -1). In this way, the output is a view of the input,
+        while an additional reshape would result in a contiguous array and more memory use.
+
+        Args:
+            x: input tensor, shape (B, C, F, N)
+            filter_length: length of the filter, determines the shape of the convolution tensor
+            delay: delay to add to the input signal `x` before constructing the convolution tensor
+            n_steps: Optional, number of time steps to keep in the out. Defaults to the number of
+                    time steps in the input tensor.
+
+        Returns:
+            Return a convolutional tensor with shape (B, C, F, n_steps, filter_length)
+        """
+        if x.ndim != 4:
+            raise RuntimeError(f'Expecting a 4-D input. Received input with shape {x.shape}')
+
+        B, C, F, N = x.shape
+
+        if n_steps is None:
+            # Keep the same length as the input signal
+            n_steps = N
+
+        # Pad temporal dimension
+        x = torch.nn.functional.pad(x, (filter_length - 1 + delay, 0))
+
+        # Build Toeplitz-like matrix view by unfolding across time
+        tilde_X = x.unfold(-1, filter_length, 1)
+
+        # Trim to the set number of time steps
+        tilde_X = tilde_X[:, :, :, :n_steps, :]
+
+        return tilde_X
+
+    @classmethod
+    def permute_convtensor(cls, x: torch.Tensor) -> torch.Tensor:
+        """Reshape and permute columns to convert the result of
+        convtensor to be equal to convmtx_mc. This is used for verification
+        purposes and it is not required to use the filter.
+
+        Args:
+            x: output of self.convtensor, shape (B, C, F, N, filter_length)
+
+        Returns:
+            Output has shape (B, F, N, C*filter_length) that corresponds to
+            the layout of convmtx_mc.
+        """
+        B, C, F, N, filter_length = x.shape
+
+        # .view will not work, so a copy will have to be created with .reshape
+        # That will result in more memory use, since we don't use a view of the original
+        # multi-channel signal
+        x = x.permute(0, 2, 3, 1, 4)
+        x = x.reshape(B, F, N, C * filter_length)
+
+        permute = []
+        for m in range(C):
+            permute[m * filter_length : (m + 1) * filter_length] = m * filter_length + np.flip(
+                np.arange(filter_length)
+            )
+        return x[..., permute]
+
+    def estimate_correlations(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        tilde_input: torch.Tensor,
+        input_length: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor]:
+        """
+        Args:
+            input: Input signal, shape (B, C, F, N)
+            weight: Time-frequency weight, shape (B, F, N)
+            tilde_input: Multi-channel convolution tensor, shape (B, C, F, N, filter_length)
+            input_length: Length of each input example, shape (B)
+
+        Returns:
+            Returns a tuple of correlation matrices for each batch.
+
+            Let `X` denote the input signal in a single subband,
+            `tilde{X}` the corresponding multi-channel correlation matrix,
+            and `w` the vector of weights.
+
+            The first output is
+                Q = tilde{X}^H * diag(w) * tilde{X}     (1)
+            for each (b, f).
+            The matrix calculated in (1) has shape (C * filter_length, C * filter_length)
+            The output is returned in a tensor with shape (B, F, C, filter_length, C, filter_length).
+
+            The second output is
+                R = tilde{X}^H * diag(w) * X            (2)
+            for each (b, f).
+            The matrix calculated in (2) has shape (C * filter_length, C)
+            The output is returned in a tensor with shape (B, F, C, filter_length, C). The last
+            dimension corresponds to output channels.
+        """
+        if input_length is not None:
+            # Take only valid samples into account
+            length_mask: torch.Tensor = make_seq_mask_like(
+                lengths=input_length, like=weight, time_dim=-1, valid_ones=False
+            )
+            weight = weight.masked_fill(length_mask, 0.0)
+
+        # Calculate (1)
+        # result: (B, F, C, filter_length, C, filter_length)
+        Q = torch.einsum('bjfik,bmfin->bfjkmn', tilde_input.conj(), weight[:, None, :, :, None] * tilde_input)
+
+        # Calculate (2)
+        # result: (B, F, C, filter_length, C)
+        R = torch.einsum('bjfik,bmfi->bfjkm', tilde_input.conj(), weight[:, None, :, :] * input)
+
+        return Q, R
+
+    def estimate_filter(self, Q: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
+        """Estimate the MIMO prediction filter as
+            G(b,f) = Q(b,f) \ R(b,f)
+        for each subband in each example in the batch (b, f).
+
+        Args:
+            Q: shape (B, F, C, filter_length, C, filter_length)
+            R: shape (B, F, C, filter_length, C)
+
+        Returns:
+            Complex-valued prediction filter, shape (B, C, F, C, filter_length)
+        """
+        B, F, C, filter_length, _, _ = Q.shape
+        assert (
+            filter_length == self.filter_length
+        ), f'Shape of Q {Q.shape} is not matching filter length {self.filter_length}'
+
+        # Reshape to analytical dimensions for each (b, f)
+        Q = Q.reshape(B, F, C * self.filter_length, C * filter_length)
+        R = R.reshape(B, F, C * self.filter_length, C)
+
+        # Diagonal regularization
+        if self.diag_reg:
+            # Regularization: diag_reg * trace(Q) + eps
+            diag_reg = self.diag_reg * torch.diagonal(Q, dim1=-2, dim2=-1).sum(-1).real + self.eps
+            # Apply regularization on Q
+            Q = Q + torch.diag_embed(diag_reg.unsqueeze(-1) * torch.ones(Q.shape[-1], device=Q.device))
+
+        # Solve for the filter
+        G = torch.linalg.solve(Q, R)
+
+        # Reshape to desired representation: (B, F, input channels, filter_length, output channels)
+        G = G.reshape(B, F, C, filter_length, C)
+        # Move output channels to front: (B, output channels, F, input channels, filter_length)
+        G = G.permute(0, 4, 1, 2, 3)
+
+        return G
+
+    def apply_filter(
+        self, filter: torch.Tensor, input: Optional[torch.Tensor] = None, tilde_input: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Apply a prediction filter `filter` on the input `input` as
+
+            output(b,f) = tilde{input(b,f)} * filter(b,f)
+
+        If available, directly use the convolution matrix `tilde_input`.
+
+        Args:
+            input: Input signal, shape (B, C, F, N)
+            tilde_input: Convolution matrix for the input signal, shape (B, C, F, N, filter_length)
+            filter: Prediction filter, shape (B, C, F, C, filter_length)
+
+        Returns:
+            Multi-channel signal obtained by applying the prediction filter on
+            the input signal, same shape as input (B, C, F, N)
+        """
+        if input is None and tilde_input is None:
+            raise RuntimeError(f'Both inputs cannot be None simultaneously.')
+        if input is not None and tilde_input is not None:
+            raise RuntimeError(f'Both inputs cannot be provided simultaneously.')
+
+        if tilde_input is None:
+            tilde_input = self.convtensor(input, filter_length=self.filter_length, delay=self.prediction_delay)
+
+        # For each (batch, output channel, f, time step), sum across (input channel, filter tap)
+        output = torch.einsum('bjfik,bmfjk->bmfi', tilde_input, filter)
+
+        return output
+
+
+class MaskBasedDereverbWPE(NeuralModule):
+    """Multi-channel linear prediction-based dereverberation using
+    weighted prediction error for filter estimation.
+
+    An optional mask to estimate the signal power can be provided.
+    If a time-frequency mask is not provided, the algorithm corresponds
+    to the conventional WPE algorithm.
+
+    Args:
+        filter_length: Length of the convolutional filter for each channel in frames.
+        prediction_delay: Delay of the input signal for multi-channel linear prediction in frames.
+        num_iterations: Number of iterations for reweighting
+        mask_min_db: Threshold mask to a minimal value before applying it, defaults to -200dB
+        mask_max_db: Threshold mask to a minimal value before applying it, defaults to 0dB
+        diag_reg: Diagonal regularization for WPE
+        eps: Small regularization constant
+
+    References:
+        - Kinoshita et al, Neural network-based spectrum estimation for online WPE dereverberation, 2017
+        - Yoshioka and Nakatani, Generalization of Multi-Channel Linear Prediction Methods for Blind MIMO Impulse Response Shortening, 2012
+    """
+
+    def __init__(
+        self,
+        filter_length: int,
+        prediction_delay: int,
+        num_iterations: int = 1,
+        mask_min_db: float = -200,
+        mask_max_db: float = 0,
+        diag_reg: Optional[float] = 1e-8,
+        eps: float = 1e-10,
+    ):
+        super().__init__()
+        # Filter setup
+        self.filter = WPEFilter(
+            filter_length=filter_length, prediction_delay=prediction_delay, diag_reg=diag_reg, eps=eps
+        )
+        self.num_iterations = num_iterations
+        # Mask thresholding
+        self.mask_min = db2mag(mask_min_db)
+        self.mask_max = db2mag(mask_max_db)
+
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        """Returns definitions of module output ports.
+        """
+        return {
+            "input": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            "input_length": NeuralType(('B',), LengthsType(), optional=True),
+            "mask": NeuralType(('B', 'C', 'D', 'T'), FloatType(), optional=True),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        """Returns definitions of module output ports.
+        """
+        return {
+            "output": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            "output_length": NeuralType(('B',), LengthsType(), optional=True),
+        }
+
+    @typecheck()
+    def forward(
+        self, input: torch.Tensor, input_length: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Given an input signal `input`, apply the WPE dereverberation algoritm.
+
+        Args:
+            input: C-channel complex-valued spectrogram, shape (B, C, F, N)
+            input_length: Optional length for each signal in the batch, shape (B,)
+            mask: Optional mask, shape (B, 1, F, N) or (B, C, F, N)
+
+        Returns:
+            Processed tensor with the same number of channels as the input,
+            shape (B, C, F, N).
+        """
+        io_dtype = input.dtype
+
+        with torch.cuda.amp.autocast(enabled=False):
+
+            output = input.cdouble()
+
+            for i in range(self.num_iterations):
+                magnitude = torch.abs(output)
+                if i == 0 and mask is not None:
+                    # Apply thresholds
+                    mask = torch.clamp(mask, min=self.mask_min, max=self.mask_max)
+                    # Mask magnitude
+                    magnitude = mask * magnitude
+                # Calculate power
+                power = magnitude ** 2
+                # Apply filter
+                output, output_length = self.filter(input=output, input_length=input_length, power=power)
+
+        return output.to(io_dtype), output_length

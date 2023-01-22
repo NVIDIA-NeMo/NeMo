@@ -459,3 +459,55 @@ def wrap_to_pi(x: torch.Tensor) -> torch.Tensor:
     """
     pi = torch.tensor(math.pi, device=x.device)
     return torch.remainder(x + pi, 2 * pi) - pi
+
+
+def convmtx_numpy(x: np.ndarray, filter_length: int, delay: int = 0, n_steps: Optional[int] = None) -> np.ndarray:
+    """Construct a causal convolutional matrix from x delayed by `delay` samples.
+
+    Args:
+        x: input signal, shape (N,)
+        filter_length: length of the filter in samples
+        delay: delay the signal by a number of samples
+        n_steps: total number of time steps (rows) for the output matrix
+
+    Returns:
+        Convolutional matrix, shape (n_steps, filter_length)
+    """
+    if x.ndim != 1:
+        raise ValueError(f'Expecting one-dimensional signal. Received signal with shape {x.shape}')
+
+    if n_steps is None:
+        # Keep the same length as the input signal
+        n_steps = len(x)
+
+    # pad as necessary
+    x_pad = np.hstack([np.zeros(delay), x])
+    if (pad_len := n_steps - len(x_pad)) > 0:
+        x_pad = np.hstack([x_pad, np.zeros(pad_len)])
+    else:
+        x_pad = x_pad[:n_steps]
+
+    return scipy.linalg.toeplitz(x_pad, np.hstack([x_pad[0], np.zeros(filter_length - 1)]))
+
+
+def convmtx_mc_numpy(x: np.ndarray, filter_length: int, delay: int = 0, n_steps: Optional[int] = None) -> np.ndarray:
+    """Construct a causal multi-channel convolutional matrix from `x` delayed by `delay` samples.
+
+    Args:
+        x: input signal, shape (N, M)
+        filter_length: length of the filter in samples
+        delay: delay the signal by a number of samples
+        n_steps: total number of time steps (rows) for the output matrix
+
+    Returns:
+        Multi-channel convolutional matrix, shape (n_steps, M * filter_length)
+    """
+    if x.ndim != 2:
+        raise ValueError(f'Expecting two-dimensional signal. Received signal with shape {x.shape}')
+
+    mc_mtx = []
+
+    for m in range(x.shape[1]):
+        mc_mtx.append(convmtx_numpy(x[:, m], filter_length=filter_length, delay=delay, n_steps=n_steps))
+
+    return np.hstack(mc_mtx)

@@ -23,6 +23,7 @@ import pytest
 from nemo.collections.asr.parts.utils.audio_utils import SOUND_VELOCITY as sound_velocity
 from nemo.collections.asr.parts.utils.audio_utils import (
     calculate_sdr_numpy,
+    convmtx_mc_numpy,
     db2mag,
     estimated_coherence,
     generate_approximate_noise_field,
@@ -364,3 +365,38 @@ class TestAudioUtilsElements:
             assert np.isclose(
                 estimated_sdr, golden_sdr, atol=atol
             ), f'Example {n}: estimated ({estimated_sdr}) not matching the actual value ({golden_sdr})'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('filter_length', [10])
+    @pytest.mark.parametrize('delay', [0, 5])
+    def test_convmtx_mc(self, num_channels: int, filter_length: int, delay: int):
+        """Test convmtx against convolve and sum.
+        Multiplication of convmtx_mc of input with a vectorized multi-channel filter
+        should match the sum of convolution of each input channel with the corresponding
+        filter.
+        """
+        atol = 1e-6
+        random_seed = 42
+        num_examples = 10
+        num_samples = 2000
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for n in range(num_examples):
+            x = _rng.normal(size=(num_samples, num_channels))
+            f = _rng.normal(size=(filter_length, num_channels))
+
+            CM = convmtx_mc_numpy(x=x, filter_length=filter_length, delay=delay)
+
+            # Multiply convmtx_mc with the vectorized filter
+            uut = CM @ f.transpose().reshape(-1, 1)
+            uut = uut.squeeze(1)
+
+            # Calculate reference as sum of convolutions
+            golden_ref = 0
+            for m in range(num_channels):
+                x_m_delayed = np.hstack([np.zeros(delay), x[:, m]])
+                golden_ref += np.convolve(x_m_delayed, f[:, m], mode='full')[: len(x)]
+
+            assert np.allclose(uut, golden_ref, atol=atol), f'Example {n}: UUT not matching the reference.'

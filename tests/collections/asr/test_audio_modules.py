@@ -19,8 +19,14 @@ import numpy as np
 import pytest
 import torch
 
-from nemo.collections.asr.modules.audio_modules import MaskReferenceChannel, SpectrogramToMultichannelFeatures
+from nemo.collections.asr.modules.audio_modules import (
+    MaskBasedDereverbWPE,
+    MaskReferenceChannel,
+    SpectrogramToMultichannelFeatures,
+    WPEFilter,
+)
 from nemo.collections.asr.modules.audio_preprocessing import AudioToSpectrogram
+from nemo.collections.asr.parts.utils.audio_utils import convmtx_mc_numpy
 
 try:
     importlib.import_module('torchaudio')
@@ -189,3 +195,155 @@ class TestMaskBasedProcessor:
 
                 # Compare values
                 assert np.allclose(out_np, out_golden, atol=atol), f'Output not matching for example {n}'
+
+
+class TestMaskBasedDereverb:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('filter_length', [10])
+    @pytest.mark.parametrize('delay', [0, 5])
+    def test_wpe_convtensor(self, num_channels: int, filter_length: int, delay: int):
+        """Test construction of convolutional tensor in WPE. Compare against
+        reference implementation convmtx_mc.
+        """
+        atol = 1e-6
+        random_seed = 42
+        num_examples = 10
+        batch_size = 8
+        num_subbands = 15
+        num_frames = 21
+
+        _rng = np.random.default_rng(seed=random_seed)
+        input_size = (batch_size, num_channels, num_subbands, num_frames)
+
+        for n in range(num_examples):
+            X = _rng.normal(size=input_size) + 1j * _rng.normal(size=input_size)
+
+            # Reference
+            tilde_X_ref = np.zeros((batch_size, num_subbands, num_frames, num_channels * filter_length), dtype=X.dtype)
+            for b in range(batch_size):
+                for f in range(num_subbands):
+                    tilde_X_ref[b, f, :, :] = convmtx_mc_numpy(
+                        X[b, :, f, :].transpose(), filter_length=filter_length, delay=delay
+                    )
+
+            # UUT
+            tilde_X_uut = WPEFilter.convtensor(torch.tensor(X), filter_length=filter_length, delay=delay)
+
+            # UUT has vectors arranged in a tensor shape with permuted columns
+            # Reorganize to match the shape and column permutation
+            tilde_X_uut = WPEFilter.permute_convtensor(tilde_X_uut)
+            tilde_X_uut = tilde_X_uut.cpu().detach().numpy()
+
+            assert np.allclose(tilde_X_uut, tilde_X_ref, atol=atol), f'Example {n}: comparison failed'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('filter_length', [10])
+    @pytest.mark.parametrize('delay', [0, 5])
+    def test_wpe_filter(self, num_channels: int, filter_length: int, delay: int):
+        """Test estimation of correlation matrices, filter and filtering.
+        """
+        atol = 1e-6
+        random_seed = 42
+        num_examples = 10
+        batch_size = 4
+        num_subbands = 15
+        num_frames = 50
+
+        wpe_filter = WPEFilter(filter_length=filter_length, prediction_delay=delay, diag_reg=None)
+
+        _rng = np.random.default_rng(seed=random_seed)
+        input_size = (batch_size, num_channels, num_subbands, num_frames)
+
+        for n in range(num_examples):
+            X = torch.tensor(_rng.normal(size=input_size) + 1j * _rng.normal(size=input_size))
+            weight = torch.tensor(_rng.uniform(size=(batch_size, num_subbands, num_frames)))
+
+            # Create convtensor (B, C, F, N, filter_length)
+            tilde_X = wpe_filter.convtensor(X, filter_length=filter_length, delay=delay)
+
+            # Test 1:
+            # estimate_correlation
+
+            # Reference
+            # move channels to back
+            X_golden = X.permute(0, 2, 3, 1)
+            # move channels to back and reshape to (B, F, N, C*filter_length)
+            tilde_X_golden = tilde_X.permute(0, 2, 3, 1, 4).reshape(
+                batch_size, num_subbands, num_frames, num_channels * filter_length
+            )
+            # (B, F, C * filter_length, C * filter_length)
+            Q_golden = torch.matmul(tilde_X_golden.transpose(-1, -2).conj(), weight[..., None] * tilde_X_golden)
+            # (B, F, C * filter_length, C)
+            R_golden = torch.matmul(tilde_X_golden.transpose(-1, -2).conj(), weight[..., None] * X_golden)
+
+            # UUT
+            Q_uut, R_uut = wpe_filter.estimate_correlations(input=X, weight=weight, tilde_input=tilde_X)
+            # Flatten (B, F, C, filter_length, C, filter_length) into (B, F, C*filter_length, C*filter_length)
+            Q_uut_flattened = Q_uut.flatten(start_dim=-2, end_dim=-1).flatten(start_dim=-3, end_dim=-2)
+            # Flatten (B, F, C, filter_length, C, filter_length) into (B, F, C*filter_length, C*filter_length)
+            R_uut_flattened = R_uut.flatten(start_dim=-3, end_dim=-2)
+
+            assert torch.allclose(Q_uut_flattened, Q_golden, atol=atol), f'Example {n}: comparison failed for Q'
+            assert torch.allclose(R_uut_flattened, R_golden, atol=atol), f'Example {n}: comparison failed for R'
+
+            # Test 2:
+            # estimate_filter
+
+            # Reference
+            G_golden = torch.linalg.solve(Q_golden, R_golden)
+
+            # UUT
+            G_uut = wpe_filter.estimate_filter(Q_uut, R_uut)
+            # Flatten and move output channels to back
+            G_uut_flattened = G_uut.reshape(batch_size, num_channels, num_subbands, -1).permute(0, 2, 3, 1)
+
+            assert torch.allclose(G_uut_flattened, G_golden, atol=atol), f'Example {n}: comparison failed for G'
+
+            # Test 3:
+            # apply_filter
+
+            # Reference
+            U_golden = torch.matmul(tilde_X_golden, G_golden)
+
+            # UUT
+            U_uut = wpe_filter.apply_filter(filter=G_uut, tilde_input=tilde_X)
+            U_uut_ref = U_uut.permute(0, 2, 3, 1)
+
+            assert torch.allclose(
+                U_uut_ref, U_golden, atol=atol
+            ), f'Example {n}: comparison failed for undesired output U'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [3])
+    @pytest.mark.parametrize('filter_length', [5])
+    @pytest.mark.parametrize('delay', [0, 2])
+    def test_mask_based_dereverb_init(self, num_channels: int, filter_length: int, delay: int):
+        """Test that dereverb can be initialized and can process audio.
+        """
+        num_examples = 10
+        batch_size = 8
+        num_subbands = 15
+        num_frames = 21
+        num_iterations = 2
+
+        input_size = (batch_size, num_subbands, num_frames, num_channels)
+
+        dereverb = MaskBasedDereverbWPE(
+            filter_length=filter_length, prediction_delay=delay, num_iterations=num_iterations
+        )
+
+        for n in range(num_examples):
+            # multi-channel input
+            x = torch.randn(input_size) + 1j * torch.randn(input_size)
+            # random input_length
+            x_length = torch.randint(1, num_frames, (batch_size,))
+            # multi-channel mask
+            mask = torch.rand(input_size)
+
+            # UUT
+            y, y_length = dereverb(input=x, input_length=x_length, mask=mask)
+
+            assert y.shape == x.shape, 'Output shape not matching, example {n}'
+            assert torch.equal(y_length, x_length), 'Length not matching, example {n}'

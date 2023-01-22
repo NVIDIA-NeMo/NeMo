@@ -732,7 +732,7 @@ class AudioToSpectrogram(NeuralModule):
         """
         return {
             "input": NeuralType(('B', 'C', 'T'), AudioSignal()),
-            "input_length": NeuralType(('B',), LengthsType()),
+            "input_length": NeuralType(('B',), LengthsType(), optional=True),
         }
 
     @property
@@ -745,7 +745,9 @@ class AudioToSpectrogram(NeuralModule):
         }
 
     @typecheck()
-    def forward(self, input: torch.Tensor, input_length: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, input: torch.Tensor, input_length: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert a batch of C-channel input signals
         into a batch of complex-valued spectrograms.
 
@@ -757,8 +759,6 @@ class AudioToSpectrogram(NeuralModule):
             Output spectrogram with F subbands and N time frames, shape (B, C, F, N)
             and output length with shape (B,).
         """
-        output_length = self.get_output_length(input_length=input_length)
-
         B, T = input.size(0), input.size(-1)
         input = input.view(B, -1, T)
 
@@ -766,11 +766,17 @@ class AudioToSpectrogram(NeuralModule):
         with torch.cuda.amp.autocast(enabled=False):
             output = self.stft(input.float())
 
-        # Mask padded frames
-        length_mask: torch.Tensor = make_seq_mask_like(
-            lengths=output_length, like=output, time_dim=-1, valid_ones=False
-        )
-        output = output.masked_fill(length_mask, 0.0)
+        if input_length is not None:
+            # Mask padded frames
+            output_length = self.get_output_length(input_length=input_length)
+
+            length_mask: torch.Tensor = make_seq_mask_like(
+                lengths=output_length, like=output, time_dim=-1, valid_ones=False
+            )
+            output = output.masked_fill(length_mask, 0.0)
+        else:
+            # Assume all frames are valid for all examples in the batch
+            output_length = output.size(-1) * torch.ones(B, device=output.device).long()
 
         return output, output_length
 
@@ -828,7 +834,7 @@ class SpectrogramToAudio(NeuralModule):
         """
         return {
             "input": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
-            "input_length": NeuralType(('B',), LengthsType()),
+            "input_length": NeuralType(('B',), LengthsType(), optional=True),
         }
 
     @property
@@ -841,7 +847,7 @@ class SpectrogramToAudio(NeuralModule):
         }
 
     @typecheck()
-    def forward(self, input: torch.Tensor, input_length: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, input_length: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Convert input complex-valued spectrogram to a time-domain
         signal. Multi-channel IO is supported.
 
@@ -853,8 +859,6 @@ class SpectrogramToAudio(NeuralModule):
             Time-domain signal with T time-domain samples and C channels, (B, C, T)
             and output length with shape (B,).
         """
-        output_length = self.get_output_length(input_length=input_length)
-
         B, F, N = input.size(0), input.size(-2), input.size(-1)
         assert F == self.F, f'Number of subbands F={F} not matching self.F={self.F}'
         input = input.view(B, -1, F, N)
@@ -863,11 +867,17 @@ class SpectrogramToAudio(NeuralModule):
         with torch.cuda.amp.autocast(enabled=False):
             output = self.istft(input.cfloat())
 
-        # Mask padded samples
-        length_mask: torch.Tensor = make_seq_mask_like(
-            lengths=output_length, like=output, time_dim=-1, valid_ones=False
-        )
-        output = output.masked_fill(length_mask, 0.0)
+        if input_length is not None:
+            # Mask padded samples
+            output_length = self.get_output_length(input_length=input_length)
+
+            length_mask: torch.Tensor = make_seq_mask_like(
+                lengths=output_length, like=output, time_dim=-1, valid_ones=False
+            )
+            output = output.masked_fill(length_mask, 0.0)
+        else:
+            # Assume all frames are valid for all examples in the batch
+            output_length = output.size(-1) * torch.ones(B, device=output.device).long()
 
         return output, output_length
 

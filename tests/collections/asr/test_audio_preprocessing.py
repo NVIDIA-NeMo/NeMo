@@ -66,9 +66,7 @@ class TestAudioSpectrogram:
                 for b in range(batch_size):
 
                     # Transform just the current example
-                    b_spec, b_spec_len = audio2spec(
-                        input=x[b : b + 1, :, : input_length[b]], input_length=torch.tensor([input_length[b]])
-                    )
+                    b_spec, b_spec_len = audio2spec(input=x[b : b + 1, :, : input_length[b]])
                     actual_len = b_spec.size(-1)
 
                     # Check lengths
@@ -125,9 +123,7 @@ class TestAudioSpectrogram:
                 for b in range(batch_size):
 
                     # Transform just the current example
-                    b_x, b_x_len = spec2audio(
-                        input=spec[b : b + 1, ..., : input_length[b]], input_length=torch.tensor([input_length[b]])
-                    )
+                    b_x, b_x_len = spec2audio(input=spec[b : b + 1, ..., : input_length[b]])
 
                     actual_len = b_x.size(-1)
 
@@ -179,9 +175,7 @@ class TestAudioSpectrogram:
             for n in range(num_examples):
                 x = _rng.normal(size=(batch_size, num_channels, num_samples))
 
-                x_spec, x_spec_length = audio2spec(
-                    input=torch.Tensor(x), input_length=torch.Tensor([num_samples] * batch_size)
-                )
+                x_spec, x_spec_length = audio2spec(input=torch.Tensor(x))
                 x_hat, x_hat_length = spec2audio(input=x_spec, input_length=x_spec_length)
 
                 assert np.allclose(

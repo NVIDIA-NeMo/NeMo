@@ -27,7 +27,6 @@ from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy
 from nemo.collections.common import tokenizers
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
-from nemo.utils.app_state import AppState, ModelMetadataRegistry
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__
@@ -100,43 +99,22 @@ class NestedRNNTModel(ASRModel):
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         super().__init__(cfg=cfg, trainer=trainer)
 
-        if 'inner_model_file' in self.cfg:
-            filepath = self.register_artifact('inner_model_file', self.cfg.inner_model_file)
-            print("Restoring inner model file from nested nemo model path :", filepath)
-            self.inner_model = ASRModel.restore_from(filepath, map_location='cpu')
-
+        if 'inner_model' in self.cfg:
+            self.register_nemo_submodule(
+                "inner_model", config_field="inner_model", model=EncDecRNNTBPEModel(self.cfg.inner_model)
+            )
         else:
-            # Restore a model from net
-            self.inner_model = ASRModel.from_pretrained('stt_en_conformer_transducer_small', map_location='cpu')
-            metadata = AppState().get_model_metadata_from_guid(
-                self.inner_model.model_guid
-            )  # type: ModelMetadataRegistry
-
-            # register the checkpoint from cache
-            self.register_artifact('inner_model_file', metadata.restoration_path)
+            # Restore a model from pretrained checkpoint
+            self.register_nemo_submodule(
+                "inner_model",
+                config_field="inner_model",
+                model=ASRModel.from_pretrained('stt_en_conformer_transducer_small', map_location='cpu'),
+            )
 
         self.linear = torch.nn.Linear(
             self.inner_model.tokenizer.vocab_size + 1, self.inner_model.tokenizer.vocab_size + 1
         )
         self.inner_model.freeze()
-
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        original_state_dict = super().state_dict(destination, prefix, keep_vars)
-
-        # remove inner state dict
-        keys = list(original_state_dict.keys())
-        for key in keys:
-            if 'inner_model' in key:
-                original_state_dict.pop(key)
-
-        return original_state_dict
-
-    def load_state_dict(self, state_dict: 'OrderedDict[str, Tensor]', strict: bool = None):
-        if strict is not None:
-            print("Warning: `strict` is ignored for this model. Setting strict to `False`.")
-
-        strict = False
-        super().load_state_dict(state_dict, strict)
 
     setup_training_data = lambda *args, **kwargs: None
     setup_validation_data = lambda *args, **kwargs: None
@@ -349,23 +327,10 @@ class TestEncDecRNNTBPEModel:
 
             # Unpack the nemo file
             NestedRNNTModel._save_restore_connector._unpack_nemo_file(path, tmp_dir)
-            files = list(os.listdir(tmp_dir))
-            inner_nemo_file = None
-            for fn in files:
-                if fn.endswith('stt_en_conformer_transducer_small.nemo'):
-                    inner_nemo_file = fn
-                    break
 
-            assert inner_nemo_file is not None
-            print(inner_nemo_file)
-            print(list(os.listdir(tmp_dir)))
-
-            # Check size of inner and outer checkpoint, that it prevents duplication of parameters.
-            fp = os.path.join(tmp_dir, inner_nemo_file)
-            assert os.path.getsize(fp) > 5 * (2 ** 20)  # Assert the base nemo file is greater than 50 MB
-
-            fp_outer = os.path.join(tmp_dir, 'model_weights.ckpt')
-            assert os.path.getsize(fp_outer) < 5 * (2 ** 20)  # Assert the inner weights are less than 5 MB
+            # Check size of the checkpoint, which contains weights from pretrained model + linear layer
+            fp_weights = os.path.join(tmp_dir, 'model_weights.ckpt')
+            assert os.path.getsize(fp_weights) > 50 * (2 ** 20)  # Assert the weights are more than 50 MB
 
             # Check if param after restoration is exact match
             original_state_dict = model.inner_model.state_dict()

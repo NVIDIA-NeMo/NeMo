@@ -635,7 +635,64 @@ The resulting .nemo file will then have the following file:
     4978b28103264263a03439aaa6560e5e_tokenizer.model
 
 If ``verify_src_exists`` is set to ``False``, then the artifact is optional. This means that ``.register_artifact`` will return ``None`` 
-if the ``src`` cannot be found. 
+if the ``src`` cannot be found.
+
+Nested NeMo Models
+------------------
+
+In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy or use hybrid ASR-TTS models to generate audio from the text on the fly to train or finetune the ASR model.
+
+There are 3 ways to instantiate child models inside parent models:
+
+- use subconfig directly
+- use the ``.nemo`` checkpoint path to load the child model
+- use a pretrained NeMo model
+
+To register a child model, use the ``register_nemo_submodule`` method of the parent model. This method will add the child model to a provided model attribute and, in the serialization process, will handle child artifacts correctly and store the child model config in the parent model config in ``config_field``.
+
+.. code-block:: python
+
+    from nemo.core.classes import ModelPT
+
+    class ChildModel(ModelPT):
+        ...  # implement necessary methods
+
+    class ParentModel(ModelPT):
+        def __init__(self, cfg, trainer=None):
+            super().__init__(cfg=cfg, trainer=trainer)
+
+            # optionally annotate type for IDE autocompletion and type checking
+            self.child_model: Optional[ChildModel]
+            if cfg.get("child_model") is not None:
+                # load directly from config
+                # either if config provided initially, or automatically
+                # after model restoration
+                self.register_nemo_submodule(
+                    name="child_model",
+                    config_field="child_model",
+                    model=ChildModel(self.cfg.child_model, trainer=trainer),
+                )
+            elif cfg.get('child_model_path') is not None:
+                # load from .nemo model checkpoint
+                # while saving, config will be automatically assigned/updated
+                # in cfg.child_model
+                self.register_nemo_submodule(
+                    name="child_model",
+                    config_field="child_model",
+                    model=ChildModel.restore_from(self.cfg.child_model_path, trainer=trainer),
+                )
+            elif cfg.get('child_model_name') is not None:
+                # load from pretrained model
+                # while saving, config will be automatically assigned/updated
+                # in cfg.child_model
+                self.register_nemo_submodule(
+                    name="child_model",
+                    config_field="child_model",
+                    model=ChildModel.from_pretrained(self.cfg.child_model_name, trainer=trainer),
+                )
+            else:
+                self.child_model = None
+
 
 Neural Modules
 ==============

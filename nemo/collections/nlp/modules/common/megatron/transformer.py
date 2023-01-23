@@ -496,19 +496,19 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
             if attention_bias is not None:
                 attention_bias = attention_bias.expand_as(residual)
 
-            layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
-            # print(f"Layer: {self.layer_number} Attention checksum {layernorm_input.sum()}")
-
             if self.is_adapter_available():
                 adapter_1 = self.get_adapter_module(AdapterName.PRE_ATTN_ADAPTER)
                 if adapter_1:
                     strategy = adapter_1.adapter_strategy
-                    layernorm_input = self.forward_single_enabled_adapter_(
-                        layernorm_input,
+                    attention_output = self.forward_single_enabled_adapter_(
+                        attention_output,
                         adapter_1,
                         adapter_name=AdapterName.PRE_ATTN_ADAPTER,
                         adapter_strategy=strategy,
                     )
+
+            layernorm_input = bias_dropout_add_func(attention_output, attention_bias, residual, self.hidden_dropout)
+            # print(f"Layer: {self.layer_number} Attention checksum {layernorm_input.sum()}")
 
             # Post-LN normalization after residual
             if self.transformer_block_type == 'post_ln':
@@ -576,7 +576,15 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 layernorm_input = normalization_output
         # MLP.
         mlp_output, mlp_bias = self.mlp(normalization_output)
-
+        if (
+            self.is_adapter_available()
+        ):  # TODO: (@adithyre) was able to move adapter_2 back to the end of the transformer after ptl 1.7 update.
+            adapter_2 = self.get_adapter_module(AdapterName.POST_ATTN_ADAPTER)
+            if adapter_2:
+                strategy = adapter_2.adapter_strategy
+                mlp_output = self.forward_single_enabled_adapter_(
+                    mlp_output, adapter_2, adapter_name=AdapterName.POST_ATTN_ADAPTER, adapter_strategy=strategy
+                )
         residual = layernorm_input
 
         bias_dropout_add_func = self._get_bias_droput_add_func(
@@ -591,16 +599,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
 
         if get_key_value:
             output = [output, presents]
-
-        if (
-            self.is_adapter_available()
-        ):  # TODO: (@adithyre) was able to move adapter_2 back to the end of the transformer after ptl 1.7 update.
-            adapter_2 = self.get_adapter_module(AdapterName.POST_ATTN_ADAPTER)
-            if adapter_2:
-                strategy = adapter_2.adapter_strategy
-                output = self.forward_single_enabled_adapter_(
-                    output, adapter_2, adapter_name=AdapterName.POST_ATTN_ADAPTER, adapter_strategy=strategy
-                )
 
         return output
 

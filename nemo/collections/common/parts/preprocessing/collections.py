@@ -353,14 +353,12 @@ class ASRSpeechLabel(SpeechLabel):
         elif 'audio_filepath' in item:
             item['audio_file'] = item.pop('audio_filepath')
         else:
-            raise ValueError(
-                f"Manifest file has invalid json line " f"structure: {line} without proper audio file key."
-            )
-        item['audio_file'] = os.path.expanduser(item['audio_file'])
+            raise ValueError(f"Manifest file has invalid json line structure: {line} without proper audio file key.")
+        item['audio_file'] = manifest.get_full_path(audio_file=item['audio_file'], manifest_file=manifest_file)
 
         # Duration.
         if 'duration' not in item:
-            raise ValueError(f"Manifest file has invalid json line " f"structure: {line} without proper duration key.")
+            raise ValueError(f"Manifest file has invalid json line structure: {line} without proper duration key.")
 
         # Label.
         if 'command' in item:
@@ -370,7 +368,7 @@ class ASRSpeechLabel(SpeechLabel):
         elif 'label' in item:
             pass
         else:
-            raise ValueError(f"Manifest file has invalid json line " f"structure: {line} without proper label key.")
+            raise ValueError(f"Manifest file has invalid json line structure: {line} without proper label key.")
 
         item = dict(
             audio_file=item['audio_file'],
@@ -852,7 +850,7 @@ class Audio(_Collection):
 
 
 class AudioCollection(Audio):
-    """List of audio files from a manifest file. 
+    """List of audio files from a manifest file.
     """
 
     def __init__(

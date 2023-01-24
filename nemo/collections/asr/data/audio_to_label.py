@@ -19,7 +19,7 @@ import braceexpand
 import torch
 import webdataset as wd
 
-from nemo.collections.asr.data.audio_to_text import expand_audio_filepaths
+from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_audio_filepaths
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
 from nemo.collections.common.parts.preprocessing import collections
 from nemo.core.classes import Dataset, IterableDataset
@@ -278,6 +278,7 @@ target_label_n, "offset": offset_in_sec_n}
         super().__init__()
         if isinstance(manifest_filepath, str):
             manifest_filepath = manifest_filepath.split(',')
+        cache_datastore_manifests(manifest_filepaths=manifest_filepath, cache_audio=True)
         self.collection = collections.ASRSpeechLabel(
             manifests_files=manifest_filepath,
             min_duration=min_duration,
@@ -535,6 +536,7 @@ class _TarredAudioLabelDataset(IterableDataset):
         world_size: int = 0,
         is_regression_task: bool = False,
     ):
+        cache_datastore_manifests(manifest_filepaths=manifest_filepath)
         self.collection = collections.ASRSpeechLabel(
             manifests_files=manifest_filepath,
             min_duration=min_duration,

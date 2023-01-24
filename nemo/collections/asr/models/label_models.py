@@ -25,8 +25,11 @@ from pytorch_lightning import Trainer
 from torchmetrics import Accuracy
 from tqdm import tqdm
 
-from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset
-from nemo.collections.asr.data.audio_to_label_dataset import get_tarred_speech_label_dataset
+from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset, cache_datastore_manifests
+from nemo.collections.asr.data.audio_to_label_dataset import (
+    get_concat_tarred_speech_label_dataset,
+    get_tarred_speech_label_dataset,
+)
 from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
@@ -165,7 +168,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         self.encoder = EncDecSpeakerLabelModel.from_config_dict(cfg.encoder)
         self.decoder = EncDecSpeakerLabelModel.from_config_dict(cfg.decoder)
 
-        self._macro_accuracy = Accuracy(num_classes=num_classes, average='macro', task='multiclass')
+        self._macro_accuracy = Accuracy(num_classes=num_classes, top_k=1, average='macro', task='multiclass')
 
         self.labels = None
         if hasattr(self._cfg, 'spec_augment') and self._cfg.spec_augment is not None:
@@ -183,6 +186,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         manifest_filepaths = convert_to_config_list(data_layer_config['manifest_filepath'])
 
         for manifest_filepath in itertools.chain.from_iterable(manifest_filepaths):
+            cache_datastore_manifests(manifest_filepaths=manifest_filepath)
             collection = ASRSpeechLabel(
                 manifests_files=manifest_filepath,
                 min_duration=data_layer_config.get("min_duration", None),
@@ -215,13 +219,22 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
                 return None
 
             shuffle_n = config.get('shuffle_n', 4 * config['batch_size']) if shuffle else 0
-            dataset = get_tarred_speech_label_dataset(
-                featurizer=featurizer,
-                config=config,
-                shuffle_n=shuffle_n,
-                global_rank=self.global_rank,
-                world_size=self.world_size,
-            )
+            if config.get("is_concat", False):
+                dataset = get_concat_tarred_speech_label_dataset(
+                    featurizer=featurizer,
+                    config=config,
+                    shuffle_n=shuffle_n,
+                    global_rank=self.global_rank,
+                    world_size=self.world_size,
+                )
+            else:
+                dataset = get_tarred_speech_label_dataset(
+                    featurizer=featurizer,
+                    config=config,
+                    shuffle_n=shuffle_n,
+                    global_rank=self.global_rank,
+                    world_size=self.world_size,
+                )
             shuffle = False
         else:
             if 'manifest_filepath' in config and config['manifest_filepath'] is None:
@@ -450,12 +463,12 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
     def get_label(self, path2audio_file):
         """
-        Returns label of path2audio_file from classes the model was trained on. 
+        Returns label of path2audio_file from classes the model was trained on.
         Args:
             path2audio_file: path to audio wav file
 
         Returns:
-            label: label corresponding to the trained model        
+            label: label corresponding to the trained model
         """
         _, logits = self.infer_file(path2audio_file=path2audio_file)
         mapped_labels = list(self._cfg['train_ds']['labels'])
@@ -515,10 +528,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
     @torch.no_grad()
     def batch_inference(self, manifest_filepath, batch_size=32, sample_rate=16000, device='cuda'):
         """
-        Perform batch inference on EncDecSpeakerLabelModel. 
+        Perform batch inference on EncDecSpeakerLabelModel.
         To perform inference on single audio file, once can use infer_model, get_label or get_embedding
 
-        To map predicted labels, one can do 
+        To map predicted labels, one can do
             `arg_values = logits.argmax(axis=1)`
             `pred_labels = list(map(lambda t : pred_labels[t], arg_values))`
 

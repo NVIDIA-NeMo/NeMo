@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 
 from nemo.collections.asr.data import audio_to_label
 from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list, get_chain_dataset
+from nemo.collections.common.data.dataset import ConcatDataset
 
 
 def get_classification_label_dataset(featurizer, config: dict) -> audio_to_label.AudioToClassificationLabelDataset:
@@ -123,6 +125,35 @@ def get_tarred_classification_label_dataset(
             datasets.append(dataset)
 
     return get_chain_dataset(datasets=datasets, ds_config=config)
+
+
+def get_concat_tarred_speech_label_dataset(
+    featurizer, config: dict, shuffle_n: int, global_rank: int, world_size: int,
+):
+    tarred_audio_filepaths = config['tarred_audio_filepaths']
+    manifest_filepaths = config['manifest_filepath']
+    datasets = []
+    for dataset_idx, (tarred_audio_filepath, manifest_filepath) in enumerate(
+        zip(tarred_audio_filepaths, manifest_filepaths)
+    ):
+        conf = copy.deepcopy(config)
+        conf['manifest_filepath'] = manifest_filepath
+        conf['tarred_audio_filepaths'] = tarred_audio_filepath
+        dataset = get_tarred_speech_label_dataset(
+            config=conf, featurizer=featurizer, shuffle_n=shuffle_n, global_rank=global_rank, world_size=world_size,
+        )
+        datasets.append(dataset)
+
+    dataset = ConcatDataset(
+        datasets,
+        sampling_technique=config.get('concat_sampling_technique', 'temperature'),
+        sampling_temperature=config.get('concat_sampling_temperature', 5),
+        sampling_probabilities=config.get('concat_sampling_probabilities', None),
+        global_rank=global_rank,
+        world_size=world_size,
+        shuffle=config['shuffle'],
+    )
+    return dataset
 
 
 def get_tarred_speech_label_dataset(

@@ -373,7 +373,7 @@ class FilterbankFeatures(nn.Module):
     def filter_banks(self):
         return self.fb
 
-    def forward(self, x, seq_len):
+    def forward(self, x, seq_len, linear_spec=False):
         seq_len = self.get_seq_len(seq_len.float())
 
         if self.stft_pad_amount is not None:
@@ -408,9 +408,12 @@ class FilterbankFeatures(nn.Module):
         if self.mag_power != 1.0:
             x = x.pow(self.mag_power)
 
+        # return plain spectrogram if required
+        if linear_spec:
+            return x, seq_len
+
         # dot with filterbank energies
         x = torch.matmul(self.fb.to(x.dtype), x)
-
         # log features if required
         if self.log:
             if self.log_zero_guard_type == "add":

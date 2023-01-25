@@ -23,6 +23,13 @@ DEFAULT_PUNCTUATION = (
     ')', '[', ']', '{', '}',
 )
 
+VITS_PUNCTUATION = (
+    ',', '.', '!', '?', '-',
+    ':', ';', '"', '«', '»',
+    '“', '”', '¡', '¿', '—', 
+    '…',
+)
+
 GRAPHEME_CHARACTER_SETS = {
     "en-US": (
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',

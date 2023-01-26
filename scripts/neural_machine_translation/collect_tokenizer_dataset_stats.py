@@ -55,6 +55,7 @@ def tokenize_line(line, tokenizer):
     """
     Returns a tokenized line
     """
+    line = line.rstrip("\n")
     tokens = tokenizer.text_to_ids(line)
 
     return tokens

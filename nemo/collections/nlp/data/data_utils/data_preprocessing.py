@@ -460,7 +460,13 @@ def remove_punctuation_from_sentence(sentence):
 
 
 def dataset_to_ids(
-    dataset, tokenizer, cache_ids=False, add_bos_eos=True, cache_data_per_node=False, use_cache=False,
+    dataset,
+    tokenizer,
+    cache_ids=False,
+    add_bos_eos=True,
+    cache_data_per_node=False,
+    use_cache=False,
+    remove_trailing_newline=False,
 ):
     """
     Reads dataset from file line by line, tokenizes each line with tokenizer,
@@ -474,6 +480,7 @@ def dataset_to_ids(
         add_bos_eos (bool): whether to add <s> and </s> symbols (e.g., for NMT)
         cache_data_per_node (bool): Cache data on local_rank 0. Use when there is not a shared-filesystem.
         use_cache (bool): Use cached ids if they exist.
+        remove_trailing_newline (bool): Remove trailing newline character.
     Returns:
         ids: list of ids which correspond to tokenized strings of the dataset
     """
@@ -487,7 +494,10 @@ def dataset_to_ids(
         data = open(dataset, "rb").readlines()
         ids = []
         for sentence in tqdm(data, desc="Tokenizing sentence"):
-            sent_ids = tokenizer.text_to_ids(sentence.decode("utf-8"))
+            text = sentence.decode("utf-8")
+            if remove_trailing_newline:
+                text = text.rstrip("\n")
+            sent_ids = tokenizer.text_to_ids(text)
             if add_bos_eos:
                 sent_ids = [tokenizer.bos_id] + sent_ids + [tokenizer.eos_id]
             ids.append(sent_ids)

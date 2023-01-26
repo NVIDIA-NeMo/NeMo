@@ -1064,6 +1064,7 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         processor = source_processor if not target else target_processor
         tokenizer = encoder_tokenizer if not target else decoder_tokenizer
         for txt in text:
+            txt = txt.rstrip("\n")
             if processor is not None:
                 txt = processor.normalize(txt)
                 txt = processor.tokenize(txt)

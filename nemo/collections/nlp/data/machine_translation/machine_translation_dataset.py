@@ -110,6 +110,7 @@ class TranslationDataset(Dataset):
             cache_ids=self.cache_ids,
             cache_data_per_node=self.cache_data_per_node,
             use_cache=self.use_cache,
+            remove_trailing_newline=True,
         )
         tgt_ids = dataset_to_ids(
             self.dataset_tgt,
@@ -117,6 +118,7 @@ class TranslationDataset(Dataset):
             cache_ids=self.cache_ids,
             cache_data_per_node=self.cache_data_per_node,
             use_cache=self.use_cache,
+            remove_trailing_newline=True,
         )
         if self.clean:
             src_ids, tgt_ids = self.clean_src_and_target(

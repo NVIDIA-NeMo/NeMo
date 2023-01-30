@@ -2,6 +2,7 @@ attrdict
 einops
 inflect
 jieba
+kornia
 librosa
 matplotlib
 nltk

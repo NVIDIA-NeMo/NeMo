@@ -49,8 +49,8 @@ import librosa
 import matplotlib.pylab as plt
 import numpy as np
 import torch
+from einops import rearrange
 from numba import jit, prange
-from numpy import ndarray
 
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
@@ -671,3 +671,43 @@ def process_batch(batch_data, sup_data_types_set):
                 batch_dict[name + "_lens"] = batch_data[batch_index]
                 batch_index = batch_index + 1
     return batch_dict
+
+
+def to_device_recursive(e, device: torch.device):
+    """
+    Use .to(device) on all tensors within nested lists, tuples, values ofdicts
+    Returns a new structure with tensors moved to target device, leaving other data intact.
+
+    The intended use is to move collections of tensors to a device while:
+        - avoiding calling specific movers like .cpu() or .cuda()
+        - avoiding stuff like .to(torch.device("cuda:{some_variable}"))
+    """
+    if isinstance(e, (list, tuple)):
+        return [to_device_recursive(elem, device) for elem in e]
+    elif isinstance(e, dict):
+        return {key: to_device_recursive(value, device) for key, value in e.items()}
+    elif isinstance(e, torch.Tensor):
+        return e.to(device)
+    else:
+        return e
+
+
+def mask_sequence_tensor(tensor: torch.Tensor, lengths: torch.Tensor):
+    """
+    For tensors containing sequences, zero out out-of-bound elements given lengths of every element in the batch.
+
+    tensor: tensor of shape (B, D, L) or (B, D1, D2, L),
+    lengths: LongTensor of shape (B,)
+    """
+    batch_size, *_, max_lengths = tensor.shape
+
+    if len(tensor.shape) == 3:
+        mask = torch.ones(batch_size, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
+        mask = mask <= rearrange(lengths, "b -> b 1 1")
+    elif len(tensor.shape) == 4:
+        mask = torch.ones(batch_size, 1, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
+        mask = mask <= rearrange(lengths, "b -> b 1 1 1")
+    else:
+        raise ValueError("Can only mask tensors of shape B x D x L and B x D1 x D2 x L")
+
+    return tensor * mask

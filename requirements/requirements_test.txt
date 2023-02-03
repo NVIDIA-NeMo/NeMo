@@ -1,6 +1,6 @@
 black==19.10b0
 click==8.0.2
-isort>5
+isort>5.1.0,<6.0.0
 parameterized
 pytest
 pytest-runner

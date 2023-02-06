@@ -756,3 +756,30 @@ It also means that ``.forward(...)`` and ``__call__(...)`` methods each produce 
 
 .. note:: To temporarily disable typechecking, you can enclose your code in ```with typecheck.disable_checks():``` statement.
 
+
+Dynamic Layer Freezing
+----------------------
+
+You can selectively freeze any modules inside a Nemo model by specifying a freezing schedule in the config yaml. Freezing stops any gradient updates
+to that module, so that its weights are not changed for that step. This can be useful for combatting catastrophic forgetting, for example
+when finetuning a large pretrained model on a small dataset.
+
+The default approach is to freeze a module for the first N training steps, but you can also enable freezing for a specific range of steps,
+for example, from step 20 - 100, or even activate freezing from some N until the end of training. You can also freeze a module for the entire training run.
+Dynamic freezing is specified in training steps, not epochs.
+
+To enable freezing, add the following to your config:
+
+.. code-block:: yaml
+
+  model:
+    ...
+    freeze_updates:
+      enabled: true  # set to false if you want to disable freezing
+      
+      modules:   # list all of the modules you want to have freezing logic for
+        encoder: 200       # module will be frozen for the first 200 training steps
+        decoder: [50, -1]  # module will be frozen at step 50 and will remain frozen until training ends
+        joint: [10, 100]   # module will be frozen between step 10 and step 100 (step >= 10 and step <= 100)
+        transcoder: -1     # module will be frozen for the entire training run
+

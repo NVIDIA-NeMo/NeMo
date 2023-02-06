@@ -1622,12 +1622,32 @@ class ModelPT(LightningModule, Model):
                 else:
                     raise ValueError(f'Nsys end_step must be greater than or equal to nsys start_step')
 
+    def on_train_start(self):
+        """ PyTorch Lightning hook:
+            https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-start
+            We use it here to copy the relevant config for dynamic freezing.
+        """
+
+        # dynamic freezing
+        # should fire only once, on the very first batch of training and never again
+        if not hasattr(self, '_freeze_cfg'):
+            if (
+                hasattr(self.cfg, 'freeze_updates')
+                and self.cfg.freeze_updates is not None
+                and self.cfg.freeze_updates.get('enabled', False)
+            ):
+                setattr(self, '_freeze_cfg', OmegaConf.to_container(self.cfg.freeze_updates))
+                self._freeze_cfg['is_frozen'] = {k: False for k in self._freeze_cfg['modules'].keys()}
+            else:
+                setattr(self, '_freeze_cfg', None)
+
     def on_train_batch_start(self, batch: Any, batch_idx: int, unused: int = 0) -> Optional[int]:
         """ PyTorch Lightning hook:
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start
-            We use it here to enable nsys profiling.
+            We use it here to enable nsys profiling and dynamic freezing.
         """
 
+        # nsys profiling
         if self.device.type == 'cuda':
             if hasattr(self, '_nsys_profile_enabled'):
                 if self._nsys_profile_enabled:
@@ -1636,6 +1656,28 @@ class ModelPT(LightningModule, Model):
                         torch.cuda.cudart().cudaProfilerStart()
                         if self._nsys_profile_gen_shape:
                             torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
+
+        # dynamic freezing
+        if hasattr(self, '_freeze_cfg') and self._freeze_cfg is not None:
+            if self.training and hasattr(self, "trainer") and self.trainer is not None:
+                num_updates = self.trainer.global_step + 1
+
+                for ml, m_steps in self._freeze_cfg['modules'].items():
+                    # we could do hasattr check here, but it's too expensive for each step
+                    # consequently you'll throw an error if the module name doesn't exist
+                    # or was spelled wrong in the config.yaml
+                    if isinstance(m_steps, list):
+                        assert len(m_steps) == 2, "freeze_updates modules list cannot have more than two elements"
+                        should_freeze = (num_updates >= m_steps[0]) and (num_updates <= m_steps[1] or m_steps[1] == -1)
+                    else:
+                        should_freeze = num_updates <= m_steps or m_steps == -1
+                    if should_freeze and not self._freeze_cfg['is_frozen'][ml]:
+                        getattr(self, ml).freeze()
+                        getattr(self, ml).train()
+                        self._freeze_cfg['is_frozen'][ml] = True
+                    elif not should_freeze and self._freeze_cfg['is_frozen'][ml]:
+                        getattr(self, ml).unfreeze()
+                        self._freeze_cfg['is_frozen'][ml] = False
 
     def on_train_batch_end(self, outputs, batch: Any, batch_idx: int, unused: int = 0) -> None:
         """ PyTorch Lightning hook:
@@ -1649,6 +1691,16 @@ class ModelPT(LightningModule, Model):
                     if batch_idx == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
                         logging.info("====== End nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStop()
+
+    def on_train_end(self):
+        """ PyTorch Lightning hook:
+            https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-end
+            We use it here to cleanup the dynamic freezing config.
+        """
+
+        # dynamic freezing cleanup
+        if hasattr(self, '_freeze_cfg'):
+            delattr(self, '_freeze_cfg')
 
     # TODO: Remove in PTL 1.7.2
     def cuda(self, device=None):

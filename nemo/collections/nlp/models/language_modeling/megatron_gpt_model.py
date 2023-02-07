@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import itertools
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -208,6 +208,18 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         else:
             self._optimizer_param_groups = get_params_for_weight_decay_optimization(self.model)
 
+    def setup_optimization(
+        self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
+        if self.with_distributed_adam:
+
+            # Enable overlapped param sync by default
+            if 'overlap_param_sync' not in optim_kwargs:
+                optim_kwargs['overlap_param_sync'] = True
+
+        return super().setup_optimization(optim_config=optim_config, optim_kwargs=optim_kwargs)
+
     def configure_optimizers(self):
 
         if self.with_distributed_adam:
@@ -242,6 +254,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     param._disable_overlap_grad_sync = True
 
             # Initialize parameter buckets for overlapped grad and param syncs
+            # Note: Params with disabled overlapping are put in the
+            # last param bucket
             buckets = []
             if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                 # Initialize a bucket for each virtual pipeline stage
@@ -268,7 +282,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             used_params = set()
             for bucket in buckets:
                 used_params.update(bucket)
-            buckets.append([p for p in self.parameters() if p not in used_params])
+            buckets[-1].extend(p for p in self.parameters() if p not in used_params)
             self.distributed_adam_buckets = buckets
 
         return super().configure_optimizers()
@@ -300,6 +314,24 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # we zero grads here because we also call backward in the apex fwd/bwd functions
         self._optimizer.zero_grad()
+
+        if self.with_distributed_adam:
+            # hack to enable overlapping param sync and forward compute
+            # note: the distributed optimizer monkey-patches each
+            # parameter's __getattribute__ function so that it can
+            # launch parameter all-gathers the first time the
+            # parameter is accessed after the optimizer step. However,
+            # PyTorch directly passes embedding parameters into a C++,
+            # bypassing this process. A quick-and-dirty hack is to
+            # manually interact with the parameter.
+            modules = self.model if isinstance(self.model, list) else [self.model]
+            for module in modules:
+                if isinstance(module, Float16Module):
+                    module = module.module
+                module = module.language_model
+                if hasattr(module, 'embedding'):
+                    for param in module.embedding.parameters():
+                        param.data_ptr()
 
         if parallel_state.is_pipeline_first_stage(ignore_virtual=True) or parallel_state.is_pipeline_last_stage(
             ignore_virtual=True

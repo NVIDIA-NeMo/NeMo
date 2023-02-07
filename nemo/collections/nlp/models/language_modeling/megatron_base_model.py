@@ -326,8 +326,9 @@ class MegatronBaseModel(NLPModel):
         optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
         if self.with_distributed_adam:
 
-            # Allocate grads since we are storing between microbatches
+            # Allocate contiguous buffers to avoid extra copies
             optim_kwargs['contiguous_grad_buffer'] = True
+            optim_kwargs['contiguous_param_buffer'] = True
 
             if self.megatron_amp_o2:
                 # Match param allgather with model dtype
@@ -416,6 +417,9 @@ class MegatronBaseModel(NLPModel):
                     overlap_params.append(p)
             self._optimizer.init_params(reversed(overlap_params))
             self._optimizer.init_params(reversed(no_overlap_params))
+
+            # Initialize contiguous parameter buffer
+            self._optimizer.init_param_buffer()
 
         if self._scheduler is None:
             return self._optimizer

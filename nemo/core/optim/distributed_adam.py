@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from apex.contrib.optimizers.distributed_fused_adam import DistributedFusedAdam
+from apex.contrib.optimizers.distributed_fused_adam import DistributedFusedAdam, _disable_pre_forward_hook
 from apex.transformer import parallel_state
 
 
@@ -33,6 +33,14 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
 
     def _make_post_backward_hook(self, param, param_group_id, param_id):
         def hook(*unused):
+            if getattr(param, '_pre_forward_hook_is_enabled', False):
+                raise RuntimeError(
+                    'A parameter called its post-backward hook '
+                    'before its pre-forward hook. '
+                    'Please manually interact with the parameter '
+                    'before the forward pass (e.g. by calling data_ptr) '
+                    'or run DistributedFusedAdam with overlap_param_sync=False.'
+                )
             with self._lock:
                 need_to_initialize = 'fragments' not in self.state[param]
                 if need_to_initialize:
@@ -56,6 +64,5 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         super().zero_grad(*args, **kwargs)
         if self.contiguous_grad_buffer:
             for param in self.parameters():
-                param.main_grad = self.grad_buffer_view(param)
-                if param.dtype == param.main_grad.dtype and param.is_cuda:
-                    param.grad = param.main_grad
+                with _disable_pre_forward_hook(param):
+                    param.main_grad = self.grad_buffer_view(param)

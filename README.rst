@@ -53,7 +53,7 @@ We have have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/use
 can all be run on `Google Colab <https://colab.research.google.com>`_.
 
 For advanced users that want to train NeMo models from scratch or finetune existing NeMo models 
-we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/update_readme_into/examples>`_ that support multi-GPU/multi-node training.
+we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ that support multi-GPU/multi-node training.
 
 Also see our `introductory video <https://www.youtube.com/embed/wBgpMf_KQVw>`_ for a high level overview of NeMo.
 

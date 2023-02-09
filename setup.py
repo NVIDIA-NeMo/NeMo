@@ -134,8 +134,6 @@ extras_require['tts'] = list(chain([extras_require['tts'], extras_require['asr']
 
 extras_require['slu'] = list(chain([extras_require['slu'], extras_require['asr']]))
 
-tests_requirements = extras_require["test"]
-
 
 ###############################################################################
 #                            Code style checkers                              #
@@ -257,8 +255,6 @@ setuptools.setup(
     ],
     packages=setuptools.find_packages(),
     install_requires=install_requires,
-    setup_requires=['pytest-runner'],
-    tests_require=tests_requirements,
     # List additional groups of dependencies here (e.g. development
     # dependencies). You can install these using the following syntax,
     # $ pip install -e ".[all]"

@@ -17,6 +17,8 @@ from pathlib import Path
 from time import sleep
 
 import wget
+from pytorch_lightning.plugins.environments import LightningEnvironment
+from pytorch_lightning.strategies import DDPStrategy, StrategyRegistry
 
 from nemo.utils import logging
 
@@ -80,3 +82,60 @@ def maybe_download_from_cloud(url, filename, subfolder=None, cache_dir=None, ref
             sleep(0.05)
             continue
     raise ValueError("Not able to download url right now, please try again.")
+
+
+class SageMakerDDPStrategy(DDPStrategy):
+    @property
+    def cluster_environment(self):
+        env = LightningEnvironment()
+        env.world_size = lambda: int(os.environ["WORLD_SIZE"])
+        env.global_rank = lambda: int(os.environ["RANK"])
+        return env
+
+    @cluster_environment.setter
+    def cluster_environment(self, env):
+        # prevents Lightning from overriding the Environment required for SageMaker
+        pass
+
+
+def initialize_sagemaker() -> None:
+    """
+    Helper function to initiate sagemaker with NeMo.
+    This function installs libraries that NeMo requires for the ASR toolkit + initializes sagemaker ddp.
+    """
+
+    StrategyRegistry.register(
+        name='smddp', strategy=SageMakerDDPStrategy, process_group_backend="smddp", find_unused_parameters=False,
+    )
+
+    def _install_system_libraries() -> None:
+        os.system('chmod 777 /tmp && apt-get update && apt-get install -y libsndfile1 ffmpeg')
+
+    def _patch_torch_metrics() -> None:
+        """
+        Patches torchmetrics to not rely on internal state.
+        This is because sagemaker DDP overrides the `__init__` function of the modules to do automatic-partitioning.
+        """
+        from torchmetrics import Metric
+
+        def __new_hash__(self):
+            hash_vals = [self.__class__.__name__, id(self)]
+            return hash(tuple(hash_vals))
+
+        Metric.__hash__ = __new_hash__
+
+    _patch_torch_metrics()
+
+    if os.environ.get("RANK") and os.environ.get("WORLD_SIZE"):
+        import smdistributed.dataparallel.torch.distributed as dist
+
+        # has to be imported, as it overrides torch modules and such when DDP is enabled.
+        import smdistributed.dataparallel.torch.torch_smddp
+
+        dist.init_process_group()
+
+        if dist.get_local_rank():
+            _install_system_libraries()
+        return dist.barrier()  # wait for main process
+    _install_system_libraries()
+    return

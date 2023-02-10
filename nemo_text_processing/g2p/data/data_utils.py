@@ -214,7 +214,7 @@ def normalize_unicode_text(text: str) -> str:
     return text
 
 
-def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], bool]]:
+def _word_tokenize(words: List[Tuple[str, str, str]], is_lower: bool = False) -> List[Tuple[List[str], bool]]:
     """
     Process a list of words and attach indicators showing if each word is unchangeable or not. Each word representation
     can be one of valid word, any substring starting from | to | (unchangeable word), or punctuation marks including
@@ -245,6 +245,7 @@ def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], b
     Args:
         words (List[str]): a list of tuples like `(maybe_word, maybe_without_changes, maybe_punct)` where each element
             corresponds to a non-overlapping match of either `_WORDS_RE_EN` or `_WORDS_RE_ANY_LOCALE`.
+        is_lower (bool): a flag to trigger lowercase all words. By default, it is False.
 
     Returns: List[Tuple[List[str], bool]], a list of tuples like `(a list of words, is_unchanged)`.
 
@@ -255,7 +256,10 @@ def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], b
 
         without_changes = False
         if maybe_word != '':
-            token = [maybe_word]
+            if is_lower:
+                token = [maybe_word.lower()]
+            else:
+                token = [maybe_word]
         elif maybe_punct != '':
             token = [maybe_punct]
         elif maybe_without_changes != '':
@@ -274,7 +278,7 @@ def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], b
 
 def english_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
     words = _WORDS_RE_EN.findall(text)
-    return _word_tokenize(words)
+    return _word_tokenize(words, is_lower=True)
 
 
 def any_locale_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:

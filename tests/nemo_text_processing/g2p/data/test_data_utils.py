@@ -86,7 +86,7 @@ class TestDataUtils:
     def test_any_locale_word_tokenize_with_accents(self):
         input_text = "The naïve piñata at the café..."
         expected_output = self._create_expected_output(
-            ["the", " ", "naïve", " ", "piñata", " ", "at", " ", "the", " ", "café", "..."]
+            ["The", " ", "naïve", " ", "piñata", " ", "at", " ", "the", " ", "café", "..."]
         )
 
         output = any_locale_word_tokenize(input_text)
@@ -98,7 +98,7 @@ class TestDataUtils:
         input_text = r"Three times× four^teen ÷divided by [movies] on \slash."
         expected_output = self._create_expected_output(
             [
-                "three",
+                "Three",
                 " ",
                 "times",
                 "× ",

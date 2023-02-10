@@ -81,20 +81,19 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'rad.ts')
             with torch.cuda.amp.autocast(enabled=True, cache_enabled=False, dtype=torch.float16):
-                input_example1 = model.input_module.input_example(max_batch=3, max_dim=777)
-                input_example2 = model.input_module.input_example(max_batch=16, max_dim=1024)
+                input_example1 = model.input_module.input_example(max_batch=13, max_dim=777)
+                input_example2 = model.input_module.input_example(max_batch=19, max_dim=999)
                 model.export(output=filename, verbose=True, input_example=input_example1, check_trace=[input_example2])
 
-    @pytest.mark.pleasefixme('ONNX not working yet. Restore when Pytorch fixes LSTM/ONNX bugs.')
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_RadTTSModel_export_to_onnx(self, radtts_model):
         model = radtts_model.cuda()
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'rad.onnx')
-            with torch.cuda.amp.autocast(enabled=False):
-                input_example1 = model.input_module.input_example(max_batch=3, max_dim=776)
-                input_example2 = model.input_module.input_example(max_batch=16, max_dim=998)
+            with torch.cuda.amp.autocast(enabled=True, cache_enabled=False, dtype=torch.float16):
+                input_example1 = model.input_module.input_example(max_batch=13, max_dim=777)
+                input_example2 = model.input_module.input_example(max_batch=19, max_dim=999)
                 model.export(
                     output=filename, input_example=input_example1, verbose=True, check_trace=[input_example2],
                 )

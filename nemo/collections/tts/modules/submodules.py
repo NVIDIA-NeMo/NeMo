@@ -172,7 +172,7 @@ class ConvNorm(torch.nn.Module):
                 ret = self.norm(ret, mask)
         else:
             if mask is not None:
-                signal = signal * mask
+                signal = signal.mul(mask)
             ret = self.conv(signal)
             if self.norm is not None:
                 ret = self.norm(ret)

@@ -424,7 +424,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         self._input_types = {
             "text": NeuralType(('B', 'T'), TokenIndex()),
             "lens": NeuralType(('B')),
-            # "batch_lengths": NeuralType(('B'), LengthsType(), optional=True),
             "speaker_id": NeuralType(('B'), Index()),
             "speaker_id_text": NeuralType(('B'), Index()),
             "speaker_id_attributes": NeuralType(('B'), Index()),
@@ -443,12 +442,13 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         par = next(self.parameters())
         sz = (max_batch, max_dim)
         # sz = (max_batch * max_dim,)
-        inp = torch.randint(0, 94, sz, device=par.device, dtype=torch.int64)
+        # Pick up only pronouncible tokens
+        inp = torch.randint(32, 64, sz, device=par.device, dtype=torch.int64)
         speaker = torch.randint(0, 1, (max_batch,), device=par.device, dtype=torch.int64)
         pitch = torch.randn(sz, device=par.device, dtype=torch.float32) * 0.5
-        pace = torch.clamp(torch.randn(sz, device=par.device, dtype=torch.float32) * 0.1 + 1, min=0.01)
-        volume = torch.clamp(torch.randn(sz, device=par.device, dtype=torch.float32) * 0.1 + 1, min=0.01)
-        # batch_lengths = torch.zeros((max_batch + 1), device=par.device, dtype=torch.int32)
+        pace = torch.clamp(torch.randn(sz, device=par.device, dtype=torch.float32) * 0.1 + 1, min=0.2, max=2.0)
+        volume = torch.clamp(torch.randn(sz, device=par.device, dtype=torch.float32) * 0.1 + 1, min=0.2, max=2.0)
+        # batch_lengths = torch.zeros((max_batch + 1), device=par.device, dtype=torch.int64)
         # left_over_size = sz[0]
         # batch_lengths[0] = 0
         # for i in range(1, max_batch):
@@ -468,10 +468,11 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
 
         lens = []
         for i, _ in enumerate(inp):
-            len_i = random.randint(3, max_dim)
+            len_i = random.randint(64, max_dim)
             lens.append(len_i)
-            inp[i, len_i:] = pad_id
-        lens = torch.tensor(lens, device=par.device, dtype=torch.int)
+            # inp[i, len_i:] = pad_id
+        lens = torch.tensor(lens, device=par.device, dtype=torch.int32)
+        lens[0] = max_dim
 
         inputs = {
             'text': inp,
@@ -489,13 +490,14 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
     def forward_for_export(
         self, text, lens, speaker_id, speaker_id_text, speaker_id_attributes, pitch, pace, volume,
     ):
+        lens = lens.to(dtype=torch.int64)
         (mel, n_frames, dur, _, _) = self.model.infer(
             speaker_id,
             text,
             speaker_id_text=speaker_id_text,
             speaker_id_attributes=speaker_id_attributes,
-            sigma=0.0,
-            sigma_txt=0.0,
+            sigma=0.7,
+            sigma_txt=0.7,
             sigma_f0=1.0,
             sigma_energy=1.0,
             f0_mean=0.0,
@@ -511,9 +513,8 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             durs_predicted,
             volume[:, :truncated_length].unsqueeze(-1),
             pace[:, :truncated_length],
-            replicate_to_nearest_multiple=True,
             group_size=self.model.n_group_size,
-            in_lens=lens,
+            dur_lens=lens,
         )
-        volume_extended = volume_extended.squeeze(-1).float()
+        volume_extended = volume_extended.squeeze(2).float()
         return mel.float(), n_frames, dur.float(), volume_extended

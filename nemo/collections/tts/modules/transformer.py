@@ -17,6 +17,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from nemo.collections.tts.helpers.helpers import get_mask_from_lengths
+from nemo.collections.tts.modules.submodules import LinearNorm
 from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types.elements import EncodedRepresentation, LengthsType, MaskType, TokenIndex
 from nemo.core.neural_types.neural_type import NeuralType
@@ -260,3 +262,51 @@ class FFTransformerEncoder(FFTransformerDecoder):
     def forward(self, input, conditioning=0):
 
         return self._forward(self.word_emb(input), (input != self.padding_idx).unsqueeze(2), conditioning)  # (B, L, 1)
+
+
+class FFTransformer(nn.Module):
+    def __init__(
+        self,
+        in_dim,
+        out_dim=1,
+        n_layers=6,
+        n_head=1,
+        d_head=64,
+        d_inner=1024,
+        kernel_size=3,
+        dropout=0.1,
+        dropatt=0.1,
+        dropemb=0.0,
+    ):
+        super(FFTransformer, self).__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.n_head = n_head
+        self.d_head = d_head
+
+        self.pos_emb = PositionalEmbedding(self.in_dim)
+        self.drop = nn.Dropout(dropemb)
+        self.layers = nn.ModuleList()
+
+        for _ in range(n_layers):
+            self.layers.append(
+                TransformerLayer(n_head, in_dim, d_head, d_inner, kernel_size, dropout, dropatt=dropatt)
+            )
+
+        self.dense = LinearNorm(in_dim, out_dim)
+
+    def forward(self, dec_inp, in_lens):
+        # B, C, T --> B, T, C
+        inp = dec_inp.transpose(1, 2)
+        mask = get_mask_from_lengths(in_lens)[..., None]
+
+        pos_seq = torch.arange(inp.size(1), device=inp.device).to(inp.dtype)
+        pos_emb = self.pos_emb(pos_seq) * mask
+
+        out = self.drop(inp + pos_emb)
+
+        for layer in self.layers:
+            out = layer(out, mask=mask)
+
+        out = self.dense(out).transpose(1, 2)
+        return out

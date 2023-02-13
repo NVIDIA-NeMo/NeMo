@@ -447,7 +447,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 f"Changed decoding strategy of the CTC decoder to \n{OmegaConf.to_yaml(self.cfg.aux_ctc.decoding)}"
             )
         else:
-            raise ErrorValue(f"decoder_type={decoder_type} is not supported. Supported values: [ctc,rnnt]")
+            raise ValueError(f"decoder_type={decoder_type} is not supported. Supported values: [ctc,rnnt]")
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:

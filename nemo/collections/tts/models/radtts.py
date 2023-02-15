@@ -436,7 +436,7 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         # Define input_types and output_types as required by export()
         self._input_types = {
             "text": NeuralType(tensor_shape, TokenIndex()),
-            "lens": NeuralType(('B')),
+            "batch_lengths": NeuralType(('B')),
             "speaker_id": NeuralType(('B'), Index()),
             "speaker_id_text": NeuralType(('B'), Index()),
             "speaker_id_attributes": NeuralType(('B'), Index()),
@@ -455,14 +455,17 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
     def input_example(self, max_batch=1, max_dim=400):
         par = next(self.model.parameters())
         inputs = sample_tts_input(self.export_config, par.device, max_batch=max_batch, max_dim=max_dim)
-        speaker = inputs["speaker"]
+        speaker = inputs.pop("speaker")
         inp = inputs['text']
         pad_id = self.tokenizer.pad
         inp[inp == pad_id] = pad_id - 1 if pad_id > 0 else pad_id + 1
 
+        inputs.update(
+            {'speaker_id': speaker, 'speaker_id_text': speaker, 'speaker_id_attributes': speaker,}
+        )
         new_inputs = {
             'text': inp,
-            'lens': inputs['batch_lengths'],
+            'batch_lengths': inputs['batch_lengths'],
             'speaker_id': speaker,
             'speaker_id_text': speaker,
             'speaker_id_attributes': speaker,
@@ -474,16 +477,16 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         return (new_inputs,)
 
     def forward_for_export(
-        self, text, lens, speaker_id, speaker_id_text, speaker_id_attributes, pitch, pace, volume,
+        self, text, batch_lengths, speaker_id, speaker_id_text, speaker_id_attributes, pitch, pace, volume,
     ):
         if self.export_config["enable_ragged_batches"]:
             text, pitch, pace, volume_tensor, lens = batch_from_ragged(
-                text, pitch, pace, batch_lengths=lens, padding_idx=self.tokenizer_pad, volume=volume,
+                text, pitch, pace, batch_lengths=batch_lengths, padding_idx=self.tokenizer_pad, volume=volume,
             )
             if volume is not None:
                 volume = volume_tensor
         else:
-            lens = lens.to(dtype=torch.int64)
+            lens = batch_lengths.to(dtype=torch.int64)
 
         (mel, n_frames, dur, _, _) = self.model.infer(
             speaker_id,

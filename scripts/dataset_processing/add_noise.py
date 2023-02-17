@@ -139,7 +139,7 @@ def main():
     global att_factor
     att_factor = args.attenuation_factor
     global rng
-    rng = random.Random(args.seed)
+    rng = args.seed
     num_workers = args.num_workers
 
     add_noise(args.input_manifest, args.snrs, args.noise_manifest, args.out_dir, num_workers=num_workers)

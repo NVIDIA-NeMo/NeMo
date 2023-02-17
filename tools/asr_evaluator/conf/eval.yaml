@@ -4,6 +4,9 @@ env:
 engine:    
     model_path: null  
     pretrained_name: null
+    
+    output_filename: null
+    random_seed: &random_seed 42
 
     inference: 
         mode: offline # choose from offline, chunked or offline_by_chunked
@@ -23,16 +26,16 @@ engine:
             max_start_silence_secs: 5
             min_end_silence_secs: 0
             max_end_silence_secs: 5
+            rng: *random_seed
             
           noise:
             manifest_path: null
             prob: 0.8
             min_snr_db: 0
             max_snr_db: 15
+            rng: *random_seed
 
-    output_filename: null
-    random_seed: 42
-
+  
 analyst:
     metric_calculator:
         clean_groundtruth_text: True

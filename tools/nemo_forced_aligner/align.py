@@ -180,6 +180,7 @@ def main(cfg: AlignmentConfig):
 
     # load model
     model, _ = setup_model(cfg, transcribe_device)
+    model.eval()
 
     if not isinstance(model, EncDecCTCModel):
         raise NotImplementedError(

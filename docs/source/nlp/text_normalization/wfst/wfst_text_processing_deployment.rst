@@ -3,9 +3,14 @@
 Deploy to Production with C++ backend
 =====================================
 
-NeMo provides tools to deploy :doc:`TN and ITN <wfst_text_normalization>` for production :cite:`textprocessing-deployment-zhang2021nemo`.
+.. warning::
+
+    *TN/ITN transitioned from [NVIDIA/NeMo](https://github.com/NVIDIA/NeMo) repository to a standalone [NVIDIA/NeMo-text-processing](https://github.com/NVIDIA/NeMo-text-processing) repository. All updates and discussions/issues should go to the new repository.*
+
+
+NeMo-text-processing provides tools to deploy :doc:`TN and ITN <wfst_text_normalization>` for production :cite:`textprocessing-deployment-zhang2021nemo`.
 It uses `Sparrowhawk <https://github.com/google/sparrowhawk>`_ :cite:`textprocessing-deployment-sparrowhawk` -- an open-source C++ framework by Google.
-The grammars written with NeMo can be exported into an `OpenFST <https://www.openfst.org/>`_ Archive File (FAR) and dropped into Sparrowhawk.
+The grammars written with NeMo-text-processing can be exported into an `OpenFST <https://www.openfst.org/>`_ Archive File (FAR) and dropped into Sparrowhawk.
 
     .. image:: images/deployment_pipeline.png
         :align: center
@@ -18,7 +23,7 @@ Requirements
 
 * :doc:`nemo_text_processing <wfst_text_normalization>` package
 * `Docker <https://www.docker.com/>`_
-* `NeMo source code <https://github.com/NVIDIA/NeMo>`_
+* `NeMo-text-processing source code <https://github.com/NVIDIA/NeMo-text-processing>`_
 
 
 .. _wfst_deployment_quick_start:
@@ -31,11 +36,11 @@ Examples how to run:
 .. code-block:: bash
 
     # export English TN grammars and return prompt inside docker container  
-    cd NeMo/tools/text_processing_deployment
+    cd NeMo-text-processing/tools/text_processing_deployment
     bash export_grammars.sh --GRAMMARS=tn_grammars --LANGUAGE=en --INPUT_CASE=cased
 
     # export English ITN grammars and return prompt inside docker container  
-    cd NeMo/tools/text_processing_deployment
+    cd NeMo-text-processing/tools/text_processing_deployment
     bash export_grammars.sh --GRAMMARS=itn_grammars --LANGUAGE=en
 
 
@@ -44,7 +49,7 @@ Arguments:
 * ``GRAMMARS`` - ``tn_grammars`` or ``itn_grammars`` to export either TN or ITN grammars.
 * ``LANGUAGE`` - `en` for English. Click :doc:`here <wfst_text_normalization>` for full list of languages.
 * ``INPUT_CASE`` - ``cased`` or ``lower_cased`` (ITN has no differentiation between these two, only used for TN).
-* ``MODE`` - By default ``export`` which returns prompt inside the docker. If ``--MODE=test`` runs NeMo pytests inside container.
+* ``MODE`` - By default ``export`` which returns prompt inside the docker. If ``--MODE=test`` runs NeMo-text-processing pytests inside container.
 * ``OVERWRITE_CACHE`` - Whether to re-export grammars or load from cache. By default ``True``. 
 * ``FORCE_REBUILD`` - Whether to rebuild docker image in cased of updated dependencies. By default ``False``.
 
@@ -57,7 +62,7 @@ Go to script folder:
 
 .. code-block:: bash
 
-    cd NeMo/tools/text_processing_deployment
+    cd NeMo-text-processing/tools/text_processing_deployment
 
 1. Grammars written in Python are exported to `OpenFST <https://www.openfst.org/>`_ archive files (FAR). Specifically, grammars `ClassifyFst` and `VerbalizeFst` from :doc:`nemo_text_processing <wfst_text_normalization>` are exported and saved to `./LANGUAGE/classify/tokenize_and_classify.far` and `./LANGUAGE/verbalize/verbalize.far` respectively.
 

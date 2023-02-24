@@ -37,7 +37,6 @@ def enhancer_config():
             "network_capacity": network_capacity,
             "mixed_prob": 0.9,
             "fmap_max": fmap_max,
-            "max_spectrogram_length": 2000,
             "generator": {
                 "_target_": "nemo.collections.tts.modules.spectrogram_enhancer.Generator",
                 "n_bands": n_bands,
@@ -45,7 +44,6 @@ def enhancer_config():
                 "network_capacity": network_capacity,
                 "style_depth": style_depth,
                 "fmap_max": fmap_max,
-                "max_spectrogram_length": 2000,
             },
             "discriminator": {
                 "_target_": "nemo.collections.tts.modules.spectrogram_enhancer.Discriminator",

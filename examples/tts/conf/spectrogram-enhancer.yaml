@@ -7,7 +7,6 @@ model:
   network_capacity: 16
   mixed_prob: 0.9
   fmap_max: 192
-  max_spectrogram_length: 2000  # in frames, upper bound
 
   generator:
     _target_: "nemo.collections.tts.modules.spectrogram_enhancer.Generator"  
@@ -16,7 +15,6 @@ model:
     network_capacity: ${model.network_capacity}
     style_depth: ${model.style_depth}
     fmap_max: ${model.fmap_max}
-    max_spectrogram_length: ${model.max_spectrogram_length}
 
   discriminator:
     _target_: "nemo.collections.tts.modules.spectrogram_enhancer.Discriminator"

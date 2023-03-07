@@ -40,6 +40,8 @@ __all__ = [
     "megatron_gpt_generate",
     "get_computeprob_response",
     "generate",
+    "sample_token_greedy",
+    "sample_token_topk",
 ]
 
 
@@ -857,3 +859,45 @@ def tab_sample_sequence_batch(
             counter += 1
             if done:
                 break
+
+
+def sample_token_greedy(logits):
+    """
+    Greedy sampling. Returns the token with the highest probability, and corresponding log_prob.
+
+    Args:
+        logits: [batch_size, vocab_size] - unnormalized log probabilities of the next token
+    
+    Returns:
+        log_probs: [batch_size] - log probabilities of the sampled tokens
+        token_ids: [batch_size] - sampled token ids
+    """
+    log_probs, token_ids = torch.max(torch.nn.functional.log_softmax(logits, dim=-1), dim=-1)
+
+    return log_probs, token_ids
+
+
+def sample_token_topk(logits, top_k=0, top_p=0.0, temperature=1.0, filter_value=-float('Inf')):
+    """
+    Greedy sampling. Returns the token with the highest probability, and corresponding log_prob.
+
+    Args:
+        logits: [batch_size, vocab_size] - unnormalized log probabilities of the next token
+        top_k: int - if > 0: only sample from top k tokens with highest probability
+        top_p: float - if > 0.0: only sample from a subset of candidates, where the cumulative probability
+        temperature: float - temperature for sampling
+        filter_value: float - value to set filtered tokens to
+    
+    Returns:
+        log_probs: [batch_size] - log probabilities of the sampled tokens
+        token_ids: [batch_size] - sampled token ids
+    """
+    logits = logits.float()
+    logits /= temperature
+    logits = top_k_logits(logits, top_k=top_k, top_p=top_p, filter_value=filter_value)
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+
+    token_ids = torch.multinomial(log_probs.exp(), num_samples=1).view(-1)
+    log_probs = log_probs.gather(1, token_ids.unsqueeze(1)).squeeze(1)
+
+    return log_probs, token_ids

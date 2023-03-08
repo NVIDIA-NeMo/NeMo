@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
@@ -30,9 +32,17 @@ def main(cfg):
 
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     trainer = pl.Trainer(**cfg.trainer)
-    _ = exp_manager(trainer, cfg.get("exp_manager", None))
+    log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     speaker_model = EncDecSpeakerLabelModel(cfg=cfg.model, trainer=trainer)
     speaker_model.maybe_init_from_pretrained_checkpoint(cfg)
+
+    # save labels to file
+    if log_dir is not None:
+        with open(os.path.join(log_dir, 'labels.txt'), 'w') as f:
+            if speaker_model.labels is not None:
+                for label in speaker_model.labels:
+                    f.write(f'{label}\n')
+
     trainer.fit(speaker_model)
 
     torch.distributed.destroy_process_group()

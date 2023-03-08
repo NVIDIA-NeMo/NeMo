@@ -127,6 +127,10 @@ model:
     scale: 30
     margin: 0.2
 
+  optim_param_groups:
+    encoder:
+      lr: .001
+
   optim:
     name: adamw
     lr: .0001 #(original titanet-large was trained with 0.08 lr)

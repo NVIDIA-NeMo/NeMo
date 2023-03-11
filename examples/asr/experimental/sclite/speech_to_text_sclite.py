@@ -39,6 +39,7 @@ from argparse import ArgumentParser
 import torch
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.utils import logging
 
 try:
@@ -72,17 +73,6 @@ def score_with_sctk(sctk_dir, ref_fname, hyp_fname, out_dir, glm=""):
         hypglm = hyp_fname
 
     _ = subprocess.check_output(f"{sclite_path} -h {hypglm}  -r {refglm} -i wsj -o all", shell=True)
-
-
-def read_manifest(manifest_path):
-    manifest_data = []
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            data = json.loads(line)
-            manifest_data.append(data)
-
-    logging.info('Loaded manifest data')
-    return manifest_data
 
 
 can_gpu = torch.cuda.is_available()

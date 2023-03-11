@@ -63,10 +63,10 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.tts.models import FastPitchModel
 from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.collections.tts.parts.utils.helpers import process_batch, to_device_recursive
-from nemo.collections.tts.parts.utils.tts_dataset_utils import read_manifest, write_manifest
 
 
 def chunks(iterable: Iterable, size: int) -> Iterator[List]:
@@ -198,7 +198,7 @@ def prepare_paired_mel_spectrograms(
             }
             output_manifest.append(new_manifest_entry)
 
-    write_manifest(output_json_manifest, output_manifest)
+    write_manifest(output_json_manifest, output_manifest, ensure_ascii=False)
 
 
 def argument_parser() -> argparse.ArgumentParser:

@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import argparse
-import json
 import logging
 import os
 import random
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 
 # Checks -
 # (Recommendation) Please normalize the text for each language (avoid numbers, special characters, punctuation)
@@ -41,39 +41,6 @@ parser.add_argument("--min_sample_duration_sec", default=16, type=int, help='Min
 parser.add_argument("--dataset_size_required_hrs", default=1, type=int, help='Duration of dataset required (hrs)')
 
 args = parser.parse_args()
-
-
-def read_manifest(manifest_path: str):
-    """
-    Args:
-        manifest_path: absolute path of the manifest file
-
-    Returns:
-        List with manifest entires as elements
-
-    """
-    data = []
-
-    for line in open(manifest_path, 'r'):
-        data.append(json.loads(line))
-
-    return data
-
-
-def write_manifest(manifest_path: str, data: list):
-    """
-    Args:
-        manifest_path: absolute path for where to save the manifest file
-        data: list consisting of entries for the manifest
-
-    Returns:
-
-    """
-
-    with open(manifest_path, 'w') as outfile:
-        for elem in data:
-            s = json.dumps(elem)
-            outfile.write(s + '\n')
 
 
 def create_cs_manifest(

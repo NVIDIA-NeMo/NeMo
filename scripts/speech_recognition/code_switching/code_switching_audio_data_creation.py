@@ -22,6 +22,7 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy.io import wavfile
 from tqdm import tqdm
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
 parser = argparse.ArgumentParser(description='Create synthetic code-switching data audio data from monolingual data')
 parser.add_argument("--manifest_path", default=None, type=str, help='Path to CS indermediate manifest', required=True)
@@ -62,23 +63,6 @@ parser.add_argument(
 parser.add_argument("--workers", default=1, type=int, help='Number of worker processes')
 
 args = parser.parse_args()
-
-
-def read_manifest(manifest_path: str):
-    """
-    Args:
-        manifest_path: absolute path of the manifest file
-
-    Returns:
-        List with manifest entires as elements
-
-    """
-    data = []
-
-    for line in open(manifest_path, 'r'):
-        data.append(json.loads(line))
-
-    return data
 
 
 def split_list(input_list: list, num_splits: int):

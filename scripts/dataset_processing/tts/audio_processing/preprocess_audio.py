@@ -42,13 +42,9 @@ from hydra.utils import instantiate
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
-from nemo.collections.tts.parts.utils.tts_dataset_utils import (
-    get_base_dir,
-    normalize_volume,
-    read_manifest,
-    write_manifest,
-)
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir, normalize_volume
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -119,8 +115,8 @@ def main(cfg):
     config = instantiate(cfg.config)
     logging.info(f"Running audio preprocessing with config: {config}")
 
-    input_manifest_path = Path(config.input_manifest)
-    output_manifest_path = Path(config.output_manifest)
+    input_manifest_path = config.input_manifest
+    output_manifest_path = config.output_manifest
     output_dir = Path(config.output_dir)
     num_workers = config.num_workers
     max_entries = config.max_entries
@@ -173,9 +169,9 @@ def main(cfg):
         output_durations += output_duration
         output_entries.append(output_entry)
 
-    write_manifest(manifest_path=output_manifest_path, entries=output_entries)
+    write_manifest(output_path=output_manifest_path, target_manifest=output_entries, ensure_ascii=False)
     if filter_file:
-        write_manifest(manifest_path=filter_file, entries=filtered_entries)
+        write_manifest(output_path=str(filter_file), target_manifest=filtered_entries, ensure_ascii=False)
 
     logging.info(f"Duration of original audio: {original_durations / 3600} hours")
     logging.info(f"Duration of processed audio: {output_durations / 3600} hours")

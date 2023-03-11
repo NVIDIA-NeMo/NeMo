@@ -43,6 +43,7 @@ import soundfile as sf
 import sox
 from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm.contrib.concurrent import process_map
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
 random.seed(42)
 
@@ -143,15 +144,6 @@ def read_file(filelist, id=-1):
             meta = {"audio_filepath": line, "offset": 0, "duration": None, "label": speaker}
             json_lines.append(meta)
     return json_lines
-
-
-def read_manifest(manifest):
-    data = []
-    with open(manifest, 'r', encoding='utf-8') as f:
-        for line in f:
-            item = json.loads(line)
-            data.append(item)
-    return data
 
 
 def get_duration(json_line):

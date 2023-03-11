@@ -189,7 +189,7 @@ It will write the resampled .wav-files to the specified directory and save a new
 Data Preprocessing
 ******************
 
-Before we start training the model on the above manifest files, we need to preprocess the text data. Data pre-processing is done to reduce ambiguity in transcrits. This is an essential step, and often requires moderate expertise in the language.
+Before we start training the model on the above manifest files, we need to preprocess the text data. Data pre-processing is done to reduce ambiguity in transcripts. This is an essential step, and often requires moderate expertise in the language.
 
 We used the following script
 **prepare_dataset_kinyarwanda.py**:
@@ -200,17 +200,8 @@ We used the following script
     import os
     import re
     from collections import defaultdict
+    from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
     from tqdm.auto import tqdm
-
-    def read_manifest(path):
-        manifest = []
-        with open(path, 'r') as f:
-            for line in tqdm(f, desc="Reading manifest data"):
-                line = line.replace("\n", "")
-                data = json.loads(line)
-                manifest.append(data)
-        return manifest
-
 
     def write_processed_manifest(data, original_path):
         original_manifest_name = os.path.basename(original_path)
@@ -218,10 +209,7 @@ We used the following script
 
         manifest_dir = os.path.split(original_path)[0]
         filepath = os.path.join(manifest_dir, new_manifest_name)
-        with open(filepath, 'w') as f:
-            for datum in tqdm(data, desc="Writing manifest data"):
-                datum = json.dumps(datum)
-                f.write(f"{datum}\n")
+        write_manifest(filepath, data)
         print(f"Finished writing manifest: {filepath}")
         return filepath
 

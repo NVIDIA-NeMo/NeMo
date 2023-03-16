@@ -27,14 +27,14 @@ from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
-from nemo.collections.asr.parts.mixins import ASRBPEMixin
+from nemo.collections.asr.parts.mixins import ASRBPEMixin, InterCTCMixin
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import AccessMixin
 from nemo.utils import logging, model_utils
 
 
-class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
+class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
     """Base class for hybrid RNNT/CTC models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -87,6 +87,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
 
         # setting the RNNT decoder as the default one
         self.use_rnnt_decoder = True
+
+        # setting up interCTC loss (from InterCTCMixin)
+        self.setup_interctc(decoder_name='ctc_decoder', loss_name='ctc_loss', wer_name='ctc_wer')
 
     @torch.no_grad()
     def transcribe(
@@ -342,6 +345,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
         if AccessMixin.is_access_enabled():
             AccessMixin.reset_registry(self)
 
+        if self.is_interctc_enabled():
+            AccessMixin.set_access_enabled(access_enabled=True)
+
         signal, signal_len, transcript, transcript_len = batch
 
         # forward() only performs encoder forward
@@ -361,6 +367,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
             log_every_n_steps = 1
             sample_id = batch_nb
 
+        if (sample_id + 1) % log_every_n_steps == 0:
+            compute_wer = True
+        else:
+            compute_wer = False
+
         # If fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
             # Compute full joint and loss
@@ -372,29 +383,18 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
             # Add auxiliary losses, if registered
             loss_value = self.add_auxiliary_losses(loss_value)
 
-            # Reset access registry
-            if AccessMixin.is_access_enabled():
-                AccessMixin.reset_registry(self)
-
             tensorboard_logs = {
-                'train_loss': loss_value,
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
 
-            if (sample_id + 1) % log_every_n_steps == 0:
+            if compute_wer:
                 self.wer.update(encoded, encoded_len, transcript, transcript_len)
                 _, scores, words = self.wer.compute()
                 self.wer.reset()
                 tensorboard_logs.update({'training_batch_wer': scores.float() / words})
 
-        else:
-            # If fused Joint-Loss-WER is used
-            if (sample_id + 1) % log_every_n_steps == 0:
-                compute_wer = True
-            else:
-                compute_wer = False
-
+        else:  # If fused Joint-Loss-WER is used
             # Fused joint step
             loss_value, wer, _, _ = self.joint(
                 encoder_outputs=encoded,
@@ -408,12 +408,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
             # Add auxiliary losses, if registered
             loss_value = self.add_auxiliary_losses(loss_value)
 
-            # Reset access registry
-            if AccessMixin.is_access_enabled():
-                AccessMixin.reset_registry(self)
-
             tensorboard_logs = {
-                'train_loss': loss_value,
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
@@ -429,8 +424,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
             tensorboard_logs['train_rnnt_loss'] = loss_value
             tensorboard_logs['train_ctc_loss'] = ctc_loss
             loss_value = (1 - self.ctc_loss_weight) * loss_value + self.ctc_loss_weight * ctc_loss
-            tensorboard_logs['train_loss'] = loss_value
-            if (sample_id + 1) % log_every_n_steps == 0:
+            if compute_wer:
                 self.ctc_wer.update(
                     predictions=log_probs,
                     targets=transcript,
@@ -440,6 +434,20 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
                 ctc_wer, _, _ = self.ctc_wer.compute()
                 self.ctc_wer.reset()
                 tensorboard_logs.update({'training_batch_wer_ctc': ctc_wer})
+
+        # note that we want to apply interctc independent of whether main ctc
+        # loss is used or not (to allow rnnt + interctc training).
+        # assuming ``ctc_loss_weight=0.3`` and interctc is applied to a single
+        # layer with weight of ``0.1``, the total loss will be
+        # ``loss = 0.9 * (0.3 * ctc_loss + 0.7 * rnnt_loss) + 0.1 * interctc_loss``
+        loss_value, additional_logs = self.add_interctc_losses(
+            loss_value, transcript, transcript_len, compute_wer=compute_wer
+        )
+        tensorboard_logs.update(additional_logs)
+        tensorboard_logs['train_loss'] = loss_value
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
 
         # Log items
         self.log_dict(tensorboard_logs)
@@ -469,6 +477,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
         return list(zip(sample_id, best_hyp_text))
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        if self.is_interctc_enabled():
+            AccessMixin.set_access_enabled(access_enabled=True)
+
         signal, signal_len, transcript, transcript_len = batch
 
         # forward() only performs encoder forward
@@ -479,6 +490,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
         del signal
 
         tensorboard_logs = {}
+        loss_value = None
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
@@ -489,7 +501,6 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
                 loss_value = self.loss(
                     log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
                 )
-
                 tensorboard_logs['val_loss'] = loss_value
 
             self.wer.update(encoded, encoded_len, transcript, transcript_len)
@@ -519,7 +530,6 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
                 transcript_lengths=target_len,
                 compute_wer=compute_wer,
             )
-
             if loss_value is not None:
                 tensorboard_logs['val_loss'] = loss_value
 
@@ -547,26 +557,30 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
 
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
+        loss_value, additional_logs = self.add_interctc_losses(
+            loss_value,
+            transcript,
+            transcript_len,
+            compute_wer=True,
+            compute_loss=self.compute_eval_loss,
+            log_wer_num_denom=True,
+            log_prefix="val_",
+        )
+        if self.compute_eval_loss:
+            # overriding total loss value. Note that the previous
+            # rnnt + ctc loss is available in metrics as "val_final_loss" now
+            tensorboard_logs['val_loss'] = loss_value
+        tensorboard_logs.update(additional_logs)
+
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
+
         return tensorboard_logs
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         logs = self.validation_step(batch, batch_idx, dataloader_idx=dataloader_idx)
-        test_logs = {
-            'test_wer_num': logs['val_wer_num'],
-            'test_wer_denom': logs['val_wer_denom'],
-            # 'test_wer': logs['val_wer'],
-        }
-        if 'val_loss' in logs:
-            test_logs['test_loss'] = logs['val_loss']
-
-        if self.ctc_loss_weight > 0:
-            test_logs['test_wer_num_ctc'] = logs['val_wer_num_ctc']
-            test_logs['test_wer_denom_ctc'] = logs['val_wer_denom_ctc']
-            if 'val_ctc_loss' in logs:
-                test_logs['test_ctc_loss'] = logs['val_ctc_loss']
-            if 'val_rnnt_loss' in logs:
-                test_logs['test_rnnt_loss'] = logs['val_rnnt_loss']
-
+        test_logs = {name.replace("val_", "test_"): value for name, value in logs.items()}
         return test_logs
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
@@ -582,7 +596,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
             ctc_wer_num = torch.stack([x['val_wer_num_ctc'] for x in outputs]).sum()
             ctc_wer_denom = torch.stack([x['val_wer_denom_ctc'] for x in outputs]).sum()
             tensorboard_logs['val_wer_ctc'] = ctc_wer_num.float() / ctc_wer_denom
-        return {**val_loss_log, 'log': tensorboard_logs}
+        metrics = {**val_loss_log, 'log': tensorboard_logs}
+        self.finalize_interctc_metrics(metrics, outputs, prefix="val_")
+        return metrics
 
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
         if self.compute_eval_loss:
@@ -599,7 +615,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin):
             ctc_wer_denom = torch.stack([x['test_wer_denom_ctc'] for x in outputs]).sum()
             tensorboard_logs['test_wer_ctc'] = ctc_wer_num.float() / ctc_wer_denom
 
-        return {**test_loss_log, 'log': tensorboard_logs}
+        metrics = {**test_loss_log, 'log': tensorboard_logs}
+        self.finalize_interctc_metrics(metrics, outputs, prefix="test_")
+        return metrics
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:

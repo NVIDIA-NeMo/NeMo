@@ -198,8 +198,15 @@ class Tacotron2Model(SpectrogramGenerator):
     def forward(self, *, tokens, token_len, audio=None, audio_len=None):
         if audio is not None and audio_len is not None:
             spec_target, spec_target_len = self.audio_to_melspec_precessor(audio, audio_len)
+        else:
+            if self.training or self.calculate_loss:
+                raise ValueError(
+                    f"'audio' and 'audio_len' can not be None when either 'self.training' or 'self.calculate_loss' is True."
+                )
+
         token_embedding = self.text_embedding(tokens).transpose(1, 2)
         encoder_embedding = self.encoder(token_embedding=token_embedding, token_len=token_len)
+
         if self.training:
             spec_pred_dec, gate_pred, alignments = self.decoder(
                 memory=encoder_embedding, decoder_inputs=spec_target, memory_lengths=token_len
@@ -208,10 +215,12 @@ class Tacotron2Model(SpectrogramGenerator):
             spec_pred_dec, gate_pred, alignments, pred_length = self.decoder(
                 memory=encoder_embedding, memory_lengths=token_len
             )
+
         spec_pred_postnet = self.postnet(mel_spec=spec_pred_dec)
 
-        if not self.calculate_loss:
+        if not self.calculate_loss and not self.training:
             return spec_pred_dec, spec_pred_postnet, gate_pred, alignments, pred_length
+
         return spec_pred_dec, spec_pred_postnet, gate_pred, spec_target, spec_target_len, alignments
 
     @typecheck(

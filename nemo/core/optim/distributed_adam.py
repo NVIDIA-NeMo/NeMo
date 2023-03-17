@@ -113,7 +113,8 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         return hook
 
     def try_grad_sync(self, params):
-        params = list(params)
+        params = [p for p in params if not getattr(p, '_disable_greedy_grad_copy', False)]
+        params = [p for p in params if not getattr(p, '_disable_overlap_grad_sync', False)]
         for p in params:
             self._grad_copy(p)
         self._try_start_bucket_grad_sync(params=params)

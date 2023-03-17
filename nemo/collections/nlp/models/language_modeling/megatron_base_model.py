@@ -269,7 +269,7 @@ class MegatronBaseModel(NLPModel):
             for buf, synced in zip(grads, torch._utils._unflatten_dense_tensors(coalesced, grads)):
                 buf.copy_(synced)
 
-    def reduce_overlap_gradients(self):
+    def reduce_overlap_gradients(self, params=None):
         """Reduce grads if overlapped grad sync is enabled
 
         Used for pipeline parallelism with the distributed Adam
@@ -278,10 +278,14 @@ class MegatronBaseModel(NLPModel):
         stages, the grad sync is deferred until the bubble overhead.
 
         """
+        if self.with_distributed_adam and self._optimizer.overlap_grad_sync:
+            if params is None:
+                params = self._optimizer.parameters()
+            self._optimizer.try_grad_sync(params)
+
+    def sync_overlap_parameters(self, params=None):
         if self.with_distributed_adam:
-            self._optimizer.try_grad_sync(
-                p for p in self._optimizer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)
-            )
+            self._optimizer._try_start_bucket_param_sync(params)
 
     def on_train_batch_end(self, outputs, batch, batch_idx: int, unused: Optional[int] = 0) -> None:
         super().on_train_batch_end(outputs, batch, batch_idx)

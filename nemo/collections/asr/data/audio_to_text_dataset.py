@@ -390,7 +390,7 @@ def get_tarred_dataset(
         else:
             datasets.append(dataset)
 
-    return get_chain_dataset(datasets=datasets, ds_config=config)
+    return get_chain_dataset(datasets=datasets, ds_config=config, rank=global_rank)
 
 
 def get_dali_char_dataset(
@@ -741,7 +741,7 @@ def convert_to_config_list(initial_list):
     return initial_list
 
 
-def get_chain_dataset(datasets, ds_config):
+def get_chain_dataset(datasets, ds_config, rank=0):
     if len(datasets) > 1:
         if ds_config.get('bucketing_batch_size', None) is not None:
             bucketing_batch_sizes = calc_bucketing_batch_sizes(ds_config, len(datasets))
@@ -765,7 +765,7 @@ def get_chain_dataset(datasets, ds_config):
     elif bucketing_strategy == 'synced_randomized':
         return audio_to_text.RandomizedChainDataset(datasets=datasets, rnd_seed=0)
     elif bucketing_strategy == 'fully_randomized':
-        return audio_to_text.RandomizedChainDataset(datasets=datasets, rnd_seed=random.randint(0, 30000))
+        return audio_to_text.RandomizedChainDataset(datasets=datasets, rnd_seed=random.randint(0, 30000) + rank)
     else:
         raise ValueError(
             f'bucketing_strategy={bucketing_strategy} is not supported! Supported strategies are [fixed_order, fully_randomized, synced_randomized].'

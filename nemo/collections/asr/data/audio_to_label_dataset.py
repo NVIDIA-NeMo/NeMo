@@ -124,7 +124,7 @@ def get_tarred_classification_label_dataset(
         else:
             datasets.append(dataset)
 
-    return get_chain_dataset(datasets=datasets, ds_config=config)
+    return get_chain_dataset(datasets=datasets, ds_config=config, rank=global_rank)
 
 
 def get_concat_tarred_speech_label_dataset(
@@ -216,4 +216,4 @@ def get_tarred_speech_label_dataset(
         else:
             datasets.append(dataset)
 
-    return get_chain_dataset(datasets=datasets, ds_config=config)
+    return get_chain_dataset(datasets=datasets, ds_config=config, rank=global_rank)

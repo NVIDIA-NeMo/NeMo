@@ -30,21 +30,26 @@ class _TokensWrapper:
         self.tokenizer = tokenizer
 
         if tokenizer is None:
-            self.reverse_map = {vocabulary[i]: i for i in range(len(vocabulary))}
+            self.reverse_map = {self.vocabulary[i]: i for i in range(len(self.vocabulary))}
+
+        self.vocab_len = len(self.vocabulary)
+
+        if (self.tokenizer is not None) and hasattr(self.tokenizer, 'unk_id') and self.tokenizer.unk_id is not None:
+            self.unknown_id = self.tokenizer.unk_id
+        elif ' ' in self.vocabulary:
+            self.unknown_id = self.token_to_id(' ')
+        elif '<unk>' in self.vocabulary:
+            self.unknown_id = self.token_to_id('<unk>')
+        else:
+            self.unknown_id = -1
 
     @property
     def blank(self):
-        return len(self.vocabulary)
+        return self.vocab_len
 
     @property
     def unk_id(self):
-        if (self.tokenizer is not None) and hasattr(self.tokenizer, 'unk_id') and self.tokenizer.unk_id is not None:
-            return self.tokenizer.unk_id
-
-        if '<unk>' in self.vocabulary:
-            return self.token_to_id('<unk>')
-        else:
-            return -1
+        return self.unknown_id
 
     @property
     def vocab(self):
@@ -53,7 +58,7 @@ class _TokensWrapper:
     @property
     def vocab_size(self):
         # the +1 is because we add the blank id
-        return len(self.vocabulary) + 1
+        return self.vocab_len + 1
 
     def token_to_id(self, token: str):
         if token == self.blank:
@@ -95,7 +100,6 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
         word_score: float = -1.0,
         unk_weight: float = -math.inf,
         sil_weight: float = 0.0,
-        unit_lm: bool = False,
     ):
 
         try:
@@ -122,7 +126,6 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
         self.vocab_size = self.tokenizer_wrapper.vocab_size
         self.blank = self.tokenizer_wrapper.blank
         self.silence = self.tokenizer_wrapper.unk_id
-        self.unit_lm = unit_lm
 
         if lexicon_path is not None:
             self.lexicon = load_words(lexicon_path)
@@ -161,10 +164,9 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
             )
 
             self.decoder = LexiconDecoder(
-                self.decoder_opts, self.trie, self.lm, self.silence, self.blank, self.unk_word, [], self.unit_lm,
+                self.decoder_opts, self.trie, self.lm, self.silence, self.blank, self.unk_word, [], False,
             )
         else:
-            assert self.unit_lm, "lexicon free decoding can only be done with a unit language model"
             from flashlight.lib.text.decoder import LexiconFreeDecoder, LexiconFreeDecoderOptions
 
             d = {
@@ -188,9 +190,17 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
         """Normalize tokens by handling CTC blank, ASG replabels, etc."""
 
         idxs = (g[0] for g in itertools.groupby(idxs))
-        idxs = filter(lambda x: x != self.blank and x != self.silence, idxs)
+        if self.silence < 0:
+            idxs = filter(lambda x: x != self.blank and x != self.silence, idxs)
+        else:
+            idxs = filter(lambda x: x != self.blank, idxs)
+        idxs = list(idxs)
+        if idxs[0] == self.silence:
+            idxs = idxs[1:]
+        if idxs[-1] == self.silence:
+            idxs = idxs[:-1]
 
-        return torch.LongTensor(list(idxs))
+        return torch.LongTensor(idxs)
 
     def _get_timesteps(self, token_idxs: List[int]):
         """Returns frame numbers corresponding to every non-blank token.

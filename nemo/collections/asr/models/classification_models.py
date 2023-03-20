@@ -392,6 +392,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel):
                             # replace top k value with current top k
                             self._accuracy.top_k = top_k_i
                             labels_k_i = self._accuracy.top_k_predicted_labels(logits)
+                            labels_k_i = labels_k_i.cpu()
                             labels_k.append(labels_k_i)
 
                         # convenience: if only one top_k, pop out the nested list

@@ -185,6 +185,8 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                     best_hyp, all_hyp = self.ctc_decoding.ctc_decoder_predictions_tensor(
                         logits, encoded_len, return_hypotheses=return_hypotheses,
                     )
+                    logits = logits.cpu()
+
                     if return_hypotheses:
                         # dump log probs per file
                         for idx in range(logits.shape[0]):

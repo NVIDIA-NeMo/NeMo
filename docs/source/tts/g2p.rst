@@ -212,6 +212,23 @@ Note, if the input manifest contains target "word_id", evaluation will be also p
 
   {"text_graphemes": "Oxygen is less able to diffuse into the blood, leading to hypoxia.", "pred_text": "diffuse_vrb", "start_end": [23, 30], "homograph_span": "diffuse", "word_id": "diffuse_vrb"}
 
+To train a model with `Chinese Polyphones with Pinyin (CPP) <https://github.com/kakaobrain/g2pM/tree/master/data>`__ dataset, run:
+
+.. code-block::
+    # prepare CPP manifest
+    mkdir -p ./cpp_manifest
+    git clone https://github.com/kakaobrain/g2pM.git
+    python3 export_zh_cpp_data_to_manifest.py --data_folder g2pM/data/ --output_folder ./cpp_manifest
+    
+    # model training and evaluation
+    python3 heteronym_classification_train_and_evaluate.py \
+        --config-name "heteronym_classification_zh.yaml" \
+        train_manifest="./cpp_manifest/train.json" \
+        validation_manifest="./cpp_manifest/dev.json" \
+        model.test_ds.dataset.manifest="./cpp_manifest/test.json" \
+        model.wordids="./cpp_manifest/wordid.tsv" \
+        do_training=False \
+        do_testing=True
 
 Requirements
 ------------

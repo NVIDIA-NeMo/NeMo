@@ -407,7 +407,7 @@ def cal_target_metadata_wer(manifest: str, target: str, meta_cfg: DictConfig, ev
                     raise ValueError("Current only support target metadata belongs to numeric or string ")
 
         for slot_key in slot_wer:
-            slot_wer[slot_key]['wer'] = slot_wer[slot_key]['errors'] / slot_wer[slot_key]['tokens']
+            slot_wer[slot_key][eval_metric] = slot_wer[slot_key]['errors'] / slot_wer[slot_key]['tokens']
             slot_wer[slot_key]['ins_rate'] = slot_wer[slot_key]['inss'] / slot_wer[slot_key]['tokens']
             slot_wer[slot_key]['del_rate'] = slot_wer[slot_key]['dels'] / slot_wer[slot_key]['tokens']
             slot_wer[slot_key]['sub_rate'] = slot_wer[slot_key]['subs'] / slot_wer[slot_key]['tokens']

@@ -362,8 +362,8 @@ class ImpulsePerturbation(Perturbation):
             self._audiodataset = AugmentationDataset(manifest_path, audio_tar_filepaths, shuffle_n)
             self._data_iterator = iter(self._audiodataset)
 
-        self.rng = rng
-        random.seed(self.rng) if rng else None
+        self._rng = rng
+        random.seed(self._rng) if rng else None
 
     def perturb(self, data):
         impulse = read_one_audiosegment(

@@ -11,6 +11,7 @@ data_simulator:
     session_length: 600 # Length of each simulated multispeaker audio session (seconds)
 
   session_params:
+    max_audio_read_sec: 20 # The maximum audio length in second when loading an audio file. The bigger the number, the slower the reading speed. Should be greater than 2.5 second.
     sentence_length_params: # k,p values for a negative_binomial distribution which is sampled to get the sentence length (in number of words)
     - 0.4 # k (Number of successes until the experiment is stopped) value must be a positive integer.
     - 0.05 # p (Success probability) must be in the range (0, 1]. The average sentence length will be k*(1-p)/p
@@ -51,12 +52,14 @@ data_simulator:
     add_bg: false # Add ambient background noise if true
     background_manifest: null # Path to background noise manifest file
     num_noise_files: 10 # Number of randomly chosen noise source files to be potentially included in one session
-    snr: 60 # SNR for background noise (using average speaker power)
-    snr_min: null  # Min random SNR for background noise (using average speaker power)
-    snr_max: null  # Max random SNR for background noise (using average speaker power)
+    snr: 60 # SNR for background noise (using average speaker power), set `snr_min` and `snr_max` values to enable random SNR
+    snr_min: null  # Min random SNR for background noise (using average speaker power), set `null` to use fixed SNR
+    snr_max: null  # Max random SNR for background noise (using average speaker power), set `null` to use fixed SNR
 
   # Segment and session augmentations. Available augmentations are in nemo/collections/asr/parts/preprocessing/perturb.py
   # See tutorial at https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_Noise_Augmentation.ipynb
+  # Note that ImpulsePerturbation, NoisePerturbation, RirAndNoisePerturbation and other perturbations that uses `collections.ASRAudioText`
+  # cannot use multi-proccessing in simulation, due to non-pickable errors.
   add_seg_aug: False  # Set True to enable augmentation on each speech segment
   segment_augmentor:
     gain:  # Randomly perturb the gain of each speech segment

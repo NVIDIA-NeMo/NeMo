@@ -14,6 +14,7 @@
 
 """Utilities for generating text."""
 
+import pickle
 from collections.abc import Iterable
 from functools import partial
 from typing import Callable, Tuple
@@ -259,6 +260,7 @@ def send_generate_info(
     greedy,
     repetition_penalty,
     min_tokens_to_generate,
+    end_strings,
 ):
     """
     Needs to be synced up with receive_generate_info
@@ -284,6 +286,14 @@ def send_generate_info(
     # Send variables to all ranks
     torch.distributed.broadcast(context_length_tensor, src, model_parallel_group)
     torch.distributed.broadcast(context_tokens_tensor, src, model_parallel_group)
+
+    # send end strings
+    string_tensor = torch.as_tensor(
+        np.frombuffer(pickle.dumps(end_strings), dtype=np.int8), device=torch.cuda.current_device()
+    )
+    size = torch.as_tensor([string_tensor.size(0)], device=torch.cuda.current_device(), dtype=torch.int64)
+    torch.distributed.broadcast(size, src, model_parallel_group)
+    torch.distributed.broadcast(string_tensor, src, model_parallel_group)
 
 
 def receive_generate_info():
@@ -311,6 +321,14 @@ def receive_generate_info():
     torch.distributed.broadcast(context_length_tensor, src, model_parallel_group)
     torch.distributed.broadcast(context_tokens_tensor, src, model_parallel_group)
 
+    array_size = torch.empty(1, dtype=torch.int64, device=torch.cuda.current_device())
+    torch.distributed.broadcast(array_size, src, model_parallel_group)
+
+    string_tensor = torch.empty(array_size[0], dtype=torch.int8, device=torch.cuda.current_device())
+    torch.distributed.broadcast(string_tensor, src, model_parallel_group)
+    bytes = string_tensor.cpu().numpy().tobytes()
+    end_strings = pickle.loads(bytes)
+
     return (
         context_length_tensor,
         context_tokens_tensor,
@@ -322,6 +340,7 @@ def receive_generate_info():
         greedy,
         repetition_penalty,
         min_tokens_to_generate,
+        end_strings,
     )
 
 
@@ -338,6 +357,7 @@ def synced_generate(
     greedy=False,
     repetition_penalty=1.2,
     min_tokens_to_generate=0,
+    end_strings=[],
 ):
     context_length = context_length_tensor.min().item()
     tokenizer = model.tokenizer
@@ -360,6 +380,7 @@ def synced_generate(
             tokens_to_generate,
             all_probs,
             temperature=temperature,
+            end_strings=end_strings,
             extra={
                 "top_p": top_p,
                 "top_k": top_k,
@@ -417,6 +438,7 @@ def generate(
     greedy=False,
     repetition_penalty=1.0,
     min_tokens_to_generate=0,
+    end_strings=['<|endoftext|>'],
     **strategy_args,
 ) -> OutputType:
     """
@@ -433,6 +455,7 @@ def generate(
         repetition_penalty (float): The parameter for repetition penalty. 1.0 means no penalty
         min_tokens_to_generate (int): The minimum length of the tokens to be generated
         strategy_args, the extra arguments are treated as inference strategy arguments
+        end_strings, a list of strings to stop generation when they are encountered in the output.
     Returns:
         OutputType: It generates the output in a dictionary type. It has the following keys:
             sentences: List[str], output sentences
@@ -466,6 +489,7 @@ def generate(
             greedy,
             repetition_penalty,
             min_tokens_to_generate,
+            end_strings,
         )
     else:
         (
@@ -479,6 +503,7 @@ def generate(
             greedy,
             repetition_penalty,
             min_tokens_to_generate,
+            end_strings,
         ) = receive_generate_info()
 
     output = synced_generate(
@@ -494,6 +519,7 @@ def generate(
         greedy=greedy,
         repetition_penalty=repetition_penalty,
         min_tokens_to_generate=min_tokens_to_generate,
+        end_strings=end_strings,
     )
     special_tokens = set()
     if hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is not None:
@@ -574,6 +600,7 @@ def sample_sequence_batch(
     all_probs=False,
     type_ids=None,
     temperature=None,
+    end_strings=['<|endoftext|>'],
     extra={},
 ):
     # Importing here to avoid circular import errors
@@ -690,7 +717,12 @@ def sample_sequence_batch(
                 group = parallel_state.get_embedding_group()
                 torch.distributed.broadcast(new_tokens, src, group)
 
-                done_token = (prev == eod_id).byte() & started.byte()
+                #                done_token = (prev == eod_id).byte() & started.byte()
+                done_token = inference_strategy.end_of_generation_condition(
+                    tokens[:, : context_length + 1], prev, eod_id, end_strings
+                )
+                done_token = done_token.byte() & started.byte()
+
                 just_finished = (done_token & ~is_done).bool()
                 lengths[just_finished.view(-1)] = context_length
                 is_done = is_done | done_token

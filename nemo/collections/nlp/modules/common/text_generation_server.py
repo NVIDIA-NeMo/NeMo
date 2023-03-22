@@ -44,6 +44,7 @@ API_ALLOWED_KEYS = set(
         "neighbors",
         "repetition_penalty",
         "min_tokens_to_generate",
+        "end_strings",
     ]
 )
 
@@ -156,6 +157,14 @@ class MegatronGenerate(Resource):
             if neighbors < 0:
                 return "num of neighbors must be an integer no less than 0"
 
+        end_strings = ['<|endoftext|>']
+        if 'end_strings' in request.get_json():
+            end_strings = request.get_json()['end_strings']
+            if not isinstance(end_strings, list):
+                return "expect end_strings to be a list of strings"
+            if not all([isinstance(s, str) for s in end_strings]):
+                return "expect end_strings to be a list of strings"
+
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
             extra = {}
@@ -182,6 +191,7 @@ class MegatronGenerate(Resource):
                 greedy,
                 repetition_penalty,
                 min_tokens_to_generate,
+                end_strings=end_strings,
                 **extra,
             )
             for k in output:

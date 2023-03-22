@@ -30,6 +30,9 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
+# the text representation of eos_id, it applies for all tokenizers
+END_OF_SEQ = '<|endoftext|>'
+
 
 class TextGenerationStrategy:
     """
@@ -131,6 +134,36 @@ class TextGenerationStrategy:
             context_length (int): the new token position in the tokens
         """
         pass
+
+    def end_of_generation_condition(
+        self, tokens: torch.Tensor, prev: torch.Tensor, eod_id: int, end_strings: List[str]
+    ) -> torch.Tensor:
+        """
+        return whether the generation should stop based on the previous token
+        Args:
+            tokens (torch.Tensor): the generated tokens so far
+            prev  (torch.Tensor): the previous token
+            eod_id (int): the end of document token id
+            end_strings (List[str]): the list of end of generation strings
+        returns:
+            a boolean tensor indicating whether the generation should stop
+        """
+        if len(end_strings) == 1 and end_strings[0] == END_OF_SEQ:
+            return prev == eod_id
+        else:
+            tokenizer = self.model.tokenizer
+            conditions = []
+            for p, token_item in zip(prev, tokens):
+                text = tokenizer.ids_to_text(token_item.tolist())
+                conditions.append(
+                    any(
+                        [
+                            p.item() == eod_id if end_string == END_OF_SEQ else text.endswith(end_string)
+                            for end_string in end_strings
+                        ]
+                    )
+                )
+            return torch.tensor(conditions, dtype=torch.bool, device=tokens.device)
 
     def post_generation_process(self, output):
         """

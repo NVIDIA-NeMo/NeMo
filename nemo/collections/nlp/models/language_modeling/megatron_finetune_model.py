@@ -286,17 +286,19 @@ class MegatronT5FinetuneModel(MegatronT5Model):
     def inference_step(self, batch, batch_idx, mode, dataloader_idx=0):
         # Regular finetuning datasets will return a list of dicts for each microbatch. But T0 datasets will return a single dict for the global batch.
         batch_has_lang_information = isinstance(batch, list) and len(batch[0]) == 7
+        data_cfg = self.cfg.data.validation_ds if mode == 'validation' else self.cfg.data.test_ds
 
-        processed_batch = self._reconfigure_and_process_inference_batch(
-            batch, self.cfg.data.validation_ds if mode == 'validation' else self.cfg.data.test_ds
-        )
+        processed_batch = self._reconfigure_and_process_inference_batch(batch, data_cfg)
 
         # Call parent validation step to get the loss.
         # NOTE: There could be extra keys in the processed_batch dictionary such as "langs" for XNLI, this will be ignored in the parent class.
         loss = super().validation_step(processed_batch, batch_idx)
 
         predicted_token_ids, _ = self.decode(
-            tokens_enc=processed_batch['text_enc'], enc_mask=processed_batch['enc_mask'], num_tokens_to_generate=30
+            tokens_enc=processed_batch['text_enc'],
+            enc_mask=processed_batch['enc_mask'],
+            num_tokens_to_generate=30,
+            bos_id=self.tokenizer.pad_id if data_cfg.replace_bos_with_pad else self.tokenizer.bos_id,
         )
 
         # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
@@ -317,12 +319,8 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                 pred=pred,
                 label=label,
                 metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
-                class_labels=self.cfg.data.validation_ds.metric.get('class_labels', None)
-                if mode == 'validation'
-                else self.cfg.data.test_ds.metric.get('class_labels', None),
-                labels_are_strings=self.cfg.data.validation_ds.metric.get('labels_are_strings', False)
-                if mode == 'validation'
-                else self.cfg.data.test_ds.metric.get('labels_are_strings', False),
+                class_labels=data_cfg.metric.get('class_labels', None),
+                labels_are_strings=data_cfg.metric.get('labels_are_strings', False),
             )
             if batch_has_lang_information:
                 _ = metric(pred, label, category)

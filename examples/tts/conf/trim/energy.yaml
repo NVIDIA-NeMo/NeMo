@@ -1,4 +1,4 @@
-_target_: nemo.collections.tts.data.audio_trimming.EnergyAudioTrimmer
+_target_: nemo.collections.tts.parts.preprocessing.audio_trimming.EnergyAudioTrimmer
 
 db_threshold: 50.0
 speech_frame_threshold: 3

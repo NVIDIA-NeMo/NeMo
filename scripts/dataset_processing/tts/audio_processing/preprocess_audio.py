@@ -22,17 +22,24 @@ These can be done separately through multiple executions of the script, or all a
 too many copies of the same audio.
 
 Most of these can also be done by the TTS data loader at training time, but doing them ahead of time
-lets us implement more complex processing, validate the corectness of the output, and save on compute time.
+lets us implement more complex processing, validate the correctness of the output, and save on compute time.
 
-$ HYDRA_FULL_ERROR=1 python <nemo_root_path>/scripts/dataset_processing/tts/audio_processing/preprocess_audio.py \
-    --config-path=<nemo_root_path>/scripts/dataset_processing/tts/audio_processing/config \
-    --config-name=preprocessing.yaml \
-    data_base_dir="/home/data" \
-    config.num_workers=1
+$ python <nemo_root_path>/scripts/dataset_processing/tts/audio_processing/preprocess_audio.py \
+    --input_manifest="<data_root_path>/manifest.json" \
+    --output_manifest="<data_root_path>/manifest_processed.json" \
+    --input_audio_dir="<data_root_path>/audio" \
+    --output_audio_dir="<data_root_path>/audio_processed" \
+    --num_workers=1 \
+    --trim_config_path="<nemo_root_path>/examples/tts/conf/trim/energy.yaml" \
+    --output_sample_rate=22050 \
+    --volume_level=0.95 \
+    --min_duration=0.5 \
+    --max_duration=20.0 \
+    --filter_file="filtered.txt"
 """
 
+import argparse
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
@@ -40,57 +47,86 @@ import librosa
 import soundfile as sf
 from hydra.utils import instantiate
 from joblib import Parallel, delayed
+from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir, normalize_volume
-from nemo.core.config import hydra_runner
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_audio_paths, normalize_volume
 from nemo.utils import logging
 
 
-@dataclass
-class AudioPreprocessingConfig:
-    # Input training manifest.
-    input_manifest: Path
-    # New training manifest after processing audio.
-    output_manifest: Path
-    # Directory to save processed audio to.
-    output_dir: Path
-    # Number of threads to use. -1 will use all available CPUs.
-    num_workers: int = -1
-    # If provided, maximum number of entries in the manifest to process.
-    max_entries: int = 0
-    # If provided, rate to resample the audio to.
-    output_sample_rate: int = 0
-    # If provided, peak volume to normalize audio to.
-    volume_level: float = 0.0
-    # If provided, filter out utterances shorter than min_duration.
-    min_duration: float = 0.0
-    # If provided, filter out utterances longer than min_duration.
-    max_duration: float = float("inf")
-    # If provided, output filter_file will contain list of utterances filtered out.
-    filter_file: Path = None
+def get_args():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Compute speaker level pitch statistics.",
+    )
+    parser.add_argument(
+        "--input_manifest", required=True, type=Path, help="Path to input training manifest.",
+    )
+    parser.add_argument(
+        "--input_audio_dir", required=True, type=Path, help="Path to base directory with audio files.",
+    )
+    parser.add_argument(
+        "--output_manifest", required=True, type=Path, help="Path to output training manifest with processed audio.",
+    )
+    parser.add_argument(
+        "--output_audio_dir", required=True, type=Path, help="Path to output directory for audio files.",
+    )
+    parser.add_argument(
+        "--num_workers", default=1, type=int, help="Number of parallel threads to use. If -1 all CPUs are used."
+    )
+    parser.add_argument(
+        "--trim_config_path",
+        required=False,
+        type=Path,
+        help="Path to config file for nemo.collections.tts.data.audio_trimming.AudioTrimmer",
+    )
+    parser.add_argument(
+        "--max_entries", default=0, type=int, help="If provided, maximum number of entries in the manifest to process."
+    )
+    parser.add_argument(
+        "--output_sample_rate", default=0, type=int, help="If provided, rate to resample the audio to."
+    )
+    parser.add_argument(
+        "--volume_level", default=0.0, type=float, help="If provided, peak volume to normalize audio to."
+    )
+    parser.add_argument(
+        "--min_duration", default=0.0, type=float, help="If provided, filter out utterances shorter than min_duration."
+    )
+    parser.add_argument(
+        "--max_duration", default=0.0, type=float, help="If provided, filter out utterances longer than max_duration."
+    )
+    parser.add_argument(
+        "--filter_file",
+        required=False,
+        type=Path,
+        help="If provided, output filter_file will contain list of " "utterances filtered out.",
+    )
+    args = parser.parse_args()
+    return args
 
 
 def _process_entry(
     entry: dict,
-    base_dir: Path,
-    output_dir: Path,
+    input_audio_dir: Path,
+    output_audio_dir: Path,
     audio_trimmer: AudioTrimmer,
     output_sample_rate: int,
     volume_level: float,
 ) -> Tuple[dict, float, float]:
     audio_filepath = Path(entry["audio_filepath"])
-    rel_audio_path = audio_filepath.relative_to(base_dir)
-    input_path = os.path.join(base_dir, rel_audio_path)
-    output_path = os.path.join(output_dir, rel_audio_path)
 
-    audio, sample_rate = librosa.load(input_path, sr=None)
+    audio_path, audio_path_rel = get_audio_paths(audio_path=audio_filepath, base_path=input_audio_dir)
+    output_path = output_audio_dir / audio_path_rel
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+
+    audio_path = str(audio_path)
+    output_path = str(output_path)
+
+    audio, sample_rate = librosa.load(audio_path, sr=None)
 
     if audio_trimmer is not None:
-        audio_id = str(audio_filepath)
-        audio, start_i, end_i = audio_trimmer.trim_audio(audio=audio, sample_rate=sample_rate, audio_id=audio_id)
+        audio, start_i, end_i = audio_trimmer.trim_audio(audio=audio, sample_rate=sample_rate, audio_id=audio_path)
 
     if output_sample_rate is not None:
         audio = librosa.resample(y=audio, orig_sr=sample_rate, target_sr=output_sample_rate)
@@ -101,51 +137,50 @@ def _process_entry(
 
     sf.write(file=output_path, data=audio, samplerate=sample_rate)
 
-    original_duration = librosa.get_duration(filename=str(audio_filepath))
-    output_duration = librosa.get_duration(filename=str(output_path))
+    original_duration = librosa.get_duration(filename=audio_path)
+    output_duration = librosa.get_duration(filename=output_path)
 
-    entry["audio_filepath"] = output_path
     entry["duration"] = output_duration
+
+    if os.path.isabs(audio_filepath):
+        entry["audio_filepath"] = output_path
 
     return entry, original_duration, output_duration
 
 
-@hydra_runner(config_path='config', config_name='preprocessing')
-def main(cfg):
-    config = instantiate(cfg.config)
-    logging.info(f"Running audio preprocessing with config: {config}")
+def main():
+    args = get_args()
 
-    input_manifest_path = config.input_manifest
-    output_manifest_path = config.output_manifest
-    output_dir = Path(config.output_dir)
-    num_workers = config.num_workers
-    max_entries = config.max_entries
-    output_sample_rate = config.output_sample_rate
-    volume_level = config.volume_level
-    min_duration = config.min_duration
-    max_duration = config.max_duration
-    filter_file = Path(config.filter_file)
+    input_manifest_path = args.input_manifest
+    output_manifest_path = args.output_manifest
+    input_audio_dir = args.input_audio_dir
+    output_audio_dir = args.output_audio_dir
+    num_workers = args.num_workers
+    max_entries = args.max_entries
+    output_sample_rate = args.output_sample_rate
+    volume_level = args.volume_level
+    min_duration = args.min_duration
+    max_duration = args.max_duration
+    filter_file = args.filter_file
 
-    if cfg.trim:
-        audio_trimmer = instantiate(cfg.trim)
+    if args.trim_config_path:
+        audio_trimmer_config = OmegaConf.load(args.trim_config_path)
+        audio_trimmer = instantiate(audio_trimmer_config)
     else:
         audio_trimmer = None
 
-    output_dir.mkdir(exist_ok=True, parents=True)
+    output_audio_dir.mkdir(exist_ok=True, parents=True)
 
     entries = read_manifest(input_manifest_path)
     if max_entries:
         entries = entries[:max_entries]
 
-    audio_paths = [entry["audio_filepath"] for entry in entries]
-    base_dir = get_base_dir(audio_paths)
-
     # 'threading' backend is required when parallelizing torch models.
     job_outputs = Parallel(n_jobs=num_workers, backend='threading')(
         delayed(_process_entry)(
             entry=entry,
-            base_dir=base_dir,
-            output_dir=output_dir,
+            input_audio_dir=input_audio_dir,
+            output_audio_dir=output_audio_dir,
             audio_trimmer=audio_trimmer,
             output_sample_rate=output_sample_rate,
             volume_level=volume_level,
@@ -158,14 +193,14 @@ def main(cfg):
     original_durations = 0.0
     output_durations = 0.0
     for output_entry, original_duration, output_duration in job_outputs:
+        original_durations += original_duration
 
-        if not min_duration <= output_duration <= max_duration:
+        if (min_duration and output_duration < min_duration) or (max_duration and output_duration > max_duration):
             if output_duration != original_duration:
                 output_entry["original_duration"] = original_duration
             filtered_entries.append(output_entry)
             continue
 
-        original_durations += original_duration
         output_durations += output_duration
         output_entries.append(output_entry)
 
@@ -173,8 +208,8 @@ def main(cfg):
     if filter_file:
         write_manifest(output_path=str(filter_file), target_manifest=filtered_entries, ensure_ascii=False)
 
-    logging.info(f"Duration of original audio: {original_durations / 3600} hours")
-    logging.info(f"Duration of processed audio: {output_durations / 3600} hours")
+    logging.info(f"Duration of original audio: {original_durations / 3600:.2f} hours")
+    logging.info(f"Duration of processed audio: {output_durations / 3600:.2f} hours")
 
 
 if __name__ == "__main__":

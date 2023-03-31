@@ -209,6 +209,7 @@ apex_available = True
 
 try:
     from apex.contrib.layer_norm.layer_norm import FastLayerNorm
+    from apex.normalization import MixedFusedRMSNorm
     from apex.normalization.fused_layer_norm import FusedLayerNorm, MixedFusedLayerNorm
     from apex.transformer.functional.fused_softmax import FusedScaleMaskSoftmax
     from apex.transformer.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
@@ -223,33 +224,22 @@ try:
         """
 
         p = next(n.parameters())
+
         if isinstance(n, FusedLayerNorm) or isinstance(n, MixedFusedLayerNorm):
             shape, eps, affine = n.normalized_shape, n.eps, n.elementwise_affine
+            n_state = n.state_dict()
         elif isinstance(n, FastLayerNorm):
             shape, eps, affine = n.weight.shape, n.epsilon, True
+            n_state = n.state_dict()
+        elif isinstance(n, MixedFusedRMSNorm):
+            shape, eps, affine = n.normalized_shape, n.eps, n.elementwise_affine
+            tmp_n_state = n.state_dict()
+            n_state = {'weight': tmp_n_state['weight'], 'bias': torch.zeros_like(tmp_n_state['weight'])}
         else:
             return None
 
         mod = nn.LayerNorm(shape, eps=eps, elementwise_affine=affine, device=p.device, dtype=p.dtype)
-        n_state = n.state_dict()
-        mod.load_state_dict(n_state)
-        return mod
 
-    def replace_RowParallelLinear(n: nn.Module) -> Optional[nn.Linear]:
-        """
-        Replaces Apex's FusedLayerNorm with nn.LayerNorm. This is required for ONNX export.
-        Args:
-           n: the FusedLayerNorm pytorch module to replace
-        Returns:
-           Equivalent LayerNorm module
-        """
-        if not isinstance(n, RowParallelLinear):
-            raise ValueError("This function can only change the RowParallelLinear module.")
-
-        dev = next(n.parameters()).device
-        mod = LinearWithBiasSkip(n.weight, n.bias, n.skip_bias_add).to(device=dev)
-
-        n_state = n.state_dict()
         mod.load_state_dict(n_state)
         return mod
 
@@ -296,6 +286,7 @@ try:
         "RowParallelLinear": replace_ParallelLinear,
         "ColumnParallelLinear": replace_ParallelLinear,
         "FusedScaleMaskSoftmax": replace_FusedScaleMaskSoftmax,
+        "MixedFusedRMSNorm": replace_FusedLayerNorm,
     }
 
 except Exception as e:

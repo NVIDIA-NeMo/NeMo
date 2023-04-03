@@ -29,7 +29,7 @@ class StreamingEncoder(ABC):
         pass
 
     @abstractmethod
-    def get_initial_cache_state(self, batch_size, dtype, device):
+    def get_initial_cache_state(self, batch_size, dtype, device, max_dim):
         pass
 
     @staticmethod

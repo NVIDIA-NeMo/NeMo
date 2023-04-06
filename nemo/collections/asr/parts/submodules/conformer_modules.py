@@ -39,6 +39,19 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
     Args:
         d_model (int): input dimension of MultiheadAttentionMechanism and PositionwiseFeedForward
         d_ff (int): hidden dimension of PositionwiseFeedForward
+        self_attention_model (str): type of the attention layer and positional encoding
+            'rel_pos': relative positional embedding and Transformer-XL
+            'rel_pos_local_attn': relative positional embedding and Transformer-XL with local attention using
+                overlapping chunks. Attention context is determined by att_context_size parameter.
+            'abs_pos': absolute positional embedding and Transformer
+            Default is rel_pos.
+        global_tokens (int): number of tokens to be used for global attention.
+            Only relevant if self_attention_model is 'rel_pos_local_attn'.
+            Defaults to 0.
+        global_tokens_spacing (int): how far apart the global tokens are
+            Defaults to 1.
+        global_attn_separate (bool): whether the q, k, v layers used for global tokens should be separate.
+            Defaults to False.
         n_heads (int): number of heads for multi-head attention
         conv_kernel_size (int): kernel size for depthwise convolution in convolution module
         dropout (float): dropout probabilities for linear layers
@@ -50,6 +63,9 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         d_model,
         d_ff,
         self_attention_model='rel_pos',
+        global_tokens=0,
+        global_tokens_spacing=1,
+        global_attn_separate=False,
         n_heads=4,
         conv_kernel_size=31,
         conv_norm_type='batch_norm',
@@ -101,6 +117,9 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
                 pos_bias_v=pos_bias_v,
                 max_cache_len=MHA_max_cache_len,
                 att_context_size=att_context_size,
+                global_tokens=global_tokens,
+                global_tokens_spacing=global_tokens_spacing,
+                global_attn_separate=global_attn_separate,
             )
         elif self_attention_model == 'abs_pos':
             self.self_attn = MultiHeadAttention(

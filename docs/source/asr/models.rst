@@ -148,6 +148,13 @@ the transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-
 
 Note that both configs are subword-based (BPE).
 
+You can also train these models with longformer-style attention (https://arxiv.org/abs/2004.05150) using the following configs: CTC config at
+``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_ctc_bpe.yaml`` and transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_transducer_bpe.yaml``
+This allows using the model on longer audio (up to 70 minutes with Fast Conformer). Note that the Fast Conformer checkpoints
+can be used with limited context attention even if trained with full context. However, if you also want to use global tokens,
+which help aggregate information from outside the limited context, then training is required.
+
+
 Cache-aware Streaming Conformer
 -------------------------------
 

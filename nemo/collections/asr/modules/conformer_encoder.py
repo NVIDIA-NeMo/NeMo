@@ -118,6 +118,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             All layers before this will never be dropped. Note that drop
             probability will be adjusted accordingly if mode is "linear" when
             start layer is > 1. Defaults to 1.
+        global_tokens (int): number of tokens to be used for global attention.
+            Only relevant if self_attention_model is 'rel_pos_local_attn'.
+            Defaults to 0.
+        global_tokens_spacing (int): how far apart the global tokens are
+            Defaults to 1.
+        global_attn_separate (bool): whether the q, k, v layers used for global tokens should be separate.
+            Defaults to False.
+
     """
 
     def input_example(self, max_batch=1, max_dim=256):
@@ -233,6 +241,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         stochastic_depth_drop_prob: float = 0.0,
         stochastic_depth_mode: str = "linear",
         stochastic_depth_start_layer: int = 1,
+        global_tokens: int = 0,
+        global_tokens_spacing: int = 1,
+        global_attn_separate: bool = False,
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor
@@ -242,7 +253,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.scale = math.sqrt(self.d_model)
         self.att_context_style = att_context_style
         self.subsampling_factor = subsampling_factor
+
         self.self_attention_model = self_attention_model
+        self.global_tokens = global_tokens
+        self.global_attn_separate = global_attn_separate
+        self.global_tokens_spacing = global_tokens_spacing
 
         if att_context_size:
             self.att_context_size = list(att_context_size)
@@ -379,6 +394,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 d_model=d_model,
                 d_ff=d_ff,
                 self_attention_model=self_attention_model,
+                global_tokens=global_tokens,
+                global_tokens_spacing=global_tokens_spacing,
+                global_attn_separate=global_attn_separate,
                 n_heads=n_heads,
                 conv_kernel_size=conv_kernel_size,
                 conv_norm_type=conv_norm_type,

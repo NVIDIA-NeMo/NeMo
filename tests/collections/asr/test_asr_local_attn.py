@@ -11,16 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 import os
 import shutil
 import tempfile
 
 import pytest
+import pytorch_lightning as pl
 import torch
+from omegaconf import DictConfig
 
-from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.models import ASRModel, EncDecCTCModel
 
 
 def getattr2(object, attr):
@@ -86,3 +86,105 @@ class TestASRLocalAttention:
             if attr_for_eq_check is not None and len(attr_for_eq_check) > 0:
                 for attr in attr_for_eq_check:
                     assert getattr2(model, attr) == getattr2(model_copy, attr)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "global_tokens", [0, 1, 4],
+    )
+    @pytest.mark.parametrize(
+        "global_tokens_spacing", [1, 4],
+    )
+    def test_train(self, global_tokens, global_tokens_spacing):
+        preprocessor_config = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+        vocabulary = [
+            ' ',
+            'a',
+            'b',
+            'c',
+            'd',
+            'e',
+            'f',
+            'g',
+            'h',
+            'i',
+            'j',
+            'k',
+            'l',
+            'm',
+            'n',
+            'o',
+            'p',
+            'q',
+            'r',
+            's',
+            't',
+            'u',
+            'v',
+            'w',
+            'x',
+            'y',
+            'z',
+            "'",
+        ]
+        encoder_config = {
+            '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+            'feat_in': 64,
+            'n_layers': 8,
+            'd_model': 4,
+            'self_attention_model': 'rel_pos_local_attn',
+            'att_context_size': [128, 128],
+            'global_tokens': global_tokens,
+            'global_tokens_spacing': global_tokens_spacing,
+        }
+        decoder_config = {
+            '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+            'feat_in': None,
+            'num_classes': len(vocabulary),
+            'vocabulary': vocabulary,
+        }
+        model_config = DictConfig(
+            {
+                'preprocessor': DictConfig(preprocessor_config),
+                'encoder': DictConfig(encoder_config),
+                'decoder': DictConfig(decoder_config),
+                'optim': {'name': 'adamw'},
+            }
+        )
+
+        class DummyDataset(torch.utils.data.Dataset):
+            """Simply returns a single set of values."""
+
+            def __init__(self, values):
+                self.values = values
+
+            def __len__(self):
+                return 1
+
+            def __getitem__(self, idx):
+                return self.values
+
+        input_signal = torch.randn(size=(1, 960000))
+        input_length = torch.tensor([960000])
+        target = torch.randint(size=(1, 280), low=0, high=28)
+        target_length = torch.tensor([280])
+
+        asr_model = EncDecCTCModel(cfg=model_config)
+        asr_model.train()
+        _ = asr_model.forward(input_signal=input_signal, input_signal_length=input_length)
+
+        trainer = pl.Trainer(max_epochs=1)
+        trainer.fit(
+            asr_model,
+            train_dataloaders=torch.utils.data.DataLoader(
+                DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+            ),
+            val_dataloaders=torch.utils.data.DataLoader(
+                DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+            ),
+        )
+        trainer.test(
+            asr_model,
+            dataloaders=torch.utils.data.DataLoader(
+                DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+            ),
+        )

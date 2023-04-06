@@ -155,7 +155,7 @@ model:
       # scheduler config override
       warmup_steps: 15000
       warmup_ratio: null
-      min_lr: 1e-6
+      min_lr: 1e-4
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs

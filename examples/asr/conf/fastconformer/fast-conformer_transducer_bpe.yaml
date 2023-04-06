@@ -202,7 +202,7 @@ model:
 
   optim:
     name: adamw
-    lr: 2.5e-3
+    lr: 5e-3
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
@@ -213,7 +213,7 @@ model:
       # scheduler config override
       warmup_steps: 15000
       warmup_ratio: null
-      min_lr: 1e-6
+      min_lr: 5e-4
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs

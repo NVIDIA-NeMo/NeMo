@@ -14,6 +14,7 @@
 
 import random
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -80,29 +81,36 @@ class SpecAugment(nn.Module, Typing):
     @typecheck()
     @torch.no_grad()
     def forward(self, input_spec, length):
-        sh = input_spec.shape
+        batch_size, num_freq_bins, _ = input_spec.shape
+        # Move lengths to CPU before repeated indexing
+        lengths_cpu = length.cpu().numpy()
+        # Generate a numpy boolean mask. `True` elements represent where the input spec will be augmented.
+        fill_mask: np.array = np.full(shape=input_spec.shape, fill_value=False)
+        freq_start_upper_bound = num_freq_bins - self.freq_width
+        # Choose different mask ranges for each element of the batch
+        for idx in range(batch_size):
+            # Set freq masking
+            for _ in range(self.freq_masks):
+                start = self._rng.randint(0, freq_start_upper_bound)
+                width = self._rng.randint(0, self.freq_width)
+                fill_mask[idx, start : start + width, :] = True
 
-        for idx in range(sh[0]):
-            for i in range(self.freq_masks):
-                x_left = self._rng.randint(0, sh[1] - self.freq_width)
+            # Derive time width, sometimes based percentage of input length.
+            if self.adaptive_temporal_width:
+                time_max_width = max(1, int(lengths_cpu[idx] * self.time_width))
+            else:
+                time_max_width = self.time_width
+            time_start_upper_bound = max(1, lengths_cpu[idx] - time_max_width)
 
-                w = self._rng.randint(0, self.freq_width)
-
-                input_spec[idx, x_left : x_left + w, :] = self.mask_value
-
-            for i in range(self.time_masks):
-                if self.adaptive_temporal_width:
-                    time_width = max(1, int(length[idx] * self.time_width))
-                else:
-                    time_width = self.time_width
-
-                y_left = self._rng.randint(0, max(1, length[idx] - time_width))
-
-                w = self._rng.randint(0, time_width)
-
-                input_spec[idx, :, y_left : y_left + w] = self.mask_value
-
-        return input_spec
+            # Set time masking
+            for _ in range(self.time_masks):
+                start = self._rng.randint(0, time_start_upper_bound)
+                width = self._rng.randint(0, time_max_width)
+                fill_mask[idx, :, start : start + width] = True
+        # Bring the mask to device and fill spec
+        fill_mask = torch.from_numpy(fill_mask).to(input_spec.device)
+        masked_spec = input_spec.masked_fill(mask=fill_mask, value=self.mask_value)
+        return masked_spec
 
 
 class SpecCutout(nn.Module, Typing):

@@ -70,7 +70,7 @@ After this is done (will take a while), you'll have two files: ```spm_32k_wiki.m
 
 **Step 4: Convert training data into memory map format**
 
-This format makes trainig more efficient, especially with many nodes and GPUs. This step will also tokenize data using tokenizer model from Step 3.
+This format makes training more efficient, especially with many nodes and GPUs. This step will also tokenize data using tokenizer model from Step 3.
 
 *Option 1:* Using HuggingFace GPT2 tokenizer files.
 

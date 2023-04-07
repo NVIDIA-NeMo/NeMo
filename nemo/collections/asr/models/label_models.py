@@ -427,9 +427,9 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             audio = librosa.core.resample(audio, orig_sr=sr, target_sr=target_sr)
         audio_length = audio.shape[0]
         device = self.device
-        audio = np.array(audio)
+        audio = np.array([audio])
         audio_signal, audio_signal_len = (
-            torch.tensor([audio], device=device),
+            torch.tensor(audio, device=device),
             torch.tensor([audio_length], device=device),
         )
         mode = self.training

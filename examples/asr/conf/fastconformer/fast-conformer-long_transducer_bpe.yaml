@@ -42,7 +42,7 @@ model:
     tarred_audio_filepaths: null
     shuffle_n: 2048
     # bucketing params
-    bucketing_strategy: "fuly_randomized"
+    bucketing_strategy: "fully_randomized"
     bucketing_batch_size: null
 
   validation_ds:

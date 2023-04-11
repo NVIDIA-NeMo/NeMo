@@ -280,13 +280,19 @@ def split_partition(
     # Special case for GPT models - whose last PP TP rank has a duplicate embedding tensor
 
     # Megatron GPT check for final PP rank duplicated embeddings
-    if (
-        pp_rank == (pp_size - 1) and hasattr(model, 'model') and hasattr(model.model, 'word_embeddings')
-    ):  # duplicate embedding copy (tied weights)
-        duplicate_word_embedding_offset = 1
-    else:
-        duplicate_word_embedding_offset = 0
-    idx += duplicate_word_embedding_offset  # add duplicate embedding offset to index
+    duplicate_gpt_word_embedding_offset = 0
+    untied_gpt_embedding = False
+
+    if 'gpt' in model.cfg.target.lower():
+        logging.info("Splitting GPT model")
+        if pp_rank == (pp_size - 1) and hasattr(model, 'model') and hasattr(model.model, 'word_embeddings'):
+            # duplicate embedding copy (tied weights)
+            duplicate_gpt_word_embedding_offset = 1
+
+        if model.cfg.get('share_embeddings_and_output_weights', True) is False:
+            untied_gpt_embedding = True
+
+    idx += duplicate_gpt_word_embedding_offset  # add duplicate embedding offset to index
 
     # Special case for T5 models - where the embeddings are shared between encoder and decoder
     # and the rank of decoder split is arbitrary.
@@ -334,8 +340,8 @@ def split_partition(
 
     # Print some debug info
     logging.info(f"Start Layer Idx: {idx} Number of layers in current rank: {num_params} Offset: {offset}")
-    if duplicate_word_embedding_offset > 0:
-        logging.info(f"GPT duplicate_word_embedding_offset: {duplicate_word_embedding_offset}")
+    if duplicate_gpt_word_embedding_offset > 0:
+        logging.info(f"GPT duplicate_gpt_word_embedding_offset: {duplicate_gpt_word_embedding_offset}")
     if enc_dec_share_token_embeddings_count:
         logging.info(f"EncDec share_token_embeddings_count: {enc_dec_share_token_embeddings_count}")
     if shared_enc_dec_embeddings_intermediate:
@@ -356,7 +362,7 @@ def split_partition(
         # but GPT has an additional word embedding as its last parameter
         # Therefore we check for this, and reset the index to the parameter of the PP 0 TP 0 rank
         # which holds the parameters of the embedding.
-        if idx == (len(partitions[0])) and duplicate_word_embedding_offset > 0:
+        if idx == (len(partitions[0])) and duplicate_gpt_word_embedding_offset > 0:
             logging.info("Found duplicate embedding copy for GPT model, resetting index")
             idx = 0  # reset idx parameter to 0 if we have duplicate embedding copy
 
@@ -421,7 +427,7 @@ def split_partition(
     # Add 1 to offset to account for last PP rank's duplicated Embedding
     offset_diff = offset - num_params
     # GPT offset correction
-    if pp_size > 1 and pp_rank == (pp_size - 1) and pp_split_rank == 0:
+    if not untied_gpt_embedding and pp_size > 1 and pp_rank == (pp_size - 1) and pp_split_rank == 0:
         offset_diff += 1
     # T5 offset correction for shared embedding when pp split rank == pp rank
     if shared_enc_dec_embeddings:
@@ -473,7 +479,7 @@ def split_partition(
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument("--model_file", type=str, required=True, help="Path to source .nemo file")
+    parser.add_argument("--model_file", type=str, default=None, required=False, help="Path to source .nemo file")
     parser.add_argument("--target_file", type=str, required=True, help="Path to write target .nemo file")
     parser.add_argument(
         "--tensor_model_parallel_size", type=int, default=-1, required=False, help="TP size of source model"
@@ -552,6 +558,9 @@ def main():
     pipeline_model_parallel_split_rank = args.target_pipeline_model_parallel_split_rank
     cls = model_utils.import_class_by_path(args.model_class)
 
+    if args.model_file is None and args.model_extracted_dir is None:
+        raise ValueError("Cannot pass model_file and model_extracted_dir as None at the same time.")
+
     trainer = Trainer(devices=1, strategy=NLPDDPStrategy(), accelerator="cpu", precision=precision)
 
     if tp_size < 0 or pp_size < 0:
@@ -614,8 +623,13 @@ def main():
                     logging.info(f"Using extracted model directory: {args.model_extracted_dir}")
                     save_restore_connector.model_extracted_dir = args.model_extracted_dir
 
+                if args.model_file is not None:
+                    model_filepath = args.model_file
+                else:
+                    model_filepath = args.model_extracted_dir
+
                 model = cls.restore_from(
-                    restore_path=args.model_file,
+                    restore_path=model_filepath,
                     trainer=trainer,
                     map_location=torch.device("cpu"),
                     save_restore_connector=save_restore_connector,
@@ -684,7 +698,24 @@ def main():
     else:
         # If input model has TP = 1 and PP = 1
         app_state.model_parallel_size = 1
-        model = cls.restore_from(restore_path=args.model_file, trainer=trainer, map_location=torch.device("cpu"))
+
+        save_restore_connector = NLPSaveRestoreConnector()
+
+        if args.model_extracted_dir is not None:
+            logging.info(f"Using extracted model directory: {args.model_extracted_dir}")
+            save_restore_connector.model_extracted_dir = args.model_extracted_dir
+
+        if args.model_file is not None:
+            model_filepath = args.model_file
+        else:
+            model_filepath = args.model_extracted_dir
+
+        model = cls.restore_from(
+            restore_path=model_filepath,
+            trainer=trainer,
+            map_location=torch.device("cpu"),
+            save_restore_connector=save_restore_connector,
+        )
         model.to(dtype=dtype)
 
     # If target model has TP > 1 or PP > 1

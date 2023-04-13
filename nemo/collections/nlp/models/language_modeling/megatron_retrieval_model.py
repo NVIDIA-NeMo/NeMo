@@ -36,7 +36,6 @@ from nemo.collections.nlp.modules.common.megatron.retrieval_token_level_encoder_
     MegatronRetrievalTokenLevelEncoderDecoderModule,
 )
 from nemo.collections.nlp.modules.common.megatron.utils import (
-    ApexGuardDefaults,
     average_losses_across_data_parallel_group,
     build_position_ids,
     get_params_for_weight_decay_optimization,
@@ -60,13 +59,14 @@ from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer import parallel_state
-    from apex.transformer.enums import ModelType
+    from megatron.core import parallel_state
+    from megatron.core.enums import ModelType
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
-    ModelType = ApexGuardDefaults()
-    HAVE_APEX = False
+
+    HAVE_MEGATRON_CORE = False
 
 
 __all__ = ["MegatronRetrievalModel"]
@@ -268,7 +268,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         if self.cfg.precision == 16:
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
-                self.log('loss_scale', loss_scale)
+                self.log('loss_scale', loss_scale, batch_size=1)
 
         if self.with_distributed_adam:
             # gradients are reduced internally in distributed optimizer
@@ -292,54 +292,18 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         if (batch_idx + 1) % self.trainer.accumulate_grad_batches == 0:
             # Reduced loss for logging.
             average_reduced_loss = sum(self._reduced_loss_buffer) / len(self._reduced_loss_buffer)
-            self.log('reduced_train_loss', average_reduced_loss, prog_bar=True)
+            self.log('reduced_train_loss', average_reduced_loss, prog_bar=True, batch_size=1)
             lr = self._optimizer.param_groups[0]['lr']
-            self.log('lr', lr)
-            self.log('global_step', self.trainer.global_step, prog_bar=True)
+            self.log('lr', lr, batch_size=1)
+            self.log('global_step', self.trainer.global_step, prog_bar=True, batch_size=1)
             self.log(
                 'consumed_samples',
                 self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
                 prog_bar=True,
+                batch_size=1,
             )
             self._reduced_loss_buffer = []
         return lm_loss
-
-    def on_train_batch_end(self, outputs, batch, batch_idx: int, unused: Optional[int] = 0) -> None:
-        super().on_train_batch_end(outputs, batch, batch_idx)
-
-        # TODO: Replace with newer override for scheduler.step() instead of
-        # search for plugins for fp16 GradScalar
-        if self.trainer.precision_plugin is not None and isinstance(
-            self.trainer.precision_plugin, NativeMixedPrecisionPlugin
-        ):
-            precision_plugin = self.trainer.precision_plugin
-
-            if (
-                hasattr(precision_plugin, 'scaler')
-                and precision_plugin.scaler is not None
-                and isinstance(precision_plugin.scaler, GradScaler)
-            ):
-                grad_scaler = precision_plugin.scaler
-
-                # If the grad scaler skipped its optimizer step due to infs/nans,
-                # decrement the step of all schedulers.
-                if grad_scaler.optimizer_update_skipped is not None and grad_scaler.optimizer_update_skipped is True:
-                    scheduler_cfgs = self.trainer.lr_scheduler_configs
-
-                    if not scheduler_cfgs or not self.trainer.lightning_module.automatic_optimization:
-                        return
-
-                    for scheduler_cfg in scheduler_cfgs:
-                        # Decrement the counter by 2, then perform a scheduler.step() to perform a no-up
-                        # as well as update the optimizer lr in all param groups
-                        scheduler_cfg.scheduler.last_epoch -= 2
-                        scheduler_cfg.scheduler.step()
-
-                    # Increase the max step count by 1
-
-                    # Reset the optimizer update skipped to `None` - this is to prevent scheduler no-ops during
-                    # accumulated gradient updates.
-                    grad_scaler.optimizer_update_skipped = None
 
     def validation_step(self, batch, batch_idx):
         input_tokens_id = batch['tokens']
@@ -369,10 +333,10 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         if len(outputs) == 0:
             return
         averaged_loss = torch.stack(outputs).mean()
-        self.log('val_loss', averaged_loss, prog_bar=True)
+        self.log('val_loss', averaged_loss, prog_bar=True, batch_size=1)
         # formula to compute the perplexity
         # https://towardsdatascience.com/the-relationship-between-perplexity-and-entropy-in-nlp-f81888775ccc
-        self.log('perplexity', torch.exp(averaged_loss), prog_bar=True)
+        self.log('perplexity', torch.exp(averaged_loss), prog_bar=True, batch_size=1)
         return averaged_loss
 
     def test_step(self, batch, batch_idx):
@@ -380,9 +344,9 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
 
     def test_epoch_end(self, outputs):
         averaged_loss = torch.stack(outputs).mean()
-        self.log('test_loss', averaged_loss, prog_bar=True)
+        self.log('test_loss', averaged_loss, prog_bar=True, batch_size=1)
         logging.info(f'test_loss: {averaged_loss} ')
-        self.log('perplexity', torch.exp(averaged_loss), prog_bar=True)
+        self.log('perplexity', torch.exp(averaged_loss), prog_bar=True, batch_size=1)
         return averaged_loss
 
     def build_train_valid_test_datasets(self):

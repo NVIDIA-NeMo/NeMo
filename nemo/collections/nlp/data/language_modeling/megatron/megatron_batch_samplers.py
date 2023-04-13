@@ -69,9 +69,9 @@ class BaseMegatronBatchSampler:
             micro_batch_size: The size of each micro batch.
             global_batch_size: The size of global batch.
             data_parallel_rank: The value you can obtain via
-                `parallel_state.get_data_parallel_rank()` of apex.transformer.
+                `parallel_state.get_data_parallel_rank()` of megatron.core.
             data_parallel_size: The value you can obtain via
-                `parallel_state.get_data_parallel_world_size()` of apex.transformer.
+                `parallel_state.get_data_parallel_world_size()` of megatron.core.
         """
         # Sanity checks.
         if total_samples <= 0:

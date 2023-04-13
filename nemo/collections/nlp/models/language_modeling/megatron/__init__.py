@@ -17,8 +17,8 @@
 try:
     from nemo.collections.nlp.models.language_modeling.megatron.gpt_model import GPTModel
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+    HAVE_MEGATRON_CORE = False
 
 # from nemo.collections.nlp.models.language_modeling.megatron.t5_model import T5Model

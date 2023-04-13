@@ -26,11 +26,11 @@ from nemo.core.config import hydra_runner
 from nemo.utils.app_state import AppState
 
 try:
-    from apex.transformer import parallel_state
+    from megatron.core import parallel_state
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+    HAVE_MEGATRON_CORE = False
 
 
 if not torch.cuda.is_available():

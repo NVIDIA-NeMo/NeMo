@@ -26,15 +26,13 @@ from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import ChannelType, NeuralType
 
 try:
-    from apex.transformer import parallel_state, tensor_parallel
+    from megatron.core import tensor_parallel
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
 
-    # fake missing classes with None attributes
-    ModelType = AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
+    HAVE_MEGATRON_CORE = False
 
 
 __all__ = ["PromptEncoder", "PromptEncoderType"]
@@ -156,9 +154,6 @@ class TPMLP(NeuralModule, Exportable):
 
         sequence_parallel = False
         gradient_accumulation_fusion = False
-        no_async_tensor_model_parallel_allreduce = (
-            parallel_state.get_tensor_model_parallel_world_size() == 1 or sequence_parallel
-        )
         self.first = tensor_parallel.ColumnParallelLinear(
             self.output_size,
             self.hidden_size,
@@ -168,7 +163,6 @@ class TPMLP(NeuralModule, Exportable):
             use_cpu_initialization=False,
             bias=True,
             sequence_parallel_enabled=sequence_parallel,
-            no_async_tensor_model_parallel_allreduce=no_async_tensor_model_parallel_allreduce,
             gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
         self.second = tensor_parallel.RowParallelLinear(

@@ -13,20 +13,6 @@
 # limitations under the License.
 
 import enum
-import math
-
-import torch
-import torch.nn as nn
-import torch.nn.init as init
-
-from nemo.core.classes import Exportable, NeuralModule
-
-try:
-    from apex.transformer import tensor_parallel
-
-    HAVE_APEX = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
 
 __all__ = ['VirtualPromptSource', 'VirtualPromptStyle', 'VirtualPromptPlaceholderToken']
 

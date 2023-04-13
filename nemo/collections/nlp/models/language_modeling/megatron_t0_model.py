@@ -27,12 +27,23 @@ from nemo.collections.nlp.models.language_modeling.megatron_finetune_model impor
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer import parallel_state
     from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
 
     HAVE_APEX = True
+
 except (ImportError, ModuleNotFoundError):
+
     HAVE_APEX = False
+
+
+try:
+    from megatron.core import parallel_state
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
 
 __all__ = ['MegatronT0Model']
 
@@ -142,8 +153,8 @@ class MegatronT0Model(MegatronT5FinetuneModel):
         else:
             return datasets
 
-    def training_step(self, batch, batch_idx):
-        return super(MegatronT5FinetuneModel, self).training_step(batch, batch_idx)
+    def training_step(self, dataloader_iter, batch_idx):
+        return super(MegatronT5FinetuneModel, self).training_step(dataloader_iter, batch_idx)
 
     # Override the parent batch reconfiguring logic.
     def _reconfigure_and_process_inference_batch(self, batch):

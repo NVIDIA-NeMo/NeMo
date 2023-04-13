@@ -42,8 +42,13 @@ RUN apt-get update && \
   libavdevice-dev && \
   rm -rf /var/lib/apt/lists/*
 
-WORKDIR /tmp/
+WORKDIR /workspace/
+# Install Megatron-core
+RUN git clone https://github.com/aklife97/Megatron-LM.git && \
+  cd Megatron-LM && \
+  pip install -e .
 
+WORKDIR /tmp/
 # TODO: Remove once this Apex commit (2/24/23) is included in PyTorch
 # container
 RUN git clone https://github.com/NVIDIA/apex.git && \

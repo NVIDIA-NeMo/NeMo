@@ -43,12 +43,12 @@ from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging, model_utils
 
 try:
-    from apex.transformer import parallel_state
+    from megatron.core import parallel_state
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+    HAVE_MEGATRON_CORE = False
 
 
 class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
@@ -143,14 +143,15 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             'enc_inputs': processed_inputs,
         }
 
-    def validation_step(self, batch, batch_idx, inference=False):
+    def validation_step(self, dataloader_iter, batch_idx, inference=False):
+        batch = next(dataloader_iter)
         enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids = batch
 
         mode = self.training
         self.eval()
         gbs = self.cfg.get('validation_global_batch_size', self.cfg.global_batch_size)
         self._reconfigure_and_process_inference_batch(enc_input.size(0), gbs)
-        loss_mean = self.fwd_bwd_step(batch, batch_idx, forward_only=True)
+        loss_mean = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=True)
 
         if self.cfg.get('report_validation_metric', False):
             metrics = self.compute_accuracy(enc_input, enc_mask, labels)
@@ -283,13 +284,13 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             # we can only log on one rank if it is rank zero so we broadcast from last rank
             torch.distributed.broadcast(averaged_loss, get_last_rank())
 
-            self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True)
+            self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True, batch_size=1)
             logging.info(f'Validation loss: {averaged_loss}')
 
         else:
             averaged_loss = torch.stack([item['loss'] for item in outputs]).mean()
             logging.info(f'Validation loss: {averaged_loss}')
-            self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True)
+            self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True, batch_size=1)
 
         if self.cfg.get('report_validation_accuracy', False):
             gather_results = [None for _ in range(parallel_state.get_data_parallel_world_size())]
@@ -324,7 +325,7 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             else:
                 val_acc = torch.tensor(0.0).cuda()
 
-            self.log('val_acc', val_acc, prog_bar=True, rank_zero_only=True)
+            self.log('val_acc', val_acc, prog_bar=True, rank_zero_only=True, batch_size=1)
 
         gbs = self.cfg.global_batch_size
         mbs = self.cfg.micro_batch_size

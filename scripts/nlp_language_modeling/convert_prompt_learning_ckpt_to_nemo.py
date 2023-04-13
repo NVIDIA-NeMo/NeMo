@@ -29,11 +29,13 @@ from nemo.utils.app_state import AppState
 from nemo.utils.model_utils import inject_model_parallel_rank
 
 try:
-    from apex.transformer import parallel_state
+    from megatron.core import parallel_state
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+
+    HAVE_MEGATRON_CORE = False
 
 """
 This is the script to convert the p-tuning PTL checkpoint file to nemo file for evaluation. 

@@ -57,6 +57,14 @@ pipeline {
       }
     }
 
+    // TODO: remove when pip package is available
+    stage('Megatron Core installation') {
+      steps {
+        sh 'git clone https://github.com/aklife97/Megatron-LM.git && \
+            cd Megatron-LM && \
+            pip install -e .'
+      }
+    }
 
     stage('PyTorch Lightning version') {
       steps {

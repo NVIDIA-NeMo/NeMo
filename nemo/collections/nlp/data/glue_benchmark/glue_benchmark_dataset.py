@@ -382,6 +382,7 @@ class TextToTextGLUEDataset(GLUEDataset):
         max_seq_length_decoder: int = 128,
         use_cache: bool = True,
         prefix_override: str = None,
+        pad_to_max_length: bool = True,
     ):
         """
         Processes GLUE datasets
@@ -392,10 +393,12 @@ class TextToTextGLUEDataset(GLUEDataset):
             max_seq_length: max sequence length minus 2 for [CLS] and [SEP]
             use_cache: whether to use data cache
             prefix_override: if you want to override default prompt for this task specify this via a string.
+            pad_to_max_length: If true, pad to the maximum length.
         """
         super().__init__(file_name, task_name, tokenizer, max_seq_length, use_cache, compute_features=False)
         self.max_seq_length = max_seq_length
         self.max_seq_length_decoder = max_seq_length_decoder
+        self.pad_to_max_length = pad_to_max_length
         self.processor = processors[self.task_name]()
         self.prefix_override = prefix_override
         self.features = self.convert_examples_to_features()
@@ -412,9 +415,16 @@ class TextToTextGLUEDataset(GLUEDataset):
         dec_input = [item['text_dec'] for item in batch]
         labels = [item['labels'] for item in batch]
 
-        max_dec_input_length = max([len(item) for item in dec_input]) if dec_input else 0
         max_enc_query_length = max([len(item) for item in enc_query]) if enc_query else 0
+        max_dec_input_length = max([len(item) for item in dec_input]) if dec_input else 0
         max_label_length = max([len(item) for item in labels]) if labels else 0
+        if self.pad_to_max_length:
+            assert max_enc_query_length <= self.max_seq_length
+            assert max_dec_input_length <= self.max_seq_length_decoder
+            assert max_label_length <= self.max_seq_length_decoder
+            max_enc_query_length = self.max_seq_length
+            max_dec_input_length = self.max_seq_length_decoder
+            max_label_length = self.max_seq_length_decoder
 
         loss_mask = [([1] * (len(item))) + ([0] * (max_label_length - len(item))) for item in labels]
         enc_query = [item + [self.tokenizer.pad_id] * (max_enc_query_length - len(item)) for item in enc_query]
@@ -488,10 +498,18 @@ class TextToTextXNLIDataset(TextToTextGLUEDataset):
         use_cache: bool = True,
         prefix_override: str = None,
         lang_list: List[str] = None,
+        pad_to_max_length: bool = True,
     ):
         self.lang_list = set(lang_list)
         super().__init__(
-            file_name, task_name, tokenizer, max_seq_length, max_seq_length_decoder, use_cache, prefix_override
+            file_name,
+            task_name,
+            tokenizer,
+            max_seq_length,
+            max_seq_length_decoder,
+            use_cache,
+            prefix_override,
+            pad_to_max_length,
         )
         if len(lang_list) <= 0 or lang_list is None:
             raise ValueError(f"Found an empty or None lang_list for {self.task_name}")

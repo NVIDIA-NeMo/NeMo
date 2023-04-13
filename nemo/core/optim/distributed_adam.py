@@ -21,7 +21,7 @@ from apex.contrib.optimizers.distributed_fused_adam import (
     _coalescing_manager,
     _disable_pre_forward_hook,
 )
-from apex.transformer import parallel_state
+from megatron.core import parallel_state
 
 
 def _str_to_dtype(dtype):

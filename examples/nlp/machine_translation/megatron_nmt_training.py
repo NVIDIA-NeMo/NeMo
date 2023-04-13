@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelSummary
@@ -32,6 +33,8 @@ from nemo.collections.nlp.parts.nlp_overrides import (
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+
+mp.set_start_method("spawn", force=True)
 
 
 @hydra_runner(config_path="conf", config_name="aayn_base_megatron")

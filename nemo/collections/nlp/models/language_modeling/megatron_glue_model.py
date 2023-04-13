@@ -22,11 +22,13 @@ from nemo.collections.nlp.models.language_modeling.megatron_finetune_model impor
 from nemo.utils import logging
 
 try:
-    from apex.transformer import parallel_state
+    from megatron.core import parallel_state
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+
+    HAVE_MEGATRON_CORE = False
 
 __all__ = ['MegatronT5GLUEModel']
 

@@ -20,10 +20,18 @@ import torch
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer import tensor_parallel
     from apex.transformer.log_util import set_logging_level
     from apex.transformer.microbatches import ConstantNumMicroBatches
-    from apex.transformer.parallel_state import (
+    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
+
+    HAVE_APEX = True
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_APEX = False
+
+try:
+    from megatron.core import tensor_parallel
+    from megatron.core.parallel_state import (
         get_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_split_rank,
@@ -32,14 +40,12 @@ try:
         set_tensor_model_parallel_world_size,
         set_virtual_pipeline_model_parallel_rank,
     )
-    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
 
-    HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+
+    HAVE_MEGATRON_CORE = False
 
 try:
-    # TODO: remove when apex is updated
     from apex.transformer.parallel_state import set_virtual_pipeline_model_parallel_world_size
 
     HAVE_INTERLEAVED = True
@@ -65,7 +71,7 @@ def initialize_model_parallel_for_nemo(
 ):
 
     if virtual_pipeline_model_parallel_size is not None and not HAVE_INTERLEAVED:
-        raise ValueError("set_virtual_pipeline_model_parallel_world_size is needed in Apex for interleaved.")
+        raise ValueError("set_virtual_pipeline_model_parallel_world_size is needed in megatron-core for interleaved.")
 
     # updating NeMo globals
     app_state = AppState()
@@ -171,7 +177,7 @@ def fake_initialize_model_parallel(
     """
     Fake initialize model data parallel groups so that we can instantiate model parallel models before DDP is initialized.
     This is needed because PTL execution flow is init model, init trainer -> call trainer.fit(model). DDP is initialized during .fit.
-    This function is taken from apex.transformer.parallel_state and modified so that the distributed groups are not created.
+    This function is taken from megatron.core.parallel_state and modified so that the distributed groups are not created.
     We only need the tensor parallel and pipeline parallel ranks to instantiate the model.
 
     Arguments:

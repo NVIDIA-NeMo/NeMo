@@ -24,21 +24,33 @@ from nemo.collections.nlp.modules.common.megatron.module import param_is_not_sha
 try:
     import amp_C
     from apex.multi_tensor_apply import multi_tensor_applier
-    from apex.transformer import parallel_state
-    from apex.transformer.tensor_parallel.layers import param_is_not_tensor_parallel_duplicate
 
     HAVE_APEX = True
+
 except (ImportError, ModuleNotFoundError):
+
     HAVE_APEX = False
 
 HAVE_APEX_DISTRIBUTED_ADAM = False
+
 if HAVE_APEX:
     try:
         from apex.contrib.optimizers.distributed_fused_adam import DistributedFusedAdam
 
         HAVE_APEX_DISTRIBUTED_ADAM = True
+
     except (ImportError, ModuleNotFoundError):
         pass
+
+try:
+    from megatron.core import parallel_state
+    from megatron.core.tensor_parallel.layers import param_is_not_tensor_parallel_duplicate
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
 
 
 def clip_grad_norm_fp32(parameters, max_norm, norm_type=2):

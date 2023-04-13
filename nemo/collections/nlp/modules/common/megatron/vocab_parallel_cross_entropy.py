@@ -14,16 +14,18 @@
 import torch
 
 try:
-    from apex.transformer.parallel_state import (
+    from megatron.core.parallel_state import (
         get_tensor_model_parallel_group,
         get_tensor_model_parallel_rank,
         get_tensor_model_parallel_world_size,
     )
-    from apex.transformer.tensor_parallel.utils import VocabUtility
+    from megatron.core.tensor_parallel.utils import VocabUtility
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+
+    HAVE_MEGATRON_CORE = False
 
 __all__ = ["vocab_parallel_cross_entropy"]
 

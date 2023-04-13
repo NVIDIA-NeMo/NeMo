@@ -29,13 +29,21 @@ from nemo.core.classes.mixins import adapter_mixin_strategies
 
 try:
     from apex.normalization.fused_layer_norm import MixedFusedLayerNorm
-    from apex.transformer.tensor_parallel import ColumnParallelLinear, RowParallelLinear
 
     HAVE_APEX = True
 
 except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
+
+try:
+    from megatron.core.tensor_parallel import ColumnParallelLinear, RowParallelLinear
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
 
 
 class AdapterName(str, enum.Enum):
@@ -102,6 +110,9 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         if not HAVE_APEX:
             logging.info("Apex is required to use ParallelLinearAdapters.")
             raise RuntimeError("ParallelLinearAdapter can not run without Apex.")
+        if not HAVE_MEGATRON_CORE:
+            logging.info("Megatron-core is required to use ParallelLinearAdapters.")
+            raise RuntimeError("ParallelLinearAdapter can not run without Megatron-core.")
         self.activation = activation_registry[activation]()
         self.norm_position = norm_position
 

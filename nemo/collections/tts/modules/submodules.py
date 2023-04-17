@@ -19,6 +19,17 @@ from torch import Tensor
 from torch.autograd import Variable
 from torch.nn import functional as F
 
+from nemo.core.classes import adapter_mixins
+
+
+SUPPORTED_CONDITION_TYPES = ["add", "concat", "layernorm"]
+
+
+def check_support_condition_types(condition_types):
+    for tp in condition_types:
+        if tp not in SUPPORTED_CONDITION_TYPES:
+            raise ValueError(f"Unknown conditioning type {tp}")
+
 
 def masked_instance_norm(
     input: Tensor, mask: Tensor, weight: Tensor, bias: Tensor, momentum: float, eps: float = 1e-5,
@@ -122,7 +133,7 @@ class LinearNorm(torch.nn.Module):
         return self.linear_layer(x)
 
 
-class ConvNorm(torch.nn.Module):
+class ConvNorm(torch.nn.Module, adapter_mixins.AdapterModuleMixin):
     __constants__ = ['use_partial_padding']
     use_partial_padding: bool
 
@@ -176,6 +187,10 @@ class ConvNorm(torch.nn.Module):
             ret = self.conv(signal)
             if self.norm is not None:
                 ret = self.norm(ret)
+
+        if self.is_adapter_available():
+            ret = self.forward_enabled_adapters(ret.transpose(1, 2)).transpose(1, 2)
+
         return ret
 
 
@@ -410,3 +425,85 @@ class WaveNet(torch.nn.Module):
                 output = output + res_skip_acts
 
         return self.end(output)
+
+
+class ConditionalLayerNorm(torch.nn.LayerNorm):
+    """
+    This module is used to condition torch.nn.LayerNorm.
+    If we don't have any conditions, this will be a normal LayerNorm.
+    """
+
+    def __init__(self, hidden_dim, condition_dim=None, condition_types=[]):
+        check_support_condition_types(condition_types)
+        self.condition = "layernorm" in condition_types
+        super().__init__(hidden_dim, elementwise_affine=not self.condition)
+
+        if self.condition:
+            self.cond_weight = torch.nn.Linear(condition_dim, hidden_dim)
+            self.cond_bias = torch.nn.Linear(condition_dim, hidden_dim)
+            self.init_parameters()
+
+    def init_parameters(self):
+        torch.nn.init.constant_(self.cond_weight.weight, 0.0)
+        torch.nn.init.constant_(self.cond_weight.bias, 1.0)
+        torch.nn.init.constant_(self.cond_bias.weight, 0.0)
+        torch.nn.init.constant_(self.cond_bias.bias, 0.0)
+
+    def forward(self, inputs, conditioning=None):
+        inputs = super().forward(inputs)
+
+        # Normalize along channel
+        if self.condition:
+            if conditioning is None:
+                raise ValueError(
+                    'You should add additional data types as conditions e.g. speaker id or reference audio'
+                )
+            inputs = inputs * self.cond_weight(conditioning)
+            inputs = inputs + self.cond_bias(conditioning)
+
+        return inputs
+
+
+class ConditionalInput(torch.nn.Module):
+    """
+    This module is used to condition any model inputs.
+    If we don't have any conditions, this will be a normal pass.
+    """
+
+    def __init__(self, hidden_dim, condition_dim, condition_types=[]):
+        check_support_condition_types(condition_types)
+        super().__init__()
+        self.support_types = ["add", "concat"]
+        self.condition_types = [tp for tp in condition_types if tp in self.support_types]
+        self.hidden_dim = hidden_dim
+        self.condition_dim = condition_dim
+
+        if "add" in self.condition_types and condition_dim != hidden_dim:
+            self.add_proj = torch.nn.Linear(condition_dim, hidden_dim)
+
+        if "concat" in self.condition_types:
+            self.concat_proj = torch.nn.Linear(hidden_dim + condition_dim, hidden_dim)
+
+    def forward(self, inputs, conditioning=None):
+        """
+        Args:
+            inputs (torch.tensor): B x T x C tensor.
+            conditioning (torch.tensor): B x 1 x C conditioning embedding.
+        """
+        if len(self.condition_types) > 0:
+            if conditioning is None:
+                raise ValueError(
+                    'You should add additional data types as conditions e.g. speaker id or reference audio'
+                )
+
+            if "add" in self.condition_types:
+                if self.condition_dim != self.hidden_dim:
+                    conditioning = self.add_proj(conditioning)
+                inputs = inputs + conditioning
+
+            if "concat" in self.condition_types:
+                conditioning = conditionting.repeat(1, inputs.shape[1], 1)
+                inputs = torch.cat([inputs, conditioning])
+                inputs = self.concat_proj(inputs)
+
+        return inputs

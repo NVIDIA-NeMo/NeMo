@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,8 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import nemo.collections.tts.modules.adapters
-from nemo.collections.tts.modules.tacotron2 import Decoder as Taco2Decoder
-from nemo.collections.tts.modules.tacotron2 import Encoder as Taco2Encoder
-from nemo.collections.tts.modules.tacotron2 import Postnet as Taco2Postnet
-from nemo.collections.tts.modules.waveglow import WaveGlowModule
+from nemo.collections.tts.parts.mixins.fastpitch_adapter_mixins import FastPitchAdapterModelMixin

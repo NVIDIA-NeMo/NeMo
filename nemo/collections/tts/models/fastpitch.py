@@ -26,6 +26,7 @@ from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
 from nemo.collections.tts.losses.fastpitchloss import DurationLoss, EnergyLoss, MelLoss, PitchLoss
 from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.collections.tts.modules.fastpitch import FastPitchModule
+from nemo.collections.tts.parts.mixins import FastPitchAdapterModelMixin
 from nemo.collections.tts.parts.utils.helpers import (
     batch_from_ragged,
     plot_alignment_to_numpy,
@@ -74,7 +75,7 @@ class TextTokenizerConfig:
     text_tokenizer: TextTokenizer = TextTokenizer()
 
 
-class FastPitchModel(SpectrogramGenerator, Exportable):
+class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixin):
     """FastPitch model (https://arxiv.org/abs/2006.06873) that is used to generate mel spectrogram from text."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -138,11 +139,22 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         output_fft = instantiate(self._cfg.output_fft)
         duration_predictor = instantiate(self._cfg.duration_predictor)
         pitch_predictor = instantiate(self._cfg.pitch_predictor)
+        energy_embedding_kernel_size = cfg.get("energy_embedding_kernel_size", 0)
+        energy_predictor = instantiate(self._cfg.get("energy_predictor", None))
+
+        # [TODO] may remove if we change the pre-trained config
         speaker_emb_condition_prosody = cfg.get("speaker_emb_condition_prosody", False)
         speaker_emb_condition_decoder = cfg.get("speaker_emb_condition_decoder", False)
         speaker_emb_condition_aligner = cfg.get("speaker_emb_condition_aligner", False)
-        energy_embedding_kernel_size = cfg.get("energy_embedding_kernel_size", 0)
-        energy_predictor = instantiate(self._cfg.get("energy_predictor", None))
+        if cfg.n_speakers > 1:
+            input_fft.cond_input.condition_types.append("add")
+        if speaker_emb_condition_prosody:
+            duration_predictor.cond_input.condition_types.append("add")
+            pitch_predictor.cond_input.condition_types.append("add")
+        if speaker_emb_condition_decoder:
+            output_fft.cond_input.condition_types.append("add")
+        if speaker_emb_condition_aligner and self.aligner is not None:
+            self.aligner.cond_input.condition_types.append("add")
 
         self.fastpitch = FastPitchModule(
             input_fft,
@@ -157,9 +169,6 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             energy_embedding_kernel_size,
             cfg.n_mel_channels,
             cfg.max_token_duration,
-            speaker_emb_condition_prosody,
-            speaker_emb_condition_decoder,
-            speaker_emb_condition_aligner,
         )
         self._input_types = self._output_types = None
         self.export_config = {

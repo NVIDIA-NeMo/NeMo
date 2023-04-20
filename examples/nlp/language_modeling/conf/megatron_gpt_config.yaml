@@ -45,6 +45,7 @@ model:
   # gradient accumulation will be done automatically based on data_parallel_size
   micro_batch_size: 4 # limited by GPU memory
   global_batch_size: 8 # will use more micro batches to reach global batch size
+  rampup_batch_size: null # Should be a list of 3 values: [<start_batch_size>, <batch_size_increment>, <rampup_samples>]
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
   virtual_pipeline_model_parallel_size: null # interleaved pipeline

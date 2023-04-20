@@ -55,6 +55,7 @@ from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
 try:
+    import apex.transformer.pipeline_parallel.utils
     from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     HAVE_APEX = True
@@ -427,14 +428,22 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True, batch_size=1,
         )
 
+        consumed_samples = self.compute_consumed_samples(self.trainer.global_step - self.init_global_step)
         # TODO: make sure compute_consumed_samples works for pipeline parallelism
         self.log(
-            'consumed_samples',
-            self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
-            prog_bar=True,
-            rank_zero_only=True,
-            batch_size=1,
+            'consumed_samples', consumed_samples, prog_bar=True, rank_zero_only=True, batch_size=1,
         )
+
+        if self.cfg.get('rampup_batch_size', None):
+            micro_batch_size = self.cfg.get('micro_batch_size', 1)
+            total_gpus_number = self.trainer.num_devices * self.trainer.num_nodes
+            current_global_batch_size = get_num_microbatches() * micro_batch_size * total_gpus_number
+            self.log('global_batch_size', current_global_batch_size, prog_bar=True, rank_zero_only=True, batch_size=1)
+
+            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+            num_microbatch_calculator.update(
+                consumed_samples=consumed_samples, consistency_check=True,
+            )
 
         return loss_mean
 
@@ -814,6 +823,29 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             init_consumed_samples = 0
         self.init_consumed_samples = init_consumed_samples
         self.init_global_step = self.trainer.global_step
+
+        rampup_batch_size = self.cfg.get('rampup_batch_size', None)
+        if rampup_batch_size:
+            start_batch_size = rampup_batch_size[0]
+            batch_size_increment = rampup_batch_size[1]
+            total_gpus_number = self.trainer.num_devices * self.trainer.num_nodes
+
+            assert start_batch_size % (total_gpus_number) == 0, (
+                'expected'
+                ' start batch size ({}) to be divisible by total number of GPUs'
+                ' ({})'.format(start_batch_size, total_gpus_number)
+            )
+
+            micro_batch_size = self.cfg.get('micro_batch_size', 1)
+            tensor_model_parallel_size = self.cfg.get('tensor_model_parallel_size', 1)
+            pipeline_model_parallel_size = self.cfg.get('pipeline_model_parallel_size', 1)
+            total_data_parallel_size = total_gpus_number // (tensor_model_parallel_size * pipeline_model_parallel_size)
+
+            assert batch_size_increment % (micro_batch_size * total_data_parallel_size) == 0, (
+                'expected'
+                ' batch size increment ({}) to be divisible by micro_batch_size ({}) times total data parallel size'
+                ' ({})'.format(batch_size_increment, micro_batch_size, total_data_parallel_size)
+            )
 
         if stage == 'predict':
             return

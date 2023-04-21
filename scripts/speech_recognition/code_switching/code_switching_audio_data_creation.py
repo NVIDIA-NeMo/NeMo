@@ -60,6 +60,12 @@ parser.add_argument(
 parser.add_argument(
     "--sample_end_pause_msec", default=20, type=int, help='Pause to be added at the end of the sample (msec)'
 )
+parser.add_argument(
+    "--is_lid_manifest",
+    default=True,
+    type=bool,
+    help='If true, generate manifest in the multi-sample lid format, else the standard manifest format',
+)
 parser.add_argument("--workers", default=1, type=int, help='Number of worker processes')
 
 args = parser.parse_args()
@@ -116,6 +122,7 @@ def create_cs_data(
     pause_join_msec: int,
     pause_end_msec: int,
     cs_data_sampling_rate: int,
+    is_lid_manifest: bool,
 ):
 
     """
@@ -128,6 +135,7 @@ def create_cs_data(
         pause_join_msec: Pause to be added between different phrases of the sample (msec)
         pause_end_msec: Pause to be added at the end of the sample (msec)
         cs_data_sampling_rate: Desired sampling rate of the generated samples
+        is_lid_manifest: If true, generate manifest in the multi-sample lid format, else the standard manifest format
 
     Returns:
 
@@ -144,7 +152,11 @@ def create_cs_data(
             staring_pause = np.zeros(int(pause_beg_msec * fs / 1000))
             combined_audio += list(staring_pause)
 
+            text_entry_list = []
             for index in range(len(data['lang_ids'])):
+
+                phrase_entry = {}
+                # dictionary to store the phrase information which will be added to the complete sentence
 
                 data_sample, fs_sample = librosa.load(data['paths'][index], sr=fs)
                 # Alternative-  fs_sample, data_sample = wavfile.read(data['paths'][index])
@@ -170,7 +182,12 @@ def create_cs_data(
 
                 combined_audio += list(data_sample_norm)
 
-                # adding small pause between gemgments
+                phrase_entry['str'] = data['texts'][index]
+                phrase_entry['lang'] = data['lang_ids'][index]
+
+                text_entry_list.append(phrase_entry)
+
+                # adding small pause between semgments
                 if index != (len(data['lang_ids']) - 1):
                     pause = np.zeros(int(pause_join_msec * fs / 1000))
                     combined_audio += list(pause)
@@ -192,7 +209,10 @@ def create_cs_data(
             metadata_json = {}
             metadata_json['audio_filepath'] = audio_file_path
             metadata_json['duration'] = float(len(combined_audio) / fs)
-            metadata_json['text'] = ' '.join(data['texts'])
+            if is_lid_manifest:
+                metadata_json['text'] = text_entry_list
+            else:
+                metadata_json['text'] = ' '.join(data['texts'])
 
             metadata_json['language_ids'] = data['lang_ids']
             metadata_json['original_texts'] = data['texts']
@@ -213,6 +233,7 @@ def main():
     pause_join_msec = args.sample_joining_pause_msec
     pause_end_msec = args.sample_end_pause_msec
     cs_data_sampling_rate = args.cs_data_sampling_rate
+    is_lid_manifest = args.is_lid_manifest
     num_process = args.workers
 
     # Sanity Checks
@@ -249,6 +270,7 @@ def main():
             pause_join_msec,
             pause_end_msec,
             cs_data_sampling_rate,
+            is_lid_manifest,
         )
         for idx, split_manifest in enumerate(data_split)
     )

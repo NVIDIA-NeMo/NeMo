@@ -20,7 +20,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write
 
 # Checks -
 # (Recommendation) Please normalize the text for each language (avoid numbers, special characters, punctuation)
-# Please ensure that the audio_fielpaths are absolute locations
+# Please ensure that the audio_filepaths are absolute locations
 
 
 parser = argparse.ArgumentParser(description='Create synthetic code-switching data manifest from monolingual data')

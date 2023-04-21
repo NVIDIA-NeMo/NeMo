@@ -1,15 +1,14 @@
-# It contains the default values for training a streaming Conformer-Transducer ASR model, large size (~120M) with Transducer loss and sub-word encoding.
+# It contains the default values for training a streaming cache-aware Conformer-Transducer ASR model, large size (~120M) with Transducer loss and sub-word encoding.
+# Models trained with this config have limited right context which make them efficient for streaming ASR.
 
-# Architecture and training config:
-# You may find more detail on the architecture and training config at NeMo/examples/asr/comf/offline/conformer_transducer_bpe.yaml
+# You may find more detail:
+# Conformer's architecture config: NeMo/examples/asr/conf/conformer/conformer_transducer_bpe.yaml
+# Cache-aware Streaming Conformer: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer
 
-# Models trained with this config have limited right context which make them efficient for streaming ASR
-# You may use NeMo/examples/asr/speech_to_text_streaming_infer.py to simulate/evaluate this model in cache-aware streaming mode
+# You may use NeMo/examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py to simulate/evaluate this model in cache-aware streaming mode
+# Pre-trained ASR models can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
 
-# if loss does not go down properly or gives NAN, you may try the followings by order:
-# + using gradient clipping of 1.0
-# + increase the warmup steps from 10K to 20K
-# + use striding instead of stacking for downsampling
+# Note: if loss does not go down properly or diverges, you may try increasing the warmup steps from 10K to 20K.
 
 name: "Conformer-Transducer-BPE-Streaming"
 
@@ -30,8 +29,6 @@ model:
     shuffle: true
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
-    trim_silence: false
     max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
     min_duration: 0.1
     # tarred datasets
@@ -47,18 +44,18 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
 
   test_ds:
     manifest_filepath: null
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
 
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
@@ -68,7 +65,7 @@ model:
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
     sample_rate:  ${model.sample_rate}
-    normalize: "per_feature"
+    normalize: "NA" # No normalization for mel-spectogram makes streaming easier
     window_size: 0.025
     window_stride: 0.01
     window: "hann"
@@ -93,8 +90,8 @@ model:
     d_model: 512
 
     # Sub-sampling params
-    # stacking_norm and stacking can be around 25% faster than striding during inference, while they may give similar or slightly worse results in terms of accuracy for Transducer models
-    subsampling: striding # vggnet, striding, stacking or stacking_norm
+    # stacking_norm, stacking and dw_striding can be around 25% faster than striding during inference, while they may give similar or slightly worse results in terms of accuracy for Transducer models
+    subsampling: striding # vggnet, striding, stacking, stacking_norm, or dw_striding
     subsampling_factor: 4 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: -1 # -1 sets it to d_model
     causal_downsampling: true # enables causal convolutions during downsampling
@@ -116,7 +113,9 @@ model:
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     # for att_context_style=regular, the right context is recommended to be a small number around 0 to 3 as multiple-layers may increase the effective right context too large
     # for att_context_style=chunked_limited, the left context need to be dividable by the right context plus one
-    att_context_size: [102, 33] # -1 means unlimited context
+    # for chunked_limited you may calculate the look-ahead or right context by the following formula:
+    # look-ahead(secs) = att_context_size[1]*subsampling_factor*window_stride, example: 27*4*0.01=1.08s
+    att_context_size: [140, 27] # -1 means unlimited context
     att_context_style: chunked_limited # regular or chunked_limited
 
     xscaling: true # scales up the input embeddings by sqrt(d_model)
@@ -169,7 +168,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 4
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
@@ -201,11 +200,6 @@ model:
       fastemit_lambda: 1e-3  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
       clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
 
-  # Adds Gaussian noise to the gradients of the decoder to avoid overfitting
-  variational_noise:
-    start_step: 0
-    std: 0.0
-
   optim:
     name: adamw
     lr: 5.0
@@ -219,7 +213,6 @@ model:
       d_model: ${model.encoder.d_model}
       # scheduler config override
       warmup_steps: 10000 # you may try larger warmup like 20K is training is not stable
-      warmup_ratio: null
       min_lr: 1e-6
 
 trainer:
@@ -231,8 +224,8 @@ trainer:
   accelerator: auto
   strategy: ddp
   accumulate_grad_batches: 1
-  gradient_clip_val: 0.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  gradient_clip_val: 1.0
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

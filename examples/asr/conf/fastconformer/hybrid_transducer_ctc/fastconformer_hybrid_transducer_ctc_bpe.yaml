@@ -1,24 +1,18 @@
-# It contains the default values for training a Fast Conformer-Transducer ASR model, large size (~120M) with Transducer loss and sub-word encoding.
-# This version uses Longformer-style attention in order to handle longer audio
+# It contains the default values for training a FastConformer-Hybrid-Transducer-CTC ASR model, large size (~115M) with sub-word encoding.
+# The model would have two decoders: RNNT (Transducer) and CTC
 
-# Architecture and training config:
-# Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
-# batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
+# You may find more detail:
+# FastConformer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#fast-conformer
+# Hybrid ASR: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#hybrid-transducer-ctc
+# FastConformer-CTC's architecture config: NeMo/examples/asr/conf/fastconformer/fast-conformer_ctc_bpe.yaml
+# FastConformer-Transducer's architecture config, along with the optimal batch size and precision: NeMo/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml
 
-# You may find more info about Fast Conformer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#fast-conformer
-
-# Differences from baseline config are in
-# model.encoder.global_tokens
-# model.encoder.global_tokens_spacing
-# model.encoder.global_attn_separate
-
-name: "FastConformer-Long-Transducer-BPE"
+name: "FastConformer-Hybrid-Transducer-CTC-BPE"
 
 model:
   sample_rate: 16000
   compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
   log_prediction: true # enables logging sample predictions in the output during training
-  rnnt_reduction: 'mean_volume'
   skip_nan_grad: false
 
   model_defaults:
@@ -33,16 +27,14 @@ model:
     shuffle: true
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
-    trim_silence: false
-    max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
+    max_duration: 20 # you may need to update it for your dataset
     min_duration: 0.1
     # tarred datasets
     is_tarred: false
     tarred_audio_filepaths: null
     shuffle_n: 2048
     # bucketing params
-    bucketing_strategy: "fully_randomized"
+    bucketing_strategy: "synced_randomized"
     bucketing_batch_size: null
 
   validation_ds:
@@ -50,20 +42,21 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
 
   test_ds:
     manifest_filepath: null
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
 
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  # We recommend to use vocab size of 1024 with SPE Unigram for most languages
   tokenizer:
     dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
     type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
@@ -99,36 +92,22 @@ model:
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
     subsampling_factor: 8 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
-    causal_downsampling: false
-
-    # Reduction parameters: Can be used to add another subsampling layer at a given position.
-    # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.
-    # Adding it at the end will give the best WER while adding it at the beginning will give the best speedup.
-    reduction: null # pooling, striding, or null
-    reduction_position: null # Encoder block index or -1 for subsampling at the end of encoder
-    reduction_factor: 1
 
     # Feed forward module's params
     ff_expansion_factor: 4
 
     # Multi-headed Attention Module's params
-    self_attention_model: rel_pos_local_attn # longformer-style attention (sliding window + global tokens)
-    global_tokens: 1 # number of tokens that attend and are attended to by all tokens (put 0 to disable)
-    global_tokens_spacing: 1 # how far apart the global tokens are
-    global_attn_separate: false # whether global tokens should use separate q,k,v layers
+    self_attention_model: rel_pos # rel_pos or abs_pos
     n_heads: 8 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
-    att_context_size: [128,128] # -1 means unlimited context
+    att_context_size: [-1, -1] # -1 means unlimited context
     att_context_style: regular # regular or chunked_limited
     xscaling: true # scales up the input embeddings by sqrt(d_model)
-    untie_biases: true # unties the biases of the TransformerXL layers
+    pos_emb_max_len: 5000
 
     # Convolution module's params
     conv_kernel_size: 9
     conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
-    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
-    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
-    conv_context_size: null
 
     ### regularization
     dropout: 0.1 # The dropout used in most of the Conformer Modules
@@ -153,11 +132,6 @@ model:
       t_max: null
       dropout: 0.2
 
-  # if a large vocabulary size is desired, you may wish to use SampleRNNTJoint module
-  # _target_: nemo.collections.asr.modules.SampledRNNTJoint
-  # n_samples: 500 # Specifies the minimum number of tokens to sample from the vocabulary space, excluding
-  # the RNNT blank token. If a given value is larger than the entire vocabulary size, then the full
-  # vocabulary will be used
   joint:
     _target_: nemo.collections.asr.modules.RNNTJoint
     log_softmax: null  # 'null' would set it automatically according to CPU/GPU device
@@ -172,7 +146,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 4
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
@@ -194,46 +168,58 @@ model:
       tsd_max_sym_exp: 50  # for Time Synchronous Decoding
       alsd_max_target_len: 2.0  # for Alignment-Length Synchronous Decoding
 
+  # The section which would contain the decoder and decoding configs of the auxiliary CTC decoder
+  aux_ctc:
+    ctc_loss_weight: 0.3 # the weight used to combine the CTC loss with the RNNT loss
+    use_cer: false
+    ctc_reduction: 'mean_batch'
+    decoder:
+      _target_: nemo.collections.asr.modules.ConvASRDecoder
+      feat_in: null
+      num_classes: -1
+      vocabulary: []
+    decoding:
+      strategy: "greedy"
+
+  # config for InterCTC loss: https://arxiv.org/abs/2102.03216
+  # specify loss weights and which layers to use for InterCTC
+  # e.g., to reproduce the paper results, set loss_weights: [0.3]
+  # and apply_at_layers: [8] (assuming 18 layers). Note that final
+  # layer loss coefficient is automatically adjusted (to 0.7 in above example)
+  interctc:
+    loss_weights: []
+    apply_at_layers: []
+
   loss:
     loss_name: "default"
 
-    warprnnt_numba_kwargs:
-      # FastEmit regularization: https://arxiv.org/abs/2010.11148
-      # You may enable FastEmit to reduce the latency of the model for streaming
-      fastemit_lambda: 0.0  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
-      clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
-
-  # Adds Gaussian noise to the gradients of the decoder to avoid overfitting
-  variational_noise:
-    start_step: 0
-    std: 0.0
-
   optim:
     name: adamw
-    lr: 2.5e-3
+    lr: 5.0
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
 
     # scheduler setup
     sched:
-      name: CosineAnnealing
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 15000
+      warmup_steps: 10000
       warmup_ratio: null
       min_lr: 1e-6
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
-  max_epochs: 500
+  max_epochs: 1000
   max_steps: -1 # computed at runtime if not set
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   accelerator: auto
   strategy: ddp
   accumulate_grad_batches: 1
-  gradient_clip_val: 0.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  gradient_clip_val: 1.0
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

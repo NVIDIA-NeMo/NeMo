@@ -17,9 +17,29 @@
 #  | XLarge (644M)|  1024   |    8   |    24     |        5         |     1e-3     |           640            |        2        |
 #  +--------------+---------+--------+-----------+------------------+--------------+--------------------------+-----------------+  
 
+# Default learning parameters in this config are set for global batch size of 2K while you may use lower values.
+# To increase the global batch size with limited number of GPUs, you may use higher accumulate_grad_batches.
+# However accumulate_grad_batches is better to be avoided as long as the global batch size is large enough and training is stable.
+
 # You may find more info about Conformer-Transducer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-transducer
 # Pre-trained models of Conformer-Transducer can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
 # The checkpoint of the large model trained on NeMo ASRSET with this recipe can be found here: https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_large
+
+# We suggest to use trainer.precision=bf16 for GPUs which support it otherwise trainer.precision=16 is recommended.
+# Using bf16 or 16 would make it possible to double the batch size and speedup training/inference. If fp16 is not stable and model diverges after some epochs, you may use fp32.
+# Here are the suggested batch size per GPU for each precision and memory sizes:
+#  +-----------+------------+------------+
+#  | Precision | GPU Memory | Batch Size |
+#  +===========+============+============+
+#  | 32        |    16GB    |     8      |
+#  |           |    32GB    |     16     |
+#  |           |    80GB    |     32     |
+#  +-----------+------------+------------+
+#  | 16 or     |    16GB    |     16     |
+#  | bf16      |    32GB    |     32     |
+#  |           |    80GB    |     64     |
+#  +-----------+------------+------------+
+# Note:  They are based on the assumption of max_duration of 20. If you have longer or shorter max_duration, then batch sizes may need to get updated accordingly.
 
 name: "Conformer-Transducer-BPE"
 
@@ -41,8 +61,6 @@ model:
     shuffle: true
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
-    trim_silence: false
     max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
     min_duration: 0.1
     # tarred datasets
@@ -58,20 +76,21 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
 
   test_ds:
     manifest_filepath: null
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
-    use_start_end_token: false
 
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  # recommend to use SPE Unigram tokenizer with vocab size of 1K to 4k when using 4x sub-sampling
   tokenizer:
     dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
     type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
@@ -173,7 +192,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 4
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
@@ -235,7 +254,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

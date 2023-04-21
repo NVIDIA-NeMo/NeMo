@@ -1,24 +1,5 @@
 # It contains the default values for training a Conformer-Transducer ASR model, large size (~120M) with Transducer loss and char-based vocabulary.
-
-# Architecture and training config:
-# Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
-# batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
-# Here are the recommended configs for different variants of Conformer-Transducer, other parameters are the same as in this config file.
-#
-#  +-------------+---------+---------+----------+--------------+--------------------------+
-#  | Model       | d_model | n_heads | n_layers | weight_decay | pred_hidden/joint_hidden |
-#  +=============+=========+========+===========+==============+==========================+
-#  | Small  (14M)|   176   |    4   |    16     |     0.0      |           320            |
-#  +-------------+---------+--------+-----------+--------------+--------------------------+
-#  | Medium (32M)|   256   |    4   |    16     |     1e-3     |           640            |
-#  +-------------+---------+--------+-----------+--------------+--------------------------+
-#  | Large (120M)|   512   |    8   |    17     |     1e-3     |           640            |
-#  +-----------------------------------------------------------+--------------------------+
-#
-
-# You may find more info about Conformer-Transducer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-transducer
-# Pre-trained models of Conformer-Transducer can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
-# The checkpoint of the large model trained on NeMo ASRSET with this recipe can be found here: https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_large
+# You may find more detail on Conformer-Transducer at `examples/asr/conf/conformer/conformer_transducer_bpe.yaml`
 
 name: "Conformer-Transducer-Char"
 
@@ -59,6 +40,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
 
@@ -67,6 +49,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
 
@@ -167,7 +150,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 4
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
@@ -229,7 +212,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

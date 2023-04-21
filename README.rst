@@ -75,12 +75,20 @@ Key Features
 * Speech processing
     * `HuggingFace Space for Audio Transcription (File, Microphone and YouTube) <https://huggingface.co/spaces/smajumdar/nemo_multilingual_language_id>`_
     * `Automatic Speech Recognition (ASR) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/intro.html>`_
-        * Supported models: Jasper, QuartzNet, CitriNet, Conformer-CTC, Conformer-Transducer, Squeezeformer-CTC, Squeezeformer-Transducer, ContextNet, LSTM-Transducer (RNNT), LSTM-CTC, FastConformer-CTC, FastConformer-Transducer, Conformer-HAT...
-        * Supports CTC, Transducer/RNNT and Hybrid losses/decoders
+        * Supported ASR models: `<https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html>`_
+            * Jasper, QuartzNet, CitriNet, ContextNet
+            * Conformer-CTC, Conformer-Transducer, FastConformer-CTC, FastConformer-Transducer
+            * Squeezeformer-CTC and Squeezeformer-Transducer
+            * LSTM-Transducer (RNNT) and LSTM-CTC
+        * Supports the following decoders/losses:
+            * CTC
+            * Transducer/RNNT
+            * Hybrid Transducer/CTC
             * NeMo Original `Multi-blank Transducers <https://arxiv.org/abs/2211.03541>`_
+        * Streaming/Buffered ASR (CTC/Transducer) - `Chunked Inference Examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_chunked_inference>`_
+        * Cache-aware Streaming Conformer - `<https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer>`_
         * Beam Search decoding
         * `Language Modelling for ASR <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/asr_language_modeling.html>`_: N-gram LM in fusion with Beam Search decoding, Neural Rescoring with Transformer
-        * Streaming and Buffered ASR (CTC/Transducer) - `Chunked Inference Examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_chunked_inference>`_
         * `Support of long audios for Conformer with memory efficient local attention <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/results.html#inference-on-long-audio>`_
     * `Speech Classification, Speech Command Recognition and Language Identification <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_classification/intro.html>`_: MatchboxNet (Command Recognition), AmberNet (LangID)
     * `Voice activity Detection (VAD) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/speech_classification/models.html#marblenet-vad>`_: MarbleNet
@@ -98,12 +106,12 @@ Key Features
     * `Punctuation and Capitalization <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/punctuation_and_capitalization.html>`_
     * `Token classification (named entity recognition) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/token_classification.html>`_
     * `Text classification <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/text_classification.html>`_
-    * `Joint Intent and Slot Classification <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/joint_intent_slot.html>`_    
+    * `Joint Intent and Slot Classification <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/joint_intent_slot.html>`_
     * `Question answering <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/question_answering.html>`_
     * `GLUE benchmark <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/glue_benchmark.html>`_
     * `Information retrieval <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/information_retrieval.html>`_
     * `Entity Linking <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/entity_linking.html>`_
-    * `Dialogue State Tracking <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/sgd_qa.html>`_   
+    * `Dialogue State Tracking <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/sgd_qa.html>`_
     * `Prompt Learning <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/nemo_megatron/prompt_learning.html>`_
     * `NGC collection of pre-trained NLP models. <https://ngc.nvidia.com/catalog/collections/nvidia:nemo_nlp>`_
     * `Synthetic Tabular Data Generation <https://developer.nvidia.com/blog/generating-synthetic-data-with-transformers-a-solution-for-enterprise-data-challenges/>`_
@@ -170,7 +178,7 @@ We recommend installing NeMo in a fresh Conda environment.
     conda create --name nemo python==3.8.10
     conda activate nemo
 
-Install PyTorch using their `configurator <https://pytorch.org/get-started/locally/>`_. 
+Install PyTorch using their `configurator <https://pytorch.org/get-started/locally/>`_.
 
 .. code-block:: bash
 
@@ -237,7 +245,7 @@ Install it manually if not using the NVIDIA PyTorch container.
     git checkout 57057e2fcf1c084c0fcc818f55c0ff6ea1b24ae2
     pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
 
-It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Apex or any other dependencies. 
+It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Apex or any other dependencies.
 
 While installing Apex, it may raise an error if the CUDA version on your system does not match the CUDA version torch was compiled with.
 This raise can be avoided by commenting it here: https://github.com/NVIDIA/apex/blob/master/setup.py#L32
@@ -251,13 +259,13 @@ cuda-nvprof is needed to install Apex. The version should match the CUDA version
 packaging is also needed:
 
 .. code-block:: bash
-  
+
   pip install -y packaging
 
 
 Transformer Engine
 ~~~~~~~~~~~~~~~~~~
-NeMo Megatron GPT has been integrated with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_ 
+NeMo Megatron GPT has been integrated with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_
 Transformer Engine enables FP8 training on NVIDIA Hopper GPUs.
 `Install <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_ it manually if not using the NVIDIA PyTorch container.
 
@@ -265,7 +273,7 @@ Transformer Engine enables FP8 training on NVIDIA Hopper GPUs.
 
   pip install --upgrade git+https://github.com/NVIDIA/TransformerEngine.git@stable
 
-It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Transformer Engine or any other dependencies. 
+It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Transformer Engine or any other dependencies.
 
 Transformer Engine requires PyTorch to be built with CUDA 11.8.
 
@@ -275,7 +283,7 @@ NeMo Text Processing, specifically (Inverse) Text Normalization, is now a separa
 
 Docker containers:
 ~~~~~~~~~~~~~~~~~~
-We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.16.0`` comes with container ``nemo:23.01``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_. 
+We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.16.0`` comes with container ``nemo:23.01``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
 
 To use built container, please run
 
@@ -283,7 +291,7 @@ To use built container, please run
 
     docker pull nvcr.io/nvidia/nemo:23.01
 
-To build a nemo container with Dockerfile from a branch, please run 
+To build a nemo container with Dockerfile from a branch, please run
 
 .. code-block:: bash
 

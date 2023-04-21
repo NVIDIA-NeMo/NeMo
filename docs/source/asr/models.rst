@@ -154,6 +154,7 @@ This allows using the model on longer audio (up to 70 minutes with Fast Conforme
 can be used with limited context attention even if trained with full context. However, if you also want to use global tokens,
 which help aggregate information from outside the limited context, then training is required.
 
+You may find more examples under ``<NeMo_git_root>/examples/asr/conf/fastconformer/``.
 
 Cache-aware Streaming Conformer
 -------------------------------
@@ -211,6 +212,8 @@ at ``<NeMo_git_root>/examples/asr/conf/conformer/streaming/conformer_ctc_bpe.yam
 To simulate cache-aware streaming, you may use the script at ``<NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py``. It can simulate streaming in single stream or multi-stream mode (in batches) for an ASR model.
 This script can be used for models trained offline with full-context but the accuracy would not be great unless the chunk size is large enough which would result in high latency.
 It is recommended to train a model in streaming model with limited context for this script. More info can be found in the script.
+
+You may find FastConformer variants of cache-aware streaming models under ``<NeMo_git_root>/examples/asr/conf/fastconformer/``.
 
 .. _LSTM-Transducer_model:
 
@@ -284,6 +287,9 @@ You may find the example config files of Conformer variant of such hybrid models
 ``<NeMo_git_root>/examples/asr/conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc_char.yaml`` and
 with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc_bpe.yaml``.
 
+Similar example configs for FastConformer variants of Hybrid models can be found here:
+``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/``
+``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_cache_aware_streaming/``
 
 .. _Conformer-HAT_model:
 

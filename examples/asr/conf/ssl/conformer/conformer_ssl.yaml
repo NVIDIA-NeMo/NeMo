@@ -188,7 +188,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

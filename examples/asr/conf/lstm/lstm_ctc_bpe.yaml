@@ -25,8 +25,6 @@ model:
     shuffle: true
     num_workers: 4
     pin_memory: true
-    use_start_end_token: false
-    trim_silence: false
     max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
     min_duration: 0.1
     # tarred datasets
@@ -44,7 +42,6 @@ model:
     shuffle: false
     num_workers: 4
     pin_memory: true
-    use_start_end_token: false
 
   test_ds:
     manifest_filepath: null
@@ -53,7 +50,6 @@ model:
     shuffle: false
     num_workers: 4
     pin_memory: true
-    use_start_end_token: false
 
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
@@ -129,7 +125,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.3
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

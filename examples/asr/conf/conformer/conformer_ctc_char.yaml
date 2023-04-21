@@ -1,6 +1,5 @@
 # It contains the default values for training a Conformer-CTC ASR model, large size (~120M) with CTC loss and char-based vocabulary.
-# Char-based encoding may give lower accuracy than sub-word encoding (conformer_ctc_bpe.yaml).
-
+# Char-based encoding may give lower accuracy than sub-word encoding for some languages (conformer_ctc_bpe.yaml).
 # You may find more detail on Conformer-CTC at `examples/asr/conf/conformer/conformer_ctc_bpe.yaml`
 
 name: "Conformer-CTC-Char"
@@ -38,6 +37,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
 
@@ -47,6 +47,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: false
+    use_start_end_token: false
     num_workers: 8
     pin_memory: true
 
@@ -161,7 +162,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  precision: 32 # 16, 32, or bf16
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.

@@ -331,7 +331,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             tokens_enc=batch['text_enc'],
             enc_mask=batch['enc_mask'],
             num_tokens_to_generate=30,
-            bos_id=self.tokenizer.pad_id if data_cfg.replace_bos_with_pad else self.tokenizer.bos_id,
+            bos_id=self.tokenizer.pad_id if data_cfg.get('replace_bos_with_pad', False) else self.tokenizer.bos_id,
         )
 
         # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.

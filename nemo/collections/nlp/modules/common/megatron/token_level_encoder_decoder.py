@@ -18,6 +18,9 @@ from omegaconf import DictConfig
 from nemo.collections.nlp.modules.common.megatron.alibi_relative_position_embedding import (
     ALiBiRelativePositionEmbedding,
 )
+from nemo.collections.nlp.modules.common.megatron.kerple_relative_position_embedding import (
+    KERPLERelativePositionEmbedding,
+)
 from nemo.collections.nlp.modules.common.megatron.language_model import Embedding
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.megatron_decoders import get_decoder_model
@@ -176,7 +179,16 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     num_attention_heads_alibi=None,
                     max_seq_len=max_position_embeddings,
                 )
-                self._encoder_relative_position_embedding_key = "encoder_relative_position_embedding"
+                self._encoder_relative_position_embedding_key = "encoder_alibi_position_embedding"
+            elif self.encoder_cfg.get('position_embedding_type', 'learned_absolute') == 'kerple':
+                self.encoder_relative_position_embedding = KERPLERelativePositionEmbedding(
+                    bidirectional=True,
+                    num_attention_heads=encoder_cfg.num_attention_heads,
+                    layer_type=LayerType.encoder,
+                    num_attention_heads_kerple=None,
+                    max_seq_len=max_position_embeddings,
+                )
+                self._encoder_relative_position_embedding_key = "encoder_kerple_position_embedding"
             else:
                 self.encoder_relative_position_embedding = None
 
@@ -296,7 +308,16 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     num_attention_heads_alibi=None,
                     max_seq_len=max_position_embeddings,
                 )
-                self._decoder_relative_position_embedding_key = "decoder_relative_position_embedding"
+                self._decoder_relative_position_embedding_key = "decoder_alibi_position_embedding"
+            elif self.decoder_cfg.get('position_embedding_type', 'learned_absolute') == 'kerple':
+                self.decoder_relative_position_embedding = KERPLERelativePositionEmbedding(
+                    bidirectional=False,
+                    num_attention_heads=decoder_cfg.num_attention_heads,
+                    layer_type=LayerType.decoder,
+                    num_attention_heads_kerple=None,
+                    max_seq_len=max_position_embeddings,
+                )
+                self._decoder_relative_position_embedding_key = "decoder_kerple_position_embedding"
             else:
                 self.decoder_relative_position_embedding = None
 

@@ -232,7 +232,7 @@ def get_wer_feat_logit(audio_file_path, asr, frame_len, tokens_per_chunk, delay,
     return hyp, tokens, log_prob
 
 
-class FrameBatchASR_Logits(FrameBatchASR):
+class FrameBatchASRLogits(FrameBatchASR):
     """
     A class for streaming frame-based ASR.
     Inherits from FrameBatchASR and adds new capability of returning the logit output.
@@ -260,10 +260,9 @@ class FrameBatchASR_Logits(FrameBatchASR):
         self.set_frame_reader(frame_reader)
 
     @torch.no_grad()
-    def _get_batch_preds(self):
+    def _get_batch_preds(self, keep_logits):
         device = self.asr_model.device
         for batch in iter(self.data_loader):
-
             feat_signal, feat_signal_len = batch
             feat_signal, feat_signal_len = feat_signal.to(device), feat_signal_len.to(device)
             log_probs, encoded_len, predictions = self.asr_model(
@@ -272,9 +271,12 @@ class FrameBatchASR_Logits(FrameBatchASR):
             preds = torch.unbind(predictions)
             for pred in preds:
                 self.all_preds.append(pred.cpu().numpy())
+            # Always keep logits in FrameBatchASRLogits
+            _ = keep_logits
             log_probs_tup = torch.unbind(log_probs)
             for log_prob in log_probs_tup:
                 self.all_logprobs.append(log_prob)
+            del log_probs, log_probs_tup
             del encoded_len
             del predictions
 
@@ -635,7 +637,7 @@ class ASRDecoderTimeStamps:
             log_prediction=asr_model._cfg.get("log_prediction", False),
         )
 
-        frame_asr = FrameBatchASR_Logits(
+        frame_asr = FrameBatchASRLogits(
             asr_model=asr_model,
             frame_len=self.chunk_len_in_sec,
             total_buffer=self.total_buffer_in_secs,

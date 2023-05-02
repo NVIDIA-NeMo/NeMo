@@ -15,11 +15,11 @@ import io
 import os
 from typing import Dict, List, Optional, Union
 
-import braceexpand
 import torch
 import webdataset as wd
 
 from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_sharded_filepaths
+from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
 from nemo.collections.common.parts.preprocessing import collections
 from nemo.core.classes import Dataset, IterableDataset
@@ -399,7 +399,7 @@ class AudioToSpeechLabelDataset(_AudioLabelDataset):
             Defaults to False.
         is_regression_task (bool): Whether the dataset is for a regression task instead of classification.
             Defaults to False.
-        cal_labels_occurrence (bool): Wether to calculate occurrence of labels
+        cal_labels_occurrence (bool): Whether to calculate occurrence of labels
             Defaults to False.
     """
 
@@ -737,9 +737,6 @@ class TarredAudioToClassificationLabelDataset(_TarredAudioLabelDataset):
         is_regression_task (bool): Whether it is a regression task. Defualts to False.
     """
 
-    # self.labels = labels if labels else self.collection.uniq_labels
-    # self.num_commands = len(self.labels)
-
     def _collate_fn(self, batch):
         return _speech_collate_fn(batch, pad_id=0)
 
@@ -856,7 +853,450 @@ class TarredAudioToSpeechLabelDataset(_TarredAudioLabelDataset):
         return _fixed_seq_collate_fn(self, batch)
 
     def sliced_seq_collate_fn(self, batch):
-        return _sliced_seq_collate_fn(self, batch)
+        raise NotImplementedError
 
     def vad_frame_seq_collate_fn(self, batch):
         return _vad_frame_seq_collate_fn(self, batch)
+
+
+class AudioToMultiLabelDataset(Dataset):
+    """
+    Dataset that loads a json file containing paths to audio files, durations (in seconds), and a sequence of labels.
+    Each new line is a different sample. Example below:
+    {"audio_filepath": "/path/to/audio_wav_0.wav", "duration": time_in_sec_0, "label": \
+        "0 1 1 0 1", "offset": offset_in_sec_0}
+    ...
+    {"audio_filepath": "/path/to/audio_wav_n.wav", "duration": time_in_sec_n, "label": \
+        "0 1 0 0 1", "offset": offset_in_sec_n}
+    Args:
+        manifest_filepath (Union[str, List[str]]): Path to manifest json as described above. Can
+            be comma-separated paths.
+        labels (Optional[list]): String containing all the possible labels to map to
+            if None then automatically picks from ASRSpeechLabel collection.
+        min_duration (float): Dataset parameter.
+            All training files which have a duration less than min_duration
+            are dropped. Note: Duration is read from the manifest JSON.
+            Defaults to 0.1.
+        max_duration (float): Dataset parameter.
+            All training files which have a duration more than max_duration
+            are dropped. Note: Duration is read from the manifest JSON.
+            Defaults to None.
+        trim (bool): Whether to use trim silence from beginning and end
+            of audio signal using librosa.effects.trim().
+            Defaults to False.
+        window_length_in_sec (float): length of window/slice (in seconds)
+            Use this for speaker recognition and VAD tasks.
+        shift_length_in_sec (float): amount of shift of window for generating the frame for VAD task in a batch
+            Use this for VAD task during inference.
+        normalize_audio (bool): Whether to normalize audio signal.
+            Defaults to False.
+        is_regression_task (bool): Whether the dataset is for a regression task instead of classification.
+            Defaults to False.
+        cal_labels_occurrence (bool): Whether to calculate occurrence of labels
+            Defaults to False.
+        delimiter (Optional[str]): Delimiter to use when spliting the label string, default to None.
+        normalize_audio_db (bool): Whether to normalize audio signal to a target db, default to False.
+        normalize_audio_db_target (float): Target db to normalize audio signal, default to -20.
+    """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+        """
+
+        output_types = {
+            'audio_signal': NeuralType(
+                ('B', 'T'),
+                AudioSignal(freq=self._sample_rate)
+                if self is not None and hasattr(self, '_sample_rate')
+                else AudioSignal(),
+            ),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+        }
+
+        if self.is_regression_task:
+            output_types.update(
+                {
+                    'targets': NeuralType(tuple('B, T'), RegressionValuesType()),
+                    'targets_length': NeuralType(tuple('B'), LengthsType()),
+                }
+            )
+        else:
+            output_types.update(
+                {'label': NeuralType(('B', 'T'), LabelsType()), 'label_length': NeuralType(tuple('B'), LengthsType()),}
+            )
+
+        return output_types
+
+    def __init__(
+        self,
+        *,
+        manifest_filepath: Union[str, List[str]],
+        sample_rate: int,
+        labels: Optional[List[str]] = None,
+        int_values: bool = False,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        min_duration: Optional[float] = 0.1,
+        max_duration: Optional[float] = None,
+        trim_silence: bool = False,
+        is_regression_task: bool = False,
+        cal_labels_occurrence: Optional[bool] = False,
+        delimiter: Optional[str] = None,
+        normalize_audio_db: bool = False,
+        normalize_audio_db_target: float = -20.0,
+    ):
+        super().__init__()
+        if isinstance(manifest_filepath, str):
+            manifest_filepath = manifest_filepath.split(',')
+
+        self.delimiter = delimiter
+        self.normalize_audio_db = normalize_audio_db
+        self.normalize_audio_db_target = normalize_audio_db_target
+
+        self.collection = collections.ASRSpeechLabel(
+            manifests_files=manifest_filepath,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            is_regression_task=is_regression_task,
+            cal_labels_occurrence=cal_labels_occurrence,
+            delimiter=delimiter,
+        )
+
+        self.featurizer = WaveformFeaturizer(sample_rate=sample_rate, int_values=int_values, augmentor=augmentor)
+        self.trim = trim_silence
+        self.is_regression_task = is_regression_task
+        self.id2occurrence = {}
+        self.labels_occurrence = None
+
+        if not is_regression_task:
+            self.labels = labels if labels else self._get_label_set()
+            self.num_classes = len(self.labels) if self.labels is not None else 1
+            self.label2id, self.id2label = {}, {}
+            for label_id, label in enumerate(self.labels):
+                self.label2id[label] = label_id
+                self.id2label[label_id] = label
+                if cal_labels_occurrence:
+                    self.id2occurrence[label_id] = self.collection.labels_occurrence[label]
+                    self.labels_occurrence.append(self.id2occurrence[label_id])
+
+            for idx in range(len(self.labels[:5])):
+                logging.debug(" label id {} and its mapped label {}".format(idx, self.id2label[idx]))
+        else:
+            self.labels = []
+            self.num_classes = 1
+
+    def _get_label_set(self):
+        labels = []
+        for sample in self.collection:
+            label_str = sample.label
+            if label_str:
+                label_str_list = label_str.split(self.delimiter) if self.delimiter else label_str.split()
+                labels.extend(label_str_list)
+        return sorted(set(labels))
+
+    def _label_str_to_tensor(self, label_str: str):
+        labels = label_str.split(self.delimiter) if self.delimiter else label_str.split()
+
+        if self.is_regression_task:
+            labels = [float(s) for s in labels]
+            labels = torch.tensor(labels).float()
+        else:
+            labels = [self.label2id[s] for s in labels]
+            labels = torch.tensor(labels).long()
+        return labels
+
+    def __len__(self):
+        return len(self.collection)
+
+    def __getitem__(self, index):
+        sample = self.collection[index]
+
+        offset = sample.offset
+
+        if offset is None:
+            offset = 0
+
+        features = self.featurizer.process(
+            sample.audio_file,
+            offset=offset,
+            duration=sample.duration,
+            trim=self.trim,
+            normalize_db=self.normalize_audio_db,
+            normalize_db_target=self.normalize_audio_db_target,
+        )
+
+        f, fl = features, torch.tensor(features.size(0)).long()
+
+        t = self._label_str_to_tensor(sample.label)
+
+        tl = torch.tensor(t.size(0)).long()
+
+        return f, fl, t, tl
+
+    def _collate_fn(self, batch):
+        return _speech_collate_fn(batch, pad_id=0)
+
+
+class TarredAudioToMultiLabelDataset(IterableDataset):
+    """
+    A similar Dataset to the AudioToMultiLabelDataset, but which loads tarred audio files.
+
+    Accepts a single comma-separated JSON manifest file (in the same style as for the AudioToSpeechLabelDataset),
+    as well as the path(s) to the tarball(s) containing the wav files. Each line of the manifest should
+    contain the information for one audio file, including at least the transcript and name of the audio
+    file within the tarball.
+
+    Valid formats for the audio_tar_filepaths argument include:
+    (1) a single string that can be brace-expanded, e.g. 'path/to/audio.tar' or 'path/to/audio_{1..100}.tar.gz', or
+    (2) a list of file paths that will not be brace-expanded, e.g. ['audio_1.tar', 'audio_2.tar', ...].
+
+    See the WebDataset documentation for more information about accepted data and input formats.
+
+    If using multiple processes the number of shards should be divisible by the number of workers to ensure an
+    even split among workers. If it is not divisible, logging will give a warning but training will proceed.
+    In addition, if using mutiprocessing, each shard MUST HAVE THE SAME NUMBER OF ENTRIES after filtering
+    is applied. We currently do not check for this, but your program may hang if the shards are uneven!
+
+    Notice that a few arguments are different from the AudioToBPEDataset; for example, shuffle (bool) has been
+    replaced by shuffle_n (int).
+
+    Additionally, please note that the len() of this DataLayer is assumed to be the length of the manifest
+    after filtering. An incorrect manifest length may lead to some DataLoader issues down the line.
+
+    Args:
+        audio_tar_filepaths: Either a list of audio tarball filepaths, or a
+            string (can be brace-expandable).
+        manifest_filepath (str): Path to the manifest.
+        labels (list): Dataset parameter.
+            List of target classes that can be output by the speaker recognition model.
+        shuffle_n (int): How many samples to look ahead and load to be shuffled.
+            See WebDataset documentation for more details.
+            Defaults to 0.
+        min_duration (float): Dataset parameter.
+            All training files which have a duration less than min_duration
+            are dropped. Note: Duration is read from the manifest JSON.
+            Defaults to 0.1.
+        max_duration (float): Dataset parameter.
+            All training files which have a duration more than max_duration
+            are dropped. Note: Duration is read from the manifest JSON.
+            Defaults to None.
+        trim(bool): Whether to use trim silence from beginning and end
+            of audio signal using librosa.effects.trim().
+            Defaults to False.
+        window_length_in_sec (float): time length of window/slice (in seconds) # Pass this only for speaker recognition and VAD task
+        shift_length_in_sec (float): amount of shift of window for generating the frame for VAD task. in a batch # Pass this only for VAD task during inference.
+        normalize_audio (bool): Whether to normalize audio signal. Defaults to False.
+        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a str value during ddp.
+            -   `scatter`: The default shard strategy applied by WebDataset, where each node gets
+                a unique set of shards, which are permanently pre-allocated and never changed at runtime.
+            -   `replicate`: Optional shard strategy, where each node gets all of the set of shards
+                available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
+                The benefit of replication is that it allows each node to sample data points from the entire
+                dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+
+                .. warning::
+                    Replicated strategy allows every node to sample the entire set of available tarfiles,
+                    and therefore more than one node may sample the same tarfile, and even sample the same
+                    data points! As such, there is no assured guarantee that all samples in the dataset will be
+                    sampled at least once during 1 epoch. Scattered strategy, on the other hand, on specific
+                    occasions (when the number of shards is not divisible with ``world_size``), will not sample
+                    the entire dataset. For these reasons it is not advisable to use tarred datasets as validation
+                    or test datasets.
+        global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
+        world_size (int): Total number of processes, used for partitioning shards. Defaults to 0.
+        delimiter (Optional[str]): Delimiter to use when spliting the label string, default to None.
+        normalize_audio_db (bool): Whether to normalize audio signal to a target db, default to False.
+        normalize_audio_db_target (float): Target db to normalize audio signal, default to -20.
+    """
+
+    def __init__(
+        self,
+        *,
+        audio_tar_filepaths: Union[str, List[str]],
+        manifest_filepath: Union[str, List[str]],
+        sample_rate: int,
+        labels: Optional[List[str]] = None,
+        shuffle_n: int = 0,
+        int_values: bool = False,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        min_duration: Optional[float] = 0.1,
+        max_duration: Optional[float] = None,
+        trim_silence: bool = False,
+        is_regression_task: bool = False,
+        shard_strategy: str = "scatter",
+        global_rank: int = 0,
+        world_size: int = 0,
+        delimiter: Optional[str] = None,
+        normalize_audio_db: bool = False,
+        normalize_audio_db_target: float = -20.0,
+    ):
+        super().__init__()
+        if isinstance(manifest_filepath, str):
+            manifest_filepath = manifest_filepath.split(',')
+
+        self.trim = trim_silence
+        self.is_regression_task = is_regression_task
+        self.delimiter = delimiter
+        self.normalize_audio_db = normalize_audio_db
+        self.normalize_audio_db_target = normalize_audio_db_target
+
+        self.collection = collections.ASRSpeechLabel(
+            manifests_files=manifest_filepath,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            is_regression_task=is_regression_task,
+            index_by_file_id=True,
+        )
+        self.file_occurence = count_occurence(self.collection.mapping)
+
+        self.featurizer = WaveformFeaturizer(sample_rate=sample_rate, int_values=int_values, augmentor=augmentor)
+
+        if not is_regression_task:
+            self.labels = labels if labels else self._get_label_set()
+            self.num_classes = len(self.labels) if self.labels is not None else 1
+            self.label2id, self.id2label = {}, {}
+            for label_id, label in enumerate(self.labels):
+                self.label2id[label] = label_id
+                self.id2label[label_id] = label
+            for idx in range(len(self.labels[:5])):
+                logging.debug(" label id {} and its mapped label {}".format(idx, self.id2label[idx]))
+        else:
+            self.labels = []
+            self.num_classes = 1
+
+        audio_tar_filepaths = expand_sharded_filepaths(
+            sharded_filepaths=audio_tar_filepaths,
+            shard_strategy=shard_strategy,
+            world_size=world_size,
+            global_rank=global_rank,
+        )
+        # Put together WebDataset
+        self._dataset = wd.WebDataset(urls=audio_tar_filepaths, nodesplitter=None)
+
+        if shuffle_n > 0:
+            self._dataset = self._dataset.shuffle(shuffle_n)
+        else:
+            logging.info("WebDataset will not shuffle files within the tar files.")
+
+        self._dataset = (
+            self._dataset.rename(audio=VALID_FILE_FORMATS, key='__key__')
+            .to_tuple('audio', 'key')
+            .pipe(self._filter)
+            .map(f=self._build_sample)
+        )
+
+    def _get_label_set(self):
+        labels = []
+        for sample in self.collection:
+            label_str = sample.label
+            if label_str:
+                label_str_list = label_str.split(self.delimiter) if self.delimiter else label_str.split()
+                labels.extend(label_str_list)
+        return sorted(set(labels))
+
+    def _label_str_to_tensor(self, label_str: str):
+        labels = label_str.split(self.delimiter) if self.delimiter else label_str.split()
+
+        if self.is_regression_task:
+            labels = [float(s) for s in labels]
+            labels = torch.tensor(labels).float()
+        else:
+            labels = [self.label2id[s] for s in labels]
+            labels = torch.tensor(labels).long()
+        return labels
+
+    def _filter(self, iterator):
+        """This function is used to remove samples that have been filtered out by ASRSpeechLabel already.
+        Otherwise, we would get a KeyError as _build_sample attempts to find the manifest entry for a sample
+        that was filtered out (e.g. for duration).
+        Note that if using multi-GPU training, filtering may lead to an imbalance in samples in each shard,
+        which may make your code hang as one process will finish before the other.
+        """
+
+        class TarredAudioFilter:
+            def __init__(self, collection, file_occurence):
+                self.iterator = iterator
+                self.collection = collection
+                self.file_occurence = file_occurence
+                self._iterable = self._internal_generator()
+
+            def __iter__(self):
+                self._iterable = self._internal_generator()
+                return self
+
+            def __next__(self):
+                try:
+                    values = next(self._iterable)
+                except StopIteration:
+                    # reset generator
+                    self._iterable = self._internal_generator()
+                    values = next(self._iterable)
+
+                return values
+
+            def _internal_generator(self):
+                """
+                WebDataset requires an Iterator, but we require an iterable that yields 1-or-more
+                values per value inside self.iterator.
+
+                Therefore wrap the iterator with a generator function that will yield 1-or-more
+                values per sample in the iterator.
+                """
+                for _, tup in enumerate(self.iterator):
+                    audio_bytes, audio_filename = tup
+
+                    file_id, _ = os.path.splitext(os.path.basename(audio_filename))
+                    if audio_filename in self.file_occurence:
+                        for j in range(0, self.file_occurence[file_id]):
+                            if j == 0:
+                                audio_filename = file_id
+                            else:
+                                audio_filename = file_id + "-sub" + str(j)
+                            yield audio_bytes, audio_filename
+
+        return TarredAudioFilter(self.collection, self.file_occurence)
+
+    def _build_sample(self, tup):
+        """Builds the training sample by combining the data from the WebDataset with the manifest info.
+        """
+        audio_bytes, audio_filename = tup
+        # Grab manifest entry from self.collection
+        file_id, _ = os.path.splitext(os.path.basename(audio_filename))
+
+        manifest_idx = self.collection.mapping[file_id]
+        manifest_entry = self.collection[manifest_idx]
+
+        offset = manifest_entry.offset
+        if offset is None:
+            offset = 0
+
+        # Convert audio bytes to IO stream for processing (for SoundFile to read)
+        audio_filestream = io.BytesIO(audio_bytes)
+        features = self.featurizer.process(
+            audio_filestream,
+            offset=offset,
+            duration=manifest_entry.duration,
+            trim=self.trim,
+            normalize_db=self.normalize_audio_db,
+            normalize_db_target=self.normalize_audio_db_target,
+        )
+
+        audio_filestream.close()
+
+        # Audio features
+        f, fl = features, torch.tensor(features.shape[0]).long()
+
+        t = self._label_str_to_tensor(manifest_entry.label)
+
+        tl = torch.tensor(t.size(0)).long()
+
+        return f, fl, t, tl
+
+    def __iter__(self):
+        return self._dataset.__iter__()
+
+    def __len__(self):
+        return len(self.collection)
+
+    def _collate_fn(self, batch):
+        return _speech_collate_fn(batch, pad_id=0)

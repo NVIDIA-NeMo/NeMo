@@ -20,7 +20,7 @@ import torch
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.data import audio_to_label
-from nemo.collections.asr.models import EncDecClassificationModel, configs
+from nemo.collections.asr.models import EncDecClassificationModel, EncDecFrameClassificationModel, configs
 from nemo.utils.config_utils import assert_dataclass_signature_match
 
 
@@ -64,6 +64,49 @@ def speech_classification_model():
         }
     )
     model = EncDecClassificationModel(cfg=modelConfig)
+    return model
+
+
+@pytest.fixture()
+def frame_classification_model():
+    preprocessor = {'cls': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'params': dict({})}
+    encoder = {
+        'cls': 'nemo.collections.asr.modules.ConvASREncoder',
+        'params': {
+            'feat_in': 64,
+            'activation': 'relu',
+            'conv_mask': True,
+            'jasper': [
+                {
+                    'filters': 32,
+                    'repeat': 1,
+                    'kernel': [1],
+                    'stride': [1],
+                    'dilation': [1],
+                    'dropout': 0.0,
+                    'residual': False,
+                    'separable': True,
+                    'se': True,
+                    'se_context_size': -1,
+                }
+            ],
+        },
+    }
+
+    decoder = {
+        'cls': 'nemo.collections.asr.modules.ConvASRDecoderClassification',
+        'params': {'feat_in': 32, 'num_classes': 5,},
+    }
+
+    modelConfig = DictConfig(
+        {
+            'preprocessor': DictConfig(preprocessor),
+            'encoder': DictConfig(encoder),
+            'decoder': DictConfig(decoder),
+            'labels': ListConfig(["dummy_cls_{}".format(i + 1) for i in range(5)]),
+        }
+    )
+    model = EncDecFrameClassificationModel(cfg=modelConfig)
     return model
 
 
@@ -200,6 +243,107 @@ class TestEncDecClassificationModel:
 
         result = assert_dataclass_signature_match(
             audio_to_label.AudioToSpeechLabelDataset,
+            configs.EncDecClassificationDatasetConfig,
+            ignore_args=IGNORE_ARGS,
+            remap_args=REMAP_ARGS,
+        )
+        signatures_match, cls_subset, dataclass_subset = result
+
+        assert signatures_match
+        assert cls_subset is None
+        assert dataclass_subset is None
+
+
+class TestEncDecFrameClassificationModel(TestEncDecClassificationModel):
+    @pytest.mark.unit
+    def test_reshape_labels(self, frame_classification_model):
+        model = frame_classification_model.eval()
+
+        logits = torch.ones(4, 20, 2)
+        labels = torch.ones(4, 10)
+        logits_len = torch.tensor([6, 7, 8, 9])
+        labels_len = torch.tensor([5, 6, 7, 8])
+        labels_new, labels_len_new = model.reshape_labels(
+            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
+        )
+        assert labels_new.size(1) == logits.size(1)
+        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
+
+        logits = torch.ones(4, 21, 2)
+        labels = torch.ones(4, 10)
+        logits_len = torch.tensor([6, 7, 8, 9])
+        labels_len = torch.tensor([5, 6, 7, 8])
+        labels_new, labels_len_new = model.reshape_labels(
+            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
+        )
+        assert labels_new.size(1) == logits.size(1)
+        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
+
+        logits = torch.ones(4, 19, 2)
+        labels = torch.ones(4, 10)
+        logits_len = torch.tensor([6, 7, 8, 9])
+        labels_len = torch.tensor([5, 6, 7, 8])
+        labels_new, labels_len_new = model.reshape_labels(
+            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
+        )
+        assert labels_new.size(1) == logits.size(1)
+        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
+
+        logits = torch.ones(4, 20, 2)
+        labels = torch.ones(4, 9)
+        logits_len = torch.tensor([6, 7, 8, 9])
+        labels_len = torch.tensor([5, 6, 7, 8])
+        labels_new, labels_len_new = model.reshape_labels(
+            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
+        )
+        assert labels_new.size(1) == logits.size(1)
+        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
+
+        logits = torch.ones(4, 20, 2)
+        labels = torch.ones(4, 11)
+        logits_len = torch.tensor([6, 7, 8, 9])
+        labels_len = torch.tensor([5, 6, 7, 8])
+        labels_new, labels_len_new = model.reshape_labels(
+            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
+        )
+        assert labels_new.size(1) == logits.size(1)
+        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
+
+    @pytest.mark.unit
+    def test_EncDecClassificationDatasetConfig_for_AudioToMultiSpeechLabelDataset(self):
+        # ignore some additional arguments as dataclass is generic
+        IGNORE_ARGS = [
+            'is_tarred',
+            'num_workers',
+            'batch_size',
+            'tarred_audio_filepaths',
+            'shuffle',
+            'pin_memory',
+            'drop_last',
+            'tarred_shard_strategy',
+            'shuffle_n',
+            # `featurizer` is supplied at runtime
+            'featurizer',
+            # additional ignored arguments
+            'vad_stream',
+            'int_values',
+            'sample_rate',
+            'normalize_audio',
+            'augmentor',
+            'bucketing_batch_size',
+            'bucketing_strategy',
+            'bucketing_weights',
+            'delimiter',
+            'normalize_audio_db',
+            'normalize_audio_db_target',
+            'window_length_in_sec',
+            'shift_length_in_sec',
+        ]
+
+        REMAP_ARGS = {'trim_silence': 'trim'}
+
+        result = assert_dataclass_signature_match(
+            audio_to_label.AudioToMultiLabelDataset,
             configs.EncDecClassificationDatasetConfig,
             ignore_args=IGNORE_ARGS,
             remap_args=REMAP_ARGS,

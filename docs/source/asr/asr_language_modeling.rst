@@ -21,7 +21,9 @@ best candidates. The beam search decoders in NeMo support language models traine
 `https://github.com/kpu/kenlm <https://github.com/kpu/kenlm>`__).
 The beam search decoders and KenLM library are not installed by default in NeMo, and you need to install them to be
 able to use beam search decoding and N-gram LM.
-Please refer to `scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh` on how to install them.
+Please refer to `scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`__ 
+on how to install them. Alternatively, you can build Docker image 
+`scripts/installers/Dockerfile.ngramtools <https://github.com/NVIDIA/NeMo/blob/stable/scripts/installers/Dockerfile.ngramtools>`__ with all the necessary dependencies.
 
 NeMo supports both character-based and BPE-based models for N-gram LMs. An N-gram LM can be used with beam search
 decoders on top of the ASR models to produce more accurate candidates. The beam search decoder would incorporate
@@ -45,7 +47,7 @@ The script to train an N-gram language model with KenLM can be found at
 `scripts/asr_language_modeling/ngram_lm/train_kenlm.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/train_kenlm.py>`__.
 
 This script would train an N-gram language model with KenLM library which can be used with the beam search decoders
-on top of the ASR models. This script supports both character level and BPE level encodings and models which is
+on top of the ASR models. This script supports both character level and BPE level encodings and models which are
 detected automatically from the type of the model.
 
 
@@ -53,15 +55,15 @@ You may train the N-gram model as the following:
 
 .. code-block::
 
-    python train_kenlm.py --nemo_model_file <path to the .nemo file of the model> \
-                              --train_file <path to the training text or JSON manifest file \
-                              --kenlm_bin_path <path to the bin folder of KenLM library> \
-                              --kenlm_model_file <path to store the binary KenLM model> \
-                              --ngram_length <order of N-gram model> \
-                              --preserve_arpa
+    python train_kenlm.py nemo_model_file=<path to the .nemo file of the model> \
+                              train_paths=<list of paths to the training text or JSON manifest files> \
+                              kenlm_bin_path=<path to the bin folder of KenLM library> \
+                              kenlm_model_file=<path to store the binary KenLM model> \
+                              ngram_length=<order of N-gram model> \
+                              preserve_arpa=true
 
-The train file specified by `--train_file` can be a text file or JSON manifest. If the file's extension is anything
-other than `.json`, it assumes that data format is plain text. For plain text format, each line should contain one
+The `train_paths` parameter allows for various input types, such as a list of text files, JSON manifests, or directories, to be used as the training data.
+If the file's extension is anything other than `.json`, it assumes that data format is plain text. For plain text format, each line should contain one
 sample. For JSON manifest file, the file need to contain json formatted samples per each line like this:
 
 .. code-block::
@@ -69,16 +71,16 @@ sample. For JSON manifest file, the file need to contain json formatted samples 
     {"audio_filepath": "/data_path/file1.wav", "text": "The transcript of the audio file."}
 
 It just extracts the `text` field from each line to create the training text file. After the N-gram model is trained,
-it is stored at the path specified by `--kenlm_model_file`.
+it is stored at the path specified by `kenlm_model_file`.
 
 The following is the list of the arguments for the training script:
 
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
 | **Argument**     | **Type** | **Default** | **Description**                                                                                 |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
-| nemo_model_file  | str      | Required    | The path of the `.nemo` file of the ASR model. It is needed to extract the tokenizer.           |
+| nemo_model_file  | str      | Required    | The path to `.nemo` file of the ASR model, or name of a pretrained NeMo model to extract a tokenizer. |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
-| train_file       | str      | Required    | Path to the training file, it can be a text file or JSON manifest.                              |
+| train_paths      | List[str] | Required    | List of training files or folders. Files can be a plain text file or ".json" manifest or ".json.gz". |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
 | kenlm_model_file | str      | Required    | The path to store the KenLM binary model file.                                                  |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
@@ -86,9 +88,13 @@ The following is the list of the arguments for the training script:
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
 | ngram_length**   | int      | Required    | Specifies order of N-gram LM.                                                                   |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
-| do_lower_case    | bool     | ``False``   | Whether to make the training text all lower case.                                               |
+| ngram_prune      | List[int] | [0]        | List of thresholds to prune N-grams. Example: [0,0,1]. See Pruning section on the https://kheafield.com/code/kenlm/estimation  |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| cache_path       | str      | ""          | Cache path to save tokenized files.                                                             |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
 | preserve_arpa    | bool     | ``False``   | Whether to preserve the intermediate ARPA file after construction of the BIN file.              |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| verbose          | int      | 1           | Verbose level.                                                                                  |
 +------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
 
 ** Note: Recommend to use 6 as the order of the N-gram model for BPE-based models. Higher orders may need the re-compilation of KenLM to support it.
@@ -174,6 +180,14 @@ The following is the list of the important arguments for the evaluation script:
 +---------------------+----------+------------------+-------------------------------------------------------------------------+
 | decoding            | Dict     | BeamCTC          | Subdict of beam search configs. Values found via                        |
 |                     | Config   | InferConfig      | python eval_beamsearch_ngram.py --help                                  |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| text_processing.do_lowercase      | bool | ``False`` | Whether to make the training text all lower case.                    |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| text_processing.punctuation_marks | str   | ""       | String with punctuation marks to process. Example: ".\,?"            |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| text_processing.rm_punctuation    |  bool | ``False``| Whether to remove punctuation marks from text.                       |
++---------------------+----------+------------------+-------------------------------------------------------------------------+
+| text_processing.separate_punctuation | bool |``True``| Whether to separate punctuation with the previous word by space.     |
 +---------------------+----------+------------------+-------------------------------------------------------------------------+
 
 Width of the beam search (`--beam_width`) specifies the number of top candidates/predictions the beam search decoder
@@ -334,7 +348,7 @@ Given a trained TransformerLMModel `.nemo` file or a pretrained HF model, the sc
 `scripts/asr_language_modeling/neural_rescorer/eval_neural_rescorer.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/neural_rescorer/eval_neural_rescorer.py>`__
 can be used to re-score beams obtained with ASR model. You need the `.tsv` file containing the candidates produced
 by the acoustic model and the beam search decoding to use this script. The candidates can be the result of just the beam
-search decoding or the result of fusion with an N-gram LM. You may generate this file by specifying `--preds_output_folder' for
+search decoding or the result of fusion with an N-gram LM. You may generate this file by specifying `--preds_output_folder` for
 `scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py>`__.
 
 The neural rescorer would rescore the beams/candidates by using two parameters of `rescorer_alpha` and `rescorer_beta` as the following:
@@ -457,3 +471,77 @@ You can then pass this file to your flashlight config object during decoding:
            decoding.beam.flashlight_cfg.boost_path='/path/to/my_boost_file.boost' \
            decoding.beam.flashlight_cfg.beam_size_token = 32 \
            decoding.beam.flashlight_cfg.beam_threshold = 25.0
+
+Combine N-gram Language Models
+==============================
+
+Before combining N-gram LMs install required OpenGrm NGram library using `scripts/installers/install_opengrm.sh <https://github.com/NVIDIA/NeMo/blob/stable/scripts/installers/install_opengrm.sh>`__.
+Alternatively, you can use Docker image `scripts/installers/Dockerfile.ngramtools <https://github.com/NVIDIA/NeMo/blob/stable/scripts/installers/Dockerfile.ngramtools>`__ with all the necessary dependencies.
+
+To combine two N-gram language models, you can use the script ngram_merge.py located at 
+`scripts/asr_language_modeling/ngram_lm/ngram_merge.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/ngram_merge.py>`__.
+
+This script interpolate two ARPA N-gram language models and creates a KenLM binary file that can be used with the beam search decoders on top of ASR models.  
+You can specify weights (`--alpha` and `--beta`) for each of the models (`--ngram_a` and `--ngram_b`) correspondingly: `alpha` * `ngram_a` + `beta` * `ngram_b`.
+This script supports both character level and BPE level encodings and models which are detected automatically from the type of the model.
+
+To combine two N-gram models, you can use the following command:
+
+.. code-block::
+
+    python ngram_merge.py  --kenlm_bin_path <path to the bin folder of KenLM library> \
+                    --ngram_bin_path  <path to the bin folder of OpenGrm Ngram library> \
+                    --arpa_a <path to the ARPA N-gram model file A> \
+                    --alpha <weight of N-gram model A> \
+                    --arpa_b <path to the ARPA N-gram model file B> \
+                    --beta <weight of N-gram model B> \
+                    --out_path <path to folder to store the output files>
+
+
+
+If you provide `--test_file` and `--nemo_model_file`, the script will calculate the perplexity of the resulting N-gram model on the test set.
+Note, the result of each step during the process is cached in the temporary file in the `--out_path`, to speed up further run.
+You can use the `--force` flag to discard the cache and recalculate everything from scratch.
+
+.. code-block::
+
+    python ngram_merge.py  --kenlm_bin_path <path to the bin folder of KenLM library> \
+                    --ngram_bin_path  <path to the bin folder of OpenGrm Ngram library> \
+                    --arpa_a <path to the ARPA N-gram model file A> \
+                    --alpha <weight of N-gram model A> \
+                    --arpa_b <path to the ARPA N-gram model file B> \
+                    --beta <weight of N-gram model B> \
+                    --out_path <path to folder to store the output files>
+                    --nemo_model_file <path to the .nemo file of the model> \
+                    --test_file <path to the test file> \
+                    --symbols <path to symbols (.syms) file> \
+                    --force <flag to recalculate and rewrite all cached files>
+
+
+The following is the list of the arguments for the opengrm script:
+
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| **Argument**         |**Type**| **Default**      | **Description**                                                         |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| kenlm_bin_path       | str    | Required         | The path to the bin folder of KenLM library. It is a folder named `bin` under where KenLM is installed. |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| ngram_bin_path       | str    | Required         | The path to the bin folder of OpenGrm Ngram. It is a folder named `bin` under where OpenGrm Ngram is installed. |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| arpa_a               | str    | Required         | Path to the ARPA N-gram model file A                                    |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| alpha                | float  | Required         | Weight of N-gram model A                                                |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| arpa_b               | int    | Required         | Path to the ARPA N-gram model file B                                    |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| beta                 | float  | Required         | Weight of N-gram model B                                                |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| out_path             | str    | Required         | Path for writing temporary and resulting files.                         |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| test_file            | str    | None             | Path to test file to count perplexity if provided.                      |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| symbols              | str    | None             | Path to symbols (.syms) file. Could be calculated if it is not provided.|
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| nemo_model_file      | str    | None             | The path to '.nemo' file of the ASR model, or name of a pretrained NeMo model.  |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| force                | bool   | ``False``        | Whether to recompile and rewrite all files                              |
++----------------------+--------+------------------+-------------------------------------------------------------------------+

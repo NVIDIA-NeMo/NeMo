@@ -22,6 +22,7 @@ from torchmetrics import Metric
 from nemo.collections.asr.metrics.wer import AbstractCTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.submodules import ctc_beam_decoding
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.collections.common.tokenizers.aggregate_tokenizer import DummyTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
@@ -147,7 +148,10 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         if isinstance(self.decoding, ctc_beam_decoding.AbstractBeamCTCInfer):
             if hasattr(self.tokenizer.tokenizer, 'get_vocab'):
                 vocab_dict = self.tokenizer.tokenizer.get_vocab()
-                vocab = list(vocab_dict.keys())
+                if isinstance(self.tokenizer.tokenizer, DummyTokenizer):  # AggregateTokenizer.DummyTokenizer
+                    vocab = vocab_dict
+                else:
+                    vocab = list(vocab_dict.keys())
                 self.decoding.set_vocabulary(vocab)
                 self.decoding.set_tokenizer(tokenizer)
             else:

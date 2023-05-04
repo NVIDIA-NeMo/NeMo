@@ -15,6 +15,7 @@ import glob
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -442,14 +443,48 @@ def transcribe_partial_audio(
 
 
 class PunctuationCapitalization:
-    def __init__(self, punctuation_marks='.,?'):
-        self.regex_punctuation = re.compile(fr"([{''.join(punctuation_marks)}])")
+    def __init__(self, punctuation_marks: str):
+        """
+        Class for text processing with punctuation and capitalization. Can be used with class TextProcessingConfig.
 
-    def separate_punctuation(self, lines):
-        return [self.regex_punctuation.sub(r' \1 ', line) for line in lines]
+        Args:
+            punctuation_marks (str): String with punctuation marks to process.
+        Example: punctuation_marks = '.,?'
+        """
+        if punctuation_marks:
+            self.regex_punctuation = re.compile(fr"([{''.join(punctuation_marks)}])")
+            self.regex_extra_space = re.compile('\s{2,}')
+        else:
+            self.regex_punctuation = None
 
-    def do_lowercase(self, lines):
+    def separate_punctuation(self, lines: List[str]) -> List[str]:
+        if self.regex_punctuation is not None:
+            return [
+                self.regex_extra_space.sub('', self.regex_punctuation.sub(r' \1 ', line)).strip() for line in lines
+            ]
+        else:
+            return lines
+
+    def do_lowercase(self, lines: List[str]) -> List[str]:
         return [line.lower() for line in lines]
 
-    def rm_punctuation(self, lines):
-        return [self.regex_punctuation.sub(' ', line).strip() for line in lines]
+    def rm_punctuation(self, lines: List[str]) -> List[str]:
+        if self.regex_punctuation is not None:
+            return [self.regex_extra_space.sub('', self.regex_punctuation.sub(' ', line)).strip() for line in lines]
+        else:
+            return lines
+
+
+@dataclass
+class TextProcessingConfig:
+    # Punctuation marks to process. Example: ".,?"
+    punctuation_marks: str = ""
+
+    # Whether to apply lower case conversion on the training text.
+    do_lowercase: bool = False
+
+    # Whether to remove punctuation marks from text.
+    rm_punctuation: bool = False
+
+    # Whether to separate punctuation with the previouse word by space.
+    separate_punctuation: bool = True

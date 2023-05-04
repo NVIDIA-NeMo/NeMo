@@ -1,2 +1,2 @@
 Model Name,Language,MCV Dev-Set (v??) (pl),MCV Dev-Set v12.0 (pl),MCV Test-Set v12.0 (pl),MLS Dev (en),MLS Test (en),VoxPopuli Dev (pl),VoxPopuli Test (pl)
-stt_pl_quartznet15x5,pl,14,,,,,,
+stt_pl_fastconformer_hybrid_large_pc,pl,,6.0 %,8.7 %,7.1 %,5.8 %,11.3 %,8.5 %

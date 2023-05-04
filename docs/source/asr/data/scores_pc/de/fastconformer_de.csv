@@ -1,0 +1,2 @@
+Model Name,Language,MCV Dev-Set v12.0 (de),MCV Test-Set v12.0 (de),MLS Dev (en),MLS Test (en),VoxPopuli Dev (de),VoxPopuli Test (de)
+stt_de_fastconformer_hybrid_large_pc,de,4.7 %,5.4 %,10.1 %,11.1 %,12.6 %,10.4 %

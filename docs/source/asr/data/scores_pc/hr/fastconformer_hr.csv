@@ -1,0 +1,2 @@
+Model Name,Language,Parlaspeech Dev-Set (v??) (hr),Parlaspeech Test-Set (v??) (hr)
+stt_hr_fastconformer_hybrid_large_pc,hr,10.4 %,8.7 %

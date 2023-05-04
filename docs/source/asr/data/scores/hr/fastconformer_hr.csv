@@ -1,3 +1,2 @@
 Model Name,Language,ParlaSpeech Dev-Set v1.0 (hr),ParlaSpeech Test-Set v1.0 (hr),Parlaspeech Dev-Set (v??) (hr),Parlaspeech Test-Set (v??) (hr)
-stt_hr_conformer_ctc_large,hr,4.43,4.70,,
-stt_hr_conformer_transducer_large,hr,4.56,4.69,,
+stt_hr_fastconformer_hybrid_large_pc,hr,,,4.5 %,4.2 %

@@ -1,0 +1,2 @@
+Model Name,Language,EuroParl Test Set (en),Fisher Test Set (en),Librispeech Test-Clean,Librispeech Test-Other,MCV Test-Set v11.0 (en),MLS Test (en),NSC Part1,SPGI Test,VoxPopuli Test (en)
+stt_en_fastconformer_hybrid_large_pc,en,12.5 %,19.0 %,7.3 %,9.2 %,10.1 %,12.7 %,7.2 %,5.1 %,6.7 %

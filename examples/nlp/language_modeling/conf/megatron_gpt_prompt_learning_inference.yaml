@@ -24,6 +24,7 @@ pipeline_model_parallel_size: -1
 gpt_model_file: null  # GPT nemo file path
 virtual_prompt_model_file: ??? # path to a MegatronGPTPromptLearningModel model if you want to use soft prompts
 pred_file_path: ??? # Path will model predictions will be written
+max_seq_length: 8192 # this will filter out inputs whose length is longer than the set value form the generation process.
 data_paths: # paths to .jsonl files you want to perform inference on
 num_workers: 8
  

@@ -198,7 +198,7 @@ def get_full_path(
         # If input is a string, get the corresponding full path
         audio_file = Path(audio_file)
 
-        if (len(str(audio_file)) < audio_file_len_limit) and not audio_file.is_file() and not audio_file.is_absolute():
+        if (len(str(audio_file)) < audio_file_len_limit) and not audio_file.is_absolute() and not audio_file.is_file():
             # If audio_file is not available and the path is not absolute, the full path is assumed
             # to be relative to the manifest file parent directory or data directory.
             if manifest_file is None and data_dir is None:

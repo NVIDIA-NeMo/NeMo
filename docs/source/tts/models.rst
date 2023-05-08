@@ -12,6 +12,8 @@ This section provides a brief overview of TTS models that NeMo's TTS collection 
 Mel-Spectrogram Generators
 --------------------------
 
+.. _FastPitch_model:
+
 FastPitch
 ~~~~~~~~~
 FastPitch is a fully-parallel text-to-speech synthesis model based on FastSpeech, conditioned on fundamental frequency contours. The model predicts pitch contours during inference. By altering these predictions, the generated speech can be more expressive, better match the semantic of the utterance, and in the end more engaging to the listener. Uniformly increasing or decreasing pitch with FastPitch generates speech that resembles the voluntary modulation of voice. Conditioning on frequency contours improves the overall quality of synthesized speech, making it comparable to the state of the art. It does not introduce an overhead, and FastPitch retains the favorable, fully-parallel Transformers architecture, with over 900x real-time factor for mel-spectrogram synthesis of a typical utterance. The architecture of FastPitch is shown below. It is based on FastSpeech and consists of two feed-forward Transformer (FFTr) stacks. The first FFTr operates in the resolution of input tokens, and the other one in the resolution of the output frames. Please refer to :cite:`tts-models-lancucki2021fastpitch` for details.

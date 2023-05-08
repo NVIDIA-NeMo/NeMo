@@ -31,7 +31,9 @@ from nemo.collections.asr.data.text_to_text import (
     TextToTextDataset,
     TextToTextIterableDataset,
 )
-from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE, EncDecRNNTBPEModel
+from nemo.collections.asr.models.asr_model import ASRModel
+from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
+from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.preprocessing.features import clean_spectrogram_batch, normalize_batch
 from nemo.collections.asr.parts.submodules.batchnorm import replace_bn_with_fused_bn_all

@@ -26,7 +26,6 @@ from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Se
 import numpy as np
 import torch
 import torch.utils.data
-from nemo_text_processing.text_normalization.normalize import Normalizer
 from torch.nn.utils.rnn import pad_sequence
 from tqdm.auto import tqdm
 
@@ -34,6 +33,12 @@ from nemo.collections.asr.data.audio_to_text import _speech_collate_fn
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.utils import logging
+
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+except Exception as e:
+    logging.warning(e)
+    logging.warning("nemo_text_processing is not installed")
 
 AnyPath = Union[Path, str]
 
@@ -176,7 +181,7 @@ class TextToTextDatasetBase:
         asr_use_start_end_token: bool,
         tts_parser: Callable,
         tts_text_pad_id: int,
-        tts_text_normalizer: Normalizer,
+        tts_text_normalizer: "Normalizer",
         tts_text_normalizer_call_kwargs: Dict,
         min_words: int = 1,
         max_words: int = 1_000_000,
@@ -379,7 +384,7 @@ class TextToTextDataset(TextToTextDatasetBase, Dataset):
         asr_use_start_end_token: bool,
         tts_parser: Callable,
         tts_text_pad_id: int,
-        tts_text_normalizer: Normalizer,
+        tts_text_normalizer: "Normalizer",
         tts_text_normalizer_call_kwargs: Dict,
         min_words: int = 1,
         max_words: int = 1_000_000,
@@ -426,7 +431,7 @@ class TextToTextIterableDataset(TextToTextDatasetBase, IterableDataset):
         asr_use_start_end_token: bool,
         tts_parser: Callable,
         tts_text_pad_id: int,
-        tts_text_normalizer: Normalizer,
+        tts_text_normalizer: "Normalizer",
         tts_text_normalizer_call_kwargs: Dict,
         min_words: int = 1,
         max_words: int = 1_000_000,

@@ -380,7 +380,9 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
 
             # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
-            (query_layer, key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(mixed_x_layer, 3)
+            (query_layer, key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(
+                mixed_x_layer, 3, contiguous_split_chunks=True
+            )
         else:
             # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
             mixed_kv_layer, _ = self.key_value(encoder_output)
@@ -395,7 +397,9 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
 
             # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
-            (key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(mixed_kv_layer, 2)
+            (key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(
+                mixed_kv_layer, 2, contiguous_split_chunks=True
+            )
 
             # Attention head [sq, b, h] --> [sq, b, hp]
             query_layer, _ = self.query(hidden_states)

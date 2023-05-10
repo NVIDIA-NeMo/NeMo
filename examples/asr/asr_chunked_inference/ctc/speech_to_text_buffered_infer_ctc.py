@@ -27,7 +27,9 @@ python speech_to_text_buffered_infer_ctc.py \
     total_buffer_in_secs=4.0 \
     chunk_len_in_secs=1.6 \
     model_stride=4 \
-    batch_size=32
+    batch_size=32 \
+    clean_groundtruth_text=True \
+    langid='en'
 
 # NOTE:
     You can use `DEBUG=1 python speech_to_text_buffered_infer_ctc.py ...` to print out the
@@ -45,6 +47,8 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 
+from nemo.collections.asr.metrics.wer import CTCDecodingConfig
+from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchASR
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
@@ -79,6 +83,9 @@ class TranscriptionConfig:
     total_buffer_in_secs: float = 4.0  # Length of buffer (chunk + left and right padding) in seconds
     model_stride: int = 8  # Model downsampling factor, 8 for Citrinet models and 4 for Conformer models",
 
+    # Decoding strategy for CTC models
+    decoding: CTCDecodingConfig = CTCDecodingConfig()
+
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.
     # If `cuda` is a negative number, inference will be on CPU only.
@@ -88,6 +95,12 @@ class TranscriptionConfig:
 
     # Recompute model transcription, even if the output folder exists with scores.
     overwrite_transcripts: bool = True
+
+    # Config for word / character error rate calculation
+    calculate_wer: bool = True
+    clean_groundtruth_text: bool = False
+    langid: str = "en"  # specify this for convert_num_to_words step in groundtruth cleaning
+    use_cer: bool = False
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
@@ -188,10 +201,23 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         manifest,
         filepaths,
     )
-    output_filename = write_transcription(
+    output_filename, pred_text_attr_name = write_transcription(
         hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, compute_timestamps=False
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
+
+    if cfg.calculate_wer:
+        output_manifest_w_wer, total_res, _ = cal_write_wer(
+            pred_manifest=output_filename,
+            pred_text_attr_name=pred_text_attr_name,
+            clean_groundtruth_text=cfg.clean_groundtruth_text,
+            langid=cfg.langid,
+            use_cer=cfg.use_cer,
+            output_filename=None,
+        )
+        if output_manifest_w_wer:
+            logging.info(f"Writing prediction and error rate of each sample to {output_manifest_w_wer}!")
+            logging.info(f"{total_res}")
 
     return cfg
 

@@ -38,9 +38,10 @@ engine:
   
 analyst:
     metric_calculator:
+        exist_pred_manifest: null # specify the previously generated manifest will skip engine
         clean_groundtruth_text: True
         langid: "en" # speciify language to clean text. Note use text normalization in NeMo for better performancce
-        output_filename: null # specify it if wanna skip engine and use previously generated manifest
+        output_filename: null
         use_cer: False
 
     metadata:

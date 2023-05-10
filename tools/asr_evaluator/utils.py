@@ -18,8 +18,6 @@ from pathlib import Path
 from typing import Tuple
 
 from omegaconf import DictConfig, OmegaConf, open_dict
-
-from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.utils import logging
 
 
@@ -110,6 +108,7 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
 
     subprocess.run(
         f"python {script_path} "
+        f"calculate_wer=False "
         f"model_path={cfg.model_path} "
         f"pretrained_name={cfg.pretrained_name} "
         f"dataset_manifest={cfg.test_ds.manifest_filepath} "
@@ -148,6 +147,7 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
         # 2) add command as "rnnt_decoding.strategy=greedy_batch " to below script
         subprocess.run(
             f"python {script_path} "
+            f"calculate_wer=False "
             f"model_path={cfg.model_path} "
             f"pretrained_name={cfg.pretrained_name} "
             f"dataset_manifest={cfg.test_ds.manifest_filepath} "
@@ -161,139 +161,6 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
         )
 
     return cfg
-
-
-def clean_label(_str: str, num_to_words: bool = True, langid="en") -> str:
-    """
-    Remove unauthorized characters in a string, lower it and remove unneeded spaces
-    """
-    replace_with_space = [char for char in '/?*\",.:=?_{|}~¨«·»¡¿„…‧‹›≪≫!:;ː→']
-    replace_with_blank = [char for char in '`¨´‘’“”`ʻ‘’“"‘”']
-    replace_with_apos = [char for char in '‘’ʻ‘’‘']
-    _str = _str.strip()
-    _str = _str.lower()
-    for i in replace_with_blank:
-        _str = _str.replace(i, "")
-    for i in replace_with_space:
-        _str = _str.replace(i, " ")
-    for i in replace_with_apos:
-        _str = _str.replace(i, "'")
-    if num_to_words:
-        if langid == "en":
-            _str = convert_num_to_words(_str, langid="en")
-        else:
-            logging.info(
-                "Currently support basic num_to_words in English only. Please use Text Normalization to convert other languages! Skipping!"
-            )
-
-    ret = " ".join(_str.split())
-    return ret
-
-
-def convert_num_to_words(_str: str, langid: str = "en") -> str:
-    """
-    Convert digits to corresponding words. Note this is a naive approach and could be replaced with text normalization.
-    """
-    if langid == "en":
-        num_to_words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
-        _str = _str.strip()
-        words = _str.split()
-        out_str = ""
-        num_word = []
-        for word in words:
-            if word.isdigit():
-                num = int(word)
-                while num:
-                    digit = num % 10
-                    digit_word = num_to_words[digit]
-                    num_word.append(digit_word)
-                    num = int(num / 10)
-                    if not (num):
-                        num_str = ""
-                        num_word = num_word[::-1]
-                        for ele in num_word:
-                            num_str += ele + " "
-                        out_str += num_str + " "
-                        num_word.clear()
-            else:
-                out_str += word + " "
-        out_str = out_str.strip()
-    else:
-        raise ValueError(
-            "Currently support basic num_to_words in English only. Please use Text Normalization to convert other languages!"
-        )
-    return out_str
-
-
-def cal_write_wer(cfg: DictConfig, pred_text_attr_name: str = None) -> Tuple[DictConfig, dict]:
-    """ 
-    Calculate wer, inserion, deletion and substitution rate based on groundtruth text and pred_text_attr_name (pred_text) 
-    We use WER in function name as a convention, but it currently Error Rate (ER) support Word Error Rate (WER) and Character Error Rate (CER)
-    """
-    samples = []
-    hyps = []
-    refs = []
-
-    with open(cfg.engine.output_filename, 'r') as fp:
-        for line in fp:
-            sample = json.loads(line)
-
-            if 'text' not in sample:
-                raise ValueError(
-                    "ground-truth text does not present in manifest! Cannot calculate Word Error Rate. Exiting!"
-                )
-
-            if not pred_text_attr_name:
-                pred_text_attr_name = "pred_text"
-
-            hyp = sample[pred_text_attr_name]
-            ref = sample['text']
-
-            if cfg.analyst.metric_calculator.clean_groundtruth_text:
-                ref = clean_label(ref, langid=cfg.analyst.metric_calculator.langid)
-
-            wer, tokens, ins_rate, del_rate, sub_rate = word_error_rate_detail(
-                hypotheses=[hyp], references=[ref], use_cer=cfg.analyst.metric_calculator.use_cer
-            )
-            eval_metric = "wer"
-            if cfg.analyst.metric_calculator.use_cer:
-                eval_metric = "cer"
-
-            sample[eval_metric] = wer  # evaluatin metric, could be word error rate of character error rate
-            sample['tokens'] = tokens  # number of word/characters/tokens
-            sample['ins_rate'] = ins_rate  # insertion error rate
-            sample['del_rate'] = del_rate  # deletion error rate
-            sample['sub_rate'] = sub_rate  # substitution error rate
-
-            samples.append(sample)
-            hyps.append(hyp)
-            refs.append(ref)
-
-    total_wer, total_tokens, total_ins_rate, total_del_rate, total_sub_rate = word_error_rate_detail(
-        hypotheses=hyps, references=refs, use_cer=cfg.analyst.metric_calculator.use_cer
-    )
-
-    if "output_filename" not in cfg.analyst.metric_calculator or not cfg.analyst.metric_calculator.output_filename:
-        # overwrite the current generated manifest
-        OmegaConf.set_struct(cfg, True)
-        with open_dict(cfg):
-            cfg.analyst.metric_calculator.output_filename = cfg.engine.output_filename
-
-    with open(cfg.analyst.metric_calculator.output_filename, 'w') as fout:
-        for sample in samples:
-            json.dump(sample, fout)
-            fout.write('\n')
-            fout.flush()
-
-    total_res = {
-        "samples": len(samples),
-        "tokens": total_tokens,
-        eval_metric: total_wer,
-        "ins_rate": total_ins_rate,
-        "del_rate": total_del_rate,
-        "sub_rate": total_sub_rate,
-    }
-    return cfg, total_res, eval_metric
 
 
 def cal_target_metadata_wer(manifest: str, target: str, meta_cfg: DictConfig, eval_metric: str = "wer",) -> dict:
@@ -314,7 +181,6 @@ def cal_target_metadata_wer(manifest: str, target: str, meta_cfg: DictConfig, ev
     Return: 
         ret (dict): Generated dictionary containing all results regarding the target metadata. 
     """
-
     if eval_metric not in ['wer', 'cer']:
         raise ValueError(
             "Currently support wer and cer as eval_metric. Please implement it in cal_target_metadata_wer if using different eval_metric"

@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import itertools
-from typing import Any, List, Optional, Union
+import queue
+from functools import partial
+from typing import Any, Iterator, List, Optional, Union
 
 import numpy as np
 import torch
@@ -67,6 +69,9 @@ except (ImportError, ModuleNotFoundError):
 try:
     from megatron.core import parallel_state
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
+
+    # TODO @tmoon: Use once available in Megatron-LM
+    # from megatron.core.pipeline_parallel.schedules import DataIteratorList
 
     HAVE_MEGATRON_CORE = True
 
@@ -337,15 +342,24 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
     def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
         tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
 
+        # handle asynchronous grad reduction
+        no_sync_func = None
+        grad_sync_func = None
+        param_sync_func = None
+        if not forward_only and self.with_distributed_adam:
+            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_o2,)
+            grad_sync_func = self.reduce_overlap_gradients
+            param_sync_func = self.sync_overlap_parameters
+
         # run forward and backwards passes for an entire global batch
         # we do this inside training_step to support pipeline parallelism
         fwd_bwd_function = get_forward_backward_func()
 
-        # TODO @akhattar: remove sync related stuff from config, add num_micro_batches_with_partial_activation_checkpoints when ready
+        # TODO @akhattar: add num_micro_batches_with_partial_activation_checkpoints when ready
         losses_reduced_per_micro_batch = fwd_bwd_function(
             forward_step_func=self.get_forward_output_and_loss_func(),
-            data_iterator=dataloader_iter,
-            model=[self.model],
+            data_iterator=self._make_data_iterator_list(dataloader_iter),
+            model=self.model,
             num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
             tensor_shape=tensor_shape,
@@ -353,6 +367,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
             sequence_parallel=self.cfg.get('sequence_parallel', False),
             enable_autocast=self.enable_autocast,
+            no_sync_func=no_sync_func,
+            grad_sync_func=grad_sync_func,
+            param_sync_func=param_sync_func,
         )
 
         # only the last stages of the pipeline return losses
@@ -556,44 +573,88 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                         grad = word_embeddings_weight.grad
                     torch.distributed.all_reduce(grad, group=parallel_state.get_embedding_group())
 
+    def _make_data_iterator_list(self, data_iterator: Iterator) -> List[Iterator]:
+        """ Convert data iterator into form expected by Megatron
+
+            With interleaved pipeline parallelism, Megatron expects a
+            list of one data iterator per model chunk. Each model
+            chunk independently gets data from its data iterator, so
+            we need to interact with the data iterator multiple times
+            for each microbatch step. Instead of incorporating this
+            logic into the data loader, we cache the iterator's output
+            to the first model chunk and reuse it in the other model
+            chunks.
+        """
+
+        if not isinstance(self.model, list) or len(self.model) == 1:
+            return data_iterator  # TODO @tmoon: Remove
+            # TODO @tmoon: Use once available in Megatron-LM
+            # return DataIteratorList([data_iterator])
+
+        class CachingIterator:
+            """Iterator wrapper that caches values"""
+
+            class Proxy:
+                """Returns values from caching iterator wrapper
+
+                Assumed to never advance past the caching iterator.
+                """
+
+                def __init__(self):
+                    self.cache = queue.Queue()
+
+                def __iter__(self):
+                    return self
+
+                def __next__(self):
+                    return self.cache.get_nowait()
+
+            def __init__(self, iterator: Iterator):
+                self.iterator = iterator
+                self.proxies = []
+
+            def make_proxy(self):
+                self.proxies.append(CachingIterator.Proxy())
+                return self.proxies[-1]
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                val = next(self.iterator)
+                for proxy in self.proxies:
+                    proxy.cache.put(val)
+                return val
+
+        # Make list of iterator wrappers
+        iters = [CachingIterator(data_iterator)]
+        while len(iters) < len(self.model):
+            iters.append(iters[0].make_proxy())
+        return iters  # TODO @tmoon: Remove
+        # TODO @tmoon: Use once available in Megatron-LM
+        # return DataIteratorList(iters)
+
     def get_forward_output_and_loss_func(self, validation_step=False):
         def fwd_output_and_loss_func(dataloader_iter, model, checkpoint_activations_all_layers=None):
-            if parallel_state.get_pipeline_model_parallel_world_size() == 1:
-                batch = next(dataloader_iter)
-                for k in batch.keys():
-                    if self.get_attention_mask_from_fusion:
-                        batch[k] = batch[k].cuda(non_blocking=True) if k not in ['attention_mask'] else None
-                    else:
-                        batch[k] = batch[k].cuda(non_blocking=True)
-            else:
-                if parallel_state.is_pipeline_first_stage():
-                    batch = next(dataloader_iter)
-                    # First pipeline stage needs tokens, position_ids, and attention_mask
-                    for k in batch.keys():
-                        if self.get_attention_mask_from_fusion:
-                            batch[k] = batch[k].cuda(non_blocking=True) if k in ['tokens', 'position_ids'] else None
-                        else:
-                            batch[k] = (
-                                batch[k].cuda(non_blocking=True)
-                                if k in ['tokens', 'position_ids', 'attention_mask']
-                                else None
-                            )
-                elif parallel_state.is_pipeline_last_stage():
-                    batch = next(dataloader_iter)
-                    # Last pipeline stage needs the labels, loss_mask, and attention_mask
-                    for k in batch.keys():
-                        if self.get_attention_mask_from_fusion:
-                            batch[k] = batch[k].cuda(non_blocking=True) if k in ['labels', 'loss_mask'] else None
-                        else:
-                            batch[k] = (
-                                batch[k].cuda(non_blocking=True)
-                                if k in ['labels', 'loss_mask', 'attention_mask']
-                                else None
-                            )
-                else:
-                    # Intermediate pipeline stage doesn't need any inputs
-                    batch = {k: None for k in ['tokens', 'position_ids', 'attention_mask', 'labels']}
 
+            # Get data batch
+            batch = next(dataloader_iter)
+
+            # Transfer needed data to GPU
+            required_keys = set()
+            if parallel_state.get_pipeline_model_parallel_world_size() == 1:
+                required_keys.update(batch.keys())
+            else:
+                required_keys.add('attention_mask')
+                if parallel_state.is_pipeline_first_stage():
+                    required_keys.update(('tokens', 'position_ids'))
+                if parallel_state.is_pipeline_last_stage():
+                    required_keys.update(('labels', 'loss_mask'))
+            if self.get_attention_mask_from_fusion:
+                required_keys.remove('attention_mask')
+            batch = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in batch.items()}
+
+            # Model forward pass
             output_tensor = model(
                 batch['tokens'],
                 batch['position_ids'],
@@ -1052,8 +1113,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             return self.model.parameters()
 
     def _reset_activation_checkpointing_args(self):
-        """ Disables activation checkpointing completely and saves the values so that 
-            _restore_activation_checkpointing_args can restore them later. This function must always be 
+        """ Disables activation checkpointing completely and saves the values so that
+            _restore_activation_checkpointing_args can restore them later. This function must always be
             called before _restore_activation_checkpointing_args.
         """
         # Store values to restore them later.
@@ -1076,8 +1137,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             module.language_model.encoder.activations_checkpoint_layers_per_pipeline = None
 
     def _restore_activation_checkpointing_args(self):
-        """ Restores the activation checkpointing parameters using the values saved by  
-            _reset_activation_checkpointing_args. This function must never be called before 
+        """ Restores the activation checkpointing parameters using the values saved by
+            _reset_activation_checkpointing_args. This function must never be called before
             _reset_activation_checkpointing_args.
         """
         # Restore config values.
@@ -1096,8 +1157,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             )
 
     def _reset_sequence_parallelism_args(self):
-        """ Disables sequence parallelism completely and saves the values so that 
-            _restore_sequence_parallelism_args can restore them later. This function must always be 
+        """ Disables sequence parallelism completely and saves the values so that
+            _restore_sequence_parallelism_args can restore them later. This function must always be
             called before _restore_sequence_parallelism_args.
         """
         # Store values to restore them later.
@@ -1112,8 +1173,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             module.language_model.encoder.sequence_parallel = None
 
     def _restore_sequence_parallelism_args(self):
-        """ Restores the sequence parallelism parameters using the values saved by  
-            _reset_sequence_parallelism_args. This function must never be called before 
+        """ Restores the sequence parallelism parameters using the values saved by
+            _reset_sequence_parallelism_args. This function must never be called before
             _reset_sequence_parallelism_args.
         """
         # Restore config values.

@@ -74,28 +74,25 @@ def build_model(
         and virtual_pipeline_model_parallel_size is not None
     ):
         model = []
+        parallel_state.set_virtual_pipeline_model_parallel_world_size(virtual_pipeline_model_parallel_size)
         for i in range(virtual_pipeline_model_parallel_size):
-            cur_args = args
-            cur_kwargs = kwargs
             parallel_state.set_virtual_pipeline_model_parallel_rank(i)
-            # Set pre_process and post_process only after virtual rank is set.
-            pre_process = parallel_state.is_pipeline_first_stage()
-            post_process = parallel_state.is_pipeline_last_stage()
-            cur_kwargs.update(
-                {"pre_process": pre_process, "post_process": post_process,}
+            model.append(
+                model_provider_func(
+                    *args,
+                    **kwargs,
+                    pre_process=parallel_state.is_pipeline_first_stage(),
+                    post_process=parallel_state.is_pipeline_last_stage(),
+                )
             )
-            this_model = model_provider_func(*cur_args, **cur_kwargs)
-            model.append(this_model)
     else:
-        cur_args = args
-        cur_kwargs = kwargs
         if model_type == ModelType.encoder_or_decoder:
-            pre_process = parallel_state.is_pipeline_first_stage()
-            post_process = parallel_state.is_pipeline_last_stage()
-            cur_kwargs.update(
-                {"pre_process": pre_process, "post_process": post_process,}
+            model = model_provider_func(
+                *args,
+                **kwargs,
+                pre_process=parallel_state.is_pipeline_first_stage(),
+                post_process=parallel_state.is_pipeline_last_stage(),
             )
-            model = model_provider_func(*cur_args, **cur_kwargs)
         elif model_type == ModelType.encoder_and_decoder:
             pre_process = parallel_state.is_pipeline_first_stage()
             post_process = parallel_state.is_pipeline_last_stage()
@@ -111,22 +108,22 @@ def build_model(
                 post_process = rank == (split_rank - 1) or rank == (world_size - 1)
                 add_encoder = parallel_state.is_pipeline_stage_before_split()
                 add_decoder = parallel_state.is_pipeline_stage_after_split()
-            cur_kwargs.update(
-                {
-                    "pre_process": pre_process,
-                    "post_process": post_process,
-                    "add_encoder": add_encoder,
-                    "add_decoder": add_decoder,
-                }
+            model = model_provider_func(
+                *args,
+                **kwargs,
+                pre_process=pre_process,
+                post_process=post_process,
+                add_encoder=add_encoder,
+                add_decoder=add_decoder,
             )
-            model = model_provider_func(*cur_args, **cur_kwargs)
         else:
             raise ValueError(f"Unrecognized ModelType '{model_type}'")
 
-        model.model_type = model_type
-
     if not isinstance(model, list):
         model = [model]
+
+    for model_module in model:
+        model_module.model_type = model_type
 
     # Set tensor model parallel attributes if not set.
     # Only parameters that are already tensor model parallel have these

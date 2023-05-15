@@ -38,6 +38,7 @@ from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.mlp import ParallelMLP, SwitchMLP
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+from nemo.collections.nlp.parts import utils_funcs
 from nemo.core import adapter_mixins
 from nemo.utils import logging
 
@@ -139,6 +140,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         hidden_dropout=0.1,
         persist_layer_norm=False,
         use_cpu_initialization=False,
+        megatron_amp_O2=False,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
         masked_softmax_fusion=True,
@@ -176,6 +178,8 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         self.bias = bias
         self.transformer_block_type = transformer_block_type
         self.position_embedding_type = position_embedding_type
+        self.param_dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
+
         self.set_accepted_adapter_types([LinearAdapterConfig._target_, ParallelLinearAdapterConfig._target_])
 
         if not bias and bias_dropout_add_fusion:
@@ -223,6 +227,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 apply_query_key_layer_scaling=apply_query_key_layer_scaling,
                 kv_channels=kv_channels,
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 masked_softmax_fusion=masked_softmax_fusion,
                 attention_dropout=attention_dropout,
                 multi_query_attention=multi_query_attention,
@@ -292,6 +297,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 kv_channels=kv_channels,
                 multi_query_attention=multi_query_attention,
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 masked_softmax_fusion=masked_softmax_fusion,
                 attention_dropout=attention_dropout,
                 megatron_legacy=megatron_legacy,
@@ -339,6 +345,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 apply_query_key_layer_scaling=apply_query_key_layer_scaling,
                 kv_channels=kv_channels,
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 masked_softmax_fusion=masked_softmax_fusion,
                 attention_dropout=attention_dropout,
                 megatron_legacy=megatron_legacy,
@@ -381,6 +388,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
                 use_cpu_initialization=use_cpu_initialization,
+                dtype=self.param_dtype,
                 bias_activation_fusion=bias_activation_fusion,
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
@@ -401,6 +409,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
                 use_cpu_initialization=use_cpu_initialization,
+                dtype=self.param_dtype,
                 bias_activation_fusion=bias_activation_fusion,
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
@@ -637,6 +646,7 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
         bias_dropout_add_fusion=True,
         persist_layer_norm=False,
         use_cpu_initialization=False,
+        megatron_amp_O2=False,
         bias_activation_fusion=True,
         openai_gelu=False,
         onnx_safe=False,
@@ -678,6 +688,7 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
             bias_dropout_add_fusion=bias_dropout_add_fusion,
             persist_layer_norm=persist_layer_norm,
             use_cpu_initialization=use_cpu_initialization,
+            megatron_amp_O2=megatron_amp_O2,
             bias_activation_fusion=bias_activation_fusion,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
@@ -702,14 +713,8 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
             moe_dropout=moe_dropout,
         )
 
-        if precision == 'bf16':
-            self.dtype = torch.bfloat16
-        elif int(precision) == 16:
-            self.dtype = torch.float16
-        elif int(precision) == 32:
-            self.dtype = torch.float32
-        else:
-            raise ValueError
+        # Dtype for forward pass - ignore amp O2
+        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2=None)
 
     def forward(
         self,
@@ -822,14 +827,8 @@ class AutocastTransformerLayer(TransformerLayer):
         )
         # use_emha=use_emha,
 
-        if autocast_dtype == 32:
-            self.dtype = torch.float32
-        elif autocast_dtype == 16:
-            self.dtype = torch.float16
-        elif autocast_dtype == 'bf16':
-            self.dtype = torch.bfloat16
-        else:
-            raise ValueError
+        # Dtype for forward pass - ignore amp O2
+        self.dtype = utils_funcs.dtype_from_precision(autocast_dtype, megatron_amp_O2=None)
 
     def forward(
         self,
@@ -889,6 +888,7 @@ class ParallelTransformer(MegatronModule):
         attention_dropout=0.1,
         ffn_dropout=0.0,
         use_cpu_initialization=False,
+        megatron_amp_O2=False,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
         masked_softmax_fusion=True,
@@ -1079,6 +1079,7 @@ class ParallelTransformer(MegatronModule):
                     attention_dropout=attention_dropout,
                     ffn_dropout=ffn_dropout,
                     use_cpu_initialization=use_cpu_initialization,
+                    megatron_amp_O2=megatron_amp_O2,
                     bias_activation_fusion=bias_activation_fusion,
                     bias_dropout_add_fusion=bias_dropout_add_fusion,
                     masked_softmax_fusion=masked_softmax_fusion,

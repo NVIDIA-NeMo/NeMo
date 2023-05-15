@@ -24,6 +24,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     parallel_lm_logits,
     scaled_init_method_normal,
 )
+from nemo.collections.nlp.parts import utils_funcs
 
 try:
     from apex.transformer.enums import AttnMaskType
@@ -123,6 +124,7 @@ class GPTModel(MegatronModule):
         use_scaled_init_method=True,
         fp16_lm_cross_entropy=False,
         use_cpu_initialization=False,
+        megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
         ffn_dropout=0.0,
@@ -171,6 +173,7 @@ class GPTModel(MegatronModule):
         self.sequence_parallel = sequence_parallel
         self.gradient_accumulation_fusion = gradient_accumulation_fusion
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
+        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
 
         if kv_channels is None:
             assert (
@@ -204,6 +207,7 @@ class GPTModel(MegatronModule):
             post_process=self.post_process,
             init_method_std=init_method_std,
             use_cpu_initialization=use_cpu_initialization,
+            megatron_amp_O2=megatron_amp_O2,
             precision=precision,
             fp32_residual_connection=fp32_residual_connection,
             activations_checkpoint_granularity=activations_checkpoint_granularity,
@@ -243,7 +247,10 @@ class GPTModel(MegatronModule):
 
         if self.share_embeddings_and_output_weights:
             self.initialize_word_embeddings(
-                init_method=init_method_normal(init_method_std), vocab_size=vocab_size, hidden_size=hidden_size
+                init_method=init_method_normal(init_method_std),
+                vocab_size=vocab_size,
+                hidden_size=hidden_size,
+                param_dtype=self.dtype,
             )
 
     def set_input_tensor(self, input_tensor):

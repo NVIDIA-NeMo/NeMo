@@ -26,6 +26,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     init_method_normal,
     scaled_init_method_normal,
 )
+from nemo.collections.nlp.parts import utils_funcs
 
 try:
     from apex.transformer.enums import ModelType
@@ -68,6 +69,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         init_method_std=0.02,
         fp16_cross_entropy=False,
         use_cpu_initialization=False,
+        megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
         precision=16,
@@ -121,6 +123,8 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         self.num_chunked_cross_attention = len(dec_cross_attention)
         self.megatron_lm_compatible = megatron_lm_compatible
 
+        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
+
         if kv_channels is None:
             assert (
                 hidden_size % num_attention_heads == 0
@@ -138,6 +142,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 embedding_dropout_prob=hidden_dropout,
                 position_embedding_type='learned_absolute' if add_position_embedding else '',
                 transpose_batch_sequence=False,
+                dtype=self.dtype,
             )
             self._embedding_key = "embedding"
 
@@ -172,6 +177,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 else post_process,  # megatron lm model has no final layer_norm
                 init_method_std=init_method_std,
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
                 precision=precision,
@@ -236,6 +242,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 post_process=False,  # no need for post process
                 init_method_std=init_method_std,
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
                 precision=precision,
@@ -280,6 +287,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 post_process=post_process,
                 init_method_std=init_method_std,
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
                 precision=precision,

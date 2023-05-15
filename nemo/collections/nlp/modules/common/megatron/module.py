@@ -111,7 +111,7 @@ class MegatronModule(torch.nn.Module):
                 f"No decoder_cross_attention_relative_position_embedding found on this rank. Looking for decoder_cross_attention_relative_position_embedding.relative_position_embedding.weight"
             )
 
-    def initialize_word_embeddings(self, init_method, vocab_size, hidden_size):
+    def initialize_word_embeddings(self, init_method, vocab_size, hidden_size, param_dtype=torch.float32):
         if not self.share_token_embeddings:
             raise Exception('initialize_word_embeddings() was called but ' 'share_token_embeddings is false')
 
@@ -140,7 +140,7 @@ class MegatronModule(torch.nn.Module):
             # set word_embeddings weights to 0 here, then copy first
             # stage's weights using all_reduce below.
             self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
-                vocab_size, hidden_size, init_method=init_method
+                vocab_size, hidden_size, init_method=init_method, params_dtype=param_dtype
             )
             self.word_embeddings.weight.data.fill_(0)
             self.word_embeddings.weight.shared = True

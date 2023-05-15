@@ -38,6 +38,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     scaled_init_method_normal,
 )
 from nemo.collections.nlp.modules.common.megatron.vocab_parallel_cross_entropy import vocab_parallel_cross_entropy
+from nemo.collections.nlp.parts import utils_funcs
 
 try:
     from apex.transformer.enums import AttnMaskType, ModelType
@@ -115,6 +116,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         post_process=True,
         fp16_cross_entropy=False,
         use_cpu_initialization=False,
+        megatron_amp_O2=False,
         precision=16,
         embedding_init_method_std=0.02,
         embedding_dropout=0.1,
@@ -143,6 +145,8 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
 
         encoder_kv_channels, decoder_kv_channels = self._validate_config()
 
+        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
+
         encoder, decoder = None, None
         if add_encoder:
             if pre_process:
@@ -153,6 +157,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     init_method=init_method_normal(embedding_init_method_std),
                     num_tokentypes=num_tokentypes,
                     use_cpu_initialization=use_cpu_initialization,
+                    dtype=self.dtype,
                     embedding_dropout_prob=embedding_dropout,
                     position_embedding_type=encoder_cfg.get('position_embedding_type', 'learned_absolute'),
                 )
@@ -209,6 +214,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 post_process=post_process,
                 init_method_std=encoder_cfg.get('init_method_std', 0.02),
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=encoder_cfg.get('hidden_dropout', 0.1),
                 attention_dropout=encoder_cfg.get('attention_dropout', 0.1),
                 ffn_dropout=encoder_cfg.get('ffn_dropout', 0.0),
@@ -254,6 +260,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                         init_method=init_method_normal(embedding_init_method_std),
                         num_tokentypes=num_tokentypes,
                         use_cpu_initialization=use_cpu_initialization,
+                        dtype=self.dtype,
                         embedding_dropout_prob=embedding_dropout,
                         position_embedding_type=decoder_cfg.get('position_embedding_type', 'learned_absolute'),
                     )
@@ -338,6 +345,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 post_process=post_process,
                 init_method_std=decoder_cfg.get('init_method_std', 0.02),
                 use_cpu_initialization=use_cpu_initialization,
+                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=decoder_cfg.get('hidden_dropout', 0.1),
                 attention_dropout=decoder_cfg.get('attention_dropout', 0.1),
                 ffn_dropout=decoder_cfg.get('ffn_dropout', 0.0),
@@ -393,6 +401,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     gather_output=not self.parallel_output,
                     init_method=init_method_normal(decoder_cfg.init_method_std),
                     use_cpu_initialization=use_cpu_initialization,
+                    params_dtype=self.dtype,
                 )
 
             self._tokens_head_key = 'tokens_head'

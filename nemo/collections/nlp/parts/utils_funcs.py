@@ -16,7 +16,7 @@ __all__ = ['list2str', 'tensor2list', 'plot_confusion_matrix', 'get_classificati
 
 import os
 import time
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -25,6 +25,20 @@ from sklearn.metrics import classification_report, confusion_matrix
 from torch import Tensor
 
 from nemo.utils import logging
+
+
+def dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool]) -> torch.dtype:
+    if megatron_amp_O2 is not None and megatron_amp_O2 is False:
+        return torch.float32
+
+    if precision == 'bf16':
+        return torch.bfloat16
+    elif int(precision) == 16:
+        return torch.float16
+    elif int(precision) == 32:
+        return torch.float32
+    else:
+        raise ValueError(f"Could not parse the precision of `{precision}` to a valid torch.dtype")
 
 
 def list2str(l: List[int]) -> str:

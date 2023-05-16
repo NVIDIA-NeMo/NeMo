@@ -470,7 +470,10 @@ class SaveRestoreConnector:
                     # unpack all restorations paths (nemo checkpoints)
                     # in nemo checkpoints all resources contain hash in name, so there should be no collisions
                     for path in restoration_paths:
-                        self._unpack_nemo_file(path2file=path, out_folder=archive_dir)
+                        if self.model_extracted_dir:
+                            shutil.copytree(src=path, dst=archive_dir, dirs_exist_ok=True)
+                        else:
+                            self._unpack_nemo_file(path2file=path, out_folder=archive_dir)
                     os.chdir(archive_dir)
                     for conf_path, artiitem in tarfile_artifacts:
                         # Get basename and copy it to nemo_file_folder

@@ -15,7 +15,7 @@
 import functools
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -45,7 +45,7 @@ def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
     return abs_path, rel_path
 
 
-def get_audio_filepaths(manifest_entry: dict, audio_dir: Path) -> Tuple[Path, Path]:
+def get_audio_filepaths(manifest_entry: Dict[str, Any], audio_dir: Path) -> Tuple[Path, Path]:
     """
     Get the absolute and relative paths of audio from a manifest entry.
 
@@ -107,6 +107,31 @@ def general_padding(item, item_len, max_len, pad_value=0):
     return item
 
 
+def stack_tensors(tensors: List[torch.Tensor], max_lens: List[int], pad_value: float = 0.0) -> torch.Tensor:
+    """
+    Create batch by stacking input tensor list along the time axes.
+
+    Args:
+        tensors: List of tensors to pad and stack
+        max_lens: List of lengths to pad each axis to, starting with the last axis
+        pad_value: Value for padding
+
+    Returns:
+        Padded and stacked tensor.
+    """
+    padded_tensors = []
+    for tensor in tensors:
+        padding = []
+        for i, max_len in enumerate(max_lens, 1):
+            padding += [0, max_len - tensor.shape[-i]]
+
+        padded_tensor = torch.nn.functional.pad(tensor, pad=padding, value=pad_value)
+        padded_tensors.append(padded_tensor)
+
+    stacked_tensor = torch.stack(padded_tensors)
+    return stacked_tensor
+
+
 def logbeta(x, y):
     return gammaln(x) + gammaln(y) - gammaln(x + y)
 
@@ -153,3 +178,55 @@ def get_base_dir(paths):
         base_dir = common_path(base_dir, audio_dir)
 
     return base_dir
+
+
+def filter_dataset_by_duration(entries: List[Dict[str, Any]], min_duration: float, max_duration: float):
+    """
+    Filter out manifest entries based on duration.
+
+    Args:
+        entries: List of manifest entry dictionaries.
+        min_duration: Minimum duration below which entries are removed.
+        max_duration: Maximum duration above which entries are removed.
+
+    Returns:
+        filtered_entries: List of manifest entries after filtering.
+        total_hours: Total duration of original dataset, in hours
+        filtered_hours: Total duration of dataset after filtering, in hours
+    """
+    filtered_entries = []
+    total_duration = 0.0
+    filtered_duration = 0.0
+    for entry in entries:
+        duration = entry["duration"]
+        total_duration += duration
+        if (min_duration and duration < min_duration) or (max_duration and duration > max_duration):
+            continue
+
+        filtered_duration += duration
+        filtered_entries.append(entry)
+
+    total_hours = total_duration / 3600.0
+    filtered_hours = filtered_duration / 3600.0
+
+    return filtered_entries, total_hours, filtered_hours
+
+
+def get_weighted_sampler(
+    sample_weights: List[float], batch_size: int, num_steps: int
+) -> torch.utils.data.WeightedRandomSampler:
+    """
+    Create pytorch sampler for doing weighted random sampling.
+
+    Args:
+        sample_weights: List of sampling weights for all elements in the dataset.
+        batch_size: Batch size to sample.
+        num_steps: Number of steps to be considered an epoch.
+
+    Returns:
+        Pytorch sampler
+    """
+    weights = torch.tensor(sample_weights, dtype=torch.float64)
+    num_samples = batch_size * num_steps
+    sampler = torch.utils.data.WeightedRandomSampler(weights=weights, num_samples=num_samples)
+    return sampler

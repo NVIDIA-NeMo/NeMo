@@ -15,7 +15,7 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import librosa
 import numpy as np
@@ -23,14 +23,17 @@ import torch
 from torch import Tensor
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_audio_filepaths
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_audio_filepaths, stack_tensors
 from nemo.utils.decorators import experimental
 
 
 @experimental
 class Featurizer(ABC):
+    def __init__(self, feature_names: List[str]) -> None:
+        self.feature_names = feature_names
+
     @abstractmethod
-    def save(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> None:
+    def save(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> None:
         """
         Save feature value to disk for given manifest entry.
 
@@ -41,7 +44,7 @@ class Featurizer(ABC):
         """
 
     @abstractmethod
-    def load(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
+    def load(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
         """
         Read saved feature value for given manifest entry.
 
@@ -54,8 +57,17 @@ class Featurizer(ABC):
             Dictionary of feature names to Tensors
         """
 
+    @abstractmethod
+    def collate_fn(self, train_batch: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
+        """
+        Combine list/batch of features into a feature dictionary.
+        """
+        raise NotImplementedError
 
-def _get_feature_filepath(manifest_entry: dict, audio_dir: Path, feature_dir: Path, feature_name: str) -> Path:
+
+def _get_feature_filepath(
+    manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path, feature_name: str
+) -> Path:
     """
     Get the absolute path for the feature file corresponding to the input manifest entry
 
@@ -68,7 +80,11 @@ def _get_feature_filepath(manifest_entry: dict, audio_dir: Path, feature_dir: Pa
 
 
 def _save_pt_feature(
-    feature_name: Optional[str], feature_tensor: Tensor, manifest_entry: Dict, audio_dir: Path, feature_dir: Path,
+    feature_name: Optional[str],
+    feature_tensor: Tensor,
+    manifest_entry: Dict[str, Any],
+    audio_dir: Path,
+    feature_dir: Path,
 ) -> None:
     """
     If feature_name is provided, save feature as .pt file.
@@ -84,12 +100,15 @@ def _save_pt_feature(
 
 
 def _load_pt_feature(
-    feature_dict: Dict, feature_name: Optional[str], manifest_entry: Dict, audio_dir: Path, feature_dir: Path,
+    feature_dict: Dict[str, Tensor],
+    feature_name: Optional[str],
+    manifest_entry: Dict[str, Any],
+    audio_dir: Path,
+    feature_dir: Path,
 ) -> None:
     """
     If feature_name is provided, load feature into feature_dict from .pt file.
     """
-
     if feature_name is None:
         return
 
@@ -98,6 +117,22 @@ def _load_pt_feature(
     )
     feature_tensor = torch.load(feature_filepath)
     feature_dict[feature_name] = feature_tensor
+
+
+def _collate_feature(
+    feature_dict: Dict[str, Tensor], feature_name: Optional[str], train_batch: List[Dict[str, Tensor]]
+) -> None:
+    if feature_name is None:
+        return
+
+    feature_tensors = []
+    for example in train_batch:
+        feature_tensor = example[feature_name]
+        feature_tensors.append(feature_tensor)
+
+    max_len = max([f.shape[0] for f in feature_tensors])
+    stacked_features = stack_tensors(feature_tensors, max_lens=[max_len])
+    feature_dict[feature_name] = stacked_features
 
 
 class MelSpectrogramFeaturizer:
@@ -141,7 +176,7 @@ class MelSpectrogramFeaturizer:
             dither=0.0,
         )
 
-    def compute_mel_spec(self, manifest_entry: dict, audio_dir: Path) -> Tensor:
+    def compute_mel_spec(self, manifest_entry: Dict[str, Any], audio_dir: Path) -> Tensor:
         """
         Computes mel spectrogram for the input manifest entry.
 
@@ -168,7 +203,7 @@ class MelSpectrogramFeaturizer:
 
         return spec_tensor
 
-    def save(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> None:
+    def save(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> None:
         spec_tensor = self.compute_mel_spec(manifest_entry=manifest_entry, audio_dir=audio_dir)
         _save_pt_feature(
             feature_name=self.feature_name,
@@ -178,7 +213,7 @@ class MelSpectrogramFeaturizer:
             feature_dir=feature_dir,
         )
 
-    def load(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
+    def load(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
         feature_dict = {}
         _load_pt_feature(
             feature_dict=feature_dict,
@@ -189,13 +224,18 @@ class MelSpectrogramFeaturizer:
         )
         return feature_dict
 
+    def collate_fn(self, train_batch: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
+        feature_dict = {}
+        _collate_feature(feature_dict=feature_dict, feature_name=self.feature_name, train_batch=train_batch)
+        return feature_dict
+
 
 class EnergyFeaturizer:
     def __init__(self, spec_featurizer: MelSpectrogramFeaturizer, feature_name: str = "energy") -> None:
         self.feature_name = feature_name
         self.spec_featurizer = spec_featurizer
 
-    def compute_energy(self, manifest_entry: dict, audio_dir: Path) -> Tensor:
+    def compute_energy(self, manifest_entry: Dict[str, Any], audio_dir: Path) -> Tensor:
         """
         Computes energy for the input manifest entry.
 
@@ -213,7 +253,7 @@ class EnergyFeaturizer:
 
         return energy
 
-    def save(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> None:
+    def save(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> None:
         energy_tensor = self.compute_energy(manifest_entry=manifest_entry, audio_dir=audio_dir)
         _save_pt_feature(
             feature_name=self.feature_name,
@@ -223,7 +263,7 @@ class EnergyFeaturizer:
             feature_dir=feature_dir,
         )
 
-    def load(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
+    def load(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
         feature_dict = {}
         _load_pt_feature(
             feature_dict=feature_dict,
@@ -232,6 +272,11 @@ class EnergyFeaturizer:
             audio_dir=audio_dir,
             feature_dir=feature_dir,
         )
+        return feature_dict
+
+    def collate_fn(self, train_batch: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
+        feature_dict = {}
+        _collate_feature(feature_dict=feature_dict, feature_name=self.feature_name, train_batch=train_batch)
         return feature_dict
 
 
@@ -256,7 +301,7 @@ class PitchFeaturizer:
         self.pitch_fmin = pitch_fmin
         self.pitch_fmax = pitch_fmax
 
-    def compute_pitch(self, manifest_entry: dict, audio_dir: Path) -> Tuple[Tensor, Tensor, Tensor]:
+    def compute_pitch(self, manifest_entry: Dict[str, Any], audio_dir: Path) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Computes pitch and optional voiced mask for the input manifest entry.
 
@@ -287,7 +332,7 @@ class PitchFeaturizer:
 
         return pitch_tensor, voiced_mask_tensor, voiced_prob_tensor
 
-    def save(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> None:
+    def save(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> None:
         pitch_tensor, voiced_mask_tensor, voiced_prob_tensor = self.compute_pitch(
             manifest_entry=manifest_entry, audio_dir=audio_dir
         )
@@ -313,7 +358,7 @@ class PitchFeaturizer:
             feature_dir=feature_dir,
         )
 
-    def load(self, manifest_entry: dict, audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
+    def load(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path) -> Dict[str, Tensor]:
         feature_dict = {}
         _load_pt_feature(
             feature_dict=feature_dict,
@@ -336,4 +381,11 @@ class PitchFeaturizer:
             audio_dir=audio_dir,
             feature_dir=feature_dir,
         )
+        return feature_dict
+
+    def collate_fn(self, train_batch: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
+        feature_dict = {}
+        _collate_feature(feature_dict=feature_dict, feature_name=self.pitch_name, train_batch=train_batch)
+        _collate_feature(feature_dict=feature_dict, feature_name=self.voiced_mask_name, train_batch=train_batch)
+        _collate_feature(feature_dict=feature_dict, feature_name=self.voiced_prob_name, train_batch=train_batch)
         return feature_dict

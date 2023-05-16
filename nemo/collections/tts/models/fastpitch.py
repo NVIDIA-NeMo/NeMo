@@ -95,15 +95,20 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         input_fft_kwargs = {}
         if self.learn_alignment:
             self.vocab = None
-            self.ds_class_name = cfg.train_ds.dataset._target_.split(".")[-1]
 
-            if self.ds_class_name == "TTSDataset":
-                self._setup_tokenizer(cfg)
-                assert self.vocab is not None
-                input_fft_kwargs["n_embed"] = len(self.vocab.tokens)
-                input_fft_kwargs["padding_idx"] = self.vocab.pad
-            else:
-                raise ValueError(f"Unknown dataset class: {self.ds_class_name}.")
+            self.ds_class = cfg.train_ds.dataset._target_
+            self.ds_class_name = self.ds_class.split(".")[-1]
+            if not self.ds_class in [
+                "nemo.collections.tts.data.dataset.TTSDataset",
+                "nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset",
+                "nemo.collections.tts.torch.data.TTSDataset",
+            ]:
+                raise ValueError(f"Unknown dataset class: {self.ds_class}.")
+
+            self._setup_tokenizer(cfg)
+            assert self.vocab is not None
+            input_fft_kwargs["n_embed"] = len(self.vocab.tokens)
+            input_fft_kwargs["padding_idx"] = self.vocab.pad
 
         self._parser = None
         self._tb_logger = None
@@ -149,6 +154,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         speaker_emb_condition_prosody = cfg.get("speaker_emb_condition_prosody", False)
         speaker_emb_condition_decoder = cfg.get("speaker_emb_condition_decoder", False)
         speaker_emb_condition_aligner = cfg.get("speaker_emb_condition_aligner", False)
+        use_log_energy = cfg.get("use_log_energy", True)
         if n_speakers > 1 and "add" not in input_fft.cond_input.condition_types:
             input_fft.cond_input.condition_types.append("add")
         if speaker_emb_condition_prosody:
@@ -173,6 +179,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             energy_embedding_kernel_size,
             cfg.n_mel_channels,
             cfg.max_token_duration,
+            use_log_energy,
         )
         self._input_types = self._output_types = None
         self.export_config = {
@@ -261,12 +268,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             return self._parser
 
         if self.learn_alignment:
-            ds_class_name = self._cfg.train_ds.dataset._target_.split(".")[-1]
-
-            if ds_class_name == "TTSDataset":
-                self._parser = self.vocab.encode
-            else:
-                raise ValueError(f"Unknown dataset class: {ds_class_name}")
+            self._parser = self.vocab.encode
         else:
             self._parser = parsers.make_parser(
                 labels=self._cfg.labels,
@@ -382,8 +384,10 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             None,
         )
         if self.learn_alignment:
-            assert self.ds_class_name == "TTSDataset", f"Unknown dataset class: {self.ds_class_name}"
-            batch_dict = process_batch(batch, self._train_dl.dataset.sup_data_types_set)
+            if self.ds_class == "nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset":
+                batch_dict = batch
+            else:
+                batch_dict = process_batch(batch, self._train_dl.dataset.sup_data_types_set)
             audio = batch_dict.get("audio")
             audio_lens = batch_dict.get("audio_lens")
             text = batch_dict.get("text")
@@ -493,8 +497,10 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             None,
         )
         if self.learn_alignment:
-            assert self.ds_class_name == "TTSDataset", f"Unknown dataset class: {self.ds_class_name}"
-            batch_dict = process_batch(batch, self._train_dl.dataset.sup_data_types_set)
+            if self.ds_class == "nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset":
+                batch_dict = batch
+            else:
+                batch_dict = process_batch(batch, self._train_dl.dataset.sup_data_types_set)
             audio = batch_dict.get("audio")
             audio_lens = batch_dict.get("audio_lens")
             text = batch_dict.get("text")
@@ -578,6 +584,29 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             )
             self.log_train_images = True
 
+    def _setup_train_dataloader(self, cfg):
+        phon_mode = contextlib.nullcontext()
+        if hasattr(self.vocab, "set_phone_prob"):
+            phon_mode = self.vocab.set_phone_prob(self.vocab.phoneme_probability)
+
+        with phon_mode:
+            dataset = instantiate(cfg.dataset, text_tokenizer=self.vocab,)
+
+        sampler = dataset.get_sampler(cfg.dataloader_params.batch_size)
+        return torch.utils.data.DataLoader(
+            dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params
+        )
+
+    def _setup_test_dataloader(self, cfg):
+        phon_mode = contextlib.nullcontext()
+        if hasattr(self.vocab, "set_phone_prob"):
+            phon_mode = self.vocab.set_phone_prob(0.0)
+
+        with phon_mode:
+            dataset = instantiate(cfg.dataset, text_tokenizer=self.vocab,)
+
+        return torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
+
     def __setup_dataloader_from_config(self, cfg, shuffle_should_be: bool = True, name: str = "train"):
         if "dataset" not in cfg or not isinstance(cfg.dataset, DictConfig):
             raise ValueError(f"No dataset for {name}")
@@ -596,7 +625,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         elif cfg.dataloader_params.shuffle:
             logging.error(f"The {name} dataloader for {self} has shuffle set to True!!!")
 
-        if cfg.dataset._target_ == "nemo.collections.tts.data.dataset.TTSDataset":
+        if self.ds_class == "nemo.collections.tts.data.dataset.TTSDataset":
             phon_mode = contextlib.nullcontext()
             if hasattr(self.vocab, "set_phone_prob"):
                 phon_mode = self.vocab.set_phone_prob(prob=None if name == "val" else self.vocab.phoneme_probability)
@@ -614,10 +643,16 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         return torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
 
     def setup_training_data(self, cfg):
-        self._train_dl = self.__setup_dataloader_from_config(cfg)
+        if self.ds_class == "nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset":
+            self._train_dl = self._setup_train_dataloader(cfg)
+        else:
+            self._train_dl = self.__setup_dataloader_from_config(cfg)
 
     def setup_validation_data(self, cfg):
-        self._validation_dl = self.__setup_dataloader_from_config(cfg, shuffle_should_be=False, name="val")
+        if self.ds_class == "nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset":
+            self._validation_dl = self._setup_test_dataloader(cfg)
+        else:
+            self._validation_dl = self.__setup_dataloader_from_config(cfg, shuffle_should_be=False, name="val")
 
     def setup_test_data(self, cfg):
         """Omitted."""

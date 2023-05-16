@@ -3799,8 +3799,8 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
     stage('L2: Megatron T5 with KERPLE Pretraining and Resume Training TP=2') {
       when {
         anyOf {
-          branch 'r1.18.0'
-          changeRequest target: 'r1.18.0'
+          branch 'main'
+          changeRequest target: 'main'
         }
       }
       failFast true

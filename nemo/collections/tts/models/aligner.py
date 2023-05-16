@@ -103,7 +103,7 @@ class AlignerModel(ModelPT):
                 cfg.text_tokenizer.g2p['_target_'] = cfg.text_tokenizer.g2p['_target_'].replace(
                     "nemo_text_processing.g2p", "nemo.collections.tts.g2p"
                 )
-                logging.warning("This checkpoint support will be dropped after r1.18.0.")
+                logging.warning("This checkpoint support will be dropped after NeMo 1.18.0.")
 
             g2p_kwargs = {}
 

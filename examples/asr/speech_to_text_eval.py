@@ -82,7 +82,7 @@ class EvaluationConfig(transcribe_speech.TranscriptionConfig):
     only_score_manifest: bool = False
 
     text_processing: Optional[TextProcessingConfig] = TextProcessingConfig(
-        punctuation_marks=".,?", separate_punctuation=True, do_lowercase=False, rm_punctuation=False,
+        punctuation_marks=".,?", separate_punctuation=False, do_lowercase=False, rm_punctuation=False,
     )
 
 
@@ -134,6 +134,7 @@ def main(cfg: EvaluationConfig):
     pc = PunctuationCapitalization(cfg.text_processing.punctuation_marks)
     if cfg.text_processing.separate_punctuation:
         ground_truth_text = pc.separate_punctuation(ground_truth_text)
+        predicted_text = pc.separate_punctuation(predicted_text)
     if cfg.text_processing.do_lowercase:
         ground_truth_text = pc.do_lowercase(ground_truth_text)
         predicted_text = pc.do_lowercase(predicted_text)

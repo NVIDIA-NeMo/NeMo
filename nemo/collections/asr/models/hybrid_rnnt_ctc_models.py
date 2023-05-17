@@ -102,6 +102,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
+        logprobs: bool = False,
     ) -> (List[str], Optional[List['Hypothesis']]):
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -119,6 +120,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
             verbose: (bool) whether to display tqdm progress bar
+            logprobs: (bool) whether to return ctc logits insted of hypotheses
 
         Returns:
             Returns a tuple of 2 items -
@@ -189,6 +191,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                     config['augmentor'] = augmentor
 
                 temporary_datalayer = self._setup_transcribe_dataloader(config)
+                logits_list = []
                 for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
                     encoded, encoded_len = self.forward(
                         input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
@@ -206,6 +209,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                             best_hyp[idx].y_sequence = logits[idx][: encoded_len[idx]]
                             if best_hyp[idx].alignments is None:
                                 best_hyp[idx].alignments = best_hyp[idx].y_sequence
+                    if logprobs:
+                        for logit, elen in zip(logits, encoded_len):
+                            logits_list.append(logit[:elen])
                     del logits
 
                     hypotheses += best_hyp
@@ -229,7 +235,10 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 self.joint.unfreeze()
                 if hasattr(self, 'ctc_decoder'):
                     self.ctc_decoder.unfreeze()
-        return hypotheses, all_hypotheses
+        if logprobs:
+            return logits_list
+        else:
+            return hypotheses, all_hypotheses
 
     def change_vocabulary(
         self,

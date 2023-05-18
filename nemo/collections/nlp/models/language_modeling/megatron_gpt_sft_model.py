@@ -235,7 +235,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             num_train_samples_per_dataset = [[None]] * len(data_cfg.file_names)
 
         for file_path, num_samples in zip(data_cfg.file_names, num_train_samples_per_dataset):
-            if self.cfg.data.chat:
+            if self.cfg.data.get("chat", False):
                 dataset_cls = GPTSFTChatDataset
             else:
                 dataset_cls = GPTSFTDataset

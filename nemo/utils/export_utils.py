@@ -309,7 +309,8 @@ try:
            Equivalent LayerNorm module
         """
         if not isinstance(n, FusedScaleMaskSoftmax):
-            raise ValueError("This function can only change the FusedScaleMaskSoftmax module.")
+            logging.warning("This function can only change the FusedScaleMaskSoftmax module.")
+            return n
 
         # disable the fusion only
         mod = FusedScaleMaskSoftmax(

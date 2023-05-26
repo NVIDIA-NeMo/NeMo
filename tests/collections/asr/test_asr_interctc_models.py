@@ -66,7 +66,6 @@ def squeezeformer_encoder_config() -> Dict:
 
 
 class TestInterCTCLoss:
-    @pytest.mark.pleasefixme
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "model_class", [EncDecCTCModel, EncDecHybridRNNTCTCModel],
@@ -199,10 +198,17 @@ class TestInterCTCLoss:
             def __getitem__(self, idx):
                 return self.values
 
+        # this sometimes results in all zeros in the output which breaks tests
+        # so using this only for the ptl calls in the bottom, but using
+        # processed signal directly initially to remove the chance of
+        # this edge-case
         input_signal = torch.randn(size=(1, 512))
         input_length = torch.randint(low=161, high=500, size=[1])
         target = torch.randint(size=(1, input_length[0]), low=0, high=28)
         target_length = torch.tensor([input_length[0]])
+
+        processed_signal = torch.randn(size=([1, 64, 12]))
+        processed_length = torch.tensor([8])
 
         if len(apply_at_layers) != len(loss_weights):
             # has to throw an error here
@@ -216,7 +222,9 @@ class TestInterCTCLoss:
             asr_model = model_class(cfg=model_config)
             asr_model.train()
             AccessMixin.set_access_enabled(access_enabled=True)
-            logprobs, *_ = asr_model.forward(input_signal=input_signal, input_signal_length=input_length)
+            logprobs, *_ = asr_model.forward(
+                processed_signal=processed_signal, processed_signal_length=processed_length
+            )
             captured_tensors = asr_model.get_captured_interctc_tensors()
             AccessMixin.reset_registry(asr_model)
             assert len(captured_tensors) == len(apply_at_layers)

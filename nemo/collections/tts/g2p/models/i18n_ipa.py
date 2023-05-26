@@ -42,7 +42,7 @@ class IpaG2p(BaseG2p):
 
     def __init__(
         self,
-        phoneme_dict: Union[str, pathlib.Path, dict],
+        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]],
         locale: str = "en-US",
         apply_to_oov_word: Optional[Callable[[str], str]] = None,
         ignore_ambiguous_words: bool = True,

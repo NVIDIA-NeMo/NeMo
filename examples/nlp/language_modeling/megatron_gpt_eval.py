@@ -203,6 +203,7 @@ def main(cfg) -> None:
             trainer=trainer,
             override_config_path=pretrained_cfg,
             save_restore_connector=save_restore_connector,
+            map_location=f'cuda:{trainer.local_rank}',  # map_location is needed for converted models
         )
     elif cfg.checkpoint_dir:
         app_state = AppState()

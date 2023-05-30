@@ -673,12 +673,6 @@ class IPATokenizer(BaseTokenizer):
 
 class ChinesePhonemesTokenizer(BaseTokenizer):
     # fmt: off
-    PRONUNCIATION_LIST = ['#' + i for i in ['^', 'A', 'AI', 'AN', 'ANG', 'AO', 'B', 'C', 'CH', 'D', 
-                    'E', 'EI', 'EN', 'ENG', 'ER', 'F', 'G', 'H', 'I', 'IE', 
-                    'IN', 'ING', 'IU', 'J', 'K', 'L', 'M', 'N', 'O', 'ONG', 
-                    'OU', 'P', 'Q', 'R', 'S', 'SH', 'T', 'U', 'UI', 'UN', 
-                    'V', 'VE', 'VN', 'W', 'X', 'Y', 'Z', 'ZH']]
-    TONES_LIST = ['#1', '#2', '#3', '#4', '#5']
     PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
         ',', '.', '!', '?', '-',
         ':', ';', '/', '"', '(',
@@ -722,8 +716,11 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         if silence is not None:
             self.silence, tokens = len(tokens), tokens + [silence]  # Silence
 
-        tokens.extend(self.PRONUNCIATION_LIST)
-        tokens.extend(self.TONES_LIST)
+        self.phonemes_list = g2p.phonemes_list
+        self.tones_list = g2p.tones_list
+
+        tokens.extend(self.phonemes_list)
+        tokens.extend(self.tones_list)
         tokens.extend(string.ascii_lowercase)
 
         if apostrophe:
@@ -766,7 +763,7 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             if p == space and len(ps) > 0 and ps[-1] != space:
                 ps.append(p)
             # Add next phoneme or char (if chars=True)
-            elif (p.isalnum() or p == "'" or p in self.PRONUNCIATION_LIST or p in self.TONES_LIST) and p in tokens:
+            elif (p.isalnum() or p == "'" or p in self.phonemes_list or p in self.tones_list) and p in tokens:
                 ps.append(p)
             # Add punct
             elif (p in self.PUNCT_LIST) and self.punct:

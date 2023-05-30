@@ -14,7 +14,7 @@
 
 import pathlib
 from collections import defaultdict
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.utils import logging
@@ -23,7 +23,9 @@ from nemo.utils import logging
 class ChineseG2p(BaseG2p):
     def __init__(
         self,
-        phoneme_dict=None,
+        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[str]]],
+        phoneme_prefix: str = "#",
+        tone_prefix: str = "#",
         word_tokenize_func=None,
         apply_to_oov_word=None,
         mapping_file: Optional[str] = None,
@@ -33,7 +35,12 @@ class ChineseG2p(BaseG2p):
            be further converted into phoneme sequences using pinyin_dict_nv_22.10.txt dict file. For Chinese and English bilingual sentences, the English words
            would be converted into letters.
         Args:
-            phoneme_dict (str, Path, Dict): Path to pinyin_dict_nv_22.10.txt dict file.
+            phoneme_dict (str, Path, Dict): Path to pinyin_dict_nv_22.10.txt dict file or a dict object.
+            phoneme_prefix (str): Prepend a special symbol to any phonemes in order to distinguish phonemes from
+                graphemes because there may be overlaps between the two sets. Phoneme dictionary typically applies
+                uppercase initials and finals. It is suggested to choose a prefix that
+                is not used or preserved somewhere else. Default to "#".
+            tone_prefix (str): Prepend a special symbol to any tone digits. Default to "#".
             word_tokenize_func: Function for tokenizing text to words.
                 It has to return List[Tuple[Union[str, List[str]], bool]] where every tuple denotes word representation and flag whether to leave unchanged or not.
                 It is expected that unchangeable word representation will be represented as List[str], other cases are represented as str.
@@ -47,11 +54,17 @@ class ChineseG2p(BaseG2p):
             'jieba',
         ], f"{word_segmenter} is not supported now. Please choose correct word_segmenter."
 
+        if phoneme_prefix is None:
+            phoneme_prefix = ""
+        if tone_prefix is None:
+            tone_prefix = ""
+
         phoneme_dict = (
-            self._parse_as_pinyin_dict(phoneme_dict)
+            self._parse_as_pinyin_dict(phoneme_dict, phoneme_prefix)
             if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path)
             else phoneme_dict
         )
+        self.phonemes_list = list({pron for prons in phoneme_dict.values() for pron in prons})
 
         if apply_to_oov_word is None:
             logging.warning(
@@ -67,7 +80,9 @@ class ChineseG2p(BaseG2p):
             apply_to_oov_word=apply_to_oov_word,
             mapping_file=mapping_file,
         )
-        self.tones = {'1': '#1', '2': '#2', '3': '#3', '4': '#4', '5': '#5'}
+
+        self.tones = {str(x): tone_prefix + str(x) for x in range(1, 6)}
+        self.tones_list = list(self.tones.values())
 
         if word_segmenter == "jieba":
             try:
@@ -93,20 +108,29 @@ class ChineseG2p(BaseG2p):
         self._Style = Style
 
     @staticmethod
-    def _parse_as_pinyin_dict(phoneme_dict_path):
+    def _parse_as_pinyin_dict(
+        phoneme_dict_path: Union[str, pathlib.Path], phoneme_prefix: str
+    ) -> Dict[str, List[str]]:
         """Loads pinyin dict file, and generates a set of all valid symbols."""
         g2p_dict = defaultdict(list)
         with open(phoneme_dict_path, 'r') as file:
             for line in file:
+                # skip empty lines and comment lines starting with `;;;`.
+                if line.startswith(";;;") or len(line.strip()) == 0:
+                    continue
+
                 parts = line.split('\t')
-                # let the key be lowercased, since pypinyin would give lower representation
-                pinyin = parts[0].lower()
+                # lowercase the Chinese syllables because pypinyin requires lowercase inputs.
+                syllable = parts[0].lower()
                 pronunciation = parts[1].split()
-                pronunciation_with_sharp = ['#' + pron for pron in pronunciation]
-                g2p_dict[pinyin] = pronunciation_with_sharp
+
+                # add phoneme prefix to distinguish from other symbols.
+                pronunciation_with_prefix = [phoneme_prefix + pron for pron in pronunciation]
+                g2p_dict[syllable] = pronunciation_with_prefix
+
         return g2p_dict
 
-    def __call__(self, text):
+    def __call__(self, text: str) -> List[str]:
         """
         errors func handle below is to process the bilingual situation,
         where English words would be split into letters.
@@ -119,6 +143,8 @@ class ChineseG2p(BaseG2p):
         pinyin_seq = []
         words_list = self.word_segmenter(text)
 
+        # TODO @xueyang: add a g2p process for non-pinyin words by customizing a function for `errors` argument. For
+        #  example, add a dict look up for English words.
         for word in words_list:
             pinyin_seq += self._lazy_pinyin(
                 word,
@@ -128,12 +154,14 @@ class ChineseG2p(BaseG2p):
             )
         phoneme_seq = []
         for pinyin in pinyin_seq:
-            if pinyin[-1] in self.tones:
-                assert pinyin[:-1] in self.phoneme_dict, pinyin[:-1]
-                phoneme_seq += self.phoneme_dict[pinyin[:-1]]
-                phoneme_seq.append(self.tones[pinyin[-1]])
+            tone_hyp = pinyin[-1]
+            if tone_hyp in self.tones:
+                syllable = pinyin[:-1]
+                assert syllable in self.phoneme_dict, f"Syllable <{syllable}> does not exist in the dictionary."
+                phoneme_seq += self.phoneme_dict[syllable]
+                phoneme_seq.append(self.tones[tone_hyp])
             # All pinyin would end up with a number in 1-5, which represents tones of the pinyin.
-            # For symbols which are not pinyin, e.g. English letters, Chinese puncts, we directly
+            # For symbols which are not pinyin, such as English letters and Chinese punctuations, we directly
             # use them as inputs.
             else:
                 phoneme_seq.append(pinyin)

@@ -27,6 +27,7 @@ from nemo.collections.common.parts.preprocessing import parsers
 from nemo.collections.tts.losses.tacotron2loss import Tacotron2Loss
 from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.collections.tts.parts.utils.helpers import (
+    g2p_backward_compatible_support,
     get_mask_from_lengths,
     tacotron2_log_to_tb_func,
     tacotron2_log_to_wandb_func,
@@ -333,11 +334,14 @@ class Tacotron2Model(SpectrogramGenerator):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer and cfg.text_tokenizer.g2p is not None:
             # for backward compatibility
-            if self._is_model_being_restored() and cfg.text_tokenizer.g2p.get('_target_', None):
-                cfg.text_tokenizer.g2p['_target_'] = cfg.text_tokenizer.g2p['_target_'].replace(
-                    "nemo_text_processing.g2p", "nemo.collections.tts.g2p"
+            if (
+                self._is_model_being_restored()
+                and (cfg.text_tokenizer.g2p.get('_target_', None) is not None)
+                and cfg.text_tokenizer.g2p["_target_"].startswith("nemo_text_processing.g2p")
+            ):
+                cfg.text_tokenizer.g2p["_target_"] = g2p_backward_compatible_support(
+                    cfg.text_tokenizer.g2p["_target_"]
                 )
-                logging.warning("This checkpoint support will be dropped after NeMo 1.18.0.")
 
             g2p_kwargs = {}
 

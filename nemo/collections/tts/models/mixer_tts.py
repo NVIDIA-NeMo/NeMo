@@ -36,6 +36,7 @@ from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.collections.tts.modules.fastpitch import average_features, regulate_len
 from nemo.collections.tts.parts.utils.helpers import (
     binarize_attention_parallel,
+    g2p_backward_compatible_support,
     get_mask_from_lengths,
     plot_pitch_to_numpy,
     plot_spectrogram_to_numpy,
@@ -149,11 +150,14 @@ class MixerTTSModel(SpectrogramGenerator, Exportable):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer:
             # for backward compatibility
-            if self._is_model_being_restored() and cfg.text_tokenizer.g2p.get('_target_', None):
-                cfg.text_tokenizer.g2p['_target_'] = cfg.text_tokenizer.g2p['_target_'].replace(
-                    "nemo_text_processing.g2p", "nemo.collections.tts.g2p"
+            if (
+                self._is_model_being_restored()
+                and (cfg.text_tokenizer.g2p.get('_target_', None) is not None)
+                and cfg.text_tokenizer.g2p["_target_"].startswith("nemo_text_processing.g2p")
+            ):
+                cfg.text_tokenizer.g2p["_target_"] = g2p_backward_compatible_support(
+                    cfg.text_tokenizer.g2p["_target_"]
                 )
-                logging.warning("This checkpoint support will be dropped after NeMo 1.18.0.")
 
             g2p_kwargs = {}
 

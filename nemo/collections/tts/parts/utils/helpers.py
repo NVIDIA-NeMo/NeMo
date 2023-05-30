@@ -54,6 +54,7 @@ from numba import jit, prange
 
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated
 
 HAVE_WANDB = True
 try:
@@ -825,3 +826,14 @@ def sample_tts_input(
             0, export_config["num_speakers"], (max_batch,), device=device, dtype=torch.int64
         )
     return inputs
+
+
+@deprecated(
+    explanation="But it will not be removed until a further notice. G2P object root directory "
+    "`nemo_text_processing.g2p` has been replaced with `nemo.collections.tts.g2p`. "
+    "Please use the latter instead as of NeMo 1.18.0."
+)
+def g2p_backward_compatible_support(g2p_target: str) -> str:
+    # for backward compatibility
+    g2p_target_new = g2p_target.replace("nemo_text_processing.g2p", "nemo.collections.tts.g2p")
+    return g2p_target_new

@@ -28,7 +28,12 @@ from nemo.collections.tts.data.dataset import DistributedBucketSampler
 from nemo.collections.tts.losses.vits_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss, KlLoss
 from nemo.collections.tts.models.base import TextToWaveform
 from nemo.collections.tts.modules.vits_modules import MultiPeriodDiscriminator
-from nemo.collections.tts.parts.utils.helpers import clip_grad_value_, plot_spectrogram_to_numpy, slice_segments
+from nemo.collections.tts.parts.utils.helpers import (
+    clip_grad_value_,
+    g2p_backward_compatible_support,
+    plot_spectrogram_to_numpy,
+    slice_segments,
+)
 from nemo.collections.tts.torch.tts_data_types import SpeakerID
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import AudioSignal, FloatType, Index, IntType, TokenIndex
@@ -113,11 +118,14 @@ class VitsModel(TextToWaveform):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer and cfg.text_tokenizer.g2p is not None:
             # for backward compatibility
-            if self._is_model_being_restored() and cfg.text_tokenizer.g2p.get('_target_', None):
-                cfg.text_tokenizer.g2p['_target_'] = cfg.text_tokenizer.g2p['_target_'].replace(
-                    "nemo_text_processing.g2p", "nemo.collections.tts.g2p"
+            if (
+                self._is_model_being_restored()
+                and (cfg.text_tokenizer.g2p.get('_target_', None) is not None)
+                and cfg.text_tokenizer.g2p["_target_"].startswith("nemo_text_processing.g2p")
+            ):
+                cfg.text_tokenizer.g2p["_target_"] = g2p_backward_compatible_support(
+                    cfg.text_tokenizer.g2p["_target_"]
                 )
-                logging.warning("This checkpoint support will be dropped after NeMo 1.18.0.")
 
             g2p_kwargs = {}
 

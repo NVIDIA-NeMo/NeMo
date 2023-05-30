@@ -24,7 +24,12 @@ from pytorch_lightning.loggers import WandbLogger
 from torch import nn
 
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
-from nemo.collections.tts.parts.utils.helpers import binarize_attention, get_mask_from_lengths, plot_alignment_to_numpy
+from nemo.collections.tts.parts.utils.helpers import (
+    binarize_attention,
+    g2p_backward_compatible_support,
+    get_mask_from_lengths,
+    plot_alignment_to_numpy,
+)
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
@@ -99,11 +104,14 @@ class AlignerModel(ModelPT):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer:
             # for backward compatibility
-            if self._is_model_being_restored() and cfg.text_tokenizer.g2p.get('_target_', None):
-                cfg.text_tokenizer.g2p['_target_'] = cfg.text_tokenizer.g2p['_target_'].replace(
-                    "nemo_text_processing.g2p", "nemo.collections.tts.g2p"
+            if (
+                self._is_model_being_restored()
+                and (cfg.text_tokenizer.g2p.get('_target_', None) is not None)
+                and cfg.text_tokenizer.g2p["_target_"].startswith("nemo_text_processing.g2p")
+            ):
+                cfg.text_tokenizer.g2p["_target_"] = g2p_backward_compatible_support(
+                    cfg.text_tokenizer.g2p["_target_"]
                 )
-                logging.warning("This checkpoint support will be dropped after NeMo 1.18.0.")
 
             g2p_kwargs = {}
 

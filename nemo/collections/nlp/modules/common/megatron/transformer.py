@@ -1268,9 +1268,6 @@ class ParallelTransformer(MegatronModule):
 
             return custom_forward
 
-        # Make sure memory is freed.
-        tensor_parallel.reset_checkpointed_activations_memory_buffer()
-
         if self.activations_checkpoint_method == 'uniform':
             # Uniformly divide the total number of Transformer layers and checkpoint
             # the input activation of each divided chunk.

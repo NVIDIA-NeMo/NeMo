@@ -3175,6 +3175,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.hidden_size=256 \
         model.num_attention_heads=8 \
         model.activations_checkpoint_method='block' \
+        model.activations_checkpoint_granularity='full' \
         model.activations_checkpoint_num_layers=1 \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
         model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
@@ -3211,6 +3212,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.hidden_size=256 \
         model.num_attention_heads=8 \
         model.activations_checkpoint_method='block' \
+        model.activations_checkpoint_granularity='full' \
         model.activations_checkpoint_num_layers=1 \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
         model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"

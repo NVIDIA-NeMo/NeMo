@@ -845,6 +845,7 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.num_classes = len(cfg.labels)
         self.eval_loop_cnt = 0
+        self.ratio_threshold = cfg.get('ratio_threshold', 0.2)
         super().__init__(cfg=cfg, trainer=trainer)
 
     @classmethod
@@ -1063,8 +1064,9 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
         Reshape labels to match logits shape. For example, each label is expected to cover a 40ms frame, while each frme prediction from the
         model covers 20ms. If labels are shorter than logits, labels are repeated, otherwise labels are folded and argmax is applied to obtain 
         the label of each frame. When lengths of labels and logits are not factors of each other, labels are truncated or padded with zeros.
-        The threshold 0.2 is used to determine whether to pad or truncate labels, where the value 0.2 is not important as in real cases the ratio
-        is very close to either ceil(ratio) or floor(ratio). We use 0.2 here for easier unit-testing.
+        The ratio_threshold=0.2 is used to determine whether to pad or truncate labels, where the value 0.2 is not important as in real cases the ratio
+        is very close to either ceil(ratio) or floor(ratio). We use 0.2 here for easier unit-testing. This implementation does not allow frame length
+        and label length that are not multiples of each other.
         Args:
             logits: logits tensor with shape [B, T1, C]
             labels: labels tensor with shape [B, T2]
@@ -1080,7 +1082,7 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
         if logits_max_len < labels_max_len:
             ratio = labels_max_len // logits_max_len
             res = labels_max_len % logits_max_len
-            if ceil(ratio) - ratio < 0.2:  # e.g., ratio is 1.99
+            if ceil(ratio) - ratio < self.ratio_threshold:  # e.g., ratio is 1.99
                 # pad labels with zeros until labels_max_len is a multiple of logits_max_len
                 labels = labels.cpu().tolist()
                 if len(labels) % ceil(ratio) != 0:
@@ -1101,7 +1103,7 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
         elif logits_max_len > labels_max_len:
             ratio = logits_max_len / labels_max_len
             res = logits_max_len % labels_max_len
-            if ceil(ratio) - ratio < 0.2:  # e.g., ratio is 1.99
+            if ceil(ratio) - ratio < self.ratio_threshold:  # e.g., ratio is 1.99
                 # repeat labels for ceil(ratio) times, and DROP additional labels based on logits_max_len
                 labels = labels.repeat_interleave(ceil(ratio), dim=1).long()
                 labels = labels[:, :logits_max_len]

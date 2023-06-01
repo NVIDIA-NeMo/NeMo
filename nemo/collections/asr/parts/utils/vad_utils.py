@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import glob
 import json
 import math
@@ -18,8 +19,9 @@ import multiprocessing
 import os
 import shutil
 from itertools import repeat
+from math import ceil, floor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import IPython.display as ipd
 import librosa
@@ -27,12 +29,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from omegaconf import DictConfig
 from pyannote.core import Annotation, Segment
 from pyannote.metrics import detection
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import ParameterGrid
 from tqdm import tqdm
 
-from nemo.collections.asr.models import EncDecClassificationModel
+from nemo.collections.asr.models import EncDecClassificationModel, EncDecFrameClassificationModel
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
 
 try:
@@ -78,6 +83,7 @@ def prepare_manifest(config: dict) -> str:
         'label': 'infer',
         'split_duration': config['split_duration'],
         'window_length_in_sec': config['window_length_in_sec'],
+        'manifest_dir': Path(config['input']).parent if type(config['input']) == str else '',
     }
 
     if config.get('num_workers') is not None and config['num_workers'] > 1:
@@ -137,6 +143,12 @@ def write_vad_infer_manifest(file: dict, args_func: dict) -> list:
     filepath = file['audio_filepath']
     in_duration = file.get('duration', None)
     in_offset = file.get('offset', 0)
+
+    # if filepath is not found, try to find it in the dir of manifest
+    if not Path(filepath).is_file():
+        new_filepath = Path(args_func['manifest_dir']) / filepath
+        if new_filepath.is_file():
+            filepath = new_filepath.absolute().as_posix()
 
     try:
         sr = 16000
@@ -692,7 +704,12 @@ def generate_vad_segment_table_per_file(pred_filepath: str, per_args: dict) -> s
 
 
 def generate_vad_segment_table(
-    vad_pred_dir: str, postprocessing_params: dict, frame_length_in_sec: float, num_workers: int, out_dir: str = None,
+    vad_pred_dir: str,
+    postprocessing_params: dict,
+    frame_length_in_sec: float,
+    num_workers: int,
+    out_dir: str = None,
+    use_rttm: bool = False,
 ) -> str:
     """
     Convert frame level prediction to speech segment in start and end times format.
@@ -706,27 +723,26 @@ def generate_vad_segment_table(
         out_dir (str): output dir of generated table/csv file.
         num_workers(float): number of process for multiprocessing
     Returns:
-        table_out_dir(str): directory of the generated table.
+        out_dir(str): directory of the generated table.
     """
 
     suffixes = ("frame", "mean", "median")
     vad_pred_filepath_list = [os.path.join(vad_pred_dir, x) for x in os.listdir(vad_pred_dir) if x.endswith(suffixes)]
 
-    if out_dir:
-        table_out_dir = out_dir
-    else:
-        table_out_dir_name = "table_output_tmp_"
+    if not out_dir:
+        out_dir_name = "seg_output_"
         for key in postprocessing_params:
-            table_out_dir_name = table_out_dir_name + str(key) + str(postprocessing_params[key]) + "_"
+            out_dir_name = out_dir_name + str(key) + str(postprocessing_params[key]) + "-"
 
-        table_out_dir = os.path.join(vad_pred_dir, table_out_dir_name)
+        out_dir = os.path.join(vad_pred_dir, out_dir_name)
 
-    if not os.path.exists(table_out_dir):
-        os.mkdir(table_out_dir)
+    if not os.path.exists(out_dir):
+        os.mkdir(out_dir)
 
     per_args = {
         "frame_length_in_sec": frame_length_in_sec,
-        "out_dir": table_out_dir,
+        "out_dir": out_dir,
+        "use_rttm": use_rttm,
     }
     per_args = {**per_args, **postprocessing_params}
     num_workers = None
@@ -741,12 +757,11 @@ def generate_vad_segment_table(
                     leave=True,
                 )
             )
-
     else:
         for vad_pred_filepath in tqdm(vad_pred_filepath_list, desc='creating speech segments', leave=True):
             generate_vad_segment_table_per_file(vad_pred_filepath, per_args)
 
-    return table_out_dir
+    return out_dir
 
 
 def generate_vad_segment_table_per_file_star(args):
@@ -955,33 +970,50 @@ def pred_rttm_map(vad_pred: str, groundtruth_RTTM: str, vad_pred_method: str = "
 
 def plot(
     path2audio_file: str,
-    path2_vad_pred: str,
-    path2ground_truth_label: str = None,
+    path2_vad_pred: Optional[str] = None,
+    path2groundtruth_rttm: Optional[str] = None,
+    groundtruth_labels: Optional[str] = None,
+    sample_rate: int = 16000,
     offset: float = 0,
     duration: float = None,
     threshold: float = None,
     per_args: dict = None,
+    unit_frame_len: float = 0.01,
+    label_repeat: int = 1,
+    xticks_step: int = 5,
 ) -> ipd.Audio:
     """
-    Plot VAD outputs for demonstration in tutorial
+    Plot Audio and/or VAD output and/or groundtruth labels for visualization
     Args:
         path2audio_file (str):  path to audio file.
         path2_vad_pred (str): path to vad prediction file,
-        path2ground_truth_label(str): path to groundtruth label file.
+        path2groundtruth_rttm(str): path to groundtruth RTTM file.
+        ground_truth_labels(str): a list of groundtruth label.
+        sample_rate (int): sample rate of audio file.
+        offset (float): offset in seconds.
+        duration (float): duration in seconds.
         threshold (float): threshold for prediction score (from 0 to 1).
         per_args(dict): a dict that stores the thresholds for postprocessing.
+        unit_frame_len (float): unit frame length in seconds for VAD predictions.
+        label_repeat (int): repeat the label for this number of times to match different frame lengths in preds and labels.
+        xticks_step (int): step size for xticks.
     """
     plt.figure(figsize=[20, 2])
-    UNIT_FRAME_LEN = 0.01
 
-    audio, sample_rate = librosa.load(path=path2audio_file, sr=16000, mono=True, offset=offset, duration=duration)
+    audio, sample_rate = librosa.load(
+        path=path2audio_file, sr=sample_rate, mono=True, offset=offset, duration=duration
+    )
     dur = librosa.get_duration(y=audio, sr=sample_rate)
 
-    time = np.arange(offset, offset + dur, UNIT_FRAME_LEN)
-    frame, _ = load_tensor_from_file(path2_vad_pred)
-    frame_snippet = frame[int(offset / UNIT_FRAME_LEN) : int((offset + dur) / UNIT_FRAME_LEN)]
+    time = np.arange(offset, offset + dur, unit_frame_len)
+    len_pred = int(dur / unit_frame_len) + 1
 
-    len_pred = len(frame_snippet)
+    frame_snippet = None
+    if path2_vad_pred:
+        frame, _ = load_tensor_from_file(path2_vad_pred)
+        frame_snippet = frame[int(offset / unit_frame_len) : int((offset + dur) / unit_frame_len)]
+        len_pred = len(frame_snippet)
+
     ax1 = plt.subplot()
     ax1.plot(np.arange(audio.size) / sample_rate, audio, 'gray')
     ax1.set_xlim([0, int(dur) + 1])
@@ -995,27 +1027,41 @@ def plot(
     if not threshold and not per_args:
         raise ValueError("One and only one of threshold and per_args must have been used!")
 
-    if threshold:
+    if threshold and frame_snippet is not None:
         pred_snippet = np.where(frame_snippet >= threshold, 1, 0)
-    if per_args:
+    elif per_args and frame_snippet is not None:
         _, per_args_float = prepare_gen_segment_table(
             frame, per_args
         )  # take whole frame here for calculating onset and offset
         speech_segments = generate_vad_segment_table_per_tensor(frame, per_args_float)
         pred = gen_pred_from_speech_segments(speech_segments, frame)
-        pred_snippet = pred[int(offset / UNIT_FRAME_LEN) : int((offset + dur) / UNIT_FRAME_LEN)]
+        pred_snippet = pred[int(offset / unit_frame_len) : int((offset + dur) / unit_frame_len)]
+    else:
+        pred_snippet = None
 
-    if path2ground_truth_label:
-        label = extract_labels(path2ground_truth_label, time)
-        ax2.plot(np.arange(len_pred) * UNIT_FRAME_LEN, label, 'r', label='label')
+    if path2groundtruth_rttm and path2groundtruth_rttm.endswith('.rttm'):
+        label = extract_labels(path2groundtruth_rttm, time)
+    elif groundtruth_labels:
+        label = [float(x) for x in groundtruth_labels]
+        if label_repeat > 1:
+            label = np.repeat(label, label_repeat)
+        label = label[int(offset / unit_frame_len) : int((offset + dur) / unit_frame_len)]
+    else:
+        label = None
 
-    ax2.plot(np.arange(len_pred) * UNIT_FRAME_LEN, pred_snippet, 'b', label='pred')
-    ax2.plot(np.arange(len_pred) * UNIT_FRAME_LEN, frame_snippet, 'g--', label='speech prob')
+    if label:
+        ax2.plot(np.arange(len_pred) * unit_frame_len, label, 'r', label='label')
+    if pred_snippet:
+        ax2.plot(np.arange(len_pred) * unit_frame_len, pred_snippet, 'b', label='pred')
+    if frame_snippet:
+        ax2.plot(np.arange(len_pred) * unit_frame_len, frame_snippet, 'g--', label='speech prob')
+
     ax2.tick_params(axis='y', labelcolor='r')
     ax2.legend(loc='lower right', shadow=True)
     ax2.set_ylabel('Preds and Probas')
     ax2.set_ylim([-0.1, 1.1])
-    return ipd.Audio(audio, rate=16000)
+    ax2.set_xticks(np.arange(0, int(dur) + 1, xticks_step))
+    return ipd.Audio(audio, rate=sample_rate)
 
 
 def gen_pred_from_speech_segments(
@@ -1038,11 +1084,11 @@ def gen_pred_from_speech_segments(
 def extract_labels(path2ground_truth_label: str, time: list) -> list:
     """
     Extract ground-truth label for given time period.
-    path2ground_truth_label (str): path of groundtruth label file 
+    path2ground_truth_label (str): path of groundtruth RTTM file 
     time (list) : a list of array representing time period.
     """
 
-    data = pd.read_csv(path2ground_truth_label, sep=" ", delimiter=None, header=None)
+    data = pd.read_csv(path2ground_truth_label, sep="\s+", delimiter=None, header=None)
     data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
     labels = []
     for pos in time:
@@ -1086,9 +1132,14 @@ def generate_vad_frame_pred(
             else:
                 log_probs = vad_model(input_signal=test_batch[0], input_signal_length=test_batch[1])
             probs = torch.softmax(log_probs, dim=-1)
+            if len(probs.shape) == 3 and probs.shape[0] == 1:
+                # squeeze the batch dimension, since batch size is 1 for frame-VAD
+                probs = probs.squeeze(0)  # [1,T,C] -> [T,C]
             pred = probs[:, 1]
 
-            if status[i] == 'start':
+            if window_length_in_sec == 0:
+                to_save = pred
+            elif status[i] == 'start':
                 to_save = pred[:-trunc]
             elif status[i] == 'next':
                 to_save = pred[trunc:-trunc_l]
@@ -1097,6 +1148,7 @@ def generate_vad_frame_pred(
             else:
                 to_save = pred
 
+            to_save = to_save.cpu().tolist()
             all_len += len(to_save)
             outpath = os.path.join(out_dir, data[i] + ".frame")
             with open(outpath, "a", encoding='utf-8') as fout:
@@ -1122,6 +1174,21 @@ def init_vad_model(model_path: str):
     else:
         logging.info(f"Using NGC cloud VAD model {model_path}")
         vad_model = EncDecClassificationModel.from_pretrained(model_name=model_path)
+    return vad_model
+
+
+def init_frame_vad_model(model_path: str):
+    """
+    Initiate VAD model with model path
+    """
+    if model_path.endswith('.nemo'):
+        logging.info(f"Using local VAD model from {model_path}")
+        vad_model = EncDecFrameClassificationModel.restore_from(restore_path=model_path)
+    elif model_path.endswith('.ckpt'):
+        vad_model = EncDecFrameClassificationModel.load_from_checkpoint(checkpoint_path=model_path)
+    else:
+        logging.info(f"Using NGC cloud VAD model {model_path}")
+        vad_model = EncDecFrameClassificationModel.from_pretrained(model_name=model_path)
     return vad_model
 
 
@@ -1238,32 +1305,6 @@ def construct_manifest_eval(
     return aligned_vad_asr_output_manifest
 
 
-def extract_audio_features(vad_model: EncDecClassificationModel, manifest_vad_input: str, out_dir: str) -> str:
-    """
-    Extract audio features and write to out_dir
-    """
-
-    file_list = []
-    with open(manifest_vad_input, 'r', encoding='utf-8') as fin:
-        for line in fin.readlines():
-            file_list.append(Path(json.loads(line)['audio_filepath']).stem)
-
-    logging.info(f"Extracting features on {len(file_list)} audio files/json lines!")
-
-    for i, test_batch in enumerate(tqdm(vad_model.test_dataloader(), total=len(vad_model.test_dataloader()))):
-        test_batch = [x.to(vad_model.device) for x in test_batch]
-        with autocast():
-            processed_signal, processed_signal_length = vad_model.preprocessor(
-                input_signal=test_batch[0], length=test_batch[1],
-            )
-            processed_signal = processed_signal.squeeze(0)[:, :processed_signal_length]
-            processed_signal = processed_signal.cpu()
-            outpath = os.path.join(out_dir, file_list[i] + ".pt")
-            torch.save(processed_signal, outpath)
-        del test_batch
-    return out_dir
-
-
 def load_rttm_file(filepath: str) -> pd.DataFrame:
     """
     Load rttm file and extract speech segments
@@ -1321,7 +1362,7 @@ def load_speech_overlap_segments_from_rttm(rttm_file: str) -> Tuple[List[List[fl
 
     Returns:
         merged (List[List[float]]): merged speech intervals without overlaps
-        overlaps (List[List[float]]): intervals without overlap speech
+        overlaps (List[List[float]]): intervals with overlap speech
     """
     speech_segments = list(load_rttm_file(rttm_file)['segment'])
     speech_segments = [list(x) for x in speech_segments]
@@ -1367,7 +1408,9 @@ def get_nonspeech_segments(
     return nonspeech_segments
 
 
-def get_frame_labels(segments: List[List[float]], frame_length: float, offset: float, duration: float) -> str:
+def get_frame_labels(
+    segments: List[List[float]], frame_length: float, offset: float, duration: float, as_str: bool = True
+) -> str:
     """
     Generate frame-level binary labels for audio, '0' for non-speech and '1' for speech
 
@@ -1379,30 +1422,39 @@ def get_frame_labels(segments: List[List[float]], frame_length: float, offset: f
     """
     labels = []
     n_frames = int(np.ceil(duration / frame_length))
-
     sid = 0
     for i in range(n_frames):
         t = offset + i * frame_length
         while sid < len(segments) - 1 and segments[sid][1] < t:
             sid += 1
-        if segments[sid][0] <= t <= segments[sid][1]:
-            labels.append('1')
+        if segments[sid][1] != 0 and segments[sid][0] <= t <= segments[sid][1]:
+            labels.append(1)
         else:
-            labels.append('0')
-    return ' '.join(labels)
+            labels.append(0)
+    if as_str:
+        return ' '.join([str(x) for x in labels])
+    return [float(x) for x in labels]
 
 
 def plot_sample_from_rttm(
-    audio_file: str, rttm_file: str, max_duration: Optional[float] = None, save_path: str = "", show: bool = True
+    audio_file: str,
+    rttm_file: str,
+    max_duration: Optional[float] = None,
+    save_path: str = "",
+    show: bool = True,
+    offset: float = 0.0,
+    unit_frame_len: float = 0.01,
 ):
+    """
+    Plot audio signal and frame-level labels from RTTM file
+    """
     plt.figure(figsize=[20, 2])
-    UNIT_FRAME_LEN = 0.01
 
-    audio, sample_rate = librosa.load(path=audio_file, sr=16000, mono=True, offset=0, duration=max_duration)
+    audio, sample_rate = librosa.load(path=audio_file, sr=16000, mono=True, offset=offset, duration=max_duration)
     dur = librosa.get_duration(y=audio, sr=sample_rate)
 
     segments = load_speech_segments_from_rttm(rttm_file)
-    labels = get_frame_labels(segments, UNIT_FRAME_LEN, 0.0, dur)
+    labels = get_frame_labels(segments, unit_frame_len, offset, dur)
     labels = [float(x) for x in labels.split()]
 
     length = len(labels)
@@ -1415,7 +1467,7 @@ def plot_sample_from_rttm(
     ax1.set_ylim([-1, 1])
     ax2 = ax1.twinx()
 
-    ax2.plot(np.arange(length) * UNIT_FRAME_LEN, labels, 'r', label='label')
+    ax2.plot(np.arange(length) * unit_frame_len, labels, 'r', label='label')
     ax2.tick_params(axis='y', labelcolor='r')
     ax2.legend(loc='lower right', shadow=True)
     ax2.set_ylabel('Labels')
@@ -1425,3 +1477,240 @@ def plot_sample_from_rttm(
     if save_path:
         plt.savefig(save_path)
     return ipd.Audio(audio, rate=16000)
+
+
+def align_labels_to_frames(probs, labels, threshold=0.2):
+    """
+    Aligns labels to frames when the frame length (e.g., 10ms) is different from the label length (e.g., 20ms). 
+    The threshold 0.2 is not important, since the actual ratio will always be close to an integer unless using frame/label 
+    lengths that are not multiples of each other (e.g., 15ms frame length and 20ms label length), which is not valid.
+    The value 0.2 here is just for easier unit testing.
+    Args:
+        probs (List[float]): list of probabilities
+        labels (List[int]): list of labels
+        threshold (float): threshold for rounding ratio to integer
+    Returns:
+        labels (List[int]): list of labels aligned to frames
+    """
+    frames_len = len(probs)
+    labels_len = len(labels)
+    probs = torch.tensor(probs).float()
+    labels = torch.tensor(labels).long()
+
+    if frames_len < labels_len:
+        # pad labels with zeros until labels_len is a multiple of frames_len
+        ratio = labels_len / frames_len
+        res = labels_len % frames_len
+        if (
+            ceil(ratio) - ratio < threshold
+        ):  # e.g., ratio = 2.9, ceil(ratio) = 3, then we pad labels to make it a multiple of 3
+            # pad labels with zeros until labels_max_len is a multiple of logits_max_len
+            labels = labels.tolist()
+            if len(labels) % ceil(ratio) != 0:
+                labels += [0] * (ceil(ratio) - len(labels) % ceil(ratio))
+            labels = torch.tensor(labels).long()
+            labels = labels.view(-1, ceil(ratio)).amax(1)
+            return align_labels_to_frames(probs.tolist(), labels.long().tolist())
+        # otherwise, truncate additional labels until labels_max_len is a multiple of logits_max_len
+        if res > 0:
+            labels = labels[:-res]
+        labels = labels.view(-1, floor(ratio)).amax(1)
+        return labels.long().tolist()
+    elif frames_len > labels_len:
+        # repeat labels until labels_len is a multiple of frames_len
+        ratio = frames_len / labels_len
+        res = frames_len % labels_len
+        if ceil(ratio) - ratio < threshold:
+            # e.g., ratio is 1.83, ceil(ratio) = 2, then we repeat labels to make it a multiple of 2, and discard the redundant labels
+            labels = labels.repeat_interleave(ceil(ratio), dim=0).long().tolist()
+            labels = labels[:frames_len]
+        else:
+            # e.g., ratio is 2.02, floor(ratio) = 2, then we repeat labels to make it a multiple of 2 and add additional labels
+            labels = labels.repeat_interleave(floor(ratio), dim=0).long().tolist()
+            if res > 0:
+                labels += labels[-res:]
+        return labels
+    else:
+        return labels.long().tolist()
+
+
+def read_rttm_as_pyannote_object(rttm_file: str, speaker_override: Optional[str] = None) -> Annotation:
+    """
+    Read rttm file and construct a Pyannote object.
+    Args:
+        rttm_file(str) : path of rttm file.
+        speaker_override(str) : if not None, all speakers will be replaced by this value.
+    Returns:
+        annotation(pyannote.Annotation): annotation object
+    """
+    annotation = Annotation()
+    data = pd.read_csv(rttm_file, sep="\s+", delimiter=None, header=None)
+    data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
+    for index, row in data.iterrows():
+        if speaker_override is not None:
+            annotation[Segment(row['start'], row['start'] + row['dur'])] = speaker_override
+        else:
+            annotation[Segment(row['start'], row['start'] + row['dur'])] = row['speaker']
+    return annotation
+
+
+def convert_labels_to_speech_segments(labels: List[float], frame_length_in_sec: float = 0.01):
+    """
+    Convert a list of labels to a list of speech segments.
+    Args:
+        labels (List[float]): list of labels
+        frame_length_in_sec (float): frame length in seconds
+    Returns:
+        segments (List[Tuple[float, float]]): list of speech segments
+    """
+    segments = []
+    start = -1
+    for i, label in enumerate(labels):
+        if label == 1:
+            if start == -1:
+                start = i * frame_length_in_sec
+        else:
+            if start > -1:
+                segments.append([start, (i - 1) * frame_length_in_sec])
+                start = -1
+    if start != -1:
+        segments.append([start, (len(labels) - 1) * frame_length_in_sec])
+    return segments
+
+
+def frame_vad_construct_pyannote_object_per_file(
+    prediction: Union[str, List[float]], groundtruth: Union[str, List[float]], frame_length_in_sec: float = 0.01
+) -> Tuple[Annotation, Annotation]:
+    """
+    Construct a Pyannote object for evaluation.
+    Args:
+        prediction (str) : path of VAD predictions stored as RTTM or CSV-like txt.
+        groundtruth (str): path of groundtruth rttm file.
+        frame_length_in_sec(float): frame length in seconds
+    Returns:
+        reference(pyannote.Annotation): groundtruth
+        hypothesis(pyannote.Annotation): prediction
+    """
+
+    hypothesis = Annotation()
+    if isinstance(groundtruth, str) and prediction.endswith('.rttm'):
+        hypothesis = read_rttm_as_pyannote_object(prediction, speaker_override='speech')
+    elif isinstance(groundtruth, str) and prediction.endswith('.txt'):
+        pred = pd.read_csv(prediction, sep=" ", header=None)
+        for index, row in pred.iterrows():
+            hypothesis[Segment(float(row[0]), float(row[0]) + float(row[1]))] = 'speech'
+    elif isinstance(groundtruth, list):
+        segments = convert_labels_to_speech_segments(prediction, frame_length_in_sec)
+        for segment in segments:
+            hypothesis[Segment(segment[0], segment[1])] = 'speech'
+    else:
+        raise ValueError('prediction must be a path to rttm file or a list of frame labels.')
+
+    reference = Annotation()
+    if isinstance(groundtruth, str) and groundtruth.endswith('.rttm'):
+        reference = read_rttm_as_pyannote_object(groundtruth, speaker_override='speech')
+    elif isinstance(groundtruth, list):
+        segments = convert_labels_to_speech_segments(groundtruth, frame_length_in_sec)
+        for segment in segments:
+            reference[Segment(segment[0], segment[1])] = 'speech'
+    else:
+        raise ValueError('groundtruth must be a path to rttm file or a list of frame labels.')
+    return reference, hypothesis
+
+
+def frame_vad_infer_load_manifest(cfg: DictConfig):
+    """
+    Load manifest file and prepare label/rttm mapping
+    Args:
+        cfg: config file
+    Returns:
+        manifest_orig (List[Dict]): original manifest data 
+        key_labels_map (Dict): mapping from unique_audio_name to its labels
+        key_rttm_map (Dict): mapping from unique_audio_name to its rttm file
+    """
+    unique_audio_names = set()
+    key_labels_map = {}
+    key_rttm_map = {}
+    manifest_orig = []
+    manifest_file = Path(cfg.dataset).absolute().as_posix()
+    with open(manifest_file, 'r') as fin:
+        for line in fin.readlines():
+            entry = json.loads(line.strip())
+            audio_filepath = get_full_path(audio_file=entry['audio_filepath'], manifest_file=manifest_file)
+            entry['audio_filepath'] = str(audio_filepath)
+            uniq_audio_name = Path(audio_filepath).stem
+
+            if uniq_audio_name in unique_audio_names:
+                raise ValueError("Please make sure each line is with different audio_filepath! ")
+            else:
+                unique_audio_names.add(uniq_audio_name)
+
+            manifest_orig.append(entry)
+
+            # always prefer RTTM labels if exist
+            if "label" not in entry or "rttm_filepath" in entry or "rttm_file" in entry:
+                rttm_key = "rttm_filepath" if "rttm_filepath" in entry else "rttm_file"
+                segments = load_speech_segments_from_rttm(entry[rttm_key])
+                label_str = get_frame_labels(
+                    segments=segments,
+                    frame_length=cfg.vad.parameters.shift_length_in_sec,
+                    duration=entry['duration'],
+                    offset=entry['offset'],
+                )
+                key_rttm_map[uniq_audio_name] = entry[rttm_key]
+                key_labels_map[uniq_audio_name] = [float(x) for x in label_str.split()]
+            elif entry.get("label", None) is not None:
+                key_labels_map[uniq_audio_name] = [float(x) for x in entry["label"].split()]
+            else:
+                raise ValueError("Must have either `label` or `rttm_filepath` in manifest")
+
+    return manifest_orig, key_labels_map, key_rttm_map
+
+
+def frame_vad_eval_detection_error(
+    pred_dir: str, key_labels_map: dict, key_rttm_map: dict, key_pred_rttm_map: dict, frame_length_in_sec: float
+):
+    """
+    Perform evaluation on frame-VAD results
+    Args:
+        pred_dir: directory of frame-VAD prediction files with in `<unique_audio_name>.frame` format
+        key_labels_map: dictionary of mapping each <unique_audio_name> to its labels
+        key_rttm_map: dictionary of mapping each <unique_audio_name> to its GROUNDTRUTH rttm file
+        key_pred_rttm_map: dictionary of mapping each <unique_audio_name> to its PREDICTED rttm file
+        frame_length_in_sec: frame length in seconds, e.g. 0.02s
+    Returns:
+        auroc: AUROC score in 0~100%
+        report: Pyannote detection.DetectionErrorRate() report
+    """
+    all_probs = []
+    all_labels = []
+    metric = detection.DetectionErrorRate()
+    key_probs_map = {}
+    predictions_list = list(Path(pred_dir).glob("*.frame"))
+    for frame_pred in tqdm(predictions_list, desc="Evaluating VAD results", total=len(predictions_list)):
+        pred_probs = []
+        with frame_pred.open("r") as fin:
+            for line in fin.readlines():
+                line = line.strip()
+                if not line:
+                    continue
+                pred_probs.append(float(line))
+        key = frame_pred.stem
+        key_probs_map[key] = pred_probs
+        key_labels_map[key] = align_labels_to_frames(probs=pred_probs, labels=key_labels_map[key])
+        all_probs.extend(key_probs_map[key])
+        all_labels.extend(key_labels_map[key])
+
+        if key in key_rttm_map:
+            groundtruth = key_rttm_map[key]
+        else:
+            groundtruth = key_labels_map[key]
+
+        reference, hypothesis = frame_vad_construct_pyannote_object_per_file(
+            prediction=key_pred_rttm_map[key], groundtruth=groundtruth, frame_length_in_sec=frame_length_in_sec,
+        )
+        metric(reference, hypothesis)
+
+    auroc = roc_auc_score(y_true=all_labels, y_score=all_probs)
+    report = metric.report(display=False)
+    return auroc, report

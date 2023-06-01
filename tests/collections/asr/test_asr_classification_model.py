@@ -255,52 +255,13 @@ class TestEncDecClassificationModel:
 
 
 class TestEncDecFrameClassificationModel(TestEncDecClassificationModel):
+    @pytest.mark.parametrize(["logits_len", "labels_len"], [(20, 10), (21, 10), (19, 10), (20, 9), (20, 11)])
     @pytest.mark.unit
-    def test_reshape_labels(self, frame_classification_model):
+    def test_reshape_labels(self, frame_classification_model, logits_len, labels_len):
         model = frame_classification_model.eval()
 
-        logits = torch.ones(4, 20, 2)
-        labels = torch.ones(4, 10)
-        logits_len = torch.tensor([6, 7, 8, 9])
-        labels_len = torch.tensor([5, 6, 7, 8])
-        labels_new, labels_len_new = model.reshape_labels(
-            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
-        )
-        assert labels_new.size(1) == logits.size(1)
-        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
-
-        logits = torch.ones(4, 21, 2)
-        labels = torch.ones(4, 10)
-        logits_len = torch.tensor([6, 7, 8, 9])
-        labels_len = torch.tensor([5, 6, 7, 8])
-        labels_new, labels_len_new = model.reshape_labels(
-            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
-        )
-        assert labels_new.size(1) == logits.size(1)
-        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
-
-        logits = torch.ones(4, 19, 2)
-        labels = torch.ones(4, 10)
-        logits_len = torch.tensor([6, 7, 8, 9])
-        labels_len = torch.tensor([5, 6, 7, 8])
-        labels_new, labels_len_new = model.reshape_labels(
-            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
-        )
-        assert labels_new.size(1) == logits.size(1)
-        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
-
-        logits = torch.ones(4, 20, 2)
-        labels = torch.ones(4, 9)
-        logits_len = torch.tensor([6, 7, 8, 9])
-        labels_len = torch.tensor([5, 6, 7, 8])
-        labels_new, labels_len_new = model.reshape_labels(
-            logits=logits, labels=labels, logits_len=logits_len, labels_len=labels_len
-        )
-        assert labels_new.size(1) == logits.size(1)
-        assert torch.equal(labels_len_new, torch.tensor([6, 7, 8, 9]))
-
-        logits = torch.ones(4, 20, 2)
-        labels = torch.ones(4, 11)
+        logits = torch.ones(4, logits_len, 2)
+        labels = torch.ones(4, labels_len)
         logits_len = torch.tensor([6, 7, 8, 9])
         labels_len = torch.tensor([5, 6, 7, 8])
         labels_new, labels_len_new = model.reshape_labels(

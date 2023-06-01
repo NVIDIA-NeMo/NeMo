@@ -1,0 +1,209 @@
+name: &name "MarbleNet-3x2x64"
+
+model:
+  sample_rate: 16000
+  repeat: 2
+  dropout: 0.0
+  kernel_size_factor: 1.0
+
+  labels: ['0', '1']
+
+  train_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    labels: ${model.labels}
+    batch_size: 128
+    shuffle: True
+    # tarred datasets
+    is_tarred: false
+    tarred_audio_filepaths: null
+    tarred_shard_strategy: "scatter"
+    shuffle_n: 2048
+    num_workers: 8
+    pin_memory: true
+    # bucketing params
+    bucketing_strategy: "synced_randomized"
+    bucketing_batch_size: null
+    bucketing_weights: null
+    augmentor:
+      white_noise:
+        prob: 0.9
+        min_level: -90
+        max_level: -46
+      gain:
+        prob: 0.5
+        min_gain_dbfs: -10.0
+        max_gain_dbfs: 10.0
+      noise:
+        prob: 0.6
+        manifest_path: /manifests/vad_noise/freesound_nonspeech_train_FL200.json
+        min_snr_db: 0
+        max_snr_db: 20
+        max_gain_db: 300.0
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    labels: ${model.labels}
+    batch_size: 128
+    shuffle: False
+    num_workers: 8
+    pin_memory: true
+    val_loss_idx: 0
+
+  test_ds:
+    manifest_filepath: null
+    sample_rate: ${model.sample_rate}
+    labels: ${model.labels}
+    batch_size: 128
+    shuffle: False
+    num_workers: 8
+    pin_memory: true
+    test_loss_idx: 0
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    normalize: "None"
+    window_size: 0.025
+    sample_rate: ${model.sample_rate}
+    window_stride: 0.01
+    window: "hann"
+    features: &n_mels 80
+    n_fft: 512
+    frame_splicing: 1
+    dither: 0.00001
+    stft_conv: false
+    pad_to: 2
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 2 # set to zero to disable it
+    time_masks: 10 # set to zero to disable it
+    freq_width: 27
+    time_width: 0.05
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConvASREncoder
+    feat_in: *n_mels
+    activation: relu
+    conv_mask: true
+
+    jasper:
+      - filters: 128
+        repeat: 1
+        kernel: [11]
+        stride: [2]
+        dilation: [1]
+        dropout: ${model.dropout}
+        residual: false
+        separable: true
+        kernel_size_factor: ${model.kernel_size_factor}
+
+      - filters: 64
+        repeat: ${model.repeat}
+        kernel: [13]
+        stride: [1]
+        dilation: [1]
+        dropout: ${model.dropout}
+        residual: true
+        separable: true
+        kernel_size_factor: ${model.kernel_size_factor}
+
+      - filters: 64
+        repeat: ${model.repeat}
+        kernel: [15]
+        stride: [1]
+        dilation: [1]
+        dropout: ${model.dropout}
+        residual: true
+        separable: true
+        kernel_size_factor: ${model.kernel_size_factor}
+
+      - filters: 64
+        repeat: ${model.repeat}
+        kernel: [17]
+        stride: [1]
+        dilation: [1]
+        dropout: ${model.dropout}
+        residual: true
+        separable: true
+        kernel_size_factor: ${model.kernel_size_factor}
+
+      - filters: 128
+        repeat: 1
+        kernel: [29]
+        stride: [1]
+        dilation: [2]
+        dropout: ${model.dropout}
+        residual: false
+        separable: true
+        kernel_size_factor: ${model.kernel_size_factor}
+
+      - filters: &enc_filters 128
+        repeat: 1
+        kernel: [1]
+        stride: [1]
+        dilation: [1]
+        dropout: ${model.dropout}
+        residual: false
+
+  decoder:
+    _target_: nemo.collections.common.parts.MultiLayerPerceptron
+    hidden_size: *enc_filters
+    num_classes: -1
+    num_layers: 1
+    activation: 'relu'
+    log_softmax: false
+
+  optim:
+    name: sgd
+    lr: 0.01
+    # optimizer arguments
+    weight_decay: 0.001
+    momentum: 0.9
+
+    # scheduler setup
+    sched:
+      name: PolynomialHoldDecayAnnealing
+      # Scheduler params
+      power: 2.0
+      warmup_ratio: 0.05
+      hold_ratio: 0.45
+      min_lr: 0.001
+      last_epoch: -1
+
+trainer:
+  devices: -1 # number of gpus, -1 to use all gpus
+  max_epochs: 100
+  max_steps: -1 # computed at runtime if not set
+  num_nodes: 1
+  accelerator: auto
+  strategy: ddp
+  accumulate_grad_batches: 1
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: False  # Provided by exp_manager
+  log_every_n_steps: 10  # Interval of logging.
+  val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  check_val_every_n_epoch: 1
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+
+exp_manager:
+  exp_dir: null
+  name: *name
+  create_tensorboard_logger: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: "val_acc_macro"
+    mode: "max"
+    save_top_k: 3
+    always_save_nemo: true # saves the checkpoints as nemo files instead of PTL checkpoints
+    save_best_model: true
+
+  # you need to set these two to True to continue the training
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    name: null
+    project: null

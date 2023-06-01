@@ -1,0 +1,38 @@
+name: &name "vad_inference_postprocessing"
+
+dataset: null # Path of json file of evaluation data. Audio files should have unique names
+num_workers: 12
+sample_rate: 16000
+evaluate: False  # whether to get AUROC and DERs, the manifest must contains groundtruth if enabled
+
+prepare_manifest:
+  auto_split: True # whether to automatically split manifest entry by split_duration to avoid potential CUDA out of memory issue.
+  split_duration: 400 # try smaller number if you still have CUDA memory issue
+
+vad:
+  model_path: "vad_multilingual_frame_marblenet" #.nemo local model path or pretrained model name or none
+  use_rttm: True # set True to output as RTTM format
+  parameters: # Parameters not tuned on large datasets, please use default parameters with caution
+    normalize_audio_db: null  # set to non null value to normalize RMS DB of audio before preprocessing
+    window_length_in_sec: 0.0  # window length in sec for VAD context input, must be 0 for frame-VAD
+    shift_length_in_sec: 0.02 # frame-length in seconds for frame-VAD 
+    smoothing: False # Deprecated for Frame-VAD. false or type of smoothing method (eg: median, mean)
+    overlap: 0.875 # Deprecated for Frame-VAD. overlap ratio for overlapped mean/median smoothing filter. If smoothing=False, ignore this value.
+    postprocessing:
+      onset: 0.3 # onset threshold for detecting the beginning and end of a speech
+      offset: 0.3 # offset threshold for detecting the end of a speech.
+      pad_onset: 0.5 # adding durations before each speech segment
+      pad_offset: 0.5 # adding durations after each speech segment
+      min_duration_on: 0.0 # threshold for short speech deletion
+      min_duration_off: 0.6 # threshold for short non-speech segment deletion
+      filter_speech_first: True
+
+prepared_manifest_vad_input: null # if not specify, it will automatically generated be "manifest_vad_input.json"
+frame_out_dir: "vad_frame_outputs"
+smoothing_out_dir: null # if not specify, it will automatically generated be frame_out_dir + "/overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
+rttm_out_dir: null # if not specify, it will automatically be frame_out_dir + "/seg_output_" + key and value in postprocessing params
+out_manifest_filepath: null # if not specify it will automatically be "manifest_vad_out.json"
+
+
+# json manifest line example
+# {"audio_filepath": "/path/to/audio_file.wav", "offset": 0, "duration": 1.23, "label": "infer", "text": "-"}

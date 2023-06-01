@@ -240,8 +240,7 @@ def get_audio_multi_label_dataset(cfg: DictConfig) -> audio_to_label.AudioToMult
         is_regression_task=cfg.get("is_regression_task", False),
         cal_labels_occurrence=cfg.get("cal_labels_occurrence", False),
         delimiter=cfg.get("delimiter", None),
-        normalize_audio_db=cfg.get("normalize_audio_db", False),
-        normalize_audio_db_target=cfg.get("normalize_audio_db_target", -20),
+        normalize_audio_db=cfg.get("normalize_audio_db", None),
     )
     return dataset
 
@@ -294,8 +293,7 @@ def get_tarred_audio_multi_label_dataset(
             shard_strategy=cfg.get('tarred_shard_strategy', 'scatter'),
             global_rank=global_rank,
             world_size=world_size,
-            normalize_audio_db=cfg.get("normalize_audio_db", False),
-            normalize_audio_db_target=cfg.get("normalize_audio_db_target", -20),
+            normalize_audio_db=cfg.get("normalize_audio_db", None),
         )
 
         if bucketing_weights:

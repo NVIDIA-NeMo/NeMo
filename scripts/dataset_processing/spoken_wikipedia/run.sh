@@ -102,7 +102,7 @@ ${NEMO_PATH}/tools/ctc_segmentation/run_segmentation.sh \
 --MODEL_NAME_OR_PATH=${MODEL_FOR_SEGMENTATION} \
 --DATA_DIR=${INPUT_DIR}_prepared \
 --OUTPUT_DIR=${OUTPUT_DIR} \
---MIN_SCORE=${MIN_SCORE}
+--MIN_SCORE=${THRESHOLD}
 
 # Thresholds for filtering
 CER_THRESHOLD=20

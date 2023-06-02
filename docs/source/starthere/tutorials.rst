@@ -131,6 +131,9 @@ To run a tutorial:
      - Punctuation and Capitalization
      - `Punctuation and Capitalization <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Punctuation_and_Capitalization.ipynb>`_
    * - NLP
+     - Spellchecking ASR Customization - SpellMapper
+     - `Spellchecking ASR Customization - SpellMapper <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/SpellMapper_English_ASR_Customization.ipynb>`_
+   * - NLP
      - Entity Linking
      - `Entity Linking <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/Entity_Linking_Medical.ipynb>`_
    * - NLP

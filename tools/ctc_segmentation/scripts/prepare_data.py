@@ -151,7 +151,7 @@ def split_text(
     )
 
     # end of quoted speech - to be able to split sentences by full stop
-    transcript = re.sub(r"([\.\?\!])([\"\'])", r"\g<2>\g<1> ", transcript)
+    transcript = re.sub(r"([\.\?\!])([\"\'”])", r"\g<2>\g<1> ", transcript)
 
     # remove extra space
     transcript = re.sub(r" +", " ", transcript)

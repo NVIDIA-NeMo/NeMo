@@ -9,6 +9,7 @@ NeMo's NLP collection supports provides the following task-specific models:
    :maxdepth: 1
 
    punctuation_and_capitalization_models
+   spellchecking_asr_customization
    token_classification
    joint_intent_slot
    text_classification

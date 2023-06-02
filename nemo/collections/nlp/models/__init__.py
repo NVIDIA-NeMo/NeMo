@@ -30,6 +30,7 @@ from nemo.collections.nlp.models.language_modeling.bert_lm_model import BERTLMMo
 from nemo.collections.nlp.models.language_modeling.transformer_lm_model import TransformerLMModel
 from nemo.collections.nlp.models.machine_translation import MTEncDecModel
 from nemo.collections.nlp.models.question_answering.qa_model import QAModel
+from nemo.collections.nlp.models.spellchecking_asr_customization import SpellcheckingAsrCustomizationModel
 from nemo.collections.nlp.models.text2sparql.text2sparql_model import Text2SparqlModel
 from nemo.collections.nlp.models.text_classification import TextClassificationModel
 from nemo.collections.nlp.models.text_normalization_as_tagging import ThutmoseTaggerModel

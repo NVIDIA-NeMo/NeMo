@@ -692,7 +692,7 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         sep='|',  # To be able to distinguish between 2/3 letters codes.
         add_blank_at=None,
         pad_with_space=False,
-        text_preprocessing_func=lambda text: chinese_text_preprocessing(text),
+        text_preprocessing_func=chinese_text_preprocessing,
     ):
         """Chinese phoneme-based tokenizer.
         Args:
@@ -716,12 +716,15 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         if silence is not None:
             self.silence, tokens = len(tokens), tokens + [silence]  # Silence
 
-        self.phonemes_list = g2p.phonemes_list
-        self.tones_list = g2p.tones_list
+        self.phoneme_list = g2p.phoneme_list
+        self.tone_list = g2p.tone_list
+        self.ascii_letter_list = g2p.ascii_letter_list
 
-        tokens.extend(self.phonemes_list)
-        tokens.extend(self.tones_list)
-        tokens.extend(string.ascii_lowercase)
+        tokens.extend(self.phoneme_list)
+        tokens.extend(self.tone_list)
+        tokens.extend(self.ascii_letter_list)
+
+        self.text_preprocessing_func = text_preprocessing_func
 
         if apostrophe:
             tokens.append("'")  # Apostrophe
@@ -737,15 +740,12 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
 
         self.punct = punct
         self.pad_with_space = pad_with_space
-
-        self.text_preprocessing_func = text_preprocessing_func
         self.g2p = g2p
 
-    def encode(self, text):
+    def encode(self, text: str) -> List[int]:
         """See base class for more information."""
-
         text = self.text_preprocessing_func(text)
-        g2p_text = self.g2p(text)  # TODO: handle infer
+        g2p_text = self.g2p(text)
         return self.encode_from_g2p(g2p_text, text)
 
     def encode_from_g2p(self, g2p_text: List[str], raw_text: Optional[str] = None):
@@ -762,15 +762,15 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             # Add space if last one isn't one
             if p == space and len(ps) > 0 and ps[-1] != space:
                 ps.append(p)
-            # Add next phoneme or char (if chars=True)
-            elif (p.isalnum() or p == "'" or p in self.phonemes_list or p in self.tones_list) and p in tokens:
+            # Add next phoneme or tone or ascii letter or apostrophe.
+            elif (p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list) and p in tokens:
                 ps.append(p)
-            # Add punct
+            # Add punctuation
             elif (p in self.PUNCT_LIST) and self.punct:
                 ps.append(p)
             # Warn about unknown char/phoneme
             elif p != space:
-                message = f"Text: [{''.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
+                message = f"Text: [{' '.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
                 if raw_text is not None:
                     message += f"Original text: [{raw_text}]. Symbol will be skipped."
                 logging.warning(message)

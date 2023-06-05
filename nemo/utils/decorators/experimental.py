@@ -15,19 +15,13 @@
 
 __all__ = ['experimental']
 
+
+import wrapt
+
 from nemo.utils import logging
 
 
-def experimental(cls):
-    """ Decorator which indicates that module is experimental.
-    Use it to mark experimental or research modules.
-    """
-
-    def wrapped(cls):
-        logging.warning(
-            f'Module {cls} is experimental, not ready for production and is not fully supported. Use at your own risk.'
-        )
-
-        return cls
-
-    return wrapped(cls=cls)
+@wrapt.decorator
+def experimental(wrapped, instance, args, kwargs):
+    logging.warning(f"`{wrapped}` is experimental and not ready for production yet. Use at your own risk.")
+    return wrapped(*args, **kwargs)

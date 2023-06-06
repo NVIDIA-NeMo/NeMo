@@ -19,6 +19,7 @@ import os
 import pickle
 import time
 from functools import partial
+from typing import Callable, List, Optional, Type
 
 import numpy as np
 import torch
@@ -35,7 +36,7 @@ def _build_index_from_memdata(fn, newline_int):
     """
     Build index of delimiter positions between samples in memmap.
     Can be provided externally.
-    
+
     Returns a 1D array of ints.
     """
     # use memmap to read file
@@ -68,17 +69,28 @@ class TextMemMapDataset(Dataset):
 
     def __init__(
         self,
-        dataset_paths,
-        newline_int=10,
-        header_lines=0,
-        workers=None,
-        tokenizer=None,
-        sort_dataset_paths=True,
-        build_index_fn=_build_index_from_memdata,
+        dataset_paths: List[str],
+        newline_int: Optional[int] = 10,
+        header_lines: Optional[int] = 0,
+        workers: Optional[int] = None,
+        tokenizer: Optional[Type["TokenizerSpec"]] = None,
+        build_index_fn: Optional[Callable[[str, Optional[int]], bool]] = _build_index_from_memdata,
+        sort_dataset_paths: Optional[bool] = True,
+        index_mapping_dir: Optional[str] = None,
     ):
         """
-        build_index_fn - a callable build_index_fn(fn, newline_int) -> midx [np.array] that returns the index of newlines in a file fn
-                         must be pickleable (to be used in multiprocessing.Pool.map)
+        Args:
+            dataset_paths: list of JSONL file paths.
+            newline_int: ASCII code to use to interpret newlines in file.
+            header_lines: number of header lines in JSON files.
+            workers: number of workers to use for creating index files.
+            tokenizer: tokenizer to use to convert text to tokens.
+            build_index_fn: a callable build_index_fn(fn, newline_int) -> midx [np.array]
+                that returns the index of newlines in a file fn must be pickleable
+                (to be used in multiprocessing.Pool.map).
+            sort_dataset_paths: whether to sort datasets by paths.
+            index_mapping_dir: directory to save the index mapping to.
+                If None, will write to the same folder as the dataset.
         """
         super().__init__()
         self.mdata_midx_list = []
@@ -106,14 +118,20 @@ class TextMemMapDataset(Dataset):
         is_ditributed = torch.distributed.is_available() and torch.distributed.is_initialized()
 
         if not is_ditributed or (is_ditributed and torch.distributed.get_rank() == 0):
-            build_index_files(dataset_paths, newline_int, workers=self._worker, build_index_fn=build_index_fn)
+            build_index_files(
+                dataset_paths,
+                newline_int,
+                workers=self._worker,
+                build_index_fn=build_index_fn,
+                index_mapping_dir=index_mapping_dir,
+            )
 
         if is_ditributed:
             torch.distributed.barrier()
 
         logging.info(f"Loading data files")
         start_time = time.time()
-        mdata_midx_list = [self.load_file(fn) for fn in self._files_list]
+        mdata_midx_list = [self.load_file(fn, index_mapping_dir) for fn in self._files_list]
         logging.info(
             f'Time loading {len(mdata_midx_list)} mem-mapped files: {datetime.timedelta(seconds=time.time() - start_time)}'
         )
@@ -193,7 +211,7 @@ class TextMemMapDataset(Dataset):
 
         return data
 
-    def load_file(self, fn):
+    def load_file(self, fn, index_mapping_dir: Optional[str] = None):
         """
         Loads a text file as np.int8.
 
@@ -203,7 +221,7 @@ class TextMemMapDataset(Dataset):
             size - number of lines in file
         """
         logging.info(f"Loading {fn}")
-        idx_fn = f"{fn}.{__idx_suffix__}"
+        idx_fn = _index_fn(fn, index_mapping_dir)
 
         # create data map
         mdata = np.memmap(fn, dtype=np.uint8, mode='r')
@@ -246,15 +264,29 @@ class CSVMemMapDataset(TextMemMapDataset):
 
     def __init__(
         self,
-        dataset_paths,
-        newline_int=10,
-        header_lines=1,
-        workers=None,
-        tokenizer=None,
-        sort_dataset_paths=True,
+        dataset_paths: List[str],
+        newline_int: Optional[int] = 10,
+        header_lines: Optional[int] = 0,
+        workers: Optional[int] = None,
+        tokenizer: Optional[Type["TokenizerSpec"]] = None,
+        sort_dataset_paths: Optional[bool] = True,
         data_col=1,
         data_sep=',',
+        index_mapping_dir: Optional[str] = None,
     ):
+        """
+        Args:
+            dataset_paths: list of JSONL file paths.
+            newline_int: ASCII code to use to interpret newlines in file.
+            header_lines: number of header lines in JSON files.
+            workers: number of workers to use for creating index files.
+            tokenizer: tokenizer to use to convert text to tokens.
+            sort_dataset_paths: whether to sort datasets by paths.
+            data_col: index of data column.
+            data_sep: data separator.
+            index_mapping_dir: directory to save the index mapping to.
+                If None, will write to the same folder as the dataset.
+        """
         super().__init__(
             dataset_paths=dataset_paths,
             newline_int=newline_int,
@@ -262,6 +294,7 @@ class CSVMemMapDataset(TextMemMapDataset):
             workers=workers,
             tokenizer=tokenizer,
             sort_dataset_paths=sort_dataset_paths,
+            index_mapping_dir=index_mapping_dir,
         )
         self._data_col = data_col
         self._data_sep = data_sep
@@ -280,8 +313,26 @@ class JSONLMemMapDataset(TextMemMapDataset):
     """
 
     def __init__(
-        self, dataset_paths, newline_int=10, header_lines=1, workers=None, tokenizer=None, sort_dataset_paths=True,
+        self,
+        dataset_paths: List[str],
+        newline_int: Optional[int] = 10,
+        header_lines: Optional[int] = 0,
+        workers: Optional[int] = None,
+        tokenizer: Optional[Type["TokenizerSpec"]] = None,
+        sort_dataset_paths: Optional[bool] = True,
+        index_mapping_dir: Optional[str] = None,
     ):
+        """
+        Args:
+            dataset_paths: list of JSONL file paths.
+            newline_int: ASCII code to use to interpret newlines in file.
+            header_lines: number of header lines in JSON files.
+            workers: number of workers to use for creating index files.
+            tokenizer: tokenizer to use to convert text to tokens.
+            sort_dataset_paths: whether to sort datasets by paths.
+            index_mapping_dir: directory to save the index mapping to.
+                If None, will write to the same folder as the dataset.
+        """
         super().__init__(
             dataset_paths=dataset_paths,
             newline_int=newline_int,
@@ -289,6 +340,7 @@ class JSONLMemMapDataset(TextMemMapDataset):
             workers=workers,
             tokenizer=tokenizer,
             sort_dataset_paths=sort_dataset_paths,
+            index_mapping_dir=index_mapping_dir,
         )
 
     def _build_data_from_text(self, text):
@@ -304,9 +356,48 @@ def _index_file_exists(idx_fn):
         return False
 
 
-def _build_memmap_index_files(newline_int, build_index_fn, fn):
+def _index_fn(fn: str, index_mapping_dir: str) -> str:
+    """Return base file name of index files.
+
+    This returns the base file name associated with specified index
+    files. This base name is the base on top of which suffixes
+    like .npy or .info are added.
+
+    The parent directory is created if it does not already exist.
+
+    fn may be specified in multiple ways:
+    1. file name: data.jsonl,
+    2. relative path to a file: relative/path/to/data.jsonl,
+    3. absolute path to a file: /absolute/path/to/data.jsonl.
+
+    This function returns paths in the pattern of:
+    1. /path/to/input_mapping_dir/data.jsonl.idx
+    2. /path/to/input_mapping_dir/relative/path/to/data.jsonl.idx
+    3. /path/to/input_mapping_dir/absolute/path/to/data.jsonl.idx
+
+    Args:
+        fn: filename to get base name for.
+        index_mapping_dir: directory to save the index mapping to.
+                If None, will write to the same folder as the dataset.
+    """
+    if index_mapping_dir:
+        # Remove leading "/" and "..".
+        while fn.startswith(("/", "..")):
+            if fn.startswith(".."):
+                fn = fn.lstrip("..")
+            if fn.startswith("/"):
+                fn = fn.lstrip("/")
+        idx_fn = f"{os.path.join(index_mapping_dir, fn)}.{__idx_suffix__}"
+        # Create parent directory if needed.
+        os.makedirs(os.path.dirname(idx_fn), exist_ok=True)
+    else:
+        idx_fn = f"{fn}.{__idx_suffix__}"
+    return idx_fn
+
+
+def _build_memmap_index_files(newline_int, build_index_fn, fn, index_mapping_dir: str):
     """Helper function to build an index file"""
-    idx_fn = f"{fn}.{__idx_suffix__}"
+    idx_fn = _index_fn(fn, index_mapping_dir)
 
     # create data map
     if _index_file_exists(idx_fn):
@@ -332,7 +423,9 @@ def _build_memmap_index_files(newline_int, build_index_fn, fn):
         return True
 
 
-def build_index_files(dataset_paths, newline_int, workers=None, build_index_fn=_build_index_from_memdata):
+def build_index_files(
+    dataset_paths, newline_int, workers=None, build_index_fn=_build_index_from_memdata, index_mapping_dir: str = None
+):
     """Auxiliary method to build multiple index files"""
     if len(dataset_paths) < 1:
         raise ValueError("files_list must contain at leat one file name")
@@ -344,7 +437,10 @@ def build_index_files(dataset_paths, newline_int, workers=None, build_index_fn=_
     # load all files into memmap
     start_time = time.time()
     with mp.Pool(workers) as p:
-        build_status = p.map(partial(_build_memmap_index_files, newline_int, build_index_fn), dataset_paths)
+        build_status = p.map(
+            partial(_build_memmap_index_files, newline_int, build_index_fn, index_mapping_dir=index_mapping_dir),
+            dataset_paths,
+        )
 
     logging.info(
         f'Time building {sum(build_status)} / {len(build_status)} mem-mapped files: {datetime.timedelta(seconds=time.time() - start_time)}'

@@ -218,11 +218,6 @@ of filepaths, e.g. ``['/data/shard1.tar', '/data/shard2.tar']``, or in a single 
 As with non-tarred datasets, the manifest file should be passed in ``manifest_filepath``. The dataloader assumes that the length
 of the manifest after filtering is the correct size of the dataset for reporting training progress. 
 
-If the manifest is large, you may wish to reference sharded manifest files instead of a single manifest file. The naming convention 
-is identical to the audio tarballs and there should be a 1:1 relationship between a sharded audio tarfile and its manifest shard; e.g. 
-``'/data/sharded_manifests/manifest__OP_1..64_CL_'`` in the above example. Using sharded manifests improves job startup times and 
-decreases memory usage, as each worker only loads manifest shards for the corresponding audio shards instead of the entire manifest. 
-
 The ``tarred_shard_strategy`` field of the config file can be set if you have multiple shards and are running an experiment with
 multiple workers. It defaults to ``scatter``, which preallocates a set of shards per worker which do not change during runtime.
 Note that this strategy, on specific occasions (when the number of shards is not divisible with ``world_size``), will not sample
@@ -241,6 +236,18 @@ see the corresponding class APIs in the `Datasets <./api.html#Datasets>`__ secti
   In addition, if using distributed processing, each shard must have the same number of entries after filtering is
   applied such that each worker ends up with the same number of files. We currently do not check for this in any dataloader, but the user's
   program may hang if the shards are uneven.
+
+Sharded Manifests
+~~~~~~~~~~~~~~~~~
+If your dataset / manifest is large, you may wish to use sharded manifest files instead of a single manifest file. The naming convention
+is identical to the audio tarballs and there should be a 1:1 relationship between a sharded audio tarfile and its manifest shard; e.g.
+``'/data/sharded_manifests/manifest__OP_1..64_CL_'`` in the above example. Using sharded manifests improves job startup times and
+decreases memory usage, as each worker only loads manifest shards for the corresponding audio shards instead of the entire manifest.
+
+To enable sharded manifest filename expansion, set the ``shard_manifests`` field of the config file to true. In addition, the 
+``defer_setup`` flag needs to be true as well, so that the dataloader will be initialized after the DDP and its length can be collected from 
+the distributed workers.
+
 
 Conversion to Tarred Datasets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

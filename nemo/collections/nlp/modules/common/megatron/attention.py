@@ -22,6 +22,8 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     AdapterName,
     InfusedAdapterConfig,
     LoraKQVAdapterConfig,
+    LoraKVAdapterConfig,
+    LoraQAdapterConfig,
 )
 from nemo.collections.nlp.modules.common.megatron.fused_softmax import MatchedScaleMaskSoftmax
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
@@ -115,7 +117,14 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         self.megatron_legacy = megatron_legacy
         self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
 
-        self.set_accepted_adapter_types([InfusedAdapterConfig._target_, LoraKQVAdapterConfig._target_])
+        self.set_accepted_adapter_types(
+            [
+                InfusedAdapterConfig._target_,
+                LoraKQVAdapterConfig._target_,
+                LoraQAdapterConfig._target_,
+                LoraKVAdapterConfig._target_,
+            ]
+        )
 
         if kv_channels is None:
             assert (
@@ -395,6 +404,11 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         else:
             # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
             mixed_kv_layer, _ = self.key_value(encoder_output)
+            if self.is_adapter_available():
+                lora_kv_adapter = self.get_adapter_module(AdapterName.LORA_KV_ADAPTER)
+                if lora_kv_adapter:
+                    lora_mixed_kv_layer = lora_kv_adapter(encoder_output)
+                    mixed_kv_layer = mixed_kv_layer + lora_mixed_kv_layer
 
             # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
             new_tensor_shape = mixed_kv_layer.size()[:-1] + (
@@ -412,6 +426,11 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
             # Attention head [sq, b, h] --> [sq, b, hp]
             query_layer, _ = self.query(hidden_states)
+            if self.is_adapter_available():
+                lora_q_adapter = self.get_adapter_module(AdapterName.LORA_Q_ADAPTER)
+                if lora_q_adapter:
+                    lora_q_layer = lora_q_adapter(hidden_states)
+                    query_layer = query_layer + lora_q_layer
             # [sq, b, hp] --> [sq, b, np, hn]
             new_tensor_shape = query_layer.size()[:-1] + (
                 self.num_attention_heads_per_partition,

@@ -3588,50 +3588,49 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       }
     }
 
-    // TODO: add when https://github.com/NVIDIA/apex/pull/1596 is merged
-    // stage('L2: Megatron GPT Prompt Tuning TP1 PP2') {
-    //   when {
-    //     anyOf {
-    //       branch 'main'
-    //       changeRequest target: 'main'
-    //     }
-    //   }
-    //   failFast true
-    //   parallel{
-    //     stage('GPT Prompt Learning TP=1 PP=2') {
-    //       steps {
-    //         sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
-    //             --config-name=megatron_gpt_prompt_learning_config \
-    //             name='/home/TestData/nlp/prompt_learning/p_tuning_test_pp' \
-    //             trainer.devices=2 \
-    //             trainer.max_steps=1 \
-    //             trainer.val_check_interval=1 \
-    //             trainer.max_epochs=null \
-    //             model.optim.name=fused_adam \
-    //             model.data.num_workers=1 \
-    //             model.pipeline_model_parallel_size=2 \
-    //             model.language_model_path='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp2.nemo' \
-    //             model.existing_tasks=[] \
-    //             model.new_tasks=['boolq'] \
-    //             model.data.train_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl'] \
-    //             model.data.validation_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl'] \
-    //             model.global_batch_size=4"
-    //         sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp"
-    //         sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning_eval.py \
-    //             virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/p_tuning_test_pp.nemo' \
-    //             gpt_model_file='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp2.nemo' \
-    //             inference.greedy=True \
-    //             inference.add_BOS=False \
-    //             trainer.devices=2 \
-    //             pipeline_model_parallel_size=2 \
-    //             pred_file_path=/home/TestData/nlp/prompt_learning/p_tuning_test_pp_preds.txt \
-    //             data_paths=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl']"
-    //         sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp.nemo"
-    //         sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp_preds.txt"
-    //       }
-    //     }
-    //   }
-    // }
+     stage('L2: Megatron GPT Prompt Tuning TP1 PP2') {
+       when {
+         anyOf {
+           branch 'main'
+           changeRequest target: 'main'
+         }
+       }
+       failFast true
+       parallel{
+         stage('GPT Prompt Learning TP=1 PP=2') {
+           steps {
+             sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning.py \
+                 --config-name=megatron_gpt_prompt_learning_config \
+                 name='/home/TestData/nlp/prompt_learning/p_tuning_test_pp' \
+                 trainer.devices=2 \
+                 trainer.max_steps=1 \
+                 trainer.val_check_interval=1 \
+                 trainer.max_epochs=null \
+                 model.optim.name=fused_adam \
+                 model.data.num_workers=1 \
+                 model.pipeline_model_parallel_size=2 \
+                 model.language_model_path='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp2.nemo' \
+                 model.existing_tasks=[] \
+                 model.new_tasks=['boolq'] \
+                 model.data.train_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl'] \
+                 model.data.validation_ds=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl'] \
+                 model.global_batch_size=4"
+             sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp"
+             sh "python examples/nlp/language_modeling/megatron_gpt_prompt_learning_eval.py \
+                 virtual_prompt_model_file='/home/TestData/nlp/prompt_learning/p_tuning_test_pp.nemo' \
+                 gpt_model_file='/home/TestData/nlp/megatron_gpt/tiny/megatron_14m_gpt_tp1_pp2.nemo' \
+                 inference.greedy=True \
+                 inference.add_BOS=False \
+                 trainer.devices=2 \
+                 pipeline_model_parallel_size=2 \
+                 pred_file_path=/home/TestData/nlp/prompt_learning/p_tuning_test_pp_preds.txt \
+                 data_paths=['/home/TestData/nlp/prompt_learning/boolq_CI_test.jsonl']"
+             sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp.nemo"
+             sh "rm -rf /home/TestData/nlp/prompt_learning/p_tuning_test_pp_preds.txt"
+           }
+         }
+       }
+     }
 
     // TODO: Add this test back. Test was failing on CI machines due to HW error
     // stage('L2: Megatron GPT Convert from Megatron-LM checkpoing and Eval') {

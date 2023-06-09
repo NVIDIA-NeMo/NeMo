@@ -1,2 +1,3 @@
 nemo_toolkit[all]
-pytest
+prettyprinter # for testing
+pytest # for testing

@@ -7,7 +7,6 @@ A tool for doing Forced Alignment using Viterbi decoding of NeMo CTC-based model
 ``` bash
 python <path_to_NeMo>/tools/nemo_forced_aligner/align.py \
         pretrained_name="stt_en_citrinet_1024_gamma_0_25" \
-        model_downsample_factor=8 \
         manifest_filepath=<path to manifest of utterances you want to align> \
         output_dir=<path to where your ctm files will be saved>
 ```
@@ -23,34 +22,44 @@ Call the `align.py` script, specifying the parameters as follows:
 * `model_path`: string specifying the local filepath to a CTC NeMo ASR model which will be used to generate the log-probs which we will use to do alignment. If `pretrained_name` is specified, `model_path` must not be specified.
 >Note: NFA can only use CTC models (not Transducer models) at the moment. If you want to transcribe a long audio file (longer than ~5-10 mins), do not use Conformer CTC model as that will likely give Out Of Memory errors.
 
-* `model_downsample_factor`: the downsample factor of the ASR model. It should be 2 if your model is QuartzNet, 4 if it is Conformer CTC, 8 if it is Citrinet.
-
 * `manifest_filepath`: The path to the manifest of the data you want to align, containing `'audio_filepath'` and `'text'` fields. The audio filepaths need to be absolute paths.
 
-* `output_dir`: The folder where to save CTM files containing the generated alignments and new JSON manifest containing paths to those CTM files. There will be one CTM file per utterance (ie one CTM file per line in the manifest). The files will be called `<output_dir>/{tokens,words,additional_segments}/<utt_id>.ctm` and each line in each file will start with `<utt_id>`. By default, `utt_id` will be the stem of the audio_filepath. This can be changed by overriding `audio_filepath_parts_in_utt_id`. The new JSON manifest will be at `<output_dir>/<original manifest file name>_with_ctm_paths.json`.
+* `output_dir`: The folder where to save the output files (e.g. CTM, ASS) containing the generated alignments and new JSON manifest containing paths to those CTM/ASS files. The CTM file will be called `<output_dir>/ctm/{tokens,words,segments}/<utt_id>.ctm` and each line in each file will start with `<utt_id>`. By default, `utt_id` will be the stem of the audio_filepath. This can be changed by overriding `audio_filepath_parts_in_utt_id`. The new JSON manifest will be at `<output_dir>/<original manifest file name>_with_ctm_paths.json`. The ASS files will be at `<output_dir>/ass/{tokens,words}/<utt_id>.ass`. You can adjust which files should be saved by adjusting the parameter `save_output_file_formats`. 
 
-* **[OPTIONAL]** `align_using_pred_text`: if True, will transcribe the audio using the ASR model (specified by `pretrained_name` or `model_path`) and then use that transcription as the 'ground truth' for the forced alignment. The `"pred_text"` will be saved in the output JSON manifest at `<output_dir>/{original manifest name}_with_ctm_paths.json`. To avoid over-writing other transcribed texts, if there are already `"pred_text"` entries in the original manifest, the program will exit without attempting to generate alignments.  (Default: False). 
+### Optional parameters:
 
-* **[OPTIONAL]** `transcribe_device`: The device that will be used for generating log-probs (i.e. transcribing). If None, NFA will set it to 'cuda' if it is available (otherwise will set it to 'cpu'). If specified `transcribe_device` needs to be a string that can be input to the `torch.device()` method. (Default: `None`).
+* `align_using_pred_text`: if True, will transcribe the audio using the ASR model (specified by `pretrained_name` or `model_path`) and then use that transcription as the reference text for the forced alignment. The `"pred_text"` will be saved in the output JSON manifest at `<output_dir>/{original manifest name}_with_ctm_paths.json`. To avoid over-writing other transcribed texts, if there are already `"pred_text"` entries in the original manifest, the program will exit without attempting to generate alignments.  (Default: False). 
 
-* **[OPTIONAL]** `viterbi_device`: The device that will be used for doing Viterbi decoding. If None, NFA will set it to 'cuda' if it is available (otherwise will set it to 'cpu'). If specified `transcribe_device` needs to be a string that can be input to the `torch.device()` method.(Default: `None`).
+* `transcribe_device`: The device that will be used for generating log-probs (i.e. transcribing). If None, NFA will set it to 'cuda' if it is available (otherwise will set it to 'cpu'). If specified `transcribe_device` needs to be a string that can be input to the `torch.device()` method. (Default: `None`).
 
-* **[OPTIONAL]** `batch_size`: The batch_size that will be used for generating log-probs and doing Viterbi decoding. (Default: 1).
+* `viterbi_device`: The device that will be used for doing Viterbi decoding. If None, NFA will set it to 'cuda' if it is available (otherwise will set it to 'cpu'). If specified `transcribe_device` needs to be a string that can be input to the `torch.device()` method.(Default: `None`).
 
-* **[OPTIONAL]** `additional_ctm_grouping_separator`: the string used to separate CTM segments if you want to obtain CTM files at a level that is not the token level or the word level. NFA will always produce token-level and word-level CTM files in: `<output_dir>/tokens/<utt_id>.ctm` and `<output_dir>/words/<utt_id>.ctm`. If `additional_ctm_grouping_separator` is specified, an additional folder `<output_dir>/{tokens/words/additional_segments}/<utt_id>.ctm` will be created containing CTMs for `addtional_ctm_grouping_separator`-separated segments. (Default: `None`. Cannot be empty string or space (" "), as space-separated word-level CTMs will always be saved in `<output_dir>/words/<utt_id>.ctm`.)
-> Note: the `additional_ctm_grouping_separator` will be removed from the ground truth text and all the output CTMs, ie it is treated as a marker which is not part of the ground truth. The separator will essentially be treated as a space, and any additional spaces around it will be amalgamated into one, i.e. if `additional_ctm_grouping_separator="|"`, the following texts will be treated equivalently: `“abc|def”`, `“abc |def”`, `“abc| def”`, `“abc | def"`.
+* `batch_size`: The batch_size that will be used for generating log-probs and doing Viterbi decoding. (Default: 1).
 
-* **[OPTIONAL]** `remove_blank_tokens_from_ctm`: a boolean denoting whether to remove <blank> tokens from token-level output CTMs. (Default: False). 
+* `use_local_attention`: boolean flag specifying whether to try to use local attention for the ASR Model (will only work if the ASR Model is a Conformer model). If local attention is used, we will set the local attention context size to [64,64].
 
-* **[OPTIONAL]** `audio_filepath_parts_in_utt_id`: This specifies how many of the 'parts' of the audio_filepath we will use (starting from the final part of the audio_filepath) to determine the utt_id that will be used in the CTM files. (Default: 1, i.e. utt_id will be the stem of the basename of audio_filepath). Note also that any spaces that are present in the audio_filepath will be replaced with dashes, so as not to change the number of space-separated elements in the CTM files.
+* `additional_segment_grouping_separator`: an optional string used to separate the text into smaller segments. If this is not specified, then the whole text will be treated as a single segment. (Default: `None`. Cannot be empty string or space (" "), as NFA will automatically produce word-level timestamps for substrings separated by spaces).
+> Note: the `additional_segment_grouping_separator` will be removed from the reference text and all the output files, ie it is treated as a marker which is not part of the reference text. The separator will essentially be treated as a space, and any additional spaces around it will be amalgamated into one, i.e. if `additional_segment_grouping_separator="|"`, the following texts will be treated equivalently: `“abc|def”`, `“abc |def”`, `“abc| def”`, `“abc | def"`.
 
-* **[OPTIONAL]** `minimum_timestamp_duration`: a float indicating a minimum duration (in seconds) for timestamps in the CTM. If any line in the CTM has a duration lower than the `minimum_timestamp_duration`, it will be enlarged from the middle outwards until it meets the minimum_timestamp_duration, or reaches the beginning or end of the audio file. Note that this may cause timestamps to overlap. (Default: 0, i.e. no modifications to predicted duration).
+* `remove_blank_tokens_from_ctm`: a boolean denoting whether to remove <blank> tokens from token-level output CTMs. (Default: False). 
 
-* **[OPTIONAL]** `use_buffered_chunked_streaming`: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models (e.g., stt_en_citrinet_1024_gamma_0_25)with `per_feature` preprocessor are supported. The below two params are needed if this option set to `True`.
+* `audio_filepath_parts_in_utt_id`: This specifies how many of the 'parts' of the audio_filepath we will use (starting from the final part of the audio_filepath) to determine the utt_id that will be used in the CTM files. (Default: 1, i.e. utt_id will be the stem of the basename of audio_filepath). Note also that any spaces that are present in the audio_filepath will be replaced with dashes, so as not to change the number of space-separated elements in the CTM files.
 
-* **[OPTIONAL]** `chunk_len_in_secs`: the chunk size for buffered chunked streaming inference. Default is 1.6 seconds.
+* `minimum_timestamp_duration`: a float indicating a minimum duration (in seconds) for timestamps in the CTM. If any line in the CTM has a duration lower than the `minimum_timestamp_duration`, it will be enlarged from the middle outwards until it meets the minimum_timestamp_duration, or reaches the beginning or end of the audio file. Note that this may cause timestamps to overlap. (Default: 0, i.e. no modifications to predicted duration).
 
-* **[OPTIONAL]** `total_buffer_in_secs`: the buffer size for buffered chunked streaming inference. Default is 4.0 seconds.
+* `use_buffered_chunked_streaming`: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models (e.g., stt_en_citrinet_1024_gamma_0_25)with `per_feature` preprocessor are supported. The below two params are needed if this option set to `True`.
+
+* `chunk_len_in_secs`: the chunk size for buffered chunked streaming inference. Default is 1.6 seconds.
+
+* `total_buffer_in_secs`: the buffer size for buffered chunked streaming inference. Default is 4.0 seconds.
+
+* `simulate_cache_aware_streaming`: a flag to indicate whether to use cache aware streaming to do get the logits for alignment. Default: `False`.
+
+* `save_output_file_formats`: list of file formats to use for saving the output. Default: `["ctm", "ass"]` (these are all the available ones currently).
+
+* `ctm_file_config`: `CTMFileConfig` to specify the configuration of the output CTM files.
+
+* `ass_file_config`: `ASSFileConfig` to specify the configuration of the output ASS files.
 
 # Input manifest file format
 By default, NFA needs to be provided with a 'manifest' file where each line specifies the absolute "audio_filepath" and "text" of each utterance that you wish to produce alignments for, like the format below:
@@ -58,25 +67,35 @@ By default, NFA needs to be provided with a 'manifest' file where each line spec
 {"audio_filepath": "/absolute/path/to/audio.wav", "text": "the transcription of the utterance"}
 ```
 
-You can omit the `"text"` field from the manifest if you specify `align_using_pred_text=true`. In that case, any `"text"` fields in the manifest will be ignored: the ASR model at `pretrained_name` or `model_path` will be used to transcribe the audio and obtain `"pred_text"`, which will be used as the 'ground truth' for the forced alignment process. The `"pred_text"` will also be saved in the output manifest JSON file at `<output_dir>/<original manifest file name>_with_ctm_paths.json`. To remove the possibility of overwriting `"pred_text"`, NFA will raise an error if `align_using_pred_text=true` and there are existing `"pred_text"` fields in the original manifest.
+You can omit the `"text"` field from the manifest if you specify `align_using_pred_text=true`. In that case, any `"text"` fields in the manifest will be ignored: the ASR model at `pretrained_name` or `model_path` will be used to transcribe the audio and obtain `"pred_text"`, which will be used as the reference text for the forced alignment process. The `"pred_text"` will also be saved in the output manifest JSON file at `<output_dir>/<original manifest file name>_with_output_file_paths.json`. To remove the possibility of overwriting `"pred_text"`, NFA will raise an error if `align_using_pred_text=true` and there are existing `"pred_text"` fields in the original manifest.
 
-> Note: NFA does not require `"duration"` fields in the manifest, and can align long audio files without running out of memory. Depending on your machine specs, you can align audios up to 5-10 minutes on Conformer CTC models, up to around 1.5 hours for QuartzNet models, and up to several hours for Citrinet models. NFA will also produce better alignments the more accurate the ground-truth `"text"` is.
+> Note: NFA does not require `"duration"` fields in the manifest, and can align long audio files without running out of memory. The duration of audio file you can align will depend on the amount of memory on your machine. NFA will also produce better alignments the more accurate the reference text in `"text"` is.
 
 
 # Output CTM file format
 For each utterance specified in a line of `manifest_filepath`, several CTM files will be generated:
-* a CTM file containing token-level alignments at `<output_dir>/tokens/<utt_id>.ctm`,
-* a CTM file containing word-level alignments at `<output_dir>/words/<utt_id>.ctm`,
-* if `additional_ctm_grouping_separator` is specified, there will also be a CTM file containing those segments at `output_dir/additional_segments`.
+* a CTM file containing token-level alignments at `<output_dir>/ctm/tokens/<utt_id>.ctm`,
+* a CTM file containing word-level alignments at `<output_dir>/ctm/words/<utt_id>.ctm`,
+* a CTM file containing segment-level alignments at `<output_dir>/ctm/segments/<utt_id>.ctm`. If `additional_segment_grouping_separator` is specified, the segments will be parts of the text separated by `additonal_segment_grouping_separator`. If it is not specified, the entire text will be treated as a single segment.
+
 Each CTM file will contain lines of the format:
 `<utt_id> 1 <start time in seconds> <duration in seconds> <text, ie token/word/segment>`.
 Note the second item in the line (the 'channel ID', which is required by the CTM file format) is always 1, as NFA operates on single channel audio.
 
+# Output ASS file format
+NFA will produce the following ASS files, which you can use to generate subtitle videos:
+* ASS files with token-level highlighting will be at `<output_dir>/ass/tokens/<utt_id>.ass,`
+* ASS files with word-level highlighting will be at `<output_dir>/ass/words/<utt_id>.ass`.
+All words belonging to the same segment 'segments' will appear at the same time in the subtitles generated with the ASS files. If you find that your segments are not the right size, you can use set `ass_file_config.resegment_text_to_fill_space=true` and specify some number of `ass_file_config.max_lines_per_segment`.
+
+
 # Output JSON manifest file format
-A new manifest file will be saved at `<output_dir>/<original manifest file name>_with_ctm_paths.json`. It will contain the same fields as the original manifest, and additionally:
-* `"token_level_ctm_filepath"`
-* `"word_level_ctm_filepath"`
-* `"additonal_segment_level_ctm_filepath"` (if `additional_ctm_grouping_separator` is specified)
+A new manifest file will be saved at `<output_dir>/<original manifest file name>_with_output_file_paths.json`. It will contain the same fields as the original manifest, and additionally:
+* `"token_level_ctm_filepath"` (if `save_output_file_formats` contains `ctm`)
+* `"word_level_ctm_filepath"` (if `save_output_file_formats` contains `ctm`)
+* `"segment_level_ctm_filepath"` (if `save_output_file_formats` contains `ctm`)
+* `"token_level_ass_filepath"` (if `save_output_file_formats` contains `ass`)
+* `"word_level_ass_filepath"` (if `save_output_file_formats` contains `ass`)
 * `"pred_text"` (if `align_using_pred_text=true`)
 
 

@@ -388,7 +388,7 @@ def transcribe_partial_audio(
         decode_function = (
             asr_model.decoding.rnnt_decoder_predictions_tensor
             if decoder_type == 'rnnt'
-            else asr_model.decoding.ctc_decoder_predictions_tensor
+            else asr_model.ctc_decoding.ctc_decoder_predictions_tensor
         )
     elif hasattr(asr_model, 'joint'):  # RNNT model
         decode_function = asr_model.decoding.rnnt_decoder_predictions_tensor

@@ -82,11 +82,11 @@ class ChineseG2p(BaseG2p):
             if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path)
             else phoneme_dict
         )
-        self.phoneme_list = list({pron for prons in phoneme_dict.values() for pron in prons})
+        self.phoneme_list = sorted({pron for prons in phoneme_dict.values() for pron in prons})
 
         # tones
         self.tone_dict = {str(x): tone_prefix + str(x) for x in range(1, 6)}
-        self.tone_list = list(self.tone_dict.values())
+        self.tone_list = sorted(self.tone_dict.values())
 
         # ascii letters
         self.ascii_letter_dict = {

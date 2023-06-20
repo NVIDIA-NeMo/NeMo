@@ -46,9 +46,11 @@ def build_topo(name: str, tokens: List[int], blank_num: int, with_self_loops: bo
     else:
         raise ValueError(f"Unknown topo name: {name}")
     if blank_num != 0:
-        blank_mask = ans.labels == 0
-        ans.labels[(ans.labels != -1) & (ans.labels <= blank_num)] -= 1
-        ans.labels[blank_mask] = blank_num
+        labels = ans.labels
+        blank_mask = labels == 0
+        labels[(labels != -1) & (labels <= blank_num)] -= 1
+        labels[blank_mask] = blank_num
+        ans.labels = labels  # force update ans.labels property to notify FSA about modifications, required by k2
     ans = k2.arc_sort(ans)
     return ans
 

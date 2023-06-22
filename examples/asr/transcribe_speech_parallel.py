@@ -32,6 +32,15 @@ python transcribe_speech_parallel.py \
     predict_ds.batch_size=16 \
     output_path=/tmp/
 
+Example for Hybrid-CTC/RNNT models with non-tarred datasets:
+
+python transcribe_speech_parallel.py \
+    model=stt_en_fastconformer_hybrid_large \
+    decoder_type=ctc \
+    predict_ds.manifest_filepath=/dataset/manifest_file.json \
+    predict_ds.batch_size=16 \
+    output_path=/tmp/
+
 Example for tarred datasets:
 
 python transcribe_speech_parallel.py \
@@ -73,7 +82,7 @@ from omegaconf import MISSING, OmegaConf
 from nemo.collections.asr.data.audio_to_text_dataset import ASRPredictionWriter
 from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.models.configs.asr_models_config import ASRDatasetConfig
 from nemo.core.config import TrainerConfig, hydra_runner
 from nemo.utils import logging
@@ -92,6 +101,10 @@ class ParallelTranscriptionConfig:
 
     # decoding strategy for RNNT models
     rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig()
+
+    # decoder for hybrid models, must be one of 'ctc', 'rnnt' if not None
+    decoder_type: Optional[str] = None
+
     trainer: TrainerConfig = TrainerConfig(devices=-1, accelerator="gpu", strategy="ddp")
 
 
@@ -136,6 +149,9 @@ def main(cfg: ParallelTranscriptionConfig):
             "Attempting to initialize from a pretrained model as the model name does not have the extension of .nemo or .ckpt"
         )
         model = ASRModel.from_pretrained(model_name=cfg.model, map_location="cpu")
+
+    if isinstance(model, EncDecHybridRNNTCTCModel) and cfg.decoder_type is not None:
+        model.change_decoding_strategy(decoder_type=cfg.decoder_type)
 
     trainer = ptl.Trainer(**cfg.trainer)
 

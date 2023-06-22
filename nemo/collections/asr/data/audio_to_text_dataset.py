@@ -713,6 +713,7 @@ class ASRPredictionWriter(BasePredictionWriter):
             item = {}
             sample = self.dataset.get_manifest_sample(sample_id)
             item["audio_filepath"] = sample.audio_file
+            item["offset"] = sample.offset
             item["duration"] = sample.duration
             item["text"] = sample.text_raw
             item["pred_text"] = transcribed_text

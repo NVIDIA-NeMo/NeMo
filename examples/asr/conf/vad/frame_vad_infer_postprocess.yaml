@@ -21,10 +21,10 @@ vad:
     postprocessing:
       onset: 0.3 # onset threshold for detecting the beginning and end of a speech
       offset: 0.3 # offset threshold for detecting the end of a speech.
-      pad_onset: 0.5 # adding durations before each speech segment
-      pad_offset: 0.5 # adding durations after each speech segment
-      min_duration_on: 0.0 # threshold for short speech deletion
-      min_duration_off: 0.6 # threshold for short non-speech segment deletion
+      pad_onset: 0.2 # adding durations before each speech segment
+      pad_offset: 0.2 # adding durations after each speech segment
+      min_duration_on: 0.2 # threshold for short speech deletion
+      min_duration_off: 0.2 # threshold for short non-speech segment deletion
       filter_speech_first: True
 
 prepared_manifest_vad_input: null # if not specify, it will automatically generated be "manifest_vad_input.json"

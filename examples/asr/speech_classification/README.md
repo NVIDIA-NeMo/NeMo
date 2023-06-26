@@ -86,3 +86,20 @@ The manifest json file should have the following format (each line is a Python d
 {"audio_filepath": "/path/to/audio_file1.wav", "offset": 0, "duration": 10000}  
 {"audio_filepath": "/path/to/audio_file2.wav", "offset": 0, "duration": 10000}  
 ```
+
+
+## Visualization
+
+To visualize the VAD outputs, you can use the `nemo.collections.asr.parts.utils.vad_utils.plot_sample_from_rttm` function, which takes an audio file and an RTTM file as input, and plots the audio waveform and the VAD labels. Since the VAD inference script will output a json manifest `manifest_vad_out.json` by default, you can create a Jupyter Notebook with the following script and fill in the paths using the output manifest:
+```python
+from nemo.collections.asr.parts.utils.vad_utils import plot_sample_from_rttm
+
+plot_sample_from_rttm(
+    audio_file="/path/to/audio_file.wav",
+    rttm_file="/path/to/rttm_file.rttm",
+    offset=0.0,
+    duration=1000,
+    save_path="vad_pred.png"
+)
+```
+

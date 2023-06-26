@@ -1648,7 +1648,7 @@ def frame_vad_infer_load_manifest(cfg: DictConfig):
             manifest_orig.append(entry)
 
             # always prefer RTTM labels if exist
-            if "label" not in entry or "rttm_filepath" in entry or "rttm_file" in entry:
+            if "label" not in entry and ("rttm_filepath" in entry or "rttm_file" in entry):
                 rttm_key = "rttm_filepath" if "rttm_filepath" in entry else "rttm_file"
                 segments = load_speech_segments_from_rttm(entry[rttm_key])
                 label_str = get_frame_labels(
@@ -1661,8 +1661,8 @@ def frame_vad_infer_load_manifest(cfg: DictConfig):
                 key_labels_map[uniq_audio_name] = [float(x) for x in label_str.split()]
             elif entry.get("label", None) is not None:
                 key_labels_map[uniq_audio_name] = [float(x) for x in entry["label"].split()]
-            else:
-                raise ValueError("Must have either `label` or `rttm_filepath` in manifest")
+            elif cfg.evaluate:
+                raise ValueError("Must have either `label` or `rttm_filepath` in manifest when evaluate=True")
 
     return manifest_orig, key_labels_map, key_rttm_map
 

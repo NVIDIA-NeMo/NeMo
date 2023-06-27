@@ -327,6 +327,9 @@ class GPTPromptLearningDataset(Dataset):
     def __getitem__(self, idx):
         return self.examples[idx]
 
+    def _ceil_to_nearest(self, n, m):
+        return (n + m - 1) // m * m
+
     def collate_fn(self, batch, tp_workers=0):
         """ Prepares input_ids, labels, loss mask, attention_mask, and position ids for global batch """
         taskname_ids, input_ids, answer_starts = zip(*batch)
@@ -350,11 +353,16 @@ class GPTPromptLearningDataset(Dataset):
         else:
             resi_padding = 0
         batch_max += resi_padding
+        ceil_batch_max = self._ceil_to_nearest(
+            batch_max, 8
+        )  # @adithyare this padding does not conflict with the tp_workers padding above
+        # since tp_workers is always a multiple of 2. the padding to multiple of 8 is to ensure an mem-optimized softmax is used.
+        batch_max = ceil_batch_max + 1
         input_ids, loss_mask = self.pad_batch_and_build_loss_mask(input_ids, batch_max, answer_starts)
         # Should be a label for every token in batch, label is the next token
         labels = input_ids[:, 1:].contiguous()
         input_ids = input_ids[:, :-1].contiguous()
-        batch_max -= 1
+        batch_max -= 1  # @adithyare I *think* this negatition is done to account for the above 2 lines which removes one item from the input_ids seq.
 
         # Loss mask should align with labels
         loss_mask = loss_mask[:, 1:].contiguous()

@@ -159,6 +159,9 @@ class AudioText(_Collection):
                     if hasattr(parser, "is_aggregate") and parser.is_aggregate and isinstance(text, str):
                         if lang is not None:
                             text_tokens = parser(text, lang)
+                        # for future use if want to add language bypass to audio_to_text classes
+                        # elif hasattr(parser, "lang") and parser.lang is not None:
+                        #    text_tokens = parser(text, parser.lang)
                         else:
                             raise ValueError("lang required in manifest when using aggregate tokenizers")
                     else:

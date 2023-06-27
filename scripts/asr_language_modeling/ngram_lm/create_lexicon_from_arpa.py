@@ -74,4 +74,6 @@ if __name__ == "__main__":
                 if tokenizer is None:
                     f.write("{w}\t{s}\n".format(w=word, s=" ".join(word)))
                 else:
-                    f.write("{w}\t{s}\n".format(w=word, s=" ".join(tokenizer.text_to_tokens(word))))
+                    w_ids = tokenizer.text_to_ids(word)
+                    if tokenizer.unk_id not in w_ids:
+                        f.write("{w}\t{s}\n".format(w=word, s=" ".join(tokenizer.text_to_tokens(word))))

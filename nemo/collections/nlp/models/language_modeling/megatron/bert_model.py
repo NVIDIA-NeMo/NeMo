@@ -188,6 +188,7 @@ class BertModel(MegatronModule):
         add_binary_head=True,
         megatron_legacy=False,
         sequence_parallel=False,
+        position_embedding_type='learned_absolute',
     ):
         super(BertModel, self).__init__()
         # args = get_args()
@@ -234,6 +235,7 @@ class BertModel(MegatronModule):
             onnx_safe=onnx_safe,
             megatron_legacy=megatron_legacy,
             sequence_parallel=sequence_parallel,
+            position_embedding_type=position_embedding_type,
         )
 
         self.initialize_word_embeddings(

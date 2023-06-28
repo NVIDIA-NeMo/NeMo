@@ -163,6 +163,7 @@ class MegatronBaseModel(NLPModel):
         # The automatic garbage collector sould be disabled before training starts.
         if self.gc_interval > 0:
             gc.disable()
+            self.validation_global_step = 1
 
     def _enable_nvidia_optimizations(self):
         "These optimizations are present in NVIDIA NGC PyTorch Containers"
@@ -224,6 +225,16 @@ class MegatronBaseModel(NLPModel):
     def on_train_start(self) -> None:
         super().on_train_start()
         self.init_global_step = self.trainer.global_step
+
+    def on_validation_start(self) -> None:
+        super().on_validation_start()
+        if self.gc_interval > 0:
+            gc.collect()
+
+    def on_validation_end(self) -> None:
+        super().on_validation_end()
+        if self.gc_interval > 0:
+            gc.collect()
 
     def _build_vocab(self):
         """
@@ -372,6 +383,14 @@ class MegatronBaseModel(NLPModel):
 
         if self.gc_interval > 0 and (self.trainer.global_step % self.gc_interval == 0):
             gc.collect()
+
+    def on_validation_batch_end(self, outputs, batch: Any, batch_idx: int, dataloader_idx: int) -> None:
+        super().on_validation_batch_end(outputs, batch, batch_idx, dataloader_idx)
+
+        if self.gc_interval > 0:
+            if self.validation_global_step % self.gc_interval == 0:
+                gc.collect()
+            self.validation_global_step += 1
 
     def setup_optimization(
         self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,

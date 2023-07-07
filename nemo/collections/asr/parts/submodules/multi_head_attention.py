@@ -73,7 +73,6 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(p=dropout_rate)
 
         self._max_cache_len = max_cache_len
-        self._cache_id = None
 
     def forward_qkv(self, query, key, value):
         """Transforms query, key and value.
@@ -119,20 +118,20 @@ class MultiHeadAttention(nn.Module):
 
         return self.linear_out(x)  # (batch, time1, d_model)
 
-    def forward(self, query, key, value, mask, pos_emb=None, cache=None, cache_next=None):
+    def forward(self, query, key, value, mask, pos_emb=None, cache=None):
         """Compute 'Scaled Dot Product Attention'.
         Args:
             query (torch.Tensor): (batch, time1, size)
             key (torch.Tensor): (batch, time2, size)
             value(torch.Tensor): (batch, time2, size)
             mask (torch.Tensor): (batch, time1, time2)
-            cache (torch.Tensor) : (cache_nums, batch, time_cache, size)
-            cache_next (torch.Tensor) : (cache_nums, batch, time_cache_next, size)
+            cache (torch.Tensor) : (batch, time_cache, size)
 
         returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
+            cache (torch.Tensor) : (batch, time_cache_next, size)
         """
-        key, value, query = self.update_cache(key=key, value=value, query=query, cache=cache, cache_next=cache_next)
+        key, value, query, cache = self.update_cache(key=key, value=value, query=query, cache=cache)
 
         if torch.is_autocast_enabled():
             query, key, value = query.to(torch.float32), key.to(torch.float32), value.to(torch.float32)
@@ -142,17 +141,17 @@ class MultiHeadAttention(nn.Module):
             q, k, v = self.forward_qkv(query, key, value)
             scores = torch.matmul(q, k.transpose(-2, -1)) / self.s_d_k
             out = self.forward_attention(v, scores, mask)
+        if cache is None:
+            return out
+        else:
+            return out, cache
 
-        return out
-
-    def update_cache(self, key, value, query, cache, cache_next):
+    def update_cache(self, key, value, query, cache):
         if cache is not None:
-            key = value = torch.cat([cache[self._cache_id], key], dim=1)
+            key = value = torch.cat([cache, key], dim=1)
             q_keep_size = query.shape[1] - self.cache_drop_size
-            if cache_next is not None:
-                cache_next[self._cache_id, :, :-q_keep_size, :] = cache[self._cache_id, :, q_keep_size:, :]
-                cache_next[self._cache_id, :, -q_keep_size:, :] = query[:, :q_keep_size, :]
-        return key, value, query
+            cache = torch.cat([cache[:, q_keep_size:, :], query[:, :q_keep_size, :]], dim=1)
+        return key, value, query, cache
 
 
 class RelPositionMultiHeadAttention(MultiHeadAttention):
@@ -195,7 +194,7 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         x = x[:, :, 1:].view(b, h, qlen, pos_len)  # (b, h, t1, t2)
         return x
 
-    def forward(self, query, key, value, mask, pos_emb, cache=None, cache_next=None):
+    def forward(self, query, key, value, mask, pos_emb, cache=None):
         """Compute 'Scaled Dot Product Attention' with rel. positional encoding.
         Args:
             query (torch.Tensor): (batch, time1, size)
@@ -203,12 +202,13 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
             value(torch.Tensor): (batch, time2, size)
             mask (torch.Tensor): (batch, time1, time2)
             pos_emb (torch.Tensor) : (batch, time1, size)
-            cache (torch.Tensor) : (cache_nums, batch, time_cache, size)
-            cache_next (torch.Tensor) : (cache_nums, batch, time_cache_next, size)
+            cache (torch.Tensor) : (batch, time_cache, size)
+
         Returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
+            cache (torch.Tensor) : (batch, time_cache_next, size)
         """
-        key, value, query = self.update_cache(key=key, value=value, query=query, cache=cache, cache_next=cache_next)
+        key, value, query, cache = self.update_cache(key=key, value=value, query=query, cache=cache)
 
         if torch.is_autocast_enabled():
             query, key, value = query.to(torch.float32), key.to(torch.float32), value.to(torch.float32)
@@ -244,7 +244,10 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
 
             out = self.forward_attention(v, scores, mask)
 
-        return out
+        if cache is None:
+            return out
+        else:
+            return out, cache
 
 
 class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
@@ -298,7 +301,7 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
             self.global_k = nn.Linear(n_feat, n_feat)
             self.global_v = nn.Linear(n_feat, n_feat)
 
-    def forward(self, query, key, value, pad_mask, pos_emb, cache=None, cache_next=None):
+    def forward(self, query, key, value, pad_mask, pos_emb, cache=None):
         """Compute Scaled Dot Product Local Attention with rel. positional encoding. using overlapping chunks
         Args:
             query (torch.Tensor): (batch, time, size)
@@ -306,13 +309,13 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
             value(torch.Tensor): (batch, time, size)
             pad_mask (torch.Tensor): (batch, time)
             pos_emb (torch.Tensor) : (batch, 2w + 1, size)
-            cache (torch.Tensor) : (cache_nums, batch, time_cache, size)
-            cache_next (torch.Tensor) : (cache_nums, batch, time_cache_next, size)
+            cache (torch.Tensor) : (batch, time_cache, size)
         Returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
+            cache (torch.Tensor) : (batch, time_cache_next, size)
         """
 
-        key, value, query = self.update_cache(key=key, value=value, query=query, cache=cache, cache_next=cache_next)
+        key, value, query, cache = self.update_cache(key=key, value=value, query=query, cache=cache)
 
         if torch.is_autocast_enabled():
             query, key, value = query.to(torch.float32), key.to(torch.float32), value.to(torch.float32)
@@ -453,7 +456,11 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
 
                 out[is_index_global_attn_nonzero] += out_global_to_all
 
-        return self.linear_out(out.reshape(n_batch, -1, self.h * self.d_k)[:, :T])
+        ret = self.linear_out(out.reshape(n_batch, -1, self.h * self.d_k)[:, :T])
+        if cache is None:
+            return ret
+        else:
+            return ret, cache
 
     def _get_global_attn_indices(self, is_index_global_attn: torch.Tensor) -> Tuple:
         """

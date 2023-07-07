@@ -161,7 +161,7 @@ class ExportableEncDecModel(Exportable):
     @property
     def output_names(self):
         otypes = self.output_module.output_types
-        if hasattr(self.input_module, 'export_cache_support') and self.input_module.export_cache_support:
+        if getattr(self.input_module, 'export_cache_support', False):
             in_types = self.input_module.output_types
             otypes = {n: t for (n, t) in list(otypes.items())[:1]}
             for (n, t) in list(in_types.items())[1:]:
@@ -174,7 +174,6 @@ class ExportableEncDecModel(Exportable):
         """
         This forward is used when we need to export the model to ONNX format.
         Inputs cache_last_channel and cache_last_time are needed to be passed for exporting streaming models.
-        When they are passed, it just passes the inputs through the encoder part and currently the ONNX conversion does not fully work for this case.
         Args:
             input: Tensor that represents a batch of raw audio signals,
                 of shape [B, T]. T here represents timesteps.
@@ -187,49 +186,26 @@ class ExportableEncDecModel(Exportable):
         Returns:
             the output of the model
         """
-        if hasattr(self.input_module, 'forward_for_export'):
-            if cache_last_channel is None and cache_last_time is None:
-                encoder_output = self.input_module.forward_for_export(audio_signal=input, length=length)
-            else:
-                encoder_output = self.input_module.forward_for_export(
-                    audio_signal=input,
-                    length=length,
-                    cache_last_channel=cache_last_channel,
-                    cache_last_time=cache_last_time,
-                    cache_last_channel_len=cache_last_channel_len,
-                )
+        enc_fun = getattr(self.input_module, 'forward_for_export', self.input_module.forward)
+        if cache_last_channel is None:
+            encoder_output = enc_fun(audio_signal=input, length=length)
+            if isinstance(encoder_output, tuple):
+                encoder_output = encoder_output[0]
         else:
-            if cache_last_channel is None and cache_last_time is None:
-                encoder_output = self.input_module(audio_signal=input, length=length)
-            else:
-                encoder_output = self.input_module(
-                    audio_signal=input,
-                    length=length,
-                    cache_last_channel=cache_last_channel,
-                    cache_last_time=cache_last_time,
-                    cache_last_channel_len=cache_last_channel_len,
-                )
-        if isinstance(encoder_output, tuple):
-            decoder_input = encoder_output[0]
-        else:
-            decoder_input = encoder_output
-        if hasattr(self.output_module, 'forward_for_export'):
-            if cache_last_channel is None and cache_last_time is None:
-                ret = self.output_module.forward_for_export(encoder_output=decoder_input)
-            else:
-                ret = self.output_module.forward_for_export(encoder_output=decoder_input)
-        else:
-            if cache_last_channel is None and cache_last_time is None:
-                ret = self.output_module(encoder_output=decoder_input)
-            else:
-                ret = self.output_module(encoder_output=decoder_input)
-        if cache_last_channel is None and cache_last_time is None:
-            pass
-        else:
-            if isinstance(ret, tuple):
-                ret = (ret[0], encoder_output[1], encoder_output[2], encoder_output[3], encoder_output[4])
-            else:
-                ret = (ret, encoder_output[1], encoder_output[2], encoder_output[3], encoder_output[4])
+            encoder_output, length, cache_last_channel, cache_last_time, cache_last_channel_len = enc_fun(
+                audio_signal=input,
+                length=length,
+                cache_last_channel=cache_last_channel,
+                cache_last_time=cache_last_time,
+                cache_last_channel_len=cache_last_channel_len,
+            )
+
+        dec_fun = getattr(self.output_module, 'forward_for_export', self.output_module.forward)
+        ret = dec_fun(encoder_output=encoder_output)
+        if isinstance(ret, tuple):
+            ret = ret[0]
+        if cache_last_channel is not None:
+            ret = (ret, length, cache_last_channel, cache_last_time, cache_last_channel_len)
         return cast_all(ret, from_dtype=torch.float16, to_dtype=torch.float32)
 
     @property

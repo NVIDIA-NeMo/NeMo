@@ -45,7 +45,6 @@ class CausalConv2D(nn.Conv2d):
             raise ValueError("Argument padding should be set to None for CausalConv2D.")
         self._left_padding = kernel_size - 1
         self._right_padding = stride - 1
-        self._cache_id = None
 
         padding = 0
         super(CausalConv2D, self).__init__(
@@ -113,7 +112,6 @@ class CausalConv1D(nn.Conv1d):
                 raise ValueError(f"Invalid padding param: {padding}!")
 
         self._max_cache_len = self._left_padding
-        self._cache_id = None
 
         super(CausalConv1D, self).__init__(
             in_channels=in_channels,
@@ -129,21 +127,21 @@ class CausalConv1D(nn.Conv1d):
             dtype=dtype,
         )
 
-    def update_cache(self, x, cache=None, cache_next=None):
+    def update_cache(self, x, cache=None):
         if cache is None:
             new_x = F.pad(x, pad=(self._left_padding, self._right_padding))
         else:
             new_x = F.pad(x, pad=(0, self._right_padding))
-            new_x = torch.cat([cache[self._cache_id], new_x], dim=-1)
-            # todo: we should know input_x.size(-1) at config time
-            if cache_next is not None:
-                cache_keep_size = torch.tensor(x.size(-1) - self.cache_drop_size, dtype=torch.int64, device=x.device)
-                cache_keep_size = torch.clip(cache_keep_size, min=1, max=cache_next.size(-1))
-                cache_next[self._cache_id, :, :, :-cache_keep_size] = cache[self._cache_id, :, :, cache_keep_size:]
-                cache_next[self._cache_id, :, :, -cache_keep_size:] = x[:, :, :cache_keep_size]
-        return new_x
+            new_x = torch.cat([cache, new_x], dim=-1)
+            if self.cache_drop_size > 0:
+                x = x[:, :, : -self.cache_drop_size]
+            cache = torch.cat([cache[:, :, x.size(-1) :], x], dim=-1)
+        return new_x, cache
 
-    def forward(self, x, cache=None, cache_next=None):
-        x = self.update_cache(x, cache=cache, cache_next=cache_next)
+    def forward(self, x, cache=None):
+        x, cache = self.update_cache(x, cache=cache)
         x = super().forward(x)
-        return x
+        if cache is None:
+            return x
+        else:
+            return x, cache

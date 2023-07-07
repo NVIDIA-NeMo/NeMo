@@ -138,29 +138,19 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         self.dropout = nn.Dropout(dropout)
         self.norm_out = LayerNorm(d_model)
 
-    def forward(
-        self,
-        x,
-        att_mask=None,
-        pos_emb=None,
-        pad_mask=None,
-        cache_last_channel=None,
-        cache_last_time=None,
-        cache_last_channel_next=None,
-        cache_last_time_next=None,
-    ):
+    def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None):
         """
         Args:
             x (torch.Tensor): input signals (B, T, d_model)
             att_mask (torch.Tensor): attention masks(B, T, T)
             pos_emb (torch.Tensor): (L, 1, d_model)
             pad_mask (torch.tensor): padding mask
-            cache_last_channel (torch.tensor) : cache for MHA layers (N, B, T_cache, d_model)
-            cache_last_time (torch.tensor) : cache for convolutional layers (N, B, d_model, T_cache)
-            cache_last_channel_next (torch.tensor) : next cache for MHA layers (N, B, T_cache, d_model)
-            cache_last_time_next (torch.tensor) : next cache for convolutional layers (N, B, d_model, T_cache)
+            cache_last_channel (torch.tensor) : cache for MHA layers (B, T_cache, d_model)
+            cache_last_time (torch.tensor) : cache for convolutional layers (B, d_model, T_cache)
         Returns:
             x (torch.Tensor): (B, T, d_model)
+            cache_last_channel (torch.tensor) : next cache for MHA layers (B, T_cache, d_model)
+            cache_last_time (torch.tensor) : next cache for convolutional layers (B, d_model, T_cache)
         """
         residual = x
         x = self.norm_feed_forward1(x)
@@ -169,31 +159,17 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         x = self.norm_self_att(residual)
         if self.self_attention_model == 'rel_pos':
-            x = self.self_attn(
-                query=x,
-                key=x,
-                value=x,
-                mask=att_mask,
-                pos_emb=pos_emb,
-                cache=cache_last_channel,
-                cache_next=cache_last_channel_next,
-            )
+            x = self.self_attn(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb, cache=cache_last_channel)
         elif self.self_attention_model == 'rel_pos_local_attn':
-            x = self.self_attn(
-                query=x,
-                key=x,
-                value=x,
-                pad_mask=pad_mask,
-                pos_emb=pos_emb,
-                cache=cache_last_channel,
-                cache_next=cache_last_channel_next,
-            )
+            x = self.self_attn(query=x, key=x, value=x, pad_mask=pad_mask, pos_emb=pos_emb, cache=cache_last_channel)
         elif self.self_attention_model == 'abs_pos':
-            x = self.self_attn(
-                query=x, key=x, value=x, mask=att_mask, cache=cache_last_channel, cache_next=cache_last_channel_next
-            )
+            x = self.self_attn(query=x, key=x, value=x, mask=att_mask, cache=cache_last_channel)
         else:
             x = None
+
+        if x is not None and cache_last_channel is not None:
+            (x, cache_last_channel) = x
+
         residual = residual + self.dropout(x)
 
         if self.is_adapter_available():
@@ -208,7 +184,9 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             residual = pack_ip['x']
 
         x = self.norm_conv(residual)
-        x = self.conv(x, pad_mask=pad_mask, cache=cache_last_time, cache_next=cache_last_time_next)
+        x = self.conv(x, pad_mask=pad_mask, cache=cache_last_time)
+        if cache_last_time is not None:
+            (x, cache_last_time) = x
         residual = residual + self.dropout(x)
 
         x = self.norm_feed_forward2(residual)
@@ -228,8 +206,10 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         if self.is_access_enabled() and self.access_cfg.get('save_encoder_tensors', False):
             self.register_accessible_tensor(name='encoder', tensor=x)
-
-        return x
+        if cache_last_channel is None:
+            return x
+        else:
+            return x, cache_last_channel, cache_last_time
 
     def forward_single_enabled_adapter_(
         self,
@@ -355,7 +335,7 @@ class ConformerConvolution(nn.Module):
             in_channels=dw_conv_input_dim, out_channels=d_model, kernel_size=1, stride=1, padding=0, bias=True
         )
 
-    def forward(self, x, pad_mask=None, cache=None, cache_next=None):
+    def forward(self, x, pad_mask=None, cache=None):
         x = x.transpose(1, 2)
         x = self.pointwise_conv1(x)
 
@@ -368,10 +348,9 @@ class ConformerConvolution(nn.Module):
         if pad_mask is not None:
             x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
 
+        x = self.depthwise_conv(x, cache=cache)
         if cache is not None:
-            x = self.depthwise_conv(x, cache=cache, cache_next=cache_next)
-        else:
-            x = self.depthwise_conv(x)
+            x, cache = x
 
         if self.norm_type == "layer_norm":
             x = x.transpose(1, 2)
@@ -383,7 +362,10 @@ class ConformerConvolution(nn.Module):
         x = self.activation(x)
         x = self.pointwise_conv2(x)
         x = x.transpose(1, 2)
-        return x
+        if cache is None:
+            return x
+        else:
+            return x, cache
 
     def reset_parameters_conv(self):
         pw1_max = pw2_max = self.d_model ** -0.5

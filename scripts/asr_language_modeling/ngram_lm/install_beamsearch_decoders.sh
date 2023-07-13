@@ -14,6 +14,8 @@
 # limitations under the License.
 
 # Use this script to install KenLM, OpenSeq2Seq decoder, Flashlight decoder
+shopt -s expand_aliases
+
 NEMO_PATH=/workspace/nemo  # Path to NeMo folder: /workspace/nemo if you use NeMo/Dockerfile
 if [ "$#" -eq 1 ]
 then
@@ -24,11 +26,14 @@ KENLM_MAX_ORDER=10 # Maximum order of KenLM model, also specified in the setup_o
 cd $NEMO_PATH
 
 if [ $(id -u) -eq 0 ]; then
-  alias sudo=eval
+  alias aptupdate='apt-get update'
+  alias b2install='./b2'
+else
+  alias aptupdate='sudo apt-get update'
+  alias b2install='sudo ./b2'
 fi
 
-sudo apt-get update && apt-get upgrade -y && apt-get install -y liblzma-dev && rm -rf /var/lib/apt/lists/* # liblzma needed for flashlight decoder
-
+aptupdate && apt-get upgrade -y && apt-get install -y liblzma-dev && rm -rf /var/lib/apt/lists/* # liblzma needed for flashlight decoder'
 
 git clone https://github.com/NVIDIA/OpenSeq2Seq
 cd OpenSeq2Seq
@@ -42,7 +47,7 @@ cp $NEMO_PATH/scripts/installers/setup_os2s_decoders.py ./setup.py
 ./setup.sh
 
 # install Boost package for KenLM
-wget https://boostorg.jfrog.io/artifactory/main/release/1.80.0/source/boost_1_80_0.tar.bz2 --no-check-certificate && tar --bzip2 -xf $NEMO_PATH/decoders/boost_1_80_0.tar.bz2 && cd boost_1_80_0 && ./bootstrap.sh && sudo ./b2 --layout=tagged link=static,shared threading=multi,single install -j4 || echo FAILURE
+wget https://boostorg.jfrog.io/artifactory/main/release/1.80.0/source/boost_1_80_0.tar.bz2 --no-check-certificate && tar --bzip2 -xf $NEMO_PATH/decoders/boost_1_80_0.tar.bz2 && cd boost_1_80_0 && ./bootstrap.sh && b2install --layout=tagged link=static,shared threading=multi,single install -j4 || echo FAILURE
 export BOOST_ROOT=$NEMO_PATH/decoders/boost_1_80_0
 
 # install KenLM

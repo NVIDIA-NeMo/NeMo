@@ -29,9 +29,6 @@ __NUMBA_DEFAULT_MINIMUM_VERSION__ = "0.53.0"
 __NUMBA_MINIMUM_VERSION__ = os.environ.get("NEMO_NUMBA_MINVER", __NUMBA_DEFAULT_MINIMUM_VERSION__)
 
 __NUMBA_MINIMUM_VERSION_FP16_SUPPORTED__ = "0.57.0"
-NUMBA_FP16_SUPPORTED = model_utils.check_lib_version(
-    'numba', __NUMBA_MINIMUM_VERSION_FP16_SUPPORTED__, operator=operator.ge
-)[0]
 
 
 NUMBA_INSTALLATION_MESSAGE = (
@@ -171,12 +168,16 @@ def is_numba_cuda_fp16_supported(return_reason: bool = False) -> Union[bool, Tup
         use_nvidia_binding = False
         reason += "Env variable `NUMBA_CUDA_USE_NVIDIA_BINDING` is not available or has not set to `1`."
 
-    if NUMBA_FP16_SUPPORTED:
+    numba_fp16_version_correct = model_utils.check_lib_version(
+        'numba', __NUMBA_MINIMUM_VERSION_FP16_SUPPORTED__, operator=operator.ge
+    )[0]
+
+    if numba_fp16_version_correct:
         reason += f"Numba CUDA FP16 is supported in installed numba version."
     else:
         reason += f"Numba CUDA FP16 is not supported in installed numba version."
 
-    result = use_nvidia_binding and NUMBA_FP16_SUPPORTED
+    result = use_nvidia_binding and numba_fp16_version_correct
 
     if return_reason:
         return result, reason

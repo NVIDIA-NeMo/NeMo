@@ -34,9 +34,9 @@ Prerequisites
 
 Before you begin using NeMo, it's assumed you meet the following prerequisites.
 
-#. You have Python version 3.6, 3.7 or 3.8.
+#. You have Python version 3.9, 3.10.
 
-#. You have Pytorch version 1.8.1.
+#. You have Pytorch version 1.13.1 or 2.0+.
 
 #. You have access to an NVIDIA GPU for training.
 

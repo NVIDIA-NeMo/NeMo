@@ -102,8 +102,10 @@ class ParallelTranscriptionConfig:
     # decoding strategy for RNNT models
     rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig()
 
-    # decoder for hybrid models, must be one of 'ctc', 'rnnt' if not None
+    # decoder type: ctc or rnnt, can be used to switch between CTC and RNNT decoder for Hybrid RNNT/CTC models
     decoder_type: Optional[str] = None
+    # att_context_size can be set for cache-aware streaming models with multiple look-aheads
+    att_context_size: Optional[list] = None
 
     trainer: TrainerConfig = TrainerConfig(devices=-1, accelerator="gpu", strategy="ddp")
 

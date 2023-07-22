@@ -76,6 +76,11 @@ class EvaluationConfig(transcribe_speech.TranscriptionConfig):
     dataset_manifest: str = MISSING
     output_filename: Optional[str] = "evaluation_transcripts.json"
 
+    # decoder type: ctc or rnnt, can be used to switch between CTC and RNNT decoder for Joint RNNT/CTC models
+    decoder_type: Optional[str] = None
+    # att_context_size can be set for cache-aware streaming models with multiple look-aheads
+    att_context_size: Optional[list] = None
+
     use_cer: bool = False
     tolerance: Optional[float] = None
 

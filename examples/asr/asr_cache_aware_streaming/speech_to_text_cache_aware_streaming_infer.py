@@ -46,9 +46,12 @@ Setting `--pad_and_drop_preencoded` would perform the caching for all steps incl
 It may result in slightly different outputs from the sub-sampling module compared to offline mode for some techniques like striding and sw_striding.
 Enabling it would make it easier to export the model to ONNX.
 
-# Hybrid ASR models
+## Hybrid ASR models
 For Hybrid ASR models which have two decoders, you may select the decoder by --set_decoder DECODER_TYPE, where DECODER_TYPE can be "ctc" or "rnnt".
 If decoder is not set, then the default decoder would be used which is the RNNT decoder for Hybrid ASR models.
+
+## Multi-lookahead models
+For models which support multiple lookaheads, the default is the first one in the list of model.encoder.att_context_size. To change it, you may use --att_context_size, for example --att_context_size [70,1].
 
 
 ## Evaluate a model trained with full context for offline mode
@@ -58,7 +61,7 @@ But the accuracy would not be very good with small chunks as there is inconsiste
 The accuracy of the model on the borders of chunks would not be very good.
 
 To use a model trained with full context, you need to pass the chunk_size and shift_size arguments.
-If shift_size is not passed, chunk_size would be use as the shift_size too.
+If shift_size is not passed, chunk_size would be used as the shift_size too.
 Also argument online_normalization should be enabled to simulate a realistic streaming.
 The following command would simulate cache-aware streaming on a pretrained model from NGC with chunk_size of 100, shift_size of 50 and 2 left chunks as left context.
 The chunk_size of 100 would be 100*4*10=4000ms for a model with 4x downsampling and 10ms shift in feature extraction.
@@ -273,6 +276,13 @@ def main():
         help="Selects the decoder for Hybrid ASR models which has both the CTC and RNNT decoder. Supported decoders are ['ctc', 'rnnt']",
     )
 
+    parser.add_argument(
+        "--att_context_size",
+        type=str,
+        default=None,
+        help="Sets the att_context_size for the models which support multiple lookaheads",
+    )
+
     args = parser.parse_args()
     if (args.audio_file is None and args.manifest_file is None) or (
         args.audio_file is not None and args.manifest_file is not None
@@ -292,6 +302,12 @@ def main():
             asr_model.change_decoding_strategy(decoder_type=args.set_decoder)
         else:
             raise ValueError("Decoder cannot get changed for non-Hybrid ASR models.")
+
+    if args.att_context_size is not None:
+        if hasattr(asr_model.encoder, "set_default_att_context_size"):
+            asr_model.encoder.set_default_att_context_size(att_context_size=json.loads(args.att_context_size))
+        else:
+            raise ValueError("Model does not support multiple lookaheads.")
 
     global autocast
     if (

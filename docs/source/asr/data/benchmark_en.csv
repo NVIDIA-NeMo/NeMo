@@ -35,3 +35,4 @@ stt_en_fastconformer_transducer_xxlarge,EncDecRNNTBPEModel,"https://ngc.nvidia.c
 stt_en_fastconformer_hybrid_large_streaming_80ms,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_fastconformer_hybrid_large_streaming_80ms"
 stt_en_fastconformer_hybrid_large_streaming_480ms,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_fastconformer_hybrid_large_streaming_480ms"
 stt_en_fastconformer_hybrid_large_streaming_1040ms,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_fastconformer_hybrid_large_streaming_1040ms"
+stt_en_fastconformer_hybrid_large_streaming_multi,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_fastconformer_hybrid_large_streaming_multi"

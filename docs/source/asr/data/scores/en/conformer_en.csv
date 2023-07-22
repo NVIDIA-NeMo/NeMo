@@ -18,3 +18,11 @@ stt_en_fastconformer_hybrid_large_streaming_1040ms (CTC),en,,,,,2.7 %,6.4 %,,,9.
 stt_en_fastconformer_hybrid_large_streaming_80ms (RNNT),en,,,,,2.7 %,6.5 %,,,9.1 %,6.9 %,,,,,,,3.2 %,1.9 %
 stt_en_fastconformer_hybrid_large_streaming_480ms (RNNT),en,,,,,2.7 %,6.1 %,,,8.5 %,6.7 %,,,,,,,3.1 %,1.8 %
 stt_en_fastconformer_hybrid_large_streaming_1040ms (RNNT),en,,,,,2.3 %,5.5 %,,,8.0 %,6.6 %,,,,,,,2.9 %,1.6 %
+stt_en_fastconformer_hybrid_large_streaming_multi (RNNT - 0ms),en,,,,,,7.0 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (RNNT - 80ms),en,,,,,,6.4 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (RNNT - 480),en,,,,,,5.7 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (RNNT - 1040),en,,,,,,5.4 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (CTC - 0ms),en,,,,,,8.4 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (CTC - 80ms),en,,,,,,7.8 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (CTC - 480),en,,,,,,6.7 %,,,,,,,,,,,,
+stt_en_fastconformer_hybrid_large_streaming_multi (CTC - 1040),en,,,,,,6.2 %,,,,,,,,,,,,

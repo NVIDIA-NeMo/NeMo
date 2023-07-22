@@ -47,6 +47,7 @@ from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType
+from nemo.utils import logging
 
 __all__ = ['ConformerEncoder']
 
@@ -778,6 +779,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         return att_context_size_all, att_context_size_all[0], att_context_probs, conv_context_size
 
     def set_default_att_context_size(self, att_context_size):
+        if att_context_size not in self.att_context_size_all:
+            logging.warning(
+                f"att_context_size={att_context_size} is not among the list of the supported look-aheads: {self.att_context_size_all}"
+            )
         self.att_context_size = att_context_size
 
     def setup_streaming_params(

@@ -66,7 +66,7 @@ class MegatronBaseModel(NLPModel):
 
     - Initialize the model parallel world for nemo.
     - Turn on all of the nvidia optimizations.
-    - If `cfg.tokenizer` is available, it loads the tokenizer and pad the vocab to the 
+    - If `cfg.tokenizer` is available, it loads the tokenizer and pad the vocab to the
       correct size for tensor model parallelism.
     - If using distributed optimizer, configure to be compatible
       with O2 level optimizations and/or model parallelism.
@@ -405,9 +405,8 @@ class MegatronBaseModel(NLPModel):
         optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
         if self.with_distributed_adam:
 
-            # Allocate contiguous buffers to avoid extra copies
+            # Allocate contiguous buffer to avoid extra copies
             optim_kwargs['contiguous_grad_buffer'] = True
-            optim_kwargs['contiguous_param_buffer'] = True
 
             # Make sure optimizer state is in FP32
             optim_dtype = torch.float32
@@ -507,7 +506,8 @@ class MegatronBaseModel(NLPModel):
             self._optimizer.init_params(reversed(no_overlap_params))
 
             # Initialize contiguous parameter buffer
-            self._optimizer.init_param_buffer()
+            if self._optimizer.contiguous_param_buffer:
+                self._optimizer.init_param_buffer()
 
         if self._scheduler is None:
             return self._optimizer

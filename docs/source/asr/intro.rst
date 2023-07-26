@@ -33,7 +33,7 @@ A demo below allows evaluation of NeMo ASR models in multiple langauges from the
 .. raw:: html
 
     <iframe src="https://hf.space/embed/smajumdar/nemo_multilingual_language_id/+"
-    width="100%" class="gradio-asr"></iframe>
+    width="100%" class="gradio-asr" allow="microphone *"></iframe>
 
     <script type="text/javascript" language="javascript">
         $('.gradio-asr').css('height', $(window).height()+'px');

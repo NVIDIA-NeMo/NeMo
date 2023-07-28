@@ -44,15 +44,23 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_TRITON = False
 
-import pynvml
+try:
+    import pynvml
+
+    HAVE_PYNVML = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_PYNVML = False
 
 
 def HAVE_AMPERE_GPU():
-    pynvml.nvmlInit()
-    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-    device_arch = pynvml.nvmlDeviceGetArchitecture(handle)
-    pynvml.nvmlShutdown()
-    return device_arch == pynvml.NVML_DEVICE_ARCH_AMPERE
+    if HAVE_PYNVML:
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        device_arch = pynvml.nvmlDeviceGetArchitecture(handle)
+        pynvml.nvmlShutdown()
+        return device_arch == pynvml.NVML_DEVICE_ARCH_AMPERE
+    else:
+        return False
 
 
 @pytest.mark.run_only_on('GPU')

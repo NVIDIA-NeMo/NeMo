@@ -38,6 +38,55 @@ web_port: 9889 # the port number of the web server
 chat: False # use the chat interface
 chatbot_config:
   value: False   # whether to inject the value attributes
+  attributes:
+    - name: Quality
+      min: 0
+      max: 4
+      key: quality
+      type: int
+      default: 4
+    - name: Toxicity
+      min: 0
+      max: 4
+      key: toxcity
+      type: int
+      default: 0
+    - name: Humor
+      min: 0
+      max: 4
+      key: humor
+      type: int
+      default: 0
+    - name: Creativity
+      min: 0
+      max: 4
+      key: creativity
+      type: int
+      default: 0
+    - name: Violence
+      min: 0
+      max: 4
+      key: violence
+      type: int
+      default: 0
+    - name: Helpfulness
+      min: 0
+      max: 4
+      key: helpfulness
+      type: int
+      default: 4
+    - name: Not_Appropriate
+      min: 0
+      max: 4
+      key: not_appropriate
+      type: int
+      default: 0
+    - name: Language
+      choices: ['ar', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'eo', 'es', 'eu', 'fa', 'fi', 'fr', 'gl', 'he', 'hu', 'id', 'it', 'ja', 'ko', 'nb', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'th', 'tr', 'uk', 'vi', 'zh']
+      key: lang
+      type: list
+      default: en
+   
   user: User
   assistant: Assistant
   system: "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"

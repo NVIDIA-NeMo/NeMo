@@ -1,4 +1,5 @@
 boto3
+datasets
 einops
 faiss-cpu
 fasttext

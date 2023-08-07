@@ -314,7 +314,12 @@ def main(cfg) -> None:
                         'assistant': cfg.chatbot_config.assistant,
                         'system': cfg.chatbot_config.system,
                     }
-                    web_ui = partial(get_chatbot_demo, defaults=defaults, value=cfg.chatbot_config.value)
+                    web_ui = partial(
+                        get_chatbot_demo,
+                        defaults=defaults,
+                        value=cfg.chatbot_config.value,
+                        attributes=cfg.chatbot_config.attributes,
+                    )
                 else:
                     web_ui = get_demo
                 loop = asyncio.new_event_loop()

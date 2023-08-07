@@ -371,7 +371,13 @@ class JSONLMemMapDataset(TextMemMapDataset):
 
     def _build_data_from_text(self, text):
         """Return a dictionary of data based on a single JSON line."""
-        return json.loads(text)
+        try:
+            record = json.loads(text)
+        except Exception as e:
+            logging.error(f"Exception: {e}")
+            logging.error(f"datapoint: {text}")
+            raise e
+        return record
 
 
 def _index_file_exists(idx_fn):

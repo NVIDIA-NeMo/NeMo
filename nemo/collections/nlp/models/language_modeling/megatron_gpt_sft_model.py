@@ -277,6 +277,9 @@ class MegatronGPTSFTModel(MegatronGPTModel):
                 memmap_workers=data_cfg.get(
                     'memmap_workers', None
                 ),  # used to set num. of workers to create the memmap index files
+                hf_dataset=data_cfg.get(
+                    'hf_dataset', False
+                ),  # Whether to load the json file with the HuggingFace dataset. otherwise, will load the jsonl file with the JSONLMemMapDataset.
             )
             datasets.append(dataset)
 

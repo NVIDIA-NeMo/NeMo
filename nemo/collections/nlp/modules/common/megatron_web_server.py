@@ -190,7 +190,7 @@ def get_demo(share, username, password, server_port=5555, web_port=9889, loop=No
 
 
 def get_chatbot_demo(
-    share, username, password, server_port=5555, web_port=9889, loop=None, value=False, defaults=None
+    share, username, password, server_port=5555, web_port=9889, loop=None, value=False, defaults=None, attributes=None,
 ):
     check_gradio_import()
     from nemo.collections.nlp.modules.common.chatbot_component import Chatbot
@@ -222,28 +222,20 @@ def get_chatbot_demo(
                     )
 
                 with gr.Accordion("Value Parameters", open=True, visible=value):
-                    keys = ['quality', 'toxicity', 'humor', 'creativity', 'violence', 'helpfulness', 'not_appropriate']
-                    quality_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=9, label='Quality', interactive=True, visible=True
-                    )
-                    toxicity_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=0, label='Toxicity', interactive=True, visible=True
-                    )
-                    humor_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=0, label='Humor', interactive=True, visible=True
-                    )
-                    creativity_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=0, label='Creativity', interactive=True, visible=True
-                    )
-                    violence_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=0, label='Violence', interactive=True, visible=True
-                    )
-                    helpfulness_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=9, label='Helpfulness', interactive=True, visible=True
-                    )
-                    not_appropriate_value = gr.Slider(
-                        minimum=0, maximum=9, step=1, value=0, label='Not Appropriate', interactive=True, visible=True
-                    )
+                    keys = [k.key for k in attributes]
+                    # keys = ['quality', 'toxicity', 'humor', 'creativity', 'violence', 'helpfulness', 'not_appropriate']
+                    widgets = []
+                    for item in attributes:
+                        if item.type == 'int':
+                            slider = gr.Slider(
+                                minimum=item.min, maximum=item.max, step=1, value=item.default, label=item.name
+                            )
+                            widgets.append(slider)
+                        elif item.type == 'list':
+                            dropdown = gr.Dropdown(
+                                item.choices, label=item.name, default=item.default, value=item.default
+                            )
+                            widgets.append(dropdown)
                     used_value = gr.CheckboxGroup(keys, value=keys)
 
                     def change_visibility(x):
@@ -256,17 +248,7 @@ def get_chatbot_demo(
                         return values
 
                     used_value.change(
-                        change_visibility,
-                        inputs=[used_value],
-                        outputs=[
-                            quality_value,
-                            toxicity_value,
-                            humor_value,
-                            creativity_value,
-                            violence_value,
-                            helpfulness_value,
-                            not_appropriate_value,
-                        ],
+                        change_visibility, inputs=[used_value], outputs=widgets,
                     )
 
                 def set_sampling(x):
@@ -328,25 +310,11 @@ def get_chatbot_demo(
                     assistant_name,
                     session_state,
                     prompts_presets,
-                    quality_value,
-                    toxicity_value,
-                    humor_value,
-                    creativity_value,
-                    violence_value,
-                    helpfulness_value,
-                    not_appropriate_value,
                     used_value,
+                    *values,
                 ):
 
-                    values_array = [
-                        quality_value,
-                        toxicity_value,
-                        humor_value,
-                        creativity_value,
-                        violence_value,
-                        helpfulness_value,
-                        not_appropriate_value,
-                    ]
+                    values_array = values
                     if value:
                         value_str = get_value_str(values_array, used_value)
                     else:
@@ -400,14 +368,8 @@ def get_chatbot_demo(
                         assistant_name,
                         session_state,
                         prompt_presets,
-                        quality_value,
-                        toxicity_value,
-                        humor_value,
-                        creativity_value,
-                        violence_value,
-                        helpfulness_value,
-                        not_appropriate_value,
                         used_value,
+                        *widgets,
                     ],
                     [chatbot],
                 )

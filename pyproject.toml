@@ -16,7 +16,7 @@
 profile = "black"  # black-compatible
 line_length = 119  # should match black parameters
 ignore_whitespace = true  # ignore whitespace for compatibility with the initial style
-py_version = 38  # python 3.8 as a target version
+py_version = 310  # python 3.10 as a target version
 known_first_party = ["nemo"]  # FIRSTPARTY section
 known_third_party = ["nemo_text_processing", "examples", "scripts"]  # THIRDPARTY section
 sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]

@@ -87,7 +87,7 @@ model:
       add_bos_to_input: ${data.train_ds.add_bos_to_input}
       add_eos_to_input: ${data.train_ds.add_eos_to_input}
       metric:
-        name: "exact_string_match" # Name of the evaluation metric to use.
+        name: "exact_string_match" # Name of the evaluation metric to use. Supported metrics: [`exact_string_match`, `rouge`, `pearson_corr_coef`, `spearman_corr_coef`, `f1`, `accuracy`, `average_precision`]
         average: micro # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
         num_classes: null # Number of classes for the metric. Works only for 'F1', 'accuracy' and 'average_precision' etc. Refer to torchmetrics for metrics where this is supported.
         class_labels: null # If the targets in your dataset are strings and not integers/float, you need to provide a list of class labels (size = num_classes) so we can convert from strings to integer categories to compute the metric.

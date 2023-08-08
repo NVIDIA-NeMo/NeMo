@@ -106,24 +106,36 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                         )
 
             metric_name = data_cfg.metric.name
-            metric = MetricStringToTorchMetric[metric_name]
+            metric_class = MetricStringToTorchMetric[metric_name]
+
             # GLUE will not have a "src_file_name" attribute and will always have only a single metric.
             if hasattr(data_cfg, "src_file_name") or hasattr(data_cfg, "file_names"):
-                if hasattr(data_cfg, "src_file_name") and isinstance(data_cfg.src_file_name, ListConfig):
-                    # We pass average and num_classes to the metric constructor via kwargs even if they don't exist for each metric.
+                if (
+                    hasattr(data_cfg, "src_file_name")
+                    and isinstance(data_cfg.src_file_name, ListConfig)
+                    and metric_name != 'rouge'
+                ):
                     metric = [
-                        metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
+                        metric_class(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
                         for _ in range(len(data_cfg.src_file_name))
                     ]
-                elif hasattr(data_cfg, "file_names") and isinstance(data_cfg.file_names, ListConfig):
+                elif (
+                    hasattr(data_cfg, "file_names")
+                    and isinstance(data_cfg.file_names, ListConfig)
+                    and metric_name != 'rouge'
+                ):
                     metric = [
-                        metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
+                        metric_class(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)
                         for _ in range(len(data_cfg.file_names))
                     ]
+                elif hasattr(data_cfg, "src_file_name") and isinstance(data_cfg.src_file_name, ListConfig):
+                    metric = [metric_class() for _ in range(len(data_cfg.src_file_name))]
+                elif hasattr(data_cfg, "file_names") and isinstance(data_cfg.file_names, ListConfig):
+                    metric = [metric_class() for _ in range(len(data_cfg.file_names))]
                 else:
-                    metric = [metric(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)]
+                    metric = [metric_class(average=data_cfg.metric.average, num_classes=data_cfg.metric.num_classes)]
             else:
-                metric = [metric()]  # GLUE does need to specify average or num_classes.
+                metric = [metric_class()]  # GLUE does need to specify average or num_classes.
 
         return metric, metric_name
 
@@ -221,7 +233,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             else:
                 pred = class_labels.index(pred)
             if label not in class_labels:
-                raise ValueError(f"Ground truth labe; {label} is not in the class labels list : {class_labels}")
+                raise ValueError(f"Ground truth label {label} is not in the class labels list : {class_labels}")
             label = class_labels.index(label)
             pred = torch.LongTensor([pred]).to(self.device)
             label = torch.LongTensor([label]).to(self.device)

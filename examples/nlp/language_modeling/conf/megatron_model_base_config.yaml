@@ -11,7 +11,7 @@ relative_attention_num_buckets: 32 # Relative position number of buckets for com
 relative_attention_max_distance: 128 # max_distance to keep relative distance in the attention_num_buckets.
 relative_position_bias_self_attention_only: True # whether to only use relative position bias for self attention only.
 kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
-apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
+apply_query_key_layer_scaling: False # scale Q * K^T by 1 / layer-number.
 layernorm_epsilon: 1e-5
 persist_layer_norm: True # Use of persistent fused layer norm kernel.
 bias_activation_fusion: True # Use a kernel that fuses the bias addition from weight matrices with the subsequent activation function.

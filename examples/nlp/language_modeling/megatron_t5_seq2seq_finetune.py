@@ -57,6 +57,21 @@ def _modify_config(t5_cfg, cfg, add_cfg_to_tree=False):
                 t5_cfg.encoder.ffn_dropout = cfg.model.get('ffn_dropout', 0.1)
             if hasattr(t5_cfg.decoder, 'ffn_dropout'):
                 t5_cfg.decoder.ffn_dropout = cfg.model.get('ffn_dropout', 0.1)
+
+            if hasattr(cfg.model, 'encoder'):
+                if hasattr(cfg.model.encoder, 'position_embedding_type'):
+                    t5_cfg.encoder.position_embedding_type = cfg.model.encoder.position_embedding_type
+                if hasattr(cfg.model.encoder, 'use_flash_attention'):
+                    t5_cfg.encoder.use_flash_attention = cfg.model.encoder.use_flash_attention
+                if hasattr(cfg.model.encoder, 'attention_dropout'):
+                    t5_cfg.encoder.attention_dropout = cfg.model.encoder.attention_dropout
+            if hasattr(cfg.model, 'decoder'):
+                if hasattr(cfg.model.decoder, 'position_embedding_type'):
+                    t5_cfg.decoder.position_embedding_type = cfg.model.decoder.position_embedding_type
+                if hasattr(cfg.model.decoder, 'use_flash_attention'):
+                    t5_cfg.decoder.use_flash_attention = cfg.model.decoder.use_flash_attention
+                if hasattr(cfg.model.decoder, 'attention_dropout'):
+                    t5_cfg.decoder.attention_dropout = cfg.model.decoder.attention_dropout
         else:
             t5_cfg.hidden_dropout = cfg.model.get('hidden_dropout', 0.1)
             t5_cfg.attention_dropout = cfg.model.get('attention_dropout', 0.1)

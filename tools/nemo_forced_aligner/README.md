@@ -4,7 +4,9 @@
 Try it out: <a href="https://huggingface.co/spaces/erastorgueva-nv/NeMo-Forced-Aligner">HuggingFace Space 🎤</a> | Tutorial: <a href="https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb">"How to use NFA?" 🚀</a> | Blog post: <a href="https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/">"How does forced alignment work?" 📚</a>
 </p>
 
-<img align="center" width="600" src="https://github.com/NVIDIA/NeMo/releases/download/v1.20.0/nfa_forced_alignment_pipeline.png">
+<p align="center">
+<img width="80%" src="https://github.com/NVIDIA/NeMo/releases/download/v1.20.0/nfa_forced_alignment_pipeline.png">
+</p>
 
 NFA is a tool for generating token-, word- and segment-level timestamps of speech in audio using NeMo's CTC-based Automatic Speech Recognition models. You can provide your own reference text, or use ASR-generated transcription. You can use NeMo's ASR Model checkpoints out of the box in [14+ languages](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html#speech-recognition-languages), or train your own model. NFA can be used on long audio files of 1+ hours duration (subject to your hardware and the ASR model used).
 
@@ -20,8 +22,9 @@ NFA is a tool for generating token-, word- and segment-level timestamps of speec
 	    output_dir=<path to where your output files will be saved>
     ```
 
-<img align="center" src="https://github.com/NVIDIA/NeMo/releases/download/v1.20.0/nfa_run.png">
-
+<p align="center">
+	<img src="https://github.com/NVIDIA/NeMo/releases/download/v1.20.0/nfa_run.png">
+</p>
 
 ## Documentation 
 More documentation is available [here](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/tools/nemo_forced_aligner.html).

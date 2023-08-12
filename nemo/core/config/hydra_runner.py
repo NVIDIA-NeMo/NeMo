@@ -23,6 +23,27 @@ from hydra.core.config_store import ConfigStore
 from hydra.types import TaskFunction
 from omegaconf import DictConfig, OmegaConf
 
+
+def _get_gpu_name():
+    try:
+        import pynvml
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+    pynvml.nvmlInit()
+    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+    cuda_capability, _ = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+    pynvml.nvmlShutdown()
+    if cuda_capability == 8:
+        return "a100"
+    elif cuda_capability == 9:
+        return "h100"
+    else:
+        return None
+
+
+OmegaConf.register_new_resolver("gpu_name", _get_gpu_name)
+
 # multiple interpolated values in the config
 OmegaConf.register_new_resolver("multiply", lambda x, y: x * y)
 

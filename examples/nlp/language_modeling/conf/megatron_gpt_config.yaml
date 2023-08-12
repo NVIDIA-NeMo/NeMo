@@ -1,3 +1,6 @@
+defaults:
+  - optional tp_overlap@model.ub_tp_comm_overlap_cfg:
+
 name: megatron_gpt
 restore_from_path: null # used when starting from a .nemo file
 

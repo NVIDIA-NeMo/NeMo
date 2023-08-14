@@ -149,7 +149,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         with open_dict(self.cfg):
             self.cfg.existing_tasks = (
                 self.existing_tasks + self.new_tasks
-            )  # TODO: for backward compatibility (@adithyare) in general these tasks lists should be depricated
+            )  # TODO: for backward compatibility (@adithyare) in general these tasks lists should be deprecated
 
         self.virtual_prompt_style = VirtualPromptStyle(cfg.virtual_prompt_style)
         self.model_type = ModelType.encoder_or_decoder

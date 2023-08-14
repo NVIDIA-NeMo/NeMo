@@ -172,6 +172,8 @@ def main(cfg) -> None:
     )
 
     model.freeze()
+    if not cfg.model.get('use_flash_attention', False):
+        cfg.inference.compute_attention_mask = True
     config = OmegaConf.to_container(cfg.inference, resolve=True)
     model.set_inference_config(config)
 

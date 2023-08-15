@@ -52,6 +52,12 @@ RUN git clone https://github.com/NVIDIA/apex.git && \
   git checkout 8b7a1ff183741dd8f9b87e7bafd04cfde99cea28 && \
   pip3 install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
 
+# install megatron core, this can be removed once 0.3 pip package is released
+RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
+  cd Megatron-LM && \
+  git checkout 0609f27fe8376f17ab65c001d3d8f35cd8175950 && \
+  pip install -e .
+
 # uninstall stuff from base container
 RUN pip3 uninstall -y sacrebleu torchtext
 

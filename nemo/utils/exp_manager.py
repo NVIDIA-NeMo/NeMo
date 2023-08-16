@@ -139,6 +139,7 @@ class ExpManagerConfig:
     resume_if_exists: Optional[bool] = False
     resume_past_end: Optional[bool] = False
     resume_ignore_no_checkpoint: Optional[bool] = False
+    resume_from_checkpoint: Optional[str] = None
     # Logging parameters
     create_tensorboard_logger: Optional[bool] = True
     summary_writer_kwargs: Optional[Dict[Any, Any]] = None
@@ -257,6 +258,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             - resume_ignore_no_checkpoint (bool): exp_manager errors out if resume_if_exists is True and no checkpoint
                 could be found. This behaviour can be disabled, in which case exp_manager will print a message and
                 continue without restoring, by setting resume_ignore_no_checkpoint to True. Defaults to False.
+            - resume_from_checkpoint (str): Can be used to specify a path to a specific checkpoint file to load from. This will
+                override any checkpoint found when resume_if_exists is True. Defaults to None.
             - create_tensorboard_logger (bool): Whether to create a tensorboard logger and attach it to the pytorch
                 lightning trainer. Defaults to True.
             - summary_writer_kwargs (dict): A dictionary of kwargs that can be passed to lightning's TensorboardLogger
@@ -342,6 +345,12 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             )
         else:
             check_resume(trainer, log_dir, cfg.resume_past_end, cfg.resume_ignore_no_checkpoint)
+
+    #  TODO: this behavior is undesirable, need ckpts in exp_dir to take priority if present over resume_from_checkpoint
+    # if cfg.resume_from_checkpoint is not None:
+    #     trainer.ckpt_path = cfg.resume_from_checkpoint
+
+    logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
     checkpoint_name = name
     # If name returned from get_log_dir is "", use cfg.name for checkpointing

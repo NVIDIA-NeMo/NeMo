@@ -14,17 +14,9 @@
 
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
-from nemo.collections.nlp.parts.nlp_overrides import (
-    GradScaler,
-    MegatronHalfPrecisionPlugin,
-    NLPDDPStrategy,
-    PipelineMixedPrecisionPlugin,
-)
+from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronBertTrainerBuilder
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -38,41 +30,8 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
-    megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
-    with_distributed_adam = cfg.model.optim.get('name') == 'distributed_fused_adam'
-
-    plugins = []
-    strategy = NLPDDPStrategy(
-        no_ddp_communication_hook=True,
-        gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
-        find_unused_parameters=False,
-    )
-
-    if cfg.trainer.precision in [16, '16', 'bf16', '16-mixed', 'bf16-mixed']:
-        scaler = None
-        if cfg.trainer.precision in [16, '16', '16-mixed']:
-            scaler = GradScaler(
-                init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
-                growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
-            )
-            # MixedPrecisionPlugin in PTL >= 2.0 requires precision to be 16-mixed or bf16-mixed
-            plugin_precision = '16-mixed'
-        else:
-            plugin_precision = 'bf16-mixed'
-        if megatron_amp_o2 and not with_distributed_adam:
-            plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
-        else:
-            plugins.append(PipelineMixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
-
-    if cfg.get('cluster_type', None) == 'BCP':
-        plugins.append(TorchElasticEnvironment())
-
-    trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
-
+    trainer = MegatronBertTrainerBuilder(cfg).create_trainer()
     exp_manager(trainer, cfg.exp_manager)
-
-    # resume_from_checkpoint = uninject_model_parallel_rank(resume_from_checkpoint)
-    logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):

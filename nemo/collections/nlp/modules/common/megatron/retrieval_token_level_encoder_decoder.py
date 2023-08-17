@@ -42,7 +42,10 @@ try:
     from megatron.core import ModelParallelConfig, tensor_parallel
 
     HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
+
+    ModelParallelConfig = ApexGuardDefaults
 
     HAVE_MEGATRON_CORE = True
 

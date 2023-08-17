@@ -33,6 +33,7 @@ from nemo.collections.nlp.modules.common import (
     VirtualPromptSource,
     VirtualPromptStyle,
 )
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.modules.common.transformer.text_generation import TextGeneration
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.utils import AppState, logging
@@ -51,6 +52,8 @@ try:
     HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
+
+    ModelParallelConfig = ApexGuardDefaults
 
     HAVE_MEGATRON_CORE = False
 

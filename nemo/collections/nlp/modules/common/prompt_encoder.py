@@ -20,7 +20,7 @@ import torch.nn.init as init
 from torch import nn
 
 from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_bias_gelu
-from nemo.collections.nlp.modules.common.megatron.utils import init_method_normal
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, init_method_normal
 from nemo.core.classes import Exportable, NeuralModule
 from nemo.core.classes.common import typecheck
 
@@ -30,6 +30,8 @@ try:
     HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
+
+    ModelParallelConfig = ApexGuardDefaults
 
     HAVE_MEGATRON_CORE = False
 

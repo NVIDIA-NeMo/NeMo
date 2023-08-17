@@ -31,6 +31,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_base_prompt_learning
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common import VirtualPromptPlaceholderToken, VirtualPromptSource, VirtualPromptStyle
 from nemo.collections.nlp.modules.common.megatron.utils import (
+    ApexGuardDefaults,
     average_losses_across_data_parallel_group,
     get_iterator_k_split,
 )
@@ -60,6 +61,8 @@ try:
     HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
+
+    ModelParallelConfig = ApexGuardDefaults
 
     HAVE_MEGATRON_CORE = False
 

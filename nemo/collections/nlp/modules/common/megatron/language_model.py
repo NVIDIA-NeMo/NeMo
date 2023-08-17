@@ -59,6 +59,8 @@ try:
 
 except (ImportError, ModuleNotFoundError):
 
+    ModelParallelConfig = ApexGuardDefaults
+
     HAVE_MEGATRON_CORE = False
 
 

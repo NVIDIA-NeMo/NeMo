@@ -25,7 +25,7 @@ import torch.nn.init as init
 from nemo.collections.common.parts.adapter_modules import AdapterModuleUtil
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_bias_gelu
-from nemo.collections.nlp.modules.common.megatron.utils import init_method_const, init_method_normal
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, init_method_const, init_method_normal
 from nemo.collections.nlp.modules.common.prompt_encoder import InferenceTable
 from nemo.core.classes.mixins import adapter_mixin_strategies
 
@@ -45,6 +45,8 @@ try:
     HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
+
+    ModelParallelConfig = ApexGuardDefaults
 
     HAVE_MEGATRON_CORE = False
 

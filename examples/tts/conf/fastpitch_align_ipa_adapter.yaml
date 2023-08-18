@@ -1,0 +1,324 @@
+# This config contains the default values for training FastPitch speaker adaptation
+# If you want to train model on other dataset, you can change config values according to your dataset.
+# Most dataset-specific arguments are in the head of the config file, see below.
+
+name: FastPitch
+
+train_dataset: ???
+validation_datasets: ???
+sup_data_path: ???
+sup_data_types: [ "align_prior_matrix", "pitch", "speaker_id", "reference_audio"]
+
+
+# Default values from librosa.pyin
+pitch_fmin: 65.40639132514966
+pitch_fmax: 2093.004522404789
+
+# these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
+# by running `scripts/dataset_processing/tts/extract_sup_data.py`
+pitch_mean: ???  # e.g. 212.35873413085938 for LJSpeech
+pitch_std:  ???  # e.g.  68.52806091308594 for LJSpeech
+
+# Default values for dataset with sample_rate=44100
+sample_rate: 44100
+n_mel_channels: 80
+n_window_size: 2048
+n_window_stride: 512
+n_fft: 2048
+lowfreq: 0
+highfreq: 8000
+window: hann
+
+phoneme_dict_path: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
+
+model:
+  unfreeze_aligner: false
+  unfreeze_duration_predictor: false
+  unfreeze_pitch_predictor: false
+  unfreeze_energy_predictor: false
+  learn_alignment: true
+  bin_loss_warmup_epochs: 100
+  
+  max_token_duration: 75
+  symbols_embedding_dim: 384
+  pitch_embedding_kernel_size: 3
+  energy_embedding_kernel_size: 3
+    
+  pitch_fmin: ${pitch_fmin}
+  pitch_fmax: ${pitch_fmax}
+
+  pitch_mean: ${pitch_mean}
+  pitch_std: ${pitch_std}
+
+  sample_rate: ${sample_rate}
+  n_mel_channels: ${n_mel_channels}
+  n_window_size: ${n_window_size}
+  n_window_stride: ${n_window_stride}
+  n_fft: ${n_fft}
+  lowfreq: ${lowfreq}
+  highfreq: ${highfreq}
+  window: ${window}
+
+  text_normalizer:
+    _target_: nemo_text_processing.text_normalization.normalize.Normalizer
+    lang: en
+    input_case: cased
+    
+  text_normalizer_call_kwargs:
+    verbose: false
+    punct_pre_process: true
+    punct_post_process: true
+
+  text_tokenizer:
+    _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
+    punct: true
+    apostrophe: true
+    pad_with_space: true
+    g2p:
+      _target_: nemo.collections.tts.g2p.modules.IPAG2P
+      phoneme_dict: ${phoneme_dict_path}
+      heteronyms: ${heteronyms_path}
+      phoneme_probability: 0.8
+      # Relies on the heteronyms list for anything that needs to be disambiguated
+      ignore_ambiguous_words: false
+      use_chars: true
+      use_stresses: true
+      
+  adapter:
+    # Config of the adapter training/eval script.
+    adapter_name: "adapter"  # Name of the adapter, used by the script
+    adapter_module_name: "encoder+decoder+duration_predictor+pitch_predictor+aligner"  # Name of the adapter module. Combine multiple modules with '+' between module names.
+    adapter_state_dict_name: "adapters.pt"  # If the individual adapters must be saved, a file name can be provided here. null disables this.
+    
+    # Config of the adapter module itself
+    _target_: nemo.collections.common.parts.adapter_modules.LinearAdapter
+    in_features: ${model.symbols_embedding_dim}  # User must provide the output dimension of the layers of the model, which is the input dimension of this adapter.
+    dim: 256  # The hidden dimension of the adapter, as chosen by user, but small values are preferred to reduce param count.
+    activation: swish
+    norm_position: 'pre'  # Can be `pre` or `post`
+    dropout: 0.0  # float, dropout for the adapter
+
+    # Adapter strategy config
+    adapter_strategy:
+      _target_: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
+      stochastic_depth: 0.0  # float, setting to > 0 will enable stochastic depth for each adapter block.
+      l2_lambda: 0.0  # float, setting to > 0 will enable l2 norm auxiliary loss for each adapter's output.
+
+    # Optional global config available to all adapters at a global level.
+    # A global config is shared across every layer of the adapters, defining global properties rather
+    # than properties local to the adapter (as defined above).
+    # This can be useful in order to select *which type of adapter* is added, *what adapters to enable*,
+    # and further global operations that can decide dynamically how to support the requested adapter.
+    global_cfg:
+      check_encoder_adapter: True  # determines whether to check if encoder adapter modules is supported
+      check_decoder_adapter: True  # determines whether to check if decoder adapter modules is supported
+      check_duration_predictor_adapter: True  # determines whether to check if duration_predictor adapter modules is supported
+      check_pitch_predictor_adapter: True  # determines whether to check if pitch_predictor adapter modules is supported
+      check_aligner_adapter: True  # determines whether to check if aligner adapter modules is supported
+      
+  train_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.dataset.TTSDataset
+      manifest_filepath: ${train_dataset}
+      sample_rate: ${model.sample_rate}
+      sup_data_path: ${sup_data_path}
+      sup_data_types: ${sup_data_types}
+      n_fft: ${model.n_fft}
+      win_length: ${model.n_window_size}
+      hop_length: ${model.n_window_stride}
+      window: ${model.window}
+      n_mels: ${model.n_mel_channels}
+      lowfreq: ${model.lowfreq}
+      highfreq: ${model.highfreq}
+      max_duration: null
+      min_duration: 0.1
+      ignore_file: null
+      trim: false
+      pitch_fmin: ${model.pitch_fmin}
+      pitch_fmax: ${model.pitch_fmax}
+      pitch_norm: true
+      pitch_mean: ${model.pitch_mean}
+      pitch_std: ${model.pitch_std}
+      use_beta_binomial_interpolator: true
+      
+    dataloader_params:
+      drop_last: false
+      shuffle: true
+      batch_size: 32
+      num_workers: 12
+      pin_memory: true
+
+  validation_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.dataset.TTSDataset
+      manifest_filepath: ${validation_datasets}
+      sample_rate: ${model.sample_rate}
+      sup_data_path: ${sup_data_path}
+      sup_data_types: ${sup_data_types}
+      n_fft: ${model.n_fft}
+      win_length: ${model.n_window_size}
+      hop_length: ${model.n_window_stride}
+      window: ${model.window}
+      n_mels: ${model.n_mel_channels}
+      lowfreq: ${model.lowfreq}
+      highfreq: ${model.highfreq}
+      max_duration: null
+      min_duration: 0.1
+      ignore_file: null
+      trim: false
+      pitch_fmin: ${model.pitch_fmin}
+      pitch_fmax: ${model.pitch_fmax}
+      pitch_norm: true
+      pitch_mean: ${model.pitch_mean}
+      pitch_std: ${model.pitch_std}
+      use_beta_binomial_interpolator: true
+
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 32
+      num_workers: 8
+      pin_memory: true
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    features: ${model.n_mel_channels}
+    lowfreq: ${model.lowfreq}
+    highfreq: ${model.highfreq}
+    n_fft: ${model.n_fft}
+    n_window_size: ${model.n_window_size}
+    window_size: false
+    n_window_stride: ${model.n_window_stride}
+    window_stride: false
+    pad_to: 1
+    pad_value: 0
+    sample_rate: ${model.sample_rate}
+    window: ${model.window}
+    normalize: null
+    preemph: null
+    dither: 0.0
+    frame_splicing: 1
+    log: true
+    log_zero_guard_type: add
+    log_zero_guard_value: 1e-05
+    mag_power: 1.0
+
+  input_fft: #n_embed and padding_idx are added by the model
+    _target_: nemo.collections.tts.modules.transformer.FFTransformerEncoder
+    n_layer: 6
+    n_head: 1
+    d_model: ${model.symbols_embedding_dim}
+    d_head: 64
+    d_inner: 1536
+    kernel_size: 3
+    dropout: 0.1
+    dropatt: 0.1
+    dropemb: 0.0
+    d_embed: ${model.symbols_embedding_dim}
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
+
+  output_fft:
+    _target_: nemo.collections.tts.modules.transformer.FFTransformerDecoder
+    n_layer: 6
+    n_head: 1
+    d_model: ${model.symbols_embedding_dim}
+    d_head: 64
+    d_inner: 1536
+    kernel_size: 3
+    dropout: 0.1
+    dropatt: 0.1
+    dropemb: 0.0
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
+
+  alignment_module:
+    _target_: nemo.collections.tts.modules.aligner.AlignmentEncoder
+    n_text_channels: ${model.symbols_embedding_dim}
+    condition_types: [ "add" ] # options: [ "add", "concat" ]
+    
+  duration_predictor:
+    _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
+    input_size: ${model.symbols_embedding_dim}
+    kernel_size: 3
+    filter_size: 256
+    dropout: 0.1
+    n_layers: 2
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
+
+  pitch_predictor:
+    _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
+    input_size: ${model.symbols_embedding_dim}
+    kernel_size: 3
+    filter_size: 256
+    dropout: 0.1
+    n_layers: 2
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
+
+  energy_predictor:
+    _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
+    input_size: ${model.symbols_embedding_dim}
+    kernel_size: 3
+    filter_size: 256
+    dropout: 0.1
+    n_layers: 2
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
+
+  speaker_encoder:
+    _target_: nemo.collections.tts.modules.submodules.SpeakerEncoder
+    precomputed_embedding_dim: null
+    lookup_module:
+      _target_: nemo.collections.tts.modules.submodules.SpeakerLookupTable
+      n_speakers: ???
+      embedding_dim: ${model.symbols_embedding_dim}
+    gst_module:
+      _target_: nemo.collections.tts.modules.submodules.GlobalStyleToken
+      gst_size: ${model.symbols_embedding_dim}
+      n_style_token: 10
+      n_style_attn_head: 4
+      reference_encoder:
+        _target_: nemo.collections.tts.modules.submodules.ReferenceEncoder
+        n_mels: ${model.n_mel_channels}
+        cnn_filters: [32, 32, 64, 64, 128, 128] 
+        dropout: 0.2
+        gru_hidden: ${model.symbols_embedding_dim}
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        bias: true
+
+  optim:
+    name: adamw
+    lr: 1e-3
+    betas: [0.9, 0.999]
+    weight_decay: 1e-6
+
+    sched:
+      name: NoamAnnealing
+      warmup_steps: 1000
+      last_epoch: -1
+      d_model: 1  # Disable scaling based on model dim
+
+trainer:
+  num_nodes: 1
+  devices: 1
+  accelerator: gpu
+  strategy: ddp
+  precision: 16
+  max_epochs: 1000
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1000.0
+  enable_checkpointing: false # Provided by exp_manager
+  logger: false # Provided by exp_manager
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 1
+  benchmark: false
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    monitor: val_loss
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false

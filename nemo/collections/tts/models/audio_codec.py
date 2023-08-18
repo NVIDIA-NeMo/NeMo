@@ -236,9 +236,9 @@ class AudioCodecModel(ModelPT):
             loss_disc = self.disc_loss_fn(disc_scores_real=disc_scores_real, disc_scores_gen=disc_scores_gen)
             train_disc_loss = loss_disc
 
+            optim_disc.zero_grad()
             self.manual_backward(train_disc_loss)
             optim_disc.step()
-            optim_disc.zero_grad()
         else:
             loss_disc = None
 
@@ -260,9 +260,9 @@ class AudioCodecModel(ModelPT):
         if commit_loss is not None:
             loss_gen_all += commit_loss
 
+        optim_gen.zero_grad()
         self.manual_backward(loss_gen_all)
         optim_gen.step()
-        optim_gen.zero_grad()
 
         self.update_lr()
 
@@ -290,9 +290,13 @@ class AudioCodecModel(ModelPT):
 
     def validation_step(self, batch, batch_idx):
         audio, audio_len, audio_gen, _ = self._process_batch(batch)
-        loss_audio = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+        loss_time_domain = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
         loss_mel = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
-        metrics = {"val_loss": loss_audio + loss_mel, "val_loss_audio": loss_audio, "val_loss_mel": loss_mel}
+        metrics = {
+            "val_loss": loss_time_domain + loss_mel,
+            "val_loss_time_domain": loss_time_domain,
+            "val_loss_mel": loss_mel,
+        }
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
     @staticmethod

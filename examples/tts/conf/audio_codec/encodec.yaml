@@ -35,6 +35,8 @@ model:
 
   sample_rate: ${sample_rate}
   samples_per_frame: ${samples_per_frame}
+
+  mel_loss_scale: 5.0
   time_domain_loss_scale: 0.1
   # Probability of updating the discriminator during each training step
   # For example, update the discriminator 2/3 times (2 updates for every 3 batches)

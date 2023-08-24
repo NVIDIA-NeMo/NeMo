@@ -333,6 +333,63 @@ class CSVMemMapDataset(TextMemMapDataset):
         return super()._build_data_from_text(text)
 
 
+class CSVFieldsMemmapDataset(TextMemMapDataset):
+    """
+    Allow per-line lazy access to multiple csv files using numpy memmap.
+    Returns a dictionary with multiple fields.
+    """
+
+    def __init__(
+        self,
+        dataset_paths,
+        newline_int=10,
+        header_lines=1,
+        workers=None,
+        tokenizer=None,
+        sort_dataset_paths=True,
+        data_sep=',',
+        data_fields={"data": 0},
+        index_mapping_dir: Optional[str] = None,
+    ):
+        """
+        Args:
+            dataset_paths: list of csv file paths to read data from
+            newline_int: ASCII code to use to interpret newlines in file.
+            header_lines: number of header lines in csv files.
+            workers: number of workers to use for creating index files.
+            tokenizer: tokenizer to use to convert text to tokens.
+            sort_dataset_paths: whether to sort datasets by paths.
+            data_sep: data separator.
+            data_fields:  dict of field names and their corresponding column indices
+            index_mapping_dir: directory to save the index mapping to.
+                If None, will write to the same folder as the dataset.
+        """
+        super().__init__(
+            dataset_paths=dataset_paths,
+            newline_int=newline_int,
+            header_lines=header_lines,
+            workers=workers,
+            tokenizer=tokenizer,
+            sort_dataset_paths=sort_dataset_paths,
+            index_mapping_dir=index_mapping_dir,
+        )
+
+        self._data_fields = data_fields
+        self._data_sep = data_sep
+
+    def _build_data_from_text(self, text: str):
+        """
+
+        """
+        _build_data_from_text = super()._build_data_from_text
+        data = {}
+        text_fields = text.split(self._data_sep)
+        for field_name, field_idx in self._data_fields.items():
+            data[field_name] = _build_data_from_text(text_fields[field_idx])
+
+        return data
+
+
 class JSONLMemMapDataset(TextMemMapDataset):
     """
     Memory-mapped iteration over a JSONL file.

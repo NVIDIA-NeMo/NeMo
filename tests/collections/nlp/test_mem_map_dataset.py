@@ -84,6 +84,22 @@ def test_csv_mem_map_dataset(csv_file):
     assert indexed_dataset[2].strip() == "Bob"
 
 
+def test_csv_fields_mem_map_dataset(csv_file):
+    """Test for CSV memory-mapped datasets."""
+
+    indexed_dataset = text_memmap_dataset.CSVFieldsMemmapDataset(
+        dataset_paths=[csv_file], data_fields={"ID": 0, "Name": 1}, header_lines=1
+    )
+    assert isinstance(indexed_dataset[0], dict)
+    assert sorted(indexed_dataset[0].keys()) == ["ID", "Name"]
+    assert indexed_dataset[0]["ID"] == "1" and indexed_dataset[1]["ID"] == "2" and indexed_dataset[2]["ID"] == "3"
+    assert (
+        indexed_dataset[0]["Name"].strip() == "John"
+        and indexed_dataset[1]["Name"].strip() == "Jane"
+        and indexed_dataset[2]["Name"].strip() == "Bob"
+    )
+
+
 @pytest.mark.parametrize(
     "dataset_class", [text_memmap_dataset.JSONLMemMapDataset, text_memmap_dataset.CSVMemMapDataset],
 )

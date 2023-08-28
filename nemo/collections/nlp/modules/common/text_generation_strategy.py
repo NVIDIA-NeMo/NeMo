@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import abc
-from typing import List, Tuple
+import warnings
+from typing import List, Set, Tuple
 
 import torch
 
@@ -49,7 +50,14 @@ class TextGenerationStrategy:
 
     def __init__(self, model):
         self.model = model
-        self.model.eval()
+        if self.model.training:
+            # TODO in the future this should raise an exception
+            warnings.warn(
+                "Generation started while the model is in training mode, switching to eval mode "
+                "(this situation may raise an exception in future versions, please call `eval()` before generation)"
+            )
+            self.model.eval()
+        self._end_of_generation_cache = None
 
     def forward_step(self, batch, tensor_shape):
         fwd_bwd_function = get_forward_backward_func()
@@ -147,26 +155,28 @@ class TextGenerationStrategy:
         returns:
             a boolean tensor indicating whether the generation should stop
         """
-        if len(end_strings) == 1 and end_strings[0] == END_OF_SEQ:
+        if (len(end_strings) == 1 and end_strings[0] == END_OF_SEQ) or not end_strings:
+            # Simple scenario: only finish on end of document token.
             return prev == eod_id
-        else:
-            tokenizer = self.model.tokenizer
-            conditions = []
-            end_tokens = set()
-            end_tokens.add(eod_id)
-            for end_string in end_strings:
-                ids_1 = tokenizer.text_to_ids(f'<extra_id_1>{end_string}')
-                ids_2 = tokenizer.text_to_ids('<extra_id_1>')
-                if len(ids_1) <= len(ids_2):
-                    continue
-                token_id = ids_1[len(ids_2) :][0]
-                end_tokens.add(token_id)
-            for p, token_item in zip(prev, tokens):
-                text = tokenizer.ids_to_text(token_item.tolist())
-                conditions.append(
-                    any([text.endswith(end_string) for end_string in end_strings] + [p.item() in end_tokens])
-                )
-            return torch.tensor(conditions, dtype=torch.bool, device=tokens.device)
+
+        end_tokens, end_strings_to_check = self._get_end_of_generation_tokens_and_strings(eod_id, end_strings)
+        assert end_tokens
+
+        is_end = torch.isin(prev, torch.tensor(list(end_tokens), dtype=prev.dtype, device=prev.device))
+
+        if end_strings_to_check:
+            # The loop below is inefficient (see warning in `_get_end_of_generation_tokens_and_strings()`)
+            # TODO In addition, we will not stop if the model generates an end string followed by extra characters,
+            # e.g., if `end_string` is "Done" and there exists a "Done!" token it could generate tokens
+            #       [..., ".", "Done!"]
+            # which would fail the `endswith("Done")` check. However, stopping when "Done!" is generated would not
+            # work either, since we would need to post-process the generated string to truncate the extra "!".
+            # ==> this is left for future work if there is a compelling use case requiring this feature.
+            for idx, token_seq in enumerate(tokens):
+                text = self.model.tokenizer.ids_to_text(token_seq.tolist())
+                is_end[idx] |= any(text.endswith(end_string) for end_string in end_strings_to_check)
+
+        return is_end
 
     def post_generation_process(self, output):
         """
@@ -175,6 +185,66 @@ class TextGenerationStrategy:
             output  (dict): the text generation output dictionary
         """
         return output
+
+    def _get_end_of_generation_tokens_and_strings(
+        self, eod_id: int, end_strings: List[str]
+    ) -> Tuple[Set[int], List[str]]:
+        """
+        return the tokens and strings indicating the end of generation
+        Args:
+            eod_id (int): the end of document token id
+            end_strings (List[str]): the list of end of generation strings
+        Returns:
+            a pair `(tokens, strings)` where `tokens` is a set of tokens (int) and `strings` is a list of strings,
+            which must all be used to identify the end of generation (`tokens` always contains `eod_id`, while
+            `strings` may be empty if all end strings are associated to unique tokens)
+        """
+        tokenizer = self.model.tokenizer
+        # A cache is used to remember which end strings are associated to unique tokens vs. which ones
+        # require an actual string comparison.
+        if self._end_of_generation_cache is None or self._end_of_generation_cache["tokenizer"] is not tokenizer:
+            # Invalidate the cache.
+            self._end_of_generation_cache = {
+                "tokenizer": tokenizer,
+                "end_string_to_token": {END_OF_SEQ: eod_id},
+                "end_strings_to_check": set(),
+            }
+        end_string_to_token = self._end_of_generation_cache["end_string_to_token"]
+
+        end_tokens = {eod_id}  # always include `eod_id`, even if `END_OF_SEQ` is not within `end_strings`
+        end_strings_to_check = []  # will contain end strings that have no associated special token
+
+        for end_string in end_strings:
+            try:
+                end_tokens.add(end_string_to_token[end_string])
+                continue
+            except KeyError:
+                if end_string in self._end_of_generation_cache["end_strings_to_check"]:
+                    end_strings_to_check.append(end_string)
+                    continue
+
+            # `end_string` does not exist in the cache yet: check if `end_string` is a special token for
+            # the tokenizer. Ideally, we would simply use `tokenizer.text_to_ids(end_string)`, but some
+            # tokenizers (e.g., SentencePiece) may prefix the special token with another token associated
+            # to an empty string. The code below is thus meant to extract the special token associated to
+            # `end_string` (if it exists). Note that we use "<extra_id_1>" as prefix string to have a low
+            # risk of the tokenizer merging it with `end_string`, but this is somewhat arbitrary.
+            ids_ref = tokenizer.text_to_ids("<extra_id_1>")
+            ids_with_end_string = tokenizer.text_to_ids(f"<extra_id_1>{end_string}")
+            if len(ids_with_end_string) == len(ids_ref) + 1 and ids_with_end_string[:-1] == ids_ref:
+                # We can assume that the extra token is the one corresponding to `end_string`.
+                end_string_to_token[end_string] = ids_with_end_string[-1]
+                end_tokens.add(ids_with_end_string[-1])
+            else:
+                # No special token.
+                warnings.warn(
+                    f"The end string '{end_string}' has no associated special token: this may slow down "
+                    "generation (consider using a different tokenizer or modifying `end_strings`)"
+                )
+                self._end_of_generation_cache["end_strings_to_check"].add(end_string)
+                end_strings_to_check.append(end_string)
+
+        return end_tokens, end_strings_to_check
 
 
 class GPTModelTextGenerationStrategy(TextGenerationStrategy):

@@ -19,9 +19,12 @@ This script should be run after compute_features.py as it loads the precomputed 
 
 $ python <nemo_root_path>/scripts/dataset_processing/tts/compute_feature_stats.py \
     --feature_config_path=<nemo_root_path>/examples/tts/conf/features/feature_22050.yaml
-    --manifest_path=<data_root_path>/manifest.json \
-    --audio_dir=<data_root_path>/audio \
-    --feature_dir=<data_root_path>/features \
+    --manifest_path=<data_root_path>/manifest1.json \
+    --manifest_path=<data_root_path>/manifest2.json \
+    --audio_dir=<data_root_path>/audio1 \
+    --audio_dir=<data_root_path>/audio2 \
+    --feature_dir=<data_root_path>/features1 \
+    --feature_dir=<data_root_path>/features2 \
     --stats_path=<data_root_path>/feature_stats.json
 
 The output dictionary will contain the feature statistics for every speaker, as well as a "default" entry
@@ -74,13 +77,17 @@ def get_args():
         "--feature_config_path", required=True, type=Path, help="Path to feature config file.",
     )
     parser.add_argument(
-        "--manifest_path", required=True, type=Path, help="Path to training manifest.",
+        "--manifest_path", required=True, type=Path, action="append", help="Path(s) to training manifest.",
     )
     parser.add_argument(
-        "--audio_dir", required=True, type=Path, help="Path to base directory with audio data.",
+        "--audio_dir", required=True, type=Path, action="append", help="Path(s) to base directory with audio data.",
     )
     parser.add_argument(
-        "--feature_dir", required=True, type=Path, help="Path to directory where feature data was stored.",
+        "--feature_dir",
+        required=True,
+        type=Path,
+        action="append",
+        help="Path(s) to directory where feature data was stored.",
     )
     parser.add_argument(
         "--feature_names", default="pitch,energy", type=str, help="Comma separated list of features to process.",
@@ -118,25 +125,34 @@ def main():
     args = get_args()
 
     feature_config_path = args.feature_config_path
-    manifest_path = args.manifest_path
-    audio_dir = args.audio_dir
-    feature_dir = args.feature_dir
+    manifest_paths = args.manifest_path
+    audio_dirs = args.audio_dir
+    feature_dirs = args.feature_dir
     feature_name_str = args.feature_names
     mask_field = args.mask_field
     stats_path = args.stats_path
     overwrite = args.overwrite
 
-    if not manifest_path.exists():
-        raise ValueError(f"Manifest {manifest_path} does not exist.")
-
-    if not audio_dir.exists():
-        raise ValueError(f"Audio directory {audio_dir} does not exist.")
-
-    if not feature_dir.exists():
+    if not (len(manifest_paths) == len(audio_dirs) == len(feature_dirs)):
         raise ValueError(
-            f"Feature directory {feature_dir} does not exist. "
-            f"Please check that the path is correct and that you ran compute_features.py"
+            f"Need same number of manifest, audio_dir, and feature_dir. Received: "
+            f"{len(manifest_paths)}, "
+            f"{len(audio_dirs)}, "
+            f"{len(feature_dirs)}"
         )
+
+    for (manifest_path, audio_dir, feature_dir) in zip(manifest_paths, audio_dirs, feature_dirs):
+        if not manifest_path.exists():
+            raise ValueError(f"Manifest {manifest_path} does not exist.")
+
+        if not audio_dir.exists():
+            raise ValueError(f"Audio directory {audio_dir} does not exist.")
+
+        if not feature_dir.exists():
+            raise ValueError(
+                f"Feature directory {feature_dir} does not exist. "
+                f"Please check that the path is correct and that you ran compute_features.py"
+            )
 
     if stats_path.exists():
         if overwrite:
@@ -156,29 +172,30 @@ def main():
     # for that speaker
     feature_stats = {name: defaultdict(list) for name in feature_names}
 
-    entries = read_manifest(manifest_path)
+    for (manifest_path, audio_dir, feature_dir) in zip(manifest_paths, audio_dirs, feature_dirs):
+        entries = read_manifest(manifest_path)
 
-    for entry in tqdm(entries):
-        speaker = entry["speaker"]
+        for entry in tqdm(entries):
+            speaker = entry["speaker"]
 
-        entry_dict = {}
-        for featurizer in featurizers:
-            feature_dict = featurizer.load(manifest_entry=entry, audio_dir=audio_dir, feature_dir=feature_dir)
-            entry_dict.update(feature_dict)
+            entry_dict = {}
+            for featurizer in featurizers:
+                feature_dict = featurizer.load(manifest_entry=entry, audio_dir=audio_dir, feature_dir=feature_dir)
+                entry_dict.update(feature_dict)
 
-        if mask_field:
-            mask = entry_dict[mask_field]
-        else:
-            mask = None
+            if mask_field:
+                mask = entry_dict[mask_field]
+            else:
+                mask = None
 
-        for feature_name in feature_names:
-            values = entry_dict[feature_name]
-            if mask is not None:
-                values = values[mask]
+            for feature_name in feature_names:
+                values = entry_dict[feature_name]
+                if mask is not None:
+                    values = values[mask]
 
-            feature_stat_dict = feature_stats[feature_name]
-            feature_stat_dict["default"].append(values)
-            feature_stat_dict[speaker].append(values)
+                feature_stat_dict = feature_stats[feature_name]
+                feature_stat_dict["default"].append(values)
+                feature_stat_dict[speaker].append(values)
 
     stat_dict = defaultdict(dict)
     for feature_name in feature_names:

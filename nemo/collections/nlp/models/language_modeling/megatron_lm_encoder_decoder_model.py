@@ -714,8 +714,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         """
         Shared code for validation and test step
         """
-        # Prefetch the dataloader_iter before fwd_bwd func to avoid PP rank 2 from waiting indefinitely with PP rank 1 reaches the end of dataloader_iter
-        dataloader_iter, done = self._prefetch(dataloader_iter)
+        # Check if iterator is exhausted
+        dataloader_iter, done = self._val_iterator_done(dataloader_iter)
         if done:
             return
 

@@ -385,20 +385,17 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         return loss_mean
 
     def validation_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
-        # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of iterables
-        try:
-            return self.inference_step(dataloader_iter, batch_idx, 'validation', dataloader_idx)
-        except StopIteration:
-            return
+        return self.inference_step(dataloader_iter, batch_idx, 'validation', dataloader_idx)
 
     def test_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
         # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of iterables
-        try:
-            return self.inference_step(dataloader_iter, batch_idx, 'test', dataloader_idx)
-        except StopIteration:
-            return
+        return self.inference_step(dataloader_iter, batch_idx, 'test', dataloader_idx)
 
     def inference_step(self, dataloader_iter, batch_idx, mode, dataloader_idx=0):
+        # Check if iterator is exhausted
+        dataloader_iter, done = self._val_iterator_done(dataloader_iter)
+        if done:
+            return
         batch = next(dataloader_iter)
         data_cfg = self.cfg.data.validation_ds if mode == 'validation' else self.cfg.data.test_ds
         self._reconfigure_and_process_inference_batch(batch, data_cfg)

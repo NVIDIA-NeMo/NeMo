@@ -197,6 +197,8 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
                         tokenizer.add_special_tokens([f'<extra_id_{mask_type}>'])
 
     def build_train_valid_test_datasets(self):
+        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
+        self._reconfigure_val_batches()
         logging.info(f'Building {self.model_name} datasets.')
         if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")

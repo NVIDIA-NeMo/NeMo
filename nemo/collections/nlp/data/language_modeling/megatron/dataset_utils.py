@@ -1344,8 +1344,8 @@ def get_samples_mapping(
         logging.info('    loaded indexed file in {:3.3f} seconds'.format(time.time() - start_time))
         logging.info('    total number of samples: {}'.format(samples_mapping.shape[0]))
 
-        # Deallocate temporary numpy arrays that were created for `get_samples_mapping()` when needed
-        if hasattr(indexed_dataset, 'doc_idx') and hasattr(indexed_dataset, 'sizes'):
-            deallocate_indexed_dataset_memory(indexed_dataset)
+    # Deallocate temporary numpy arrays that were created for `get_samples_mapping()` when needed
+    if hasattr(indexed_dataset, 'doc_idx') and hasattr(indexed_dataset, 'sizes'):
+        deallocate_indexed_dataset_memory(indexed_dataset)
 
     return samples_mapping

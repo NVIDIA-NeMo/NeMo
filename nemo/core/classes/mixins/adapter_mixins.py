@@ -409,12 +409,12 @@ class AdapterModuleMixin(ABC):
 
                     # Check if adapter is enabled or not
                     if self.adapter_cfg[name]['enabled'] and name in module.adapter_layer:
+
                         # Recursively set training mode of submodules
                         module.adapter_layer[name].train()
 
                         # Recursively set grad required for submodules
-                        for pname, param in module.adapter_layer[name].named_parameters():
-                            param.requires_grad_(True)
+                        module.adapter_layer[name].adapter_unfreeze()
 
                         # unfreeze batch norm if any in the adapter submodules
                         for mname, module_ in module.adapter_layer[name].named_modules():

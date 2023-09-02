@@ -61,6 +61,15 @@ class AdapterModuleUtil(access_mixins.AccessMixin):
         """
         return adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
 
+    def adapter_unfreeze(self,):
+        """
+        Sets the requires grad for all parameters in the adapter to True.
+        This method should be overridden for any custom unfreeze behavior that is required.
+        For example, if not all params of the adapter should be unfrozen.
+        """
+        for param in self.parameters():
+            param.requires_grad_(True)
+
 
 class LinearAdapter(nn.Module, AdapterModuleUtil):
 

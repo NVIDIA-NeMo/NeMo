@@ -28,6 +28,7 @@ from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_b
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, init_method_const, init_method_normal
 from nemo.core.classes.mixins import adapter_mixin_strategies
 
+
 try:
     from apex.normalization.fused_layer_norm import MixedFusedLayerNorm
 
@@ -205,6 +206,12 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         else:
             raise NotImplementedError("out_init_method should be zero, normal or xavier")
         return init_fn
+
+    def adapter_unfreeze(self,):
+        """
+        Can be customized to allow for selective training of only some params in the PEFT.
+        """
+        super().adapter_unfreeze()
 
     def forward(self, x):
 

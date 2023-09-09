@@ -25,6 +25,8 @@ import pytorch_lightning as pl
 import torch
 from lightning_fabric.utilities.cloud_io import get_filesystem
 from omegaconf import OmegaConf
+from pytorch_lightning.callbacks.progress import TQDMProgressBar
+from pytorch_lightning.callbacks.progress.tqdm_progress import _update_n
 from pytorch_lightning.loops.fetchers import _DataFetcher
 from pytorch_lightning.overrides.base import _LightningModuleWrapperBase
 from pytorch_lightning.plugins import ClusterEnvironment
@@ -1073,3 +1075,27 @@ class GlobalBatchDataFetcher(_DataFetcher):
             assert isinstance(dataloader, Sized)  # `_has_len` is True
             self.done = self.fetched >= len(dataloader)
         self.on_fetch_end(batch, start_output)
+
+
+class CustomProgressBar(TQDMProgressBar):
+    """
+    Add CustomProgressBar to remove 's/it' and display progress per step instead of per microbatch
+    for megatron models
+    """
+
+    def init_train_tqdm(self):
+        """
+        Override bar_format to not have 's/it'
+        """
+        self.bar = super().init_train_tqdm()
+        self.bar.bar_format = "{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]"
+        return self.bar
+
+    def on_train_batch_end(self, trainer, pl_module, *_, **__):
+        """
+        Override parent class on_train_batch_end to update progress bar per global_step instead of per microbatch
+        """
+        n = trainer.global_step
+        if self._should_update(n, self.train_progress_bar.total):
+            _update_n(self.train_progress_bar, n)
+            self.train_progress_bar.set_postfix(self.get_metrics(trainer, pl_module))

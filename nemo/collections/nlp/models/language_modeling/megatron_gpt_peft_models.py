@@ -434,6 +434,11 @@ class MegatronGPTIA3Model(MegatronGPTLayerwisePEFTModel):
                 self.name_key_to_cfg[k] = infused_adapter_cfg
             else:
                 raise ValueError(f"PEFT Key {k} is unknown.")
+
+        self.layer_selection = cfg.peft.ia3_tuning.get("layer_selection", None)
+        if self.layer_selection is None:
+            self.layer_selection = list(range(1, cfg.num_layers + 1))
+
         super().__init__(cfg, trainer)
 
 

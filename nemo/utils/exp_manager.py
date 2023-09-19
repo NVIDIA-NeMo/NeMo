@@ -578,8 +578,8 @@ def check_resume(
         end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
         last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
 
-        end_checkpoints = end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.glob("*end.ckpt"))
-        last_checkpoints = last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.glob("*last.ckpt"))
+        end_checkpoints = end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.rglob("*end.ckpt"))
+        last_checkpoints = last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.rglob("*last.ckpt"))
 
         if not checkpoint_dir.exists() or (not len(end_checkpoints) > 0 and not len(last_checkpoints) > 0):
             if resume_ignore_no_checkpoint:

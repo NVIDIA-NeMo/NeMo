@@ -40,7 +40,7 @@ class TestAudioCodecModules:
         lengths = torch.tensor([self.len1, self.len2], dtype=torch.int32)
 
         conv = Conv1dNorm(in_channels=self.in_channels, out_channels=self.out_channels, kernel_size=self.kernel_size)
-        out = conv(inputs, lengths)
+        out = conv(inputs=inputs, input_len=lengths)
 
         assert out.shape == (self.batch_size, self.out_channels, self.max_len)
         assert torch.all(out[0, :, : self.len1] != 0.0)
@@ -66,7 +66,7 @@ class TestAudioCodecModules:
             stride=stride,
             padding=padding,
         )
-        out = conv(inputs, lengths)
+        out = conv(inputs=inputs, input_len=lengths)
 
         assert out.shape == (self.batch_size, self.out_channels, out_len)
         assert torch.all(out[0, :, :out_len_1] != 0.0)
@@ -87,7 +87,7 @@ class TestAudioCodecModules:
         conv = ConvTranspose1dNorm(
             in_channels=self.in_channels, out_channels=self.out_channels, kernel_size=self.kernel_size, stride=stride
         )
-        out = conv(inputs, lengths)
+        out = conv(inputs=inputs, input_len=lengths)
 
         assert out.shape == (self.batch_size, self.out_channels, out_len)
         assert torch.all(out[0, :, :out_len_1] != 0.0)

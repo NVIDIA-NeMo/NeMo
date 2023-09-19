@@ -40,8 +40,8 @@ class MaskedLoss(Loss):
     @property
     def input_types(self):
         return {
-            "target": NeuralType(('B', 'D', 'T'), RegressionValuesType()),
             "predicted": NeuralType(('B', 'D', 'T'), PredictionsType()),
+            "target": NeuralType(('B', 'D', 'T'), RegressionValuesType()),
             "target_len": NeuralType(tuple('B'), LengthsType()),
         }
 
@@ -97,7 +97,7 @@ class TimeDomainLoss(Loss):
     @property
     def output_types(self):
         return {
-            "loss": [NeuralType(elements_type=LossType())],
+            "loss": NeuralType(elements_type=LossType()),
         }
 
     @typecheck()
@@ -146,7 +146,7 @@ class MultiResolutionMelLoss(Loss):
     @property
     def output_types(self):
         return {
-            "loss": [NeuralType(elements_type=LossType())],
+            "loss": NeuralType(elements_type=LossType()),
         }
 
     @typecheck()

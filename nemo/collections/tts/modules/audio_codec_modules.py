@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
-import torch
 import torch.nn as nn
-from einops import rearrange
 
 from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
+from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
-from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, LengthsType, VoidType
+from nemo.core.neural_types.elements import LengthsType, VoidType
 from nemo.core.neural_types.neural_type import NeuralType
 
 
@@ -64,21 +63,22 @@ class Conv1dNorm(NeuralModule):
     def input_types(self):
         return {
             "inputs": NeuralType(('B', 'C', 'T'), VoidType()),
-            "lengths": NeuralType(tuple('B'), LengthsType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
         }
 
     @property
     def output_types(self):
         return {
-            "out": [NeuralType(('B', 'C', 'T'), VoidType())],
+            "out": NeuralType(('B', 'C', 'T'), VoidType()),
         }
 
     def remove_weight_norm(self):
         nn.utils.remove_weight_norm(self.conv)
 
-    def forward(self, inputs, lengths):
+    @typecheck()
+    def forward(self, inputs, input_len):
         out = self.conv(inputs)
-        out = mask_sequence_tensor(out, lengths)
+        out = mask_sequence_tensor(out, input_len)
         return out
 
 
@@ -101,21 +101,22 @@ class ConvTranspose1dNorm(NeuralModule):
     def input_types(self):
         return {
             "inputs": NeuralType(('B', 'C', 'T'), VoidType()),
-            "lengths": NeuralType(tuple('B'), LengthsType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
         }
 
     @property
     def output_types(self):
         return {
-            "out": [NeuralType(('B', 'C', 'T'), VoidType())],
+            "out": NeuralType(('B', 'C', 'T'), VoidType()),
         }
 
     def remove_weight_norm(self):
         nn.utils.remove_weight_norm(self.conv)
 
-    def forward(self, inputs, lengths):
+    @typecheck()
+    def forward(self, inputs, input_len):
         out = self.conv(inputs)
-        out = mask_sequence_tensor(out, lengths)
+        out = mask_sequence_tensor(out, input_len)
         return out
 
 
@@ -151,11 +152,12 @@ class Conv2dNorm(NeuralModule):
     @property
     def output_types(self):
         return {
-            "out": [NeuralType(('B', 'C', 'H', 'T'), VoidType())],
+            "out": NeuralType(('B', 'C', 'H', 'T'), VoidType()),
         }
 
     def remove_weight_norm(self):
         nn.utils.remove_weight_norm(self.conv)
 
+    @typecheck()
     def forward(self, inputs):
         return self.conv(inputs)

@@ -484,9 +484,11 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
-        gen_params = itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters())
-        disc_params = self.discriminator.parameters()
+        vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
+        gen_params = itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params)
         optim_g = instantiate(optim_config, params=gen_params)
+
+        disc_params = self.discriminator.parameters()
         optim_d = instantiate(optim_config, params=disc_params)
 
         if sched_config is None:

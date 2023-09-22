@@ -289,6 +289,7 @@ class GPTSFTChatDataset(GPTSFTDataset):
             labels = [x[: self.max_seq_length] for x in labels]
             loss_mask = [x[: self.max_seq_length] for x in loss_mask]
             contexts = [x[: self.max_seq_length] for x in contexts]
+            answers = [x[: self.max_seq_length] for x in answers]
 
         # increase max length to nearest multiple of 4 or 8
         if self.pad_to_max_length:

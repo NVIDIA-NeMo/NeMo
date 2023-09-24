@@ -170,6 +170,8 @@ class ExpManagerConfig:
     ema: Optional[EMAParams] = EMAParams()
     # Wall clock time limit
     max_time_per_run: Optional[str] = None
+    # time to sleep non 0 ranks during initialization
+    seconds_to_sleep: float = 5
 
 
 class TimingCallback(Callback):
@@ -301,6 +303,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
                 Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
             - max_time (str): The maximum wall clock time *per run*. This is intended to be used on clusters where you want 
                 a checkpoint to be saved after this specified time and be able to resume from that checkpoint. Defaults to None.
+            - seconds_to_sleep (float): seconds to sleep non rank 0 processes for. Used to give enough time for rank 0 to initialize
 
     returns:
         log_dir (Path): The final logging directory where logging files are saved. Usually the concatenation of
@@ -500,6 +503,11 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
 
         # Add lightning file logging to global_rank zero
         add_filehandlers_to_pl_logger(log_dir / 'lightning_logs.txt', log_dir / 'nemo_error_log.txt')
+
+    elif trainer.num_devices * trainer.num_devices > 1:
+        # sleep other ranks so rank 0 can finish
+        # doing the initialization such as moving files
+        time.sleep(cfg.seconds_to_sleep)
 
     return log_dir
 

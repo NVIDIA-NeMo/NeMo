@@ -32,7 +32,7 @@ Optionally, launch TensorBoard to view the training results in ``./nemo_experime
 ..
 
 If ``create_checkpoint_callback`` is set to ``True``, then NeMo automatically creates checkpoints during training
-using PyTorch Lightning's `ModelCheckpoint <https://pytorch-lightning.readthedocs.io/en/stable/extensions/generated/pytorch_lightning.callbacks.ModelCheckpoint.html#pytorch_lightning.callbacks.ModelCheckpoint>`_.
+using PyTorch Lightning's `ModelCheckpoint <https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.ModelCheckpoint.html>`_.
 We can configure the ``ModelCheckpoint`` via YAML or CLI.
 
 .. code-block:: yaml

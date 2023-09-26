@@ -98,7 +98,7 @@ class AlignmentEncoder(torch.nn.Module):
 
         self._apply_mask(dist, mask, float("inf"))
 
-        return dist
+        return dist.squeeze(1)
 
     @staticmethod
     def get_euclidean_dist(queries_enc, keys_enc):

@@ -375,7 +375,15 @@ class AudioSegment(object):
 
     @classmethod
     def segment_from_file(
-        cls, audio_file, target_sr=None, n_segments=0, trim=False, orig_sr=None, channel_selector=None, offset=None
+        cls,
+        audio_file,
+        target_sr=None,
+        n_segments=0,
+        trim=False,
+        orig_sr=None,
+        channel_selector=None,
+        offset=None,
+        dtype='float32',
     ):
         """Grabs n_segments number of samples from audio_file.
         If offset is not provided, n_segments are selected randomly.
@@ -390,6 +398,7 @@ class AudioSegment(object):
         :param orig_sr: the original sample rate
         :param channel selector: select a subset of channels. If set to `None`, the original signal will be used.
         :param offset: fixed offset in seconds
+        :param dtype: data type to load audio as.
         :return: numpy array of samples
         """
         is_segmented = False
@@ -412,15 +421,15 @@ class AudioSegment(object):
                                 f'Provided audio start ({audio_start}) is larger than the maximum possible ({max_audio_start})'
                             )
                     f.seek(audio_start)
-                    samples = f.read(n_segments_at_original_sr, dtype='float32')
+                    samples = f.read(n_segments_at_original_sr, dtype=dtype)
                     is_segmented = True
                 elif n_segments_at_original_sr > len(f):
                     logging.warning(
                         f"Number of segments ({n_segments_at_original_sr}) is greater than the length ({len(f)}) of the audio file {audio_file}. This may lead to shape mismatch errors."
                     )
-                    samples = f.read(dtype='float32')
+                    samples = f.read(dtype=dtype)
                 else:
-                    samples = f.read(dtype='float32')
+                    samples = f.read(dtype=dtype)
         except RuntimeError as e:
             logging.error(f"Loading {audio_file} via SoundFile raised RuntimeError: `{e}`.")
             raise e

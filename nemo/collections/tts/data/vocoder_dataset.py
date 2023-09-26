@@ -122,11 +122,13 @@ class VocoderDataset(Dataset):
         return sampler
 
     def _segment_audio(self, audio_filepath: Path) -> AudioSegment:
-        # Retry file read multiple times as file seeking can produce random IO errors.
+        # File seeking sometimes fails when reading flac files with libsndfile < 1.0.30.
+        # Read audio as int32 to minimize issues, and retry read on a different segment in case of failure.
+        # https://github.com/bastibe/python-soundfile/issues/274
         for _ in range(self.num_audio_retries):
             try:
                 audio_segment = AudioSegment.segment_from_file(
-                    audio_filepath, target_sr=self.sample_rate, n_segments=self.n_samples,
+                    audio_filepath, target_sr=self.sample_rate, n_segments=self.n_samples, dtype="int32"
                 )
                 return audio_segment
             except Exception:

@@ -86,14 +86,17 @@ def __process_transcript(file_path: str):
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)
     entries = []
-    i = 0
     SPEAKER_LEN = 7
+
+    candidates = []
+    speakers = set()
     with open(file_path / "train" / "content.txt", encoding="utf-8") as fin:
         for line in fin:
             content = line.split()
             wav_name, text = content[0], "".join(content[1::2]) + "。"
             wav_name = wav_name.replace(u'\ufeff', '')
             speaker = wav_name[:SPEAKER_LEN]
+            speakers.add(speaker)
             wav_file = file_path / "train" / "wav" / speaker / wav_name
             assert os.path.exists(wav_file), f"{wav_file} not found!"
             duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
@@ -102,18 +105,27 @@ def __process_transcript(file_path: str):
             processed_file = file_path / "processed" / wav_name
             # convert wav to mono 22050HZ, 16 bit (as SFSpeech dataset)
             subprocess.run(f"sox {wav_file} -r 22050 -c 1 -b 16 {processed_file}", shell=True)
-            simplified_text = cc.convert(text)
-            normalized_text = normalizer_call(simplified_text)
-            entry = {
-                'audio_filepath': os.path.abspath(processed_file),
-                'duration': float(duration),
-                'text': text,
-                'normalized_text': normalized_text,
-                'speaker': int(speaker[3:]),
-            }
+            candidates.append((processed_file, duration, text, speaker))
 
-            i += 1
-            entries.append(entry)
+    # remapping the speakder to speaker_id (start from 1)
+    remapping = {}
+    for index, speaker in enumerate(sorted(speakers)):
+        remapping[speaker] = index + 1
+
+    for processed_file, duration, text, speaker in candidates:
+        simplified_text = cc.convert(text)
+        normalized_text = normalizer_call(simplified_text)
+        entry = {
+            'audio_filepath': os.path.abspath(processed_file),
+            'duration': float(duration),
+            'text': text,
+            'normalized_text': normalized_text,
+            'speaker_raw': speaker,
+            'speaker': remapping[speaker],
+        }
+
+        entries.append(entry)
+
     return entries
 
 

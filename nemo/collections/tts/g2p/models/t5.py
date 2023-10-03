@@ -170,7 +170,18 @@ class T5G2PModel(G2PModel):
         )
         generated_str, _, _ = self._generate_predictions(input_ids=input_ids, model_max_target_len=self.max_target_len)
         per = word_error_rate(hypotheses=generated_str, references=labels_str, use_cer=True)
-        return {f"{split}_loss": val_loss, 'per': per}
+        output = {f"{split}_loss": val_loss, 'per': per}
+        if split == 'val':
+            if isinstance(self.trainer.val_dataloaders, (list, tuple)) and len(self.trainer.val_dataloaders) > 1:
+                self.validation_step_outputs[dataloader_idx].append(output)
+            else:
+                self.validation_step_outputs.append(output)
+        else:
+            if isinstance(self.trainer.test_dataloaders, (list, tuple)) and len(self.trainer.test_dataloaders) > 1:
+                self.test_step_outputs[dataloader_idx].append(output)
+            else:
+                self.test_step_outputs.append(output)
+        return output
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         """

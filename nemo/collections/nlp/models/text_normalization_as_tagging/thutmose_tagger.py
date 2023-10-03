@@ -236,14 +236,15 @@ class ThutmoseTaggerModel(NLPModel):
         val_loss_tag = self.loss_fn(logits=tag_logits, labels=tag_labels, loss_mask=labels_mask)
         val_loss_semiotic = self.loss_fn(logits=semiotic_logits, labels=semiotic_labels, loss_mask=labels_mask)
         val_loss = val_loss_tag + val_loss_semiotic
+        self.validation_step_outputs.append(val_loss)
         return {'val_loss': val_loss}
 
-    def on_validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+        avg_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
 
         # calculate metrics and classification report
         # In our task recall = accuracy, and the recall column - is the per class accuracy
@@ -269,6 +270,8 @@ class ThutmoseTaggerModel(NLPModel):
         self.tag_multiword_classification_report.reset()
         self.semiotic_classification_report.reset()
 
+        self.validation_step_outputs.clear()  # free memory
+
     def test_step(self, batch, batch_idx):
         """
         Lightning calls this inside the test loop with the data from the test dataloader
@@ -276,12 +279,12 @@ class ThutmoseTaggerModel(NLPModel):
         """
         return self.validation_step(batch, batch_idx)
 
-    def on_test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         """
         Called at the end of test to aggregate outputs.
         :param outputs: list of individual outputs of each test step.
         """
-        return self.on_validation_epoch_end(outputs)
+        return self.on_validation_epoch_end()
 
     # Functions for inference
     @torch.no_grad()

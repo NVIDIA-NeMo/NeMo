@@ -209,6 +209,8 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                     "were found. Saving latest model instead."
                 )
             else:
+                if os.path.isdir(self.best_model_path.split('.ckpt')[0]):
+                    self.best_model_path = self.best_model_path.split('.ckpt')[0]
                 self.best_model_path = trainer.strategy.broadcast(self.best_model_path)
                 trainer._checkpoint_connector.restore(self.best_model_path)
 

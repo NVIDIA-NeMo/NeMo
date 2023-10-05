@@ -115,7 +115,7 @@ class EvalBeamSearchNGramConfig:
     hat_subtract_ilm: bool = False
     hat_ilm_weight: List[float] = field(default_factory=lambda: [0.0])
 
-    decoding: rnnt_beam_decoding.BeamRNNTInferConfig = rnnt_beam_decoding.BeamRNNTInferConfig(beam_size=128)
+    decoding: rnnt_beam_decoding.BeamRNNTInferConfig = field(default_factory=lambda: rnnt_beam_decoding.BeamRNNTInferConfig(beam_size=128))
 
 
 # fmt: on

@@ -14,10 +14,18 @@
 import re
 from typing import List
 
-import ipadic
-import MeCab
 from pangu import spacing
 from sacremoses import MosesDetokenizer, MosesPunctNormalizer, MosesTokenizer
+
+try:
+    import ipadic
+    import MeCab
+
+    HAVE_MECAB = True
+    HAVE_IPADIC = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_MECAB = False
+    HAVE_IPADIC = False
 
 
 class EnJaProcessor:
@@ -67,6 +75,9 @@ class JaMecabProcessor:
     """
 
     def __init__(self):
+        if not HAVE_MECAB or not HAVE_IPADIC:
+            raise ImportError("Please ensure that you have installed `MeCab` and `ipadic` to use JaMecabProcessor")
+
         self.mecab_tokenizer = MeCab.Tagger(ipadic.MECAB_ARGS + " -Owakati")
 
     def detokenize(self, text: List[str]) -> str:

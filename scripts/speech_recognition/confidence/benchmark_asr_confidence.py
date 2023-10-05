@@ -14,7 +14,7 @@
 
 import json
 import os
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -124,7 +124,9 @@ class ConfidenceBenchmarkingConfig:
 
     # Confidence configs
     target_level: str = "auto"  # Choices: "word", "token", "auto" (for both word- and token-level confidence)
-    confidence_cfg: ConfidenceConfig = ConfidenceConfig(preserve_word_confidence=True, preserve_token_confidence=True)
+    confidence_cfg: ConfidenceConfig = field(
+        default_factory=lambda: ConfidenceConfig(preserve_word_confidence=True, preserve_token_confidence=True)
+    )
     grid_params: Optional[str] = None  # a dictionary with lists of parameters to iteratively benchmark on
 
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -70,12 +70,12 @@ class TextTokenizer:
     apostrophe: bool = True
     pad_with_space: bool = True
     add_blank_at: bool = True
-    g2p: G2PConfig = G2PConfig()
+    g2p: G2PConfig = field(default_factory=lambda: G2PConfig())
 
 
 @dataclass
 class TextTokenizerConfig:
-    text_tokenizer: TextTokenizer = TextTokenizer()
+    text_tokenizer: TextTokenizer = field(default_factory=lambda: TextTokenizer())
 
 
 class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixin):

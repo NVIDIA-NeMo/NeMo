@@ -14,7 +14,7 @@
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -602,5 +602,5 @@ class BeamCTCInferConfig:
     beam_beta: float = 0.0
     kenlm_path: Optional[str] = None
 
-    flashlight_cfg: Optional[FlashlightConfig] = FlashlightConfig()
-    pyctcdecode_cfg: Optional[PyCTCDecodeConfig] = PyCTCDecodeConfig()
+    flashlight_cfg: Optional[FlashlightConfig] = field(default_factory=lambda: FlashlightConfig())
+    pyctcdecode_cfg: Optional[PyCTCDecodeConfig] = field(default_factory=lambda: PyCTCDecodeConfig())

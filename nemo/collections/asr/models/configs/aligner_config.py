@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from nemo.collections.asr.parts.k2.classes import GraphModuleConfig
 
@@ -35,10 +35,10 @@ class AlignerWrapperModelConfig:
     word_output: bool = True
     cpu_decoding: bool = False
     decode_batch_size: int = 0
-    ctc_cfg: AlignerCTCConfig = AlignerCTCConfig()
-    rnnt_cfg: AlignerRNNTConfig = AlignerRNNTConfig()
+    ctc_cfg: AlignerCTCConfig = field(default_factory=lambda: AlignerCTCConfig())
+    rnnt_cfg: AlignerRNNTConfig = field(default_factory=lambda: AlignerRNNTConfig())
 
 
 @dataclass
 class K2AlignerWrapperModelConfig(AlignerWrapperModelConfig):
-    decoder_module_cfg: GraphModuleConfig = GraphModuleConfig()
+    decoder_module_cfg: GraphModuleConfig = field(default_factory=lambda: GraphModuleConfig())

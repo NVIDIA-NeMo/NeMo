@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from omegaconf.omegaconf import MISSING, DictConfig, OmegaConf, open_dict
@@ -215,13 +215,15 @@ class PunctuationCapitalizationModelConfig:
     This config is a part of :class:`~PunctuationCapitalizationConfig`.
     """
 
-    class_labels: ClassLabelsConfig = ClassLabelsConfig()
+    class_labels: ClassLabelsConfig = field(default_factory=lambda: ClassLabelsConfig())
     """A mandatory parameter containing a dictionary with names of label id files used in .nemo checkpoints.
     These file names can also be used for passing label vocabularies to the model. If you wish to use ``class_labels``
     for passing vocabularies, please provide path to vocabulary files in
     ``model.common_dataset_parameters.label_vocab_dir`` parameter."""
 
-    common_dataset_parameters: Optional[CommonDatasetParametersConfig] = CommonDatasetParametersConfig()
+    common_dataset_parameters: Optional[CommonDatasetParametersConfig] = field(
+        default_factory=lambda: CommonDatasetParametersConfig()
+    )
     """Label ids and loss mask information information."""
 
     train_ds: Optional[PunctuationCapitalizationTrainDataConfig] = None
@@ -233,16 +235,16 @@ class PunctuationCapitalizationModelConfig:
     test_ds: Optional[PunctuationCapitalizationEvalDataConfig] = None
     """A configuration for creating test datasets and data loaders."""
 
-    punct_head: HeadConfig = HeadConfig()
+    punct_head: HeadConfig = field(default_factory=lambda: HeadConfig())
     """A configuration for creating punctuation MLP head that is applied to a language model outputs."""
 
-    capit_head: HeadConfig = HeadConfig()
+    capit_head: HeadConfig = field(default_factory=lambda: HeadConfig())
     """A configuration for creating capitalization MLP head that is applied to a language model outputs."""
 
-    tokenizer: Any = TokenizerConfig()
+    tokenizer: Any = field(default_factory=lambda: TokenizerConfig())
     """A configuration for source text tokenizer."""
 
-    language_model: LanguageModelConfig = LanguageModelConfig()
+    language_model: LanguageModelConfig = field(default_factory=lambda: LanguageModelConfig())
     """A configuration of a BERT-like language model which serves as a model body."""
 
     optim: Optional[Any] = None
@@ -311,22 +313,30 @@ class PunctuationCapitalizationConfig(NemoConfig):
     do_testing: bool = False
     """Whether ot perform testing of the model."""
 
-    model: PunctuationCapitalizationModelConfig = PunctuationCapitalizationModelConfig()
+    model: PunctuationCapitalizationModelConfig = field(default_factory=lambda: PunctuationCapitalizationModelConfig())
     """A configuration for the
     :class:`~nemo.collections.nlp.models.token_classification.punctuation_capitalization_model.PunctuationCapitalizationModel`
     model."""
 
-    trainer: Optional[TrainerConfig] = TrainerConfig()
+    trainer: Optional[TrainerConfig] = field(default_factory=lambda: TrainerConfig())
     """Contains ``Trainer`` Lightning class constructor parameters."""
 
-    exp_manager: Optional[ExpManagerConfig] = ExpManagerConfig(name=name, files_to_copy=[])
+    exp_manager: Optional[ExpManagerConfig] = field(
+        default_factory=lambda: ExpManagerConfig(name=None, files_to_copy=[])
+    )
     """A configuration with various NeMo training options such as output directories, resuming from checkpoint,
     tensorboard and W&B logging, and so on. For possible options see :ref:`exp-manager-label`."""
+
+    def __post_init__(self):
+        if self.exp_manager is not None:
+            self.exp_manager.name = self.name
 
 
 @dataclass
 class PunctuationCapitalizationLexicalAudioConfig(PunctuationCapitalizationConfig):
-    model: PunctuationCapitalizationLexicalAudioModelConfig = PunctuationCapitalizationLexicalAudioModelConfig()
+    model: PunctuationCapitalizationLexicalAudioModelConfig = field(
+        default_factory=lambda: PunctuationCapitalizationLexicalAudioModelConfig()
+    )
 
 
 def is_legacy_model_config(model_cfg: DictConfig) -> bool:

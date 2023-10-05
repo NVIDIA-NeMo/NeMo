@@ -75,7 +75,7 @@ import random
 import sys
 import tempfile
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -209,19 +209,23 @@ class BuildEnsembleConfig:
     random_seed: int = 0  # for reproducibility
 
     # default confidence, can override
-    confidence: ConfidenceConfig = ConfidenceConfig(
-        # we keep frame confidences and apply aggregation manually to get full-utterance confidence
-        preserve_frame_confidence=True,
-        exclude_blank=True,
-        aggregation="mean",
-        method_cfg=ConfidenceMethodConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
+    confidence: ConfidenceConfig = field(
+        default_factory=lambda: ConfidenceConfig(
+            # we keep frame confidences and apply aggregation manually to get full-utterance confidence
+            preserve_frame_confidence=True,
+            exclude_blank=True,
+            aggregation="mean",
+            measure_cfg=ConfidenceMethodConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
+        )
     )
     temperature: float = 1.0
 
     # this is optional, but can be used to change any aspect of the transcription
     # config, such as batch size or amp usage. Note that model, data and confidence
     # will be overriden by this script
-    transcription: transcribe_speech.TranscriptionConfig = transcribe_speech.TranscriptionConfig()
+    transcription: transcribe_speech.TranscriptionConfig = field(
+        default_factory=lambda: transcribe_speech.TranscriptionConfig()
+    )
 
     # set to True to tune the confidence.
     # requires dev manifests to be specified for each model
@@ -229,12 +233,14 @@ class BuildEnsembleConfig:
     # used to specify what to tune over. By default runs tuning over some
     # reasonalbe grid, so that it does not take forever.
     # Can be changed as needed
-    tune_confidence_config: TuneConfidenceConfig = TuneConfidenceConfig()
+    tune_confidence_config: TuneConfidenceConfig = field(default_factory=lambda: TuneConfidenceConfig())
 
     # very fast to tune and can be important in case of imbalanced datasets
     # will automatically set to False if dev data is not available
     tune_logistic_regression: bool = True
-    tune_logistic_regression_config: TuneLogisticRegressionConfig = TuneLogisticRegressionConfig()
+    tune_logistic_regression_config: TuneLogisticRegressionConfig = field(
+        default_factory=lambda: TuneLogisticRegressionConfig()
+    )
 
     def __post_init__(self):
         """Checking that if any dev data is provided, all are provided.

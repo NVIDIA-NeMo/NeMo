@@ -14,7 +14,7 @@
 
 import re
 from abc import abstractmethod
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import editdistance
@@ -1297,13 +1297,17 @@ class CTCDecodingConfig:
     batch_dim_index: int = 0
 
     # greedy decoding config
-    greedy: ctc_greedy_decoding.GreedyCTCInferConfig = ctc_greedy_decoding.GreedyCTCInferConfig()
+    greedy: ctc_greedy_decoding.GreedyCTCInferConfig = field(
+        default_factory=lambda: ctc_greedy_decoding.GreedyCTCInferConfig()
+    )
 
     # beam decoding config
-    beam: ctc_beam_decoding.BeamCTCInferConfig = ctc_beam_decoding.BeamCTCInferConfig(beam_size=4)
+    beam: ctc_beam_decoding.BeamCTCInferConfig = field(
+        default_factory=lambda: ctc_beam_decoding.BeamCTCInferConfig(beam_size=4)
+    )
 
     # confidence config
-    confidence_cfg: ConfidenceConfig = ConfidenceConfig()
+    confidence_cfg: ConfidenceConfig = field(default_factory=lambda: ConfidenceConfig())
 
     # can be used to change temperature for decoding
     temperature: float = 1.0

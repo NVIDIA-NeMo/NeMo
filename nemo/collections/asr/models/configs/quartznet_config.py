@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 from omegaconf import MISSING
@@ -174,20 +174,30 @@ class JasperModelConfig(ctc_cfg.EncDecCTCConfig):
     labels: List[str] = MISSING
 
     # Dataset configs
-    train_ds: ctc_cfg.ASRDatasetConfig = ctc_cfg.ASRDatasetConfig(
-        manifest_filepath=None, shuffle=True, trim_silence=True
+    train_ds: ctc_cfg.ASRDatasetConfig = field(
+        default_factory=lambda: ctc_cfg.ASRDatasetConfig(manifest_filepath=None, shuffle=True, trim_silence=True)
     )
-    validation_ds: ctc_cfg.ASRDatasetConfig = ctc_cfg.ASRDatasetConfig(manifest_filepath=None, shuffle=False)
-    test_ds: ctc_cfg.ASRDatasetConfig = ctc_cfg.ASRDatasetConfig(manifest_filepath=None, shuffle=False)
+    validation_ds: ctc_cfg.ASRDatasetConfig = field(
+        default_factory=lambda: ctc_cfg.ASRDatasetConfig(manifest_filepath=None, shuffle=False)
+    )
+    test_ds: ctc_cfg.ASRDatasetConfig = field(
+        default_factory=lambda: ctc_cfg.ASRDatasetConfig(manifest_filepath=None, shuffle=False)
+    )
 
     # Optimizer / Scheduler config
-    optim: Optional[model_cfg.OptimConfig] = model_cfg.OptimConfig(sched=model_cfg.SchedConfig())
+    optim: Optional[model_cfg.OptimConfig] = field(
+        default_factory=lambda: model_cfg.OptimConfig(sched=model_cfg.SchedConfig())
+    )
 
     # Model general component configs
-    preprocessor: AudioToMelSpectrogramPreprocessorConfig = AudioToMelSpectrogramPreprocessorConfig()
-    spec_augment: Optional[SpectrogramAugmentationConfig] = SpectrogramAugmentationConfig()
-    encoder: ConvASREncoderConfig = ConvASREncoderConfig(activation="relu")
-    decoder: ConvASRDecoderConfig = ConvASRDecoderConfig()
+    preprocessor: AudioToMelSpectrogramPreprocessorConfig = field(
+        default_factory=lambda: AudioToMelSpectrogramPreprocessorConfig()
+    )
+    spec_augment: Optional[SpectrogramAugmentationConfig] = field(
+        default_factory=lambda: SpectrogramAugmentationConfig()
+    )
+    encoder: ConvASREncoderConfig = field(default_factory=lambda: ConvASREncoderConfig(activation="relu"))
+    decoder: ConvASRDecoderConfig = field(default_factory=lambda: ConvASRDecoderConfig())
 
 
 @dataclass

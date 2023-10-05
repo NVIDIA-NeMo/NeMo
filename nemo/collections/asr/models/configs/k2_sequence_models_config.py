@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from nemo.collections.asr.models.configs.asr_models_config import EncDecCTCConfig
 from nemo.collections.asr.parts.k2.classes import GraphModuleConfig as BackendConfig
@@ -26,14 +26,14 @@ class GraphModuleConfig:
     split_batch_size: int = 0
     dec_type: str = "topo"
     transcribe_training: bool = True
-    backend_cfg: BackendConfig = BackendConfig()
+    backend_cfg: BackendConfig = field(default_factory=lambda: BackendConfig())
 
 
 @dataclass
 class EncDecK2SeqConfig(EncDecCTCConfig):
-    graph_module_cfg: GraphModuleConfig = GraphModuleConfig()
+    graph_module_cfg: GraphModuleConfig = field(default_factory=lambda: GraphModuleConfig())
 
 
 @dataclass
 class EncDecK2SeqModelConfig(NemoConfig):
-    model: EncDecK2SeqConfig = EncDecK2SeqConfig()
+    model: EncDecK2SeqConfig = field(default_factory=lambda: EncDecK2SeqConfig())

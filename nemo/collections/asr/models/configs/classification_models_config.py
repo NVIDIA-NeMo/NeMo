@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from omegaconf import MISSING
@@ -72,30 +72,40 @@ class EncDecClassificationConfig(model_cfg.ModelConfig):
     timesteps: int = MISSING
 
     # Dataset configs
-    train_ds: EncDecClassificationDatasetConfig = EncDecClassificationDatasetConfig(
-        manifest_filepath=None, shuffle=True, trim_silence=False
+    train_ds: EncDecClassificationDatasetConfig = field(
+        default_factory=lambda: EncDecClassificationDatasetConfig(
+            manifest_filepath=None, shuffle=True, trim_silence=False
+        )
     )
-    validation_ds: EncDecClassificationDatasetConfig = EncDecClassificationDatasetConfig(
-        manifest_filepath=None, shuffle=False
+    validation_ds: EncDecClassificationDatasetConfig = field(
+        default_factory=lambda: EncDecClassificationDatasetConfig(manifest_filepath=None, shuffle=False)
     )
-    test_ds: EncDecClassificationDatasetConfig = EncDecClassificationDatasetConfig(
-        manifest_filepath=None, shuffle=False
+    test_ds: EncDecClassificationDatasetConfig = field(
+        default_factory=lambda: EncDecClassificationDatasetConfig(manifest_filepath=None, shuffle=False)
     )
 
     # Optimizer / Scheduler config
-    optim: Optional[model_cfg.OptimConfig] = model_cfg.OptimConfig(sched=model_cfg.SchedConfig())
-
-    # Model component configs
-    preprocessor: AudioToMFCCPreprocessorConfig = AudioToMFCCPreprocessorConfig()
-    spec_augment: Optional[SpectrogramAugmentationConfig] = SpectrogramAugmentationConfig()
-    crop_or_pad_augment: Optional[CropOrPadSpectrogramAugmentationConfig] = CropOrPadSpectrogramAugmentationConfig(
-        audio_length=timesteps
+    optim: Optional[model_cfg.OptimConfig] = field(
+        default_factory=lambda: model_cfg.OptimConfig(sched=model_cfg.SchedConfig())
     )
 
-    encoder: ConvASREncoderConfig = ConvASREncoderConfig()
-    decoder: ConvASRDecoderClassificationConfig = ConvASRDecoderClassificationConfig()
+    # Model component configs
+    preprocessor: AudioToMFCCPreprocessorConfig = field(default_factory=lambda: AudioToMFCCPreprocessorConfig())
+    spec_augment: Optional[SpectrogramAugmentationConfig] = field(
+        default_factory=lambda: SpectrogramAugmentationConfig()
+    )
+    crop_or_pad_augment: Optional[CropOrPadSpectrogramAugmentationConfig] = field(
+        default_factory=lambda: CropOrPadSpectrogramAugmentationConfig(audio_length=-1)
+    )
+
+    encoder: ConvASREncoderConfig = field(default_factory=lambda: ConvASREncoderConfig())
+    decoder: ConvASRDecoderClassificationConfig = field(default_factory=lambda: ConvASRDecoderClassificationConfig())
+
+    def __post_init__(self):
+        if self.crop_or_pad_augment is not None:
+            self.crop_or_pad_augment.audio_length = self.timesteps
 
 
 @dataclass
 class EncDecClassificationModelConfig(model_cfg.NemoConfig):
-    model: EncDecClassificationConfig = EncDecClassificationConfig()
+    model: EncDecClassificationConfig = field(default_factory=lambda: EncDecClassificationConfig())

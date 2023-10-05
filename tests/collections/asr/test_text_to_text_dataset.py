@@ -15,7 +15,7 @@
 import json
 import multiprocessing
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -118,7 +118,7 @@ def tts_tokenizer():
         apostrophe: bool = True
         pad_with_space: bool = True
         add_blank_at: bool = True
-        g2p: G2PConfig = G2PConfig()
+        g2p: G2PConfig = field(default_factory=lambda: G2PConfig())
 
     config = OmegaConf.create(OmegaConf.to_yaml(TextTokenizerCfg()))
     return instantiate(config)

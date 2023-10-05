@@ -74,7 +74,7 @@ You may control the aligner's config by setting the aligner_args:
 
 
 import os
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from typing import Optional
 
 import pytorch_lightning as ptl
@@ -94,12 +94,14 @@ from nemo.utils.get_rank import is_global_rank_zero
 @dataclass
 class ParallelAlignmentConfig:
     model: Optional[str] = None  # name
-    predict_ds: ASRDatasetConfig = ASRDatasetConfig(return_sample_id=True, num_workers=4)
-    aligner_args: K2AlignerWrapperModelConfig = K2AlignerWrapperModelConfig()
+    predict_ds: ASRDatasetConfig = field(
+        default_factory=lambda: ASRDatasetConfig(return_sample_id=True, num_workers=4)
+    )
+    aligner_args: K2AlignerWrapperModelConfig = field(default_factory=lambda: K2AlignerWrapperModelConfig())
     output_path: str = MISSING
     model_stride: int = 8
 
-    trainer: TrainerConfig = TrainerConfig(gpus=-1, accelerator="ddp")
+    trainer: TrainerConfig = field(default_factory=lambda: TrainerConfig(gpus=-1, accelerator="ddp"))
 
     # there arguments will be ignored
     return_predictions: bool = False

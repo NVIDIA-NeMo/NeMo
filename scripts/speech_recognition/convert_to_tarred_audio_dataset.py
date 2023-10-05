@@ -202,7 +202,7 @@ class ASRTarredDatasetMetadata:
     num_samples_per_shard: Optional[int] = None
     is_concatenated_manifest: bool = False
 
-    dataset_config: Optional[ASRTarredDatasetConfig] = ASRTarredDatasetConfig()
+    dataset_config: Optional[ASRTarredDatasetConfig] = field(default_factory=lambda: ASRTarredDatasetConfig())
     history: Optional[List[Any]] = field(default_factory=lambda: [])
 
     def __post_init__(self):

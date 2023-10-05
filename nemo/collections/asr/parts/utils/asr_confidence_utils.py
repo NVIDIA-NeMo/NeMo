@@ -14,7 +14,7 @@
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import List, Optional
 
@@ -175,7 +175,7 @@ class ConfidenceConfig:
     preserve_word_confidence: bool = False
     exclude_blank: bool = True
     aggregation: str = "min"
-    method_cfg: ConfidenceMethodConfig = ConfidenceMethodConfig()
+    method_cfg: ConfidenceMethodConfig = field(default_factory=lambda: ConfidenceMethodConfig())
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed

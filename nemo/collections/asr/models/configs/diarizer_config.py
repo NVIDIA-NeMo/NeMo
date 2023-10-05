@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional, Tuple, Union
 
 
@@ -78,9 +78,9 @@ class ASRDiarizerParams(DiarizerComponentConfig):
 @dataclass
 class ASRDiarizerConfig(DiarizerComponentConfig):
     model_path: Optional[str] = "stt_en_conformer_ctc_large"
-    parameters: ASRDiarizerParams = ASRDiarizerParams()
-    ctc_decoder_parameters: ASRDiarizerCTCDecoderParams = ASRDiarizerCTCDecoderParams()
-    realigning_lm_parameters: ASRRealigningLMParams = ASRRealigningLMParams()
+    parameters: ASRDiarizerParams = field(default_factory=lambda: ASRDiarizerParams())
+    ctc_decoder_parameters: ASRDiarizerCTCDecoderParams = field(default_factory=lambda: ASRDiarizerCTCDecoderParams())
+    realigning_lm_parameters: ASRRealigningLMParams = field(default_factory=lambda: ASRRealigningLMParams())
 
 
 @dataclass
@@ -102,7 +102,7 @@ class VADParams(DiarizerComponentConfig):
 class VADConfig(DiarizerComponentConfig):
     model_path: str = "vad_multilingual_marblenet"  # .nemo local model path or pretrained VAD model name
     external_vad_manifest: Optional[str] = None
-    parameters: VADParams = VADParams()
+    parameters: VADParams = field(default_factory=lambda: VADParams())
 
 
 @dataclass
@@ -121,7 +121,7 @@ class SpeakerEmbeddingsParams(DiarizerComponentConfig):
 class SpeakerEmbeddingsConfig(DiarizerComponentConfig):
     # .nemo local model path or pretrained model name (titanet_large, ecapa_tdnn or speakerverification_speakernet)
     model_path: Optional[str] = None
-    parameters: SpeakerEmbeddingsParams = SpeakerEmbeddingsParams()
+    parameters: SpeakerEmbeddingsParams = field(default_factory=lambda: SpeakerEmbeddingsParams())
 
 
 @dataclass
@@ -142,7 +142,7 @@ class ClusteringParams(DiarizerComponentConfig):
 
 @dataclass
 class ClusteringConfig(DiarizerComponentConfig):
-    parameters: ClusteringParams = ClusteringParams()
+    parameters: ClusteringParams = field(default_factory=lambda: ClusteringParams())
 
 
 @dataclass
@@ -166,7 +166,7 @@ class MSDDParams(DiarizerComponentConfig):
 @dataclass
 class MSDDConfig(DiarizerComponentConfig):
     model_path: Optional[str] = "diar_msdd_telephonic"
-    parameters: MSDDParams = MSDDParams()
+    parameters: MSDDParams = field(default_factory=lambda: MSDDParams())
 
 
 @dataclass
@@ -176,16 +176,16 @@ class DiarizerConfig(DiarizerComponentConfig):
     oracle_vad: bool = False  # If True, uses RTTM files provided in the manifest file to get VAD timestamps
     collar: float = 0.25  # Collar value for scoring
     ignore_overlap: bool = True  # Consider or ignore overlap segments while scoring
-    vad: VADConfig = VADConfig()
-    speaker_embeddings: SpeakerEmbeddingsConfig = SpeakerEmbeddingsConfig()
-    clustering: ClusteringConfig = ClusteringConfig()
-    msdd_model: MSDDConfig = MSDDConfig()
-    asr: ASRDiarizerConfig = ASRDiarizerConfig()
+    vad: VADConfig = field(default_factory=lambda: VADConfig())
+    speaker_embeddings: SpeakerEmbeddingsConfig = field(default_factory=lambda: SpeakerEmbeddingsConfig())
+    clustering: ClusteringConfig = field(default_factory=lambda: ClusteringConfig())
+    msdd_model: MSDDConfig = field(default_factory=lambda: MSDDConfig())
+    asr: ASRDiarizerConfig = field(default_factory=lambda: ASRDiarizerConfig())
 
 
 @dataclass
 class NeuralDiarizerInferenceConfig(DiarizerComponentConfig):
-    diarizer: DiarizerConfig = DiarizerConfig()
+    diarizer: DiarizerConfig = field(default_factory=lambda: DiarizerConfig())
     device: str = "cpu"
     verbose: bool = False
     batch_size: int = 64

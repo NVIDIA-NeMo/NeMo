@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import torch
@@ -183,7 +183,7 @@ class MultiHeadAttentionAdapterConfig:
     n_feat: int
     dropout_rate: float = 0.0
     proj_dim: Optional[int] = None
-    adapter_strategy: Optional[Any] = MHAResidualAddAdapterStrategyConfig()
+    adapter_strategy: Optional[Any] = field(default_factory=lambda: MHAResidualAddAdapterStrategyConfig())
     _target_: str = "{0}.{1}".format(MultiHeadAttentionAdapter.__module__, MultiHeadAttentionAdapter.__name__)
 
 
@@ -287,7 +287,7 @@ class RelPositionMultiHeadAttentionAdapterConfig:
     n_feat: int
     dropout_rate: float = 0.0
     proj_dim: Optional[int] = None
-    adapter_strategy: Optional[Any] = MHAResidualAddAdapterStrategyConfig()
+    adapter_strategy: Optional[Any] = field(default_factory=lambda: MHAResidualAddAdapterStrategyConfig())
     _target_: str = "{0}.{1}".format(
         RelPositionMultiHeadAttentionAdapter.__module__, RelPositionMultiHeadAttentionAdapter.__name__
     )
@@ -336,7 +336,9 @@ class PositionalEncodingAdapterConfig:
     d_model: int
     max_len: int = 5000
     xscale: float = 1.0
-    adapter_strategy: Optional[Any] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+    adapter_strategy: Optional[Any] = field(
+        default_factory=lambda: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+    )
     _target_: str = "{0}.{1}".format(PositionalEncodingAdapter.__module__, PositionalEncodingAdapter.__name__)
 
 
@@ -378,5 +380,7 @@ class RelPositionalEncodingAdapterConfig:
     d_model: int
     max_len: int = 5000
     xscale: float = 1.0
-    adapter_strategy: Optional[Any] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+    adapter_strategy: Optional[Any] = field(
+        default_factory=lambda: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+    )
     _target_: str = "{0}.{1}".format(RelPositionalEncodingAdapter.__module__, RelPositionalEncodingAdapter.__name__)

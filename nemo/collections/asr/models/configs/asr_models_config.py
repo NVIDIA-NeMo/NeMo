@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from omegaconf import MISSING
@@ -74,24 +74,32 @@ class EncDecCTCConfig(model_cfg.ModelConfig):
     labels: List[str] = MISSING
 
     # Dataset configs
-    train_ds: ASRDatasetConfig = ASRDatasetConfig(manifest_filepath=None, shuffle=True)
-    validation_ds: ASRDatasetConfig = ASRDatasetConfig(manifest_filepath=None, shuffle=False)
-    test_ds: ASRDatasetConfig = ASRDatasetConfig(manifest_filepath=None, shuffle=False)
+    train_ds: ASRDatasetConfig = field(default_factory=lambda: ASRDatasetConfig(manifest_filepath=None, shuffle=True))
+    validation_ds: ASRDatasetConfig = field(
+        default_factory=lambda: ASRDatasetConfig(manifest_filepath=None, shuffle=False)
+    )
+    test_ds: ASRDatasetConfig = field(default_factory=lambda: ASRDatasetConfig(manifest_filepath=None, shuffle=False))
 
     # Optimizer / Scheduler config
-    optim: Optional[model_cfg.OptimConfig] = model_cfg.OptimConfig(sched=model_cfg.SchedConfig())
+    optim: Optional[model_cfg.OptimConfig] = field(
+        default_factory=lambda: model_cfg.OptimConfig(sched=model_cfg.SchedConfig())
+    )
 
     # Model component configs
-    preprocessor: AudioToMelSpectrogramPreprocessorConfig = AudioToMelSpectrogramPreprocessorConfig()
-    spec_augment: Optional[SpectrogramAugmentationConfig] = SpectrogramAugmentationConfig()
-    encoder: ConvASREncoderConfig = ConvASREncoderConfig()
-    decoder: ConvASRDecoderConfig = ConvASRDecoderConfig()
-    decoding: CTCDecodingConfig = CTCDecodingConfig()
+    preprocessor: AudioToMelSpectrogramPreprocessorConfig = field(
+        default_factory=lambda: AudioToMelSpectrogramPreprocessorConfig()
+    )
+    spec_augment: Optional[SpectrogramAugmentationConfig] = field(
+        default_factory=lambda: SpectrogramAugmentationConfig()
+    )
+    encoder: ConvASREncoderConfig = field(default_factory=lambda: ConvASREncoderConfig())
+    decoder: ConvASRDecoderConfig = field(default_factory=lambda: ConvASRDecoderConfig())
+    decoding: CTCDecodingConfig = field(default_factory=lambda: CTCDecodingConfig())
 
 
 @dataclass
 class EncDecCTCModelConfig(model_cfg.NemoConfig):
-    model: EncDecCTCConfig = EncDecCTCConfig()
+    model: EncDecCTCConfig = field(default_factory=lambda: EncDecCTCConfig())
 
 
 @dataclass

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
 
 from omegaconf.omegaconf import MISSING
@@ -46,7 +46,7 @@ class MTOptimConfig(OptimConfig):
     lr: float = 1e-3
     betas: Tuple[float, float] = (0.9, 0.98)
     weight_decay: float = 0.0
-    sched: Optional[MTSchedConfig] = MTSchedConfig()
+    sched: Optional[MTSchedConfig] = field(default_factory=lambda: MTSchedConfig())
 
 
 @dataclass
@@ -74,70 +74,80 @@ class MTEncDecModelConfig(EncDecNLPModelConfig):
     decoder_tokenizer: Any = MISSING
     decoder: Any = MISSING
 
-    head: TokenClassifierConfig = TokenClassifierConfig(log_softmax=True)
+    head: TokenClassifierConfig = field(default_factory=lambda: TokenClassifierConfig(log_softmax=True))
 
     # dataset configurations
-    train_ds: Optional[TranslationDataConfig] = TranslationDataConfig(
-        src_file_name=MISSING,
-        tgt_file_name=MISSING,
-        tokens_in_batch=512,
-        clean=True,
-        shuffle=True,
-        cache_ids=False,
-        use_cache=False,
+    train_ds: Optional[TranslationDataConfig] = field(
+        default_factory=lambda: TranslationDataConfig(
+            src_file_name=MISSING,
+            tgt_file_name=MISSING,
+            tokens_in_batch=512,
+            clean=True,
+            shuffle=True,
+            cache_ids=False,
+            use_cache=False,
+        )
     )
-    validation_ds: Optional[TranslationDataConfig] = TranslationDataConfig(
-        src_file_name=MISSING,
-        tgt_file_name=MISSING,
-        tokens_in_batch=512,
-        clean=False,
-        shuffle=False,
-        cache_ids=False,
-        use_cache=False,
+    validation_ds: Optional[TranslationDataConfig] = field(
+        default_factory=lambda: TranslationDataConfig(
+            src_file_name=MISSING,
+            tgt_file_name=MISSING,
+            tokens_in_batch=512,
+            clean=False,
+            shuffle=False,
+            cache_ids=False,
+            use_cache=False,
+        )
     )
-    test_ds: Optional[TranslationDataConfig] = TranslationDataConfig(
-        src_file_name=MISSING,
-        tgt_file_name=MISSING,
-        tokens_in_batch=512,
-        clean=False,
-        shuffle=False,
-        cache_ids=False,
-        use_cache=False,
+    test_ds: Optional[TranslationDataConfig] = field(
+        default_factory=lambda: TranslationDataConfig(
+            src_file_name=MISSING,
+            tgt_file_name=MISSING,
+            tokens_in_batch=512,
+            clean=False,
+            shuffle=False,
+            cache_ids=False,
+            use_cache=False,
+        )
     )
-    optim: Optional[OptimConfig] = MTOptimConfig()
+    optim: Optional[OptimConfig] = field(default_factory=lambda: MTOptimConfig())
 
 
 @dataclass
 class AAYNBaseConfig(MTEncDecModelConfig):
 
     # Attention is All You Need Base Configuration
-    encoder_tokenizer: TokenizerConfig = TokenizerConfig(library='yttm')
-    decoder_tokenizer: TokenizerConfig = TokenizerConfig(library='yttm')
+    encoder_tokenizer: TokenizerConfig = field(default_factory=lambda: TokenizerConfig(library='yttm'))
+    decoder_tokenizer: TokenizerConfig = field(default_factory=lambda: TokenizerConfig(library='yttm'))
 
-    encoder: NeMoTransformerEncoderConfig = NeMoTransformerEncoderConfig(
-        library='nemo',
-        model_name=None,
-        pretrained=False,
-        hidden_size=512,
-        inner_size=2048,
-        num_layers=6,
-        num_attention_heads=8,
-        ffn_dropout=0.1,
-        attn_score_dropout=0.1,
-        attn_layer_dropout=0.1,
+    encoder: NeMoTransformerEncoderConfig = field(
+        default_factory=lambda: NeMoTransformerEncoderConfig(
+            library='nemo',
+            model_name=None,
+            pretrained=False,
+            hidden_size=512,
+            inner_size=2048,
+            num_layers=6,
+            num_attention_heads=8,
+            ffn_dropout=0.1,
+            attn_score_dropout=0.1,
+            attn_layer_dropout=0.1,
+        )
     )
 
-    decoder: NeMoTransformerConfig = NeMoTransformerConfig(
-        library='nemo',
-        model_name=None,
-        pretrained=False,
-        hidden_size=512,
-        inner_size=2048,
-        num_layers=6,
-        num_attention_heads=8,
-        ffn_dropout=0.1,
-        attn_score_dropout=0.1,
-        attn_layer_dropout=0.1,
+    decoder: NeMoTransformerConfig = field(
+        default_factory=lambda: NeMoTransformerConfig(
+            library='nemo',
+            model_name=None,
+            pretrained=False,
+            hidden_size=512,
+            inner_size=2048,
+            num_layers=6,
+            num_attention_heads=8,
+            ffn_dropout=0.1,
+            attn_score_dropout=0.1,
+            attn_layer_dropout=0.1,
+        )
     )
 
 
@@ -150,32 +160,36 @@ class MTBottleneckModelConfig(AAYNBaseConfig):
     recon_per_token: bool = True
     log_timing: bool = True
 
-    encoder: NeMoTransformerBottleneckEncoderConfig = NeMoTransformerBottleneckEncoderConfig(
-        library='nemo',
-        model_name=None,
-        pretrained=False,
-        hidden_size=512,
-        inner_size=2048,
-        num_layers=6,
-        num_attention_heads=8,
-        ffn_dropout=0.1,
-        attn_score_dropout=0.1,
-        attn_layer_dropout=0.1,
-        arch='seq2seq',
-        hidden_steps=32,
-        hidden_blocks=1,
-        hidden_init_method='params',
+    encoder: NeMoTransformerBottleneckEncoderConfig = field(
+        default_factory=lambda: NeMoTransformerBottleneckEncoderConfig(
+            library='nemo',
+            model_name=None,
+            pretrained=False,
+            hidden_size=512,
+            inner_size=2048,
+            num_layers=6,
+            num_attention_heads=8,
+            ffn_dropout=0.1,
+            attn_score_dropout=0.1,
+            attn_layer_dropout=0.1,
+            arch='seq2seq',
+            hidden_steps=32,
+            hidden_blocks=1,
+            hidden_init_method='params',
+        )
     )
 
-    decoder: NeMoTransformerBottleneckDecoderConfig = NeMoTransformerBottleneckDecoderConfig(
-        library='nemo',
-        model_name=None,
-        pretrained=False,
-        inner_size=2048,
-        num_layers=6,
-        num_attention_heads=8,
-        ffn_dropout=0.1,
-        attn_score_dropout=0.1,
-        attn_layer_dropout=0.1,
-        arch='seq2seq',
+    decoder: NeMoTransformerBottleneckDecoderConfig = field(
+        default_factory=lambda: NeMoTransformerBottleneckDecoderConfig(
+            library='nemo',
+            model_name=None,
+            pretrained=False,
+            inner_size=2048,
+            num_layers=6,
+            num_attention_heads=8,
+            ffn_dropout=0.1,
+            attn_score_dropout=0.1,
+            attn_layer_dropout=0.1,
+            arch='seq2seq',
+        )
     )

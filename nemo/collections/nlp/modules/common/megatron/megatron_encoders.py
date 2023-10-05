@@ -13,7 +13,6 @@
 # limitations under the License.
 
 """Transformer based language model."""
-from MeCab import Model
 from nemo.collections.nlp.modules.common.megatron.megatron_perceiver_encoders import MegatronPerceiverEncoderModule
 from nemo.collections.nlp.modules.common.megatron.megatron_transformer_encoder import MegatronTransformerEncoderModule
 from nemo.collections.nlp.modules.common.megatron.retrieval_transformer import (
@@ -24,6 +23,13 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     init_method_normal,
     scaled_init_method_normal,
 )
+
+try:
+    from MeCab import Model
+
+    HAVE_MECAB = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_MECAB = False
 
 try:
     from apex.transformer.enums import AttnMaskType, ModelType

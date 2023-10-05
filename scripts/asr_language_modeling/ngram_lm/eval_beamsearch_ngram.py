@@ -112,14 +112,14 @@ class EvalBeamSearchNGramConfig:
     beam_beta: List[float] = field(default_factory=lambda: [0.0])  # The beta parameter or list of the betas for the beam search decoding
 
     decoding_strategy: str = "beam"
-    decoding: ctc_beam_decoding.BeamCTCInferConfig = ctc_beam_decoding.BeamCTCInferConfig(beam_size=128)
+    decoding: ctc_beam_decoding.BeamCTCInferConfig = field(default_factory=lambda: ctc_beam_decoding.BeamCTCInferConfig(beam_size=128))
     
-    text_processing: Optional[TextProcessingConfig] = TextProcessingConfig(
+    text_processing: Optional[TextProcessingConfig] = field(default_factory=lambda: TextProcessingConfig(
         punctuation_marks = ".,?",
         separate_punctuation = False,
         do_lowercase = False,
         rm_punctuation = False,
-    )
+    ))
 # fmt: on
 
 

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
 
 import torch
@@ -43,7 +43,7 @@ class GraphModuleConfig:
     topo_with_self_loops: bool = True
     token_lm: Optional[Any] = None
     intersect_pruned: bool = False
-    intersect_conf: GraphIntersectDenseConfig = GraphIntersectDenseConfig()
+    intersect_conf: GraphIntersectDenseConfig = field(default_factory=lambda: GraphIntersectDenseConfig())
     boost_coeff: float = 0.0
     predictor_window_size: int = 0
     predictor_step_size: int = 1

@@ -17,7 +17,7 @@ opencc
 pangu
 rapidfuzz
 rouge_score
-sacrebleu[ja]
+sacrebleu  # manually install sacrebleu[ja] for Japanese support; MeCab is unsupported in Python 3.11+
 sentence_transformers
 tensorstore
 zarr

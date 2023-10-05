@@ -149,8 +149,8 @@ class AlignmentConfig:
 
     # Output file configs
     save_output_file_formats: List[str] = field(default_factory=lambda: ["ctm", "ass"])
-    ctm_file_config: CTMFileConfig = CTMFileConfig()
-    ass_file_config: ASSFileConfig = ASSFileConfig()
+    ctm_file_config: CTMFileConfig = field(default_factory=lambda: CTMFileConfig())
+    ass_file_config: ASSFileConfig = field(default_factory=lambda: ASSFileConfig())
 
 
 @hydra_runner(config_name="AlignmentConfig", schema=AlignmentConfig)

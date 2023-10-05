@@ -15,7 +15,7 @@
 import copy
 import re
 from abc import abstractmethod
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import editdistance
@@ -1299,7 +1299,7 @@ class RNNTDecodingConfig:
     preserve_alignments: Optional[bool] = None
 
     #  confidence config
-    confidence_cfg: ConfidenceConfig = ConfidenceConfig()
+    confidence_cfg: ConfidenceConfig = field(default_factory=lambda: ConfidenceConfig())
 
     # RNNT Joint fused batch size
     fused_batch_size: Optional[int] = None
@@ -1317,10 +1317,10 @@ class RNNTDecodingConfig:
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both
 
     # greedy decoding config
-    greedy: greedy_decode.GreedyRNNTInferConfig = greedy_decode.GreedyRNNTInferConfig()
+    greedy: greedy_decode.GreedyRNNTInferConfig = field(default_factory=lambda: greedy_decode.GreedyRNNTInferConfig())
 
     # beam decoding config
-    beam: beam_decode.BeamRNNTInferConfig = beam_decode.BeamRNNTInferConfig(beam_size=4)
+    beam: beam_decode.BeamRNNTInferConfig = field(default_factory=lambda: beam_decode.BeamRNNTInferConfig(beam_size=4))
 
     # can be used to change temperature for decoding
     temperature: float = 1.0

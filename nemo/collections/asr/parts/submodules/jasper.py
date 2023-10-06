@@ -375,7 +375,7 @@ class MaskedConv1d(nn.Module):
             self.lens = self.lens.to(device)
         else:
             self.lens = seq_range
-            self.max_len = max_len
+            self.max_len = torch.tensor(max_len)
 
     def mask_input(self, x, lens):
         max_len = x.size(2)

@@ -1333,7 +1333,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # mcore uses distributed checkpointing
         if self.mcore_gpt:
-            if 'state_dict' in checkpoint:
+            if 'state_dict' in checkpoint and checkpoint['state_dict']:
                 for index, module in enumerate(self.get_gpt_module_list()):
                     if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
                         checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']

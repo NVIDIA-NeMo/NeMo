@@ -412,7 +412,7 @@ def calculate_sdr_numpy(
     convolution_filter_length: Optional[int] = None,
     remove_mean: bool = True,
     sdr_max: Optional[float] = None,
-    eps: float = 1e-10,
+    eps: float = 1e-8,
 ) -> float:
     """Calculate signal-to-distortion ratio.
 
@@ -519,7 +519,7 @@ def convmtx_mc_numpy(x: np.ndarray, filter_length: int, delay: int = 0, n_steps:
     return np.hstack(mc_mtx)
 
 
-def scale_invariant_target_numpy(estimate: np.ndarray, target: np.ndarray, eps: float = 1e-10) -> np.ndarray:
+def scale_invariant_target_numpy(estimate: np.ndarray, target: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """Calculate convolution-invariant target for a given estimated signal.
     
     Calculate scaled target obtained by solving
@@ -543,7 +543,7 @@ def scale_invariant_target_numpy(estimate: np.ndarray, target: np.ndarray, eps: 
 
 
 def convolution_invariant_target_numpy(
-    estimate: np.ndarray, target: np.ndarray, filter_length, diag_reg: float = 1e-8, eps: float = 1e-10
+    estimate: np.ndarray, target: np.ndarray, filter_length, diag_reg: float = 1e-6, eps: float = 1e-8
 ) -> np.ndarray:
     """Calculate convolution-invariant target for a given estimated signal.
     

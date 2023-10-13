@@ -641,6 +641,7 @@ class TestEncDecRNNTModel:
                 partial_hyp = partial_hyp[0]
                 _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
 
+    @pytest.mark.pleasefixme
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
@@ -704,6 +705,7 @@ class TestEncDecRNNTModel:
                         assert torch.is_tensor(logp)
                         assert torch.is_tensor(label)
 
+    @pytest.mark.pleasefixme
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
     )

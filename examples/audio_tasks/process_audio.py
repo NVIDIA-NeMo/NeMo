@@ -37,6 +37,7 @@ Process audio file on a single CPU/GPU. Useful for processing of moderate amount
     pretrained_name: name of a pretrained AudioToAudioModel model (from NGC registry)
     audio_dir: path to directory with audio files
     dataset_manifest: path to dataset JSON manifest file (in NeMo format)
+    max_utts: maximum number of utterances to process
 
     input_channel_selector: list of channels to take from audio files, defaults to `None` and takes all available channels
     input_key: key for audio filepath in the manifest file, defaults to `audio_filepath`
@@ -80,6 +81,7 @@ class ProcessConfig:
     pretrained_name: Optional[str] = None  # Name of a pretrained model
     audio_dir: Optional[str] = None  # Path to a directory which contains audio files
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
+    max_utts: Optional[int] = None  # max number of utterances to process
 
     # Audio configs
     input_channel_selector: Optional[List] = None  # Union types not supported Optional[Union[List, int]]
@@ -171,6 +173,10 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
                     audio_file = manifest_dir / audio_file
                 filepaths.append(str(audio_file.absolute()))
 
+    if cfg.max_utts is not None:
+        # Limit the number of utterances to process
+        filepaths = filepaths[: cfg.max_utts]
+
     logging.info(f"\nProcessing {len(filepaths)} files...\n")
 
     # setup AMP (optional)
@@ -225,6 +231,9 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
                     item = json.loads(line)
                     item['processed_audio_filepath'] = paths2processed_files[idx]
                     f.write(json.dumps(item) + "\n")
+
+                    if cfg.max_utts is not None and idx >= cfg.max_utts - 1:
+                        break
         else:
             for idx, processed_file in enumerate(paths2processed_files):
                 item = {'processed_audio_filepath': processed_file}

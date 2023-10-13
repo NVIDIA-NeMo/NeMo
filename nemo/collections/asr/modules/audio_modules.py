@@ -12,35 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
+from nemo.collections.asr.losses.audio_losses import temporal_mean
+from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.preprocessing.features import make_seq_mask_like
+from nemo.collections.asr.parts.submodules.multichannel_modules import (
+    ChannelAttentionPool,
+    ChannelAveragePool,
+    ParametricMultichannelWienerFilter,
+    TransformAttendConcatenate,
+    TransformAverageConcatenate,
+)
 from nemo.collections.asr.parts.utils.audio_utils import db2mag, wrap_to_pi
 from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types import FloatType, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
-try:
-    import torchaudio
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
-
 __all__ = [
     'MaskEstimatorRNN',
+    'MaskEstimatorFlexChannels',
     'MaskReferenceChannel',
     'MaskBasedBeamformer',
     'MaskBasedDereverbWPE',
 ]
 
 
-@experimental
 class SpectrogramToMultichannelFeatures(NeuralModule):
     """Convert a complex-valued multi-channel spectrogram to
     multichannel features.
@@ -50,32 +51,36 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
         num_input_channels: Optional, provides the number of channels
                             of the input signal. Used to infer the number
                             of output channels.
-        magnitude_reduction: Reduction across channels. Default `None`, will calculate
-                             magnitude of each channel.
+        mag_reduction: Reduction across channels. Default `None`, will calculate
+                       magnitude of each channel.
+        mag_power: Optional, apply power on the magnitude.
         use_ipd: Use inter-channel phase difference (IPD).
         mag_normalization: Normalization for magnitude features
         ipd_normalization: Normalization for IPD features
+        eps: Small regularization constant.
     """
 
     def __init__(
         self,
         num_subbands: int,
         num_input_channels: Optional[int] = None,
-        mag_reduction: Optional[str] = 'rms',
+        mag_reduction: Optional[str] = None,
+        mag_power: Optional[float] = None,
         use_ipd: bool = False,
         mag_normalization: Optional[str] = None,
         ipd_normalization: Optional[str] = None,
+        eps: float = 1e-8,
     ):
         super().__init__()
         self.mag_reduction = mag_reduction
+        self.mag_power = mag_power
         self.use_ipd = use_ipd
 
-        # TODO: normalization
-        if mag_normalization is not None:
+        if mag_normalization not in [None, 'mean', 'mean_var']:
             raise NotImplementedError(f'Unknown magnitude normalization {mag_normalization}')
         self.mag_normalization = mag_normalization
 
-        if ipd_normalization is not None:
+        if ipd_normalization not in [None, 'mean', 'mean_var']:
             raise NotImplementedError(f'Unknown ipd normalization {ipd_normalization}')
         self.ipd_normalization = ipd_normalization
 
@@ -85,6 +90,19 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
         else:
             self._num_features = num_subbands
             self._num_channels = num_input_channels if self.mag_reduction is None else 1
+
+        self.eps = eps
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tnum_subbands:      %d', num_subbands)
+        logging.debug('\tmag_reduction:     %s', self.mag_reduction)
+        logging.debug('\tmag_power:         %s', self.mag_power)
+        logging.debug('\tuse_ipd:           %s', self.use_ipd)
+        logging.debug('\tmag_normalization: %s', self.mag_normalization)
+        logging.debug('\tipd_normalization: %s', self.ipd_normalization)
+        logging.debug('\teps:               %f', self.eps)
+        logging.debug('\t_num_features:     %s', self._num_features)
+        logging.debug('\t_num_channels:     %s', self._num_channels)
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -122,6 +140,102 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
                 'must be provided when constructing the object.'
             )
 
+    @staticmethod
+    def get_mean_time_channel(input: torch.Tensor, input_length: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Calculate mean across time and channel dimensions.
+
+        Args:
+            input: tensor with shape (B, C, F, T)
+            input_length: tensor with shape (B,)
+
+        Returns:
+            Mean of `input` calculated across time and channel dimension
+            with shape (B, 1, F, 1)
+        """
+        assert input.ndim == 4, f'Expected input to have 4 dimensions, got {input.ndim}'
+
+        if input_length is None:
+            mean = torch.mean(input, dim=(-1, -3), keepdim=True)
+        else:
+            # temporal mean
+            mean = temporal_mean(input, input_length, keepdim=True)
+            # channel mean
+            mean = torch.mean(mean, dim=-3, keepdim=True)
+
+        return mean
+
+    @classmethod
+    def get_mean_std_time_channel(
+        cls, input: torch.Tensor, input_length: Optional[torch.Tensor] = None, eps: float = 1e-10
+    ) -> torch.Tensor:
+        """Calculate mean and standard deviation across time and channel dimensions.
+
+        Args:
+            input: tensor with shape (B, C, F, T)
+            input_length: tensor with shape (B,)
+
+        Returns:
+            Mean and standard deviation of the `input` calculated across time and
+            channel dimension, each with shape (B, 1, F, 1).
+        """
+        assert input.ndim == 4, f'Expected input to have 4 dimensions, got {input.ndim}'
+
+        if input_length is None:
+            std, mean = torch.std_mean(input, dim=(-1, -3), unbiased=False, keepdim=True)
+        else:
+            mean = cls.get_mean_time_channel(input, input_length)
+            std = (input - mean).pow(2)
+            # temporal mean
+            std = temporal_mean(std, input_length, keepdim=True)
+            # channel mean
+            std = torch.mean(std, dim=-3, keepdim=True)
+            # final value
+            std = torch.sqrt(std.clamp(eps))
+
+        return mean, std
+
+    @typecheck(
+        input_types={
+            'input': NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            'input_length': NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={'output': NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),},
+    )
+    def normalize_mean(self, input: torch.Tensor, input_length: torch.Tensor) -> torch.Tensor:
+        """Mean normalization for the input tensor.
+
+        Args:
+            input: input tensor
+            input_length: valid length for each example
+
+        Returns:
+            Mean normalized input.
+        """
+        mean = self.get_mean_time_channel(input=input, input_length=input_length)
+        output = input - mean
+        return output
+
+    @typecheck(
+        input_types={
+            'input': NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            'input_length': NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={'output': NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),},
+    )
+    def normalize_mean_var(self, input: torch.Tensor, input_length: torch.Tensor) -> torch.Tensor:
+        """Mean and variance normalization for the input tensor.
+
+        Args:
+            input: input tensor
+            input_length: valid length for each example
+
+        Returns:
+            Mean and variance normalized input.
+        """
+        mean, std = self.get_mean_std_time_channel(input=input, input_length=input_length, eps=self.eps)
+        output = (input - mean) / std
+        return output
+
     @typecheck()
     def forward(self, input: torch.Tensor, input_length: torch.Tensor) -> torch.Tensor:
         """Convert input batch of C-channel spectrograms into
@@ -148,20 +262,30 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
         else:
             raise ValueError(f'Unexpected magnitude reduction {self.mag_reduction}')
 
-        if self.mag_normalization is not None:
-            mag = self.mag_normalization(mag)
+        if self.mag_power is not None:
+            mag = torch.pow(mag, self.mag_power)
+
+        if self.mag_normalization == 'mean':
+            # normalize mean across channels and time steps
+            mag = self.normalize_mean(input=mag, input_length=input_length)
+        elif self.mag_normalization == 'mean_var':
+            mag = self.normalize_mean_var(input=mag, input_length=input_length)
 
         features = mag
 
         if self.use_ipd:
-            # Calculate IPD relative to average spec
-            spec_mean = torch.mean(input, axis=1, keepdim=True)
+            # Calculate IPD relative to the average spec
+            spec_mean = torch.mean(input, axis=1, keepdim=True)  # channel average
             ipd = torch.angle(input) - torch.angle(spec_mean)
             # Modulo to [-pi, pi]
             ipd = wrap_to_pi(ipd)
 
-            if self.ipd_normalization is not None:
-                ipd = self.ipd_normalization(ipd)
+            if self.ipd_normalization == 'mean':
+                # normalize mean across channels and time steps
+                # mean across time
+                ipd = self.normalize_mean(input=ipd, input_length=input_length)
+            elif self.ipd_normalization == 'mean_var':
+                ipd = self.normalize_mean_var(input=ipd, input_length=input_length)
 
             # Concatenate to existing features
             features = torch.cat([features.expand(ipd.shape), ipd], axis=2)
@@ -342,6 +466,258 @@ class MaskEstimatorRNN(NeuralModule):
         return masks, output_length
 
 
+class MaskEstimatorFlexChannels(NeuralModule):
+    """Estimate `num_outputs` masks from the input spectrogram
+    using stacked channel-wise and temporal layers.
+
+    This model is using interlaved channel blocks and temporal blocks, and
+    it can process arbitrary number of input channels.
+    Default channel block is the transform-average-concatenate layer.
+    Default temporal block is the Conformer encoder.
+    Reduction from multichannel signal to single-channel signal is performed
+    after `channel_reduction_position` blocks. Only temporal blocks are used afterwards.
+    After the sequence of blocks, the output mask is computed using an additional
+    output temporal layer and a nonlinearity.
+
+    References:
+        - Yoshioka et al, VarArray: Array-Geometry-Agnostic Continuous Speech Separation, 2022
+        - Jukić et al, Flexible multichannel speech enhancement for noise-robust frontend, 2023
+
+    Args:
+        num_outputs: Number of output masks.
+        num_subbands: Number of subbands on the input spectrogram.
+        num_blocks: Number of blocks in the model.
+        channel_reduction_position: After this block, the signal will be reduced across channels.
+        channel_reduction_type: Reduction across channels: 'average' or 'attention'
+        channel_block_type: Block for channel processing: 'transform_average_concatenate' or 'transform_attend_concatenate'
+        temporal_block_type: Block for temporal processing: 'conformer_encoder'
+        temporal_block_num_layers: Number of layers for the temporal block
+        temporal_block_num_heads: Number of heads for the temporal block
+        temporal_block_dimension: The hidden size of the model
+        temporal_block_self_attention_model: Self attention model for the temporal block
+        temporal_block_att_context_size: Attention context size for the temporal block
+        mag_reduction: Channel-wise reduction for magnitude features
+        mag_power: Power to apply on magnitude features
+        use_ipd: Use inter-channel phase difference (IPD) features
+        mag_normalization: Normalize using mean ('mean') or mean and variance ('mean_var')
+        ipd_normalization: Normalize using mean ('mean') or mean and variance ('mean_var')
+    """
+
+    def __init__(
+        self,
+        num_outputs: int,
+        num_subbands: int,
+        num_blocks: int,
+        channel_reduction_position: int = -1,  # if 0, apply before block 0, if -1 apply at the end
+        channel_reduction_type: str = 'attention',
+        channel_block_type: str = 'transform_attend_concatenate',
+        temporal_block_type: str = 'conformer_encoder',
+        temporal_block_num_layers: int = 5,
+        temporal_block_num_heads: int = 4,
+        temporal_block_dimension: int = 128,
+        temporal_block_self_attention_model: str = 'rel_pos',
+        temporal_block_att_context_size: Optional[List[int]] = None,
+        num_input_channels: Optional[int] = None,
+        mag_reduction: str = 'abs_mean',
+        mag_power: Optional[float] = None,
+        use_ipd: bool = True,
+        mag_normalization: Optional[str] = None,
+        ipd_normalization: Optional[str] = None,
+    ):
+        super().__init__()
+
+        self.features = SpectrogramToMultichannelFeatures(
+            num_subbands=num_subbands,
+            num_input_channels=num_input_channels,
+            mag_reduction=mag_reduction,
+            mag_power=mag_power,
+            use_ipd=use_ipd,
+            mag_normalization=mag_normalization,
+            ipd_normalization=ipd_normalization,
+        )
+        self.num_blocks = num_blocks
+        logging.debug('Total number of blocks: %d', self.num_blocks)
+
+        # Channel reduction
+        if channel_reduction_position == -1:
+            # Apply reduction after the last layer
+            channel_reduction_position = num_blocks
+
+        if channel_reduction_position > num_blocks:
+            raise ValueError(
+                f'Channel reduction position {channel_reduction_position} exceeds the number of blocks {num_blocks}'
+            )
+        self.channel_reduction_position = channel_reduction_position
+        logging.debug('Channel reduction will be applied before block %d', self.channel_reduction_position)
+
+        # Prepare processing blocks
+        self.channel_blocks = torch.nn.ModuleList()
+        self.temporal_blocks = torch.nn.ModuleList()
+
+        for n in range(num_blocks):
+            logging.debug('Prepare block %d', n)
+
+            # Setup channel block
+            if n < channel_reduction_position:
+                # Number of input features is either the number of input channels or the number of temporal block features
+                channel_in_features = self.features.num_features if n == 0 else temporal_block_dimension
+                logging.debug(
+                    'Setup channel block %s with %d input features and %d output features',
+                    channel_block_type,
+                    channel_in_features,
+                    temporal_block_dimension,
+                )
+
+                # Instantiante the channel block
+                if channel_block_type == 'transform_average_concatenate':
+                    channel_block = TransformAverageConcatenate(
+                        in_features=channel_in_features, out_features=temporal_block_dimension
+                    )
+                elif channel_block_type == 'transform_attend_concatenate':
+                    channel_block = TransformAttendConcatenate(
+                        in_features=channel_in_features, out_features=temporal_block_dimension
+                    )
+                else:
+                    raise ValueError(f'Unknown channel layer type: {channel_block_type}')
+                self.channel_blocks.append(channel_block)
+
+            # Setup temporal block
+            temporal_in_features = (
+                self.features.num_features if n == self.channel_reduction_position == 0 else temporal_block_dimension
+            )
+            logging.debug('Setup temporal block %s', temporal_block_type)
+            if temporal_block_type == 'conformer_encoder':
+                temporal_block = ConformerEncoder(
+                    feat_in=temporal_in_features,
+                    n_layers=temporal_block_num_layers,
+                    d_model=temporal_block_dimension,
+                    subsampling_factor=1,
+                    self_attention_model=temporal_block_self_attention_model,
+                    att_context_size=temporal_block_att_context_size,
+                    n_heads=temporal_block_num_heads,
+                )
+            else:
+                raise ValueError(f'Unknown temporal block {temporal_block}.')
+
+            self.temporal_blocks.append(temporal_block)
+
+        logging.debug('Setup channel reduction %s', channel_reduction_type)
+        if channel_reduction_type == 'average':
+            # Mean across channel dimension
+            self.channel_reduction = ChannelAveragePool()
+        elif channel_reduction_type == 'attention':
+            # Number of input features is either the number of input channels or the number of temporal block features
+            channel_reduction_in_features = (
+                self.features.num_features if self.channel_reduction_position == 0 else temporal_block_dimension
+            )
+            # Attention across channel dimension
+            self.channel_reduction = ChannelAttentionPool(in_features=channel_reduction_in_features)
+        else:
+            raise ValueError(f'Unknown channel reduction type: {channel_reduction_type}')
+
+        logging.debug('Setup %d output layers', num_outputs)
+        self.output_layers = torch.nn.ModuleList(
+            [
+                ConformerEncoder(
+                    feat_in=temporal_block_dimension,
+                    n_layers=1,
+                    d_model=temporal_block_dimension,
+                    feat_out=num_subbands,
+                    subsampling_factor=1,
+                    self_attention_model=temporal_block_self_attention_model,
+                    att_context_size=temporal_block_att_context_size,
+                    n_heads=temporal_block_num_heads,
+                )
+                for _ in range(num_outputs)
+            ]
+        )
+
+        # Output nonlinearity
+        self.output_nonlinearity = torch.nn.Sigmoid()
+
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        """Returns definitions of module output ports.
+        """
+        return {
+            "input": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
+            "input_length": NeuralType(('B',), LengthsType()),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        """Returns definitions of module output ports.
+        """
+        return {
+            "output": NeuralType(('B', 'C', 'D', 'T'), FloatType()),
+            "output_length": NeuralType(('B',), LengthsType()),
+        }
+
+    @typecheck()
+    def forward(self, input: torch.Tensor, input_length: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Estimate `num_outputs` masks from the input spectrogram.
+        """
+        # get input features from a complex-valued spectrogram, (B, C, F, T)
+        output, output_length = self.features(input=input, input_length=input_length)
+
+        # batch and num channels
+        B, M = input.size(0), input.size(1)
+
+        # process all blocks
+        for n in range(self.num_blocks):
+            if n < self.channel_reduction_position:
+                # apply multichannel block
+                output = self.channel_blocks[n](input=output)
+                # change to a single-stream format
+                F, T = output.size(-2), output.size(-1)
+                # (B, M, F, T) -> (B * M, F, T)
+                output = output.reshape(-1, F, T)
+                if M > 1:
+                    # adjust the lengths accordingly
+                    output_length = output_length.repeat_interleave(M)
+
+            elif n == self.channel_reduction_position:
+                # apply channel reduction
+                # (B, M, F, T) -> (B, F, T)
+                output = self.channel_reduction(input=output)
+
+            # apply temporal model on each channel independently
+            with typecheck.disable_checks():
+                # output is AcousticEncodedRepresentation, conformer encoder requires SpectrogramType
+                output, output_length = self.temporal_blocks[n](audio_signal=output, length=output_length)
+
+            # if channel reduction has not been applied yet, go back to multichannel layout
+            if n < self.channel_reduction_position:
+                # back to multi-channel format with possibly a different number of features
+                T = output.size(-1)
+                # (B * M, F, T) -> (B, M, F, T)
+                output = output.reshape(B, M, -1, T)
+                if M > 1:
+                    # convert lengths from single-stream format to original multichannel
+                    output_length = output_length[0:-1:M]
+
+        if self.channel_reduction_position == self.num_blocks:
+            # apply channel reduction after the last layer
+            # (B, M, F, T) -> (B, F, T)
+            output = self.channel_reduction(input=output)
+
+        # final mask for each output
+        masks = []
+        for output_layer in self.output_layers:
+            # calculate mask
+            with typecheck.disable_checks():
+                # output is AcousticEncodedRepresentation, conformer encoder requires SpectrogramType
+                mask, mask_length = output_layer(audio_signal=output, length=output_length)
+            mask = self.output_nonlinearity(mask)
+            # append to all masks
+            masks.append(mask)
+
+        # stack masks along channel dimensions
+        masks = torch.stack(masks, dim=1)
+
+        return masks, mask_length
+
+
 class MaskReferenceChannel(NeuralModule):
     """A simple mask processor which applies mask
     on ref_channel of the input signal.
@@ -358,6 +734,11 @@ class MaskReferenceChannel(NeuralModule):
         # Mask thresholding
         self.mask_min = db2mag(mask_min_db)
         self.mask_max = db2mag(mask_max_db)
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tref_channel: %d', self.ref_channel)
+        logging.debug('\tmask_min:    %f', self.mask_min)
+        logging.debug('\tmask_max:    %f', self.mask_max)
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -380,7 +761,7 @@ class MaskReferenceChannel(NeuralModule):
 
     @typecheck()
     def forward(
-        self, input: torch.Tensor, input_length: torch.Tensor, mask: torch.Tensor
+        self, input: torch.Tensor, input_length: torch.Tensor, mask: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply mask on `ref_channel` of the input signal.
         This can be used to generate multi-channel output.
@@ -407,36 +788,86 @@ class MaskBasedBeamformer(NeuralModule):
 
     Args:
         filter_type: string denoting the type of the filter. Defaults to `mvdr`
-        ref_channel: reference channel for processing
+        filter_beta: Parameter of the parameteric multichannel Wiener filter
+        filter_rank: Parameter of the parametric multichannel Wiener filter
+        filter_postfilter: Optional, postprocessing of the filter
+        ref_channel: Optional, reference channel. If None, it will be estimated automatically
+        ref_hard: If true, hard (one-hot) reference. If false, a soft reference
+        ref_hard_use_grad: If true, use straight-through gradient when using the hard reference
+        ref_subband_weighting: If true, use subband weighting when estimating reference channel
+        num_subbands: Optional, used to determine the parameter size for reference estimation
         mask_min_db: Threshold mask to a minimal value before applying it, defaults to -200dB
         mask_max_db: Threshold mask to a maximal value before applying it, defaults to 0dB
+        diag_reg: Optional, diagonal regularization for the multichannel filter
+        eps: Small regularization constant to avoid division by zero
     """
 
     def __init__(
         self,
         filter_type: str = 'mvdr_souden',
-        ref_channel: int = 0,
+        filter_beta: float = 0.0,
+        filter_rank: str = 'one',
+        filter_postfilter: Optional[str] = None,
+        ref_channel: Optional[int] = 0,
+        ref_hard: bool = True,
+        ref_hard_use_grad: bool = False,
+        ref_subband_weighting: bool = False,
+        num_subbands: Optional[int] = None,
         mask_min_db: float = -200,
         mask_max_db: float = 0,
+        postmask_min_db: float = 0,
+        postmask_max_db: float = 0,
+        diag_reg: Optional[float] = 1e-6,
+        eps: float = 1e-8,
     ):
-        if not HAVE_TORCHAUDIO:
-            logging.error('Could not import torchaudio. Some features might not work.')
-
-            raise ModuleNotFoundError(
-                "torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
-            )
-
         super().__init__()
-        self.ref_channel = ref_channel
-        self.filter_type = filter_type
-        if self.filter_type == 'mvdr_souden':
-            self.psd = torchaudio.transforms.PSD()
-            self.filter = torchaudio.transforms.SoudenMVDR()
-        else:
+        if filter_type not in ['pmwf', 'mvdr_souden']:
             raise ValueError(f'Unknown filter type {filter_type}')
+
+        self.filter_type = filter_type
+        if self.filter_type == 'mvdr_souden' and filter_beta != 0:
+            logging.warning(
+                'Using filter type %s: beta will be automatically set to zero (current beta %f) and rank to one (current rank %s).',
+                self.filter_type,
+                filter_beta,
+                filter_rank,
+            )
+            filter_beta = 0.0
+            filter_rank = 'one'
+        # Prepare filter
+        self.filter = ParametricMultichannelWienerFilter(
+            beta=filter_beta,
+            rank=filter_rank,
+            postfilter=filter_postfilter,
+            ref_channel=ref_channel,
+            ref_hard=ref_hard,
+            ref_hard_use_grad=ref_hard_use_grad,
+            ref_subband_weighting=ref_subband_weighting,
+            num_subbands=num_subbands,
+            diag_reg=diag_reg,
+            eps=eps,
+        )
         # Mask thresholding
+        if mask_min_db >= mask_max_db:
+            raise ValueError(
+                f'Lower bound for the mask {mask_min_db}dB must be smaller than the upper bound {mask_max_db}dB'
+            )
         self.mask_min = db2mag(mask_min_db)
         self.mask_max = db2mag(mask_max_db)
+        # Postmask thresholding
+        if postmask_min_db > postmask_max_db:
+            raise ValueError(
+                f'Lower bound for the postmask {postmask_min_db}dB must be smaller or equal to the upper bound {postmask_max_db}dB'
+            )
+        self.postmask_min = db2mag(postmask_min_db)
+        self.postmask_max = db2mag(postmask_max_db)
+
+        logging.debug('Initialized %s', self.__class__.__name__)
+        logging.debug('\tfilter_type:  %s', self.filter_type)
+        logging.debug('\tmask_min:     %e', self.mask_min)
+        logging.debug('\tmask_max:     %e', self.mask_max)
+        logging.debug('\tpostmask_min: %e', self.postmask_min)
+        logging.debug('\tpostmask_max: %e', self.postmask_max)
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -444,8 +875,9 @@ class MaskBasedBeamformer(NeuralModule):
         """
         return {
             "input": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
-            "input_length": NeuralType(('B',), LengthsType()),
             "mask": NeuralType(('B', 'C', 'D', 'T'), FloatType()),
+            "mask_undesired": NeuralType(('B', 'C', 'D', 'T'), FloatType(), optional=True),
+            "input_length": NeuralType(('B',), LengthsType(), optional=True),
         }
 
     @property
@@ -454,45 +886,79 @@ class MaskBasedBeamformer(NeuralModule):
         """
         return {
             "output": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
-            "output_length": NeuralType(('B',), LengthsType()),
+            "output_length": NeuralType(('B',), LengthsType(), optional=True),
         }
 
     @typecheck()
-    def forward(self, input: torch.Tensor, input_length: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        input: torch.Tensor,
+        mask: torch.Tensor,
+        mask_undesired: Optional[torch.Tensor] = None,
+        input_length: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Apply a mask-based beamformer to the input spectrogram.
         This can be used to generate multi-channel output.
-        If `mask` has `M` channels, the output will have `M` channels as well.
+        If `mask` has multiple channels, a multichannel filter is created for each mask,
+        and the output is concatenation of individual outputs along the channel dimension.
+        The total number of outputs is `num_masks * M`, where `M` is the number of channels
+        at the filter output.
 
         Args:
             input: Input signal complex-valued spectrogram, shape (B, C, F, N)
+            mask: Mask for M output signals, shape (B, num_masks, F, N)
             input_length: Length of valid entries along the time dimension, shape (B,)
-            mask: Mask for M output signals, shape (B, M, F, N)
         
         Returns:
-            M-channel output signal complex-valued spectrogram, shape (B, M, F, N)
+            Multichannel output signal complex-valued spectrogram, shape (B, num_masks * M, F, N)
         """
-        # Apply threshold on the mask
-        mask = torch.clamp(mask, min=self.mask_min, max=self.mask_max)
         # Length mask
-        length_mask: torch.Tensor = make_seq_mask_like(
-            lengths=input_length, like=mask[:, 0, ...], time_dim=-1, valid_ones=False
-        )
-        # Use each mask to generate an output at ref_channel
-        output = []
-        for m in range(mask.size(1)):
-            # Prepare mask for the desired and the undesired signal
-            mask_desired = mask[:, m, ...].masked_fill(length_mask, 0.0)
-            mask_undesired = (1 - mask_desired).masked_fill(length_mask, 0.0)
-            # Calculate PSDs
-            psd_desired = self.psd(input, mask_desired)
-            psd_undesired = self.psd(input, mask_undesired)
+        if input_length is not None:
+            length_mask: torch.Tensor = make_seq_mask_like(
+                lengths=input_length, like=mask[:, 0, ...], time_dim=-1, valid_ones=False
+            )
+
+        # Use each mask to generate an output
+        output, num_masks = [], mask.size(1)
+        for m in range(num_masks):
+            # Desired signal mask
+            mask_d = mask[:, m, ...]
+            # Undesired signal mask
+            if mask_undesired is not None:
+                mask_u = mask_undesired[:, m, ...]
+            elif num_masks == 1:
+                # If a single mask is estimated, use the complement
+                mask_u = 1 - mask_d
+            else:
+                # Use sum of all other sources
+                mask_u = torch.sum(mask, dim=1) - mask_d
+
+            # Threshold masks
+            mask_d = torch.clamp(mask_d, min=self.mask_min, max=self.mask_max)
+            mask_u = torch.clamp(mask_u, min=self.mask_min, max=self.mask_max)
+
+            if input_length is not None:
+                mask_d = mask_d.masked_fill(length_mask, 0.0)
+                mask_u = mask_u.masked_fill(length_mask, 0.0)
+
             # Apply filter
-            output_m = self.filter(input, psd_desired, psd_undesired, reference_channel=self.ref_channel)
-            output_m = output_m.masked_fill(length_mask, 0.0)
-            # Save the current output (B, F, N)
+            output_m = self.filter(input=input, mask_s=mask_d, mask_n=mask_u)
+
+            # Optional: apply a postmask with min and max thresholds
+            if self.postmask_min < self.postmask_max:
+                postmask_m = torch.clamp(mask[:, m, ...], min=self.postmask_min, max=self.postmask_max)
+                output_m = output_m * postmask_m.unsqueeze(1)
+
+            # Save the current output (B, M, F, T)
             output.append(output_m)
 
-        output = torch.stack(output, axis=1)
+        # Combine outputs along the channel dimension
+        # Each output is (B, M, F, T)
+        output = torch.concatenate(output, axis=1)
+
+        # Apply masking
+        if input_length is not None:
+            output = output.masked_fill(length_mask[:, None, ...], 0.0)
 
         return output, input_length
 
@@ -516,14 +982,18 @@ class WPEFilter(NeuralModule):
         - Jukić et al, Group sparsity for MIMO speech dereverberation, 2015
     """
 
-    def __init__(
-        self, filter_length: int, prediction_delay: int, diag_reg: Optional[float] = 1e-8, eps: float = 1e-10
-    ):
+    def __init__(self, filter_length: int, prediction_delay: int, diag_reg: Optional[float] = 1e-6, eps: float = 1e-8):
         super().__init__()
         self.filter_length = filter_length
         self.prediction_delay = prediction_delay
         self.diag_reg = diag_reg
         self.eps = eps
+
+        logging.debug('Initialized %s', self.__class__.__name__)
+        logging.debug('\tfilter_length:    %d', self.filter_length)
+        logging.debug('\tprediction_delay: %d', self.prediction_delay)
+        logging.debug('\tdiag_reg:         %g', self.diag_reg)
+        logging.debug('\teps:              %g', self.eps)
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -561,7 +1031,7 @@ class WPEFilter(NeuralModule):
             shape as the input signal (B, C, F, N), and the output length is the same
             as the input length.
         """
-        # Temporal weighting: average power over channels, shape (B, F, N)
+        # Temporal weighting: average power over channels, output shape (B, F, N)
         weight = torch.mean(power, dim=1)
         # Use inverse power as the weight
         weight = 1 / (weight + self.eps)
@@ -799,6 +1269,7 @@ class MaskBasedDereverbWPE(NeuralModule):
         mask_max_db: Threshold mask to a minimal value before applying it, defaults to 0dB
         diag_reg: Diagonal regularization for WPE
         eps: Small regularization constant
+        dtype: Data type for internal computations
 
     References:
         - Kinoshita et al, Neural network-based spectrum estimation for online WPE dereverberation, 2017
@@ -812,8 +1283,9 @@ class MaskBasedDereverbWPE(NeuralModule):
         num_iterations: int = 1,
         mask_min_db: float = -200,
         mask_max_db: float = 0,
-        diag_reg: Optional[float] = 1e-8,
-        eps: float = 1e-10,
+        diag_reg: Optional[float] = 1e-6,
+        eps: float = 1e-8,
+        dtype: torch.dtype = torch.cdouble,
     ):
         super().__init__()
         # Filter setup
@@ -824,6 +1296,16 @@ class MaskBasedDereverbWPE(NeuralModule):
         # Mask thresholding
         self.mask_min = db2mag(mask_min_db)
         self.mask_max = db2mag(mask_max_db)
+        # Internal calculations
+        if dtype not in [torch.cfloat, torch.cdouble]:
+            raise ValueError(f'Unsupported dtype {dtype}, expecting torch.cfloat or torch.cdouble')
+        self.dtype = dtype
+
+        logging.debug('Initialized %s', self.__class__.__name__)
+        logging.debug('\tnum_iterations: %s', self.num_iterations)
+        logging.debug('\tmask_min:       %g', self.mask_min)
+        logging.debug('\tmask_max:       %g', self.mask_max)
+        logging.debug('\tdtype:          %s', self.dtype)
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -851,19 +1333,21 @@ class MaskBasedDereverbWPE(NeuralModule):
         """Given an input signal `input`, apply the WPE dereverberation algoritm.
 
         Args:
-            input: C-channel complex-valued spectrogram, shape (B, C, F, N)
+            input: C-channel complex-valued spectrogram, shape (B, C, F, T)
             input_length: Optional length for each signal in the batch, shape (B,)
-            mask: Optional mask, shape (B, 1, F, N) or (B, C, F, N)
+            mask: Optional mask, shape (B, 1, F, N) or (B, C, F, T)
 
         Returns:
             Processed tensor with the same number of channels as the input,
-            shape (B, C, F, N).
+            shape (B, C, F, T).
         """
         io_dtype = input.dtype
 
         with torch.cuda.amp.autocast(enabled=False):
+            output = input.to(dtype=self.dtype)
 
-            output = input.cdouble()
+            if not output.is_complex():
+                raise RuntimeError(f'Expecting complex input, got {output.dtype}')
 
             for i in range(self.num_iterations):
                 magnitude = torch.abs(output)
@@ -891,7 +1375,7 @@ class MixtureConsistencyProjection(NeuralModule):
         eps: Small positive value for regularization
 
     Reference:
-        Wisdom et al., Differentiable consistency constraints for improved deep speech enhancement, 2018
+        Wisdom et al, Differentiable consistency constraints for improved deep speech enhancement, 2018
     """
 
     def __init__(self, weighting: Optional[str] = None, eps: float = 1e-8):

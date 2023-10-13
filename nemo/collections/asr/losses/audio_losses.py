@@ -121,8 +121,8 @@ def convolution_invariant_target(
     input_length: Optional[torch.Tensor] = None,
     mask: Optional[torch.Tensor] = None,
     filter_length: int = 512,
-    diag_reg: float = 1e-8,
-    eps: float = 1e-10,
+    diag_reg: float = 1e-6,
+    eps: float = 1e-8,
 ) -> torch.Tensor:
     """Calculate optimal convolution-invariant target for a given estimate.
     Assumes time dimension is the last dimension in the array.
@@ -222,7 +222,7 @@ def calculate_sdr_batch(
     convolution_filter_length: Optional[int] = 512,
     remove_mean: bool = True,
     sdr_max: Optional[float] = None,
-    eps: float = 1e-10,
+    eps: float = 1e-8,
 ) -> torch.Tensor:
     """Calculate signal-to-distortion ratio per channel.
 
@@ -310,7 +310,7 @@ class SDRLoss(Loss, Typing):
         convolution_filter_length: Optional[int] = 512,
         remove_mean: bool = True,
         sdr_max: Optional[float] = None,
-        eps: float = 1e-10,
+        eps: float = 1e-8,
     ):
         super().__init__()
 

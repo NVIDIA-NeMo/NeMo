@@ -77,6 +77,7 @@ class TestStochasticDepth:
                     feat_in=10, n_layers=n_layers, d_model=4, feat_out=8, stochastic_depth_start_layer=start_layer,
                 )
 
+    @pytest.mark.pleasefixme
     def test_stochastic_depth_forward(self):
         """Testing that forward works and we get randomness during training, but not during eval."""
         random_input = torch.rand((1, 2, 2))

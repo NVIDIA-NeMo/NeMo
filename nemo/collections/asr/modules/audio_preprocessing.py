@@ -716,7 +716,7 @@ class AudioToSpectrogram(NeuralModule):
             logging.error('Could not import torchaudio. Some features might not work.')
 
             raise ModuleNotFoundError(
-                "torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
+                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
             )
 
         super().__init__()
@@ -819,7 +819,7 @@ class SpectrogramToAudio(NeuralModule):
             logging.error('Could not import torchaudio. Some features might not work.')
 
             raise ModuleNotFoundError(
-                "torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
+                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
             )
 
         super().__init__()

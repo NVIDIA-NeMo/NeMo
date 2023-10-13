@@ -21,12 +21,14 @@ import torch
 
 from nemo.collections.asr.modules.audio_modules import (
     MaskBasedDereverbWPE,
+    MaskEstimatorFlexChannels,
     MaskReferenceChannel,
     SpectrogramToMultichannelFeatures,
     WPEFilter,
 )
 from nemo.collections.asr.modules.audio_preprocessing import AudioToSpectrogram
 from nemo.collections.asr.parts.utils.audio_utils import convmtx_mc_numpy
+from nemo.utils import logging
 
 try:
     importlib.import_module('torchaudio')
@@ -347,3 +349,68 @@ class TestMaskBasedDereverb:
 
             assert y.shape == x.shape, 'Output shape not matching, example {n}'
             assert torch.equal(y_length, x_length), 'Length not matching, example {n}'
+
+
+class TestMaskEstimator:
+    @pytest.mark.unit
+    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
+    @pytest.mark.parametrize('channel_reduction_position', [0, 1, -1])
+    @pytest.mark.parametrize('channel_reduction_type', ['average', 'attention'])
+    @pytest.mark.parametrize('channel_block_type', ['transform_average_concatenate', 'transform_attend_concatenate'])
+    def test_flex_channels(
+        self, channel_reduction_position: int, channel_reduction_type: str, channel_block_type: str
+    ):
+        """Test initialization of the mask estimator and make sure it can process input tensor.
+        """
+        # Model parameters
+        num_subbands_tests = [32, 65]
+        num_outputs_tests = [1, 2]
+        num_blocks_tests = [1, 5]
+
+        # Input configuration
+        num_channels_tests = [1, 4]
+        batch_size = 4
+        num_frames = 50
+
+        for num_subbands in num_subbands_tests:
+            for num_outputs in num_outputs_tests:
+                for num_blocks in num_blocks_tests:
+                    logging.debug(
+                        'Instantiate with num_subbands=%d, num_outputs=%d, num_blocks=%d',
+                        num_subbands,
+                        num_outputs,
+                        num_blocks,
+                    )
+
+                    # Instantiate
+                    uut = MaskEstimatorFlexChannels(
+                        num_outputs=num_outputs,
+                        num_subbands=num_subbands,
+                        num_blocks=num_blocks,
+                        channel_reduction_position=channel_reduction_position,
+                        channel_reduction_type=channel_reduction_type,
+                        channel_block_type=channel_block_type,
+                    )
+
+                    # Process different channel configurations
+                    for num_channels in num_channels_tests:
+                        logging.debug('Process num_channels=%d', num_channels)
+                        input_size = (batch_size, num_channels, num_subbands, num_frames)
+
+                        # multi-channel input
+                        spec = torch.randn(input_size, dtype=torch.cfloat)
+                        spec_length = torch.randint(1, num_frames, (batch_size,))
+
+                        # UUT
+                        mask, mask_length = uut(input=spec, input_length=spec_length)
+
+                        # Check output dimensions match
+                        expected_mask_shape = (batch_size, num_outputs, num_subbands, num_frames)
+                        assert (
+                            mask.shape == expected_mask_shape
+                        ), f'Output shape mismatch: expected {expected_mask_shape}, got {mask.shape}'
+
+                        # Check output lengths match
+                        assert torch.all(
+                            mask_length == spec_length
+                        ), f'Output length mismatch: expected {spec_length}, got {mask_length}'

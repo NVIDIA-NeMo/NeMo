@@ -121,15 +121,24 @@ class AudioToAudioModel(ModelPT, ABC):
         return super().on_test_start()
 
     def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):
-        return self.evaluation_step(batch, batch_idx, dataloader_idx, 'val')
+        output_dict = self.evaluation_step(batch, batch_idx, dataloader_idx, 'val')
+        if isinstance(self.trainer.val_dataloaders, (list, tuple)) and len(self.trainer.val_dataloaders) > 1:
+            self.validation_step_outputs[dataloader_idx].append(output_dict)
+        else:
+            self.validation_step_outputs.append(output_dict)
+        return output_dict
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        return self.evaluation_step(batch, batch_idx, dataloader_idx, 'test')
+        output_dict = self.evaluation_step(batch, batch_idx, dataloader_idx, 'test')
+        if isinstance(self.trainer.test_dataloaders, (list, tuple)) and len(self.trainer.test_dataloaders) > 1:
+            self.test_step_outputs[dataloader_idx].append(output_dict)
+        else:
+            self.test_step_outputs.append(output_dict)
+        return output_dict
 
     def multi_evaluation_epoch_end(self, outputs, dataloader_idx: int = 0, tag: str = 'val'):
         # Handle loss
         loss_mean = torch.stack([x[f'{tag}_loss'] for x in outputs]).mean()
-        output_dict = {f'{tag}_loss': loss_mean}
         tensorboard_logs = {f'{tag}_loss': loss_mean}
 
         # Handle metrics for this tag and dataloader_idx
@@ -141,9 +150,7 @@ class AudioToAudioModel(ModelPT, ABC):
                 # Store for logs
                 tensorboard_logs[f'{tag}_{name}'] = value
 
-        output_dict['log'] = tensorboard_logs
-
-        return output_dict
+        return {f'{tag}_loss': loss_mean, 'log': tensorboard_logs}
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
         return self.multi_evaluation_epoch_end(outputs, dataloader_idx, 'val')

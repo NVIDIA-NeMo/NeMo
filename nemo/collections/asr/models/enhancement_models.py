@@ -61,13 +61,23 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         self.decoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.decoder)
 
         if 'mixture_consistency' in self._cfg:
+            logging.debug('Using mixture consistency')
             self.mixture_consistency = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mixture_consistency)
         else:
+            logging.debug('Mixture consistency not used')
             self.mixture_consistency = None
 
         # Future enhancement:
         # If subclasses need to modify the config before calling super()
         # Check ASRBPE* classes do with their mixin
+
+        # Setup augmentation
+        if hasattr(self.cfg, 'channel_augment') and self.cfg.channel_augment is not None:
+            logging.debug('Using channel augmentation')
+            self.channel_augmentation = EncMaskDecAudioToAudioModel.from_config_dict(self.cfg.channel_augment)
+        else:
+            logging.debug('Channel augmentation not used')
+            self.channel_augmentation = None
 
         # Setup optional Optimization flags
         self.setup_optimization_flags()
@@ -125,7 +135,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
                 temporary_manifest_filepath = os.path.join(tmpdir, 'manifest.json')
                 with open(temporary_manifest_filepath, 'w', encoding='utf-8') as fp:
                     for audio_file in paths2audio_files:
-                        entry = {'input_filepath': audio_file, 'duration': librosa.get_duration(filename=audio_file)}
+                        entry = {'input_filepath': audio_file, 'duration': librosa.get_duration(path=audio_file)}
                         fp.write(json.dumps(entry) + '\n')
 
                 config = {
@@ -397,17 +407,23 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         if target_signal.ndim == 2:
             target_signal = target_signal.unsqueeze(1)
 
+        # Apply channel augmentation
+        if self.training and self.channel_augmentation is not None:
+            input_signal = self.channel_augmentation(input=input_signal)
+
+        # Process input
         processed_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
 
-        loss_value = self.loss(estimate=processed_signal, target=target_signal, input_length=input_length)
+        # Calculate the loss
+        loss = self.loss(estimate=processed_signal, target=target_signal, input_length=input_length)
 
-        tensorboard_logs = {
-            'train_loss': loss_value,
-            'learning_rate': self._optimizer.param_groups[0]['lr'],
-            'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
-        }
+        # Logs
+        self.log('train_loss', loss)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
-        return {'loss': loss_value, 'log': tensorboard_logs}
+        # Return loss
+        return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
         input_signal, input_length, target_signal, target_length = batch
@@ -419,11 +435,11 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         if target_signal.ndim == 2:
             target_signal = target_signal.unsqueeze(1)
 
+        # Process input
         processed_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
 
-        # Prepare output
-        loss_value = self.loss(estimate=processed_signal, target=target_signal, input_length=input_length)
-        output_dict = {f'{tag}_loss': loss_value}
+        # Calculate the loss
+        loss = self.loss(estimate=processed_signal, target=target_signal, input_length=input_length)
 
         # Update metrics
         if hasattr(self, 'metrics') and tag in self.metrics:
@@ -432,19 +448,10 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
                 metric.update(preds=processed_signal, target=target_signal, input_length=input_length)
 
         # Log global step
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32), sync_dist=True)
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
-        if tag == 'val':
-            if isinstance(self.trainer.val_dataloaders, (list, tuple)) and len(self.trainer.val_dataloaders) > 1:
-                self.validation_step_outputs[dataloader_idx].append(output_dict)
-            else:
-                self.validation_step_outputs.append(output_dict)
-        else:
-            if isinstance(self.trainer.test_dataloaders, (list, tuple)) and len(self.trainer.test_dataloaders) > 1:
-                self.test_step_outputs[dataloader_idx].append(output_dict)
-            else:
-                self.test_step_outputs.append(output_dict)
-        return output_dict
+        # Return loss
+        return {f'{tag}_loss': loss}
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:

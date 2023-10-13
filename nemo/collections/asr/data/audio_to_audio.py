@@ -636,7 +636,7 @@ class ASRAudioProcessor:
         Returns:
             List of durations in seconds.
         """
-        duration = [librosa.get_duration(filename=f) for f in flatten(audio_files)]
+        duration = [librosa.get_duration(path=f) for f in flatten(audio_files)]
         return duration
 
     def load_embedding(self, example: collections.Audio.OUTPUT_TYPE) -> Dict[str, torch.Tensor]:

@@ -397,7 +397,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
 
     def diarize(self, paths2audio_files: List[str] = None, batch_size: int = 0):
         """
-        Diarize files provided thorugh paths2audio_files or manifest file
+        Diarize files provided through paths2audio_files or manifest file
         input:
         paths2audio_files (List[str]): list of paths to file containing audio file
         batch_size (int): batch_size considered for extraction of speaker embeddings and VAD computation

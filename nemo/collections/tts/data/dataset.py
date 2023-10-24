@@ -177,6 +177,7 @@ class TTSDataset(Dataset):
             pitch_norm (Optional[bool]): Whether to normalize pitch or not. If True, requires providing either
                 pitch_stats_path or (pitch_mean and pitch_std).
             pitch_stats_path (Optional[Path, str]): Path to file containing speaker level pitch statistics.
+            reference_audio_type (Optional[str]): Criterion for the selection of reference audios for the GlobalStyleToken submodule. Currently, supported values are "ground-truth" (reference audio = ground truth audio, like in the original GST paper) and "same-speaker" (reference audio = random audio from the same speaker). Defaults to "same-speaker".
         """
         super().__init__()
 
@@ -485,11 +486,22 @@ class TTSDataset(Dataset):
         pass
 
     def add_reference_audio(self, **kwargs):
-        assert SpeakerID in self.sup_data_types, "Please add speaker_id in sup_data_types."
-        """Add a mapping for each speaker to their manifest indexes"""
-        self.speaker_to_index_map = defaultdict(set)
-        for i, d in enumerate(self.data):
-            self.speaker_to_index_map[d['speaker_id']].add(i)
+        reference_audio_type = kwargs.pop("reference_audio_type", "same-speaker")
+        if reference_audio_type == "same-speaker":
+            assert SpeakerID in self.sup_data_types, "Please add speaker_id in sup_data_types."
+            # Add a mapping for each speaker to their manifest indexes
+            speaker_to_index_map = defaultdict(set)
+            for i, d in enumerate(self.data):
+                speaker_to_index_map[d["speaker_id"]].add(i)
+            # Random sample a reference audio from the same speaker
+            self.get_reference_for_sample = lambda sample: self.data[
+                random.sample(speaker_to_index_map[sample["speaker_id"]], 1)[0]
+            ]
+        elif reference_audio_type == "ground-truth":
+            # Use ground truth audio as reference audio
+            self.get_reference_for_sample = lambda sample: sample
+        else:
+            raise NotImplementedError(f"Reference audio type \"{reference_audio_type}\" is not supported.")
 
     def get_spec(self, audio):
         with torch.cuda.amp.autocast(enabled=False):
@@ -529,12 +541,6 @@ class TTSDataset(Dataset):
                     [wav, torch.zeros(self.pad_multiple - wav.shape[0] % self.pad_multiple, dtype=torch.float)]
                 )
         return wav
-
-    # Random sample a reference index from the same speaker
-    def sample_reference_index(self, speaker_id):
-        reference_pool = self.speaker_to_index_map[speaker_id]
-        reference_index = random.sample(reference_pool, 1)[0]
-        return reference_index
 
     def __getitem__(self, index):
         sample = self.data[index]
@@ -699,9 +705,9 @@ class TTSDataset(Dataset):
 
         reference_audio, reference_audio_length = None, None
         if ReferenceAudio in self.sup_data_types_set:
-            reference_index = self.sample_reference_index(sample["speaker_id"])
+            reference = self.get_reference_for_sample(sample)
             reference_audio = self.featurizer.process(
-                self.data[reference_index]["audio_filepath"],
+                reference["audio_filepath"],
                 trim=self.trim,
                 trim_ref=self.trim_ref,
                 trim_top_db=self.trim_top_db,

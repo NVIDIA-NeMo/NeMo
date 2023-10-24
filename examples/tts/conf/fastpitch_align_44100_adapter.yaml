@@ -31,6 +31,8 @@ window: hann
 phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 
+reference_audio_type: "same-speaker"  # options: ["same-speaker", "ground-truth"]
+
 model:
   unfreeze_aligner: false
   unfreeze_duration_predictor: false
@@ -136,6 +138,7 @@ model:
       pitch_mean: ${model.pitch_mean}
       pitch_std: ${model.pitch_std}
       use_beta_binomial_interpolator: true
+      reference_audio_type: ${reference_audio_type}
       
     dataloader_params:
       drop_last: false
@@ -168,6 +171,7 @@ model:
       pitch_mean: ${model.pitch_mean}
       pitch_std: ${model.pitch_std}
       use_beta_binomial_interpolator: true
+      reference_audio_type: ${reference_audio_type}
 
     dataloader_params:
       drop_last: false

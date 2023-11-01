@@ -161,9 +161,10 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 return
 
             if self.best_model_path == self.previous_best_path:
+                logging.debug('Best model has not changed, skipping save.')
                 return output
 
-            self.previous_model_path = self.best_model_path
+            self.previous_best_path = self.best_model_path
             old_state_dict = deepcopy(pl_module.state_dict())
             checkpoint = torch.load(maybe_injected_best_model_path, map_location='cpu')
             if 'state_dict' in checkpoint:

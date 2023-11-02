@@ -624,6 +624,10 @@ def ckpt_to_dir(filepath: Union[str, Path]) -> Path:
 
     filepath = Path(filepath)
 
+    # if it is already a distributed checkpoint, then return
+    if filepath.suffix != ".ckpt" and filepath.is_dir():
+        return filepath
+
     # adding this assert because we will later remove directories based on the return value of this method
     assert filepath.suffix == ".ckpt", f'filepath: {filepath} must have .ckpt extension'
 

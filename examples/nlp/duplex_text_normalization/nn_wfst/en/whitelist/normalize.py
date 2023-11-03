@@ -47,6 +47,7 @@ class WhitelistNormalizer(Normalizer):
         cache_dir: str = None,
         overwrite_cache: bool = False,
         whitelist: str = None,
+        max_number_of_permutations_per_split: int = 729,
     ):
 
         from nn_wfst.en.whitelist.tokenize_and_classify import ClassifyFst
@@ -64,3 +65,4 @@ class WhitelistNormalizer(Normalizer):
         self.parser = TokenParser()
         self.lang = lang
         self.processor = MosesProcessor(lang_id=lang)
+        self.max_number_of_permutations_per_split = max_number_of_permutations_per_split

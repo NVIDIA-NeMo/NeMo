@@ -439,6 +439,11 @@ class NLPModel(ModelPT, Exportable):
             and "bert_model.embeddings.position_ids" in state_dict
         ):
             del state_dict["bert_model.embeddings.position_ids"]
+        else:
+            # fix for albert and other models
+            pos_id_keys = [x for x in state_dict.keys() if "position_ids" in x]
+            for key in pos_id_keys:
+                del state_dict[key]
         results = super(NLPModel, self).load_state_dict(state_dict, strict=strict)
         return results
 

@@ -50,8 +50,6 @@ import os
 from typing import List
 
 from helpers import DECODER_MODEL, TAGGER_MODEL, instantiate_model_and_trainer
-from nn_wfst.en.electronic.normalize import ElectronicNormalizer
-from nn_wfst.en.whitelist.normalize import WhitelistNormalizer
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.data.text_normalization import constants
@@ -61,11 +59,16 @@ from nemo.utils import logging
 
 try:
     from nemo_text_processing.text_normalization.data_loader_utils import post_process_punct
+    from nn_wfst.en.electronic.normalize import ElectronicNormalizer
+    from nn_wfst.en.whitelist.normalize import WhitelistNormalizer
+
+    NEMO_TEXT_PROCESSING_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
-    raise ModuleNotFoundError(
-        "The package `nemo_text_processing` was not installed in this environment. Please refer to"
+    NEMO_TEXT_PROCESSING_AVAILABLE = False
+    logging.warning(
+        " `nemo_text_processing` is not installed in this environment. Please refer to"
         " https://github.com/NVIDIA/NeMo-text-processing and install this package before using "
-        "this script"
+        " this script: `pip install nemo_text_processing`"
     )
 
 
@@ -82,7 +85,7 @@ def main(cfg: DictConfig) -> None:
     tagger_model.max_sequence_len = 512
     tn_model = DuplexTextNormalizationModel(tagger_model, decoder_model, lang)
 
-    if lang == constants.ENGLISH:
+    if lang == constants.ENGLISH and NEMO_TEXT_PROCESSING_AVAILABLE:
         normalizer_electronic = ElectronicNormalizer(input_case="cased", lang=lang, deterministic=True)
         normalizer_whitelist = WhitelistNormalizer(input_case="cased", lang=lang, deterministic=True)
 
@@ -139,7 +142,7 @@ def main(cfg: DictConfig) -> None:
             if test_input == "STOP":
                 done = True
             if not done:
-                if lang == constants.ENGLISH:
+                if lang == constants.ENGLISH and NEMO_TEXT_PROCESSING_AVAILABLE:
                     new_input = normalizer_electronic.normalize(test_input, verbose=False)
                     test_input = post_process_punct(input=test_input, normalized_text=new_input)
                     new_input = normalizer_whitelist.normalize(test_input, verbose=False)

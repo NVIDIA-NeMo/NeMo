@@ -45,6 +45,7 @@ class ElectronicNormalizer(Normalizer):
         deterministic: bool = True,
         cache_dir: str = None,
         overwrite_cache: bool = False,
+        max_number_of_permutations_per_split: int = 729,
     ):
 
         from nn_wfst.en.electronic.tokenize_and_classify import ClassifyFst
@@ -58,3 +59,4 @@ class ElectronicNormalizer(Normalizer):
         self.parser = TokenParser()
         self.lang = lang
         self.processor = MosesProcessor(lang_id=lang)
+        self.max_number_of_permutations_per_split = max_number_of_permutations_per_split

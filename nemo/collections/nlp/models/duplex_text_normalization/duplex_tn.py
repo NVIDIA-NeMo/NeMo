@@ -287,7 +287,9 @@ class DuplexTextNormalizationModel(nn.Module):
                         cur_output_str = post_process_punct(input=original_sents[ix], normalized_text=cur_output_str)
                     else:
                         logging.warning(
-                            "`pynini` not installed, please install via nemo_text_processing/pynini_install.sh"
+                            " `nemo_text_processing` is not installed in this environment. Please refer to"
+                            " https://github.com/NVIDIA/NeMo-text-processing and install this package before using "
+                            " this script: `pip install nemo_text_processing`"
                         )
                 final_outputs.append(cur_output_str)
             except IndexError:

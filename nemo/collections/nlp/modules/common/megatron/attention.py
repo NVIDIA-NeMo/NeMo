@@ -520,9 +520,13 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             and not set_inference_key_value_memory
         ):
             # Mainly used for decoding with sq=1
-            q = rearrange(apply_rotary_pos_emb(query_layer, rotary_pos_emb[0]), 'sq b np hn -> b sq np hn')
-            k = rearrange(apply_rotary_pos_emb(key_layer, rotary_pos_emb[1]), 'sk b np hn -> b sk np hn')
-            v = rearrange(value_layer, 'sk b np hn -> b sk np hn')
+            q = _cast_if_autocast_enabled(
+                rearrange(apply_rotary_pos_emb(query_layer, rotary_pos_emb[0]), 'sq b np hn -> b sq np hn')
+            )
+            k = _cast_if_autocast_enabled(
+                rearrange(apply_rotary_pos_emb(key_layer, rotary_pos_emb[1]), 'sk b np hn -> b sk np hn')
+            )
+            v = _cast_if_autocast_enabled(rearrange(value_layer, 'sk b np hn -> b sk np hn'))
             context_layer = flash_attn_with_kvcache(
                 q=q, k_cache=k, v_cache=v, causal=self.attn_mask_type == AttnMaskType.causal,
             )

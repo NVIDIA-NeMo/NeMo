@@ -31,16 +31,17 @@
 # https://arxiv.org/pdf/2003.02405.pdf and the implementation from
 # https://github.com/tango4j/Auto-Tuning-Spectral-Clustering.
 
-from typing import List, Set, Tuple
-
-import numpy as np
+from typing import List, Tuple
 import torch
 
 from nemo.collections.asr.parts.utils.offline_clustering import (
     NMESC,
+    SpeakerClustering,
     SpectralClustering,
+    get_scale_interpolated_embs,
     getAffinityGraphMat,
     getCosAffinityMatrix,
+    split_input_data,
 )
 from nemo.collections.asr.parts.utils.optimization_utils import linear_sum_assignment
 
@@ -234,7 +235,7 @@ def calculate_removable_counts(removable_counts_mat: torch.Tensor, remain_count:
     rem_labels = remain_count_rem % (num_clus - ind)
     removable_counts_mat[removable_count_args[: (num_clus - ind)]] -= num_labels
     removable_counts_mat[removable_count_args[:rem_labels]] -= 1
-    return removable_counts_mat
+    return removable_counts_mat.int()
 
 
 def get_merge_quantity(
@@ -333,8 +334,12 @@ def merge_vectors(
             bypass_inds_list.append(k)
     bypass_inds = torch.tensor(bypass_inds_list)
     selected_inds = torch.tensor(selected_inds_list)
-    merged_vecs = torch.vstack((emb_ndx[bypass_inds], avg_emb))
-    merged_clus_labels = torch.hstack((pre_cluster_labels[bypass_inds], merged_clus_labels[0]))
+    if bypass_inds.shape[0] == 0:
+        merged_vecs = avg_emb.unsqueeze(0)
+        merged_clus_labels = merged_clus_labels.unsqueeze(0)
+    else:
+        merged_vecs = torch.vstack((emb_ndx[bypass_inds], avg_emb))
+        merged_clus_labels = torch.hstack((pre_cluster_labels[bypass_inds], merged_clus_labels[0]))
     return merged_vecs, merged_clus_labels
 
 
@@ -478,7 +483,7 @@ def get_first_arg_index(mat: torch.Tensor, label: int) -> int:
             Label which we want to find the first occuring index
 
     Returns:
-        (int) The first index of the given label
+        (int): The first index of the given label
     """
     return int(torch.where(mat == label)[0][0])
 
@@ -967,11 +972,11 @@ class OnlineSpeakerClustering(torch.nn.Module):
             )
 
             # Merge the segments in the history buffer
-            for spk_idx, target_num in enumerate(list(class_target_vol)):
+            for spk_idx, sub_cluster_num in enumerate(list(class_target_vol)):
                 merged_embs, merged_clus_labels, _ = run_reducer(
                     pre_embs=pre_embs,
                     target_spk_idx=spk_idx,
-                    merge_quantity=target_num,
+                    merge_quantity=sub_cluster_num.item(),
                     pre_clus_labels=pre_clus_labels,
                 )
                 total_emb.append(merged_embs)
@@ -1037,7 +1042,6 @@ class OnlineSpeakerClustering(torch.nn.Module):
                 Boolean that indicates whether there is a new set of segments. Depending on the VAD timestamps,
                 the number of subsegments can be ocassionally decreased. If `add_new=True`, then it adds the newly
                 acquired cluster labels.
-
         """
         margin_seg_n = emb_in.shape[0] - (self.current_n + self.history_n)
         if len(self.Y_fullhist) == 0 and margin_seg_n > 0:
@@ -1172,8 +1176,8 @@ class OnlineSpeakerClustering(torch.nn.Module):
         self.enhanced_count_thres = enhanced_count_thres
         self.sparse_search_volume = sparse_search_volume
         self.fixed_thres = fixed_thres
-        # Merge the closest embeddings and reduce the size of the embedding count.
 
+        # Merge the closest embeddings and reduce the size of the embedding count.
         if cuda and (curr_emb.device == torch.device("cpu") or base_segment_indexes.device == torch.device("cpu")):
             raise ValueError(f"CUDA is enabled but the input {curr_emb} or {base_segment_indexes} is not on the GPU.")
 

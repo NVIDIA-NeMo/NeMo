@@ -44,7 +44,7 @@ diarizer:
       multiscale_weights: [1,1,1,1,1] # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. ex) [0.33,0.33,0.33]
       save_embeddings: True # If True, save speaker embeddings in pickle format. This should be True if clustering result is used for other models, such as `msdd_model`.
   
-  clustering:
+  clustering: 
     parameters:
       oracle_num_speakers: False # If True, use num of speakers value provided in manifest file.
       max_num_speakers: 8 # Max number of speakers for each recording. If an oracle number of speakers is passed, this value is ignored.
@@ -52,6 +52,8 @@ diarizer:
       max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold. 
       sparse_search_volume: 30 # The higher the number, the more values will be examined with more time. 
       maj_vote_spk_count: False  # If True, take a majority vote on multiple p-values to estimate the number of speakers.
+      chunk_cluster_count: 50 # Number of forced clusters (overclustering) per unit chunk in long-form audio clustering.
+      embeddings_per_chunk: 10000 # Number of embeddings in each chunk for long-form audio clustering. Adjust based on GPU memory capacity. (default: 10000, approximately 40 mins of audio) 
   
   msdd_model:
     model_path: diar_msdd_telephonic # .nemo local model path or pretrained model name for multiscale diarization decoder (MSDD)
@@ -89,4 +91,3 @@ diarizer:
       min_number_of_words: 3 # Min number of words for the left context.
       max_number_of_words: 10 # Max number of words for the right context.
       logprob_diff_threshold: 1.2  # The threshold for the difference between two log probability values from two hypotheses.
-

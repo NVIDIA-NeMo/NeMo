@@ -20,6 +20,7 @@ import torch
 from scipy.optimize import linear_sum_assignment as scipy_linear_sum_assignment
 
 from nemo.collections.asr.data.audio_to_label import repeat_signal
+from nemo.collections.asr.parts.utils.longform_clustering import LongFormSpeakerClustering
 from nemo.collections.asr.parts.utils.offline_clustering import (
     SpeakerClustering,
     get_scale_interpolated_embs,
@@ -563,6 +564,23 @@ class TestClusteringUtilFunctions:
         elif mask_method == 'drop':
             assert all(binarized_affinity_mat.sum(dim=0) <= float(p_value))
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("Y_aggr", [torch.tensor([0, 1, 0, 1])])
+    @pytest.mark.parametrize("chunk_cluster_count, embeddings_per_chunk", [(2, 50)])
+    @pytest.mark.parametrize("window_range_list", [[[0, 1], [1, 2], [2, 3], [3, 4]]])
+    @pytest.mark.parametrize(
+        "absolute_merge_mapping",
+        [[[torch.tensor([]), torch.tensor([0, 2])], [torch.tensor([]), torch.tensor([1, 3])]]],
+    )
+    @pytest.mark.parametrize("org_len", [4])
+    def test_unpack_labels(
+        self, Y_aggr, window_range_list, absolute_merge_mapping, chunk_cluster_count, embeddings_per_chunk, org_len
+    ):
+        expected_result = Y_aggr
+        longform_speaker_clustering = LongFormSpeakerClustering(cuda=False)
+        output = longform_speaker_clustering.unpack_labels(Y_aggr, window_range_list, absolute_merge_mapping, org_len)
+        assert torch.equal(output, expected_result)
+
 
 class TestSpeakerClustering:
     """
@@ -679,7 +697,7 @@ class TestSpeakerClustering:
     @pytest.mark.parametrize("n_spks, SSV, enhanced_count_thres, min_samples_for_nmesc", [(1, 5, 40, 6)])
     @pytest.mark.parametrize("seed", [0])
     def test_offline_speaker_clustering_very_short_gpu(
-        self, n_spks, spk_dur, SSV, enhanced_count_thres, min_samples_for_nmesc, seed
+        self, n_spks, spk_dur, SSV, enhanced_count_thres, min_samples_for_nmesc, seed,
     ):
         em, ts, mc, mw, spk_ts, gt = generate_toy_data(
             n_spks=n_spks, spk_dur=spk_dur, perturb_sigma=0.1, torch_seed=seed
@@ -700,6 +718,102 @@ class TestSpeakerClustering:
         )
         permuted_Y = stitch_cluster_labels(Y_old=gt, Y_new=Y_out)
         permuted_Y = permuted_Y.to(gt.device)
+        # mc[-1] is the number of base scale segments
+        assert Y_out.shape[0] == mc[-1]
+        assert all(permuted_Y == gt)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("n_spks, SSV, enhanced_count_thres, min_samples_for_nmesc", [(2, 5, 40, 6)])
+    @pytest.mark.parametrize("spk_dur, chunk_cluster_count, embeddings_per_chunk", [(120, 4, 50), (240, 4, 100)])
+    @pytest.mark.parametrize("seed", [0])
+    @pytest.mark.parametrize("jit_script", [False, True])
+    def test_longform_speaker_clustering_cpu(
+        self,
+        n_spks,
+        spk_dur,
+        SSV,
+        enhanced_count_thres,
+        min_samples_for_nmesc,
+        chunk_cluster_count,
+        embeddings_per_chunk,
+        jit_script,
+        seed,
+    ):
+        em, ts, mc, mw, spk_ts, gt = generate_toy_data(
+            n_spks=n_spks, spk_dur=spk_dur, perturb_sigma=0.1, torch_seed=seed
+        )
+        longform_speaker_clustering = LongFormSpeakerClustering(cuda=False)
+        if jit_script:
+            longform_speaker_clustering = torch.jit.script(longform_speaker_clustering)
+        else:
+            assert isinstance(longform_speaker_clustering, LongFormSpeakerClustering)
+        Y_out = longform_speaker_clustering.forward_infer(
+            embeddings_in_scales=em,
+            timestamps_in_scales=ts,
+            multiscale_segment_counts=mc,
+            multiscale_weights=mw,
+            oracle_num_speakers=-1,
+            max_num_speakers=n_spks,
+            enhanced_count_thres=enhanced_count_thres,
+            sparse_search_volume=SSV,
+            max_rp_threshold=0.15,
+            fixed_thres=-1.0,
+            chunk_cluster_count=chunk_cluster_count,
+            embeddings_per_chunk=embeddings_per_chunk,
+        )
+        permuted_Y = stitch_cluster_labels(Y_old=gt, Y_new=Y_out)
+        permuted_Y = permuted_Y.to(gt.device)
+
+        # mc[-1] is the number of base scale segments
+        assert Y_out.shape[0] == mc[-1]
+        assert all(permuted_Y == gt)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("n_spks, SSV, enhanced_count_thres, min_samples_for_nmesc", [(2, 5, 40, 6)])
+    @pytest.mark.parametrize("spk_dur, chunk_cluster_count, embeddings_per_chunk", [(120, 4, 50), (240, 4, 100)])
+    @pytest.mark.parametrize("seed", [0])
+    @pytest.mark.parametrize("jit_script", [False, True])
+    def test_longform_speaker_clustering_gpu(
+        self,
+        n_spks,
+        spk_dur,
+        SSV,
+        enhanced_count_thres,
+        min_samples_for_nmesc,
+        chunk_cluster_count,
+        embeddings_per_chunk,
+        jit_script,
+        seed,
+    ):
+        em, ts, mc, mw, spk_ts, gt = generate_toy_data(
+            n_spks=n_spks, spk_dur=spk_dur, perturb_sigma=0.1, torch_seed=seed
+        )
+        longform_speaker_clustering = LongFormSpeakerClustering(cuda=True)
+
+        if jit_script:
+            longform_speaker_clustering = torch.jit.script(longform_speaker_clustering)
+        else:
+            assert isinstance(longform_speaker_clustering, LongFormSpeakerClustering)
+
+        Y_out = longform_speaker_clustering.forward_infer(
+            embeddings_in_scales=em,
+            timestamps_in_scales=ts,
+            multiscale_segment_counts=mc,
+            multiscale_weights=mw,
+            oracle_num_speakers=-1,
+            max_num_speakers=n_spks,
+            enhanced_count_thres=enhanced_count_thres,
+            sparse_search_volume=SSV,
+            max_rp_threshold=0.15,
+            fixed_thres=-1.0,
+            chunk_cluster_count=chunk_cluster_count,
+            embeddings_per_chunk=embeddings_per_chunk,
+        )
+        permuted_Y = stitch_cluster_labels(Y_old=gt, Y_new=Y_out)
+        permuted_Y = permuted_Y.to(gt.device)
+
         # mc[-1] is the number of base scale segments
         assert Y_out.shape[0] == mc[-1]
         assert all(permuted_Y == gt)

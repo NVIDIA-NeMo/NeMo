@@ -94,7 +94,7 @@ RUN pip install numba>=0.57.1
 
 # install k2, skip if installation fails
 COPY scripts /tmp/nemo/scripts/
-RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/speech_recognition/k2/setup.sh); INSTALL_CODE=$?; \
+RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/installers/install_k2.sh); INSTALL_CODE=$?; \
   echo ${INSTALL_MSG}; \
   if [ ${INSTALL_CODE} -ne 0 ]; then \
   echo "k2 installation failed";  \

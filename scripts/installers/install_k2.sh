@@ -15,8 +15,8 @@
 # limitations under the License.
 
 K2_REPO=https://github.com/k2-fsa/k2
-LATEST_RELEASE=e5671de  # Temporary fix for CUDA 12
-# uncomment the following line after the next k2 version is released (>1.24.3)
+LATEST_RELEASE=d12eec7 # Temporary fix for PyTorch 2.1.0
+# uncomment the following line after the next k2 version is released (>1.24.4)
 #LATEST_RELEASE=$(git -c 'versionsort.suffix=-' \
 #    ls-remote --exit-code --refs --sort='version:refname' --tags ${K2_REPO} '*.*' \
 #    | tail --lines=1 \

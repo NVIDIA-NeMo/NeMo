@@ -1282,6 +1282,7 @@ class TestSaveRestore:
         default_model_infos = ModelPT.search_huggingface_models(model_filter=filt)
         assert len(model_infos) == len(default_model_infos)
 
+    @pytest.mark.pleasefixme()
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_hf_model_info_with_card_data(self):

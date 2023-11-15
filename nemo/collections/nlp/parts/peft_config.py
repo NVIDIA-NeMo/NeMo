@@ -16,12 +16,15 @@ from typing import Dict
 
 from omegaconf import DictConfig
 
-from nemo.collections.nlp.modules.common.megatron.adapters.mcore_mixins import (
-    MCoreGPTEmbeddingMixin,
-    MCoreMLPMixin,
-    MCoreSelfAttentionMixin,
-    MCoreTransformerLayerMixin,
-)
+try:
+    from nemo.collections.nlp.modules.common.megatron.adapters.mcore_mixins import (
+        MCoreGPTEmbeddingMixin,
+        MCoreMLPMixin,
+        MCoreSelfAttentionMixin,
+        MCoreTransformerLayerMixin,
+    )
+except (ImportError, ModuleNotFoundError):
+    MCoreGPTEmbeddingMixin = MCoreSelfAttentionMixin = MCoreTransformerLayerMixin = MCoreMLPMixin = None
 
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
     AdapterName,

@@ -22,6 +22,7 @@ import torch
 from nemo.collections.asr.modules.audio_modules import (
     MaskBasedDereverbWPE,
     MaskEstimatorFlexChannels,
+    MaskEstimatorGSS,
     MaskReferenceChannel,
     SpectrogramToMultichannelFeatures,
     WPEFilter,
@@ -414,3 +415,36 @@ class TestMaskEstimator:
                         assert torch.all(
                             mask_length == spec_length
                         ), f'Output length mismatch: expected {spec_length}, got {mask_length}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('num_subbands', [32, 65])
+    @pytest.mark.parametrize('num_outputs', [2, 3])
+    @pytest.mark.parametrize('batch_size', [1, 4])
+    def test_gss(self, num_channels: int, num_subbands: int, num_outputs: int, batch_size: int):
+        """Test initialization of the GSS mask estimator and make sure it can process an input tensor.
+        This tests initialization and the output shape. It does not test correctness of the output.
+        """
+        # Test vector length
+        num_frames = 50
+
+        # Instantiate UUT
+        uut = MaskEstimatorGSS()
+
+        # Process the current configuration
+        logging.debug('Process num_channels=%d', num_channels)
+        input_size = (batch_size, num_channels, num_subbands, num_frames)
+        logging.debug('Input size: %s', input_size)
+
+        # multi-channel input
+        mixture_spec = torch.randn(input_size, dtype=torch.cfloat)
+        source_activity = torch.randn(batch_size, num_outputs, num_frames) > 0
+
+        # UUT
+        mask = uut(input=mixture_spec, activity=source_activity)
+
+        # Check output dimensions match
+        expected_mask_shape = (batch_size, num_outputs, num_subbands, num_frames)
+        assert (
+            mask.shape == expected_mask_shape
+        ), f'Output shape mismatch: expected {expected_mask_shape}, got {mask.shape}'

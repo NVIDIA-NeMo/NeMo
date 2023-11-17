@@ -1555,6 +1555,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         recompute_method = self.cfg.get('activations_checkpoint_method', None)
         recompute_num_layers = self.cfg.get('activations_checkpoint_num_layers', None)
 
+        ub_tp_comm_overlap = self.cfg.get('ub_tp_comm_overlap', False)
+
         if not self.cfg.get('fp8', False):
             fp8 = None
         elif self.cfg.get('fp8_e4m3', False):
@@ -1581,6 +1583,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'recompute_method': recompute_method,
             'recompute_num_layers': recompute_num_layers,
             'distribute_saved_activations': False,  # not currently used in NeMo
+            'ub_tp_comm_overlap': ub_tp_comm_overlap,
             'fp8': fp8,
         }
 

@@ -265,7 +265,7 @@ class SEANetDecoder(NeuralModule):
             out_channels = in_channels // 2
             kernel_size = 2 * up_sample_rate
             up_sample_conv = ConvTranspose1dNorm(
-                in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=up_sample_rate
+                in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=up_sample_rate,
             )
             in_channels = out_channels
             self.up_sample_conv_layers.append(up_sample_conv)

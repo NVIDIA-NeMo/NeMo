@@ -77,6 +77,16 @@ class AudioCodecModel(ModelPT):
 
         if "vector_quantizer" in cfg:
             self.vector_quantizer = instantiate(cfg.vector_quantizer)
+
+            vq_output_types = list(self.vector_quantizer.output_types.keys())
+
+            if len(vq_output_types) == 3 and vq_output_types[-1] == 'commit_loss':
+                self.vector_quantizer_has_commit_loss = True
+                logging.info('Vector quantizer supports commit loss.')
+            else:
+                self.vector_quantizer_has_commit_loss = False
+                logging.info('Vector quantizer does not support commit loss.')
+
         else:
             logging.warning('Vector quantizer will not be used.')
             self.vector_quantizer = None
@@ -123,6 +133,9 @@ class AudioCodecModel(ModelPT):
             self.commit_loss_scale = cfg.get("commit_loss_scale", 1.0)
         else:
             self.commit_loss_scale = 0.0
+
+        if self.commit_loss_scale > 0 and not self.vector_quantizer_has_commit_loss:
+            raise ValueError('Commit loss is enabled but the quantizer does not support it.')
 
         # Log setup
         self.log_config = cfg.get("log_config", None)
@@ -353,7 +366,11 @@ class AudioCodecModel(ModelPT):
             encoded = self.encoder_noise(encoded)
 
         if self.vector_quantizer:
-            encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+            if self.vector_quantizer_has_commit_loss:
+                encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+            else:
+                encoded, _ = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+                commit_loss = 0.0
         else:
             commit_loss = 0.0
 

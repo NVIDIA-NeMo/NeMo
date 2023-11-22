@@ -66,10 +66,22 @@ except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE = False
 
 try:
+    # Flash Attention Triton
+    import pkg_resources
+    from flash_attn.flash_attn_triton import flash_attn_func as flash_attn_func_triton
+
+    # pinned triton version for flash-attention triton https://github.com/HazyResearch/flash-attention/blob/main/flash_attn/flash_attn_triton.py#L3
+    assert pkg_resources.get_distribution("triton").version == '2.0.0.dev20221202'
+
+except (ImportError, ModuleNotFoundError, AssertionError):
+
+    flash_attn_func_triton = None
+
+
+try:
     # Flash Attention 1.X
     from flash_attn.bert_padding import pad_input, unpad_input
     from flash_attn.flash_attn_interface import flash_attn_unpadded_func
-    from flash_attn.flash_attn_triton import flash_attn_func as flash_attn_func_triton
 
     HAVE_FLASH_ATTENTION = True
     flash_attn_func = None
@@ -85,8 +97,7 @@ except (ImportError, ModuleNotFoundError):
     except (ImportError, ModuleNotFoundError):
 
         HAVE_FLASH_ATTENTION = False
-
-        flash_attn_unpadded_func, flash_attn_func_triton, flash_attn_func = None, None, None
+        flash_attn_unpadded_func, flash_attn_func = None, None
         unpad_input, pad_input = None, None
 
     try:

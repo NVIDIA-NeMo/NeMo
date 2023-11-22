@@ -39,10 +39,14 @@ except (ImportError, ModuleNotFoundError):
     HAVE_FA = False
 
 try:
+    import pkg_resources
     import triton
 
+    # pinned triton version for flash-attention triton https://github.com/HazyResearch/flash-attention/blob/main/flash_attn/flash_attn_triton.py#L3
+    assert pkg_resources.get_distribution("triton").version == '2.0.0.dev20221202'
+
     HAVE_TRITON = True
-except (ImportError, ModuleNotFoundError):
+except (ImportError, ModuleNotFoundError, AssertionError):
     HAVE_TRITON = False
 
 try:

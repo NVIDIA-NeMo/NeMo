@@ -507,12 +507,8 @@ def synced_generate(
 
             if compute_logprob:
                 precision = model._trainer.precision
-                if precision in [16, "16"]:
-                    dtype = torch.float16
-                elif precision in ['bf16', 'bf16-mixed']:
-                    dtype = torch.bfloat16
-                else:
-                    dtype = torch.float32
+                dtype = torch.float32
+
                 output_logits = torch.empty(
                     tokens.size(0), context_length - 1, dtype=dtype, device=torch.device("cuda")
                 )

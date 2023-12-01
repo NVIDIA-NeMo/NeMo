@@ -9,9 +9,6 @@ pipeline {
     timeout(time: 8, unit: 'HOURS')
     disableConcurrentBuilds(abortPrevious: true)
   }
-  environment {
-    NVTE_APPLY_QK_LAYER_SCALING = 1
-  }
 
   stages {
 

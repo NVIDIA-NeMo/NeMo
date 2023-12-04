@@ -53,6 +53,7 @@ class MegatronTrainerBuilder:
             no_ddp_communication_hook=True,
             gradient_as_bucket_view=self.cfg.model.gradient_as_bucket_view,
             find_unused_parameters=False,
+            nccl_communicator_config_path=self.cfg.model.get('nccl_communicator_config_path', None),
         )
 
     def _grad_scaler(self) -> GradScaler:

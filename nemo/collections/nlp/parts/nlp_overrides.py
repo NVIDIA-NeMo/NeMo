@@ -81,6 +81,7 @@ class NLPDDPStrategy(DDPStrategy):
     Args:
         no_ddp_communication_hook: Disable DDP communication hook when using AMP-O2
         with FP32 gradient accumulation.
+        nccl_communicator_config_path: Path to the yaml file with NCCL communicator options
     """
 
     def __init__(
@@ -89,6 +90,7 @@ class NLPDDPStrategy(DDPStrategy):
         cluster_environment: ClusterEnvironment = None,
         checkpoint_io: Optional[CheckpointIO] = None,
         no_ddp_communication_hook: bool = False,
+        nccl_communicator_config_path: Optional[str] = None,
         **kwargs: Union[Any, Dict[str, Any]],
     ) -> None:
         if not HAVE_APEX:
@@ -103,6 +105,7 @@ class NLPDDPStrategy(DDPStrategy):
         super().__init__(parallel_devices, cluster_environment, checkpoint_io, **kwargs)
 
         self.no_ddp_communication_hook = no_ddp_communication_hook
+        self.nccl_communicator_config_path = nccl_communicator_config_path
 
     def setup(self, trainer: "pl.Trainer") -> None:
         """
@@ -180,7 +183,6 @@ class NLPDDPStrategy(DDPStrategy):
         Args:
             global_rank (int): the global process index.
             world_size (int): the total number of GPUs, num_nodes * num_devices
-            is_slurm_managing_tasks (bool, optional): is the cluster managed by SLURM.
         """
         app_state = AppState()
 
@@ -196,6 +198,7 @@ class NLPDDPStrategy(DDPStrategy):
                     pipeline_model_parallel_size=app_state.pipeline_model_parallel_size,
                     virtual_pipeline_model_parallel_size=app_state.virtual_pipeline_model_parallel_size,
                     pipeline_model_parallel_split_rank=app_state.pipeline_model_parallel_split_rank,
+                    nccl_communicator_config_path=self.nccl_communicator_config_path,
                 )
 
                 # assert that fake tp and pp rank match after model parallel init

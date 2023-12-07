@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__all__ = ['list2str', 'tensor2list', 'plot_confusion_matrix', 'get_classification_report']
+__all__ = [
+    'torch_dtype_from_precision',
+    'list2str',
+    'tensor2list',
+    'plot_confusion_matrix',
+    'get_classification_report',
+]
 
 import os
 import time

@@ -40,6 +40,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
     NLPSaveRestoreConnector,
     PipelineMixedPrecisionPlugin,
 )
+from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import logging
 
 
@@ -168,15 +169,6 @@ def convert(args):
             plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
         else:
             plugins.append(PipelineMixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
-
-    if precision == 32:
-        dtype = torch.float32
-    elif precision in [16, "16", "16-mixed"]:
-        dtype = torch.float16
-    elif precision in ["bf16", "bf16-mixed"]:
-        dtype = torch.bfloat16
-    else:
-        dtype = torch.float32  # fallback
 
     nemo_config.precision = precision
     print(f"nemo_config: {nemo_config}")
@@ -314,6 +306,7 @@ def convert(args):
     model._save_restore_connector = NLPSaveRestoreConnector()
 
     # cast to target precision and disable cpu init
+    dtype = torch_dtype_from_precision(precision)
     model = model.to(dtype=dtype)
     model.cfg.use_cpu_initialization = False
 

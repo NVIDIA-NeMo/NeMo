@@ -17,8 +17,7 @@ Conversion script to convert Huggingface LLaMA checkpoints into nemo checkpoint.
   Example to run this conversion script:
     python convert_hf_llama_to_nemo.py \
      --in-file <path_to_hf_checkpoints_folder> \
-     --out-file <path_to_output_nemo_file> \
-     [--fast-swiglu\
+     --out-file <path_to_output_nemo_file>
 """
 
 import os
@@ -50,7 +49,7 @@ def get_args():
         "--in-file", type=str, default=None, required=True, help="Path to Huggingface LLaMA checkpoints",
     )
     parser.add_argument("--out-file", type=str, default=None, required=True, help="Path to output .nemo file.")
-    parser.add_argument("--precision", type=str, default="32", help="Model precision")
+    parser.add_argument("--precision", type=str, default="16", help="Model precision")
     args = parser.parse_args()
     return args
 
@@ -94,7 +93,7 @@ def load_model(cls, checkpoint, strict, **kwargs):
     return model
 
 
-def load_config(args, llama_config):
+def load_config(llama_config):
     nemo_config = OmegaConf.load(
         os.path.join(os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_llama_config.yaml')
     ).model
@@ -138,7 +137,7 @@ def convert(args):
     for name, param in model.named_parameters():
         print(f"- {name}")
 
-    nemo_config = load_config(args, hf_config)
+    nemo_config = load_config(hf_config)
 
     if args.precision in ["32", "16"]:
         precision = int(float(args.precision))

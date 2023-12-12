@@ -797,8 +797,6 @@ class AutocastTransformerLayer(TransformerLayer):
         params_dtype: torch.dtype = torch.float32,
         get_rng_state_tracker: Optional[Callable] = None,
         fuse_wgrad_accumulation: bool = False,
-        apply_query_key_layer_scaling: bool = False,
-        attention_softmax_in_fp32: bool = False,
         seq_length: Optional[int] = None,
         micro_batch_size: Optional[int] = None,
         sequence_parallel: bool = False,
@@ -828,8 +826,6 @@ class AutocastTransformerLayer(TransformerLayer):
             params_dtype=params_dtype,
             get_rng_state_tracker=get_rng_state_tracker,
             fuse_wgrad_accumulation=fuse_wgrad_accumulation,
-            apply_query_key_layer_scaling=apply_query_key_layer_scaling,
-            attention_softmax_in_fp32=attention_softmax_in_fp32,
             seq_length=seq_length,
             micro_batch_size=micro_batch_size,
             sequence_parallel=sequence_parallel,
@@ -1082,7 +1078,6 @@ class ParallelTransformer(MegatronModule):
                     params_dtype=torch.float32,  # dtype params are initialized in
                     get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
                     fuse_wgrad_accumulation=config.gradient_accumulation_fusion,
-                    apply_query_key_layer_scaling=apply_query_key_layer_scaling,
                     seq_length=None,  # used for jit warmup
                     micro_batch_size=None,  # used for jit warmup
                     sequence_parallel=config.sequence_parallel,

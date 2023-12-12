@@ -158,6 +158,12 @@ parser.add_argument(
     action='store_false',
     help="Don't use Unicode script to split sentence pieces.",
 )
+parser.add_argument(
+    '--spe_byte_fallback',
+    dest='spe_byte_fallback',
+    action='store_true',
+    help="If <unk>, fallback to a byte sequence of the characters.",
+)
 parser.add_argument('--no_lower_case', dest='lower_case', action='store_false')
 parser.add_argument("--log", action='store_true')
 parser.set_defaults(log=False, lower_case=True, spe_train_extremely_large_corpus=False)

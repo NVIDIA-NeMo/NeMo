@@ -13,10 +13,23 @@
 # limitations under the License.
 
 import json
-from typing import Tuple
+from typing import Optional, Tuple, Union
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.utils import logging
+from nemo.utils.nemo_logging import LogMode
+
+
+def remove_punctuations(text: str, punctuations: Optional[Union[list, str]] = None) -> str:
+    """
+    Remove punctuations from a string
+    """
+    if not punctuations:
+        punctuations = [char for char in '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~']
+
+    for punctuation in punctuations:
+        text = text.replace(punctuation, '')
+    return text
 
 
 def clean_label(_str: str, num_to_words: bool = True, langid="en") -> str:
@@ -38,8 +51,9 @@ def clean_label(_str: str, num_to_words: bool = True, langid="en") -> str:
         if langid == "en":
             _str = convert_num_to_words(_str, langid="en")
         else:
-            logging.info(
-                "Currently support basic num_to_words in English only. Please use Text Normalization to convert other languages! Skipping!"
+            logging.warning(
+                "Currently support basic num_to_words in English only. Please use Text Normalization to convert other languages! Skipping!",
+                mode=LogMode.ONCE,
             )
 
     ret = " ".join(_str.split())
@@ -75,8 +89,9 @@ def convert_num_to_words(_str: str, langid: str = "en") -> str:
                 out_str += word + " "
         out_str = out_str.strip()
     else:
-        raise ValueError(
-            "Currently support basic num_to_words in English only. Please use Text Normalization to convert other languages!"
+        logging.warning(
+            "Currently support basic num_to_words in English only. Please use Text Normalization to convert other languages!",
+            mode=LogMode.ONCE,
         )
     return out_str
 
@@ -88,6 +103,9 @@ def cal_write_wer(
     langid: str = 'en',
     use_cer: bool = False,
     output_filename: str = None,
+    ignore_capitalization: bool = False,
+    ignore_punctuation: bool = False,
+    punctuations: Optional[list] = None,
 ) -> Tuple[str, dict, str]:
     """ 
     Calculate wer, inserion, deletion and substitution rate based on groundtruth text and pred_text_attr_name (pred_text) 
@@ -113,6 +131,14 @@ def cal_write_wer(
 
             if clean_groundtruth_text:
                 ref = clean_label(ref, langid=langid)
+
+            if ignore_punctuation:
+                ref = remove_punctuations(ref, punctuations=punctuations)
+                hyp = remove_punctuations(hyp, punctuations=punctuations)
+
+            if ignore_capitalization:
+                ref = ref.lower()
+                hyp = hyp.lower()
 
             wer, tokens, ins_rate, del_rate, sub_rate = word_error_rate_detail(
                 hypotheses=[hyp], references=[ref], use_cer=use_cer

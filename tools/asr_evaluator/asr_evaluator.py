@@ -69,6 +69,9 @@ def main(cfg):
         langid=cfg.analyst.metric_calculator.langid,
         use_cer=cfg.analyst.metric_calculator.use_cer,
         output_filename=cfg.analyst.metric_calculator.output_filename,
+        ignore_capitalization=cfg.analyst.metric_calculator.get("ignore_capitalization", False),
+        ignore_punctuation=cfg.analyst.metric_calculator.get("ignore_punctuation", False),
+        punctuations=cfg.analyst.metric_calculator.get("punctuations", None),
     )
     with open_dict(cfg):
         cfg.analyst.metric_calculator.output_filename = output_manifest_w_wer

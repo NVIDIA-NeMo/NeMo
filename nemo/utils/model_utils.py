@@ -54,10 +54,10 @@ class ArtifactPathType(Enum):
     TAR_PATH = 1
 
 
-@dataclass(init=False)
+@dataclass
 class ArtifactItem:
-    path: str
-    path_type: ArtifactPathType
+    path: str = ""
+    path_type: ArtifactPathType = ArtifactPathType.LOCAL_PATH
     hashed_path: Optional[str] = None
 
 

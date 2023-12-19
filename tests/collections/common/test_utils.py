@@ -250,10 +250,10 @@ class TestPreprocessingUtils:
             get_full_path([1, 2, 3])
 
     @pytest.mark.unit
-    def test_get_full_path_invalid_type(self):
-        """Make sure exceptions are raised when audio_file is not a string or a list of strings.
+    def test_get_full_path_invalid_relative_path(self):
+        """Make sure exceptions are raised when audio_file is a relative path and
+        manifest is not provided or both manifest and data dir are provided simultaneously.
         """
-
         with pytest.raises(ValueError, match="Use either manifest_file or data_dir"):
             # Using a relative path without manifest_file or data_dir is not allowed
             get_full_path('relative/path')

@@ -13,7 +13,7 @@ trainer:
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
-  max_epochs: -1 # PTL default. In practice, max_steps will be reached first. 
+  max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
   max_steps: 100000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 100
@@ -34,7 +34,7 @@ exp_manager:
     name: null
   resume_if_exists: True
   resume_ignore_no_checkpoint: True
-  resume_from_checkpoint: ${model.resume_from_checkpoint} 
+  resume_from_checkpoint: ${model.resume_from_checkpoint}
   create_checkpoint_callback: True
   checkpoint_callback_params:
     monitor: val_loss
@@ -99,7 +99,7 @@ model:
     type: 'GPT2BPETokenizer'
     model: null
     vocab_file: null
-    merge_file: null 
+    merge_file: null
     delimiter: null # only used for tabular tokenizer
     sentencepiece_legacy: False # Legacy=True allows you to add special tokens to sentencepiece tokenizers.
 
@@ -144,7 +144,7 @@ model:
   # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).
   # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
   # 'full' will checkpoint the entire transformer layer.
-  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_granularity: null # 'selective' or 'full'
   activations_checkpoint_method: null # 'uniform', 'block'
   # 'uniform' divides the total number of transformer layers and checkpoints the input activation
   # of each chunk at the specified granularity. When used with 'selective', 'uniform' checkpoints all attention blocks in the model.
@@ -175,9 +175,9 @@ model:
   ## Transformer Engine
   transformer_engine: False
   fp8: False # enables fp8 in TransformerLayer forward
-  fp8_e4m3: False # sets fp8_format = recipe.Format.E4M3 
+  fp8_e4m3: False # sets fp8_format = recipe.Format.E4M3
   fp8_hybrid: True # sets fp8_format = recipe.Format.HYBRID
-  fp8_margin: 0 # scaling margin 
+  fp8_margin: 0 # scaling margin
   fp8_interval: 1 # scaling update interval
   fp8_amax_history_len: 1024 # Number of steps for which amax history is recorded per tensor
   fp8_amax_compute_algo: max # 'most_recent' or 'max'. Algorithm for computing amax from history
@@ -193,13 +193,13 @@ model:
 
   ## Flash Attention
   use_flash_attention: False # Use flash attention in self-attention module, this config does nothing when transformer_engine=True
-  
+
   data:
    # Path to data must be specified by the user.
     # Supports List, String and Dictionary
     # List : can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
-    # Or see example below: 
-    # data_prefix: 
+    # Or see example below:
+    # data_prefix:
     #   - .5
     #   - /raid/data/pile/my-gpt3_00_text_document
     #   - .5
@@ -231,18 +231,18 @@ model:
     end_step: 10 # Global batch to end profiling
     ranks: [0] # Global rank IDs to profile
     gen_shape: False # Generate model and kernel details including input shapes
-  
+
   optim:
     name: fused_adam
     lr: 2e-4
-    weight_decay: 0.01 
-    betas: 
+    weight_decay: 0.01
+    betas:
     - 0.9
     - 0.98
     sched:
       name: CosineAnnealing
       warmup_steps: 500
-      constant_steps: 50000
+      constant_steps: 0
       min_lr: 2e-5
 
   gc_interval: 0

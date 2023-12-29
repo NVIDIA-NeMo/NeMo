@@ -78,7 +78,7 @@ python megatron_change_num_partitions.py \
 
 ### Only Tensor Parallelism conversion ###
 
-To the above commands, add the following argument: `--tp_conversion_only` 
+To the above commands, add the following argument: `--tp_conversion_only`
 
 # Note: This requires that the pipeline_model_parallel_size and tgt_pipeline_model_parallel_size is set to 1.
 
@@ -95,9 +95,9 @@ python megatron_change_num_partitions.py \
 
 ### Model Classes ###
 
-# NOTE: Conversion of other model types. 
+# NOTE: Conversion of other model types.
 # Default model type is MegatronGPTModel, if you want another model you need to pass classpath of the model
-# For example - MegatronT5Model - 
+# For example - MegatronT5Model -
 
 python megatron_change_num_partitions.py \
     ...
@@ -106,7 +106,7 @@ python megatron_change_num_partitions.py \
 # Additional arguments:
 
 --num_gpu_per_node: Number of GPUs per node. Default is 8.
---megatron_legacy: Whether the model is a legacy Megatron model or not. Default is False. May be unsuported for 
+--megatron_legacy: Whether the model is a legacy Megatron model or not. Default is False. May be unsuported for
     Pipeline Parallelism change.
 --tokenizer_model_path: Path to tokenizer model. Default is None. When not None, overrides the tokenizer model path
     in the model config.
@@ -146,23 +146,29 @@ def force_cpu_model(cfg):
         # temporarily set to cpu
         original_cpu_init = cfg.get('use_cpu_initialization', False)
         if 'megatron_amp_O2' in cfg:
-            key = 'megatron_amp_O2'
+            amp_o2_key = 'megatron_amp_O2'
             original_amp_o2 = cfg.megatron_amp_O2
         elif 'megatron_amp_02' in cfg:
-            key = 'megatron_amp_02'
+            amp_o2_key = 'megatron_amp_02'
             original_amp_o2 = cfg.megatron_amp_02
         else:
-            key, original_amp_o2 = None, None
+            amp_o2_key, original_amp_o2 = None, None
 
         # Set new values
         cfg.use_cpu_initialization = True
-        if key is not None:
-            cfg[key] = False
+        if amp_o2_key is not None:
+            cfg[amp_o2_key] = False
+
+        # Disable sequence parallelism - Not disabling this gives error when converting the the model to TP=1
+        original_sequence_parallel = cfg.get('sequence_parallel', None)
+        cfg.sequence_parallel = False
 
     # Setup restore dict
     restore_dict = {'use_cpu_initialization': original_cpu_init}  # 'megatron_amp_O2': original_amp_o2
-    if key is not None:
-        restore_dict[key] = original_amp_o2
+    if amp_o2_key is not None:
+        restore_dict[amp_o2_key] = original_amp_o2
+    if original_sequence_parallel is not None:
+        restore_dict['sequence_parallel'] = original_sequence_parallel
 
     return cfg, restore_dict
 
@@ -1239,7 +1245,7 @@ def main():
 
             """
             Under VP convention
-            Notation : 
+            Notation :
             Stage  = PP rank
             Number = GPT model / layer index
             Ignore TP - every PP has all TP corresponding to that PP

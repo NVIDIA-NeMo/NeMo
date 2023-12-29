@@ -37,7 +37,7 @@ Please use a container later than 23.10 or the current github main branch
     --target_pipeline_model_parallel_size=1
 2) extract your nemo file to a folder with
     tar -xvf filename.nemo
-        
+
 Then, run this conversion script:
 python convert_nemo_gpt_to_mcore.py \
  --in-folder <path to extracted, TP1 PP1 legacy checkpoint folder> \
@@ -185,6 +185,9 @@ def restore_model(nemo_file, cpu_only=False):
         nemo_file, trainer=dummy_trainer, return_config=True, map_location=map_location
     )
     model_config.use_cpu_initialization = cpu_only
+
+    if model_config.get('sequence_parallel', None):
+        model_config.sequence_parallel = False
 
     # To copy weights in the original precision, we have to turn on O2.
     orig_megatron_amp_O2_value = model_config.megatron_amp_O2

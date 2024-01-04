@@ -382,6 +382,7 @@ class MegatronBaseModel(NLPModel):
         add_bias_linear = self.cfg.get('bias', True)
 
         activation = self.cfg.get('activation', 'gelu')
+        gated_linear_unit = activation.endswith('glu')
         # TODO: need to check which activation functions are supported in mcore
         activation_func = activation_to_func(activation)
 
@@ -431,7 +432,7 @@ class MegatronBaseModel(NLPModel):
             'apply_residual_connection_post_layernorm': False,  # we don't use this in NeMo
             'layernorm_zero_centered_gamma': False,
             'add_bias_linear': add_bias_linear,
-            'gated_linear_unit': False,
+            'gated_linear_unit': gated_linear_unit,
             'activation_func': activation_func,
             'normalization': normalization,
             'init_method': init_method,

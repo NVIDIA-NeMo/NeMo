@@ -27,10 +27,11 @@ from tqdm.auto import tqdm
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToCharDALIDataset, DALIOutputs
 from nemo.collections.asr.losses.rnnt import RNNTLoss, resolve_rnnt_default_loss_name
-from nemo.collections.asr.metrics.rnnt_wer import RNNTWER, RNNTDecoding, RNNTDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -93,7 +94,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
             decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
         )
         # Setup WER calculation
-        self.wer = RNNTWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=0,
             use_cer=self._cfg.get('use_cer', False),
@@ -377,7 +378,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
                 decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
             )
 
-            self.wer = RNNTWER(
+            self.wer = WER(
                 decoding=self.decoding,
                 batch_dim_index=self.wer.batch_dim_index,
                 use_cer=self.wer.use_cer,
@@ -432,7 +433,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
         )
 
-        self.wer = RNNTWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,
@@ -708,7 +709,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
             }
 
             if (sample_id + 1) % log_every_n_steps == 0:
-                self.wer.update(encoded, encoded_len, transcript, transcript_len)
+                self.wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                )
                 _, scores, words = self.wer.compute()
                 self.wer.reset()
                 tensorboard_logs.update({'training_batch_wer': scores.float() / words})
@@ -796,7 +802,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
 
                 tensorboard_logs['val_loss'] = loss_value
 
-            self.wer.update(encoded, encoded_len, transcript, transcript_len)
+            self.wer.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=transcript,
+                targets_lengths=transcript_len,
+            )
             wer, wer_num, wer_denom = self.wer.compute()
             self.wer.reset()
 
@@ -992,3 +1003,11 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
         results.append(model)
 
         return results
+
+    @property
+    def wer(self):
+        return self._wer
+
+    @wer.setter
+    def wer(self, wer):
+        self._wer = wer

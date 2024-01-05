@@ -16,9 +16,9 @@ import joblib
 import pytest
 from omegaconf import DictConfig, ListConfig
 
-from nemo.collections.asr.metrics.wer import CTCDecodingConfig
 from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.models.confidence_ensemble import ConfidenceEnsembleModel
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig, ConfidenceMethodConfig
 
 

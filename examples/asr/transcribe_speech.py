@@ -21,10 +21,10 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf, open_dict
 
-from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
-from nemo.collections.asr.metrics.wer import CTCDecodingConfig
 from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerChangeConfig
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import (

@@ -23,9 +23,10 @@ from pytorch_lightning import Trainer
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset
 from nemo.collections.asr.losses.rnnt import RNNTLoss
-from nemo.collections.asr.metrics.rnnt_wer_bpe import RNNTBPEWER, RNNTBPEDecoding, RNNTBPEDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTBPEDecodingConfig
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
 
@@ -315,7 +316,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         )
 
         # Setup wer object
-        self.wer = RNNTBPEWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=0,
             use_cer=self._cfg.get('use_cer', False),
@@ -411,7 +412,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        self.wer = RNNTBPEWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,
@@ -460,7 +461,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        self.wer = RNNTBPEWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,

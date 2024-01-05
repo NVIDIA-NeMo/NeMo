@@ -25,10 +25,11 @@ from tqdm.auto import tqdm
 
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
-from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.utils.slu_utils import SequenceGenerator, SequenceGeneratorConfig, get_seq_mask
 from nemo.collections.common.losses import SmoothedNLLLoss
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -102,7 +103,7 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
         self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
 
         # Setup metric with decoding strategy
-        self._wer = WERBPE(
+        self.wer = WER(
             decoding=self.decoding,
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
@@ -246,14 +247,14 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
             log_every_n_steps = 1
 
         if (batch_nb + 1) % log_every_n_steps == 0:
-            self._wer.update(
+            self.wer.update(
                 predictions=predictions,
                 targets=eos_semantics,
                 predictions_lengths=pred_len,
-                target_lengths=eos_semantics_len,
+                targets_lengths=eos_semantics_len,
             )
-            wer, _, _ = self._wer.compute()
-            self._wer.reset()
+            wer, _, _ = self.wer.compute()
+            self.wer.reset()
             tensorboard_logs.update({'training_batch_wer': wer})
 
         return {'loss': loss_value, 'log': tensorboard_logs}
@@ -311,14 +312,14 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
 
         loss_value = self.loss(log_probs=log_probs, labels=eos_semantics, lengths=eos_semantics_len)
 
-        self._wer.update(
+        self.wer.update(
             predictions=predictions,
             targets=eos_semantics,
             predictions_lengths=pred_len,
-            target_lengths=eos_semantics_len,
+            targets_lengths=eos_semantics_len,
         )
-        wer, wer_num, wer_denom = self._wer.compute()
-        self._wer.reset()
+        wer, wer_num, wer_denom = self.wer.compute()
+        self.wer.reset()
 
         return {
             'val_loss': loss_value,
@@ -657,3 +658,11 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/slu_conformer_transformer_large_slurp/versions/1.13.0/files/slu_conformer_transformer_large_slurp.nemo",
         )
         results.append(model)
+
+    @property
+    def wer(self):
+        return self._wer
+
+    @wer.setter
+    def wer(self, wer):
+        self._wer = wer

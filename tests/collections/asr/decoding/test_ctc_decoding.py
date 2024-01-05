@@ -19,9 +19,13 @@ import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.metrics.wer import CTCDecoding, CTCDecodingConfig
-from nemo.collections.asr.metrics.wer_bpe import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.mixins import mixins
+from nemo.collections.asr.parts.submodules.ctc_decoding import (
+    CTCBPEDecoding,
+    CTCBPEDecodingConfig,
+    CTCDecoding,
+    CTCDecodingConfig,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 

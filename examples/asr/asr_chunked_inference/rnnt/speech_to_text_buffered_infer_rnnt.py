@@ -67,8 +67,9 @@ from typing import Optional
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf, open_dict
-from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
+
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.streaming_utils import (
     BatchedFrameASRRNNT,

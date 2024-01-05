@@ -20,8 +20,9 @@ import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.losses.ctc import CTCLoss
-from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.multimodal.speech_cv.data import video_to_text_dataset
 from nemo.collections.multimodal.speech_cv.models.visual_ctc_models import VisualEncDecCTCModel
 from nemo.core.classes.common import PretrainedModelInfo
@@ -80,7 +81,7 @@ class VisualEncDecCTCModelBPE(VisualEncDecCTCModel, ASRBPEMixin):
         self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
 
         # Setup metric with decoding strategy
-        self._wer = WERBPE(
+        self._wer = WER(
             decoding=self.decoding,
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
@@ -252,7 +253,7 @@ class VisualEncDecCTCModelBPE(VisualEncDecCTCModel, ASRBPEMixin):
 
         self.decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer)
 
-        self._wer = WERBPE(
+        self._wer = WER(
             decoding=self.decoding,
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get("log_prediction", False),
@@ -288,7 +289,7 @@ class VisualEncDecCTCModelBPE(VisualEncDecCTCModel, ASRBPEMixin):
 
         self.decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer,)
 
-        self._wer = WERBPE(
+        self._wer = WER(
             decoding=self.decoding,
             use_cer=self._wer.use_cer,
             log_prediction=self._wer.log_prediction,

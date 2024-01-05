@@ -172,17 +172,6 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
         self.val_loss = GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True)
 
     @torch.no_grad()
-    def translate(
-        self,
-        paths2audio_files: List[str],
-        batch_size: int = 4,
-        logprobs: bool = False,
-        return_hypotheses: bool = False,
-    ) -> List[str]:
-        hypotheses = self.transcribe(paths2audio_files, batch_size, logprobs, return_hypotheses)
-        return hypotheses
-
-    @torch.no_grad()
     def transcribe(
         self,
         paths2audio_files: List[str],
@@ -545,7 +534,11 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
 
         self.val_loss(loss=transf_loss, num_measurements=transf_log_probs.shape[0] * transf_log_probs.shape[1])
 
-        return {f'{eval_mode}_loss': transf_loss, 'translations': translations, 'ground_truths': ground_truths}
+        output_dict = {f'{eval_mode}_loss': transf_loss, 'translations': translations, 'ground_truths': ground_truths}
+
+        self.validation_step_outputs.append(output_dict)
+
+        return output_dict
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         return self.validation_step(batch, batch_idx, dataloader_idx, eval_mode="test")

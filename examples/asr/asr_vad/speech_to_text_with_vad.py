@@ -69,9 +69,10 @@ from torch.profiler import ProfilerActivity, profile, record_function
 from tqdm import tqdm
 
 from nemo.collections.asr.data import feature_to_text_dataset
-from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
-from nemo.collections.asr.metrics.wer import CTCDecodingConfig, word_error_rate
+from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel, EncDecClassificationModel
+from nemo.collections.asr.parts.submodules import CTCDecodingConfig
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.asr.parts.utils.vad_utils import (
     generate_overlap_vad_seq,

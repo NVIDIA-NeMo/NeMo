@@ -22,10 +22,10 @@ import pytest
 from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
 
-from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
-from nemo.collections.asr.metrics.wer import CTCDecodingConfig
 from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE, EncDecRNNTBPEModel
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyCTCInferConfig
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyRNNTInferConfig
 from nemo.collections.asr.parts.utils.asr_confidence_benchmarking_utils import run_confidence_benchmark
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig

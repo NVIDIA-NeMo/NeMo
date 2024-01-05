@@ -1357,7 +1357,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     sub_transcripts = sub_transcripts.detach()
 
                     # Update WER on each process without syncing
-                    self.wer.update(sub_enc, sub_enc_lens, sub_transcripts, sub_transcript_lens)
+                    self.wer.update(
+                        predictions=sub_enc,
+                        predictions_lengths=sub_enc_lens,
+                        targets=sub_transcripts,
+                        targets_lengths=sub_transcript_lens,
+                    )
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
@@ -1842,7 +1847,12 @@ class SampledRNNTJoint(RNNTJoint):
                 sub_transcripts = sub_transcripts.detach()
 
                 # Update WER on each process without syncing
-                self.wer.update(sub_enc, sub_enc_lens, sub_transcripts, sub_transcript_lens)
+                self.wer.update(
+                    predictions=sub_enc,
+                    predictions_lengths=sub_enc_lens,
+                    targets=sub_transcripts,
+                    targets_lengths=sub_transcript_lens,
+                )
 
             del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 

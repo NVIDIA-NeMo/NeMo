@@ -30,9 +30,10 @@ from nemo.utils import logging
 
 try:
     from nemo.collections.asr.losses.ctc import CTCLoss
-    from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
+    from nemo.collections.asr.metrics.wer import WER
     from nemo.collections.asr.models import EncDecCTCModel
     from nemo.collections.asr.parts.mixins import ASRBPEMixin
+    from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 
     ASR_AVAILABLE = True
 except (ModuleNotFoundError, ImportError) as e:
@@ -98,8 +99,8 @@ class CTCG2PModel(G2PModel, ASRBPEMixin):
 
         self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
 
-        self._wer = WERBPE(decoding=self.decoding, use_cer=False, log_prediction=False, dist_sync_on_step=True,)
-        self._per = WERBPE(decoding=self.decoding, use_cer=True, log_prediction=False, dist_sync_on_step=True,)
+        self.wer = WER(decoding=self.decoding, use_cer=False, log_prediction=False, dist_sync_on_step=True,)
+        self.per = WER(decoding=self.decoding, use_cer=True, log_prediction=False, dist_sync_on_step=True,)
 
     def setup_grapheme_tokenizer(self, cfg):
         """ Initialized grapheme tokenizer """
@@ -209,17 +210,17 @@ class CTCG2PModel(G2PModel, ASRBPEMixin):
             log_probs=log_probs, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths
         )
 
-        self._wer.update(
-            predictions=log_probs, targets=targets, target_lengths=target_lengths, predictions_lengths=encoded_len
+        self.wer.update(
+            predictions=log_probs, targets=targets, targets_lengths=target_lengths, predictions_lengths=encoded_len
         )
-        wer, wer_num, wer_denom = self._wer.compute()
-        self._wer.reset()
+        wer, wer_num, wer_denom = self.wer.compute()
+        self.wer.reset()
 
-        self._per.update(
-            predictions=log_probs, targets=targets, target_lengths=target_lengths, predictions_lengths=encoded_len
+        self.per.update(
+            predictions=log_probs, targets=targets, targets_lengths=target_lengths, predictions_lengths=encoded_len
         )
-        per, per_num, per_denom = self._per.compute()
-        self._per.reset()
+        per, per_num, per_denom = self.per.compute()
+        self.per.reset()
 
         self.log(f"{split}_loss", val_loss)
         loss = {
@@ -420,3 +421,19 @@ class CTCG2PModel(G2PModel, ASRBPEMixin):
     @classmethod
     def list_available_models(cls) -> 'List[PretrainedModelInfo]':
         return []
+
+    @property
+    def wer(self):
+        return self._wer
+
+    @wer.setter
+    def wer(self, wer):
+        self._wer = wer
+
+    @property
+    def per(self):
+        return self._per
+
+    @per.setter
+    def per(self, per):
+        self._per = per

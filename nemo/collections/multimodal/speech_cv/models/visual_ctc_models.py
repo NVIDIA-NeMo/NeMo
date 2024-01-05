@@ -26,9 +26,10 @@ from tqdm.auto import tqdm
 
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.losses.ctc import CTCLoss
-from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.parts.mixins import ASRModuleMixin, InterCTCMixin
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.multimodal.speech_cv.data import video_to_text_dataset
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -104,7 +105,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
         self.decoding = CTCDecoding(self.cfg.decoding, vocabulary=self.decoder.vocabulary)
 
         # Setup metric with decoding strategy
-        self._wer = WER(
+        self.wer = WER(
             decoding=self.decoding,
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
@@ -285,7 +286,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
 
             self.decoding = CTCDecoding(decoding_cfg=decoding_cfg, vocabulary=self.decoder.vocabulary)
 
-            self._wer = WER(
+            self.wer = WER(
                 decoding=self.decoding,
                 use_cer=self._cfg.get('use_cer', False),
                 dist_sync_on_step=True,
@@ -327,10 +328,10 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
 
         self.decoding = CTCDecoding(decoding_cfg=decoding_cfg, vocabulary=self.decoder.vocabulary)
 
-        self._wer = WER(
+        self.wer = WER(
             decoding=self.decoding,
-            use_cer=self._wer.use_cer,
-            log_prediction=self._wer.log_prediction,
+            use_cer=self.wer.use_cer,
+            log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
         )
 
@@ -559,14 +560,14 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
         )
 
         if (batch_nb + 1) % log_every_n_steps == 0:
-            self._wer.update(
+            self.wer.update(
                 predictions=log_probs,
                 targets=transcript,
                 target_lengths=transcript_len,
                 predictions_lengths=encoded_len,
             )
-            wer, _, _ = self._wer.compute()
-            self._wer.reset()
+            wer, _, _ = self.wer.compute()
+            self.wer.reset()
             tensorboard_logs.update({'training_batch_wer': wer})
 
         return {'loss': loss_value, 'log': tensorboard_logs}
@@ -577,7 +578,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
             input_video_signal=video_signal, input_video_signal_length=video_signal_len
         )
 
-        transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
+        transcribed_texts, _ = self.wer.decoding.ctc_decoder_predictions_tensor(
             decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False,
         )
 
@@ -600,11 +601,11 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
             loss_value, transcript, transcript_len, compute_wer=True, log_wer_num_denom=True, log_prefix="val_",
         )
 
-        self._wer.update(
+        self.wer.update(
             predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len
         )
-        wer, wer_num, wer_denom = self._wer.compute()
-        self._wer.reset()
+        wer, wer_num, wer_denom = self.wer.compute()
+        self.wer.reset()
         metrics.update({'val_loss': loss_value, 'val_wer_num': wer_num, 'val_wer_denom': wer_denom, 'val_wer': wer})
 
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
@@ -690,3 +691,11 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
         results = []
 
         return results
+
+    @property
+    def wer(self):
+        return self._wer
+
+    @wer.setter
+    def wer(self, wer):
+        self._wer = wer

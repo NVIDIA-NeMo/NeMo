@@ -22,9 +22,9 @@ import torch
 from omegaconf import DictConfig
 
 from nemo.collections.asr.data import audio_to_text
-from nemo.collections.asr.metrics.wer_bpe import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.models import configs
 from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.common import tokenizers
 from nemo.utils.config_utils import assert_dataclass_signature_match
 

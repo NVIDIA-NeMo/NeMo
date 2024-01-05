@@ -24,17 +24,14 @@ import torch
 from torchmetrics.audio.snr import SignalNoiseRatio
 
 from nemo.collections.asr.metrics.audio import AudioMetricWrapper
-from nemo.collections.asr.metrics.rnnt_wer import RNNTWER
-from nemo.collections.asr.metrics.rnnt_wer_bpe import RNNTBPEWER
-from nemo.collections.asr.metrics.wer import (
-    WER,
+from nemo.collections.asr.metrics.wer import WER, word_error_rate, word_error_rate_detail, word_error_rate_per_utt
+from nemo.collections.asr.parts.submodules.ctc_decoding import (
+    CTCBPEDecoding,
+    CTCBPEDecodingConfig,
     CTCDecoding,
     CTCDecodingConfig,
-    word_error_rate,
-    word_error_rate_detail,
-    word_error_rate_per_utt,
 )
-from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTDecoding
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers import CharTokenizer
 from nemo.utils.config_utils import assert_dataclass_signature_match
@@ -97,7 +94,12 @@ class TestWordErrorRate:
         if wer.batch_dim_index > 0:
             targets_tensor.transpose_(0, 1)
             predictions_tensor.transpose_(0, 1)
-        wer(predictions=predictions_tensor, targets=targets_tensor, target_lengths=torch.tensor([len(reference)]))
+        wer(
+            predictions=predictions_tensor,
+            predictions_lengths=None,
+            targets=targets_tensor,
+            targets_lengths=torch.tensor([len(reference)]),
+        )
         res, _, _ = wer.compute()
         res = res.detach().cpu()
         # return res[0] / res[1]
@@ -186,7 +188,7 @@ class TestWordErrorRate:
         decoding_config = {'strategy': 'greedy'}
         if test_wer_bpe:
             decoding = CTCBPEDecoding(decoding_config, self.char_tokenizer)
-            wer = WERBPE(decoding, use_cer=False)
+            wer = WER(decoding, use_cer=False)
         else:
             decoding = CTCDecoding(decoding_config, self.vocabulary.copy())
             wer = WER(decoding, use_cer=False)
@@ -237,7 +239,7 @@ class TestWordErrorRate:
     @pytest.mark.parametrize("test_wer_bpe", [False, True])
     def test_wer_metric_subword_return_hypothesis(self, batch_dim_index, test_wer_bpe):
         decoding_config = {'strategy': 'greedy', 'batch_dim_index': batch_dim_index}
-        wer = WERBPE(CTCBPEDecoding(decoding_config, self.char_tokenizer), use_cer=False)
+        wer = WER(CTCBPEDecoding(decoding_config, self.char_tokenizer), use_cer=False)
 
         tensor = self.__string_to_ctc_tensor('cat', test_wer_bpe, as_logprobs=True).int()
         if batch_dim_index > 0:
@@ -272,14 +274,16 @@ class TestWordErrorRate:
                 tokenizer=deepcopy(self.char_tokenizer),
                 ctc_decoder_predictions_tensor=ctc_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.char_tokenizer.ids_to_text,
+                spec=CTCBPEDecoding,
             )
-            wer = WERBPE(decoding, use_cer=False)
+            wer = WER(decoding, use_cer=False)
         else:
             decoding = Mock(
                 blank_id=len(self.vocabulary),
                 labels_map=self.vocabulary.copy(),
                 ctc_decoder_predictions_tensor=ctc_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.decode_token_to_str_with_vocabulary_mock,
+                spec=CTCDecoding,
             )
             wer = WER(decoding, use_cer=False)
         targets_tensor = self.__reference_string_to_tensor(reference, test_wer_bpe)
@@ -288,7 +292,7 @@ class TestWordErrorRate:
             predictions=None,
             predictions_lengths=None,
             targets=targets_tensor,
-            target_lengths=torch.tensor([len(reference)]),
+            targets_lengths=torch.tensor([len(reference)]),
         )
         res, _, _ = wer.compute()
         res = res.detach().cpu()
@@ -306,24 +310,26 @@ class TestWordErrorRate:
                 tokenizer=deepcopy(self.char_tokenizer),
                 rnnt_decoder_predictions_tensor=rnnt_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.char_tokenizer.ids_to_text,
+                spec=RNNTBPEDecoding,
             )
-            wer = RNNTBPEWER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
+            wer = WER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
         else:
             decoding = Mock(
                 blank_id=len(self.vocabulary),
                 labels_map=self.vocabulary.copy(),
                 rnnt_decoder_predictions_tensor=rnnt_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.decode_token_to_str_with_vocabulary_mock,
+                spec=RNNTDecoding,
             )
-            wer = RNNTWER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
+            wer = WER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
         targets_tensor = self.__reference_string_to_tensor(reference, test_wer_bpe)
         if wer.batch_dim_index > 0:
             targets_tensor.transpose_(0, 1)
         wer(
-            encoder_output=None,
-            encoded_lengths=None,
+            predictions=None,
+            predictions_lengths=None,
             targets=targets_tensor,
-            target_lengths=torch.tensor([len(reference)]),
+            targets_lengths=torch.tensor([len(reference)]),
         )
         res, _, _ = wer.compute()
         res = res.detach().cpu()

@@ -18,12 +18,12 @@ from typing import Any, Dict, List, Optional
 from omegaconf import MISSING
 
 import nemo.core.classes.dataset
-from nemo.collections.asr.metrics.wer import CTCDecodingConfig
 from nemo.collections.asr.modules.audio_preprocessing import (
     AudioToMelSpectrogramPreprocessorConfig,
     SpectrogramAugmentationConfig,
 )
 from nemo.collections.asr.modules.conv_asr import ConvASRDecoderConfig, ConvASREncoderConfig
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.core.config import modelPT as model_cfg
 
 

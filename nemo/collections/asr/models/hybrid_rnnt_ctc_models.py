@@ -25,9 +25,10 @@ from tqdm.auto import tqdm
 
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
-from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin, InterCTCMixin
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import AccessMixin
@@ -415,7 +416,12 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             }
 
             if compute_wer:
-                self.wer.update(encoded, encoded_len, transcript, transcript_len)
+                self.wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                )
                 _, scores, words = self.wer.compute()
                 self.wer.reset()
                 tensorboard_logs.update({'training_batch_wer': scores.float() / words})
@@ -454,7 +460,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 self.ctc_wer.update(
                     predictions=log_probs,
                     targets=transcript,
-                    target_lengths=transcript_len,
+                    targets_lengths=transcript_len,
                     predictions_lengths=encoded_len,
                 )
                 ctc_wer, _, _ = self.ctc_wer.compute()
@@ -529,7 +535,12 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 )
                 tensorboard_logs['val_loss'] = loss_value
 
-            self.wer.update(encoded, encoded_len, transcript, transcript_len)
+            self.wer.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=transcript,
+                targets_lengths=transcript_len,
+            )
             wer, wer_num, wer_denom = self.wer.compute()
             self.wer.reset()
 
@@ -573,7 +584,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             loss_value = (1 - self.ctc_loss_weight) * loss_value + self.ctc_loss_weight * ctc_loss
             tensorboard_logs['val_loss'] = loss_value
         self.ctc_wer.update(
-            predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len,
+            predictions=log_probs, targets=transcript, targets_lengths=transcript_len, predictions_lengths=encoded_len,
         )
         ctc_wer, ctc_wer_num, ctc_wer_denom = self.ctc_wer.compute()
         self.ctc_wer.reset()

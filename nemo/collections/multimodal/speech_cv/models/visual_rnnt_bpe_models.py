@@ -21,8 +21,9 @@ from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
 
 from nemo.collections.asr.losses.rnnt import RNNTLoss
-from nemo.collections.asr.metrics.rnnt_wer_bpe import RNNTBPEWER, RNNTBPEDecoding, RNNTBPEDecodingConfig
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTBPEDecodingConfig
 from nemo.collections.multimodal.speech_cv.data import video_to_text_dataset
 from nemo.collections.multimodal.speech_cv.models.visual_rnnt_models import VisualEncDecRNNTModel
 from nemo.core.classes.common import PretrainedModelInfo
@@ -71,7 +72,7 @@ class VisualEncDecRNNTBPEModel(VisualEncDecRNNTModel, ASRBPEMixin):
         )
 
         # Setup wer object
-        self.wer = RNNTBPEWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=0,
             use_cer=self._cfg.get('use_cer', False),
@@ -167,7 +168,7 @@ class VisualEncDecRNNTBPEModel(VisualEncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        self.wer = RNNTBPEWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,
@@ -216,7 +217,7 @@ class VisualEncDecRNNTBPEModel(VisualEncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        self.wer = RNNTBPEWER(
+        self.wer = WER(
             decoding=self.decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,

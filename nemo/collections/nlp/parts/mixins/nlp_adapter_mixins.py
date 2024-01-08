@@ -146,10 +146,8 @@ class NLPAdapterModelMixin:
                         layers = self.model.module.language_model.encoder.layers
                     else:
                         layers = self.model.language_model.encoder.layers
-                if layer_selection is None:
-                    layer_selection = list(range(1, self.cfg.num_layers + 1))
                 for layer in layers:
-                    if layer.layer_number in layer_selection:
+                    if layer.layer_number in (layer_selection or list(range(1, self.cfg.num_layers + 1))):
                         for name, module in layer.named_modules():
                             self._check_and_add_adapter(
                                 name, module, adapter_name, adapter_cfg, name_key_to_mcore_mixins

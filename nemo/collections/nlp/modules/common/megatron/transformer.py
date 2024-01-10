@@ -1463,7 +1463,7 @@ class ParallelTransformer(MegatronModule):
             # fp8_autocast will not do anything if TE or FP8 isn't used
             fp8_group = None
             if self.fp8 and parallel_state.model_parallel_is_initialized():
-                fp8_group = parallel_state.get_amax_reduction_group()
+                fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=True)
 
             if HAVE_TE:
                 # if TE is installed but fp8 is not available then this will do nothing

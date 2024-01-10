@@ -55,6 +55,7 @@ class AppState(metaclass=Singleton):
         self._data_parallel_group = None
         self._megatron_checkpoint_version = None
         self._use_fp8 = False
+        self._context_parallel_size = None
         self._init_mpi_proc_gruop = False
 
         self._random_seed = None
@@ -363,6 +364,22 @@ class AppState(metaclass=Singleton):
                 use_fp8:  Use of FP8.
         """
         self._use_fp8 = use_fp8
+
+    @property
+    def context_parallel_size(self):
+        """ Property returns the number of GPUs in each context parallel group.
+            Returns:
+                Number of GPUs in each context parallel group.
+        """
+        return self._context_parallel_size
+
+    @context_parallel_size.setter
+    def context_parallel_size(self, size):
+        """ Property sets the number of GPUs in each context parallel group.
+            Args:
+                size (int):  Number of GPUs in each context parallel group.
+        """
+        self._context_parallel_size = size
 
     @property
     def init_mpi_proc_group(self):

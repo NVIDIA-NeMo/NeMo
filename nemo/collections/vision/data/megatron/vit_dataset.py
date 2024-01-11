@@ -16,13 +16,19 @@ import random
 
 import numpy as np
 import torch
-import torchvision.transforms as T
 from PIL import Image, ImageFilter, ImageOps
 from torch.utils.data import Dataset
 
 from nemo.collections.multimodal.data.common.data_samplers import SharedEpoch
 from nemo.collections.vision.data.megatron.autoaugment import ImageNetPolicy
 from nemo.collections.vision.data.megatron.image_folder import ImageFolder
+
+try:
+    import torchvision.transforms as T
+
+    TORCHVISION_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    TORCHVISION_AVAILABLE = False
 
 
 def _to_torch_data_type(precision):
@@ -92,6 +98,7 @@ class Solarization(object):
 class ClassificationTransform:
     def __init__(self, model_cfg, image_size, train=True):
         self.data_type = _to_torch_data_type(model_cfg.precision)
+        assert TORCHVISION_AVAILABLE, "Torchvision imports failed but they are required."
         if train:
             self.transform = T.Compose(
                 [

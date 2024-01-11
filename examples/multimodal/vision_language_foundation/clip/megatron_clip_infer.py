@@ -17,7 +17,7 @@ from omegaconf.omegaconf import OmegaConf
 from PIL import Image
 
 from nemo.collections.multimodal.data.clip.clip_dataset import get_preprocess_fns
-from nemo.collections.multimodal.models.vision_language_foundation.clip import MegatronCLIPModel
+from nemo.collections.multimodal.models.vision_language_foundation.clip.megatron_clip_models import MegatronCLIPModel
 from nemo.collections.multimodal.parts.utils import setup_trainer_and_model_for_inference
 from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.core.config import hydra_runner

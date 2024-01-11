@@ -20,16 +20,22 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torchvision.transforms.functional as F
-from torchvision.transforms import (
-    CenterCrop,
-    Compose,
-    InterpolationMode,
-    Normalize,
-    RandomResizedCrop,
-    Resize,
-    ToTensor,
-)
+
+try:
+    import torchvision.transforms.functional as F
+    from torchvision.transforms import (
+        CenterCrop,
+        Compose,
+        InterpolationMode,
+        Normalize,
+        RandomResizedCrop,
+        Resize,
+        ToTensor,
+    )
+
+    TORCHVISION_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    TORCHVISION_AVAILABLE = False
 
 OPENAI_DATASET_MEAN = (0.48145466, 0.4578275, 0.40821073)
 OPENAI_DATASET_STD = (0.26862954, 0.26130258, 0.27577711)
@@ -52,6 +58,7 @@ class ResizeMaxSize(nn.Module):
             width, height = img.size
         scale = self.max_size / float(max(height, width))
         if scale != 1.0:
+            assert TORCHVISION_AVAILABLE, "Torchvision imports failed but they are required."
             new_size = tuple(round(dim * scale) for dim in (height, width))
             img = F.resize(img, new_size, self.interpolation)
             pad_h = self.max_size - new_size[0]
@@ -72,6 +79,7 @@ def image_transform(
     resize_longest_max: bool = False,
     fill_color: int = 0,
 ):
+    assert TORCHVISION_AVAILABLE, "Torchvision imports failed but they are required."
     mean = mean or OPENAI_DATASET_MEAN
     if not isinstance(mean, (list, tuple)):
         mean = (mean,) * 3

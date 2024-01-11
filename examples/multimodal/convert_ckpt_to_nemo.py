@@ -36,7 +36,7 @@ from nemo.collections.multimodal.models.text_to_image.controlnet.controlnet impo
 from nemo.collections.multimodal.models.text_to_image.imagen import MegatronImagen
 from nemo.collections.multimodal.models.text_to_image.instruct_pix2pix.ldm.ddpm_edit import MegatronLatentDiffusionEdit
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm import MegatronLatentDiffusion
-from nemo.collections.multimodal.models.vision_language_foundation.clip import MegatronCLIPModel
+from nemo.collections.multimodal.models.vision_language_foundation.clip.megatron_clip_models import MegatronCLIPModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.utils import AppState, logging

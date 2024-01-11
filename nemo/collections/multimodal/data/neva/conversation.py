@@ -72,15 +72,6 @@ class Conversation:
                     ret += role + ": " + message + seps[i % 2]
                 else:
                     ret += role + ":"
-        elif self.sep_style == SeparatorStyle.MPT:
-            ret = self.system + self.sep
-            for role, message in messages:
-                if message:
-                    if type(message) is tuple:
-                        message, _, _ = message
-                    ret += role + message + self.sep
-                else:
-                    ret += role
         elif self.sep_style == SeparatorStyle.LLAMA_2:
             wrap_sys = lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n"
             wrap_inst = lambda msg: f"[INST] {msg} [/INST]"

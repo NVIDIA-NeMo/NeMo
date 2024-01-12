@@ -22,6 +22,7 @@ from nemo.utils.cast_utils import (
     cast_all,
     cast_tensor,
 )
+from nemo.utils.dtype import str_to_dtype
 from nemo.utils.nemo_logging import Logger as _Logger
 from nemo.utils.nemo_logging import LogMode as logging_mode
 

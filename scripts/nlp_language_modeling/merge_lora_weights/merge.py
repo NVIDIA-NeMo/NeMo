@@ -15,6 +15,18 @@
 
 """
 Merge lora weights into a base GPT LM. Only PP=1 supported so far.
+
+Example usage:
+python scripts/nlp_language_modeling/merge_lora_weights/merge.py \
+    trainer.accelerator=gpu \   (use 'cpu' if model cannot fit in memory)
+    tensor_model_parallel_size=<TP of lora checkpoint> \
+    pipeline_model_parallel_size=1 \
+    gpt_model_file=<path to base model nemo file or extracted folder> \
+    lora_model_path=<path to megatron_gpt_peft_lora_tuning.nemo> \
+    merged_model_path=<output nemo file>
+
+TP of lora checkpoint can be found by visually examining the output of
+`tar -tvf /path/to/lora.nemo`
 """
 
 
@@ -84,12 +96,7 @@ def fix_for_O2(state_dict):
 
 
 def merge(
-    base_model_state_dict: Dict[str, Any],
-    lora_state_dict: Dict[int, Any],
-    tp: int,
-    num_layers: int,
-    curr_rank: int,
-    mcore: bool,
+    base_model_state_dict: Dict[str, Any], lora_state_dict: Dict[int, Any], tp: int, num_layers: int, mcore: bool,
 ):
     """ 
     Iterate through all the self_attention.query_key_value projection feedforward weights in all the layers.
@@ -114,11 +121,11 @@ def merge(
             key_lora_in = f'model.language_model.encoder.layers.{nl}.self_attention.adapter_layer.lora_kqv_adapter.linear_in.weight'
             key_lora_out = f'model.language_model.encoder.layers.{nl}.self_attention.adapter_layer.lora_kqv_adapter.linear_out.weight'
         wt_lora_in = torch.cat([lora_state_dict[_tp][key_lora_in] for _tp in range(tp)], dim=0)
-        wt_lora_out = lora_state_dict[curr_rank][key_lora_out]
+        wt_lora_out = torch.cat([lora_state_dict[_tp][key_lora_out] for _tp in range(tp)], dim=0)
         wt_self_attn = base_model_state_dict[key_self_attn_kqv]
         wt_lora = wt_lora_out @ wt_lora_in
         base_model_state_dict[key_self_attn_kqv] = wt_self_attn + wt_lora.type_as(wt_self_attn)
-        print("mergeing for weight", key_self_attn_kqv)
+        print("merging for weight", key_self_attn_kqv)
     return base_model_state_dict
 
 
@@ -142,11 +149,6 @@ def main(cfg) -> None:
             cfg.pipeline_model_parallel_size = model_config.get('pipeline_model_parallel_size', 1)
             cfg.pipeline_model_parallel_split_rank = model_config.get('pipeline_model_parallel_split_rank', 0)
 
-    assert (
-        cfg.trainer.devices * cfg.trainer.num_nodes
-        == cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size
-    ), "devices * num_nodes should equal tensor_model_parallel_size * pipeline_model_parallel_size"
-
     if cfg.gpt_model_file:
         save_restore_connector = NLPSaveRestoreConnector()
         if os.path.isdir(cfg.gpt_model_file):
@@ -164,11 +166,12 @@ def main(cfg) -> None:
             pretrained_cfg.activations_checkpoint_granularity = None
             pretrained_cfg.activations_checkpoint_method = None
             pretrained_cfg.precision = trainer.precision
+            pretrained_cfg.use_cpu_initialization = cfg.trainer.accelerator == 'cpu'
         model = MegatronGPTModel.restore_from(
             restore_path=cfg.gpt_model_file,
             trainer=trainer,
             override_config_path=pretrained_cfg,
-            map_location=torch.device("cpu"),
+            map_location=torch.device("cpu") if cfg.trainer.accelerator == 'cpu' else None,
             save_restore_connector=save_restore_connector,
         )
     elif cfg.checkpoint_dir:
@@ -197,15 +200,14 @@ def main(cfg) -> None:
         raise ValueError("need at least a nemo file or checkpoint dir")
 
     # load the lora weights on cpu for all ranks of the lora model
-    lora_weights, lora_model_cfg = load_lora(cfg.lora_model_path, model.cfg.tensor_model_parallel_size)
+    lora_weights, lora_model_cfg = load_lora(cfg.lora_model_path, cfg.tensor_model_parallel_size)
 
     # merge the lora weights with the base model, for this current rank.
     merged_weights = merge(
         model.state_dict(),
         lora_weights,
-        tp=model.cfg.tensor_model_parallel_size,
+        tp=cfg.tensor_model_parallel_size,
         num_layers=model.cfg.num_layers,
-        curr_rank=model.global_rank,
         mcore=model.mcore_gpt,
     )
 
@@ -214,19 +216,22 @@ def main(cfg) -> None:
         merged_weights = fix_for_O2(merged_weights)
     model.load_state_dict(merged_weights)
 
-    # Going to go through the motions of inference to force PTL to run subprocess for loading all base model's ranks.
-    input = "Context: In 2004, philosopher and psychologist Michel ter Hark (Groningen, The Netherlands) published a book, called Popper, Otto Selz and the rise of evolutionary epistemology, in which he claimed that Popper took some of his ideas from his tutor, the German psychologist Otto Selz. Selz never published his ideas, partly because of the rise of Nazism, which forced him to quit his work in 1933, and the prohibition of referring to Selz' work. Popper, the historian of ideas and his scholarship, is criticised in some academic quarters for his rejection of Plato, Hegel and Marx. Question: Who claimed Otto Selz deserved credit for ideas published by Popper? Answer:"
-    ds = RequestDataSet([input])
-    request_dl = DataLoader(dataset=ds, batch_size=1)
-    config = {'greedy': True, 'compute_logprob': False, 'tokens_to_generate': 5, 'add_BOS': False}
-    model.set_inference_config(config)
-    response = trainer.predict(model, request_dl)
-    print(response)
+    if cfg.trainer.accelerator != 'cpu' and model.global_rank == 0:
+        # Going to go through the motions of inference to force PTL to run subprocess for loading all base model's ranks.
+        input = "Context: In 2004, philosopher and psychologist Michel ter Hark (Groningen, The Netherlands) published a book, called Popper, Otto Selz and the rise of evolutionary epistemology, in which he claimed that Popper took some of his ideas from his tutor, the German psychologist Otto Selz. Selz never published his ideas, partly because of the rise of Nazism, which forced him to quit his work in 1933, and the prohibition of referring to Selz' work. Popper, the historian of ideas and his scholarship, is criticised in some academic quarters for his rejection of Plato, Hegel and Marx. Question: Who claimed Otto Selz deserved credit for ideas published by Popper? Answer:"
+        ds = RequestDataSet([input])
+        request_dl = DataLoader(dataset=ds, batch_size=1)
+        config = {'greedy': True, 'compute_logprob': False, 'tokens_to_generate': 5, 'add_BOS': False}
+        model.set_inference_config(config)
+        response = trainer.predict(model, request_dl)
+        print(response)
 
-    with open_dict(model.cfg):
-        model.cfg.restore_from_path = cfg.merged_model_path
-        model.cfg.data = lora_model_cfg.data
-        model.cfg.target = f"{MegatronGPTSFTModel.__module__}.{MegatronGPTSFTModel.__name__}"
+        with open_dict(model.cfg):
+            model.cfg.restore_from_path = cfg.merged_model_path
+            model.cfg.data = lora_model_cfg.data
+            model.cfg.target = f"{MegatronGPTSFTModel.__module__}.{MegatronGPTSFTModel.__name__}"
+    else:
+        logging.info("Skipping inference validation of merged model since device is 'cpu'.")
 
     model.save_to(cfg.merged_model_path)
     logging.info(f"saved merged model to {cfg.merged_model_path}")

@@ -100,17 +100,6 @@ RUN INSTALL_MSG=$(/bin/bash /tmp/torchaudio_build/scripts/installers/install_tor
   else echo "Skipping failed torchaudio installation"; fi \
   else echo "torchaudio installed successfully"; fi
 
-# install nemo dependencies
-WORKDIR /tmp/nemo
-ENV LHOTSE_REQUIRE_TORCHAUDIO=0
-COPY requirements .
-RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
-
-# install flash attention
-RUN pip install flash-attn
-# install numba for latest containers
-RUN pip install numba>=0.57.1
-
 COPY scripts /tmp/nemo/scripts/
 # install correct graphviz version (k2 and pynini visualization tool), skip if installation fails
 RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/installers/install_graphviz.sh --docker); INSTALL_CODE=$?; \
@@ -132,6 +121,17 @@ RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/installers/install_k2.sh); INSTALL
   exit ${INSTALL_CODE};  \
   else echo "Skipping failed k2 installation"; fi \
   else echo "k2 installed successfully"; fi
+
+# install nemo dependencies
+WORKDIR /tmp/nemo
+ENV LHOTSE_REQUIRE_TORCHAUDIO=0
+COPY requirements .
+RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
+
+# install flash attention
+RUN pip install flash-attn
+# install numba for latest containers
+RUN pip install numba>=0.57.1
 
 # copy nemo source into a scratch image
 FROM scratch as nemo-src

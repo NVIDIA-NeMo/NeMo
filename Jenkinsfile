@@ -3949,7 +3949,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       }
       failFast true
       steps {
-        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_tuning.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.val_check_interval=2 \
@@ -3978,7 +3978,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.validation_ds.num_workers=0 \
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]"
-        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_tuning.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.val_check_interval=1 \
@@ -4054,7 +4054,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       failFast true
       steps {
         sh "rm -rf examples/nlp/language_modeling/gpt_peft_lora_results_pp2"
-        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_tuning.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=9999 \
@@ -4089,7 +4089,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       failFast true
       steps {
         sh "rm -rf /home/TestData/nlp/lora_tuning_tp2"
-        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_tuning.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=9999 \
@@ -4111,7 +4111,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.validation_ds.num_workers=0 \
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]"
-        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_generate.py \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/TP2/megatron_gpt_tp2.nemo \
         model.peft.restore_from_path=/home/TestData/nlp/lora_tuning_tp2/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo \
         model.peft.restore_from_ckpt_name=null \
@@ -4176,7 +4176,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       }
       failFast true
       steps{
-        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_generate.py \
             model.restore_from_path=/home/TestData/nlp/megatron_gpt_sft/megatron_gpt_rope_sft.nemo \
             model.peft.restore_from_path=null \
             model.data.test_ds.file_names=['/home/TestData/nlp/megatron_gpt_sft/sample.jsonl'] \
@@ -4995,7 +4995,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       failFast true
       steps {
         sh "rm -rf /home/TestData/nlp/t5_lora_tuning_tp2"
-        sh "python examples/nlp/language_modeling/tuning/megatron_t5_peft_tuning.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_t5_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=9999 \
@@ -5017,7 +5017,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.validation_ds.num_workers=0 \
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]"
-        sh "python examples/nlp/language_modeling/tuning/megatron_t5_peft_eval.py \
+        sh "python examples/nlp/language_modeling/tuning/megatron_t5_generate.py \
         model.restore_from_path=/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m_tp2.nemo \
         model.peft.restore_from_path=/home/TestData/nlp/t5_lora_tuning_tp2/megatron_t5_peft_lora_tuning/checkpoints/megatron_t5_peft_lora_tuning.nemo \
         model.peft.restore_from_ckpt_name=null \

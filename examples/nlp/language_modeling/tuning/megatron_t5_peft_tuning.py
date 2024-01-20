@@ -11,7 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+#############################
+# THIS SCRIPT IS DEPRECATED #
+#############################
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf
 
@@ -20,6 +22,7 @@ from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrai
 from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated
 from nemo.utils.exp_manager import exp_manager
 
 mp.set_start_method("spawn", force=True)
@@ -34,8 +37,15 @@ This script is exactly the same as the peft tuning script for GPT. For more deta
 please refer to the GPT script and docs.
 """
 
+banner = '\n'.join(['' "*" * 80] * 5)
 
-@hydra_runner(config_path="conf", config_name="megatron_t5_peft_tuning_config")
+
+@deprecated(
+    wait_seconds=20,
+    explanation=f"\n{banner}\nmegatron_t5_peft_tuning.py is renamed to megatron_t5_finetuning.py with the "
+    f"same functionality. \nPlease switch to the new name.\n{banner}\n",
+)
+@hydra_runner(config_path="conf", config_name="megatron_t5_finetuning_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')

@@ -11,7 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+#############################
+# THIS SCRIPT IS DEPRECATED #
+#############################
 import os
 import tempfile
 
@@ -159,9 +161,13 @@ def validate_checkpoint_loading_args(cfg):
         raise ValueError(f'Hparams file {cfg.hparams_file} does not exist or is not a file.')
 
 
+banner = '\n'.join(['' "*" * 80] * 5)
+
+
 @deprecated(
-    explanation=f"{__file__} is deprecated. PEFT and SFT scripts are now consolidated"
-    "See updated scripts `megatron_gpt_peft_tuning.py` and `megatron_gpt_peft_eval.py` for examples."
+    wait_seconds=20,
+    explanation=f"\n{banner}\n{__file__} is deprecated. PEFT and SFT scripts are now consolidated"
+    f"See updated scripts `megatron_gpt_finetuning.py` and `megatron_gpt_generate.py` for examples.\n{banner}\n",
 )
 @hydra_runner(config_path="conf", config_name="megatron_gpt_sft")
 def main(cfg) -> None:

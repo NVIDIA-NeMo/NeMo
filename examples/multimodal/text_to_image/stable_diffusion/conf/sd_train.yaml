@@ -144,7 +144,6 @@ model:
       dropout: 0.0
     lossconfig:
       target: torch.nn.Identity
-    capture_cudagraph_iters: ${model.capture_cudagraph_iters}
 
   cond_stage_config:
     _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenMegatronCLIPEmbedder
@@ -157,7 +156,6 @@ model:
     #    version: openai/clip-vit-large-patch14
     #    device: cuda
     #    max_length: 77
-    #    capture_cudagraph_iters: ${model.capture_cudagraph_iters}
 
 
   # miscellaneous
@@ -193,7 +191,7 @@ model:
       synthetic_data_length: 10000
       train:
           dataset_path:
-              - /datasets/coyo/wdinfo.pkl
+              - /datasets/coyo/test.pkl
           augmentations:
             resize_smallest_side: 512
             center_crop_h_w: 512, 512

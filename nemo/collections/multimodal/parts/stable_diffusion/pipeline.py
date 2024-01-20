@@ -14,6 +14,8 @@
 import os
 import pickle
 import time
+from collections import defaultdict
+from itertools import chain
 
 import torch
 from PIL import Image
@@ -25,10 +27,10 @@ from nemo.collections.multimodal.models.text_to_image.stable_diffusion.samplers.
 from nemo.collections.multimodal.parts.stable_diffusion.utils import DataParallelWrapper
 
 
-def encode_prompt(cond_stage_model, prompt, unconditional_guidance_scale, batch_size):
-    c = cond_stage_model.encode(batch_size * [prompt])
+def encode_prompt(cond_stage_model, prompts, unconditional_guidance_scale):
+    c = cond_stage_model.encode(prompts)
     if unconditional_guidance_scale != 1.0:
-        uc = cond_stage_model.encode(batch_size * [""])
+        uc = cond_stage_model.encode(len(prompts) * [""])
     else:
         uc = None
     return c, uc
@@ -73,10 +75,17 @@ def torch_to_numpy(images):
     return numpy_images
 
 
+def pad_with_zeros(cond, u_cond, batch_size):
+    b, *shape = cond.shape
+    filler = torch.zeros(batch_size - b, *shape, device=cond.device)
+    return torch.cat([cond, filler]), torch.cat([u_cond, filler])
+
+
 def pipeline(model, cfg, verbose=True, rng=None):
     # setup default values for inference configs
     unconditional_guidance_scale = cfg.infer.get("unconditional_guidance_scale", 7.5)
-    batch_size = cfg.infer.get('num_images_per_prompt', 1)
+    num_images_per_prompt = cfg.infer.get('num_images_per_prompt', 1)
+    batch_size = cfg.infer.get('batch_size', 1)
     prompts = cfg.infer.get('prompts', [])
     height = cfg.infer.get('height', 512)
     width = cfg.infer.get('width', 512)
@@ -127,10 +136,16 @@ def pipeline(model, cfg, verbose=True, rng=None):
         if isinstance(prompts, str):
             prompts = [prompts]
 
-        for prompt in prompts:
+        multi_prompts = [p for p in prompts for _ in range(num_images_per_prompt)]
+        batched_prompts = [multi_prompts[i : i + batch_size] for i in range(0, len(multi_prompts), batch_size)]
+        # decrease batch_size if the number of imputs is lower than bs in the config
+        batch_size = min(len(batched_prompts[0]), batch_size)
+
+        for batch in batched_prompts:
             tic = time.perf_counter()
             tic_total = tic
-            cond, u_cond = encode_prompt(model.cond_stage_model, prompt, unconditional_guidance_scale, batch_size)
+            cond, u_cond = encode_prompt(model.cond_stage_model, batch, unconditional_guidance_scale,)
+            cond, u_cond = pad_with_zeros(cond, u_cond, batch_size)
             toc = time.perf_counter()
             conditioning_time = toc - tic
 
@@ -138,6 +153,7 @@ def pipeline(model, cfg, verbose=True, rng=None):
             latents = torch.randn(
                 [batch_size, in_channels, height // downsampling_factor, width // downsampling_factor], generator=rng
             ).to(torch.cuda.current_device())
+            assert len(cond) == len(latents), (len(cond), len(latents))
 
             tic = time.perf_counter()
             samples, intermediates = sampler.sample(
@@ -158,6 +174,8 @@ def pipeline(model, cfg, verbose=True, rng=None):
 
             tic = time.perf_counter()
             images = decode_images(model, samples)
+            # remove padding
+            images = images[: len(batch)]
             toc = time.perf_counter()
             decode_time = toc - tic
 
@@ -186,9 +204,13 @@ def pipeline(model, cfg, verbose=True, rng=None):
         if save_to_file:
             os.makedirs(out_path, exist_ok=True)
             if output_type == 'pil':
-                for text_prompt, pils in zip(prompts, output):
-                    for idx, image in enumerate(pils):
-                        image.save(os.path.join(out_path, f'{text_prompt[:50]}_{idx}.png'))
+                prompts = chain.from_iterable(batched_prompts)
+                pils = chain.from_iterable(output)
+                counts = defaultdict(int)
+                for text_prompt, image in zip(prompts, pils):
+                    idx = counts[text_prompt]
+                    counts[text_prompt] += 1
+                    image.save(os.path.join(out_path, f'{text_prompt[:50]}_{idx}.png'))
             else:
                 with open(os.path.join(out_path, 'output.pkl'), 'wb') as f:
                     pickle.dump(output, f)

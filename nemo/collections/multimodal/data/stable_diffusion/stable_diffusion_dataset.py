@@ -183,3 +183,43 @@ def build_train_valid_precached_datasets(
             )
 
     return train_data, val_data
+
+
+def build_train_valid_precached_clip_datasets(model_cfg, consumed_samples):
+    data_cfg = model_cfg.data
+
+    # This function maps data that are tuples to dictionary.
+    def tuple_to_dict(inp):
+        for input in inp:
+            out_dict = dict()
+            out_dict[model_cfg.first_stage_key] = input[0]
+            out_dict[model_cfg.cond_stage_key] = input[1]
+            yield out_dict
+
+    def transform_fn(sample):
+        latents, text_embed = sample["pyd"]["image_embed"], sample["pyd"]['captions_embed']
+        latents = torch.from_numpy(latents)
+        text_embed = torch.from_numpy(text_embed)
+
+        # latents are of shape ([4, 64, 64])
+        return latents, text_embed
+
+    train_data = WebDatasetCommon(
+        dataset_cfg=data_cfg,
+        consumed_samples=consumed_samples,
+        map_fn=transform_fn,
+        compose_fn=tuple_to_dict,
+        is_train=True,
+    )
+
+    val_data = None
+    if data_cfg.get("validation") is not None and data_cfg.validation.get("data_path"):
+        val_data = WebDatasetCommon(
+            dataset_cfg=data_cfg,
+            consumed_samples=consumed_samples,
+            map_fn=transform_fn,
+            compose_fn=tuple_to_dict,
+            is_train=False,
+        )
+
+    return train_data, val_data

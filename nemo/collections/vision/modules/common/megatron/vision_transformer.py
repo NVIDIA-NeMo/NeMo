@@ -36,7 +36,7 @@ except (ImportError, ModuleNotFoundError):
     ModelType = AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
 
 try:
-    from megatron.core import parallel_state
+    from megatron.core import ModelParallelConfig, parallel_state
 
     HAVE_MEGATRON_CORE = True
 
@@ -82,6 +82,16 @@ class DropPath(MegatronModule):
         return output
 
 
+class LayerScale(torch.nn.Module):
+    def __init__(self, dim, init_values=1e-5, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = torch.nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x):
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
+
+
 class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
     """A single transformer layer.
 
@@ -91,7 +101,7 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
 
     def __init__(
         self,
-        config,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         layer_number,
@@ -102,37 +112,48 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
         self_attn_mask_type=AttnMaskType.padding,
         fp32_residual_connection=False,
         precision=16,
-        apply_query_key_layer_scaling=True,
+        apply_query_key_layer_scaling=False,
         kv_channels=None,
         layernorm_epsilon=1e-5,
         hidden_dropout=0.1,
-        bias_dropout_add_fusion=True,
         persist_layer_norm=False,
         bias_activation_fusion=True,
+        bias_dropout_add_fusion=True,
+        masked_softmax_fusion=True,
         openai_gelu=False,
         onnx_safe=False,
-        masked_softmax_fusion=True,
         attention_dropout=0.1,
         ffn_dropout=0.0,
         drop_path_rate=0.0,
+        layerscale=False,
         activation='gelu',
         megatron_legacy=False,
         bias=True,
         chunk_size=64,
         normalization='layernorm',
         transformer_block_type='pre_ln',
+        position_embedding_type='learned_absolute',
+        multi_query_attention=False,
         headscale=False,
         activations_checkpoint_granularity=None,
         normalize_attention_scores=True,
+        num_moe_experts=1,
+        moe_frequency=1,
+        moe_dropout=0.0,
         use_flash_attention=False,
     ):
         kwargs = locals()
         for key in ["self", "__class__"]:
             kwargs.pop(key)
         drop_path_rate = kwargs.pop("drop_path_rate")
+        layerscale = kwargs.pop("layerscale")
         super(ParallelVisionTransformerLayer_, self).__init__(**kwargs)
 
         self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else None
+        self.layerscale = layerscale
+        if self.layerscale:
+            self.post_attention_layerscale = LayerScale(hidden_size, init_values=1e-5)
+            self.post_mlp_layerscale = LayerScale(hidden_size, init_values=1e-5)
 
     def forward(
         self,
@@ -144,8 +165,7 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
         get_key_value=False,
         set_inference_key_value_memory=False,
         inference_max_sequence_len=None,
-        rotary_pos_emb=None,
-        # list of positional embedding tensors, first one self attention, second one and third one are for cross attention (q, k)
+        rotary_pos_emb=None,  # list of positional embedding tensors, first one self attention, second one and third one are for cross attention (q, k)
         self_attention_relative_position_bias=None,
         cross_attention_relative_position_bias=None,
         checkpoint_core_attention=False,
@@ -200,7 +220,14 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
             # different nn.functional routines to account for varying
             # dropout semantics during training and inference phases.
 
-            if self.drop_path is None:
+            if self.is_adapter_available():
+                adapter_1 = self.get_adapter_module(AdapterName.PRE_ATTN_ADAPTER)
+                if adapter_1:
+                    attention_output = (
+                        adapter_1(attention_output) + attention_output
+                    )  # simple adapter call with residual connection
+
+            if self.drop_path is None and not self.layerscale:
                 bias_dropout_add_func = self._get_bias_droput_add_func(
                     transformer_block_type=self.transformer_block_type, position_after='attention'
                 )
@@ -215,8 +242,11 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
                 out = torch.nn.functional.dropout(
                     attention_output + attention_bias, p=self.hidden_dropout, training=self.training
                 )
-                layernorm_input = residual + self.drop_path(out)
-            # print(f"Layer: {self.layer_number} Attention checksum {layernorm_input.sum()}")
+                if self.drop_path is not None:
+                    out = self.drop_path(out)
+                if self.layerscale:
+                    out = self.post_attention_layerscale(out)
+                layernorm_input = residual + out
 
             # Post-LN normalization after residual
             if self.transformer_block_type == 'post_ln':
@@ -283,10 +313,15 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
                 layernorm_input = normalization_output
         # MLP.
         mlp_output, mlp_bias = self.mlp(normalization_output)
+        if self.is_adapter_available():
+            # TODO: (@adithyre) was able to move adapter_2 back to the end of the transformer after ptl 1.7 update.
+            adapter_2 = self.get_adapter_module(AdapterName.POST_ATTN_ADAPTER)
+            if adapter_2:
+                mlp_output = adapter_2(mlp_output) + mlp_output  # simple adapter call with residual connection
 
         residual = layernorm_input
 
-        if self.drop_path is None:
+        if self.drop_path is None and not self.layerscale:
             bias_dropout_add_func = self._get_bias_droput_add_func(
                 transformer_block_type=self.transformer_block_type, position_after='mlp'
             )
@@ -295,7 +330,11 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
 
         else:
             out = torch.nn.functional.dropout(mlp_output + mlp_bias, p=self.hidden_dropout, training=self.training)
-            output = residual + self.drop_path(out)
+            if self.drop_path is not None:
+                out = self.drop_path(out)
+            if self.layerscale:
+                out = self.post_mlp_layerscale(out)
+            output = residual + out
         # print(f"Layer: {self.layer_number} MLP + Dropout + Residual checksum {output.sum()}")
 
         if self.transformer_block_type == 'post_ln':
@@ -349,14 +388,14 @@ class ParallelVisionTransformer(ParallelTransformer):
 
     def __init__(
         self,
-        config,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         num_layers,
         hidden_size,
         ffn_hidden_size,
         num_attention_heads,
-        apply_query_key_layer_scaling=True,
+        apply_query_key_layer_scaling=False,
         kv_channels=None,
         layer_type=LayerType.encoder,  # it can be a list of types or single type
         self_attn_mask_type=AttnMaskType.padding,
@@ -371,6 +410,7 @@ class ParallelVisionTransformer(ParallelTransformer):
         attention_dropout=0.1,
         ffn_dropout=0.0,
         drop_path_rate=0.0,
+        layerscale=False,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
         masked_softmax_fusion=True,
@@ -384,17 +424,34 @@ class ParallelVisionTransformer(ParallelTransformer):
         chunk_size=64,
         normalization='layernorm',
         transformer_block_type='pre_ln',
+        position_embedding_type='learned_absolute',
         headscale=False,
         layer_number_offset=0,  # this is use only for attention norm_factor scaling
         activations_checkpoint_granularity=None,
-        normalize_attention_scores=True,
+        activations_checkpoint_layers_per_pipeline=None,
+        transformer_engine=False,
+        fp8=False,
+        fp8_e4m3=False,
+        fp8_hybrid=False,
+        fp8_margin=0,
+        fp8_interval=1,
+        fp8_amax_history_len=1,
+        fp8_amax_compute_algo='most_recent',
+        reduce_amax=True,
+        use_emha=False,
         ub_tp_comm_overlap=False,
+        normalize_attention_scores=True,
+        multi_query_attention=False,
+        num_moe_experts=1,
+        moe_frequency=1,
+        moe_dropout=0.0,
         use_flash_attention=False,
     ):
         kwargs = locals()
         for key in ["self", "__class__"]:
             kwargs.pop(key)
         self.drop_path_rate = kwargs.pop("drop_path_rate")
+        layerscale = kwargs.pop("layerscale")
         super(ParallelVisionTransformer, self).__init__(**kwargs)
 
         self.num_layers = self.get_num_layers(num_layers)
@@ -431,10 +488,12 @@ class ParallelVisionTransformer(ParallelTransformer):
                 attention_dropout=attention_dropout,
                 ffn_dropout=ffn_dropout,
                 drop_path_rate=self.drop_path_rates[layer_number - 1],
+                layerscale=layerscale,
                 bias_activation_fusion=bias_activation_fusion,
                 bias_dropout_add_fusion=bias_dropout_add_fusion,
                 masked_softmax_fusion=masked_softmax_fusion,
                 persist_layer_norm=persist_layer_norm,
+                position_embedding_type=position_embedding_type,
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
                 activation=activation,
@@ -446,6 +505,9 @@ class ParallelVisionTransformer(ParallelTransformer):
                 headscale=headscale,
                 activations_checkpoint_granularity=activations_checkpoint_granularity,
                 normalize_attention_scores=normalize_attention_scores,
+                num_moe_experts=num_moe_experts,
+                moe_frequency=moe_frequency,
+                moe_dropout=moe_dropout,
                 use_flash_attention=use_flash_attention,
             )
 

@@ -15,16 +15,13 @@ infer:
   seed: 123
   prompts:
     - 'a photo of a sks dog'
-    - 'a photo of a sks dog in the Acropolis'
-    - 'a photo of a sks dog in front of eiffel tower'
-    - 'a photo of sks dog sleeping'
-    - 'a photo of a sks dog riding a bike'
+    - 'a photo of a sks dog in a bucket'
 
 trainer:
   devices: 1
   num_nodes: 1
   accelerator: gpu
-  precision: 16
+  precision: bf16
   logger: False # logger provided by exp_manager
 
 model:

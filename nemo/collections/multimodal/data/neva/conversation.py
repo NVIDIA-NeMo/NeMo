@@ -15,6 +15,18 @@ import dataclasses
 from enum import Enum, auto
 from typing import List
 
+DEFAULT_PAD_TOKEN = "<pad>"
+DEFAULT_BOS_TOKEN = "<extra_id_6>"
+DEFAULT_EOS_TOKEN = "<extra_id_7>"
+DEFAULT_UNK_TOKEN = "<unk>"
+DEFAULT_IMAGE_TOKEN = "<image>"
+DEFAULT_SYSTEM_TOKEN = "<extra_id_0>"
+DEFAULT_SEPARATOR_TOKEN = "<extra_id_1>"
+DEFAULT_LABELS_TOKEN = "<extra_id_2>"
+DEFAULT_IMAGE_PATCH_TOKEN = "<extra_id_3>"
+DEFAULT_IM_START_TOKEN = "<extra_id_4>"
+DEFAULT_IM_END_TOKEN = "<extra_id_5>"
+
 
 class SeparatorStyle(Enum):
     """Different separator style."""
@@ -70,6 +82,8 @@ class Conversation:
                     if type(message) is tuple:
                         message, _, _ = message
                     ret += role + ": " + message + seps[i % 2]
+                    if i % 2 == 1 and i != len(messages) - 1:  # Assistant end
+                        ret += " "
                 else:
                     ret += role + ":"
         elif self.sep_style == SeparatorStyle.LLAMA_2:
@@ -88,7 +102,7 @@ class Conversation:
                         message = wrap_sys(self.system) + message
                     if i % 2 == 0:
                         message = wrap_inst(message)
-                        ret += self.sep + message
+                        ret += self.sep + " " + message
                     else:
                         ret += " " + message + " " + self.sep2
                 else:
@@ -245,8 +259,8 @@ conv_nvgpt = Conversation(
     messages=(),
     offset=0,
     sep_style=SeparatorStyle.NVGPT,
-    sep="<extra_id_1>",
-    sep2="<extra_id_0>System\n",
+    sep=DEFAULT_SEPARATOR_TOKEN,
+    sep2=f"{DEFAULT_SYSTEM_TOKEN}System\n",
 )
 
 conv_vicuna_v0 = Conversation(
@@ -291,7 +305,7 @@ conv_vicuna_v1 = Conversation(
     offset=0,
     sep_style=SeparatorStyle.TWO,
     sep=" ",
-    sep2="<extra_id_7>",
+    sep2=DEFAULT_EOS_TOKEN,
 )
 
 conv_llama_2 = Conversation(
@@ -303,8 +317,8 @@ If a question does not make any sense, or is not factually coherent, explain why
     messages=(),
     offset=0,
     sep_style=SeparatorStyle.LLAMA_2,
-    sep="<extra_id_6>",
-    sep2="<extra_id_7>",
+    sep=DEFAULT_BOS_TOKEN,
+    sep2=DEFAULT_EOS_TOKEN,
 )
 
 conv_llava_llama_2 = Conversation(
@@ -316,8 +330,8 @@ conv_llava_llama_2 = Conversation(
     messages=(),
     offset=0,
     sep_style=SeparatorStyle.LLAMA_2,
-    sep="<extra_id_6>",
-    sep2="<extra_id_7>",
+    sep=DEFAULT_BOS_TOKEN,
+    sep2=DEFAULT_EOS_TOKEN,
 )
 
 conv_llava_plain = Conversation(
@@ -355,7 +369,7 @@ conv_llava_v1 = Conversation(
     offset=0,
     sep_style=SeparatorStyle.TWO,
     sep=" ",
-    sep2="<extra_id_7>",
+    sep2=DEFAULT_EOS_TOKEN,
 )
 
 conv_llava_v1_mmtag = Conversation(
@@ -367,7 +381,7 @@ conv_llava_v1_mmtag = Conversation(
     offset=0,
     sep_style=SeparatorStyle.TWO,
     sep=" ",
-    sep2="<extra_id_7>",
+    sep2=DEFAULT_EOS_TOKEN,
     version="v1_mmtag",
 )
 

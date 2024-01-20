@@ -117,6 +117,8 @@ class AbstractBaseSampler(ABC):
         # this has to come in the same format as the conditioning, # e.g. as encoded tokens, ...
         **kwargs,
     ):
+        self.verbose = verbose
+
         if conditioning is not None:
             if isinstance(conditioning, dict):
                 ctmp = conditioning[list(conditioning.keys())[0]]
@@ -132,7 +134,8 @@ class AbstractBaseSampler(ABC):
         # sampling
         C, H, W = shape
         size = (batch_size, C, H, W)
-        print(f"Data shape for sampling is {size}, eta {eta}")
+        if self.verbose:
+            print(f"Data shape for sampling is {size}, eta {eta}")
 
         if self.sampler is Sampler.DPM:
             return self.dpm_sampling_fn(
@@ -223,8 +226,13 @@ class AbstractBaseSampler(ABC):
         else:
             time_range = reversed(range(0, timesteps)) if ddim_use_original_steps else np.flip(timesteps)
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
-        print(f"Running {self.sampler.name} Sampling with {total_steps} timesteps")
-        iterator = tqdm(time_range, desc=f"{self.sampler.name} Sampler", total=total_steps)
+
+        if self.verbose:
+            print(f"Running {self.sampler.name} Sampling with {total_steps} timesteps")
+            iterator = tqdm(time_range, desc=f"{self.sampler.name} Sampler", total=total_steps)
+        else:
+            iterator = time_range
+
         old_eps = []
         for i, step in enumerate(iterator):
             index = total_steps - i - 1

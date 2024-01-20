@@ -22,6 +22,11 @@ from torch import einsum, nn
 from torch._dynamo import disable
 
 from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util import checkpoint
+from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
+    AdapterName,
+    ParallelLinearAdapterConfig,
+)
+from nemo.core import adapter_mixins
 
 
 def check_cuda():
@@ -82,7 +87,7 @@ def init_(tensor):
 class GEGLU(nn.Module):
     def __init__(self, dim_in, dim_out):
         super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out * 2)
+        self.proj = LinearWrapper(dim_in, dim_out * 2)
 
     def forward(self, x):
         x, gate = self.proj(x).chunk(2, dim=-1)
@@ -94,9 +99,9 @@ class FeedForward(nn.Module):
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = default(dim_out, dim)
-        project_in = nn.Sequential(nn.Linear(dim, inner_dim), nn.GELU()) if not glu else GEGLU(dim, inner_dim)
+        project_in = nn.Sequential(LinearWrapper(dim, inner_dim), nn.GELU()) if not glu else GEGLU(dim, inner_dim)
 
-        self.net = nn.Sequential(project_in, nn.Dropout(dropout), nn.Linear(inner_dim, dim_out))
+        self.net = nn.Sequential(project_in, nn.Dropout(dropout), LinearWrapper(inner_dim, dim_out))
 
     def forward(self, x):
         return self.net(x)
@@ -184,10 +189,45 @@ def rearrange_heads_inner(t: torch.Tensor, h: int) -> torch.Tensor:
     return t.view(b, h, n, -1).transpose(1, 2).reshape(b, n, -1)
 
 
+class LinearWrapper(nn.Linear, adapter_mixins.AdapterModuleMixin):
+    def __init__(self, in_features, out_features, bias=True, lora_network_alpha=None):
+        super().__init__(in_features, out_features, bias)
+        self.set_accepted_adapter_types([ParallelLinearAdapterConfig._target_])
+        self.lora_network_alpha = lora_network_alpha
+
+    def forward(self, x):
+        mixed_x = super().forward(x)
+        if self.is_adapter_available():
+            lora_linear_adapter = self.get_adapter_module(AdapterName.PARALLEL_LINEAR_ADAPTER)
+            lora_mixed_x = lora_linear_adapter(x)
+            # This value has the same meaning as the `--network_alpha` option in the kohya-ss trainer script.
+            # See https://github.com/darkstorm2150/sd-scripts/blob/main/docs/train_network_README-en.md#execute-learning
+            if self.lora_network_alpha:
+                mixed_x = mixed_x + lora_mixed_x * (self.lora_network_alpha / lora_linear_adapter.dim)
+            else:
+                mixed_x = mixed_x + lora_mixed_x
+        return mixed_x
+
+    def add_adapter(self, name, cfg, **kwargs):
+        self.lora_network_alpha = cfg.network_alpha
+        kwargs = {}
+        adapter_mixins.AdapterModuleMixin.add_adapter(self, name, cfg, **kwargs)
+
+
 class CrossAttention(nn.Module):
-    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0, use_flash_attention=False):
+    def __init__(
+        self,
+        query_dim,
+        context_dim=None,
+        heads=8,
+        dim_head=64,
+        dropout=0.0,
+        use_flash_attention=False,
+        lora_network_alpha=None,
+    ):
         super().__init__()
-        inner_dim = dim_head * heads
+
+        self.inner_dim = dim_head * heads
         context_dim = default(context_dim, query_dim)
         # make attention part be aware of self-attention/cross-attention
         self.context_dim = context_dim
@@ -197,11 +237,13 @@ class CrossAttention(nn.Module):
         self.scale = dim_head ** -0.5
         self.heads = heads
 
-        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
-        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_q = LinearWrapper(query_dim, self.inner_dim, bias=False, lora_network_alpha=lora_network_alpha)
+        self.to_k = LinearWrapper(context_dim, self.inner_dim, bias=False, lora_network_alpha=lora_network_alpha)
+        self.to_v = LinearWrapper(context_dim, self.inner_dim, bias=False, lora_network_alpha=lora_network_alpha)
 
-        self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
+        self.to_out = nn.Sequential(
+            LinearWrapper(self.inner_dim, query_dim, lora_network_alpha=lora_network_alpha), nn.Dropout(dropout)
+        )
         self.use_flash_attention = use_flash_attention
 
         if dim_head <= 160 and (dim_head % 8) == 0 and flash_attn_installed:
@@ -292,6 +334,7 @@ class BasicTransformerBlock(nn.Module):
         use_checkpoint=False,
         use_flash_attention=False,
         disable_self_attn=False,
+        lora_network_alpha=None,
     ):
         super().__init__()
         self.disable_self_attn = disable_self_attn
@@ -302,6 +345,7 @@ class BasicTransformerBlock(nn.Module):
             dropout=dropout,
             use_flash_attention=use_flash_attention,
             context_dim=context_dim if self.disable_self_attn else None,
+            lora_network_alpha=lora_network_alpha,
         )  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = CrossAttention(
@@ -311,6 +355,7 @@ class BasicTransformerBlock(nn.Module):
             dim_head=d_head,
             dropout=dropout,
             use_flash_attention=use_flash_attention,
+            lora_network_alpha=lora_network_alpha,
         )  # is self-attn if context is none
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
@@ -351,6 +396,7 @@ class SpatialTransformer(nn.Module):
         use_linear=False,
         use_checkpoint=False,
         use_flash_attention=False,
+        lora_network_alpha=None,
     ):
         super().__init__()
         if exists(context_dim) and not isinstance(context_dim, list):
@@ -375,6 +421,7 @@ class SpatialTransformer(nn.Module):
                     use_checkpoint=use_checkpoint,
                     use_flash_attention=use_flash_attention,
                     disable_self_attn=disable_self_attn,
+                    lora_network_alpha=lora_network_alpha,
                 )
                 for d in range(depth)
             ]

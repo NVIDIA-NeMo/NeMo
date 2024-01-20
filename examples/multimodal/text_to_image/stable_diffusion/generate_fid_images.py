@@ -74,7 +74,7 @@ def main(cfg):
         model_cfg.unet_config.use_flash_attention = False
         model_cfg.unet_config.from_pretrained = None
         model_cfg.first_stage_config.from_pretrained = None
-        model_cfg.global_batch_size = model_cfg.micro_batch_size * ntasks_per_node
+        model_cfg.global_batch_size = cfg.infer.batch_size * ntasks_per_node
 
     # Set up the trainer and model for inference
     trainer, megatron_diffusion_model = setup_trainer_and_model_for_inference(
@@ -84,13 +84,12 @@ def main(cfg):
     model.cuda().eval()
 
     # Generate images using the model and save them
-    for i, prompt in enumerate(input):
-        cfg.infer.prompts = [prompt]
-        rng = torch.Generator().manual_seed(cfg.infer.seed + local_task_id * 10 + node_id_per_cfg * 100 + i * 1000)
-        output = pipeline(model, cfg, rng=rng)
-        for image in output[0]:
-            image_num = i + partition_size_per_node * node_id_per_cfg + partition_size_per_task * local_task_id
-            image.save(os.path.join(save_path, f'image{image_num:06d}.png'))
+    cfg.infer.prompts = input
+    rng = torch.Generator().manual_seed(cfg.infer.seed + local_task_id * 10 + node_id_per_cfg * 100)
+    output = pipeline(model, cfg, rng=rng)
+    for i, image in enumerate(img for batch in output for img in batch):
+        image_num = i + partition_size_per_node * node_id_per_cfg + partition_size_per_task * local_task_id
+        image.save(os.path.join(save_path, f'image{image_num:06d}.png'))
 
 
 if __name__ == "__main__":

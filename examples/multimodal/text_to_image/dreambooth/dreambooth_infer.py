@@ -28,7 +28,9 @@ def main(cfg):
         model_cfg.unet_config.use_flash_attention = False
         model_cfg.unet_config.from_pretrained = None
         model_cfg.first_stage_config.from_pretrained = None
-        model_cfg.target = 'nemo.collections.multimodal.models.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion'
+        model_cfg.target = (
+            'nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion'
+        )
 
     trainer, megatron_diffusion_model = setup_trainer_and_model_for_inference(
         model_provider=MegatronLatentDiffusion, cfg=cfg, model_cfg_modifier=model_cfg_modifier

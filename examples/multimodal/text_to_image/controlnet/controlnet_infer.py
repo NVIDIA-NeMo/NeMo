@@ -20,7 +20,6 @@ import einops
 import torch
 from PIL import Image
 
-from nemo.collections.multimodal.models.text_to_image.controlnet import get_preprocessing_function
 from nemo.collections.multimodal.models.text_to_image.controlnet.controlnet import MegatronControlNet
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.samplers.ddim import DDIMSampler
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.samplers.plms import PLMSSampler
@@ -30,10 +29,6 @@ from nemo.core.config import hydra_runner
 
 def get_control_input(image_path, batch_size, hint_image_size, control_image_preprocess=None):
     image = cv2.imread(image_path)
-    if control_image_preprocess:
-        # More applications will be supported here
-        process = get_preprocessing_function(control_image_preprocess)
-        image = process(image)
     image = cv2.resize(image, (hint_image_size, hint_image_size))
     control = torch.from_numpy(image).float() / 255.0
     control = torch.stack([control for _ in range(batch_size)], dim=0)

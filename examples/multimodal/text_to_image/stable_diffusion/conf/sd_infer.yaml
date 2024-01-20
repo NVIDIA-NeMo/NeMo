@@ -3,6 +3,7 @@ name: stable-diffusion-train
 infer:
   unconditional_guidance_scale: 7.5
   num_images_per_prompt: 4
+  batch_size: 8
   height: 512
   width: 512
   down_factor: 8

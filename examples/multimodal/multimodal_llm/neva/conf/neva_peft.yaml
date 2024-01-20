@@ -209,7 +209,7 @@ model:
 
   optim:
     name: fused_adam
-    lr: 2e-5
+    lr: 2e-4
     weight_decay: 0.
     betas:
       - 0.9

@@ -20,15 +20,19 @@ from pytorch_lightning import Trainer
 from torch._inductor import config as inductor_config
 
 from nemo.collections.multimodal.data.dreambooth.dreambooth_dataset import DreamBoothDataset
+from nemo.collections.multimodal.modules.stable_diffusion.attention import LinearWrapper
 from nemo.collections.multimodal.modules.stable_diffusion.distributions.distributions import (
     DiagonalGaussianDistribution,
 )
+from nemo.collections.multimodal.modules.stable_diffusion.encoders.modules import LoraWrapper
 from nemo.collections.multimodal.parts.utils import randn_like
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import MegatronPretrainingRandomSampler
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
+from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.common import Serialization
+from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 from nemo.utils import logging
 
 try:
@@ -124,8 +128,11 @@ class DreamBooth(torch.nn.Module, Serialization):
         model = DreamBooth.from_config_dict(cfg)
         if self.train_text_encoder:
             self.text_encoder = model.train()
-            for param in self.text_encoder.parameters():
-                param.requires_grad = True
+            if (not hasattr(model, 'lora_layers')) or len(
+                model.lora_layers
+            ) == 0:  # if no lora, train all the parameters
+                for param in self.text_encoder.parameters():
+                    param.requires_grad = True
         else:
             self.text_encoder = model.eval()
             self.text_encoder.train = disabled_train
@@ -187,7 +194,7 @@ class DreamBooth(torch.nn.Module, Serialization):
         pass
 
 
-class MegatronDreamBooth(MegatronBaseModel):
+class MegatronDreamBooth(NLPAdapterModelMixin, MegatronBaseModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         if not HAVE_APEX:
             raise ImportError(
@@ -447,6 +454,7 @@ class MegatronDreamBooth(MegatronBaseModel):
         self._micro_batch_size = self.cfg.micro_batch_size
 
         self.setup_training_data(self.cfg.data)
+        self.setup_complete = True
 
     def setup_training_data(self, cfg):
         if self.cfg.with_prior_preservation:
@@ -637,3 +645,19 @@ class MegatronDreamBooth(MegatronBaseModel):
         finally:
             cls._set_model_restore_state(is_being_restored=False)
         return checkpoint
+
+    def _check_and_add_adapter(self, name, module, peft_name, peft_cfg, name_key_to_mcore_mixins=None):
+        if isinstance(module, AdapterModuleMixin):
+            if isinstance(module, LinearWrapper):
+                peft_cfg.in_features, peft_cfg.out_features = module.in_features, module.out_features
+            elif isinstance(module, LoraWrapper):
+                peft_cfg.in_features, peft_cfg.out_features = module.in_features, module.out_features
+            else:
+                return
+            if model_utils.import_class_by_path(peft_cfg._target_) in module.get_accepted_adapter_types():
+                module.add_adapter(
+                    name=peft_name,
+                    cfg=peft_cfg,
+                    base_model_cfg=self.cfg,
+                    model_parallel_config=self.model_parallel_config,
+                )

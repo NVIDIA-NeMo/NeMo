@@ -20,6 +20,7 @@ from omegaconf.omegaconf import OmegaConf
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm import MegatronLatentDiffusion
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
+from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -55,28 +56,26 @@ def main(cfg) -> None:
 
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    if cfg.model.capture_cudagraph_iters >= 0:
-        # Required by CUDA graph with DDP
-        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "0"
-
-        # Hack to avoid CUDA graph issue with AMP, PyTorch Lightning doesn't support
-        # changing autocast arguments for now.
-        # https://github.com/pytorch/pytorch/blob/v1.13.1/torch/cuda/graphs.py#L234
-        def amp_autocast_init(self, *args, **kwargs):
-            if "cache_enabled" not in kwargs:
-                kwargs["cache_enabled"] = False
-            return self.__orig_init__(*args, **kwargs)
-
-        torch.cuda.amp.autocast.__orig_init__ = torch.cuda.amp.autocast.__init__
-        torch.cuda.amp.autocast.__init__ = amp_autocast_init
-        torch.autocast.__orig_init__ = torch.autocast.__init__
-        torch.autocast.__init__ = amp_autocast_init
-
     trainer = MegatronStableDiffusionTrainerBuilder(cfg).create_trainer()
 
     exp_manager(trainer, cfg.exp_manager)
 
     model = MegatronLatentDiffusion(cfg.model, trainer)
+
+    if cfg.model.get('peft', None):
+
+        peft_cfg_cls = PEFT_CONFIG_MAP[cfg.model.peft.peft_scheme]
+
+        if cfg.model.peft.restore_from_path is not None:
+            # initialize peft weights from a checkpoint instead of randomly
+            # This is not the same as resume training because optimizer states are not restored.
+            logging.info("PEFT Weights will be loaded from", cfg.model.peft.restore_from_path)
+            model.load_adapters(cfg.model.peft.restore_from_path, peft_cfg_cls(model_cfg))
+        elif peft_cfg_cls is not None:
+            logging.info("Adding adapter weights to the model for PEFT")
+            model.add_adapter(peft_cfg_cls(cfg.model))
+        else:
+            logging.info(f"Running full finetuning since no peft scheme is given.\n{model.summarize()}")
 
     trainer.fit(model)
 

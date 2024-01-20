@@ -73,6 +73,16 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
 
+
+try:
+    import amp_C
+
+    HAVE_AMP_C = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_AMP_C = False
+
 try:
     from megatron.core import dist_checkpointing, parallel_state
     from megatron.core.dist_checkpointing.dict_utils import dict_list_map_outplace
@@ -930,7 +940,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         # Modify state key for Dreambooth inference
         if (
             conf.get('target')
-            == 'nemo.collections.multimodal.models.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion'
+            == 'nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion'
         ):
             new_state_dict = {}
             for key in state_dict.keys():
@@ -1140,7 +1150,13 @@ class GradScaler(torch.cuda.amp.GradScaler):
         )
         self.optimizer_update_skipped: Optional[bool] = None
         self.hysteresis = hysteresis
-        self._hysteresis_tracker = self.hysteresis
+
+    def _lazy_init_scale_growth_tracker(self, dev):
+        super()._lazy_init_scale_growth_tracker(dev)
+        if HAVE_AMP_C:
+            self._hysteresis_tracker = torch.tensor([self.hysteresis], dtype=torch.int32, device=dev)
+        else:
+            self._hysteresis_tracker = self.hysteresis
 
     def _unscale_grads_(self, optimizer, *args):
         if getattr(optimizer, "_custom_amp_unscale_grads", False):
@@ -1150,14 +1166,17 @@ class GradScaler(torch.cuda.amp.GradScaler):
 
     def _maybe_opt_step(self, optimizer, optimizer_state, *args, **kwargs):
         retval = None
-        found_inf = torch.cuda.FloatTensor([sum(v.item() for v in optimizer_state["found_inf_per_device"].values())])
+        found_infs = tuple(optimizer_state["found_inf_per_device"].values())
+        found_inf = torch.stack(found_infs).sum(dim=0, keepdim=True)
 
         # Update across all model parallel instances.
         torch.distributed.all_reduce(
             found_inf, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_model_parallel_group()
         )
 
-        if found_inf.item() == 0:
+        self._found_infs_cpu = found_inf.item()
+        self._found_infs_cuda = found_inf
+        if self._found_infs_cpu == 0:
             retval = optimizer.step(*args, **kwargs)
             self.optimizer_update_skipped = False
         else:
@@ -1213,11 +1232,38 @@ class GradScaler(torch.cuda.amp.GradScaler):
                     )
                     found_inf_combined += found_inf
 
-            if found_inf_combined > 0:
-                self._hysteresis_tracker -= 1
-                if self._hysteresis_tracker <= 0:
-                    # When hysteresis becomes zero, follow the native grad scale update rule.
-                    # Increase scale and reset growth tracker
+            if HAVE_AMP_C:
+                amp_C.update_scale_hysteresis(
+                    _scale,
+                    _growth_tracker,
+                    self._hysteresis_tracker,
+                    found_inf_combined,
+                    self._growth_factor,
+                    self._backoff_factor,
+                    self._growth_interval,
+                    self.hysteresis,
+                )
+            else:
+                if found_inf_combined > 0:
+                    self._hysteresis_tracker -= 1
+                    if self._hysteresis_tracker <= 0:
+                        # When hysteresis becomes zero, follow the native grad scale update rule.
+                        # Increase scale and reset growth tracker
+                        torch._amp_update_scale_(
+                            _scale,
+                            _growth_tracker,
+                            found_inf_combined,
+                            self._growth_factor,
+                            self._backoff_factor,
+                            self._growth_interval,
+                        )
+                    else:
+                        # Only reset the growth tracker when hysteresis is larger than zero
+                        _growth_tracker.fill_(0.0)
+                else:
+                    # When no inf found, follow the native grad scale update rule.
+                    # Increment growth_tracker, update scale when growth tracker reaches the interval, and
+                    # reset the hysteresis tracker.
                     torch._amp_update_scale_(
                         _scale,
                         _growth_tracker,
@@ -1226,22 +1272,7 @@ class GradScaler(torch.cuda.amp.GradScaler):
                         self._backoff_factor,
                         self._growth_interval,
                     )
-                else:
-                    # Only reset the growth tracker when hysteresis is larger than zero
-                    _growth_tracker.fill_(0.0)
-            else:
-                # When no inf found, follow the native grad scale update rule.
-                # Increment growth_tracker, update scale when growth tracker reaches the interval, and
-                # reset the hysteresis tracker.
-                torch._amp_update_scale_(
-                    _scale,
-                    _growth_tracker,
-                    found_inf_combined,
-                    self._growth_factor,
-                    self._backoff_factor,
-                    self._growth_interval,
-                )
-                self._hysteresis_tracker = self.hysteresis
+                    self._hysteresis_tracker = self.hysteresis
 
         # To prepare for next iteration, clear the data collected from optimizers this iteration.
         self._per_optimizer_states = defaultdict(torch.cuda.amp.grad_scaler._refresh_per_optimizer_state)
@@ -1288,7 +1319,10 @@ class GradScaler(torch.cuda.amp.GradScaler):
         if "_hysterisis_tracker" in state_dict:
             self._hysteresis_tracker = state_dict["_hysterisis_tracker"]
         else:
-            self._hysteresis_tracker = 1
+            if HAVE_AMP_C:
+                self._hysteresis_tracker = torch.tensor([1], dtype=torch.int32, device="cuda")
+            else:
+                self._hysteresis_tracker = 1
 
 
 class MegatronHalfPrecisionPlugin(MixedPrecisionPlugin):

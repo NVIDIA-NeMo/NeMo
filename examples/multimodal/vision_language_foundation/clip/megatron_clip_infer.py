@@ -46,11 +46,11 @@ def main(cfg) -> None:
     )
 
     if model.cfg.get("megatron_amp_O2", False):
-        vision_encoder = model.model.module.vision_encoder
-        text_encoder = model.model.module.text_encoder
+        vision_encoder = model.model.module.vision_encoder.eval()
+        text_encoder = model.model.module.text_encoder.eval()
     else:
-        vision_encoder = model.model.vision_encoder
-        text_encoder = model.model.text_encoder
+        vision_encoder = model.model.vision_encoder.eval()
+        text_encoder = model.model.text_encoder.eval()
 
     val_image_transform, text_transform = get_preprocess_fns(model.cfg, model.tokenizer, is_train=False,)
 

@@ -470,6 +470,7 @@ class UNetModel(nn.Module):
         # It must be specified when from pretrained is not None. It indicates loading unet from NeMo trained ckpt or HF
         use_flash_attention: bool = False,
         enable_amp_o2_fp16: bool = False,
+        lora_network_alpha=None,
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -567,6 +568,7 @@ class UNetModel(nn.Module):
                             use_linear=use_linear_in_transformer,
                             use_checkpoint=use_checkpoint,
                             use_flash_attention=use_flash_attention,
+                            lora_network_alpha=lora_network_alpha,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -631,6 +633,7 @@ class UNetModel(nn.Module):
                 use_linear=use_linear_in_transformer,
                 use_checkpoint=use_checkpoint,
                 use_flash_attention=use_flash_attention,
+                lora_network_alpha=lora_network_alpha,
             ),
             ResBlock(
                 ch,
@@ -687,6 +690,7 @@ class UNetModel(nn.Module):
                             use_linear=use_linear_in_transformer,
                             use_checkpoint=use_checkpoint,
                             use_flash_attention=use_flash_attention,
+                            lora_network_alpha=lora_network_alpha,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -722,7 +726,13 @@ class UNetModel(nn.Module):
             )
 
         if from_pretrained is not None:
-            state_dict = torch.load(from_pretrained, map_location='cpu')
+            if from_pretrained.endswith('safetensors'):
+                from safetensors.torch import load_file as load_safetensors
+
+                state_dict = load_safetensors(from_pretrained)
+            else:
+                state_dict = torch.load(from_pretrained, map_location='cpu')
+
             if 'state_dict' in state_dict.keys():
                 state_dict = state_dict['state_dict']
             missing_key, unexpected_keys, _, _ = self._load_pretrained_model(state_dict, from_NeMo=from_NeMo)
@@ -854,10 +864,10 @@ class UNetModel(nn.Module):
         return res_dict
 
     def _load_pretrained_model(self, state_dict, ignore_mismatched_sizes=False, from_NeMo=False):
-        if from_NeMo:
-            state_dict = self._strip_unet_key_prefix(state_dict)
-        else:
+        state_dict = self._strip_unet_key_prefix(state_dict)
+        if not from_NeMo:
             state_dict = self._state_key_mapping(state_dict)
+
         model_state_dict = self.state_dict()
         loaded_keys = [k for k in state_dict.keys()]
         expected_keys = list(model_state_dict.keys())
@@ -912,14 +922,16 @@ class UNetModel(nn.Module):
         for key_, value_ in state_dict.items():
             if key_.startswith('model.diffusion_model'):
                 re_state_dict[key_.replace('model.diffusion_model.', '')] = value_
-            if key_.startswith('model.model.diffusion_model'):
+            elif key_.startswith('model.model.diffusion_model'):
                 re_state_dict[key_.replace('model.model.diffusion_model.', '')] = value_
-            if key_.startswith('model._orig_mod.diffusion_model.'):
+            elif key_.startswith('model._orig_mod.diffusion_model.'):
                 re_state_dict[key_.replace('model._orig_mod.diffusion_model.', '')] = value_
-            if key_.startswith('model.model._orig_mod.diffusion_model.'):
+            elif key_.startswith('model.model._orig_mod.diffusion_model.'):
                 re_state_dict[key_.replace('model.model._orig_mod.diffusion_model.', '')] = value_
-            if key_.startswith('model.model.diffusion_model._orig_mod.'):
+            elif key_.startswith('model.model.diffusion_model._orig_mod.'):
                 re_state_dict[key_.replace('model.model.diffusion_model._orig_mod.', '')] = value_
+            else:
+                re_state_dict[key_] = value_
         return re_state_dict
 
     def _load_state_dict_into_model(self, state_dict):

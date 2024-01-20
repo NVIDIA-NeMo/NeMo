@@ -10,7 +10,7 @@ Model Classes
     :members: __init__, configure_optimizers
 
 
-.. autoclass:: nemo.collections.multimodal.models.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion
+.. autoclass:: nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion
     :show-inheritance:
     :no-members:
     :members: __init__, training_step, validation_step, setup, build_train_valid_test_datasets
@@ -49,7 +49,7 @@ Modules
     :show-inheritance:
     :no-members:
 
-.. autoclass:: nemo.collections.multimodal.models.stable_diffusion.ldm.autoencoder.AutoencoderKL
+.. autoclass:: nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoencoder.AutoencoderKL
     :show-inheritance:
     :no-members:
     :members: __init__, encode, decode

@@ -18,7 +18,8 @@ Script to convert HuggingFace LLaVA checkpoints into .nemo file.
     python convert_hf_llava_to_neva.py \
      --in-file <path_to_hf_checkpoints_folder> \
      --out-file <path_to_output_nemo_file> \
-     --tokenizer-model <path_to_sp_tokenizer_model>
+     --tokenizer-model <path_to_sp_tokenizer_model> \
+     --conv-template llama_2 # nvgpt, llama_2, v1 (vicuna)
 """
 
 import os
@@ -49,6 +50,13 @@ def get_args():
         "--in-file", type=str, default=None, required=True, help="Path to Huggingface LLaMA checkpoints",
     )
     parser.add_argument("--out-file", type=str, default=None, required=True, help="Path to output .nemo file.")
+    parser.add_argument(
+        "--conv-template",
+        type=str,
+        default="llama_2",
+        required=False,
+        help="Conversation template: nvgpt, llama_2, v1 (vicuna)",
+    )
     parser.add_argument(
         "--tokenizer-model", type=str, default=None, required=False, help="Path to sentencepiece tokenizer model."
     )
@@ -121,6 +129,8 @@ def load_config(args, llava_config):
         nemo_config.num_query_groups = llava_config['num_key_value_heads']
     nemo_config.use_cpu_initialization = True
     nemo_config.activation = 'fast-swiglu'
+    nemo_config.data.conv_template = args.conv_template
+    nemo_config.mm_cfg.model_type = args.conv_template
     if args.tokenizer_model is None:
         nemo_config.tokenizer.model = llava_config['tokenizer_model']
     else:

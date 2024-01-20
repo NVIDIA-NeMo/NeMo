@@ -108,7 +108,7 @@ Adjust model parallelism with:
     --target_tensor_model_parallel_size=??? \
     --pipeline_model_parallel_size=??? \
     --target_pipeline_model_parallel_size=??? \
-    --model_class="nemo.collections.multimodal.models.neva.neva_model.MegatronNevaModel" \
+    --model_class="nemo.collections.multimodal.models.multimodal_llm.neva.neva_model.MegatronNevaModel" \
     --precision=32 \
     --tokenizer_model_path=/path/to/tokenizer.model \
     --tp_conversion_only

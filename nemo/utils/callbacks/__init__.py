@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.utils.callbacks.cuda_graph import CUDAGraphCallback
 from nemo.utils.callbacks.nemo_model_checkpoint import NeMoModelCheckpoint
 from nemo.utils.callbacks.preemption import PreemptionCallback

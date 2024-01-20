@@ -32,6 +32,7 @@ infer:
   out_path: ${fid.save_path}
   seed: 123
   prompts:
+  batch_size: 8
 
 trainer:
   devices: ${fid.ntasks_per_node}

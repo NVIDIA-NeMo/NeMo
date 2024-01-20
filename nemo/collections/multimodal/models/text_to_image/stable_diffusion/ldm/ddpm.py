@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import itertools
+import os
+import time
 from functools import partial
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pytorch_lightning as pl
@@ -31,8 +33,10 @@ from torch._inductor import config as inductor_config
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
+from nemo.collections.multimodal.data.common.utils import get_collate_fn
 from nemo.collections.multimodal.data.stable_diffusion.stable_diffusion_dataset import (
     build_train_valid_datasets,
+    build_train_valid_precached_clip_datasets,
     build_train_valid_precached_datasets,
 )
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoencoder import (
@@ -41,6 +45,7 @@ from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoe
     VQModelInterface,
 )
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.samplers.ddim import DDIMSampler
+from nemo.collections.multimodal.modules.stable_diffusion.attention import LinearWrapper
 from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util import (
     extract_into_tensor,
     make_beta_schedule,
@@ -50,6 +55,7 @@ from nemo.collections.multimodal.modules.stable_diffusion.distributions.distribu
     DiagonalGaussianDistribution,
     normal_kl,
 )
+from nemo.collections.multimodal.modules.stable_diffusion.encoders.modules import LoraWrapper
 from nemo.collections.multimodal.parts.stable_diffusion.utils import (
     count_params,
     default,
@@ -62,9 +68,12 @@ from nemo.collections.multimodal.parts.stable_diffusion.utils import (
 from nemo.collections.multimodal.parts.utils import randn_like
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
+from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
+from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP, PEFTConfig
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.common import Serialization
-from nemo.utils import logging
+from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
+from nemo.utils import logging, model_utils
 
 try:
     from apex import amp
@@ -127,13 +136,7 @@ class DDPM(torch.nn.Module):
         self.channels = cfg.channels
         self.channels_last = cfg.get("channels_last", False)
         self.use_positional_encodings = cfg.use_positional_encodings
-        self.model = DiffusionWrapper(
-            cfg.unet_config,
-            cfg.conditioning_key,
-            cfg.inductor,
-            cfg.inductor_cudagraphs,
-            cfg.get("capture_cudagraph_iters", -1),
-        )
+        self.model = DiffusionWrapper(cfg.unet_config, cfg.conditioning_key, cfg.inductor, cfg.inductor_cudagraphs)
         self.model_type = None
         count_params(self.model, verbose=True)
 
@@ -157,7 +160,13 @@ class DDPM(torch.nn.Module):
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
 
-        self.rng = torch.Generator(device=torch.cuda.current_device(),)
+        cuda_graph_enabled = cfg.get("capture_cudagraph_iters", -1) >= 0
+        if not cuda_graph_enabled:
+            logging.info("Use custom random generator")
+            self.rng = torch.Generator(device=torch.cuda.current_device(),)
+        else:
+            logging.info("Use system random generator since CUDA graph enabled")
+            self.rng = None
 
     def register_schedule(
         self,
@@ -229,7 +238,9 @@ class DDPM(torch.nn.Module):
         self.register_buffer('lvlb_weights', lvlb_weights, persistent=False)
         assert not torch.isnan(self.lvlb_weights).all()
 
-    def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
+    def init_from_ckpt(
+        self, path, ignore_keys=list(), only_model=False, load_vae=True, load_unet=True, load_encoder=True,
+    ):
         pl_sd = torch.load(path, map_location="cpu")
         if "state_dict" in list(pl_sd.keys()):
             pl_sd = pl_sd["state_dict"]
@@ -246,12 +257,45 @@ class DDPM(torch.nn.Module):
                 new_k = new_k.lstrip("model.")
             sd[new_k] = v
 
+        logging.info(f"Loading {path}")
+        logging.info(f"It has {len(sd)} entries")
+        logging.info(f"Existing model has {len(self.state_dict())} entries")
+
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:
                 if k.startswith(ik):
-                    logging.info("Deleting key {} from state_dict.".format(k))
+                    logging.info("Deleting ignored key {} from state_dict.".format(k))
                     del sd[k]
+
+        if not load_vae:
+            deleted = 0
+            keys = list(sd.keys())
+            for k in keys:
+                if k.startswith("first_stage_model"):
+                    deleted += 1
+                    del sd[k]
+            logging.info(f"Deleted {deleted} keys from `first_stage_model` state_dict.")
+
+        if not load_encoder:
+            deleted = 0
+            keys = list(sd.keys())
+            for k in keys:
+                if k.startswith("cond_stage_model"):
+                    deleted += 1
+                    logging.info("Deleting ignored key {} from state_dict.".format(k))
+                    del sd[k]
+            logging.info(f"Deleted {deleted} keys from `cond_stage_model` state_dict.")
+
+        if not load_unet:
+            deleted = 0
+            keys = list(sd.keys())
+            for k in keys:
+                if k.startswith("model.diffusion_model"):
+                    deleted += 1
+                    del sd[k]
+            logging.info(f"Deleted {deleted} keys from `cond_stage_model` state_dict.")
+
         missing, unexpected = (
             self.load_state_dict(sd, strict=False) if not only_model else self.model.load_state_dict(sd, strict=False)
         )
@@ -513,7 +557,13 @@ class LatentDiffusion(DDPM, Serialization):
 
         self.restarted_from_ckpt = False
         if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys)
+            load_vae = True if cfg.load_vae is None else cfg.load_vae
+            load_unet = True if cfg.load_unet is None else cfg.load_unet
+            load_encoder = True if cfg.load_encoder is None else cfg.load_encoder
+
+            self.init_from_ckpt(
+                ckpt_path, ignore_keys, load_vae=load_vae, load_unet=load_unet, load_encoder=load_encoder,
+            )
             self.restarted_from_ckpt = True
 
         if self.channels_last:
@@ -725,7 +775,13 @@ class LatentDiffusion(DDPM, Serialization):
         if self.first_stage_key.endswith('encoded'):
             gaussian_parameters = batch[self.first_stage_key]
             encoder_posterior = DiagonalGaussianDistribution(gaussian_parameters)
+        elif self.first_stage_key.endswith('moments'):
+            # Loading distribution from disk and sampling encoded
+            distribution = batch[self.first_stage_key]  # torch.size([3, 1, 8, 64, 64])
+            distribution = torch.squeeze(distribution, dim=1)
+            encoder_posterior = DiagonalGaussianDistribution(distribution)
         else:
+            # Loading images from disk and encoding them
             x = super().get_input(batch, k)
             if bs is not None:
                 x = x[:bs]
@@ -1597,7 +1653,7 @@ class LatentDiffusion(DDPM, Serialization):
         pass
 
 
-class MegatronLatentDiffusion(MegatronBaseModel):
+class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
     """Megatron LatentDiffusion Model."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
@@ -1631,6 +1687,9 @@ class MegatronLatentDiffusion(MegatronBaseModel):
             self.autocast_dtype = torch.half
         else:
             raise ValueError('precision must be in ["32-true", "16-mixed", "bf16-mixed"]')
+
+        self.log_train_loss = bool(int(os.getenv("NEMO_LOG_TRAIN_LOSS", 1)))
+        self.loss_broadcast_src_rank = None
 
     def get_module_list(self):
         if isinstance(self.model, list):
@@ -1703,6 +1762,22 @@ class MegatronLatentDiffusion(MegatronBaseModel):
             else:
                 loss_mean = torch.tensor(0.0, device=torch.cuda.current_device())
 
+        if self.log_train_loss:
+            # When using pipeline parallelism, loss is calculated only in the last pipeline stage and
+            # it should be casted to other pipeline stages for logging.
+            # we can avoid this broadcast by updating the PTL log function to accept specific ranks
+            if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+                if self.loss_broadcast_src_rank is None:
+                    dp_size = parallel_state.get_data_parallel_world_size()
+                    tp_size = parallel_state.get_tensor_model_parallel_world_size()
+                    pp_size = parallel_state.get_pipeline_model_parallel_world_size()
+                    rank_in_dp_tp_group = torch.distributed.get_rank() % (dp_size * tp_size)
+                    last_pipeline_stage_offset = (tp_size * dp_size) * (pp_size - 1)
+                    self.loss_broadcast_src_rank = last_pipeline_stage_offset + rank_in_dp_tp_group
+                torch.distributed.broadcast(
+                    loss_mean, self.loss_broadcast_src_rank, group=parallel_state.get_pipeline_model_parallel_group(),
+                )
+
         return loss_mean, loss_dict
 
     def training_step(self, dataloader_iter, batch_idx):
@@ -1719,8 +1794,6 @@ class MegatronLatentDiffusion(MegatronBaseModel):
         self._optimizer.zero_grad()
 
         loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
-
-        torch.distributed.broadcast(loss_mean, get_last_rank())
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
@@ -1740,13 +1813,30 @@ class MegatronLatentDiffusion(MegatronBaseModel):
             # so we all-reduce gradients after the pipeline
             self.allreduce_gradients()  # @sangkug we think this is causing memory to blow up (hurts perf)
 
+        # for cuda graph with pytorch lightning
+        # these values will be used outside the capturing range
+        if not hasattr(self, "loss_mean"):
+            self.loss_mean = torch.empty_like(loss_mean)
+        with torch.no_grad():
+            self.loss_mean.copy_(loss_mean)
+            self.loss_dict = loss_dict
+        # this function is invoked by callback if with cuda graph, otherwise
+        # invoke it by ourselves
+        if self.cfg.get("capture_cudagraph_iters", -1) < 0:
+            self.non_cuda_graph_capturable()
+
+        return loss_mean
+
+    def non_cuda_graph_capturable(self):
+        if self.log_train_loss:
+            self.log('reduced_train_loss', self.loss_mean, prog_bar=True, rank_zero_only=True, batch_size=1)
+
         if self.cfg.precision in [16, '16', '16-mixed']:
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
                 self.log('loss_scale', loss_scale, batch_size=1)
 
-        self.log_dict(loss_dict, prog_bar=False, logger=True, on_step=True, rank_zero_only=True, batch_size=1)
-        self.log('reduced_train_loss', loss_mean, prog_bar=True, rank_zero_only=True, batch_size=1)
+        self.log_dict(self.loss_dict, prog_bar=False, logger=True, on_step=True, rank_zero_only=True, batch_size=1)
         lr = self._optimizer.param_groups[0]['lr']
         self.log('lr', lr, prog_bar=True, rank_zero_only=True, batch_size=1)
         self.log('global_step', self.trainer.global_step + 1, prog_bar=True, rank_zero_only=True, batch_size=1)
@@ -1757,7 +1847,9 @@ class MegatronLatentDiffusion(MegatronBaseModel):
             rank_zero_only=True,
             batch_size=1,
         )
-        return loss_mean
+
+        ts = torch.tensor(int(time.time() * 1e3), dtype=torch.float64)
+        self.log("timestamp", ts, batch_size=1, rank_zero_only=True)
 
     def backward(self, *args, **kwargs):
         """ LightningModule hook to do backward.
@@ -1850,7 +1942,8 @@ class MegatronLatentDiffusion(MegatronBaseModel):
         Args:
             stage (str, optional): Can be 'fit', 'validate', 'test' or 'predict'. Defaults to None.
         """
-        self.model.rng.manual_seed(self.cfg.seed + 100 * parallel_state.get_data_parallel_rank())
+        if self.model.rng:
+            self.model.rng.manual_seed(self.cfg.seed + 100 * parallel_state.get_data_parallel_rank())
 
         # log number of parameters
         if isinstance(self.model, list):
@@ -1890,16 +1983,22 @@ class MegatronLatentDiffusion(MegatronBaseModel):
         self.setup_training_data(self.cfg.data)
         self.setup_validation_data(self.cfg.data)
         self.setup_test_data(self.cfg.data)
+        self.setup_complete = True
 
     def build_train_valid_test_datasets(self):
-        logging.info('Building datasets for Stable Diffusion...')
+        logging.info("Building datasets for Stable Diffusion...")
         if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
 
-        if self.cfg.first_stage_key.endswith("encoded"):
-            self._train_ds, self._validation_ds = build_train_valid_precached_datasets(
-                model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0),
-            )
+        if self.cfg.first_stage_key.endswith("encoded") or self.cfg.first_stage_key.endswith("moments"):
+            if self.cfg.cond_stage_key.endswith("precached_clip"):
+                self._train_ds, self._validation_ds = build_train_valid_precached_clip_datasets(
+                    model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0),
+                )
+            else:
+                self._train_ds, self._validation_ds = build_train_valid_precached_datasets(
+                    model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0),
+                )
         else:
             self._train_ds, self._validation_ds = build_train_valid_datasets(
                 model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0)
@@ -1921,6 +2020,13 @@ class MegatronLatentDiffusion(MegatronBaseModel):
             logging.info(
                 f'Setting up train dataloader with len(len(self._train_ds)): {len(self._train_ds)} and consumed samples: {consumed_samples}'
             )
+            if self.cfg.cond_stage_key.endswith("precached_clip"):
+                collate_fn = get_collate_fn(
+                    first_stage_key=self.cfg.first_stage_key, cond_stage_key=self.cfg.cond_stage_key,
+                )
+            else:
+                collate_fn = None
+
             self._train_dl = torch.utils.data.DataLoader(
                 self._train_ds,
                 batch_size=self._micro_batch_size,
@@ -1928,6 +2034,7 @@ class MegatronLatentDiffusion(MegatronBaseModel):
                 pin_memory=True,
                 drop_last=True,
                 persistent_workers=True,
+                collate_fn=collate_fn,
             )
 
     def setup_validation_data(self, cfg):
@@ -2106,15 +2213,81 @@ class MegatronLatentDiffusion(MegatronBaseModel):
             cls._set_model_restore_state(is_being_restored=False)
         return checkpoint
 
+    def _check_and_add_adapter(self, name, module, peft_name, peft_cfg, name_key_to_mcore_mixins=None):
+        if isinstance(module, AdapterModuleMixin):
+            if isinstance(module, LinearWrapper):
+                peft_cfg.in_features, peft_cfg.out_features = module.in_features, module.out_features
+            elif isinstance(module, LoraWrapper):
+                peft_cfg.in_features, peft_cfg.out_features = module.in_features, module.out_features
+            else:
+                return
+            if model_utils.import_class_by_path(peft_cfg._target_) in module.get_accepted_adapter_types():
+                module.add_adapter(
+                    name=peft_name,
+                    cfg=peft_cfg,
+                    base_model_cfg=self.cfg,
+                    model_parallel_config=self.model_parallel_config,
+                )
+
+    def load_adapters(
+        self, filepath: str, peft_cfgs: Optional[Union[PEFTConfig, List[PEFTConfig]]] = None, map_location: str = None,
+    ):
+        """
+                Utility method that restores only the adapter module(s), and not the entire model itself.
+                This allows the sharing of adapters which are often just a fraction of the size of the full model,
+                enabling easier deliver.
+
+                .. note::
+
+                    During restoration, assumes that the model does not currently already have one or more adapter modules.
+
+                Args:
+                    filepath: Filepath of the .ckpt or .nemo file.
+                    peft_cfgs: One or more PEFTConfig objects that specify the PEFT method configuration.
+                        If none, will infer from the .nemo checkpoint
+                    map_location: Pytorch flag, where to place the adapter(s) state dict(s).
+                """
+
+        def _modify_state_dict(state_dict):
+            # Modify state key for Dreambooth inference
+            new_state_dict = {}
+            for key in state_dict.keys():
+                new_key = key.replace('unet', 'model.diffusion_model')
+                new_key = new_key.replace('vae', 'first_stage_model')
+                new_key = new_key.replace('text_encoder', 'cond_stage_model')
+                new_key = new_key.replace('.noise_scheduler', '')
+                new_key = new_key.replace('._orig_mod', '')
+                new_state_dict[new_key] = state_dict[key]
+            state_dict = new_state_dict
+            return state_dict
+
+        # Determine device
+        if map_location is None:
+            if torch.cuda.is_available():
+                map_location = 'cuda'
+            else:
+                map_location = 'cpu'
+
+        if filepath.endswith('.nemo'):
+            conf, state_dict = self._get_config_and_state_dict_from_nemo(filepath, map_location)
+        elif filepath.endswith('.ckpt'):
+            state_dict = torch.load(filepath, map_location)['state_dict']
+        else:
+            raise RuntimeError(f"{filepath} is not nemo file or ckpt file")
+        if not peft_cfgs:
+            assert filepath.endswith(
+                '.nemo'
+            ), "Inferring peft scheme is only supported for .nemo checkpoints. Please supply the `peft_cfgs` argument."
+            peft_cfgs = [PEFT_CONFIG_MAP[conf.peft.peft_scheme](conf)]
+        self.add_adapter(peft_cfgs)
+        state_dict = _modify_state_dict(state_dict)
+        assert set(state_dict.keys()) == self.adapter_keys
+        super().load_state_dict(state_dict, strict=False)
+
 
 class DiffusionWrapper(pl.LightningModule, Serialization):
     def __init__(
-        self,
-        diff_model_config,
-        conditioning_key,
-        inductor: bool = False,
-        inductor_cudagraphs: bool = False,
-        capture_cudagraph_iters: int = -1,
+        self, diff_model_config, conditioning_key, inductor: bool = False, inductor_cudagraphs: bool = False,
     ):
         super().__init__()
         self.diffusion_model = DiffusionWrapper.from_config_dict(diff_model_config)
@@ -2128,10 +2301,6 @@ class DiffusionWrapper(pl.LightningModule, Serialization):
             torch._dynamo.config.automatic_dynamic_shapes = False
             inductor_config.triton.cudagraphs = inductor_cudagraphs
             self.diffusion_model = torch.compile(self.diffusion_model)
-        # CUDA graph
-        self.capture_cudagraph_iters = capture_cudagraph_iters
-        self.iterations = 0
-        self.graphed_diffusion_model = None
 
     def forward(self, x, t, c_concat: list = None, c_crossattn: list = None):
         if self.conditioning_key is None:
@@ -2141,15 +2310,7 @@ class DiffusionWrapper(pl.LightningModule, Serialization):
             out = self.diffusion_model(xc, t)
         elif self.conditioning_key == 'crossattn':
             cc = torch.cat(c_crossattn, 1)
-            if self.iterations == self.capture_cudagraph_iters:
-                logging.info("Capturing CUDA graph for module: %s", self.diffusion_model.__class__.__name__)
-                self.graphed_diffusion_model = torch.cuda.make_graphed_callables(self.diffusion_model, (x, t, cc))
-
-            if 0 <= self.capture_cudagraph_iters <= self.iterations:
-                out = self.graphed_diffusion_model(x, t, cc)
-            else:
-                out = self.diffusion_model(x, t, context=cc)
-            self.iterations += 1
+            out = self.diffusion_model(x, t, context=cc)
         elif self.conditioning_key == 'hybrid':
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)

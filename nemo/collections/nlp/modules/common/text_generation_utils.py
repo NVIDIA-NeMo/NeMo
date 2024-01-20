@@ -26,6 +26,11 @@ import torch
 import torch.nn.functional as F
 
 from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
+from nemo.collections.multimodal.data.neva.conversation import (
+    DEFAULT_IM_END_TOKEN,
+    DEFAULT_IM_START_TOKEN,
+    DEFAULT_IMAGE_PATCH_TOKEN,
+)
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 from nemo.collections.nlp.modules.common.text_generation_strategy import model_inference_strategy_dispatcher
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, OutputType, SamplingParam
@@ -148,10 +153,9 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
     conv_template = model.cfg.data.get("conv_template", "nvgpt")
     final_response = []
     for idx, prompt_dict in enumerate(prompt_dict_list):
-        img = os.path.join(inference_config.inference.images_base_path, prompt_dict['image'])
         response = generate(
             model,
-            inputs=prompt_dict.get("prompt") or prompt_dict.get("text"),
+            inputs=prompt_dict.get('prompt'),
             tokens_to_generate=length_params['max_length'],
             all_probs=sampling_params['all_probs'],
             compute_logprob=sampling_params['compute_logprob'],
@@ -164,17 +168,18 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
             end_strings=sampling_params['end_strings'],
             min_tokens_to_generate=length_params['min_length'],
             compute_attention_mask=sampling_params.get("compute_attention_mask", True),
-            image_list=img,
+            image_list=prompt_dict.get('image'),
             **strategy_args,
         )
 
         # Regular expression pattern to match the sequence
-        pattern = re.compile(r'<extra_id_4>( ⁇ )+<extra_id_5>')
-        clean_text = re.sub(pattern, '<image>', response['sentences'][0])
+        pattern = re.compile(rf'{DEFAULT_IM_START_TOKEN}( ⁇ )+{DEFAULT_IM_END_TOKEN}')
+        pattern_nvgpt = re.compile(rf'{DEFAULT_IM_START_TOKEN}({DEFAULT_IMAGE_PATCH_TOKEN})+{DEFAULT_IM_END_TOKEN}')
+        combined_pattern = re.compile(f'{pattern.pattern}|{pattern_nvgpt.pattern}')
+        clean_text = re.sub(combined_pattern, '<image>', response['sentences'][0])
 
         clean_response = clean_text
-        for string in sampling_params['end_strings']:
-            clean_response = clean_response.rstrip(string)
+
         if conv_template == "nvgpt":
             labels_str_regexp = re.compile(f"<extra_id_2>quality:.*\n")
             last_match_end_position = None
@@ -182,9 +187,13 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
                 last_match_end_position = match.end()
             if last_match_end_position is not None:
                 clean_response = clean_response[last_match_end_position:]
+            clean_response = clean_response.strip("<extra_id_1>")
         elif conv_template == "llama_2":
             clean_response = clean_response.rsplit("[/INST] ", 1)[-1]
-        clean_response.strip()
+        elif conv_template == "v1":
+            clean_response = clean_response.rsplit("ASSISTANT: ", 1)[-1]
+
+        clean_response = clean_response.strip()
         response["clean_text"] = clean_text
         response["clean_response"] = clean_response
         final_response.append(response)
@@ -759,14 +768,10 @@ def sample_sequence_batch(
 
         lengths = torch.ones([batch_size]).long().cuda() * maxlen
 
-        media_tensor = None
-        if image_list is not None:
-            media_tensor = inference_strategy.get_media_tensor(image_list)
-
         while context_length < maxlen:
-            if media_tensor is not None:
+            if image_list is not None:
                 batch, tensor_shape = inference_strategy.prepare_batch_at_step(
-                    tokens, maxlen, micro_batch_size, counter, context_length, compute_attention_mask, media_tensor
+                    tokens, maxlen, micro_batch_size, counter, context_length, compute_attention_mask, image_list
                 )
             else:
                 batch, tensor_shape = inference_strategy.prepare_batch_at_step(

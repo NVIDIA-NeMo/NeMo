@@ -265,7 +265,10 @@ You can easily convert your existing NeMo-compatible ASR datasets using the
     --num_shards=<number of tarfiles that will contain the audio>
     --max_duration=<float representing maximum duration of audio samples> \
     --min_duration=<float representing minimum duration of audio samples> \
+    --force_codec=flac \
     --shuffle --shuffle_seed=0
+
+.. note:: For extra reduction of storage space at the cost of lossy (but high-quality) compression, you may use ``--force_codec=opus`` instead.
 
 This script shuffles the entries in the given manifest (if ``--shuffle`` is set, which we recommend), filter
 audio files according to ``min_duration`` and ``max_duration``, and tar the remaining audio files to the directory

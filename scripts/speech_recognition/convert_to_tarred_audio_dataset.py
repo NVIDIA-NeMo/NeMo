@@ -42,6 +42,7 @@ python convert_to_tarred_audio_dataset.py \
     --min_duration=<float representing minimum duration of audio samples> \
     --shuffle --shuffle_seed=1 \
     --sort_in_shards \
+    --force_codec=flac \
     --workers=-1
 
 
@@ -56,7 +57,7 @@ python convert_to_tarred_audio_dataset.py \
     --shuffle --shuffle_seed=1 \
     --sort_in_shards \
     --workers=-1 \
-    --concat_manifest_paths \
+    --concat_manifest_paths
     <space separated paths to 1 or more manifest files to concatenate into the original tarred dataset>
 
 3) Writing an empty metadata file

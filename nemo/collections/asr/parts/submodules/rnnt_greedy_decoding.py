@@ -566,10 +566,10 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     - 'lin' for using the linear mapping.
                     - 'exp' for using exponential mapping with linear shift.
         loop_labels: Switching between decoding algorithms. Both algorithms produce equivalent results.
-            loop_labels=True (default) algorithm is faster (especially for large batches) but can use a bit more memory
+            loop_labels=True algorithm is faster (especially for large batches) but can use a bit more memory
                 (negligible overhead compared to the amount of memory used by the encoder).
-            loop_labels=False is an implementation of a traditional decoding algorithm, which iterates over frames
-                (encoder output vectors), and in the inner loop, decodes labels for the current frame one by one,
+            loop_labels=False (default) is an implementation of a traditional decoding algorithm, which iterates over
+                frames (encoder output vectors), and in the inner loop, decodes labels for the current frame one by one,
                 stopping when <blank> is found.
             loop_labels=True iterates over labels, on each step finding the next non-blank label
                 (evaluating Joint multiple times in inner loop); It uses a minimal possible amount of calls
@@ -586,7 +586,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
-        loop_labels: bool = True,
+        loop_labels: bool = False,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2421,7 +2421,7 @@ class GreedyBatchedRNNTInferConfig:
     preserve_alignments: bool = False
     preserve_frame_confidence: bool = False
     confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
-    loop_labels: bool = True
+    loop_labels: bool = False
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed

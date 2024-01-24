@@ -78,6 +78,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
 
         if loss_name == 'tdt':
             num_classes = num_classes - self.joint.num_extra_outputs
+            self.cfg.decoding.durations = loss_kwargs.durations
+        elif loss_name == 'multiblank_rnnt':
+            self.cfg.decoding.big_blank_durations = loss_kwargs.big_blank_durations
 
         self.loss = RNNTLoss(
             num_classes=num_classes,

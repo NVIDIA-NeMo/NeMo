@@ -208,15 +208,17 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         self.compute_timestamps = self.cfg.get('compute_timestamps', None)
         self.word_seperator = self.cfg.get('word_seperator', ' ')
 
-        if self.durations is not None:  # this means it's a TDT model.
+        if self.durations is not None and self.durations != []:  # this means it's a TDT model.
             if blank_id == 0:
                 raise ValueError("blank_id must equal len(non_blank_vocabs) for TDT models")
-            if self.big_blank_durations is not None:
+            if self.big_blank_durations is not None and self.big_blank_durations != []:
                 raise ValueError("duration and big_blank_durations can't both be not None")
             if self.cfg.strategy not in ['greedy', 'greedy_batch']:
                 raise ValueError("currently only greedy and greedy_batch inference is supported for TDT models")
 
-        if self.big_blank_durations is not None:  # this means it's a multi-blank model.
+        if (
+            self.big_blank_durations is not None and self.big_blank_durations != []
+        ):  # this means it's a multi-blank model.
             if blank_id == 0:
                 raise ValueError("blank_id must equal len(vocabs) for multi-blank RNN-T models")
             if self.cfg.strategy not in ['greedy', 'greedy_batch']:
@@ -260,8 +262,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             raise NotImplementedError(f"Confidence calculation is not supported for strategy `{self.cfg.strategy}`")
 
         if self.cfg.strategy == 'greedy':
-            if self.big_blank_durations is None:
-                if self.durations is None:
+            if self.big_blank_durations is None or self.big_blank_durations == []:
+                if self.durations is None or self.durations == []:
                     self.decoding = rnnt_greedy_decoding.GreedyRNNTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
@@ -303,8 +305,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 )
 
         elif self.cfg.strategy == 'greedy_batch':
-            if self.big_blank_durations is None:
-                if self.durations is None:
+            if self.big_blank_durations is None or self.big_blank_durations == []:
+                if self.durations is None or self.durations == []:
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedRNNTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
@@ -522,10 +524,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
             # RNN-T sample level is already preprocessed by implicit RNNT decoding
             # Simply remove any blank and possibly big blank tokens
-            if self.big_blank_durations is not None:  # multi-blank RNNT
+            if self.big_blank_durations is not None and self.big_blank_durations != []:  # multi-blank RNNT
                 num_extra_outputs = len(self.big_blank_durations)
                 prediction = [p for p in prediction if p < self.blank_id - num_extra_outputs]
-            elif self.durations is not None:  # TDT model.
+            elif self.durations is not None and self.durations != []:  # TDT model.
                 prediction = [p for p in prediction if p < self.blank_id]
             else:  # standard RNN-T
                 prediction = [p for p in prediction if p != self.blank_id]
@@ -1507,6 +1509,12 @@ class RNNTDecodingConfig:
 
     # can be used to change temperature for decoding
     temperature: float = 1.0
+
+    # config for TDT decoding.
+    durations: Optional[List[int]] = field(default_factory=list)
+
+    # config for multiblank decoding.
+    big_blank_durations: Optional[List[int]] = field(default_factory=list)
 
 
 @dataclass

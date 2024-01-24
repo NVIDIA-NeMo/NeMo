@@ -43,6 +43,7 @@ from nemo.utils.model_utils import import_class_by_path, maybe_update_config_ver
 __all__ = ['Typing', 'FileIO', 'Model', 'Serialization', 'typecheck', 'PretrainedModelInfo']
 
 _TYPECHECK_ENABLED = True
+_TYPECHECK_SEMANTIC_CHECK_ENABLED = True
 # TODO @blisc: Remove _HAS_HYDRA
 _HAS_HYDRA = True
 
@@ -52,6 +53,13 @@ def is_typecheck_enabled():
     Getter method for typechecking state.
     """
     return _TYPECHECK_ENABLED
+
+
+def is_semantic_typecheck_enabled():
+    """
+    Getter method for typechecking semantics state.
+    """
+    return _TYPECHECK_SEMANTIC_CHECK_ENABLED
 
 
 @dataclass
@@ -178,7 +186,6 @@ class Typing(ABC):
             kwargs: Dictionary of argument_name:argument_value pairs passed to the wrapped
                 function upon call.
         """
-        # TODO: Properly implement this
         if input_types is not None:
             # Precompute metadata
             metadata = TypecheckMetadata(original_types=input_types, ignore_collections=ignore_collections)
@@ -202,9 +209,11 @@ class Typing(ABC):
                     )
 
                 # Perform neural type check
-                if hasattr(value, 'neural_type') and not metadata.base_types[key].compare(value.neural_type) in (
-                    NeuralTypeComparisonResult.SAME,
-                    NeuralTypeComparisonResult.GREATER,
+                if (
+                    hasattr(value, 'neural_type')
+                    and is_semantic_typecheck_enabled()
+                    and not metadata.base_types[key].compare(value.neural_type)
+                    in (NeuralTypeComparisonResult.SAME, NeuralTypeComparisonResult.GREATER,)
                 ):
                     error_msg = [
                         f"{input_types[key].compare(value.neural_type)} :",
@@ -379,9 +388,11 @@ class Typing(ABC):
                 f"Expected nested depth : {metadata.container_depth[name]}"
             )
 
-        if hasattr(obj, 'neural_type') and not type_val.compare(obj.neural_type) in (
-            NeuralTypeComparisonResult.SAME,
-            NeuralTypeComparisonResult.GREATER,
+        if (
+            hasattr(obj, 'neural_type')
+            and is_semantic_typecheck_enabled()
+            and not type_val.compare(obj.neural_type)
+            in (NeuralTypeComparisonResult.SAME, NeuralTypeComparisonResult.GREATER,)
         ):
             raise TypeError(
                 f"{type_val.compare(obj.neural_type)} : \n"
@@ -1114,3 +1125,26 @@ class typecheck:
             yield
         finally:
             typecheck.set_typecheck_enabled(enabled=True)
+
+    @staticmethod
+    def set_semantic_check_enabled(enabled: bool = True):
+        """
+        Global method to enable/disable semantic typechecking.
+
+        Args:
+            enabled: bool, when True will enable semantic typechecking.
+        """
+        global _TYPECHECK_SEMANTIC_CHECK_ENABLED
+        _TYPECHECK_SEMANTIC_CHECK_ENABLED = enabled
+
+    @staticmethod
+    @contextmanager
+    def disable_semantic_checks():
+        """
+        Context manager that temporarily disables semantic type checking within its context.
+        """
+        typecheck.set_semantic_check_enabled(enabled=False)
+        try:
+            yield
+        finally:
+            typecheck.set_semantic_check_enabled(enabled=True)

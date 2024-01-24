@@ -1152,3 +1152,41 @@ class TestNeuralTypeCheckSystem:
         assert len(outA[0]) == 3
         for i in range(len(outA)):
             assert outA[0][i].neural_type.compare(NeuralType(('B', 'D'), LogitsType()))
+
+    @pytest.mark.unit
+    def test_disable_semantic_types_input_output(self):
+        class InputOutputTypes(Typing):
+            @property
+            def input_types(self):
+                return {"x": NeuralType(('B',), LogprobsType())}
+
+            @property
+            def output_types(self):
+                return {"y": NeuralType(('B',), LabelsType())}
+
+            @typecheck()
+            def __call__(self, x):
+                x += 1
+                return x
+
+        obj = InputOutputTypes()
+        result = obj(x=torch.zeros(10))
+
+        assert result.sum() == torch.tensor(10.0)
+        assert result.neural_type.compare(NeuralType(('B',), LabelsType())) == NeuralTypeComparisonResult.SAME
+
+        # Test that input is provided with wrong type and semantic checks are not disabled
+        with pytest.raises(TypeError):
+            input_data = torch.zeros(10)
+            input_data.neural_type = NeuralType(('B',), LabelsType())
+            _ = obj(x=input_data)
+
+        # Provide input with wrong type after disabling semantic type checks
+        with typecheck.disable_semantic_checks():
+            input_data = torch.zeros(10)
+            input_data.neural_type = NeuralType(('B',), LabelsType())  # Should be LogprobsType()
+            result = obj(x=input_data)
+
+            # assert that even if semantic types are disabled, output is attached with appropriate types
+            assert result.sum() == torch.tensor(10.0)
+            assert result.neural_type.compare(NeuralType(('B',), LabelsType())) == NeuralTypeComparisonResult.SAME

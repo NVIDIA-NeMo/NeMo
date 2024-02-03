@@ -322,7 +322,16 @@ class ConfidenceMethodMixin(ABC):
         if measure_name not in self.confidence_measure_bank:
             raise ValueError(f"Unsupported measure setup: `{measure_name}`")
         measure = partial(self.confidence_measure_bank[measure_name], v=self.num_tokens, t=self.alpha)
-        self._get_confidence = lambda x: measure(torch.nan_to_num(x)).tolist()
+
+        self._confidence_measure = measure
+
+    def _get_confidence(self, x: torch.Tensor) -> list[float]:
+        """Compute confidence, return list of confidence items for each item in batch"""
+        return self._get_confidence_tensor(x).tolist()
+
+    def _get_confidence_tensor(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute confidence, return tensor"""
+        return self._confidence_measure(torch.nan_to_num(x))
 
 
 class ConfidenceMixin(ABC):

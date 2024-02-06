@@ -25,3 +25,4 @@ from nemo.core.classes.mixins.adapter_mixins import (
     get_registered_adapter,
     register_adapter,
 )
+from nemo.core.classes.mixins.hf_io_mixin import HuggingFaceFileIO

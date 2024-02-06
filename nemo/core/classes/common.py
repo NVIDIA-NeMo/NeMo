@@ -14,8 +14,11 @@
 
 
 """Interfaces common to all Neural Modules and Models."""
+import copy
 import hashlib
 import inspect
+import os
+import shutil
 import traceback
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -28,11 +31,14 @@ from typing import Dict, Iterable, List, Optional, Tuple, Union
 import hydra
 import torch
 import wrapt
-from huggingface_hub import HfApi, HfFolder, ModelFilter, hf_hub_download
-from huggingface_hub.hf_api import ModelInfo
+from huggingface_hub import HfApi
+from huggingface_hub import get_token as get_hf_token
+from huggingface_hub import hf_hub_download, snapshot_download
 from omegaconf import DictConfig, OmegaConf
 
 import nemo
+from nemo.core.classes.mixins.hf_io_mixin import HuggingFaceFileIO
+from nemo.core.config.templates.model_card import NEMO_DEFAULT_MODEL_CARD_TEMPLATE
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.neural_types import NeuralType, NeuralTypeComparisonResult
 from nemo.utils import logging
@@ -663,7 +669,7 @@ class PretrainedModelInfo:
         return self.pretrained_model_name < other.pretrained_model_name
 
 
-class Model(Typing, Serialization, FileIO):
+class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
     """
     Abstract class offering interface which should be implemented by all NeMo models.
     """
@@ -682,105 +688,6 @@ class Model(Typing, Serialization, FileIO):
         pass
 
     @classmethod
-    def search_huggingface_models(
-        cls, model_filter: Optional[Union[ModelFilter, List[ModelFilter]]] = None
-    ) -> List[ModelInfo]:
-        """
-        Should list all pre-trained models available via Hugging Face Hub.
-
-        The following metadata can be passed via the `model_filter` for additional results.
-        Metadata:
-            resolve_card_info: Bool flag, if set, returns the model card metadata. Default: False.
-            limit_results: Optional int, limits the number of results returned.
-
-        .. code-block:: python
-
-            # You can replace <DomainSubclass> with any subclass of ModelPT.
-            from nemo.core import ModelPT
-
-            # Get default ModelFilter
-            filt = <DomainSubclass>.get_hf_model_filter()
-
-            # Make any modifications to the filter as necessary
-            filt.language = [...]
-            filt.task = ...
-            filt.tags = [...]
-
-            # Add any metadata to the filter as needed
-            filt.limit_results = 5
-
-            # Obtain model info
-            model_infos = <DomainSubclass>.search_huggingface_models(model_filter=filt)
-
-            # Browse through cards and select an appropriate one
-            card = model_infos[0]
-
-            # Restore model using `modelId` of the card.
-            model = ModelPT.from_pretrained(card.modelId)
-
-        Args:
-            model_filter: Optional ModelFilter or List[ModelFilter] (from Hugging Face Hub)
-                that filters the returned list of compatible model cards, and selects all results from each filter.
-                Users can then use `model_card.modelId` in `from_pretrained()` to restore a NeMo Model.
-                If no ModelFilter is provided, uses the classes default filter as defined by `get_hf_model_filter()`.
-
-        Returns:
-            A list of ModelInfo entries.
-        """
-        # Resolve model filter if not provided as argument
-        if model_filter is None:
-            model_filter = cls.get_hf_model_filter()
-
-        # If single model filter, wrap into list
-        if not isinstance(model_filter, Iterable):
-            model_filter = [model_filter]
-
-        # Inject `nemo` library filter
-        for mfilter in model_filter:
-            if isinstance(mfilter.library, str) and mfilter.library != 'nemo':
-                logging.warning(f"Model filter's `library` tag updated be `nemo`. Original value: {mfilter.library}")
-                mfilter.library = "nemo"
-
-            elif isinstance(mfilter, Iterable) and 'nemo' not in mfilter.library:
-                logging.warning(
-                    f"Model filter's `library` list updated to include `nemo`. Original value: {mfilter.library}"
-                )
-                mfilter.library = list(mfilter)
-                mfilter.library.append('nemo')
-
-        # Check if api token exists, use if it does
-        is_token_available = HfFolder.get_token() is not None
-
-        # Search for all valid models after filtering
-        api = HfApi()
-
-        # Setup extra arguments for model filtering
-        all_results = []  # type: List[ModelInfo]
-
-        for mfilter in model_filter:
-            cardData = None
-            limit = None
-
-            if hasattr(mfilter, 'resolve_card_info') and mfilter.resolve_card_info is True:
-                cardData = True
-
-            if hasattr(mfilter, 'limit_results') and mfilter.limit_results is not None:
-                limit = mfilter.limit_results
-
-            results = api.list_models(
-                filter=mfilter,
-                use_auth_token=is_token_available,
-                sort="lastModified",
-                direction=-1,
-                cardData=cardData,
-                limit=limit,
-            )  # type: List[ModelInfo]
-
-            all_results.extend(results)
-
-        return all_results
-
-    @classmethod
     def get_available_model_names(cls) -> List[str]:
         """
         Returns the list of model names available via NVIDIA NGC cloud,
@@ -792,28 +699,6 @@ class Model(Typing, Serialization, FileIO):
         if cls.list_available_models() is not None:
             model_names = [model.pretrained_model_name for model in cls.list_available_models()]
         return model_names
-
-    @classmethod
-    def get_hf_model_filter(cls) -> ModelFilter:
-        """
-        Generates a filter for HuggingFace models.
-
-        Additionally includes default values of some metadata about results returned by the Hub.
-
-        Metadata:
-            resolve_card_info: Bool flag, if set, returns the model card metadata. Default: False.
-            limit_results: Optional int, limits the number of results returned.
-
-        Returns:
-            A Hugging Face Hub ModelFilter object.
-        """
-        model_filter = ModelFilter(library='nemo')
-
-        # Attach some additional info
-        model_filter.resolve_card_info = False
-        model_filter.limit_results = None
-
-        return model_filter
 
     @classmethod
     def from_pretrained(
@@ -854,6 +739,12 @@ class Model(Typing, Serialization, FileIO):
             class_, nemo_model_file_in_cache = cls._get_hf_hub_pretrained_model_info(
                 model_name=model_name, refresh_cache=refresh_cache
             )
+
+            # Check if nemo_model_file_in_cache is a directory
+            if os.path.isdir(nemo_model_file_in_cache):
+                # Update SaveRestoreConnector with the flag to read from an unpacked NeMo folder
+                save_restore_connector.model_extracted_dir = nemo_model_file_in_cache
+
         else:
             # NGC source
             class_, nemo_model_file_in_cache = cls._get_ngc_pretrained_model_info(
@@ -952,23 +843,98 @@ class Model(Typing, Serialization, FileIO):
         resolved_model_filename = model_name.split("/")[-1] + '.nemo'
 
         # Check if api token exists, use if it does
-        is_token_available = HfFolder.get_token() is not None
+        hf_token = get_hf_token()
 
-        # Try to load the model from the Huggingface Hub
-        path = hf_hub_download(
-            repo_id=model_name,
-            filename=resolved_model_filename,
-            library_name="nemo",
-            library_version=nemo.__version__,
-            force_download=refresh_cache,
-            use_auth_token=is_token_available,
-        )
+        # First check if .nemo file exists in HF
+        api = HfApi(token=hf_token)
+
+        # Check if model exists in HF
+        nemo_file_exists = api.file_exists(repo_id=model_name, filename=resolved_model_filename, repo_type="model")
+
+        if nemo_file_exists:
+            # Try to load the model from the Huggingface Hub
+            path = hf_hub_download(
+                repo_id=model_name,
+                filename=resolved_model_filename,
+                library_name='nemo',
+                library_version=nemo.__version__,
+                force_download=refresh_cache,
+                token=hf_token,
+            )
+        else:
+            repo_info = api.repo_info(repo_id=model_name, token=hf_token, files_metadata=True)
+
+            # Download whole HF repo and load entire directory as nemo directory
+            cache_dir = Path.joinpath(resolve_cache_dir(), "hf_hub_cache", f'{model_name}')
+
+            # If either description and location in the cloud changes, this will force re-download
+            cache_subfolder = []
+            # Calculate hash of repo_info
+            for sibling in repo_info.siblings:
+                filename = sibling.rfilename.lower()
+                # Ignore updates to readme when downloading hash
+                if "readme" not in filename or "git" not in filename:
+                    cache_subfolder.append(sibling.blob_id)
+            cache_subfolder = sorted(cache_subfolder)
+            cache_subfolder = "".join(cache_subfolder)
+            cache_subfolder = hashlib.md5(cache_subfolder.encode('utf-8')).hexdigest()
+
+            # if file exists on cache_folder/subfolder, it will be re-used, unless refresh_cache is True
+            save_path = os.path.join(cache_dir, cache_subfolder)
+
+            # If the cache dir already exists, delete it to preserve disk space
+            if os.path.exists(cache_dir):
+                num_files_in_dir = len(os.listdir(cache_dir))
+                if num_files_in_dir > 0:
+                    logging.info("Found {} files in cache directory {}".format(num_files_in_dir, cache_dir))
+                    logging.info(
+                        f"Deleting old cache directory for model `{model_name}` in order to prevent duplicates..."
+                    )
+                shutil.rmtree(cache_dir, ignore_errors=True)
+
+            if not os.path.exists(save_path):
+                logging.info(f"Downloading {model_name} from HuggingFace Hub to path: {save_path}")
+                os.makedirs(save_path, exist_ok=True)
+
+            path = snapshot_download(
+                repo_id=model_name,
+                library_name='nemo',
+                library_version=nemo.__version__,
+                force_download=refresh_cache,
+                cache_dir=save_path,
+                local_dir=save_path,
+                local_dir_use_symlinks=False,
+                token=hf_token,
+            )
 
         # Cannot pre-resolve the specific class without double instantiation (first for config, second for model params)
         # Default to current class, and perform basic class path resolution (handled via restore_from() + target class)
         class_ = cls
 
         return class_, path
+
+    def generate_model_card(
+        self, type: str = "hf", template: str = None, template_kwargs: Optional[Dict[str, str]] = None
+    ) -> object:
+        """
+        Generates a ModelCard for the current model. This method is called when pushing the model to the Hub.
+
+        Returns:
+            An object that can be represented as a str representation of the model card, usually in Markdown format.
+        """
+        if template is None:
+            template = copy.deepcopy(NEMO_DEFAULT_MODEL_CARD_TEMPLATE)
+
+        # Populate template kwargs with common model card fields
+        if template_kwargs is None:
+            template_kwargs = {}
+
+        if type == "hf":
+            # Use HuggingFaceFileIO method to generate the huggingface model card
+            return self._get_hf_model_card(template=template, template_kwargs=template_kwargs)
+
+        else:
+            raise ValueError(f"Model card type {type} not supported.")
 
 
 class typecheck:

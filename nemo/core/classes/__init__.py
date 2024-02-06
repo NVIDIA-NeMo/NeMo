@@ -29,7 +29,7 @@ from nemo.core.classes.common import (
 from nemo.core.classes.dataset import Dataset, IterableDataset
 from nemo.core.classes.exportable import Exportable, ExportFormat
 from nemo.core.classes.loss import Loss
-from nemo.core.classes.mixins import access_mixins, adapter_mixins
+from nemo.core.classes.mixins import access_mixins, adapter_mixins, hf_io_mixin
 from nemo.core.classes.modelPT import ModelPT
 from nemo.core.classes.module import NeuralModule
 from nemo.utils import exceptions

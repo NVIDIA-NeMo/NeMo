@@ -38,6 +38,7 @@ class SaveRestoreConnector:
         self._model_config_yaml = "model_config.yaml"
         self._model_weights_ckpt = "model_weights.ckpt"
         self._model_extracted_dir = None
+        self._pack_nemo_file = True
 
     def save_to(self, model: "nemo_classes.ModelPT", save_path: str):
         """
@@ -51,6 +52,10 @@ class SaveRestoreConnector:
         Args:
             model: ModelPT object to be saved.
             save_path: Path to .nemo file where model instance should be saved
+
+        Returns:
+            str: Path to .nemo file where model instance was saved (same as save_path argument) or None if not rank 0
+                The path can be a directory if the flag `pack_nemo_file` is set to False.
         """
 
         if is_global_rank_zero():
@@ -65,7 +70,16 @@ class SaveRestoreConnector:
                     # We should not update self._cfg here - the model can still be in use
                     self._update_artifact_paths(model, path2yaml_file=config_yaml)
                 self._save_state_dict_to_disk(model.state_dict(), model_weights)
-                self._make_nemo_file_from_folder(filename=save_path, source_dir=tmpdir)
+
+                # Check if we are packing the folder into a nemo file
+                if self.pack_nemo_file:
+                    self._make_nemo_file_from_folder(filename=save_path, source_dir=tmpdir)
+                else:
+                    # Get the folder path from the save_path and move all values inside the tmpdir to the folder
+                    folder_path = os.path.dirname(save_path)
+
+                    for file in os.listdir(tmpdir):
+                        shutil.move(os.path.join(tmpdir, file), folder_path)
         else:
             return
 
@@ -593,3 +607,11 @@ class SaveRestoreConnector:
     @model_extracted_dir.setter
     def model_extracted_dir(self, path: Optional[str]):
         self._model_extracted_dir = path
+
+    @property
+    def pack_nemo_file(self) -> bool:
+        return self._pack_nemo_file
+
+    @pack_nemo_file.setter
+    def pack_nemo_file(self, save_nemo_file: bool):
+        self._pack_nemo_file = save_nemo_file

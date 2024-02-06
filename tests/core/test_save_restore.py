@@ -772,6 +772,42 @@ class TestSaveRestore:
                 assert config_filepath.endswith(".yaml")
 
     @pytest.mark.unit
+    def test_restore_from_save_restore_connector_unpacked_file(self):
+        class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
+            def __init__(self):
+                super().__init__()
+                self.pack_nemo_file = False
+
+            def save_to(self, model, save_path: str):
+                save_path = save_path.replace(".nemo", "_XYZ.nemo")
+                super().save_to(model, save_path)
+
+        class MockModelV2(MockModel):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Update config
+            cfg = _mock_model_config()
+
+            # Create model
+            save_path = os.path.join(tmpdir, 'temp_model')
+            os.makedirs(save_path, exist_ok=True)
+            model_with_custom_connector = MockModel(cfg=cfg.model, trainer=None)
+            model_with_custom_connector._save_restore_connector = MySaveRestoreConnector()
+            model_with_custom_connector.save_to(save_path + "/abc.nemo")
+
+            assert os.path.isdir(save_path)
+            assert len(os.listdir(save_path)) == 2  # config and pytorch params
+
+            restore_connector = MySaveRestoreConnector()
+            restore_connector.model_extracted_dir = save_path
+            restored_model = MockModelV2.restore_from(
+                save_path.replace(".nemo", "_XYZ.nemo"), save_restore_connector=restore_connector
+            )
+            assert type(restored_model) == MockModelV2
+            assert type(restored_model._save_restore_connector) == MySaveRestoreConnector
+
+    @pytest.mark.unit
     def test_mock_model_model_collision(self):
         # The usual pipeline is working just fine.
         cfg = _mock_model_config()

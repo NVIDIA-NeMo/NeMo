@@ -897,7 +897,14 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                         self._update_artifact_paths(model, path2yaml_file=config_yaml)
 
                     # create tar file
-                    self._make_nemo_file_from_folder(save_path, tmpdir)
+                    if self.pack_nemo_file:
+                        self._make_nemo_file_from_folder(save_path, tmpdir)
+                    else:
+                        # Get the folder path from the save_path and move all values inside the tmpdir to the folder
+                        folder_path = os.path.dirname(save_path)
+
+                        for file in os.listdir(tmpdir):
+                            shutil.move(os.path.join(tmpdir, file), folder_path)
 
         else:
             return super().save_to(model, save_path)

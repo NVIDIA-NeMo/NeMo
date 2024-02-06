@@ -637,6 +637,54 @@ The resulting .nemo file will then have the following file:
 If ``verify_src_exists`` is set to ``False``, then the artifact is optional. This means that ``.register_artifact`` will return ``None`` 
 if the ``src`` cannot be found.
 
+Push to Hugging Face Hub
+------------------------
+
+NeMo models can be pushed to the `Hugging Face Hub <https://huggingface.co/>`_ with the :meth:`~nemo.core.classes.mixins.hf_io_mixin.HuggingFaceFileIO.push_to_hf_hub` method. This method performs the same actions as ``save_to()`` and then uploads the model to the HuggingFace Hub. It offers an additional ``pack_nemo_file`` argument that allows the user to upload the entire NeMo file or just the ``.nemo`` file. This is useful for large language models that have a massive number of parameters, and a single NeMo file could exceed the max upload size of Hugging Face Hub.
+
+
+Upload a model to the hub
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    token = "<HF TOKEN>" or None
+    pack_nemo_file = True  # False will upload multiple files that comprise the NeMo file onto HF Hub; Generally useful for LLMs
+
+    model.push_to_hf_hub(
+       repo_id=repo_id, pack_nemo_file=pack_nemo_file, token=token,
+    )
+
+Use a Custom Model Card Template for the Hub
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    # Override the default model card
+    template = """ <Your own custom template>
+    # {model_name}
+    """
+    kwargs = {"model_name": "ABC", "repo_id": "nvidia/ABC_XYZ"}
+    model_card = model.generate_model_card(template=template, template_kwargs=kwargs, type="hf")
+
+    model.push_to_hf_hub(
+        repo_id=repo_id, token=token, model_card=model_card
+    )
+
+    # Write your own model card class
+    class MyModelCard:
+      def __init__(self, model_name):
+        self.model_name = model_name
+
+      def __repr__(self):
+        template = """This is the {model_name} model""".format(model_name=self.model_name)
+        return template
+
+    model.push_to_hf_hub(
+        repo_id=repo_id, token=token, model_card=MyModelCard("ABC")
+    )
+
+
 Nested NeMo Models
 ------------------
 

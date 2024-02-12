@@ -1197,7 +1197,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             "is_built_on_rank": is_dataset_built_on_rank,
             "random_seed": self.cfg.seed,
             "sequence_length": self.cfg.data.seq_length,
-            "blend": self.cfg.data.data_prefix,
             "split": self.cfg.data.splits_string,
             "path_to_cache": self.cfg.data.index_mapping_dir,
             "reset_position_ids": self.reset_position_ids,
@@ -1205,6 +1204,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             "eod_mask_loss": self.eod_mask_loss,
             "eod_id": self.tokenizer.eos_id,
         }
+
+        if isinstance(self.cfg.data.data_prefix, DictConfig):
+            _pref = self.cfg.data.data_prefix
+            kwargs['blend_per_split'] = [_pref['train'], _pref['validation'], _pref['test']]
+        else:
+            kwargs['blend'] = self.cfg.data.data_prefix
 
         if self.cfg.data.get('add_fim', False):
             dataset_config = GPTFIMDatasetConfig(self.tokenizer, self.cfg.data.fim, **kwargs)

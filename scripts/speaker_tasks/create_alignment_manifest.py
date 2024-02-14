@@ -32,7 +32,10 @@ def get_seg_info_from_ctm_line(
     """
     Get time stamp information and speaker labels from CTM lines.
     This is following CTM format appeared in `Rich Transcription Meeting Eval Plan: RT09` document.
-    
+
+    CTM Format: 
+        <SOURCE>< <CHANNEL> <BEG-TIME> <DURATION> <TOKEN> <CONF> <TYPE> <SPEAKER>
+
     Args:
         ctm_list (list): List containing CTM items. e.g.: ['sw02001-A', '1', '0.000', '0.200', 'hello', '0.98', 'lex', 'speaker3']
         output_precision (int): Precision for CTM outputs in integer.
@@ -47,6 +50,8 @@ def get_seg_info_from_ctm_line(
     end = float(ctm_list[start_time_index]) + float(ctm_list[duration_index])
     start = round(start, output_precision)
     end = round(end, output_precision)
+    if type(speaker_id) == str:
+        speaker_id = speaker_id.strip()
     return start, end, speaker_id
 
 
@@ -106,7 +111,7 @@ def create_new_ctm_entry(session_name, speaker_id, wordlist, alignments, output_
                 start_time=align1,
                 duration=align2,
                 token=word,
-                conf=0,
+                conf=None,
                 type_of_token='lex',
                 speaker=speaker_id,
                 output_precision=output_precision,
@@ -245,7 +250,7 @@ def create_manifest_with_alignments(
         prev_end = 0
         for i in range(len(lines)):
             ctm = lines[i].split(' ')
-            speaker_id, start, end = get_seg_info_from_ctm_line(ctm_list=ctm, output_precision=output_precision)
+            start, end, speaker_id = get_seg_info_from_ctm_line(ctm_list=ctm, output_precision=output_precision)
             interval = start - prev_end
 
             if (i == 0 and interval > 0) or (i > 0 and interval > silence_dur_threshold):

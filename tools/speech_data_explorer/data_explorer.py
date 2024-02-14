@@ -126,7 +126,7 @@ def parse_args():
     # automaticly going in comparison mode, if there is names_compared argument
     if args.names_compared is not None:
         comparison_mode = True
-        logging.error("comparison mod set to true")
+        logging.info("comparison mod set to true")
     else:
         comparison_mode = False
 

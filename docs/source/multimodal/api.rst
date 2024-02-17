@@ -1,4 +1,4 @@
-NeMo Megatron API
+Multimodal API
 =======================
 
 Model Classes

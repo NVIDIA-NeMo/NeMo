@@ -8,7 +8,7 @@ The model architecture and pre-training process are detailed in the `Sentence-BE
 Sentence-BERT utilizes a BERT-based architecture, but it is trained using a siamese and triplet network structure to derive fixed-sized sentence embeddings that capture semantic information. 
 Sentence-BERT is commonly used to generate high-quality sentence embeddings for various downstream natural language processing tasks, such as semantic textual similarity, clustering, and information retrieval
 
-Data Input for the Senntence-BERT model
+Data Input for the Sentence-BERT model
 ---------------------------------------
 
 The fine-tuning data for the Sentence-BERT (SBERT) model should consist of data instances, 

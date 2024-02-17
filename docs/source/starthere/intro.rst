@@ -8,14 +8,17 @@ Introduction
 
 .. _dummy_header:
 
-`NVIDIA NeMo <https://github.com/NVIDIA/NeMo>`_, part of the NVIDIA AI platform, is a toolkit for building new state-of-the-art
-conversational AI models. NeMo has separate collections for Automatic Speech Recognition (ASR),
-Natural Language Processing (NLP), and Text-to-Speech (TTS) models. Each collection consists of
+NVIDIA NeMo Framework is an end-to-end, cloud-native framework to build, customize, and deploy generative AI models anywhere. 
+To learn more about using NeMo in generative AI workflows, please refer to the `NeMo Framework User Guide! <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_
+
+`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for Large Language Models (LLMs), 
+Multimodal (MM), Computer Vision (CV), Automatic Speech Recognition (ASR), 
+and Text-to-Speech (TTS) models. Each collection consists of
 prebuilt modules that include everything needed to train on your data.
-Every module can easily be customized, extended, and composed to create new conversational AI
+Every module can easily be customized, extended, and composed to create new generative AI
 model architectures.
 
-Conversational AI architectures are typically large and require a lot of data and compute
+Generative AI architectures are typically large and require a lot of data and compute
 for training. NeMo uses `PyTorch Lightning <https://www.pytorchlightning.ai/>`_ for easy and performant multi-GPU/multi-node
 mixed-precision training.
 
@@ -38,7 +41,7 @@ Before you begin using NeMo, it's assumed you meet the following prerequisites.
 Quick Start Guide
 -----------------
 
-You can try out NeMo's ASR, NLP and TTS functionality with the example below, which is based on the `Audio Translation <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/AudioTranslationSample.ipynb>`_ tutorial.
+You can try out NeMo's ASR, LLM and TTS functionality with the example below, which is based on the `Audio Translation <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/AudioTranslationSample.ipynb>`_ tutorial.
 
 Once you have :ref:`installed NeMo <installation>`, then you can run the code below:
 

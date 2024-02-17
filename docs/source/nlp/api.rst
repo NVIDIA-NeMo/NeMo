@@ -1,5 +1,5 @@
-NeMo Megatron API
-=======================
+Large language Model API
+========================
 
 Pretraining Model Classes
 -------------------------

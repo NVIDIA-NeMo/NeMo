@@ -1,5 +1,5 @@
-NVIDIA NeMo User Guide
-======================
+NVIDIA NeMo Framework Developer Docs
+====================================
 
 .. toctree::
    :maxdepth: 2
@@ -12,17 +12,27 @@ NVIDIA NeMo User Guide
    starthere/migration-guide
 
 .. toctree::
-   :maxdepth: 2
-   :caption: NeMo Core
-   :name: core
+   :maxdepth: 3
+   :caption: Multimodal (MM)
+   :name: Multimodal
 
-   core/core
-   core/exp_manager
-   core/neural_types
-   core/export
-   core/adapters/intro
-   core/api
+   multimodal/mllm/intro
+   multimodal/vlm/intro
+   multimodal/text2img/intro
+   multimodal/nerf/intro
+   multimodal/api
 
+
+.. toctree::
+   :maxdepth: 3
+   :caption: Large Language Models (LLMs)
+   :name: Large Language Models
+
+   nlp/nemo_megatron/intro
+   nlp/models
+   nlp/machine_translation/machine_translation
+   nlp/megatron_onnx_export
+   nlp/api
 
 .. toctree::
    :maxdepth: 2
@@ -37,24 +47,31 @@ NVIDIA NeMo User Guide
    asr/speech_intent_slot/intro
 
 .. toctree::
-   :maxdepth: 3
-   :caption: Natural Language Processing
-   :name: Natural Language Processing
-
-   nlp/nemo_megatron/intro
-   nlp/machine_translation/machine_translation
-   nlp/text_normalization/intro
-   nlp/api
-   nlp/megatron_onnx_export
-   nlp/models
-
-
-.. toctree::
    :maxdepth: 1
    :caption: Text To Speech (TTS)
    :name: Text To Speech
 
    tts/intro
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Vision
+   :name: vision
+
+   vision/intro
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: NeMo Core
+   :name: core
+
+   core/core
+   core/exp_manager
+   core/neural_types
+   core/export
+   core/adapters/intro
+   core/api
 
 .. toctree::
    :maxdepth: 2
@@ -71,27 +88,10 @@ NVIDIA NeMo User Guide
    text_processing/g2p/g2p
    common/intro
 
-.. toctree::
-   :maxdepth: 3
-   :caption: Multimodal (MM)
-   :name: Multimodal
-
-   multimodal/mllm/intro
-   multimodal/vlm/intro
-   multimodal/text2img/intro
-   multimodal/nerf/intro
-   multimodal/api
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Vision
-   :name: vision
-
-   vision/intro
 
 .. toctree::
    :maxdepth: 3
-   :caption: Tools
-   :name: Tools
+   :caption: Speech Tools
+   :name: Speech Tools
 
    tools/intro

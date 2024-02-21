@@ -17,6 +17,8 @@ import torch.nn.functional as F
 
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
     AdapterName,
+    Lora4HtoHAdapterConfig,
+    LoraHto4HAdapterConfig,
     MLPInfusedAdapterConfig,
 )
 from nemo.collections.nlp.modules.common.megatron.fused_bias_geglu import fused_bias_geglu
@@ -93,7 +95,9 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         self.activation = activation
         self.dropout = dropout
         self.dtype = dtype
-        self.set_accepted_adapter_types([MLPInfusedAdapterConfig._target_])
+        self.set_accepted_adapter_types(
+            [LoraHto4HAdapterConfig._target_, Lora4HtoHAdapterConfig._target_, MLPInfusedAdapterConfig._target_]
+        )
 
         supported_activations = [
             'gelu',
@@ -216,6 +220,11 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
         # [s, b, 4hp]
         intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
+        if self.is_adapter_available():
+            lora_dense_h_to_4h_adapter = self.get_adapter_module(AdapterName.LORA_Hto4H_ADAPTER)
+            if lora_dense_h_to_4h_adapter:
+                lora_intermediate_parallel = lora_dense_h_to_4h_adapter(hidden_states)
+                intermediate_parallel = intermediate_parallel + lora_intermediate_parallel
 
         if self.fast_glu_activation:
             intermediate_parallel, intermediate_parallel_2 = torch.chunk(intermediate_parallel, 2, dim=-1)
@@ -259,6 +268,11 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
         # [s, b, h]
         output, output_bias = self.dense_4h_to_h(intermediate_parallel)
+        if self.is_adapter_available():
+            lora_dense_4h_to_h_adapter = self.get_adapter_module(AdapterName.LORA_4HtoH_ADAPTER)
+            if lora_dense_4h_to_h_adapter:
+                lora_output = lora_dense_4h_to_h_adapter(intermediate_parallel)
+                output = output + lora_output
         return output, output_bias
 
 

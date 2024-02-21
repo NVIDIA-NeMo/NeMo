@@ -263,6 +263,17 @@ conv_nvgpt = Conversation(
     sep2=f"{DEFAULT_SYSTEM_TOKEN}System\n",
 )
 
+conv_nv_dpo = Conversation(
+    system="\n",
+    roles=("User", "Assistant"),
+    version="nv_dpo",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.NVGPT,
+    sep=DEFAULT_SEPARATOR_TOKEN,
+    sep2=f"{DEFAULT_SYSTEM_TOKEN}System\n",
+)
+
 conv_vicuna_v0 = Conversation(
     system="A chat between a curious human and an artificial intelligence assistant. "
     "The assistant gives helpful, detailed, and polite answers to the human's questions.",
@@ -400,6 +411,8 @@ conv_templates = {
     "v1_mmtag": conv_llava_v1_mmtag,
     "llava_llama_2": conv_llava_llama_2,
     "nvgpt": conv_nvgpt,
+    "nv_steerlm": conv_nvgpt,
+    "nv_dpo": conv_nv_dpo,
 }
 
 

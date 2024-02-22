@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+# To suppress BF16 compile related issue in the CI runs with turing/V100
+import torch._dynamo
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 
@@ -21,6 +23,8 @@ from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerB
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+
+torch._dynamo.config.suppress_errors = True
 
 mp.set_start_method("spawn", force=True)
 

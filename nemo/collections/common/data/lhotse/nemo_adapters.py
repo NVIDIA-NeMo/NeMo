@@ -27,6 +27,7 @@ from lhotse.cut import Cut
 from lhotse.lazy import LazyIteratorChain, LazyJsonlIterator
 from lhotse.serialization import open_best
 from lhotse.utils import compute_num_samples
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
 
 class LazyNeMoIterator:
@@ -74,7 +75,7 @@ class LazyNeMoIterator:
 
     def __iter__(self) -> Generator[Cut, None, None]:
         for data in self.source:
-            audio_path = data.pop("audio_filepath")
+            audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path))
             duration = data.pop("duration")
             offset = data.pop("offset", None)
             recording = self._create_recording(audio_path, duration, data.pop("sampling_rate", None))

@@ -239,9 +239,9 @@ class AudioSegment(object):
                 with sf.SoundFile(audio_file, 'r') as f:
                     dtype = 'int32' if int_values else 'float32'
                     sample_rate = f.samplerate
-                    if offset > 0:
+                    if offset is not None and offset > 0:
                         f.seek(int(offset * sample_rate))
-                    if duration > 0:
+                    if duration is not None and duration > 0:
                         samples = f.read(int(duration * sample_rate), dtype=dtype)
                     else:
                         samples = f.read(dtype=dtype)

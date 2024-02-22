@@ -493,12 +493,12 @@ class AudioFeatureIterator(IterableDataset):
             frame = self._features[:, self._start : last].cpu()
             self._start = last
         else:
-            samp_len = self._features_len[0] - self._start
             if not self.pad_to_frame_len:
-                frame = np.zeros([self._features.shape[0], samp_len], dtype='float32')
+                frame = self._features[:, self._start : self._features_len[0]].cpu()
             else:
                 frame = np.zeros([self._features.shape[0], int(self._feature_frame_len)], dtype='float32')
-            frame[:, 0:samp_len] = self._features[:, self._start : self._features_len[0]].cpu()
+                segment = self._features[:, self._start : self._features_len[0]].cpu()
+                frame[:, : segment.shape[1]] = segment
             self.output = False
         self.count += 1
         return frame

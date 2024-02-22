@@ -94,7 +94,28 @@ class TestAudioSegment:
                     audio_segment.samples, ref_samples, rtol=rtol, atol=atol
                 ), f'channel_selector {channel_selector}, samples not matching'
 
-                # 2) Load a random segment
+                # 2) Load a with duration=None and offset=None, should load the whole audio
+
+                # UUT
+                audio_segment = AudioSegment.from_file(
+                    audio_file, offset=None, duration=None, channel_selector=channel_selector
+                )
+
+                # Test
+                assert (
+                    audio_segment.sample_rate == sample_rate
+                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, sample rate not matching: {audio_segment.sample_rate} != {sample_rate}'
+                assert (
+                    audio_segment.num_channels == ref_channels
+                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, num channels not matching: {audio_segment.num_channels} != {ref_channels}'
+                assert audio_segment.num_samples == len(
+                    ref_samples
+                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, num samples not matching: {audio_segment.num_samples} != {len(ref_samples)}'
+                assert np.allclose(
+                    audio_segment.samples, ref_samples, rtol=rtol, atol=atol
+                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, samples not matching'
+
+                # 3) Load a random segment
                 offset = 0.45 * np.random.rand() * signal_len_sec
                 duration = 0.45 * np.random.rand() * signal_len_sec
 

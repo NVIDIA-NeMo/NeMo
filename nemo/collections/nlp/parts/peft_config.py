@@ -182,6 +182,7 @@ class LoraPEFTConfig(PEFTConfig):
             "row_init_method": lora_cfg.get("row_init_method", "zero"),
             "gather_output": False,
             "dropout": lora_cfg.adapter_dropout,
+            "alpha": lora_cfg.get("alpha", lora_cfg.adapter_dim),
         }
 
         if lora_cfg.weight_tying:

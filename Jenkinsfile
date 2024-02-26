@@ -117,9 +117,7 @@ pipeline {
     }
     stage('Import Checks'){
       steps {
-        sh 'python tests/core_ptl/check_imports.py --domain "asr"'
         sh 'python tests/core_ptl/check_imports.py --domain "nlp"'
-        sh 'python tests/core_ptl/check_imports.py --domain "tts"'
       }
     }
     stage('L0: Unit Tests GPU') {

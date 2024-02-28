@@ -35,7 +35,7 @@ You can also obtain timestamps for each word in the transcription as follows:
         decoding_cfg.compute_timestamps = True
         asr_model.change_decoding_strategy(decoding_cfg)
 
-    # specify flag `return_hypotheses=True``        
+    # specify flag `return_hypotheses=True``
     hypotheses = asr_model.transcribe(["path/to/audio_file.wav"], return_hypotheses=True)
 
     # if hypotheses form a tuple (from RNNT), extract just "best" hypotheses
@@ -69,11 +69,11 @@ You can also transcribe speech via the command line using the following `script 
         audio_dir=<path_to_audio_dir> # path to dir containing audio files to transcribe
 
 The script will save all transcriptions in a JSONL file where each line corresponds to an audio file in ``<audio_dir>``.
-This file will correspond to a format that NeMo commonly uses for saving model predictions, and also for storing 
-input data for training and evaluation. You can learn more about the format that NeMo uses for these files 
+This file will correspond to a format that NeMo commonly uses for saving model predictions, and also for storing
+input data for training and evaluation. You can learn more about the format that NeMo uses for these files
 (which we refer to as "manifest files") :ref:`here<section-with-manifest-format-explanation>`.
 
-You can also specify the files to be transcribed inside a manifest file, and pass that in using the argument 
+You can also specify the files to be transcribed inside a manifest file, and pass that in using the argument
 ``dataset_manifest=<path to manifest specifying audio files to transcribe>`` instead of ``audio_dir``.
 
 
@@ -87,8 +87,8 @@ You can get a good improvement in transcription accuracy even using a simple N-g
 
 After :ref:`training <train-ngram-lm>` an N-gram LM, you can use it for transcribing audio as follows:
 
-1. Install the OpenSeq2Seq beam search decoding and KenLM libraries using `this script <scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`_.
-2. Perform transcription using `this script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py>`_:
+1. Install the OpenSeq2Seq beam search decoding and KenLM libraries using the `install_beamsearch_decoders script <scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`_.
+2. Perform transcription using the `eval_beamsearch_ngram script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py>`_:
 
 .. code-block:: bash
 
@@ -124,9 +124,9 @@ The pretrained models also vary by:
 * **language** (English, Spanish, etc., including some **multilingual** and **code-switching** models),
 * whether the output text contains **punctuation & capitalization** or not.
 
-The NeMo ASR checkpoints can be found on `HuggingFace <https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia>`_, or on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_. All models released by the NeMo team can be found on NGC, and some of those are also available on HuggingFace. 
+The NeMo ASR checkpoints can be found on `HuggingFace <https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia>`_, or on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_. All models released by the NeMo team can be found on NGC, and some of those are also available on HuggingFace.
 
-All NeMo ASR checkpoints open-sourced by the NeMo team follow the following naming convention: 
+All NeMo ASR checkpoints open-sourced by the NeMo team follow the following naming convention:
 ``stt_{language}_{encoder name}_{decoder name}_{model size}{_optional descriptor}``.
 
 You can load the checkpoints automatically using the ``ASRModel.from_pretrained()`` class method, for example:
@@ -141,7 +141,7 @@ You can load the checkpoints automatically using the ``ASRModel.from_pretrained(
     # you can also load open-sourced NeMo models released by other HF users using:
     # asr_model = nemo_asr.models.ASRModel.from_pretrained("<HF username>/<model name>")
 
-See further documentation about :doc:`loading checkpoints <./results>`, a full :ref:`list <asr-checkpoint-list-by-language>` of models and their :doc:`benchmark scores <./score>`.
+See further documentation about :doc:`loading checkpoints <./results>`, a full :ref:`list <asr-checkpoint-list-by-language>` of models and their :doc:`benchmark scores <./scores>`.
 
 There is also more information about the ASR model architectures available in NeMo :doc:`here <./models>`.
 
@@ -175,7 +175,7 @@ Preparing ASR datasets
 NeMo includes preprocessing scripts for several common ASR datasets. The :doc:`Datasets <./datasets>` section contains instructions on
 running those scripts. It also includes guidance for creating your own NeMo-compatible dataset, if you have your own data.
 
-Further information 
+Further information
 -------------------
 For more information, see additional sections in the ASR docs on the left-hand-side menu or in the list below:
 
@@ -189,5 +189,4 @@ For more information, see additional sections in the ASR docs on the left-hand-s
    scores
    configs
    api
-   resources
    examples/kinyarwanda_asr.rst

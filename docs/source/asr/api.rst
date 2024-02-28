@@ -326,5 +326,3 @@ Adapter Strategies
     :member-order: bysource
     :undoc-members: adapter_module_names
 
------
-

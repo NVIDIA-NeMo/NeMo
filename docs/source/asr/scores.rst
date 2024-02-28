@@ -11,49 +11,49 @@ EN
     :header-rows: 1
     :align: left
     :file: data/scores/en/citrinet_en.csv
-                
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/en/conformer_en.csv
-                
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/en/contextnet_en.csv
-                
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/en/fastconformer_en.csv
-                
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/en/jasper10x5dr_en.csv
-                
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/en/quartznet15x5_en.csv
-                
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/en/squeezeformer_en.csv
-                
+
 --------------------
 
 BE
@@ -63,7 +63,7 @@ BE
     :header-rows: 1
     :align: left
     :file: data/scores/be/conformer_be.csv
-    
+
 --------------------
 
 BY
@@ -73,7 +73,7 @@ BY
     :header-rows: 1
     :align: left
     :file: data/scores/by/fastconformer_by.csv
-    
+
 --------------------
 
 CA
@@ -83,14 +83,14 @@ CA
     :header-rows: 1
     :align: left
     :file: data/scores/ca/conformer_ca.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/ca/quartznet15x5_ca.csv
-    
+
 --------------------
 
 DE
@@ -100,35 +100,35 @@ DE
     :header-rows: 1
     :align: left
     :file: data/scores/de/citrinet_de.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/de/conformer_de.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/de/contextnet_de.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/de/fastconformer_de.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/de/quartznet15x5_de.csv
-    
+
 --------------------
 
 ENES
@@ -138,14 +138,14 @@ ENES
     :header-rows: 1
     :align: left
     :file: data/scores/enes/conformer_enes.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/enes/contextnet_enes.csv
-    
+
 --------------------
 
 EO
@@ -155,7 +155,7 @@ EO
     :header-rows: 1
     :align: left
     :file: data/scores/eo/conformer_eo.csv
-    
+
 --------------------
 
 ES
@@ -165,35 +165,35 @@ ES
     :header-rows: 1
     :align: left
     :file: data/scores/es/citrinet_es.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/es/conformer_es.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/es/contextnet_es.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/es/fastconformer_es.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/es/quartznet15x5_es.csv
-    
+
 --------------------
 
 FR
@@ -203,28 +203,28 @@ FR
     :header-rows: 1
     :align: left
     :file: data/scores/fr/citrinet_fr.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/fr/conformer_fr.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/fr/contextnet_fr.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/fr/quartznet15x5_fr.csv
-    
+
 --------------------
 
 HR
@@ -234,14 +234,14 @@ HR
     :header-rows: 1
     :align: left
     :file: data/scores/hr/conformer_hr.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/hr/fastconformer_hr.csv
-    
+
 --------------------
 
 IT
@@ -251,21 +251,21 @@ IT
     :header-rows: 1
     :align: left
     :file: data/scores/it/conformer_it.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/it/fastconformer_it.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/it/quartznet15x5_it.csv
-    
+
 --------------------
 
 KAB
@@ -275,7 +275,7 @@ KAB
     :header-rows: 1
     :align: left
     :file: data/scores/kab/conformer_kab.csv
-    
+
 --------------------
 
 NL
@@ -285,7 +285,7 @@ NL
     :header-rows: 1
     :align: left
     :file: data/scores/nl/fastconformer_nl.csv
-    
+
 --------------------
 
 PL
@@ -295,14 +295,14 @@ PL
     :header-rows: 1
     :align: left
     :file: data/scores/pl/fastconformer_pl.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/pl/quartznet15x5_pl.csv
-    
+
 --------------------
 
 RU
@@ -312,14 +312,14 @@ RU
     :header-rows: 1
     :align: left
     :file: data/scores/ru/conformer_ru.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/ru/quartznet15x5_ru.csv
-    
+
 --------------------
 
 RW
@@ -329,7 +329,7 @@ RW
     :header-rows: 1
     :align: left
     :file: data/scores/rw/conformer_rw.csv
-    
+
 --------------------
 
 UA
@@ -339,7 +339,7 @@ UA
     :header-rows: 1
     :align: left
     :file: data/scores/ua/fastconformer_ua.csv
-    
+
 --------------------
 
 ZH
@@ -349,14 +349,14 @@ ZH
     :header-rows: 1
     :align: left
     :file: data/scores/zh/citrinet_zh.csv
-    
+
 --------------------
 
 .. csv-table::
     :header-rows: 1
     :align: left
     :file: data/scores/zh/conformer_zh.csv
-    
+
 --------------------
 
 
@@ -370,7 +370,7 @@ EN with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/en/fastconformer_en.csv
-                
+
 --------------------
 
 BY with P&C
@@ -380,7 +380,7 @@ BY with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/by/fastconformer_by.csv
-    
+
 --------------------
 
 DE with P&C
@@ -390,7 +390,7 @@ DE with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/de/fastconformer_de.csv
-    
+
 --------------------
 
 ES with P&C
@@ -400,7 +400,7 @@ ES with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/es/fastconformer_es.csv
-    
+
 --------------------
 
 HR with P&C
@@ -410,7 +410,7 @@ HR with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/hr/fastconformer_hr.csv
-    
+
 --------------------
 
 IT with P&C
@@ -420,7 +420,7 @@ IT with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/it/fastconformer_it.csv
-    
+
 --------------------
 
 NL with P&C
@@ -430,7 +430,7 @@ NL with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/nl/fastconformer_nl.csv
-    
+
 --------------------
 
 PL with P&C
@@ -440,7 +440,7 @@ PL with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/pl/fastconformer_pl.csv
-    
+
 --------------------
 
 UA with P&C
@@ -450,5 +450,3 @@ UA with P&C
     :header-rows: 1
     :align: left
     :file: data/scores_pc/ua/fastconformer_ua.csv
-    
---------------------

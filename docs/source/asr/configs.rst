@@ -1030,20 +1030,20 @@ Fine-tuning Configurations
 
 All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
 
-Models can be fine-tuned in two ways: 
+Models can be fine-tuned in two ways:
 * By updating or retaining current tokenizer alone
 * By updating model architecture and tokenizer
 
 Fine-tuning by updating or retaining current tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In this case, the model architecture is not updated. The model is initialized with the pre-trained weights by 
+In this case, the model architecture is not updated. The model is initialized with the pre-trained weights by
 two ways:
 
 1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
 2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
 
-Then users can use existing tokenizer or update the tokenizer with new vocabulary. This is useful when users don't want to update the model architecture 
+Then users can use existing tokenizer or update the tokenizer with new vocabulary. This is useful when users don't want to update the model architecture
 but want to update the tokenizer with new vocabulary.
 
 The same script can be used to finetune CTC, RNNT or Hybrid models as well.
@@ -1073,12 +1073,12 @@ Finetune ASR Models using HuggingFace Datasets
 Users can utilize HuggingFace Datasets for finetuning NeMo ASR models. The following config file can be used for this purpose:
 `<NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_hf_finetune.yaml`
 
-As mentioned earlier, users can update the tokenizer or use an existing one based on their requirements. If users want to create a new tokenizer 
+As mentioned earlier, users can update the tokenizer or use an existing one based on their requirements. If users want to create a new tokenizer
 from HuggingFace Datasets, they can use the following script:
 `<NeMo_repo>/scripts/tokenizers/get_hf_text_data.py`
 
 Fine-tuning by changing model architecture and tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If users want to update the model architecture as well they can use the following script:
 
@@ -1105,7 +1105,7 @@ There are multiple ASR subtasks inside the ``examples/asr/`` directory, you can 
 To reinitialize part of the model, to make it different from the pretrained model, users can mention them through config:
 
 .. code-block:: yaml
-    
+
     init_from_nemo_model: "<path to .nemo model file>"
         asr_model:
             include: ["preprocessor","encoder"]

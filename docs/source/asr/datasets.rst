@@ -218,7 +218,7 @@ of filepaths, e.g. ``['/data/shard1.tar', '/data/shard2.tar']``, or in a single 
   tag ``_CL_``. For SLURM based tasks, we suggest the use of the special tags for ease of use.
 
 As with non-tarred datasets, the manifest file should be passed in ``manifest_filepath``. The dataloader assumes that the length
-of the manifest after filtering is the correct size of the dataset for reporting training progress. 
+of the manifest after filtering is the correct size of the dataset for reporting training progress.
 
 The ``tarred_shard_strategy`` field of the config file can be set if you have multiple shards and are running an experiment with
 multiple workers. It defaults to ``scatter``, which preallocates a set of shards per worker which do not change during runtime.
@@ -246,8 +246,8 @@ is identical to the audio tarballs and there should be a 1:1 relationship betwee
 ``'/data/sharded_manifests/manifest__OP_1..64_CL_'`` in the above example. Using sharded manifests improves job startup times and
 decreases memory usage, as each worker only loads manifest shards for the corresponding audio shards instead of the entire manifest.
 
-To enable sharded manifest filename expansion, set the ``shard_manifests`` field of the config file to true. In addition, the 
-``defer_setup`` flag needs to be true as well, so that the dataloader will be initialized after the DDP and its length can be collected from 
+To enable sharded manifest filename expansion, set the ``shard_manifests`` field of the config file to true. In addition, the
+``defer_setup`` flag needs to be true as well, so that the dataloader will be initialized after the DDP and its length can be collected from
 the distributed workers.
 
 
@@ -276,7 +276,7 @@ audio files according to ``min_duration`` and ``max_duration``, and tar the rema
 
 The files in the target directory should look similar to the following:
 
-.. code::
+.. code:: none
 
   target_dir/
   ├── audio_1.tar
@@ -437,7 +437,7 @@ For tarred datasets, shards from the AIS cluster are used by piping ``ais get`` 
 Tarred Dataset from AIS
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-A tarred dataset can be easily used as described in the :ref:`Tarred Datasets` section by providing paths to manifests on an AIS cluster.
+A tarred dataset can be easily used as described in the `Tarred Datasets`_ section by providing paths to manifests on an AIS cluster.
 For example, a tarred dataset from an AIS cluster can be configured as
 
 .. code::
@@ -445,7 +445,7 @@ For example, a tarred dataset from an AIS cluster can be configured as
   manifest_filepath='ais://bucket/tarred_audio_manifest.json'
   tarred_audio_filepaths='ais://bucket/shard_{1..64}.tar'
 
-:ref:`Bucketing Datasets` are configured in a similar way by providing paths on an AIS cluster.
+`Bucketing Datasets`_ are configured in a similar way by providing paths on an AIS cluster.
 
 Non-tarred Dataset from AIS
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -637,7 +637,9 @@ Pre-computing bucket duration bins
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 We recommend to pre-compute the bucket duration bins in order to accelerate the start of the training -- otherwise, the dynamic bucketing sampler will have to spend some time estimating them before the training starts.
-The following script may be used::
+The following script may be used:
+
+.. code-block:: bash
 
     $ python scripts/speech_recognition/estimate_duration_bins.py -b 30 manifest.json
 
@@ -646,7 +648,9 @@ The following script may be used::
             bucket_duration_bins=[1.78,2.34,2.69,...
     <other diagnostic information about the dataset>
 
-For multi-dataset setups, one may provide multiple manifests and even their weights::
+For multi-dataset setups, one may provide multiple manifests and even their weights:
+
+.. code-block:: bash
 
     $ python scripts/speech_recognition/estimate_duration_bins.py -b 30 [[manifest.json,0.7],[other.json,0.3]]
 

@@ -8,13 +8,13 @@ There are two main ways to load pretrained checkpoints in NeMo:
 
 Refer to the following sections for instructions and examples for each.
 
-Note that these instructions are for loading fully trained checkpoints for evaluation or fine-tuning. For resuming an unfinished 
+Note that these instructions are for loading fully trained checkpoints for evaluation or fine-tuning. For resuming an unfinished
 training experiment, use the Experiment Manager to do so by setting the ``resume_if_exists`` flag to ``True``.
 
 Loading Local Checkpoints
 -------------------------
 
-NeMo automatically saves checkpoints of a model that is trained in a ``.nemo`` format. Alternatively, to manually save the model at any 
+NeMo automatically saves checkpoints of a model that is trained in a ``.nemo`` format. Alternatively, to manually save the model at any
 point, issue :code:`model.save_to(<checkpoint_path>.nemo)`.
 
 If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:`restore_from()` method:
@@ -40,7 +40,7 @@ made for convenience purpose :code:`hybrid_model.save_asr_model_to(<asr_checkpoi
 NGC Pretrained Checkpoints
 --------------------------
 
-The ASR collection has checkpoints of several models trained on various datasets for a variety of tasks. These checkpoints are 
+The ASR collection has checkpoints of several models trained on various datasets for a variety of tasks. These checkpoints are
 obtainable via NGC `NeMo Automatic Speech Recognition collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_asr>`_.
 The model cards on NGC contain more information about each of the checkpoints available.
 
@@ -139,7 +139,7 @@ Often times, we want to transcribe a large number of files at once (maybe from a
 For more information, see `nemo.collections.asr.modules <./api.html#modules>`__. For more information on the general ``Transcription API``, please take a look at :class:`~nemo.collections.asr.parts.mixins.transcription.TranscriptionMixin`. The audio files should be 16KHz mono-channel wav files.
 
 Inference on long audio
-^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^
 
 In some cases the audio is too long for standard inference, especially if you're using a model such as Conformer, where the time and memory costs of the attention layers scale quadratically with the duration.
 
@@ -188,7 +188,7 @@ Sometimes, the downsampling module at the earliest stage of the model can take m
 Inference on Apple M-Series GPU
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see :ref:`mac-installation` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
+To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see the `mac-installation <https://github.com/NVIDIA/NeMo/blob/stable/README.rst#mac-computers-with-apple-silicon>` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
 
 If ``allow_mps=true`` flag is passed to ``speech_to_text_eval.py``, the ``mps`` device will be selected automatically.
 
@@ -268,7 +268,7 @@ French
    :align: left
    :widths: 40, 10, 50
    :header-rows: 1
-   
+
 -----------------------------
 
 Polish
@@ -353,7 +353,7 @@ Kinyarwanda
 -----------------------------
 
 Belarusian
-^^^^^^^^^^^
+^^^^^^^^^^
 .. csv-table::
    :file: data/benchmark_by.csv
    :align: left
@@ -363,7 +363,7 @@ Belarusian
 -----------------------------
 
 Ukrainian
-^^^^^^^^^^^
+^^^^^^^^^
 .. csv-table::
    :file: data/benchmark_ua.csv
    :align: left
@@ -373,7 +373,7 @@ Ukrainian
 -----------------------------
 
 Multilingual
-^^^^^^^^^^^
+^^^^^^^^^^^^
 .. csv-table::
    :file: data/benchmark_multilingual.csv
    :align: left
@@ -383,7 +383,7 @@ Multilingual
 -----------------------------
 
 Code-Switching
-^^^^^^^^^^^
+^^^^^^^^^^^^^^
 .. csv-table::
    :file: data/benchmark_code_switching.csv
    :align: left

@@ -41,7 +41,7 @@ in the transformer encoder. This design choice ensures efficient scaling and uti
 +-------+----------------+------------+--------+-----------------+------------------+---------+-------------------+
 
 Model Configuration
-------------------
+--------------------
 
 Transformer Encoder
 ^^^^^^^^^^^^^^^^^^^^

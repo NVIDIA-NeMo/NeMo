@@ -12,7 +12,7 @@ NeMo Multimodal currently supports the following models:
 +-----------------------------------+----------+-------------+------+-------------------------+------------------+
 | Model                             | Training | Fine-Tuning | PEFT | Evaluation              | Inference        |
 +===================================+==========+=============+======+=========================+==================+
-| `NeVA (LLaVA) <./neva.html>`_     | ✓        | ✓           | -    | -                       | ✓                |
+| `NeVA (LLaVA) <./neva.html>`_     | Yes      | Yes         | -    | -                       | Yes              |
 +-----------------------------------+----------+-------------+------+-------------------------+------------------+
 | Kosmos-2                          | WIP      | WIP         | -    | -                       | WIP              |
 +-----------------------------------+----------+-------------+------+-------------------------+------------------+
@@ -47,7 +47,7 @@ Flamingo :cite:`mm-models-flamingo` addresses inconsistent visual feature map si
     - Dataset: Utilizes data from various datasets like M3W, ALIGN, LTIP, and VTP emphasizing multimodal in-context learning.
 
 Kosmos-1: Language Is Not All You Need: Aligning Perception with Language Models
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Kosmos-1 :cite:`mm-models-kosmos1` by Microsoft is a Multimodal Large Language Model (MLLM) aimed at melding language, perception, action, and world modeling.
 

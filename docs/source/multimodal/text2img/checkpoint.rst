@@ -12,7 +12,7 @@ Refer to the following sections for instructions and examples for each.
 Note that these instructions are for loading fully trained checkpoints for evaluation or fine-tuning.
 
 Loading ``.nemo`` Checkpoints
--------------------------
+-----------------------------
 
 NeMo automatically saves checkpoints of a model that is trained in a ``.nemo`` format. Alternatively, to manually save the model at any 
 point, issue :code:`model.save_to(<checkpoint_path>.nemo)`.
@@ -27,7 +27,7 @@ If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:
 Where the model base class is the MM model class of the original checkpoint.
 
 Converting Intermediate Checkpoints
----------------------------
+-----------------------------------
 To evaluate a partially trained checkpoint, you may need to convert it to ``.nemo`` format.
 `script to convert the checkpoint <ADD convert_ckpt_to_nemo.py PATH>`.
 
@@ -43,7 +43,7 @@ To evaluate a partially trained checkpoint, you may need to convert it to ``.nem
 
 
 Converting HuggingFace Checkpoints
----------------------------------
+----------------------------------
 
 To fully utilize the optimized training pipeline and framework/TRT inference pipeline
 of NeMo, we provide scripts to convert popular checkpoints on HuggingFace into NeMo format.

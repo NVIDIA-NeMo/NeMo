@@ -14,7 +14,8 @@ different scenes.
 NeMo's Dreambooth is built upon the Stable Diffusion framework. While its architecture mirrors Stable Diffusion (refer to :ref:`sd-config-section`), the distinction lies in its training process, specifically when utilizing a different dataset and incorporating the prior preservation loss when necessary.
 
 - Prior Preservation Loss
-When finetuning large pretrained language models on specific tasks or text-to-image diffusion models on a small dataset, problems like language drift and decreased output variety often arise. The concept of the prior preservation loss is straightforward: it guides the model using its self-generated samples and incorporates the discrepancy between the model-predicted noise on these samples. The influence of this loss component can be adjusted using model.prior_loss_weight.
+
+    When finetuning large pretrained language models on specific tasks or text-to-image diffusion models on a small dataset, problems like language drift and decreased output variety often arise. The concept of the prior preservation loss is straightforward: it guides the model using its self-generated samples and incorporates the discrepancy between the model-predicted noise on these samples. The influence of this loss component can be adjusted using model.prior_loss_weight.
 
 .. code-block:: python
 
@@ -26,7 +27,8 @@ When finetuning large pretrained language models on specific tasks or text-to-im
 
 
 - Training Dataset
-NeMo's Dreambooth model dataset is different from other NeMo multimodal models in that it doesn't necessitate data stored in the webdataset format. You can find a sample dataset at :cite:`mm-models-dreamboothdataset`. For each object you aim to integrate into the model, just place its images (typically 3-5) in a folder and specify its path in ``model.data.instance_dir``. When training with the prior preservation loss, store images produced by the original model in a distinct folder and reference its path in ``model.data.regularization_dir``. This process is automated in NeMo's DreamBooth implementation.
+
+    NeMo's Dreambooth model dataset is different from other NeMo multimodal models in that it doesn't necessitate data stored in the webdataset format. You can find a sample dataset at :cite:`mm-models-dreamboothdataset`. For each object you aim to integrate into the model, just place its images (typically 3-5) in a folder and specify its path in ``model.data.instance_dir``. When training with the prior preservation loss, store images produced by the original model in a distinct folder and reference its path in ``model.data.regularization_dir``. This process is automated in NeMo's DreamBooth implementation.
 
 Model Configuration
 --------------------

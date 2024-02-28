@@ -15,7 +15,7 @@ Building upon LLaVA's foundational principles, NeVA amplifies its training effic
 
 
 Main Language Model
-^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^
 
 The original LLaVA model incorporates the LLaMA architecture, renowned for its prowess in open-source, language-only instruction-tuning endeavors. LLaMA refines textual input through a process of tokenization and embedding. To these token embeddings, positional embeddings are integrated, and the combined representation is channeled through multiple transformer layers. The output from the concluding transformer layer, associated with the primary token, is designated as the text representation.
 
@@ -23,7 +23,7 @@ In NeMo, the text encoder is anchored in the :class:`~nemo.collections.nlp.model
 
 
 Vision Model
-^^^^^^^^^^
+^^^^^^^^^^^
 
 For visual interpretation, NeVA harnesses the power of the pre-trained CLIP visual encoder, ViT-L/14, recognized for its visual comprehension acumen. Images are first partitioned into standardized patches, for instance, 16x16 pixels. These patches are linearly embedded, forming a flattened vector that subsequently feeds into the transformer. The culmination of the transformer's processing is a unified image representation. In the NeMo framework, the NeVA vision model, anchored on the CLIP visual encoder ViT-L/14, can either be instantiated via the :class:`~nemo.collections.multimodal.models.multimodal_llm.clip.megatron_clip_models.CLIPVisionTransformer` class or initiated through the `transformers` package from Hugging Face.
 
@@ -44,7 +44,7 @@ Architecture Table
 +------------------+---------------+------------+--------------------+-----------------+------------+----------------+--------------------------+
 
 Model Configuration
-------------------
+-------------------
 
 Multimodal Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -140,7 +140,8 @@ Optimizations
 | BF16 O2                            | Enables O2-level automatic mixed precision, optimizing Bfloat16 precision for better performance.                                                                                                                                                                                                                                                                                                                                                                                                       | ``model.megatron_amp_O2=True``                                                                                                                                                                                   |
 +------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Flash Attention V2                 | FlashAttention is a fast and memory-efficient algorithm to compute exact attention. It speeds up model training and reduces memory requirement by being IO-aware. This approach is particularly useful for large-scale models and is detailed further in the repository linked. [Reference](https://github.com/Dao-AILab/flash-attention)                                                                                                                                                               | ``model.use_flash_attention=True``                                                                                                                                                                               |
-+----------------------------------- +---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
++------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
 
 NeVA Training
 --------------

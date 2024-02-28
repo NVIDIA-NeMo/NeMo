@@ -92,7 +92,7 @@ For conversion:
 
 
 Model Parallelism Adjustment
--------------------------
+----------------------------
 
 NeVA Checkpoints
 ^^^^^^^^^^^^^^^^

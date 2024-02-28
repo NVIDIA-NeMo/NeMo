@@ -90,7 +90,7 @@ for all possible arguments
 
 
 Experiment Manager Configurations
----------------------------
+---------------------------------
 
 NeMo Experiment Manager provides convenient way to configure logging, saving, resuming options and more.
 
@@ -145,7 +145,7 @@ By default we use ``fused_adam`` as the optimizer, refer to NeMo user guide for 
 Learning rate scheduler can be specified in ``optim.sched`` section.
 
 Model Architecture Configurations
-------------------------
+---------------------------------
 
 Each configuration file should describe the model architecture being used for the experiment. 
 

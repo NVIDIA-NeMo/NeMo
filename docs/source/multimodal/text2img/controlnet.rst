@@ -13,7 +13,7 @@ NeMo Multimodal provides a training pipeline and example implementation for gene
 
 
 ControlNet Dataset
-____________________
+^^^^^^^^^^^^^^^^^^^^
 
 ControlNet employs the WebDataset format for data ingestion. (See :doc:`Datasets<./datasets>`) Beyond the essential image-text pairs saved in tarfiles with matching names but distinct extensions (like 000001.jpg and 000001.txt), ControlNet also requires control input within the tarfiles, identifiable by their specific extension. By default, the control input should be stored as 000001.png for correct loading and identification in NeMo's implementation.
 

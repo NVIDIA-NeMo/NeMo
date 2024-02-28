@@ -147,7 +147,7 @@ Vocoders
    :header-rows: 1
 
 End2End models
-^^^^^^^^
+^^^^^^^^^^^^^^
 .. csv-table::
    :file: data/ngc_models_e2e.csv
    :align: left

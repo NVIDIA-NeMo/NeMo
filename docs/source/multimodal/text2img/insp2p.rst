@@ -16,7 +16,7 @@ The dataset for NeMo's InstructPix2Pix model stands out among NeMo multimodal mo
 For instructions on downloading and preparing the custom dataset for training InstructPix2Pix, refer to the official InstructPix2Pix repository. `Instruct-Pix2Pix Repository <https://github.com/timothybrooks/instruct-pix2pix#generated-dataset>`_
 
 Model Configuration
-------------------
+-------------------
 
 Data Configuration
 ^^^^^^^^^^^^^^^^^^^
@@ -50,7 +50,8 @@ Essential Model Configuration
   - ``_target_``: Designates the target module for the UNet model in the NeMo collection.
   - ``from_pretrained``: (Value not provided) Generally indicates the path or identifier of a pretrained model.
   - ``in_channels``: Specifies the number of input channels for the UNet model. Here, the value is set to 8, with the initial 4 channels dedicated to image guidance.
-Additional model configurations align with Stable Diffusion (refer to :doc:`Stable Diffusion <./sd>`).
+
+  Additional model configurations align with Stable Diffusion (refer to :doc:`Stable Diffusion <./sd>`).
 
 Optimization related configurations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

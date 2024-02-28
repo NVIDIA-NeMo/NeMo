@@ -2,7 +2,7 @@ Datasets
 ========
 
 Data pipeline overview
------------------
+----------------------
 
 .. note:: It is the responsibility of each user to check the content of the dataset, review the applicable licenses, and determine if it is suitable for their intended use. Users should review any applicable links associated with the dataset before placing the data on their machine.
 
@@ -34,7 +34,7 @@ Instruction for configuring each sub-stage is provided as a comment next to each
 
 
 Examples of Preparing a Dataset for Training Text2Img Model
------------------------
+-----------------------------------------------------------
 
 Refer to the `Dataset Tutorial <http://TODOURL>`_` for details on how to prepare the training dataset for Training Text2Img models.
 

@@ -172,7 +172,7 @@ Let’s take Falcon as an example to see how to create its layers using mcore GP
   
 
 Customizing model initialization
-""""""""""""""""""""""""""""""
+""""""""""""""""""""""""""""""""
 Here we show how modules can be customized at initialization using spec:
 
 .. image:: customization_module.png
@@ -206,7 +206,7 @@ For the Falcon example, we instantiate the ``TransformerLayerSubmodule`` datacla
 
 
 Customizing model forward
-"""""""""""""""""""""""
+"""""""""""""""""""""""""
 
 Here is a diagram showing the forward functions of conventional Mcore GPTModel v.s. Falcon. 
 

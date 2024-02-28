@@ -4,7 +4,7 @@ This section provides a detailed overview of the NeMo configuration file setup s
 
 Within the configuration files of the NeMo vision models, details concerning dataset(s), augmentation, optimization parameters, and model architectural specifications are central. This page explores each of these aspects.
 
-Discover exemplary configuration files for all NeMo vision models scripts in the `config directory of the examples <http://TODOURL>_.
+Discover exemplary configuration files for all NeMo vision models scripts in the `config directory of the examples <http://TODOURL>`_.
 
 Dataset Configuration
 =====================

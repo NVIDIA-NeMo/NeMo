@@ -2,7 +2,7 @@ Datasets
 ========
 
 ImageNet Data Preparation
------------------
+-------------------------
 
 .. note:: It is the responsibility of each user to check the content of the dataset, review the applicable licenses, and determine if it is suitable for their intended use. Users should review any applicable links associated with the dataset before placing the data on their machine.
 

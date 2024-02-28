@@ -64,7 +64,7 @@ Example of the config file: ``NeMo/examples/tts/g2p/conf/g2p_t5.yaml``.
 
 To train G2P-Conformer model and evaluate it after at the end of the training, run:
 
-.. code::
+.. code-block::
 
     python examples/text_processing/g2p/g2p_train_and_evaluate.py \
         # (Optional: --config-path=<Path to dir of configs> --config-name=<name of config without .yaml>) \
@@ -83,7 +83,7 @@ Example of the config file: ``NeMo/examples/text_processing/g2p/conf/g2p_conform
 
 To evaluate a pretrained G2P model, run:
 
-.. code::
+.. code-block::
 
     python examples/text_processing/g2p/g2p_train_and_evaluate.py \
         # (Optional: --config-path=<Path to dir of configs> --config-name=<name of config without .yaml>) \
@@ -215,6 +215,7 @@ Note, if the input manifest contains target "word_id", evaluation will be also p
 To train a model with `Chinese Polyphones with Pinyin (CPP) <https://github.com/kakaobrain/g2pM/tree/master/data>`__ dataset, run:
 
 .. code-block::
+
     # prepare CPP manifest
     mkdir -p ./cpp_manifest
     git clone https://github.com/kakaobrain/g2pM.git

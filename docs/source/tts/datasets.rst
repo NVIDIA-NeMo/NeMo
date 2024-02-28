@@ -87,7 +87,7 @@ The texts of this dataset has been normalized already. So there is no extra need
 
 
 Thorsten Müller's German Neutral-TTS Datasets
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 There are two German neutral datasets released by Thorsten Müller for now, 21.02 and 22.10, respectively. Version 22.10 has been recorded with a better recording setup, such as recording chamber and better microphone. So it is advised to train models on the 22.10 version because its audio quality is better and it has a way more natural speech flow and higher character rate per second speech. The two datasets are described below and defined in `scripts/dataset_processing/tts/thorsten_neutral/get_data.py:THORSTEN_NEUTRAL <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py#L41-L51>`_.
 
 .. code-block:: python

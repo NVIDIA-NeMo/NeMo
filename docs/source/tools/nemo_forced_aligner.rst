@@ -91,12 +91,14 @@ Optional parameters:
 Input manifest file format
 --------------------------
 By default, NFA needs to be provided with a 'manifest' file where each line specifies the absolute "audio_filepath" and "text" of each utterance that you wish to produce alignments for, like the format below:
+
 .. code-block::
+
     {"audio_filepath": "/absolute/path/to/audio.wav", "text": "the transcription of the utterance"}
 
 You can omit the ``"text"`` field from the manifest if you specify ``align_using_pred_text=true``. In that case, any ``"text"`` fields in the manifest will be ignored: the ASR model at ``pretrained_name`` or ``model_path`` will be used to transcribe the audio and obtain ``"pred_text"``, which will be used as the reference text for the forced alignment process. The ``"pred_text"`` will also be saved in the output manifest JSON file at ``<output_dir>/<original manifest file name>_with_output_file_paths.json``. To remove the possibility of overwriting ``"pred_text"``, NFA will raise an error if ``align_using_pred_text=true`` and there are existing ``"pred_text"`` fields in the original manifest.
 
-	Note: NFA does not require ``"duration"`` fields in the manifest, and can align long audio files without running out of memory. The duration of audio file you can align will depend on the amount of memory on your machine. NFA will also produce better alignments the more accurate the reference text in ``"text"`` is.
+	..note:: NFA does not require ``"duration"`` fields in the manifest, and can align long audio files without running out of memory. The duration of audio file you can align will depend on the amount of memory on your machine. NFA will also produce better alignments the more accurate the reference text in ``"text"`` is.
 
 
 Output CTM file format
@@ -112,7 +114,7 @@ Each CTM file will contain lines of the format:
 Note the second item in the line (the 'channel ID', which is required by the CTM file format) is always 1, as NFA operates on single channel audio.
 
 ``CTMFileConfig`` parameters
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``CTMFileConfig`` (which is passed into the main NFA config) has the following parameters:
 * ``remove_blank_tokens``: bool (default ``False``) to specify if the token-level CTM files should have the timestamps of the blank tokens removed.
@@ -127,7 +129,7 @@ NFA will produce the following ASS files, which you can use to generate subtitle
 All words belonging to the same segment 'segments' will appear at the same time in the subtitles generated with the ASS files. If you find that your segments are not the right size, you can use set ``ass_file_config.resegment_text_to_fill_space=true`` and specify some number of ``ass_file_config.max_lines_per_segment``.
 
 ``ASSFileConfig`` parameters
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``ASSFileConfig`` (which is passed into the main NFA config) has the following parameters:
 * ``fontsize``: int (default value ``20``) which will be the fontsize of the text

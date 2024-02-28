@@ -71,7 +71,7 @@ Ensure the NeMo hparams file has the correct model architectural parameters, pla
 For OpenCLIP migrations, provide the architecture (`arch`) and version (`version`) according to the OpenCLIP `model list <https://github.com/mlfoundations/open_clip#usage>`_. For Hugging Face conversions, set the version to `huggingface` and the architecture (`arch`) to the specific Hugging Face model identifier, e.g., `yuvalkirstain/PickScore_v1`.
 
 Model Parallelism Adjustment
----------------------------
+----------------------------
 
 CLIP Checkpoints
 ^^^^^^^^^^^^^^^^

@@ -201,8 +201,7 @@ First, instantiate the model and trainer, then call ``.fit``:
     # Or we can run the test loop on test data by calling
     trainer.test(model=model)
 
-All `trainer flags <https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html#trainer-flags>`_ can be set from from the 
-NeMo configuration. 
+All `trainer flags <https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html#trainer-flags>`_ can be set from from the NeMo configuration. 
     
 
 Configuration

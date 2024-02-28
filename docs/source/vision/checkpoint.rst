@@ -56,7 +56,7 @@ Converting Community Checkpoints
 There is no support for converting community checkpoints to NeMo ViT.
 
 Model Parallelism Adjustment
----------------------------
+----------------------------
 
 ViT Checkpoints
 ^^^^^^^^^^^^^^^^

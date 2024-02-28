@@ -48,7 +48,7 @@ Recommended UNet size for base64 and SR256 models are listed below:
 
 
 Efficient UNet
-~~~~~~~~~~~~~
+~~~~~~~~~~~~~~
 
 Efficient UNet is based on Regular UNet with the following modifications:
  
@@ -73,7 +73,7 @@ Recommended Efficient UNet size for SR256 and SR1024 models are listed below:
 
 
 Noise Scheduling / Sampler
-^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 NeMo Imagen supports two types of noise scheduling: Continous DDPM :cite:`mm-models-nichol2021improved` and EDM :cite:`mm-models-karras2022elucidating`.
 
@@ -87,7 +87,7 @@ strategy during training. It also identifies the optimal time discretization for
 incorporates a higher-order Runge-Kutta method for the sampling process.
 
 Model Configuration
-------------------
+-------------------
 
 Text Encoder
 ^^^^^^^^^^^^^^^^
@@ -124,6 +124,7 @@ during training to generate text embedding for the raw text from the dataset.
 
 Regular UNet
 ^^^^^^^^^^^^
+
 .. code-block:: yaml
 
   unet_type: base
@@ -204,7 +205,7 @@ of ResBlocks for each level. Additionally, you have the option to enable ``skip_
 which scales the skip connections, as detailed in the Imagen paper.
 
 Attention Blocks
-^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
 
 Imagen's UNet incorporates multiple attention blocks to effectively handle text embeddings. 
 The following arguments in the UNet configurations pertain to these attention blocks:
@@ -259,7 +260,8 @@ Setting ``preconditioning_type=DDPM`` allows user to train UNet with continous D
 be either ``noise`` or ``x_start``. We currently support ``linear`` and ``cosine`` modes for ``noise_schedule``.
 
 Training Optimizations
-^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^
+
 +--------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------+
 | Feature                  | Description                                                                                                                                                                                                                                                                                                                                  | To Enable                                       |
 +==========================+==============================================================================================================================================================================================================================================================================================================================================+=================================================+

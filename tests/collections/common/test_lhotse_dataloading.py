@@ -554,20 +554,20 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_unweighted(
     assert len(batches) == 4
 
     b = batches[0]
-    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 3  # dataset 1
-    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 0  # dataset 2
+    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 1  # dataset 1
+    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 2  # dataset 2
 
     b = batches[1]
-    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 0  # dataset 1
-    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 3  # dataset 2
+    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 2  # dataset 1
+    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 1  # dataset 2
 
     b = batches[2]
     assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 1  # dataset 1
     assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 2  # dataset 2
 
     b = batches[3]
-    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 2  # dataset 1
-    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 1  # dataset 2
+    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 1  # dataset 1
+    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 2  # dataset 2
 
 
 @requires_torchaudio
@@ -603,16 +603,16 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_weighted(
     )
 
     # Note: we use islice here because with Lhotse Shar the dataloader will always be infinite.
-    batches = [batch for batch in islice(dl, 4)]
-    assert len(batches) == 4
+    batches = [batch for batch in islice(dl, 6)]
+    assert len(batches) == 6
 
     b = batches[0]
     assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 3  # dataset 1
     assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 0  # dataset 2
 
     b = batches[1]
-    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 2  # dataset 1
-    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 1  # dataset 2
+    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 3  # dataset 1
+    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 0  # dataset 2
 
     b = batches[2]
     assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 3  # dataset 1
@@ -621,6 +621,14 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_weighted(
     b = batches[3]
     assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 3  # dataset 1
     assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 0  # dataset 2
+
+    b = batches[4]
+    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 3  # dataset 1
+    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 0  # dataset 2
+
+    b = batches[5]
+    assert len([cid for cid in b["ids"] if cid.startswith("dummy")]) == 1  # dataset 1
+    assert len([cid for cid in b["ids"] if cid.startswith("other")]) == 2  # dataset 2
 
 
 class TextDataset(torch.utils.data.Dataset):

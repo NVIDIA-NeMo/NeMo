@@ -95,7 +95,7 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
                 logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs.repeat())
                 weights.append(weight)
-            cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams)
+            cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams, seed=config.shard_seed)
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         cuts = CutSet.from_file(config.cuts_path)
@@ -180,18 +180,20 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
                 cutsets.append(CutSet(nemo_iter))
                 weights.append(weight)
         # Finally, we multiplex the dataset streams to mix the data.
-        cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams)
+        cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams, seed=config.shard_seed)
     return cuts
 
 
-def mux(*cutsets: CutSet, weights: list[int | float], max_open_streams: int | None = None) -> CutSet:
+def mux(
+    *cutsets: CutSet, weights: list[int | float], max_open_streams: int | None = None, seed: str | int = "trng"
+) -> CutSet:
     """
     Helper function to call the right multiplexing method flavour in lhotse.
     The result is always an infinitely iterable ``CutSet``, but depending on whether ``max_open_streams`` is set,
     it will select a more appropriate multiplexing strategy.
     """
     if max_open_streams is not None:
-        cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed="trng", max_open_streams=max_open_streams)
+        cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed=seed, max_open_streams=max_open_streams)
     else:
-        cuts = CutSet.mux(*[cs.repeat() for cs in cutsets], weights=weights, seed="trng")
+        cuts = CutSet.mux(*[cs.repeat() for cs in cutsets], weights=weights, seed=seed)
     return cuts

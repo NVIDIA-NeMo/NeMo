@@ -83,9 +83,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         if loss_name == 'tdt':
             num_classes = num_classes - self.joint.num_extra_outputs
-            self.cfg.decoding.durations = loss_kwargs.durations
-        elif loss_name == 'multiblank_rnnt':
-            self.cfg.decoding.big_blank_durations = loss_kwargs.big_blank_durations
 
         self.loss = RNNTLoss(
             num_classes=num_classes,
@@ -99,6 +96,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         else:
             self.spec_augmentation = None
 
+        self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding objects
         self.decoding = RNNTDecoding(
             decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
@@ -223,6 +221,16 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         return loss_name, loss_kwargs
 
+    def set_decoding_type_according_to_loss(self, decoding_cfg):
+        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
+
+        if loss_name == 'tdt':
+            decoding_cfg.durations = loss_kwargs.durations
+        elif loss_name == 'multiblank_rnnt':
+            decoding_cfg.big_blank_durations = loss_kwargs.big_blank_durations
+
+        return decoding_cfg
+
     @torch.no_grad()
     def transcribe(
         self,
@@ -325,6 +333,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             decoding_cls = OmegaConf.structured(RNNTDecodingConfig)
             decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
+            decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
             self.decoding = RNNTDecoding(
                 decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
@@ -380,6 +389,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         decoding_cls = OmegaConf.structured(RNNTDecodingConfig)
         decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
+        decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
         self.decoding = RNNTDecoding(
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,

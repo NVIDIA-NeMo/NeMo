@@ -448,8 +448,6 @@ def replace_for_export(model: nn.Module) -> nn.Module:
     Returns:
         model, possibly modified in-place
     """
-    from nemo.collections.tts.modules.submodules import MaskedInstanceNorm1d
-
     default_replacements = {
         "MatchedScaleMaskSoftmax": wrap_module(None, replace_MatchedScaleMaskSoftmax),
     }
@@ -466,6 +464,8 @@ def add_casts_around_norms(model: nn.Module):
     It was used with an extra post-parse script to have TRT preserve extra precision when --fp16 needed.
     Should not be needed with TRT 8.6.1 or later.
     """
+    from nemo.collections.tts.modules.submodules import MaskedInstanceNorm1d
+
     default_cast_replacements = {
         "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
         "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),

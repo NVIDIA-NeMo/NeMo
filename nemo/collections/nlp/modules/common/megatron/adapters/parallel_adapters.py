@@ -145,6 +145,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         dropout: float = 0.0,
         model_parallel_config: Optional[ModelParallelConfig] = None,
         alpha: float | None = None,
+        dropout_position: str = 'post',
         **kwargs,
     ):
         super().__init__()
@@ -159,6 +160,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         self.dim = dim
         self.alpha = alpha if alpha is not None else self.dim
         self.input_is_parallel = input_is_parallel
+        self.dropout_position = dropout_position
 
         # megatron_gpt_peft_models will provide this arg, but deprecated ones do not.
         # in case this arg is not provided, use the dummy default config.
@@ -256,6 +258,8 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         super().adapter_unfreeze()
 
     def forward(self, x):
+        if self.dropout is not None and self.dropout_position == 'pre':
+            x = self.dropout(x)
 
         if self.norm_position == 'pre':
             x = self.layer_norm(x)
@@ -281,7 +285,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             x = self.layer_norm(x)
 
         # Add dropout if available
-        if self.dropout is not None:
+        if self.dropout is not None and self.dropout_position == 'post':
             x = self.dropout(x)
 
         x = x * (self.alpha / self.dim)
@@ -302,6 +306,7 @@ class ParallelLinearAdapterConfig(AdapterConfig):
     gather_output: bool = True
     input_is_parallel: bool = False
     dropout: float = 0.0
+    dropout_position: str = 'post'
     alpha: float | None = None
     network_alpha: int | None = None
     _target_: str = "{0}.{1}".format(ParallelLinearAdapter.__module__, ParallelLinearAdapter.__name__)

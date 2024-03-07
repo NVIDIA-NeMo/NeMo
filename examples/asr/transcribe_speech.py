@@ -396,8 +396,6 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         logging.info(f"Finished transcribing from manifest file: {cfg.dataset_manifest}")
         if cfg.presort_manifest:
             transcriptions = restore_transcription_order(cfg.dataset_manifest, transcriptions)
-            if remove_path_after_done is not None:
-                os.unlink(remove_path_after_done)
     else:
         logging.info(f"Finished transcribing {len(filepaths)} files !")
     logging.info(f"Writing transcriptions into file: {cfg.output_filename}")
@@ -419,6 +417,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         compute_timestamps=compute_timestamps,
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
+
+    # clean-up
+    if cfg.presort_manifest is not None:
+        if remove_path_after_done is not None:
+            os.unlink(remove_path_after_done)
 
     if cfg.calculate_wer:
         output_manifest_w_wer, total_res, _ = cal_write_wer(

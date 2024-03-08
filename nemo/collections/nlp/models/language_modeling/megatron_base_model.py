@@ -333,8 +333,8 @@ class MegatronBaseModel(NLPModel):
             self.trainer.limit_val_batches *= get_num_microbatches()
         else:
             assert isinstance(self.trainer.limit_val_batches, float)
-            # Don't reconfigure if limit_val_batches is 0.0
-            if self.trainer.limit_val_batches == 0.0:
+            # Don't reconfigure if limit_val_batches is 0.0 or if there's no val dataloader
+            if self.trainer.limit_val_batches == 0.0 or self._validation_dl is None:
                 return
             # len(self._validation_dl) returns len as num of microbatches
             val_len_in_micro_batches = len(self._validation_dl)

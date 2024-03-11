@@ -237,7 +237,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
 
         # revert config change in case it is read elsewhere
         model_parallel_config.sequence_parallel = self._sequence_parallel
-        if self._sequence_parallel:
+        if self._sequence_parallel and not input_is_parallel:
             from importlib.metadata import version
 
             from pkg_resources import packaging

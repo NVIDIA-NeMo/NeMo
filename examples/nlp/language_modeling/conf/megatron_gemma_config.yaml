@@ -76,7 +76,7 @@ model:
   activation: 'geglu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu', 'fast-geglu', 'fast-swiglu', 'fast-reglu']
   headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
   transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
-  openai_gelu: False # Use OpenAI's GELU instead of the default GeLU
+  openai_gelu: True # Use OpenAI's GELU instead of the default GeLU
   normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sqrt(hidden_size_per_head). This arg is provided as a configuration option mostly for compatibility with models that have been weight-converted from HF. You almost always want to se this to True.
   position_embedding_type: 'rope' # Position embedding type. Options ['learned_absolute', 'rope']
   rotary_percentage: 1.0 # If using position_embedding_type=rope, then the per head dim is multiplied by this.

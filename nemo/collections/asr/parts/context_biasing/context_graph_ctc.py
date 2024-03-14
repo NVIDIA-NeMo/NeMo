@@ -179,22 +179,26 @@ class ContextGraphCTC:
             "size": "8.5,11",
             "center": "1",
             "orientation": "Portrait",
-            "ranksep": "0.4",
+            "ranksep": "0.30",
             "nodesep": "0.25",
         }
         if title is not None:
             graph_attr["label"] = title
 
+        default_edge_attr = {
+            "fontsize": "12",
+        }
+
         default_node_attr = {
             "shape": "circle",
             "style": "bold",
-            "fontsize": "14",
+            "fontsize": "12",
         }
 
         final_state_attr = {
             "shape": "doublecircle",
             "style": "bold",
-            "fontsize": "14",
+            "fontsize": "12",
         }
 
         dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
@@ -221,14 +225,18 @@ class ContextGraphCTC:
                 if node.index != current_node.index:
                     output, input, arc = str(current_node.index), str(node.index), f"{label}"
                     if (output, input, arc) not in printed_arcs:
-                        dot.edge(output, input, label=arc)
+                        if arc == self.blank_token:
+                            dot.edge(output, input, label=self.blank_token, color="blue", **default_edge_attr)
+                        else:
+                            dot.edge(output, input, label=arc)
                         queue.append(node)
                 else:
                     output, input, arc = str(current_node.index), str(current_node.index), f"{label}"
                     if (output, input, arc) not in printed_arcs:
-                        dot.edge(
-                            output, input, label=arc, color="green",
-                        )
+                        if arc == self.blank_token:
+                            dot.edge(output, input, label=self.blank_token, color="blue", **default_edge_attr)
+                        else:
+                            dot.edge(output, input, label=arc, color="green")
                 printed_arcs.add((output, input, arc))
 
         return dot

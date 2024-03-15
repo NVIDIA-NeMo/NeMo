@@ -589,6 +589,7 @@ class NLPFSDPStrategy(FSDPStrategy):
 
         self.nccl_communicator_config_path = nccl_communicator_config_path
         self.sharp = sharp
+        self.sharding_strategy = sharding_strategy
         super().__init__(**kwargs)
 
     def _set_mixed_precision_recipe(
@@ -625,7 +626,7 @@ class NLPFSDPStrategy(FSDPStrategy):
         if not parallel_state.model_parallel_is_initialized():
             app_state = AppState()
             assert app_state.pipeline_model_parallel_size == 1, "FSDP does not support pipeline parallelism"
-            if self.kwargs['sharding_strategy'] == ShardingStrategy.HYBRID_SHARD:
+            if self.sharding_strategy == ShardingStrategy.HYBRID_SHARD:
                 assert (
                     app_state.tensor_model_parallel_size == 1
                 ), "FSDP hybrid sharding cannot be used when tensor_model_parallel_size > 1."
@@ -678,7 +679,7 @@ class NLPFSDPStrategy(FSDPStrategy):
             optim_state_dict = FSDP.optim_state_dict(self.model, optimizer)
         return optim_state_dict
 
-    def load_model_state_dict(self, checkpoint: Mapping[str, Any]) -> None:
+    def load_model_state_dict(self, checkpoint: Mapping[str, Any], strict=None) -> None:
         # Release strict state dict matching when using Megatron AMP-O2 to skip matching
         # half-precision module wrapper module.
         # TODO: Refactor this to be more generic.

@@ -1,5 +1,9 @@
+
+Example With MCV
+================
+
 ########################################################################
-Example: Kinyarwanda ASR using Mozilla Common Voice Dataset
+Kinyarwanda ASR using Mozilla Common Voice Dataset
 ########################################################################
 
 In this example, we describe essential steps of training an ASR model for a new language (Kinyarwanda). Namely,

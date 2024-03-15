@@ -13,74 +13,12 @@ Pretrained checkpoints for all of these models, as well as instructions on how t
 section. You can use the available checkpoints for immediate inference, or fine-tune them on your own datasets. The checkpoints section
 also contains benchmark results for the available ASR models.
 
-.. _Jasper_model:
-
-Jasper
-------
-
-Jasper ("Just Another Speech Recognizer") :cite:`asr-models-li2019jasper` is a deep time delay neural network (TDNN) comprising of
-blocks of 1D-convolutional layers. The Jasper family of models are denoted as ``Jasper_[BxR]`` where ``B`` is the number of blocks
-and ``R`` is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D convolution, batch normalization,
-ReLU, and dropout:
-
-    .. image:: images/jasper_vertical.png
-        :align: center
-        :alt: jasper model
-        :scale: 50%
-
-Jasper models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModel` class.
-
-QuartzNet
+.. _Conformer_model:
+Conformer
 ---------
-
-QuartzNet :cite:`asr-models-kriman2019quartznet` is a version of Jasper :cite:`asr-models-li2019jasper` model with separable
-convolutions and larger filters. It can achieve performance similar to Jasper but with an order of magnitude fewer parameters.
-Similarly to Jasper, the QuartzNet family of models are denoted as ``QuartzNet_[BxR]`` where ``B`` is the number of blocks and ``R``
-is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D *separable* convolution, batch normalization,
-ReLU, and dropout:
-
-    .. image:: images/quartz_vertical.png
-        :align: center
-        :alt: quartznet model
-        :scale: 40%
-
-QuartzNet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModel` class.
-
-.. _Citrinet_model:
-
-Citrinet
---------
-
-Citrinet is a version of QuartzNet :cite:`asr-models-kriman2019quartznet` that extends ContextNet :cite:`asr-models-han2020contextnet`,
-utilizing subword encoding (via Word Piece tokenization) and Squeeze-and-Excitation mechanism :cite:`asr-models-hu2018squeeze` to
-obtain highly accurate audio transcripts while utilizing a non-autoregressive CTC based decoding scheme for efficient inference.
-
-    .. image:: images/citrinet_vertical.png
-        :align: center
-        :alt: citrinet model
-        :scale: 50%
-
-Citrinet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class.
-
-.. _ContextNet_model:
-
-ContextNet
-----------
-
-ContextNet is a model uses Transducer/RNNT loss/decoder and is introduced in :cite:`asr-models-han2020contextnet`.
-It uses Squeeze-and-Excitation mechanism :cite:`asr-models-hu2018squeeze` to model larger context.
-Unlike Citrinet, it has an autoregressive decoding scheme.
-
-ContextNet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecRNNTBPEModel` class for a
-model with sub-word encoding and :class:`~nemo.collections.asr.models.EncDecRNNTModel` for char-based encoding.
-
-You may find the example config files of ContextNet model with character-based encoding at
-``<NeMo_git_root>/examples/asr/conf/contextnet_rnnt/contextnet_rnnt_char.yaml`` and
-with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/contextnet_rnnt/contextnet_rnnt.yaml``.
-
 .. _Conformer-CTC_model:
-
 Conformer-CTC
+~~~~~~~~~~~~~
 -------------
 
 Conformer-CTC is a CTC-based variant of the Conformer model introduced in :cite:`asr-models-gulati2020conformer`. Conformer-CTC has a
@@ -109,7 +47,7 @@ with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/conforme
 .. _Conformer-Transducer_model:
 
 Conformer-Transducer
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
 Conformer-Transducer is the Conformer model introduced in :cite:`asr-models-gulati2020conformer` and uses RNNT/Transducer loss/decoder.
 It has the same encoder as Conformer-CTC but utilizes RNNT/Transducer loss/decoder which makes it an autoregressive model.
@@ -127,6 +65,32 @@ character-based variant is based on :class:`~nemo.collections.asr.models.EncDecR
 You may find the example config files of Conformer-Transducer model with character-based encoding at
 ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_transducer_char.yaml`` and
 with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_transducer_bpe.yaml``.
+
+.. _Conformer-HAT_model:
+
+Conformer-HAT
+~~~~~~~~~~~~~
+
+Conformer HAT (Hybrid Autoregressive Transducer) model (do not confuse it with Hybrid-Transducer-CTC) is a modification of Conformer-Transducer model based on this previous `work <https://arxiv.org/abs/2003.07705>`_.
+The main idea is to separate labels and blank score predictions, which allows to estimate the internal LM probabilities during decoding.
+When external LM is available for inference, the internal LM can be subtracted from HAT model prediction in beamsearch decoding to improve external LM efficiency.
+It can be helpful in the case of text-only adaptation for new domains.
+
+The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJiont" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_
+class (instead of "RNNTJoint") for joint module. The all HAT logic is implemented in the "HATJiont" class.
+
+    .. image:: images/hat.png
+        :align: center
+        :alt: HAT Model
+        :scale: 50%
+
+You may find the example config files of Conformer-HAT model with character-based encoding at
+``<NeMo_git_root>/examples/asr/conf/conformer/hat/conformer_hat_char.yaml`` and
+with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hat/conformer_hat_bpe.yaml``.
+
+By default, the decoding for HAT model works in the same way as for Conformer-Transducer.
+In the case of external ngram LM fusion you can use ``<NeMo_git_root>/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py``.
+To enable HAT internal LM subtraction set ``hat_subtract_ilm=True`` and find more appropriate couple of ``beam_alpha`` and ``hat_ilm_weight`` values in terms of the best recognition accuracy.
 
 Fast-Conformer
 --------------
@@ -242,56 +206,6 @@ To include caching support, `model.set_export_config({'cache_support' : 'True'})
 Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
 `python export.py cache_aware_conformer.nemo cache_aware_conformer.onnx --export-config cache_support=True`
 
-.. _LSTM-Transducer_model:
-
-LSTM-Transducer
----------------
-
-LSTM-Transducer is a model which uses RNNs (eg. LSTM) in the encoder. The architecture of this model is followed from suggestions in :cite:`asr-models-he2019streaming`.
-It uses RNNT/Transducer loss/decoder. The encoder consists of RNN layers (LSTM as default) with lower projection size to increase the efficiency.
-Layer norm is added between the layers to stabilize the training.
-It can be trained/used in unidirectional or bidirectional mode. The unidirectional mode is fully causal and can be used easily for simple and efficient streaming. However the accuracy of this model is generally lower than other models like Conformer and Citrinet.
-
-This model supports both the sub-word level and character level encodings. You may find the example config file of RNNT model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml``.
-You can find more details on the config files for the RNNT models at `LSTM-Transducer <./configs.html#lstm-transducer>`_.
-
-.. _LSTM-CTC_model:
-
-LSTM-CTC
---------
-
-LSTM-CTC model is a CTC-variant of the LSTM-Transducer model which uses CTC loss/decoding instead of Transducer.
-You may find the example config file of LSTM-CTC model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml``.
-
-.. _Squeezeformer-CTC_model:
-
-Squeezeformer-CTC
------------------
-
-Squeezeformer-CTC is a CTC-based variant of the Squeezeformer model introduced in :cite:`asr-models-kim2022squeezeformer`. Squeezeformer-CTC has a
-similar encoder as the original Squeezeformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model. The vast majority of the architecture is similar to Conformer model, so please refer to `Conformer-CTC <./models.html#conformer-ctc>`_.
-
-The model primarily differs from Conformer in the following ways :
-
-* Temporal U-Net style time reduction, effectively reducing memory consumption and FLOPs for execution.
-* Unified activations throughout the model.
-* Simplification of module structure, removal of redundant layers.
-
-Here is the overall architecture of the encoder of Squeezeformer-CTC:
-
-    .. image:: images/squeezeformer.png
-        :align: center
-        :alt: Squeezeformer-CTC Model
-        :scale: 50%
-
-This model supports both the sub-word level and character level encodings. You can find more details on the config files for the
-Squeezeformer-CTC models at `Squeezeformer-CTC <./configs.html#squeezeformer-ctc>`_. The variant with sub-word encoding is a BPE-based model
-which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class, while the
-character-based variant is based on :class:`~nemo.collections.asr.models.EncDecCTCModel`.
-
-You may find the example config files of Squeezeformer-CTC model with character-based encoding at
-``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and
-with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``.
 
 .. _Hybrid-Transducer_CTC_model:
 
@@ -322,32 +236,6 @@ Note Hybrid models are being exported as RNNT (encoder and decoder+joint parts) 
 To export as CTC (single encoder+decoder graph), `model.set_export_config({'decoder_type' : 'ctc'})` should be called before export.
 Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
 `python export.py hybrid_transducer.nemo hybrid_transducer.onnx --export-config decoder_type=ctc`
-
-.. _Conformer-HAT_model:
-
-Conformer-HAT (Hybrid Autoregressive Transducer)
-------------------------------------------------
-Conformer HAT model (do not confuse it with Hybrid-Transducer-CTC) is a modification of Conformer-Transducer model based on `Google paper <https://arxiv.org/abs/2003.07705>`_.
-The main idea is to separate labels and blank score predictions, which allows to estimate the internal LM probabilities during decoding.
-When external LM is available for inference, the internal LM can be subtracted from HAT model prediction in beamsearch decoding to improve external LM efficiency.
-It can be helpful in the case of text-only adaptation for new domains.
-
-The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJiont" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_
-class (instead of "RNNTJoint") for joint module. The all HAT logic is implemented in the "HATJiont" class.
-
-    .. image:: images/hat.png
-        :align: center
-        :alt: HAT Model
-        :scale: 50%
-
-You may find the example config files of Conformer-HAT model with character-based encoding at
-``<NeMo_git_root>/examples/asr/conf/conformer/hat/conformer_hat_char.yaml`` and
-with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hat/conformer_hat_bpe.yaml``.
-
-By default, the decoding for HAT model works in the same way as for Conformer-Transducer.
-In the case of external ngram LM fusion you can use ``<NeMo_git_root>/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py``.
-To enable HAT internal LM subtraction set ``hat_subtract_ilm=True`` and find more appropriate couple of ``beam_alpha`` and ``hat_ilm_weight`` values in terms of the best recognition accuracy.
-
 
 .. _Hybrid-ASR-TTS_model:
 
@@ -405,6 +293,125 @@ A typical workflow to create and use the ensemble is like this
 
 Note that the ensemble cannot be modified after construction (e.g. it does not support finetuning) and only
 transcribe functionality is supported (e.g., ``.forward()`` is not properly defined).
+
+.. _Jasper_model:
+
+Jasper
+------
+
+Jasper ("Just Another Speech Recognizer") :cite:`asr-models-li2019jasper` is a deep time delay neural network (TDNN) comprising of
+blocks of 1D-convolutional layers. The Jasper family of models are denoted as ``Jasper_[BxR]`` where ``B`` is the number of blocks
+and ``R`` is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D convolution, batch normalization,
+ReLU, and dropout:
+
+    .. image:: images/jasper_vertical.png
+        :align: center
+        :alt: jasper model
+        :scale: 50%
+
+Jasper models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModel` class.
+
+.. _Quartznet_model:
+
+QuartzNet
+---------
+
+QuartzNet :cite:`asr-models-kriman2019quartznet` is a version of Jasper :cite:`asr-models-li2019jasper` model with separable
+convolutions and larger filters. It can achieve performance similar to Jasper but with an order of magnitude fewer parameters.
+Similarly to Jasper, the QuartzNet family of models are denoted as ``QuartzNet_[BxR]`` where ``B`` is the number of blocks and ``R``
+is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D *separable* convolution, batch normalization,
+ReLU, and dropout:
+
+    .. image:: images/quartz_vertical.png
+        :align: center
+        :alt: quartznet model
+        :scale: 40%
+
+QuartzNet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModel` class.
+
+
+.. _Citrinet_model:
+
+Citrinet
+--------
+
+Citrinet is a version of QuartzNet :cite:`asr-models-kriman2019quartznet` that extends ContextNet :cite:`asr-models-han2020contextnet`,
+utilizing subword encoding (via Word Piece tokenization) and Squeeze-and-Excitation mechanism :cite:`asr-models-hu2018squeeze` to
+obtain highly accurate audio transcripts while utilizing a non-autoregressive CTC based decoding scheme for efficient inference.
+
+    .. image:: images/citrinet_vertical.png
+        :align: center
+        :alt: citrinet model
+        :scale: 50%
+
+Citrinet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class.
+
+.. _ContextNet_model:
+
+ContextNet
+----------
+
+ContextNet is a model uses Transducer/RNNT loss/decoder and is introduced in :cite:`asr-models-han2020contextnet`.
+It uses Squeeze-and-Excitation mechanism :cite:`asr-models-hu2018squeeze` to model larger context.
+Unlike Citrinet, it has an autoregressive decoding scheme.
+
+ContextNet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecRNNTBPEModel` class for a
+model with sub-word encoding and :class:`~nemo.collections.asr.models.EncDecRNNTModel` for char-based encoding.
+
+You may find the example config files of ContextNet model with character-based encoding at
+``<NeMo_git_root>/examples/asr/conf/contextnet_rnnt/contextnet_rnnt_char.yaml`` and
+with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/contextnet_rnnt/contextnet_rnnt.yaml``.
+
+.. _Squeezeformer-CTC_model:
+
+Squeezeformer-CTC
+-----------------
+
+Squeezeformer-CTC is a CTC-based variant of the Squeezeformer model introduced in :cite:`asr-models-kim2022squeezeformer`. Squeezeformer-CTC has a
+similar encoder as the original Squeezeformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model. The vast majority of the architecture is similar to Conformer model, so please refer to `Conformer-CTC <./models.html#conformer-ctc>`_.
+
+The model primarily differs from Conformer in the following ways :
+
+* Temporal U-Net style time reduction, effectively reducing memory consumption and FLOPs for execution.
+* Unified activations throughout the model.
+* Simplification of module structure, removal of redundant layers.
+
+Here is the overall architecture of the encoder of Squeezeformer-CTC:
+
+    .. image:: images/squeezeformer.png
+        :align: center
+        :alt: Squeezeformer-CTC Model
+        :scale: 50%
+
+This model supports both the sub-word level and character level encodings. You can find more details on the config files for the
+Squeezeformer-CTC models at `Squeezeformer-CTC <./configs.html#squeezeformer-ctc>`_. The variant with sub-word encoding is a BPE-based model
+which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class, while the
+character-based variant is based on :class:`~nemo.collections.asr.models.EncDecCTCModel`.
+
+You may find the example config files of Squeezeformer-CTC model with character-based encoding at
+``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and
+with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``.
+
+.. _LSTM-Transducer_model:
+
+LSTM-Transducer
+---------------
+
+LSTM-Transducer is a model which uses RNNs (eg. LSTM) in the encoder. The architecture of this model is followed from suggestions in :cite:`asr-models-he2019streaming`.
+It uses RNNT/Transducer loss/decoder. The encoder consists of RNN layers (LSTM as default) with lower projection size to increase the efficiency.
+Layer norm is added between the layers to stabilize the training.
+It can be trained/used in unidirectional or bidirectional mode. The unidirectional mode is fully causal and can be used easily for simple and efficient streaming. However the accuracy of this model is generally lower than other models like Conformer and Citrinet.
+
+This model supports both the sub-word level and character level encodings. You may find the example config file of RNNT model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml``.
+You can find more details on the config files for the RNNT models at `LSTM-Transducer <./configs.html#lstm-transducer>`_.
+
+.. _LSTM-CTC_model:
+
+LSTM-CTC
+--------
+
+LSTM-CTC model is a CTC-variant of the LSTM-Transducer model which uses CTC loss/decoding instead of Transducer.
+You may find the example config file of LSTM-CTC model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml``.
 
 
 References

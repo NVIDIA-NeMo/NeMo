@@ -293,13 +293,10 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
             Dataloader produces a global batch which is turned into a list of microbatches.
             The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
-        # Check if instance of PTL's _DataFetcherWrapper or not, since sometimes (batch, batch_idx, dataloader_idx) as a tuple
-        # from the dataloader_iter are already extracted in the child class. In that case extact only the batch
-        # from the data_iterator
-        if isinstance(dataloader_iter, _DataFetcherWrapper):
-            batch, _, _ = next(dataloader_iter)
-        else:
-            batch = next(dataloader_iter)
+        # If tuple, 1st element in it is the batch since dataloader_iter returns batch, batch_idx, dataloader_idx
+        batch = next(dataloader_iter)
+        if isinstance(batch, tuple):
+            batch = batch[0]
         if isinstance(batch, dict):
             # convert to list if not already converted.
             batch = self._process_batch(batch)

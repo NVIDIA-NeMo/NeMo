@@ -936,13 +936,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # Broadcast data.
         if data_iterator is not None:
-            # Check if instance of PTL's _DataFetcherWrapper or not, since sometimes (batch, batch_idx, dataloader_idx) as a tuple
-            # from the dataloader_iter are already extracted in the child class validation steps. In that case extact only the batch
-            # from the data_iterator
-            if isinstance(data_iterator, _DataFetcherWrapper):
-                data, _, _ = next(data_iterator)
-            else:
-                data = next(data_iterator)
+            # If tuple, 1st element in it is the batch since dataloader_iter returns batch, batch_idx, dataloader_idx
+            data = next(data_iterator)
+            if isinstance(data, tuple):
+                data = data[0]
         else:
             data = None
 
@@ -1113,13 +1110,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
     def get_forward_output_only_func(self):
         def fwd_output_only_func(dataloader_iter, model):
-            # Check if instance of PTL's _DataFetcherWrapper or not, since sometimes (batch, batch_idx, dataloader_idx) as a tuple
-            # from the dataloader_iter are already extracted in the child class validation steps. In that case extact only the batch
-            # from the data_iterator
-            if isinstance(dataloader_iter, _DataFetcherWrapper):
-                batch, _, _ = next(dataloader_iter)
-            else:
-                batch = next(dataloader_iter)
+            # If tuple, 1st element in it is the batch since dataloader_iter returns batch, batch_idx, dataloader_idx
+            batch = next(dataloader_iter)
+            if isinstance(batch, tuple):
+                batch = batch[0]
             extra_arg = {}
             if len(batch) == 3:
                 batch = [x.cuda() for x in batch]

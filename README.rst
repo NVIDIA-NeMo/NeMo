@@ -154,6 +154,18 @@ FAQ can be found on NeMo's `Discussions board <https://github.com/NVIDIA/NeMo/di
 
 Installation
 ------------
+
+The NeMo Framework can be installed in a variety of ways, depending on your needs. Depending on the domain, you may find one of the following installation methods more suitable.
+
+* Conda / Pip - Refer to the `Conda <#conda>`_ and `Pip <#pip>`_ sections for installation instructions.
+  * This is recommended for Automatic Speech Recognition (ASR) and Text-to-Speech (TTS) domains.
+  * When using a Nvidia PyTorch container as the base, this is the recommended installation method for all domains.
+
+* Docker - Refer to the `Docker containers <#Docker-containers>`_ section for installation instructions.
+  * This is recommended for Large Language Models (LLM), Multimodal and Vision domains.
+  * NeMo LLM & Multimodal Container - `nvcr.io/nvidia/nemo:24.01.01.framework`
+  * NeMo Speech Container - `nvcr.io/nvidia/nemo:24.01.speech`
+
 Conda
 ~~~~~
 
@@ -183,6 +195,19 @@ Use this installation mode if you want the latest released version.
     pip install nemo_toolkit['all']
 
 Depending on the shell used, you may need to use ``"nemo_toolkit[all]"`` instead in the above command.
+
+Pip (Domain Specific)
+~~~~~~~~~~~~~~~~~~~~~
+
+To install only a specific domain of NeMo, use the following commands. Note: It is required to install the above pre-requisites before installing a specific domain of NeMo.
+
+.. code-block:: bash
+
+    pip install nemo_toolkit['asr']
+    pip install nemo_toolkit['nlp']
+    pip install nemo_toolkit['tts']
+    pip install nemo_toolkit['vision']
+    pip install nemo_toolkit['multimodal']
 
 Pip from source
 ~~~~~~~~~~~~~~~
@@ -277,9 +302,9 @@ Note that RNNT requires numba to be installed from conda.
   pip uninstall numba
   conda install -c conda-forge numba
 
-NeMo Megatron
-~~~~~~~~~~~~~
-NeMo Megatron training requires NVIDIA Apex to be installed.
+Apex
+~~~~
+NeMo LLM Domain training requires NVIDIA Apex to be installed.
 Install it manually if not using the NVIDIA PyTorch container.
 
 To install Apex, run
@@ -313,7 +338,7 @@ With the latest versions of Apex, the `pyproject.toml` file in Apex may need to 
 
 Transformer Engine
 ~~~~~~~~~~~~~~~~~~
-NeMo Megatron GPT has been integrated with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_
+NeMo LLM Domain has been integrated with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_
 Transformer Engine enables FP8 training on NVIDIA Hopper GPUs.
 `Install <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_ it manually if not using the NVIDIA PyTorch container.
 
@@ -327,8 +352,8 @@ Transformer Engine requires PyTorch to be built with CUDA 11.8.
 
 
 Flash Attention
-~~~~~~~~~~~~~~~~~~~~
-Transformer Engine already supports Flash Attention for GPT models. If you want to use Flash Attention for non-causal models, please install `flash-attn <https://github.com/HazyResearch/flash-attention>`_. If you want to use Flash Attention with attention bias (introduced from position encoding, e.g. Alibi), please also install triton pinned version following the `implementation <https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/flash_attn_triton.py#L3>`_.
+~~~~~~~~~~~~~~~
+When traning Large Language Models in NeMo, users may opt to use Flash Attention for efficient training. Transformer Engine already supports Flash Attention for GPT models. If you want to use Flash Attention for non-causal models, please install `flash-attn <https://github.com/HazyResearch/flash-attention>`_. If you want to use Flash Attention with attention bias (introduced from position encoding, e.g. Alibi), please also install triton pinned version following the `implementation <https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/flash_attn_triton.py#L3>`_.
 
 .. code-block:: bash
 
@@ -347,15 +372,15 @@ NeMo Text Processing
 ~~~~~~~~~~~~~~~~~~~~
 NeMo Text Processing, specifically (Inverse) Text Normalization, is now a separate repository `https://github.com/NVIDIA/NeMo-text-processing <https://github.com/NVIDIA/NeMo-text-processing>`_.
 
-Docker containers:
-~~~~~~~~~~~~~~~~~~
-We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.22.0`` comes with container ``nemo:23.10``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
+Docker containers
+~~~~~~~~~~~~~~~~~
+We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.23.0`` comes with container ``nemo:24.01.speech``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
 
 To use built container, please run
 
 .. code-block:: bash
 
-    docker pull nvcr.io/nvidia/nemo:23.10
+    docker pull nvcr.io/nvidia/nemo:24.01.speech
 
 To build a nemo container with Dockerfile from a branch, please run
 

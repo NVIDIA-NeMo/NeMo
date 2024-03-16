@@ -478,7 +478,7 @@ class GPTSFTDataset(Dataset):
 class GPTSFTPackedDataset(GPTSFTDataset):
     def __init__(self, file_path: str, tokenizer: TokenizerSpec, **kwargs):
         super().__init__(file_path, tokenizer, **kwargs)
-
+        assert self.virtual_tokens == 0, "P-Tuning with packed sequence is not supported."
         self._load_packed_dataset(file_path)
 
     def __getitem__(self, idx):

@@ -256,9 +256,11 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
 
     def forward(self, hidden_states):
         # [s, b, 4 * h/p]
-        linear_fc1_output, bias_parallel = self.linear_fc1(hidden_states)
-
-        intermediate_parallel, layernorm_output = linear_fc1_output
+        if self.linear_fc1.te_return_bias:
+            intermediate_parallel, bias_parallel, layernorm_output = self.linear_fc1(hidden_states)
+        else:
+            # bias_parallel is None
+            (intermediate_parallel, layernorm_output), bias_parallel = self.linear_fc1(hidden_states)
 
         # LoRA logic
         if self.is_adapter_available():

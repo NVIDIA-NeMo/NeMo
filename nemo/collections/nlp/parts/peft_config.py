@@ -97,6 +97,16 @@ class PEFTConfig:
     def get_config_dict(self):
         return self.name_key_to_cfg
 
+    def _calculate_kv_channels(self, cfg):
+        if cfg.get("kv_channels", None) is None:
+            assert (
+                cfg.hidden_size % cfg.num_attention_heads == 0
+            ), 'hidden_size must be divisible by num_attention_heads if kv_channels is None'
+            kv_channels = cfg.hidden_size // cfg.num_attention_heads
+        else:
+            kv_channels = cfg.kv_channels
+        return kv_channels
+
 
 class SelectivePEFTConfig(PEFTConfig):
     def __init__(self, cfg):
@@ -160,16 +170,6 @@ class LoraPEFTConfig(PEFTConfig):
         self.name_key_to_mcore_mixins = name_key_to_mcore_mixins
         super().__init__(lora_cfg, name_key_to_cfg)
 
-    def _calculate_kv_channels(self, cfg):
-        if cfg.get("kv_channels", None) is None:
-            assert (
-                cfg.hidden_size % cfg.num_attention_heads == 0
-            ), 'hidden_size must be divisible by num_attention_heads if kv_channels is None'
-            kv_channels = cfg.hidden_size // cfg.num_attention_heads
-        else:
-            kv_channels = cfg.kv_channels
-        return kv_channels
-
     def _create_lora_config(self, cfg, lora_cfg, in_features, out_features, adapter_cfg_cls):
         config_args = {
             "in_features": in_features,
@@ -220,7 +220,11 @@ class IA3PEFTConfig(PEFTConfig):
         mlp_infused_adapter_cfg = MLPInfusedAdapterConfig(
             in_features=cfg.ffn_hidden_size // cfg.tensor_model_parallel_size
         )
-        infused_adapter_cfg = InfusedAdapterConfig(in_features=cfg.hidden_size // cfg.tensor_model_parallel_size)
+
+        kv_channels = self._calculate_kv_channels(cfg)
+        num_query_groups = cfg.get("num_query_groups", cfg.num_attention_heads)
+        kv_projection_size = kv_channels * num_query_groups
+        infused_adapter_cfg = InfusedAdapterConfig(in_features=kv_projection_size // cfg.tensor_model_parallel_size)
 
         name_key_to_cfg = {
             AdapterName.KEY_INFUSED: infused_adapter_cfg,

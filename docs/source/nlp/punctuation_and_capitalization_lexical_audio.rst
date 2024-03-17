@@ -15,7 +15,7 @@ Like in these examples:
 
   Yeah, they make you work. Yeah, over there you walk a lot? or Yeah, they make you work. Yeah, over there you walk a lot.
 
-You can find more details on text only punctuation and capitalization in `Punctuation And Capitalization's page <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/nlp/punctuation_and_capitalization.html>`_. In this document, we focus on model changes needed to use acoustic features.
+You can find more details on text only punctuation and capitalization in the :doc:`Punctuation And Capitalization page <./punctuation_and_capitalization>`. In this document, we focus on model changes needed to use acoustic features.
 
 Quick Start Guide
 -----------------
@@ -35,7 +35,7 @@ Quick Start Guide
 
 Model Description
 -----------------
-In addition to `Punctuation And Capitalization model <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/nlp/punctuation_and_capitalization.html>`_ we add audio encoder (e.g. Conformer's encoder) and attention based fusion of lexical and audio features.
+In addition to :doc:`Punctuation And Capitalization model <./punctuation_and_capitalization>` we add audio encoder (e.g. Conformer's encoder) and attention based fusion of lexical and audio features.
 This model architecture is based on `Multimodal Semi-supervised Learning Framework for Punctuation Prediction in Conversational Speech <https://arxiv.org/pdf/2008.00702.pdf>`__ :cite:`nlp-punct-sunkara20_interspeech`.
 
 .. note::
@@ -50,7 +50,7 @@ This model architecture is based on `Multimodal Semi-supervised Learning Framewo
 
 Raw Data Format
 ---------------
-In addition to `Punctuation And Capitalization Raw Data Format <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/nlp/punctuation_and_capitalization.html#raw-data-format>`_ this model also requires audio data.
+In addition to :ref:`Punctuation And Capitalization Raw Data Format <raw_data_format_punct>` this model also requires audio data.
 You have to provide ``audio_train.txt`` and ``audio_dev.txt`` (and optionally ``audio_test.txt``) which contain one valid path to audio per row.
 
 Example of the ``audio_train.txt``/``audio_dev.txt`` file:
@@ -100,14 +100,14 @@ Training Punctuation and Capitalization Model
 ---------------------------------------------
 
 The audio encoder is initialized with pretrained ASR model. You can use any of ``list_available_models()`` of ``EncDecCTCModel`` or your own checkpoints, either one should be provided in ``model.audio_encoder.pretrained_model``.
-You can freeze audio encoder during training and add additional ``ConformerLayer`` on top of encoder to reduce compute with ``model.audio_encoder.freeze``. You can also add `Adapters <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/core/adapters/components.html>`_ to reduce compute with ``model.audio_encoder.adapter``. Parameters of fusion module are stored in ``model.audio_encoder.fusion``.
+You can freeze audio encoder during training and add additional ``ConformerLayer`` on top of encoder to reduce compute with ``model.audio_encoder.freeze``. You can also add :doc:`Adapters <../core/adapters/components>` to reduce compute with ``model.audio_encoder.adapter``. Parameters of fusion module are stored in ``model.audio_encoder.fusion``.
 An example of a model configuration file for training the model can be found at:
 `NeMo/examples/nlp/token_classification/conf/punctuation_capitalization_lexical_audio_config.yaml <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/token_classification/conf/punctuation_capitalization_lexical_audio_config.yaml>`__.
 
 Configs
 ^^^^^^^^^^^^
 .. note::
-  This page contains only parameters specific to lexical and audio model. Others parameters can be found in `Punctuation And Capitalization's page <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/nlp/punctuation_and_capitalization.html>`_.
+  This page contains only parameters specific to lexical and audio model. Others parameters can be found in the :doc:`Punctuation And Capitalization page <./punctuation_and_capitalization>`.
 
 Model config
 ^^^^^^^^^^^^

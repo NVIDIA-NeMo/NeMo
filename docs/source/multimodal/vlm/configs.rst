@@ -1,7 +1,7 @@
 Common Configuration Files
 ==========================
 
-This section provides a detailed overview of the NeMo configuration file setup specific to models within the NeMo Multimodal Language Model collection. For foundational knowledge about setting up and executing experiments common to all NeMo models, such as the Experiment Manager and PyTorch Lightning trainer parameters, refer to the :doc:`../core/core` section.
+This section provides a detailed overview of the NeMo configuration file setup specific to models within the NeMo Multimodal Language Model collection. For foundational knowledge about setting up and executing experiments common to all NeMo models, such as the Experiment Manager and PyTorch Lightning trainer parameters, refer to the :doc:`core <../../core/core>` documentation.
 
 Within the configuration files of the NeMo Multimodal Language Model, details concerning dataset(s), augmentation, optimization parameters, and model architectural specifications are central. This page explores each of these aspects.
 

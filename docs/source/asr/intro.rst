@@ -103,7 +103,7 @@ After :ref:`training <train-ngram-lm>` an N-gram LM, you can use it for transcri
         decoding_mode=beamsearch_ngram \
         decoding_strategy="<Beam library such as beam, pyctcdecode or flashlight>"
 
-See more information about LM decoding :doc:`here <./asr_language_modeling>`.
+See more information about LM decoding :doc:`here <./asr_language_modeling_and_customization>`.
 
 Use real-time transcription
 ---------------------------
@@ -179,8 +179,8 @@ Preparing ASR datasets
 NeMo includes preprocessing scripts for several common ASR datasets. The :doc:`Datasets <./datasets>` section contains instructions on
 running those scripts. It also includes guidance for creating your own NeMo-compatible dataset, if you have your own data.
 
-Further information
--------------------
+NeMo ASR Documentation
+----------------------
 For more information, see additional sections in the ASR docs on the left-hand-side menu or in the list below:
 
 .. toctree::
@@ -188,7 +188,7 @@ For more information, see additional sections in the ASR docs on the left-hand-s
 
    models
    datasets
-   asr_language_modeling
+   asr_language_modeling_and_customization
    results
    scores
    configs

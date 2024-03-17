@@ -138,9 +138,9 @@ Audio-based TN
 
 Additional Arguments:
 
-* ``text`` - Input text or `JSON manifest file <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/datasets.html#preparing-custom-asr-data>`_ with multiple audio paths.
+* ``text`` - Input text or :ref:`JSON manifest file<section-with-manifest-format-explanation>` with multiple audio paths.
 * ``audio_data`` - (Optional) Input audio.
-* ``model`` - `Off-shelf NeMo CTC ASR model name <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html#speech-recognition-languages>`_ or path to local NeMo model checkpoint ending on .nemo
+* ``model`` - :ref:`Off-shelf NeMo CTC ASR model name <asr-checkpoint-list-by-language>` or path to local NeMo model checkpoint ending on .nemo
 * ``n_tagged`` - number of normalization options to output.
 
 

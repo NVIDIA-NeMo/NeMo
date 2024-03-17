@@ -9,7 +9,7 @@ Introduction
 .. _dummy_header:
 
 NVIDIA NeMo Framework is an end-to-end, cloud-native framework to build, customize, and deploy generative AI models anywhere. 
-To learn more about using NeMo in generative AI workflows, please refer to the `NeMo Framework User Guide! <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_
+To learn more about using NeMo in generative AI workflows, please refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_.
 
 `NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for Large Language Models (LLMs), 
 Multimodal (MM), Computer Vision (CV), Automatic Speech Recognition (ASR), 

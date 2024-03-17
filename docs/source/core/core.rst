@@ -174,9 +174,9 @@ via PyTorch Lightning `hooks <https://pytorch-lightning.readthedocs.io/en/stable
 
 For more domain-specific information, see:
 
-- :ref:`Automatic Speech Recognition (ASR) <../asr/intro>`
-- :ref:`Natural Language Processing (NLP) <../nlp/models>`
-- :ref:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
+- :doc:`Automatic Speech Recognition (ASR) <../asr/intro>`
+- :doc:`Natural Language Processing (NLP) <../nlp/models>`
+- :doc:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
 
 PyTorch Lightning Trainer
 ~~~~~~~~~~~~~~~~~~~~~~~~~

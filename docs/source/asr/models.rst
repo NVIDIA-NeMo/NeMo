@@ -24,7 +24,7 @@ Canary-1B is the latest ASR model from NVIDIA NeMo. It sits at the top of the `H
 
 You can `download the checkpoint <https://huggingface.co/nvidia/canary-1b>`__  or try out Canary in action in this `HuggingFace Space <https://huggingface.co/spaces/nvidia/canary-1b>`__.
 
-Canary-1B is an encoder-decoder model with a :ref:`FastConformer Encoder <Fast-Conformer>` and Transformer Decoder :cite:`asr-models-vaswani2017attention`.
+Canary-1B is an encoder-decoder model with a :ref:`FastConformer Encoder <Fast-Conformer>` and Transformer Decoder :cite:`asr-models-vaswani2017aayn`.
 
 It is a multi-lingual, multi-task model, supporting automatic speech-to-text recognition (ASR) in 4 languages (English, German, French, Spanish) as well as translation between English and the 3 other supported languages.
 

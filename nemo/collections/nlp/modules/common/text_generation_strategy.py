@@ -89,6 +89,9 @@ class TextGenerationStrategy:
         tokenizer = self.model.tokenizer
         if add_BOS:
             context_tokens = [[tokenizer.bos_id] + tokenizer.text_to_ids(s) for s in sentences]
+        elif hasattr(tokenizer.tokenizer, "get_prefix_tokens"):
+            # chatglm: add tokenizer.gmask_id, tokenizer.sop_id
+            context_tokens = [tokenizer.tokenizer.get_prefix_tokens() + tokenizer.text_to_ids(s) for s in sentences]
         else:
             context_tokens = [tokenizer.text_to_ids(s) for s in sentences]
         context_tokens, context_lengths = pad_batch(context_tokens, tokenizer.eos_id, max_len)

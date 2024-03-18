@@ -422,6 +422,7 @@ class MegatronBaseModel(NLPModel):
             use_fast=self.cfg.tokenizer.get('use_fast', False),
             delimiter=self.cfg.tokenizer.get('delimiter', None),
             special_tokens=self.cfg.tokenizer.get('special_tokens', None),
+            trust_remote_code=self.cfg.tokenizer.get('trust_remote_code', False),
             legacy=legacy,
         )
 
@@ -460,6 +461,7 @@ class MegatronBaseModel(NLPModel):
         model_parallel_config = self.build_model_parallel_config()
 
         add_bias_linear = self.cfg.get('bias', True)
+        add_qkv_bias = self.cfg.get('qkv_bias', False)
 
         activation = self.cfg.get('activation', 'gelu')
         gated_linear_unit = activation.endswith('glu')
@@ -480,6 +482,8 @@ class MegatronBaseModel(NLPModel):
 
         attention_softmax_in_fp32 = False  # not currently used in NeMo unless apply_query_key_layer_scaling is True
         apply_query_key_layer_scaling = self.cfg.get('apply_query_key_layer_scaling', False)
+
+        rotary_interleaved = self.cfg.get('rotary_interleaved', False)
 
         fp16_enabled = self.trainer.precision in [16, '16', '16-mixed']
         if apply_query_key_layer_scaling:
@@ -514,6 +518,7 @@ class MegatronBaseModel(NLPModel):
             'apply_residual_connection_post_layernorm': False,  # we don't use this in NeMo
             'layernorm_zero_centered_gamma': False,
             'add_bias_linear': add_bias_linear,
+            'add_qkv_bias': add_qkv_bias,
             'gated_linear_unit': gated_linear_unit,
             'activation_func': activation_func,
             'normalization': normalization,
@@ -528,6 +533,7 @@ class MegatronBaseModel(NLPModel):
             'recompute_num_layers': recompute_num_layers,
             'distribute_saved_activations': False,  # not currently used in NeMo
             'fp8': None,
+            'rotary_interleaved': rotary_interleaved,
             'deallocate_pipeline_outputs': True,
         }
 

@@ -128,8 +128,8 @@ jobs:
         echo "Docker: List containers" && docker ps -a
         DOCKER_COMMIT=$(docker ps --latest --quiet)  # latest container
         docker commit $DOCKER_COMMIT nemo_container
-        docker tag nemo_container localhost:5000/nemo_container
-        docker push localhost:5000/nemo_container
+        docker tag nemo_container localhost:5000/nemo_container_${{ github.run_id }}
+        docker push localhost:5000/nemo_container_${{ github.run_id }}
 
     # - name: Build and push to local registry
     #   uses: docker/build-push-action@v5
@@ -153,7 +153,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -176,7 +176,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -203,7 +203,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -216,11 +216,11 @@ jobs:
         - name: Checkout repository
           uses: actions/checkout@v2
         - run: |
-            CUDA_VISIBLE_DEVICES=0 python scripts/nlp_language_modeling/convert_hf_llama_to_nemo.py \
-            --in-file=/home/TestData/nlp/megatron_llama/llama-ci-hf \
-            --out-file=/home/TestData/nlp/megatron_llama/ci.nemo \
+            CUDA_VISIBLE_DEVICES=0 python scripts/checkpoint_converters/convert_llama_hf_to_nemo.py \
+            --input_name_or_path=/home/TestData/nlp/megatron_llama/llama-ci-hf \
+            --output_path=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
             --precision=16
-            rm -f /home/TestData/nlp/megatron_llama/ci.nemo
+            rm -f /home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo
         - uses: "./.github/actions/cancel-workflow"
           if: "failure()"
 
@@ -228,7 +228,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -241,10 +241,9 @@ jobs:
         - name: Checkout repository
           uses: actions/checkout@v2
         - run: |
-            python scripts/nlp_language_modeling/convert_starcoder_hf_to_nemo.py \
-            --config examples/nlp/language_modeling/conf/megatron_gpt_config.yaml \
-            --input /home/TestData/nlp/megatron_gpt/starcoder-ci-hf \
-            --output /home/TestData/nlp/megatron_gpt/starcoder-ci-hf
+            python scripts/checkpoint_converters/convert_starcoder_hf_to_nemo.py \
+            --input_name_or_path /home/TestData/nlp/megatron_gpt/starcoder-ci-hf \
+            --output_path /home/TestData/nlp/megatron_gpt/starcoder-ci-hf
             rm -f /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/megatron_starcoder_tp1_pp1.nemo
         - uses: "./.github/actions/cancel-workflow"
           if: "failure()"
@@ -253,7 +252,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -266,11 +265,34 @@ jobs:
         - name: Checkout repository
           uses: actions/checkout@v2
         - run: |
-            python scripts/nlp_language_modeling/convert_hf_falcon_to_nemo.py \
-            --config examples/nlp/language_modeling/conf/megatron_falcon_config.yaml \
-            --input /home/TestData/nlp/megatron_gpt/falcon-ci-hf \
-            --output /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
+            python scripts/checkpoint_converters/convert_falcon_hf_to_nemo.py \
+            --input_name_or_path /home/TestData/nlp/megatron_gpt/falcon-ci-hf \
+            --output_path /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
             rm -f /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
+        - uses: "./.github/actions/cancel-workflow"
+          if: "failure()"
+
+  L2_Community_LLM_Checkpoints_tests_Baichuan2:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    container:
+      image: localhost:5000/nemo_container_${{ github.run_id }}
+      options: 
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g 
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /home/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v2
+        - run: |
+            python scripts/checkpoint_converters/convert_baichuan2_hf_to_nemo.py \
+            --input_name_or_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base \
+            --output_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
+            rm -f /home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
         - uses: "./.github/actions/cancel-workflow"
           if: "failure()"
 
@@ -279,7 +301,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -307,7 +329,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -338,7 +360,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -367,7 +389,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -398,7 +420,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -445,7 +467,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -479,7 +501,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -513,7 +535,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -542,7 +564,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container
+  #     image: localhost:5000/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -592,7 +614,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -624,7 +646,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -657,7 +679,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -693,7 +715,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -724,7 +746,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -755,7 +777,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -782,7 +804,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -812,7 +834,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -842,7 +864,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -881,7 +903,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -913,7 +935,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -948,7 +970,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -975,7 +997,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -997,7 +1019,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1029,7 +1051,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1063,7 +1085,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1129,7 +1151,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1171,7 +1193,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container
+  #     image: localhost:5000/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -1212,7 +1234,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1251,7 +1273,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1289,7 +1311,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1330,7 +1352,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1372,7 +1394,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1407,7 +1429,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1442,7 +1464,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1483,7 +1505,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1561,7 +1583,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1597,7 +1619,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1667,7 +1689,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1701,7 +1723,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1742,7 +1764,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1781,7 +1803,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1822,7 +1844,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1861,7 +1883,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1902,7 +1924,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1941,7 +1963,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -1971,7 +1993,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2107,7 +2129,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2138,7 +2160,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2174,7 +2196,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2203,7 +2225,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2227,7 +2249,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2258,7 +2280,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2318,7 +2340,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2383,7 +2405,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2446,7 +2468,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container
+  #     image: localhost:5000/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -2509,7 +2531,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2540,7 +2562,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2582,7 +2604,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2624,7 +2646,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2658,7 +2680,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2736,7 +2758,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2776,7 +2798,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2815,7 +2837,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2843,7 +2865,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2886,7 +2908,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2927,7 +2949,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -2958,7 +2980,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3067,7 +3089,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3385,7 +3407,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3466,7 +3488,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3548,7 +3570,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3632,7 +3654,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3715,7 +3737,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container
+  #     image: localhost:5000/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -3809,7 +3831,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3836,7 +3858,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -3929,7 +3951,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4119,7 +4141,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4215,7 +4237,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4311,7 +4333,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4411,7 +4433,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4492,7 +4514,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4536,7 +4558,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4582,7 +4604,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4644,7 +4666,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4670,7 +4692,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4698,7 +4720,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4761,7 +4783,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4790,7 +4812,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4819,7 +4841,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -4926,7 +4948,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5033,7 +5055,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5140,7 +5162,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5221,7 +5243,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5275,7 +5297,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5366,7 +5388,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5390,7 +5412,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5470,7 +5492,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5556,7 +5578,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5600,7 +5622,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5649,7 +5671,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5714,7 +5736,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5741,7 +5763,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5771,7 +5793,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5809,7 +5831,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5843,7 +5865,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5887,7 +5909,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5928,7 +5950,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -5966,7 +5988,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
@@ -6002,7 +6024,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container
+  #     image: localhost:5000/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -6030,7 +6052,7 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container
+      image: localhost:5000/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0

@@ -114,12 +114,7 @@ class MegatronTrainerBuilder:
             if megatron_amp_O2 and not with_distributed_adam:
                 plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
             else:
-                if self.cfg.model.get('fsdp', False):
-                    plugins.append(FSDPPrecision(precision=plugin_precision, scaler=scaler))
-                else:
-                    plugins.append(
-                        PipelineMixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler)
-                    )
+                plugins.append(PipelineMixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
             self.cfg.trainer.precision = None
 
         if self.cfg.get('cluster_type', None) == 'BCP':

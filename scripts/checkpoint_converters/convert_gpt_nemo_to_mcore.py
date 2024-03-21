@@ -205,7 +205,7 @@ def restore_model(nemo_file, cpu_only=False):
             "This is a known issue. For now, please modify the config yaml file to use `MegatronGPTModel`."
         )
 
-    if model_config.precision in ['bf16', 'bf16-mixed']:
+    if model_config.get("precision", None) in ['bf16', 'bf16-mixed']:
         model_config.megatron_amp_O2 = True
 
     model = MegatronGPTModel.restore_from(

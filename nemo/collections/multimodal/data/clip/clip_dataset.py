@@ -85,22 +85,24 @@ def get_preprocess_fns(model_cfg, tokenizer=None, is_train=True):
     return img_transform, text_transform
 
 
+# This function maps data that are tuples to dictionary.
+def tuple_to_dict(inp):
+    for input in inp:
+        out_dict = dict()
+        out_dict['images'] = input[0]
+        out_dict['captions'] = input[1]
+        yield out_dict
+
+
+def transform_fn(sample, img_transform, text_transform):
+    image, text = sample["jpg"], sample["txt"]
+    return img_transform(image), text_transform(text)
+
+
 def build_train_valid_datasets(
     model_cfg, consumed_samples, tokenizer=None,
 ):
     data_cfg = model_cfg.data
-
-    # This function maps data that are tuples to dictionary.
-    def tuple_to_dict(inp):
-        for input in inp:
-            out_dict = dict()
-            out_dict['images'] = input[0]
-            out_dict['captions'] = input[1]
-            yield out_dict
-
-    def transform_fn(sample, img_transform, text_transform):
-        image, text = sample["jpg"], sample["txt"]
-        return img_transform(image), text_transform(text)
 
     train_img_transform, text_transform = get_preprocess_fns(model_cfg, tokenizer, is_train=True)
     train_data = WebDatasetCommon(

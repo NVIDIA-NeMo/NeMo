@@ -28,7 +28,6 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRest
 from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import logging
 from nemo.utils.distributed import temporary_directory
-from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import load_config, save_artifacts
 
 try:
@@ -128,7 +127,7 @@ class Quantizer:
 
         self._check_ddp_initialized(model)
 
-        if is_global_rank_zero():
+        if dist.get_rank() == 0:
             print(model)
 
         return model
@@ -183,7 +182,7 @@ class Quantizer:
 
         def forward_loop():
             for i, batch in enumerate(dataloader):
-                if is_global_rank_zero():
+                if dist.get_rank() == 0:
                     print(f"Calibrating batch {i}")
                 model.predict_step(batch, i)
 
@@ -212,7 +211,7 @@ class Quantizer:
                 export_tensorrt_llm_config=self.export_config.export_tensorrt_llm_config,
             )
             dist.barrier()  # Wait until all ranks complete export_model_config step
-            if is_global_rank_zero():
+            if dist.get_rank() == 0:
                 logging.info(f"Exporting quantized weights, model artifacts, and tokenizer config to {model_save}...")
                 save_artifacts(model, export_dir)
                 if save_qnemo:

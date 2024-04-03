@@ -62,11 +62,9 @@ jobs:
 #        --env HYDRA_FULL_ERROR=1
     steps:
     - name: Log into ACR (Azure Container Registry)  # this login is for the pushing step after
-      uses: azure/docker-login@v1
-      with:
-        login-server: nemoci.azurecr.io
-        password: ${{ secrets.ACR_PASSWORD }}
-        username: nemoci
+      run: |
+        # Login to Azure Container Registry
+        az acr login --name nemoci.azurecr.io
 
     - name: Checkout repository
       uses: actions/checkout@v2

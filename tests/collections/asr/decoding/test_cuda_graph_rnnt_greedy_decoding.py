@@ -41,13 +41,14 @@ a persistent LSTM), which is triggered in cudnn by using a batch size of 8."""
         ),
     ],
 )
-def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16):
+@pytest.mark.parametrize("loop_labels", [False, True])
+def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16, loop_labels: bool):
     skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
 
     conf = ASRModel.from_pretrained(model_name, return_config=True)
     with open_dict(conf):
         conf["decoding"]["greedy"]["max_symbols"] = 5
-        conf["decoding"]["greedy"]["loop_labels"] = False
+        conf["decoding"]["greedy"]["loop_labels"] = loop_labels
         conf["decoding"]["greedy"]["use_cuda_graph_decoder"] = False
 
     with tempfile.NamedTemporaryFile() as fp:
@@ -78,7 +79,8 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16)
             print("New transcript:", fast)
 
 
-def test_change_devices():
+@pytest.mark.parametrize("loop_labels", [False, True])
+def test_change_devices(loop_labels: bool):
     skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
 
     if torch.cuda.device_count() < 2:
@@ -93,7 +95,7 @@ def test_change_devices():
     conf = ASRModel.from_pretrained(model_name, return_config=True)
     with open_dict(conf):
         conf["decoding"]["greedy"]["max_symbols"] = 5
-        conf["decoding"]["greedy"]["loop_labels"] = False
+        conf["decoding"]["greedy"]["loop_labels"] = loop_labels
         conf["decoding"]["greedy"]["use_cuda_graph_decoder"] = True
 
     nemo_model = ASRModel.from_pretrained(model_name, map_location=second_device)

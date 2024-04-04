@@ -384,6 +384,13 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         # same as `dst_states[0][mask] = src_states[0][mask]`, but non-blocking
         torch.where(mask.unsqueeze(-1), src_states[0], dst_states[0], out=dst_states[0])
 
+    @classmethod
+    def batch_replace_states_all(
+        cls, src_states: list[torch.Tensor], dst_states: list[torch.Tensor],
+    ):
+        """Replace states in dst_states with states from src_states"""
+        dst_states[0].copy_(src_states[0])
+
     def batch_split_states(self, batch_states: list[torch.Tensor]) -> list[list[torch.Tensor]]:
         """
         Split states into a list of states.
@@ -1095,6 +1102,14 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         dtype = dst_states[0].dtype
         torch.where(mask.unsqueeze(0).unsqueeze(-1), src_states[0].to(dtype), dst_states[0], out=dst_states[0])
         torch.where(mask.unsqueeze(0).unsqueeze(-1), src_states[1].to(dtype), dst_states[1], out=dst_states[1])
+
+    @classmethod
+    def batch_replace_states_all(
+        cls, src_states: Tuple[torch.Tensor, torch.Tensor], dst_states: Tuple[torch.Tensor, torch.Tensor],
+    ):
+        """Replace states in dst_states with states from src_states"""
+        dst_states[0].copy_(src_states[0])
+        dst_states[1].copy_(src_states[1])
 
     def batch_split_states(
         self, batch_states: Tuple[torch.Tensor, torch.Tensor]

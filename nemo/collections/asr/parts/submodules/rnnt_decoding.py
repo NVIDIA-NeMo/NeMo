@@ -335,6 +335,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         preserve_alignments=self.preserve_alignments,
                         preserve_frame_confidence=self.preserve_frame_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
+                        use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', False),
                     )
 
             else:

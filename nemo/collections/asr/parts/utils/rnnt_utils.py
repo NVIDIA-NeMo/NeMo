@@ -263,6 +263,14 @@ class BatchedHyps:
         self._batch_indices = torch.arange(batch_size, device=device)
         self._ones_batch = torch.ones_like(self._batch_indices)
 
+    def clear_(self):
+        self.current_lengths.fill_(0)
+        self.transcript.fill_(0)
+        self.timesteps.fill_(0)
+        self.scores.fill_(0.0)
+        self.last_timestep.fill_(-1)
+        self.last_timestep_lasts.fill_(0)
+
     def _allocate_more(self):
         """
         Allocate 2x space for tensors, similar to common C++ std::vector implementations
@@ -437,6 +445,13 @@ class BatchedAlignments:
             self.frame_confidence = torch.zeros((batch_size, self._max_length), device=device, dtype=float_dtype)
         self._batch_indices = torch.arange(batch_size, device=device)
 
+    def clear_(self):
+        self.current_lengths.fill_(0)
+        self.timesteps.fill_(0)
+        self.logits.fill_(0.0)
+        self.labels.fill_(0)
+        self.frame_confidence.fill_(0)
+
     def _allocate_more(self):
         """
         Allocate 2x space for tensors, similar to common C++ std::vector implementations
@@ -548,7 +563,7 @@ class BatchedAlignments:
 
 
 def batched_hyps_to_hypotheses(
-    batched_hyps: BatchedHyps, alignments: Optional[BatchedAlignments] = None
+    batched_hyps: BatchedHyps, alignments: Optional[BatchedAlignments] = None, batch_size=None
 ) -> List[Hypothesis]:
     """
     Convert batched hypotheses to a list of Hypothesis objects.
@@ -557,10 +572,14 @@ def batched_hyps_to_hypotheses(
     Args:
         batched_hyps: BatchedHyps object
         alignments: BatchedAlignments object, optional; must correspond to BatchedHyps if present
+        batch_size: Batch Size to retrieve hypotheses. When working with CUDA graphs the batch size for all tensors
+            is constant, thus we need here the real batch size to return only necessary hypotheses
 
     Returns:
         list of Hypothesis objects
     """
+    assert batch_size is None or batch_size <= batched_hyps.scores.shape[0]
+    num_hyps = batched_hyps.scores.shape[0] if batch_size is None else batch_size
     hypotheses = [
         Hypothesis(
             score=batched_hyps.scores[i].item(),
@@ -569,7 +588,7 @@ def batched_hyps_to_hypotheses(
             alignments=None,
             dec_state=None,
         )
-        for i in range(batched_hyps.scores.shape[0])
+        for i in range(num_hyps)
     ]
     if alignments is not None:
         # move all data to cpu to avoid overhead with moving data by chunks

@@ -101,7 +101,7 @@ try:
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_config import TransformerConfig
-    from megatron.core.utils import init_method_normal, scaled_init_method_normal
+    from megatron.core.utils import drain_embedding_wgrad_compute, init_method_normal, scaled_init_method_normal
 
     # TODO @tmoon: Use once available in Megatron-LM
     # from megatron.core.pipeline_parallel.schedules import DataIteratorList
@@ -705,10 +705,51 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     for param in module.embedding.parameters():
                         param.data_ptr()
 
+        if self.cfg.get('pipeline_model_parallel_size', 1) > 1 and parallel_state.is_pipeline_last_stage(
+            ignore_virtual=True
+        ):
+            if (
+                self.cfg.get('defer_embedding_wgrad_compute', False) and self.mcore_gpt
+            ):  # Silently ignore the optimization if MCORE is not used
+                module_list = self.get_model_module_list()
+                if len(module_list) > 1:
+                    embedding_module = module_list[-1]
+                else:
+                    embedding_module = module_list[0]
+
+                embedding_module.embedding_activation_buffer.clear()
+                assert (
+                    len(embedding_module.embedding_activation_buffer) == 0
+                ), "When you defer wgrads, this buffer should not hold stray activations"
+
         loss_mean = self.training_step_fwd_bwd_step_call(dataloader_iter, forward_only=False)
 
         if self.cfg.get('fp8', False):
             self.prev_step_training = self.training
+
+        # Optimization: Defer the embedding GEMM Wgrads of the last PP stage to pipeline flush waiting time
+        if self.cfg.get('pipeline_model_parallel_size', 1) > 1 and parallel_state.is_pipeline_last_stage(
+            ignore_virtual=True
+        ):
+            if (
+                self.cfg.get('defer_embedding_wgrad_compute', False) and self.mcore_gpt
+            ):  # Silently ignore the optimization if MCORE is not used
+                module_list = self.get_model_module_list()
+                if len(module_list) > 1:
+                    embedding_module = module_list[-1]
+                else:
+                    embedding_module = module_list[0]
+
+                embedding_activation_buffer = embedding_module.embedding_activation_buffer
+                grad_output_buffer = embedding_module.grad_output_buffer
+                if self.cfg.get('share_embeddings_and_output_weights', True):
+                    weight = embedding_module.shared_embedding_or_output_weight()
+                else:
+                    weight = embedding_module.output_layer.weight
+
+                drain_embedding_wgrad_compute(
+                    embedding_module.config, embedding_activation_buffer, grad_output_buffer, weight
+                )
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):

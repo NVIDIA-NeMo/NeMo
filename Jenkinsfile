@@ -2201,7 +2201,7 @@ pipeline {
         }
       }
     }
-    
+
     stage('Punctuation & Capitalization tarred dataset') {
       when {
         anyOf {
@@ -2261,7 +2261,7 @@ pipeline {
         }
       }
     }
-    
+
     stage('Punctuation & Capitalization, Different ways of passing labels to model') {
       when {
         anyOf {
@@ -5585,7 +5585,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         sh "rm -rf examples/nlp/language_modeling/gpt_pretrain_results"
       }
     }
-    
+
     stage('L2: Megatron Mock Data Generation') {
       when {
         anyOf {

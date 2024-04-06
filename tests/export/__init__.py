@@ -11,15 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
-import logging
-
-LOGGER = logging.getLogger("NeMo")
-
-
-use_TensorRTLLM = True
-try:
-    from nemo.export.tensorrt_llm import TensorRTLLM
-except Exception as e:
-    LOGGER.warning("TensorRTLLM could not be imported.")

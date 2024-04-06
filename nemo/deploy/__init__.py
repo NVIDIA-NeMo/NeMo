@@ -13,13 +13,6 @@
 # limitations under the License.
 
 
-import logging
-
-LOGGER = logging.getLogger("NeMo")
-
-
-use_TensorRTLLM = True
-try:
-    from nemo.export.tensorrt_llm import TensorRTLLM
-except Exception as e:
-    LOGGER.warning("TensorRTLLM could not be imported.")
+from nemo.deploy.deploy_base import DeployBase
+from nemo.deploy.deploy_pytriton import DeployPyTriton
+from nemo.deploy.triton_deployable import ITritonDeployable

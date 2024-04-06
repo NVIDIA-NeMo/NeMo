@@ -13,13 +13,19 @@
 # limitations under the License.
 
 
-import logging
+from abc import ABC, abstractmethod
+import numpy as np
 
-LOGGER = logging.getLogger("NeMo")
 
+class ITritonDeployable(ABC):
+    @abstractmethod
+    def get_triton_input(self):
+        pass
 
-use_TensorRTLLM = True
-try:
-    from nemo.export.tensorrt_llm import TensorRTLLM
-except Exception as e:
-    LOGGER.warning("TensorRTLLM could not be imported.")
+    @abstractmethod
+    def get_triton_output(self):
+        pass
+
+    @abstractmethod
+    def triton_infer_fn(self, **inputs: np.ndarray):
+        pass

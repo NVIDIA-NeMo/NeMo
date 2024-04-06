@@ -13,13 +13,8 @@
 # limitations under the License.
 
 
-import logging
-
-LOGGER = logging.getLogger("NeMo")
-
-
-use_TensorRTLLM = True
+use_query_llm = True
 try:
-    from nemo.export.tensorrt_llm import TensorRTLLM
-except Exception as e:
-    LOGGER.warning("TensorRTLLM could not be imported.")
+    from nemo.deploy.nlp.query_llm import NemoQueryLLM
+except Exception:
+    use_query_llm = False

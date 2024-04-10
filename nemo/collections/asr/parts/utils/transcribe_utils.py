@@ -298,7 +298,7 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
 def read_and_maybe_sort_manifest(path: str, try_sort: bool = False) -> List[dict]:
     """Sorts the manifest if duration key is available for every utterance."""
     items = manifest_utils.read_manifest(path)
-    if try_sort and all("duration" in item for item in items):
+    if try_sort and all("duration" in item and item["duration"] is not None for item in items):
         items = sorted(items, reverse=True, key=lambda item: item["duration"])
     return items
 
@@ -306,7 +306,7 @@ def read_and_maybe_sort_manifest(path: str, try_sort: bool = False) -> List[dict
 def restore_transcription_order(manifest_path: str, transcriptions: list) -> list:
     with open(manifest_path) as f:
         items = [(idx, json.loads(l)) for idx, l in enumerate(f)]
-    if not all("duration" in item[1] for item in items):
+    if not all("duration" in item[1] and item[1]["duration"] is not None for item in items):
         return transcriptions
     new2old = [item[0] for item in sorted(items, reverse=True, key=lambda it: it[1]["duration"])]
     del items  # free up some memory

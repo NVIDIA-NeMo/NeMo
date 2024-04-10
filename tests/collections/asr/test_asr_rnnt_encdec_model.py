@@ -73,7 +73,7 @@ def max_symbols_setup():
                 return (
                     output,
                     [
-                        torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :].exand(
+                        torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :].expand(
                             [1, batch_size, -1]
                         )
                     ],
@@ -90,22 +90,25 @@ def max_symbols_setup():
                 ],
             )
 
-        def initialize_state(self, y: torch.Tensor) -> Optional[List[torch.Tensor]]:
-            return None
+        def initialize_state(self, y: torch.Tensor) -> List[torch.Tensor]:
+            batch_size = y.shape[0]
+            # NB: .clone is necessary after .expand, since the decoding algorithm manipulates the state
+            # (replacing elements), and this requires the state to be a real full tensor
+            # (not an expanded view, in which different elements can refer to the same memory location)
+            return [
+                torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :]
+                .expand([1, batch_size, -1])
+                .clone()
+            ]
 
         def score_hypothesis(
             self, hypothesis: Hypothesis, cache: Dict[Tuple[int], Any]
         ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
             return torch.tensor(), [torch.tensor()], torch.tensor()
 
-        def batch_select_state(
-            self, batch_states: Optional[List[torch.Tensor]], idx: int
-        ) -> Optional[List[List[torch.Tensor]]]:
-            if batch_states is not None:
-                states = [batch_states[0][:, idx]]
-                return [states]
-            else:
-                return None
+        def batch_select_state(self, batch_states: List[torch.Tensor], idx: int) -> Optional[List[List[torch.Tensor]]]:
+            states = [batch_states[0][:, idx]]
+            return [states]
 
         def batch_copy_states(
             self,
@@ -125,6 +128,22 @@ def max_symbols_setup():
             if states is None:
                 return None
             return [states[0][:, mask]]
+
+        @classmethod
+        def batch_replace_states_mask(
+            cls, src_states: list[torch.Tensor], dst_states: list[torch.Tensor], mask: torch.Tensor,
+        ):
+            """Replace states in dst_states with states from src_states using the mask"""
+            for src_substate, dst_substate in zip(src_states, dst_states):
+                torch.where(mask.unsqueeze(0).unsqueeze(-1), src_substate, dst_substate, out=dst_substate)
+
+        @classmethod
+        def batch_split_states(cls, batch_states: list[torch.Tensor]) -> list[list[torch.Tensor]]:
+            """
+            Split states into a list of states.
+            Useful for splitting the final state for converting results of the decoding algorithm to Hypothesis class.
+            """
+            return [sub_state.split(1, dim=1) for sub_state in batch_states]
 
     class DummyRNNTJoint(AbstractRNNTJoint):
         def __init__(self, num_outputs: int):
@@ -621,9 +640,15 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
-    def test_greedy_decoding_stateless_decoder(self, greedy_class):
+    @pytest.mark.parametrize("context_size", [1, 2])
+    def test_greedy_decoding_stateless_decoder(self, greedy_class, loop_labels: Optional[bool], context_size: int):
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
 
@@ -631,7 +656,7 @@ class TestEncDecRNNTModel:
         decoder_output_size = 4
         joint_output_shape = 4
 
-        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1, 'context_size': context_size}
         jointnet_cfg = {
             'encoder_hidden': encoder_output_size,
             'pred_hidden': decoder_output_size,
@@ -642,8 +667,14 @@ class TestEncDecRNNTModel:
         decoder = StatelessTransducerDecoder(prednet_cfg, vocab_size)
         for joint_type in [RNNTJoint, HATJoint]:
             joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
-
-            greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
+            greedy = greedy_class(
+                decoder,
+                joint_net,
+                blank_index=len(token_list) - 1,
+                max_symbols_per_step=5,
+                **additional_decoding_kwargs,
+            )
 
             # (B, D, T)
             enc_out = torch.randn(1, encoder_output_size, 30)
@@ -696,9 +727,14 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
-    def test_greedy_decoding_preserve_alignment(self, greedy_class):
+    def test_greedy_decoding_preserve_alignment(self, greedy_class, loop_labels: Optional[bool]):
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
 
@@ -719,13 +755,14 @@ class TestEncDecRNNTModel:
         max_symbols_per_step = 5
         for joint_type in [RNNTJoint, HATJoint]:
             joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
-
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
             greedy = greedy_class(
                 decoder,
                 joint_net,
                 blank_index=len(token_list),
                 preserve_alignments=True,
                 max_symbols_per_step=max_symbols_per_step,
+                **additional_decoding_kwargs,
             )
 
             # (B, D, T)
@@ -760,9 +797,14 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
-    def test_greedy_decoding_preserve_frame_confidence(self, greedy_class):
+    def test_greedy_decoding_preserve_frame_confidence(self, greedy_class, loop_labels: Optional[bool]):
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
 
@@ -784,12 +826,14 @@ class TestEncDecRNNTModel:
         for joint_type in [RNNTJoint, HATJoint]:
             joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
             greedy = greedy_class(
                 decoder,
                 joint_net,
                 blank_index=len(token_list),
                 preserve_frame_confidence=True,
                 max_symbols_per_step=max_symbols_per_step,
+                **additional_decoding_kwargs,
             )
 
             # (B, D, T)
@@ -827,10 +871,17 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
     @pytest.mark.parametrize("max_symbols_per_step", [1, 5])
-    def test_greedy_decoding_max_symbols_alignment(self, max_symbols_setup, greedy_class, max_symbols_per_step):
+    def test_greedy_decoding_max_symbols_alignment(
+        self, max_symbols_setup, greedy_class, max_symbols_per_step: int, loop_labels: Optional[bool]
+    ):
         decoders = [max_symbols_setup["decoder"]]
         if greedy_class is greedy_decode.GreedyBatchedRNNTInfer:
             decoders.append(max_symbols_setup["decoder_masked"])
@@ -839,12 +890,14 @@ class TestEncDecRNNTModel:
         encoded_lengths = max_symbols_setup["encoded_lengths"]
 
         for decoder in decoders:
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
             greedy = greedy_class(
                 decoder_model=decoder,
                 joint_model=joint,
                 blank_index=decoder.blank_idx,
                 max_symbols_per_step=max_symbols_per_step,
                 preserve_alignments=True,
+                **additional_decoding_kwargs,
             )
 
             with torch.no_grad():
@@ -869,10 +922,17 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
     @pytest.mark.parametrize("max_symbols_per_step", [-1, 0])
-    def test_greedy_decoding_max_symbols_confidence(self, max_symbols_setup, greedy_class, max_symbols_per_step):
+    def test_greedy_decoding_max_symbols_confidence_incorrect_max_symbols(
+        self, max_symbols_setup, greedy_class, max_symbols_per_step: int, loop_labels: Optional[bool]
+    ):
         """Test ValueError for max_symbols_per_step <= 0"""
         decoders = [max_symbols_setup["decoder"]]
         if greedy_class is greedy_decode.GreedyBatchedRNNTInfer:
@@ -880,6 +940,7 @@ class TestEncDecRNNTModel:
         joint = max_symbols_setup["joint"]
 
         for decoder in decoders:
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
             with pytest.raises(ValueError):
                 _ = greedy_class(
                     decoder_model=decoder,
@@ -887,6 +948,7 @@ class TestEncDecRNNTModel:
                     blank_index=decoder.blank_idx,
                     max_symbols_per_step=max_symbols_per_step,
                     preserve_frame_confidence=True,
+                    **additional_decoding_kwargs,
                 )
 
     @pytest.mark.skipif(
@@ -894,10 +956,17 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
     @pytest.mark.parametrize("max_symbols_per_step", [1, 5])
-    def test_greedy_decoding_max_symbols_confidence(self, max_symbols_setup, greedy_class, max_symbols_per_step):
+    def test_greedy_decoding_max_symbols_confidence(
+        self, max_symbols_setup, greedy_class, max_symbols_per_step: int, loop_labels: Optional[bool]
+    ):
         decoders = [max_symbols_setup["decoder"]]
         if greedy_class is greedy_decode.GreedyBatchedRNNTInfer:
             decoders.append(max_symbols_setup["decoder_masked"])
@@ -906,12 +975,14 @@ class TestEncDecRNNTModel:
         encoded_lengths = max_symbols_setup["encoded_lengths"]
 
         for decoder in decoders:
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
             greedy = greedy_class(
                 decoder_model=decoder,
                 joint_model=joint,
                 blank_index=decoder.blank_idx,
                 max_symbols_per_step=max_symbols_per_step,
                 preserve_frame_confidence=True,
+                **additional_decoding_kwargs,
             )
 
             with torch.no_grad():
@@ -1035,9 +1106,14 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
-    def test_greedy_decoding_SampledRNNTJoint(self, greedy_class):
+    def test_greedy_decoding_SampledRNNTJoint(self, greedy_class, loop_labels: Optional[bool]):
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
 
@@ -1056,7 +1132,10 @@ class TestEncDecRNNTModel:
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
         joint_net = SampledRNNTJoint(jointnet_cfg, vocab_size, n_samples=2, vocabulary=token_list)
 
-        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+        additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
+        greedy = greedy_class(
+            decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5, **additional_decoding_kwargs
+        )
 
         # (B, D, T)
         enc_out = torch.randn(1, encoder_output_size, 30)

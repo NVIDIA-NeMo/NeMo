@@ -347,16 +347,18 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
         # Output
         if self.post_process:
             # TODO: Make sure you are passing in the mpu_vocab_size properly
-            self.lm_head = MCoreBertLMHead(
-                self.config.hidden_size,
-                self.config,
-                self.parallel_output,
-                self.vocab_size,
-                self.pre_process,
-                self.share_embeddings_and_output_weights,
-            )
+            self.lm_head = MCoreBertLMHead(self.config.hidden_size, self.config,)
 
-            self.output_layer = self.lm_head.output_layer
+            self.output_layer = tensor_parallel.ColumnParallelLinear(
+                self.config.hidden_size,
+                self.vocab_size,
+                config=self.config,
+                init_method=self.config.init_method,
+                bias=True,
+                skip_bias_add=False,
+                gather_output=not self.parallel_output,
+                skip_weight_param_allocation=self.pre_process and self.share_embeddings_and_output_weights,
+            )
 
             self.binary_head = None
             if self.add_binary_head:
@@ -412,7 +414,8 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
 
-        logits = self.lm_head(hidden_states=hidden_states, word_embeddings_weight=output_weight)
+        hidden_states_after_lm_head = self.lm_head(hidden_states=hidden_states)
+        logits, _ = self.output_layer(hidden_states_after_lm_head, weight=output_weight)
 
         binary_logits = None
         if self.binary_head is not None and self.add_pooler:

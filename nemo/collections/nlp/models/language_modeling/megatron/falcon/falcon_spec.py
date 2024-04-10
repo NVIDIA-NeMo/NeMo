@@ -24,9 +24,9 @@ try:
         TERowParallelLinear,
     )
     from megatron.core.transformer.enums import AttnMaskType
+    from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.mlp import MLP, MLPSubmodules
     from megatron.core.transformer.spec_utils import ModuleSpec
-
     from megatron.core.transformer.transformer_layer import TransformerLayerSubmodules
 
     HAVE_MEGATRON_CORE = True
@@ -38,6 +38,7 @@ except (ImportError, ModuleNotFoundError):
     ModuleSpec = ApexGuardDefaults
 
 from .falcon_decoder_layer import FalconTransformerLayer
+
 
 # Use this spec for an implementation using modules in TE
 def get_falcon_layer_spec() -> ModuleSpec:
@@ -54,6 +55,8 @@ def get_falcon_layer_spec() -> ModuleSpec:
                 linear_qkv=TEColumnParallelLinear,
                 core_attention=TEDotProductAttention,
                 linear_proj=TERowParallelLinear,
+                q_layernorm=IdentityOp,
+                k_layernorm=IdentityOp,
             ),
         ),
         self_attn_bda=get_bias_dropout_add,

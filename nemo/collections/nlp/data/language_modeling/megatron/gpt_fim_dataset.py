@@ -33,11 +33,6 @@ except (ImportError, ModuleNotFoundError) as e:
     IMPORT_ERROR = e
 
 
-# is_dataset_built_on_rank function is needed for mcore GPTDatasetConfig
-def is_dataset_built_on_rank():
-    return True
-
-
 class GPTFIMDatasetConfig(GPTDatasetConfig):
     """Configuration object for Megatron Core GPT FIM datasets
 

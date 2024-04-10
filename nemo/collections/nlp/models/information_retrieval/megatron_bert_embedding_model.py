@@ -227,7 +227,7 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
                 for i, module in enumerate(self.model):
                     parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                     sync_embeddings = (
-                        module.initialize_last_stage_with_word_embeddings
+                        module.setup_embeddings_and_output_layer
                         if self.mcore_bert
                         else module.sync_initial_word_embeddings
                     )
@@ -235,7 +235,7 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
                 parallel_state.set_virtual_pipeline_model_parallel_rank(0)
             else:
                 sync_embeddings = (
-                    self.model.initialize_last_stage_with_word_embeddings
+                    self.model.setup_embeddings_and_output_layer
                     if self.mcore_bert
                     else self.model.sync_initial_word_embeddings
                 )

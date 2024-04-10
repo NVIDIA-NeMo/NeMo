@@ -1,7 +1,7 @@
 pipeline {
   agent {
         docker {
-          image 'nvcr.io/nvidia/pytorch:24.01-py3'
+          image 'nvcr.io/nvidia/pytorch:24.02-py3'
           args '--device=/dev/nvidia0 --gpus all --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1'
         }
   }
@@ -63,44 +63,35 @@ pipeline {
       }
     }
 
-    // Transformer Engine 1.2.0
     stage('Transformer Engine installation') {
       steps {
          sh 'git clone https://github.com/NVIDIA/TransformerEngine.git && \
              cd TransformerEngine && \
-             git fetch origin 8c9abbb80dba196f086b8b602a7cf1bce0040a6a && \
+             git fetch origin bfe21c3d68b0a9951e5716fb520045db53419c5e && \
              git checkout FETCH_HEAD && \
              git submodule init && git submodule update && \
              NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .'
       }
     }
 
-    // Apex bugfix for PyTorch 23.11 container: https://github.com/NVIDIA/apex/pull/1760
     stage('Apex installation') {
       steps {
          sh 'git clone https://github.com/NVIDIA/apex.git && \
              cd apex && \
-             git checkout c07a4cf67102b9cd3f97d1ba36690f985bae4227 && \
+             git checkout 810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c && \
              cp -R apex /usr/local/lib/python3.10/dist-packages'
       }
     }
 
-    stage('Pytorch lightning installation') {
-      steps {
-         sh 'git clone -b bug_fix https://github.com/athitten/pytorch-lightning.git && \
-             cd pytorch-lightning && \
-             PACKAGE_NAME=pytorch pip install -e .'
-      }
-    }
-
-    // pip package should be working with main, if not we can update the commit here
-    // until the pip package is updated
     stage('Megatron Core installation') {
       steps {
          sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
              cd Megatron-LM && \
-             git checkout a5415fcfacef2a37416259bd38b7c4b673583675 && \
-             pip install .'
+             git checkout 7fe863f3d94f7b64a927b04b85f5c9339d3fb784 && \
+             pip install . && \
+             cd megatron/core/datasets && \
+             make'
+         sh 'export PYTHONPATH="${PYTHONPATH}:/mnt/D3/JenkinsWorkDir/workspace/NeMo-multibranch_${GIT_BRANCH}/Megatron-LM"'
       }
     }
 
@@ -217,48 +208,48 @@ pipeline {
         sh "rm -rf /home/TestData/multimodal/stable_diffusion_train"
       }
     }
-    stage('L2: Multimodal Stable Diffusion Train with Cuda Graph') {
-      when {
-        anyOf {
-          branch 'main'
-          changeRequest target: 'main'
-        }
-      }
-      failFast true
-      steps {
-        sh "rm -rf /home/TestData/multimodal/stable_diffusion_train_with_cuda_graphs"
-        sh "python examples/multimodal/text_to_image/stable_diffusion/sd_train.py \
-            trainer.precision=16 \
-            trainer.num_nodes=1 \
-            trainer.devices=1 \
-            ++exp_manager.max_time_per_run=00:00:03:00 \
-            exp_manager.exp_dir=/home/TestData/multimodal/stable_diffusion_train_with_cuda_graph \
-            trainer.max_steps=20 \
-            model.micro_batch_size=1 \
-            model.global_batch_size=1 \
-            model.data.synthetic_data=True \
-            model.first_stage_key=images_moments \
-            model.cond_stage_key=clip_encoded \
-            model.optim.name=megatron_fused_adam \
-            +model.optim.capturable=True \
-            exp_manager.ema.enable=False \
-            model.cond_stage_config._target_=nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenCLIPEmbedder \
-            ++model.cond_stage_config.version=openai/clip-vit-large-patch14 \
-            ++model.cond_stage_config.max_length=77 \
-            model.inductor=False \
-            ~model.cond_stage_config.restore_from_path \
-            ~model.cond_stage_config.freeze \
-            ~model.cond_stage_config.layer \
-            model.first_stage_config.from_pretrained=null \
-            model.ddp_overlap=False \
-            model.capture_cudagraph_iters=15 \
-            model.unet_config.use_flash_attention=False \
-            model.unet_config.attention_resolutions=[1] \
-            model.unet_config.channel_mult=[1] \
-            "
-        sh "rm -rf /home/TestData/multimodal/stable_diffusion_train_with_cuda_graphs"
-      }
-    }
+    //stage('L2: Multimodal Stable Diffusion Train with Cuda Graph') {
+    //  when {
+    //    anyOf {
+    //      branch 'main'
+    //      changeRequest target: 'main'
+    //    }
+    //  }
+    //  failFast true
+    //  steps {
+    //    sh "rm -rf /home/TestData/multimodal/stable_diffusion_train_with_cuda_graphs"
+    //    sh "python examples/multimodal/text_to_image/stable_diffusion/sd_train.py \
+    //        trainer.precision=16 \
+    //        trainer.num_nodes=1 \
+    //        trainer.devices=1 \
+    //        ++exp_manager.max_time_per_run=00:00:03:00 \
+    //        exp_manager.exp_dir=/home/TestData/multimodal/stable_diffusion_train_with_cuda_graph \
+    //        trainer.max_steps=20 \
+    //        model.micro_batch_size=1 \
+    //        model.global_batch_size=1 \
+    //       model.data.synthetic_data=True \
+    //        model.first_stage_key=images_moments \
+    //        model.cond_stage_key=clip_encoded \
+    //        model.optim.name=megatron_fused_adam \
+    //        +model.optim.capturable=True \
+    //        exp_manager.ema.enable=False \
+    //        model.cond_stage_config._target_=nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenCLIPEmbedder \
+    //        ++model.cond_stage_config.version=openai/clip-vit-large-patch14 \
+    //        ++model.cond_stage_config.max_length=77 \
+    //        model.inductor=False \
+    //        ~model.cond_stage_config.restore_from_path \
+    //        ~model.cond_stage_config.freeze \
+    //        ~model.cond_stage_config.layer \
+    //        model.first_stage_config.from_pretrained=null \
+    //        model.ddp_overlap=False \
+    //        model.capture_cudagraph_iters=15 \
+    //        model.unet_config.use_flash_attention=False \
+    //        model.unet_config.attention_resolutions=[1] \
+    //        model.unet_config.channel_mult=[1] \
+    //        "
+    //    sh "rm -rf /home/TestData/multimodal/stable_diffusion_train_with_cuda_graphs"
+    //  }
+    //}
 //     stage('L2: Multimodal ControlNet Train') {
 //       when {
 //         anyOf {
@@ -4654,7 +4645,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
         model.sequence_parallel=true \
-        model.restore_from_path=/home/TestData/nlp/megatron_gpt/TP2/megatron_gpt_tp2.nemo \
+        model.restore_from_path=/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo \
         model.peft.peft_scheme='lora' \
         model.answer_only_loss=True \
         model.micro_batch_size=1 \

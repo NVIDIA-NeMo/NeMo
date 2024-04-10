@@ -26,6 +26,7 @@ try:
     )
     from megatron.core.transformer.dot_product_attention import DotProductAttention
     from megatron.core.transformer.enums import AttnMaskType
+    from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.mlp import MLP, MLPSubmodules
     from megatron.core.transformer.spec_utils import ModuleSpec
 
@@ -51,6 +52,8 @@ bert_layer_with_transformer_engine_spec_postln = ModuleSpec(
                 linear_qkv=TEColumnParallelLinear,
                 core_attention=TEDotProductAttention,
                 linear_proj=TERowParallelLinear,
+                q_layernorm=IdentityOp,
+                k_layernorm=IdentityOp,
             ),
         ),
         self_attn_bda=get_bias_dropout_add,
@@ -71,7 +74,11 @@ bert_layer_local_spec_postln = ModuleSpec(
             module=SelfAttention,
             params={"attn_mask_type": AttnMaskType.padding},
             submodules=SelfAttentionSubmodules(
-                linear_qkv=ColumnParallelLinear, core_attention=DotProductAttention, linear_proj=RowParallelLinear,
+                linear_qkv=ColumnParallelLinear,
+                core_attention=DotProductAttention,
+                linear_proj=RowParallelLinear,
+                q_layernorm=IdentityOp,
+                k_layernorm=IdentityOp,
             ),
         ),
         self_attn_bda=get_bias_dropout_add,

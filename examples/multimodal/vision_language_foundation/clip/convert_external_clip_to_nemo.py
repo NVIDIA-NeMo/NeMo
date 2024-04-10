@@ -55,8 +55,8 @@ except (ImportError, ModuleNotFoundError):
 
 def get_args():
     parser = ArgumentParser()
-    parser.add_argument("--arch", type=str, default="ViT-H-14")
-    parser.add_argument("--version", type=str, default="laion2b_s32b_b79k")
+    parser.add_argument("--arch", type=str, default="openai/clip-vit-base-patch32")
+    parser.add_argument("--version", type=str, default="huggingface")
 
     parser.add_argument(
         "--hparams_file",
@@ -112,7 +112,6 @@ def mapping_openclip_state_dict(open_model):
         ".positional_embedding": ".position_embeddings",
         ".backbone.proj": ".head.weight",
         ".class_embedding": ".cls_token",
-        ".backbone.conv1.weight": ".backbone.linear_encoder.weight",
     }
 
     nemo_state_dict = {}
@@ -139,9 +138,6 @@ def mapping_openclip_state_dict(open_model):
     nemo_state_dict["vision_encoder.backbone.cls_token"] = nemo_state_dict[
         "vision_encoder.backbone.cls_token"
     ].reshape(1, 1, -1)
-    w = nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"]
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"] = einops.rearrange(w, "b c p1 p2 -> b (p1 p2 c)",)
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.bias"] = torch.zeros(w.shape[0])
 
     return nemo_state_dict
 
@@ -168,10 +164,10 @@ def mapping_hf_state_dict(hf_model):
         ".pre_layrnorm.bias": ".preprocess_layernorm.bias",
         ".post_layernorm.weight": ".transformer.final_layernorm.weight",
         ".post_layernorm.bias": ".transformer.final_layernorm.bias",
-        ".backbone.embeddings.position_embedding.weight": ".backbone.position_embeddings",
-        ".language_model.embeddings.position_embedding.weight": ".language_model.embedding.position_embeddings",
+        ".backbone.embeddings.position_embedding.weight": ".backbone.position_embeddings.weight",
+        ".language_model.embeddings.position_embedding.weight": ".language_model.embedding.position_embeddings.weight",
         ".embeddings.class_embedding": ".cls_token",
-        ".backbone.embeddings.patch_embedding.weight": ".backbone.linear_encoder.weight",
+        ".backbone.embeddings.patch_embedding.weight": ".backbone.conv1.weight",
         ".final_layer_norm.weight": ".encoder.final_layernorm.weight",
         ".final_layer_norm.bias": ".encoder.final_layernorm.bias",
         ".embeddings.token_embedding.weight": ".embedding.word_embeddings.weight",
@@ -208,9 +204,6 @@ def mapping_hf_state_dict(hf_model):
     nemo_state_dict["vision_encoder.backbone.cls_token"] = nemo_state_dict[
         "vision_encoder.backbone.cls_token"
     ].reshape(1, 1, -1)
-    w = nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"]
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"] = einops.rearrange(w, "b c p1 p2 -> b (p1 p2 c)",)
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.bias"] = torch.zeros(w.shape[0])
 
     return nemo_state_dict
 

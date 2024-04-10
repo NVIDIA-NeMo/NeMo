@@ -227,8 +227,14 @@ class VitBackbone(MegatronModule):
                 torch.nn.init.zeros_(self.cls_token)
             self.position_ids = torch.arange(self.seq_length).expand(1, -1).cuda()
 
-            # Linear encoder
-            self.linear_encoder = torch.nn.Linear(self.flatten_dim, self.hidden_size)
+            # Convolution layer
+            self.conv1 = torch.nn.Conv2d(
+                in_channels=model_cfg.num_channels,  # Number of input channels
+                out_channels=self.hidden_size,  # Number of output channels
+                kernel_size=(self.patch_dim, self.patch_dim),  # Kernel size (height, width)
+                stride=(self.patch_dim, self.patch_dim),  # Stride (height, width)
+                bias=False,
+            )  # Disable bias
 
             # embedding
             self.position_embedding_type = model_cfg.get("position_embedding_type", "learned_absolute")
@@ -332,12 +338,9 @@ class VitBackbone(MegatronModule):
     def forward(self, input):
 
         if self.pre_process:
-            rearranged_input = einops.rearrange(
-                input, "b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=self.patch_dim, p2=self.patch_dim,
-            )
-
-            # [b num_patch patch_dim*patch_dim*c] ->  [b, s, h]; s:=num_patch, h:=hidden
-            encoder_output = self.linear_encoder(rearranged_input)
+            rearranged_input = self.conv1(input)
+            rearranged_input = rearranged_input.reshape(rearranged_input.shape[0], rearranged_input.shape[1], -1)
+            encoder_output = rearranged_input.permute(0, 2, 1)
 
             concatenated_tokens = encoder_output
             if self.class_token:

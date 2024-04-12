@@ -869,7 +869,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
 
                     sharded_state_dict = model.sharded_state_dict()
                     # dist checkpoint needs torch.distributed to save the checkpoint
-                    if parallel_state.is_unitialized():
+                    if not parallel_state.is_initialized():
 
                         def dummy():
                             return
@@ -1110,7 +1110,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         # if we're using dist checkpointing then state_dict will be None
         if state_dict is None:
             # dist checkpointing needs torch.distributed to load the checkpoint
-            if parallel_state.is_unitialized():
+            if not parallel_state.is_initialized():
 
                 def dummy():
                     return

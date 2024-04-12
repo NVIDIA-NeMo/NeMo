@@ -133,7 +133,7 @@ class Quantizer:
         return model
 
     def _check_ddp_initialized(self, model):
-        if parallel_state.is_unitialized():
+        if not parallel_state.is_initialized():
 
             def dummy():
                 return

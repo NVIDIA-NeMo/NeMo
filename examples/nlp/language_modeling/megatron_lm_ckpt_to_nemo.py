@@ -529,7 +529,7 @@ def convert(local_rank, rank, world_size, args):
 
     if args.nemo_file_path:
         if args.model_type == 'gpt':
-            if mcore_output and parallel_state.is_unitialized():
+            if mcore_output and not parallel_state.is_initialized():
                 parallel_state.initialize_model_parallel(
                     tensor_model_parallel_size=args.tensor_model_parallel_size,
                     pipeline_model_parallel_size=args.pipeline_model_parallel_size,

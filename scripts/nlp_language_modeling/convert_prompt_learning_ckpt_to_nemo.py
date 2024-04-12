@@ -104,7 +104,7 @@ def main(cfg) -> None:
         raise ValueError("need at least a nemo file or checkpoint dir")
 
     # check whether the DDP is initialized
-    if parallel_state.is_unitialized():
+    if not parallel_state.is_initialized():
 
         def dummy():
             return

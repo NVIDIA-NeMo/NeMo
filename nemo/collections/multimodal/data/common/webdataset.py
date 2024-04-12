@@ -302,7 +302,7 @@ if HAVE_WEBDATASET:
                 epoch = self.epoch
             rng = random.Random()
             # This seed to be deterministic AND the same across all nodes/workers in each epoch
-            if parallel_state.is_unitialized():
+            if not parallel_state.is_initialized():
                 seed = self.seed + epoch
             else:
                 seed = self.seed + epoch + (100 * parallel_state.get_data_parallel_rank())

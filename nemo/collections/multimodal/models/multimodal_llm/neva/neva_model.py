@@ -461,7 +461,7 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
         media_end_id = self.tokenizer.token_to_id(DEFAULT_IM_END_TOKEN)
 
         if self.mcore_gpt:
-            if parallel_state.is_unitialized():
+            if not parallel_state.is_initialized():
 
                 def dummy():
                     return
@@ -795,9 +795,7 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
         Args:
             stage (str, optional): Can be 'fit', 'validate', 'test' or 'predict'. Defaults to None.
         """
-        num_parameters_on_device, total_num_parameters = self._get_total_params_across_model_parallel_groups_gpt_bert(
-            self.model
-        )
+        num_parameters_on_device, total_num_parameters = self._get_total_params_across_model_parallel_groups_gpt_bert()
 
         logging.info(
             f'Pipeline model parallel rank: {parallel_state.get_pipeline_model_parallel_rank()}, '
@@ -998,7 +996,7 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
     ) -> OutputType:
 
         # check whether the DDP is initialized
-        if parallel_state.is_unitialized():
+        if not parallel_state.is_initialized():
 
             def dummy():
                 return

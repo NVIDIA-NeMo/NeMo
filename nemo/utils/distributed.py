@@ -81,7 +81,7 @@ def gather_objects(partial_results_list, main_rank=None):
         pickle.dump(predictions, open(output_fname, "wb"))
     """
     # do not fail when DDP is not initialized
-    if parallel_state.is_unitialized():
+    if not parallel_state.is_initialized():
         return partial_results_list
 
     rank = parallel_state.get_data_parallel_rank()

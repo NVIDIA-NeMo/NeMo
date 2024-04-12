@@ -89,6 +89,8 @@ try:
     from megatron.core import InferenceParams, parallel_state, tensor_parallel
     from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
     from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, MockGPTDataset
+    from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
+    from megatron.core.dist_checkpointing.mapping import LocalNonpersitentObject, ShardedObject
 
     # NeMo's implementation of the get_gpt_layer_ammo_spec function is temporarily used
     # from megatron.core.inference.gpt.model_specs import get_gpt_layer_ammo_spec
@@ -1738,6 +1740,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # reset vp rank
             if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
                 parallel_state.set_virtual_pipeline_model_parallel_rank(0)
+
+            # WAR: This is a temporary fix to skip loading FP8 parameters for Dot Product Attention
+            def skip_fp8_load(x):
+                if isinstance(x, ShardedObject) and 'fused_attention' in x.key and '_extra_state' in x.key:
+                    x = LocalNonpersitentObject(x.data)  # use the FP8 state from initialization, not from ckpt
+                return x
+
+            if self.cfg.get('fp8_dot_product_attention', False) or self.cfg.get('fp8_multi_head_attention', False):
+                dict_list_map_inplace(skip_fp8_load, sharded_state_dict)
 
             return sharded_state_dict
 

@@ -180,12 +180,19 @@ def get_optimizer_step(state):
             torch.cuda.current_stream().wait_stream(state.stream)
 
         if state.current_iteration == state.capture_iteration:
-            optimizer.zero_grad(**zero_grad_kwargs)
             torch.cuda.synchronize()
             # Sleep for one second to let environment stable
             time.sleep(1)
             rank_zero_info("CUDAGraphCallback: capturing CUDA graph for module %s.", self.__class__.__name__)
             with torch.cuda.graph(state.graph, stream=state.stream, capture_error_mode="global"):
+                # PyTorch CUDA graph doc for whole-network capturing mentions:
+                #
+                #   Sets grads to None before capture, so backward() will create
+                #   .grad attributes with allocations from the graph's private pool
+                #
+                # But it's not necessary, and it can lead to CUDA kernels inside
+                # `zero_grad()` being not captured.
+                optimizer.zero_grad(**zero_grad_kwargs)
                 self.__orig_optimizer_step__(
                     epoch, batch_idx, optimizer, optimizer_closure=optimizer_closure,
                 )

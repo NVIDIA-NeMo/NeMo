@@ -45,7 +45,7 @@ Call the ``align.py`` script, specifying the parameters as follows:
 
 * ``model_path``: string specifying the local filepath to a CTC NeMo ASR model which will be used to generate the log-probs which we will use to do alignment. If ``pretrained_name`` is specified, ``model_path`` must not be specified.
 
-	Note: Currently NFA can only use CTC models, or Hybrid CTC-Transducer models (in CTC mode). Pure Transducer models cannot be used.
+	.. note:: Currently NFA can only use CTC models, or Hybrid CTC-Transducer models (in CTC mode). Pure Transducer models cannot be used.
 
 * ``manifest_filepath``: The path to the manifest of the data you want to align, containing ``'audio_filepath'`` and ``'text'`` fields. The audio filepaths need to be absolute paths.
 
@@ -66,7 +66,7 @@ Optional parameters:
 
 * ``additional_segment_grouping_separator``: an optional string used to separate the text into smaller segments. If this is not specified, then the whole text will be treated as a single segment. (Default: ``None``. Cannot be empty string or space (" "), as NFA will automatically produce word-level timestamps for substrings separated by spaces).
 
-	Note: the ``additional_segment_grouping_separator`` will be removed from the reference text and all the output files, ie it is treated as a marker which is not part of the reference text. The separator will essentially be treated as a space, and any additional spaces around it will be amalgamated into one, i.e. if ``additional_segment_grouping_separator="|"``, the following texts will be treated equivalently: ``“abc|def”``, ``“abc |def”``, ``“abc| def”``, ``“abc | def"``.
+	.. note:: the ``additional_segment_grouping_separator`` will be removed from the reference text and all the output files, ie it is treated as a marker which is not part of the reference text. The separator will essentially be treated as a space, and any additional spaces around it will be amalgamated into one, i.e. if ``additional_segment_grouping_separator="|"``, the following texts will be treated equivalently: ``“abc|def”``, ``“abc |def”``, ``“abc| def”``, ``“abc | def"``.
 
 * ``remove_blank_tokens_from_ctm``: a boolean denoting whether to remove <blank> tokens from token-level output CTMs. (Default: False). 
 
@@ -98,13 +98,14 @@ By default, NFA needs to be provided with a 'manifest' file where each line spec
 
 You can omit the ``"text"`` field from the manifest if you specify ``align_using_pred_text=true``. In that case, any ``"text"`` fields in the manifest will be ignored: the ASR model at ``pretrained_name`` or ``model_path`` will be used to transcribe the audio and obtain ``"pred_text"``, which will be used as the reference text for the forced alignment process. The ``"pred_text"`` will also be saved in the output manifest JSON file at ``<output_dir>/<original manifest file name>_with_output_file_paths.json``. To remove the possibility of overwriting ``"pred_text"``, NFA will raise an error if ``align_using_pred_text=true`` and there are existing ``"pred_text"`` fields in the original manifest.
 
-	..note:: NFA does not require ``"duration"`` fields in the manifest, and can align long audio files without running out of memory. The duration of audio file you can align will depend on the amount of memory on your machine. NFA will also produce better alignments the more accurate the reference text in ``"text"`` is.
+	.. note:: NFA does not require ``"duration"`` fields in the manifest, and can align long audio files without running out of memory. The duration of audio file you can align will depend on the amount of memory on your machine. NFA will also produce better alignments the more accurate the reference text in ``"text"`` is.
 
 
 Output CTM file format
 ----------------------
 
 For each utterance specified in a line of ``manifest_filepath``, several CTM files will be generated:
+
 * a CTM file containing token-level alignments at ``<output_dir>/ctm/tokens/<utt_id>.ctm``,
 * a CTM file containing word-level alignments at ``<output_dir>/ctm/words/<utt_id>.ctm``,
 * a CTM file containing segment-level alignments at ``<output_dir>/ctm/segments/<utt_id>.ctm``. If ``additional_segment_grouping_separator`` is specified, the segments will be parts of the text separated by ``additonal_segment_grouping_separator``. If it is not specified, the entire text will be treated as a single segment.
@@ -117,6 +118,7 @@ Note the second item in the line (the 'channel ID', which is required by the CTM
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``CTMFileConfig`` (which is passed into the main NFA config) has the following parameters:
+
 * ``remove_blank_tokens``: bool (default ``False``) to specify if the token-level CTM files should have the timestamps of the blank tokens removed.
 * ``minimum_timestamp_duration``: float (default ``0``) to specify the minimum duration that will be applied to all timestamps. If any line in the CTM has a duration lower than this, it will be enlarged from the middle outwards until it meets the ``minimum_timestamp_duration``, or reaches the beginning or end of the audio file. Note that using a non-zero value may cause timestamps to overlap.
 
@@ -124,14 +126,17 @@ Output ASS file format
 ----------------------
 
 NFA will produce the following ASS files, which you can use to generate subtitle videos:
+
 * ASS files with token-level highlighting will be at ``<output_dir>/ass/tokens/<utt_id>.ass,``
 * ASS files with word-level highlighting will be at ``<output_dir>/ass/words/<utt_id>.ass``.
+
 All words belonging to the same segment 'segments' will appear at the same time in the subtitles generated with the ASS files. If you find that your segments are not the right size, you can use set ``ass_file_config.resegment_text_to_fill_space=true`` and specify some number of ``ass_file_config.max_lines_per_segment``.
 
 ``ASSFileConfig`` parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``ASSFileConfig`` (which is passed into the main NFA config) has the following parameters:
+
 * ``fontsize``: int (default value ``20``) which will be the fontsize of the text
 * ``vertical_alignment``: string (default value ``center``) to specify the vertical alignment of the text. Can be one of ``center``, ``top``, ``bottom``.
 * ``resegment_text_to_fill_space``: bool (default value ``False``). If ``True``, the text will be resegmented such that each segment will not take up more than (approximately) ``max_lines_per_segment`` when the ASS file is applied to a video.
@@ -144,6 +149,7 @@ Output JSON manifest file format
 --------------------------------
 
 A new manifest file will be saved at ``<output_dir>/<original manifest file name>_with_output_file_paths.json``. It will contain the same fields as the original manifest, and additionally:
+
 * ``"token_level_ctm_filepath"`` (if ``save_output_file_formats`` contains ``ctm``)
 * ``"word_level_ctm_filepath"`` (if ``save_output_file_formats`` contains ``ctm``)
 * ``"segment_level_ctm_filepath"`` (if ``save_output_file_formats`` contains ``ctm``)
@@ -159,8 +165,9 @@ Ideally you would have some 'true' CTM files to compare with your generated CTM 
 
 Alternatively (or additionally), you can visualize the quality of alignments using tools such as Gecko, which can play your audio file and display the predicted alignments at the same time. The Gecko tool requires you to upload an audio file and at least one CTM file. The Gecko tool can be accessed here: https://gong-io.github.io/gecko/. More information about the Gecko tool can be found on its Github page here: https://github.com/gong-io/gecko. 
 
-**Note**: the following may help improve your experience viewing the CTMs in Gecko:
+.. note:: 
+	The following may help improve your experience viewing the CTMs in Gecko:
 
-* setting ``minimum_timestamp_duration`` to a larger number, as Gecko may not display some tokens/words/segments properly if their timestamps are too short.
-* setting ``remove_blank_tokens_from_ctm=true`` if you are analyzing token-level CTMs, as it will make the Gecko visualization less cluttered.
+	* setting ``minimum_timestamp_duration`` to a larger number, as Gecko may not display some tokens/words/segments properly if their timestamps are too short.
+	* setting ``remove_blank_tokens_from_ctm=true`` if you are analyzing token-level CTMs, as it will make the Gecko visualization less cluttered.
 

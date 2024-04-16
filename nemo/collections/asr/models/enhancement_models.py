@@ -24,9 +24,11 @@ from pytorch_lightning import Trainer
 from tqdm import tqdm
 
 from nemo.collections.asr.data import audio_to_audio_dataset
+from nemo.collections.asr.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
 from nemo.collections.asr.data.audio_to_text_dataset import inject_dataloader_value_from_model_config
 from nemo.collections.asr.models.audio_to_audio_model import AudioToAudioModel
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types import AudioSignal, LengthsType, NeuralType
 from nemo.utils import logging
@@ -197,6 +199,11 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         return paths2processed_files
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
+
+        if config.get("use_lhotse", False):
+            return get_lhotse_dataloader_from_config(
+                config, global_rank=self.global_rank, world_size=self.world_size, dataset=LhotseAudioToTargetDataset()
+            )
 
         is_concat = config.get('is_concat', False)
         if is_concat:
@@ -398,7 +405,14 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-        input_signal, input_length, target_signal, target_length = batch
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            input_signal, input_length, target_signal, _ = batch
 
         # Expand channel dimension, if necessary
         # For consistency, the model uses multi-channel format, even if the channel dimension is 1
@@ -426,7 +440,14 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-        input_signal, input_length, target_signal, target_length = batch
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            input_signal, input_length, target_signal, _ = batch
 
         # Expand channel dimension, if necessary
         # For consistency, the model uses multi-channel format, even if the channel dimension is 1

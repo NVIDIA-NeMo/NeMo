@@ -73,7 +73,9 @@ from torchmetrics.audio.stoi import ShortTimeObjectiveIntelligibility
 from tqdm import tqdm
 
 from nemo.collections.asr.data import audio_to_audio_dataset
+from nemo.collections.asr.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
 from nemo.collections.asr.metrics.audio import AudioMetricWrapper
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.parts.preprocessing import manifest
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
@@ -103,6 +105,11 @@ class AudioEvaluationConfig(process_audio.ProcessConfig):
 def get_evaluation_dataloader(config):
     """Prepare a dataloader for evaluation.
     """
+    if config.get("use_lhotse", False):
+        return get_lhotse_dataloader_from_config(
+            config, global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()
+        )
+
     dataset = audio_to_audio_dataset.get_audio_to_target_dataset(config=config)
 
     return torch.utils.data.DataLoader(

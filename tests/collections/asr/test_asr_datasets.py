@@ -34,6 +34,7 @@ from nemo.collections.asr.data.audio_to_audio import (
     AudioToTargetWithReferenceDataset,
     _audio_collate_fn,
 )
+from nemo.collections.asr.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset, convert_manifest_nemo_to_lhotse
 from nemo.collections.asr.data.audio_to_text import (
     DataStoreObject,
     TarredAudioToBPEDataset,
@@ -52,6 +53,7 @@ from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.parts.utils.audio_utils import get_segment_start
 from nemo.collections.asr.parts.utils.manifest_utils import write_manifest
 from nemo.collections.common import tokenizers
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.utils import logging
 
 try:
@@ -970,6 +972,27 @@ class TestAudioDatasets:
             }
             dataset_factory = audio_to_audio_dataset.get_audio_to_target_dataset(config)
 
+            # Prepare lhotse manifest
+            cuts_path = manifest_filepath.replace('.json', '_cuts.jsonl')
+            convert_manifest_nemo_to_lhotse(
+                input_manifest=manifest_filepath,
+                output_manifest=cuts_path,
+                input_key=data_key['input_signal'],
+                target_key=data_key['target_signal'],
+            )
+
+            # Prepare lhotse dataset
+            config_lhotse = {
+                'cuts_path': cuts_path,
+                'use_lhotse': True,
+                'sample_rate': sample_rate,
+                'batch_size': 1,
+            }
+            dl_lhotse = get_lhotse_dataloader_from_config(
+                OmegaConf.create(config_lhotse), global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()
+            )
+            dataset_lhotse = [item for item in dl_lhotse]
+
             # Test number of channels
             for signal in data:
                 assert data_num_channels[signal] == dataset.num_channels(
@@ -981,23 +1004,25 @@ class TestAudioDatasets:
 
             # Test returned examples
             for n in range(num_examples):
-                item = dataset.__getitem__(n)
-                item_factory = dataset_factory.__getitem__(n)
-
                 for signal in data:
-                    item_signal = item[signal].cpu().detach().numpy()
                     golden_signal = data[signal][n]
-                    assert (
-                        item_signal.shape == golden_signal.shape
-                    ), f'Signal {signal}: item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
-                    assert np.allclose(
-                        item_signal, golden_signal, atol=atol
-                    ), f'Test 1: Failed for example {n}, signal {signal} (random seed {random_seed})'
 
-                    item_factory_signal = item_factory[signal].cpu().detach().numpy()
-                    assert np.allclose(
-                        item_factory_signal, golden_signal, atol=atol
-                    ), f'Test 1: Failed for factory example {n}, signal {signal} (random seed {random_seed})'
+                    for use_lhotse in [False, True]:
+                        item_signal = (
+                            dataset_lhotse[n][signal].squeeze(0) if use_lhotse else dataset.__getitem__(n)[signal]
+                        )
+                        item_factory_signal = dataset_factory.__getitem__(n)[signal]
+
+                        assert (
+                            item_signal.shape == golden_signal.shape
+                        ), f'Test 1, use_lhotse={use_lhotse}: Signal {signal} item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
+                        assert np.allclose(
+                            item_signal, golden_signal, atol=atol
+                        ), f'Test 1, use_lhotse={use_lhotse}: Failed for example {n}, signal {signal} (random seed {random_seed})'
+
+                        assert np.allclose(
+                            item_factory_signal, golden_signal, atol=atol
+                        ), f'Test 1, use_lhotse={use_lhotse}: Failed for factory example {n}, signal {signal} (random seed {random_seed})'
 
             # Test 2
             # - Filtering based on signal duration
@@ -1013,20 +1038,36 @@ class TestAudioDatasets:
                 sample_rate=sample_rate,
             )
 
+            # Prepare lhotse dataset
+            config_lhotse = {
+                'cuts_path': cuts_path,
+                'use_lhotse': True,
+                'min_duration': min_duration,
+                'max_duration': max_duration,
+                'sample_rate': sample_rate,
+                'batch_size': 1,
+            }
+            dl_lhotse = get_lhotse_dataloader_from_config(
+                OmegaConf.create(config_lhotse), global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()
+            )
+            dataset_lhotse = [item for item in dl_lhotse]
+
             filtered_examples = [n for n, val in enumerate(data_duration) if min_duration <= val <= max_duration]
 
             for n in range(len(dataset)):
-                item = dataset.__getitem__(n)
+                for use_lhotse in [False, True]:
+                    for signal in data:
+                        item_signal = (
+                            dataset_lhotse[n][signal].squeeze(0) if use_lhotse else dataset.__getitem__(n)[signal]
+                        )
+                        golden_signal = data[signal][filtered_examples[n]]
+                        assert (
+                            item_signal.shape == golden_signal.shape
+                        ), f'Test 2, use_lhotse={use_lhotse}: Signal {signal} item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
 
-                for signal in data:
-                    item_signal = item[signal].cpu().detach().numpy()
-                    golden_signal = data[signal][filtered_examples[n]]
-                    assert (
-                        item_signal.shape == golden_signal.shape
-                    ), f'Signal {signal}: item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
-                    assert np.allclose(
-                        item_signal, golden_signal, atol=atol
-                    ), f'Test 2: Failed for example {n}, signal {signal} (random seed {random_seed})'
+                        assert np.allclose(
+                            item_signal, golden_signal, atol=atol
+                        ), f'Test 2, use_lhotse={use_lhotse}: Failed for example {n}, signal {signal} (random seed {random_seed})'
 
             # Test 3
             # - Use channel selector
@@ -1078,58 +1119,98 @@ class TestAudioDatasets:
                     random_offset=random_offset,  # random offset when selecting subsegment
                 )
 
+                # Prepare lhotse dataset
+                config_lhotse = {
+                    'cuts_path': cuts_path,
+                    'use_lhotse': True,
+                    'min_duration': audio_duration,
+                    'truncate_duration': audio_duration,
+                    'truncate_offset_type': 'random' if random_offset else 'start',
+                    'sample_rate': sample_rate,
+                    'batch_size': 1,
+                }
+                dl_lhotse = get_lhotse_dataloader_from_config(
+                    OmegaConf.create(config_lhotse), global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()
+                )
+                dataset_lhotse = [item for item in dl_lhotse]
+
                 for n in range(len(dataset)):
-                    item = dataset.__getitem__(n)
+                    for use_lhotse in [False, True]:
+                        item = dataset_lhotse[n] if use_lhotse else dataset.__getitem__(n)
+                        golden_start = golden_end = None
+                        for signal in data:
+                            item_signal = item[signal].squeeze(0) if use_lhotse else item[signal]
+                            full_golden_signal = data[signal][filtered_examples[n]]
 
-                    golden_start = golden_end = None
-                    for signal in data:
-                        item_signal = item[signal].cpu().detach().numpy()
-                        full_golden_signal = data[signal][filtered_examples[n]]
+                            # Find random segment using correlation on the first channel
+                            # of the first signal, and then use it fixed for other signals
+                            if golden_start is None:
+                                golden_start = get_segment_start(
+                                    signal=full_golden_signal[0, :], segment=item_signal[0, :]
+                                )
+                                if not random_offset:
+                                    assert (
+                                        golden_start == 0
+                                    ), f'Test 4, use_lhotse={use_lhotse}: Expecting the signal to start at 0 when random_offset is False'
 
-                        # Find random segment using correlation on the first channel
-                        # of the first signal, and then use it fixed for other signals
-                        if golden_start is None:
-                            golden_start = get_segment_start(
-                                signal=full_golden_signal[0, :], segment=item_signal[0, :]
-                            )
-                            if not random_offset:
-                                assert (
-                                    golden_start == 0
-                                ), f'Expecting the signal to start at 0 when random_offset is False'
+                                golden_end = golden_start + audio_duration_samples
+                            golden_signal = full_golden_signal[..., golden_start:golden_end]
 
-                            golden_end = golden_start + audio_duration_samples
-                        golden_signal = full_golden_signal[..., golden_start:golden_end]
+                            # Test length is correct
+                            assert (
+                                item_signal.shape[-1] == audio_duration_samples
+                            ), f'Test 4, use_lhotse={use_lhotse}: Signal length ({item_signal.shape[-1]}) not matching the expected length ({audio_duration_samples})'
 
-                        # Test length is correct
-                        assert (
-                            item_signal.shape[-1] == audio_duration_samples
-                        ), f'Test 4: Signal length ({item_signal.shape[-1]}) not matching the expected length ({audio_duration_samples})'
-
-                        assert (
-                            item_signal.shape == golden_signal.shape
-                        ), f'Signal {signal}: item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
-                        # Test signal values
-                        assert np.allclose(
-                            item_signal, golden_signal, atol=atol
-                        ), f'Test 4: Failed for example {n}, signal {signal} (random seed {random_seed})'
+                            assert (
+                                item_signal.shape == golden_signal.shape
+                            ), f'Test 4, use_lhotse={use_lhotse}: Signal {signal} item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
+                            # Test signal values
+                            assert np.allclose(
+                                item_signal, golden_signal, atol=atol
+                            ), f'Test 4, use_lhotse={use_lhotse}: Failed for example {n}, signal {signal} (random seed {random_seed})'
 
             # Test 5:
             # - Test collate_fn
             batch_size = 16
-            batch = [dataset.__getitem__(n) for n in range(batch_size)]
-            batched = dataset.collate_fn(batch)
 
-            for n, signal in enumerate(data.keys()):
-                signal_shape = batched[2 * n].shape
-                signal_len = batched[2 * n + 1]
+            for use_lhotse in [False, True]:
+                if use_lhotse:
+                    # Get batch from lhotse dataloader
+                    config_lhotse['batch_size'] = batch_size
+                    dl_lhotse = get_lhotse_dataloader_from_config(
+                        OmegaConf.create(config_lhotse),
+                        global_rank=0,
+                        world_size=1,
+                        dataset=LhotseAudioToTargetDataset(),
+                    )
+                    batched = next(iter(dl_lhotse))
+                else:
+                    # Get examples from dataset and collate into a batch
+                    batch = [dataset.__getitem__(n) for n in range(batch_size)]
+                    batched = dataset.collate_fn(batch)
 
-                assert signal_shape == (
-                    batch_size,
-                    data_num_channels[signal],
-                    audio_duration_samples,
-                ), f'Test 5: Unexpected signal {signal} shape {signal_shape}'
-                assert len(signal_len) == batch_size, f'Test 5: Unexpected length of signal_len ({len(signal_len)})'
-                assert all(signal_len == audio_duration_samples), f'Test 5: Unexpected signal_len {signal_len}'
+                # Test all shapes and lengths
+                for n, signal in enumerate(data.keys()):
+                    length = signal.replace('_signal', '_length')
+
+                    if isinstance(batched, dict):
+                        signal_shape = batched[signal].shape
+                        signal_len = batched[length]
+                    else:
+                        signal_shape = batched[2 * n].shape
+                        signal_len = batched[2 * n + 1]
+
+                    assert signal_shape == (
+                        batch_size,
+                        data_num_channels[signal],
+                        audio_duration_samples,
+                    ), f'Test 5, use_lhotse={use_lhotse}: Unexpected signal {signal} shape {signal_shape}'
+                    assert (
+                        len(signal_len) == batch_size
+                    ), f'Test 5, use_lhotse={use_lhotse}: Unexpected length of signal_len ({len(signal_len)})'
+                    assert all(
+                        signal_len == audio_duration_samples
+                    ), f'Test 5, use_lhotse={use_lhotse}: Unexpected signal_len {signal_len}'
 
     @pytest.mark.unit
     def test_audio_to_target_dataset_with_target_list(self):
@@ -1237,28 +1318,49 @@ class TestAudioDatasets:
             }
             dataset_factory = audio_to_audio_dataset.get_audio_to_target_dataset(config)
 
+            # Prepare lhotse manifest
+            cuts_path = manifest_filepath.replace('.json', '_cuts.jsonl')
+            convert_manifest_nemo_to_lhotse(
+                input_manifest=manifest_filepath,
+                output_manifest=cuts_path,
+                input_key=data_key['input_signal'],
+                target_key=data_key['target_signal'],
+            )
+
+            # Prepare lhotse dataset
+            config_lhotse = {
+                'cuts_path': cuts_path,
+                'use_lhotse': True,
+                'sample_rate': sample_rate,
+                'batch_size': 1,
+            }
+            dl_lhotse = get_lhotse_dataloader_from_config(
+                OmegaConf.create(config_lhotse), global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()
+            )
+            dataset_lhotse = [item for item in dl_lhotse]
+
             for n in range(num_examples):
-                item = dataset.__getitem__(n)
-                item_factory = dataset_factory.__getitem__(n)
+                for use_lhotse in [False, True]:
+                    item = dataset_lhotse[n] if use_lhotse else dataset.__getitem__(n)
+                    item_factory = dataset_factory.__getitem__(n)
+                    for signal in data:
+                        item_signal = item[signal].squeeze(0) if use_lhotse else item[signal]
+                        golden_signal = data[signal][n]
+                        assert (
+                            item_signal.shape == golden_signal.shape
+                        ), f'Test 1, use_lhotse={use_lhotse}: Signal {signal} item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
+                        assert np.allclose(
+                            item_signal, golden_signal, atol=atol
+                        ), f'Test 1, use_lhotse={use_lhotse}: Failed for example {n}, signal {signal} (random seed {random_seed})'
 
-                for signal in data:
-                    item_signal = item[signal].cpu().detach().numpy()
-                    golden_signal = data[signal][n]
-                    assert (
-                        item_signal.shape == golden_signal.shape
-                    ), f'Signal {signal}: item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
-                    assert np.allclose(
-                        item_signal, golden_signal, atol=atol
-                    ), f'Test 1: Failed for example {n}, signal {signal} (random seed {random_seed})'
-
-                    item_factory_signal = item_factory[signal].cpu().detach().numpy()
-                    assert np.allclose(
-                        item_factory_signal, golden_signal, atol=atol
-                    ), f'Test 1: Failed for factory example {n}, signal {signal} (random seed {random_seed})'
+                        assert np.allclose(
+                            item_factory[signal], golden_signal, atol=atol
+                        ), f'Test 1, use_lhotse={use_lhotse}: Failed for factory example {n}, signal {signal} (random seed {random_seed})'
 
             # Test 2
             # Set target as the first channel of input_filepath and all files listed in target_filepath.
             # In this case, the target will have 3 channels.
+            # Note: this is currently not supported by lhotse, so we only test the default dataset here.
             dataset = AudioToTargetDataset(
                 manifest_filepath=manifest_filepath,
                 input_key=data_key['input_signal'],
@@ -1367,29 +1469,55 @@ class TestAudioDatasets:
             }
             dataset_factory = audio_to_audio_dataset.get_audio_to_target_dataset(config)
 
+            # Prepare lhotse manifest
+            cuts_path = manifest_filepath.replace('.json', '_cuts.jsonl')
+            convert_manifest_nemo_to_lhotse(
+                input_manifest=manifest_filepath,
+                output_manifest=cuts_path,
+                input_key=data_key['input_signal'],
+                target_key=None,
+            )
+
+            # Prepare lhotse dataset
+            config_lhotse = {
+                'cuts_path': cuts_path,
+                'use_lhotse': True,
+                'sample_rate': sample_rate,
+                'batch_size': 1,
+            }
+            dl_lhotse = get_lhotse_dataloader_from_config(
+                OmegaConf.create(config_lhotse), global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()
+            )
+            dataset_lhotse = [item for item in dl_lhotse]
+
             for n in range(num_examples):
-                item = dataset.__getitem__(n)
-                item_factory = dataset_factory.__getitem__(n)
 
-                # Check target is None
-                assert item['target_signal'].numel() == 0, 'target_signal is expected to be empty.'
-                assert item_factory['target_signal'].numel() == 0, 'target_signal is expected to be empty.'
+                for label in ['original', 'factory', 'lhotse']:
 
-                # Check valid signals
-                for signal in data:
-                    item_signal = item[signal].cpu().detach().numpy()
-                    golden_signal = data[signal][n]
-                    assert (
-                        item_signal.shape == golden_signal.shape
-                    ), f'Signal {signal}: item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
-                    assert np.allclose(
-                        item_signal, golden_signal, atol=atol
-                    ), f'Test 1: Failed for example {n}, signal {signal} (random seed {random_seed})'
+                    if label == 'original':
+                        item = dataset.__getitem__(n)
+                    elif label == 'factory':
+                        item = dataset_factory.__getitem__(n)
+                    elif label == 'lhotse':
+                        item = dataset_lhotse[n]
+                    else:
+                        raise ValueError(f'Unknown label {label}')
 
-                    item_factory_signal = item_factory[signal].cpu().detach().numpy()
-                    assert np.allclose(
-                        item_factory_signal, golden_signal, atol=atol
-                    ), f'Test 1: Failed for factory example {n}, signal {signal} (random seed {random_seed})'
+                    # Check target is None
+                    if 'target_signal' in item:
+                        assert item['target_signal'].numel() == 0, f'{label}: target_signal is expected to be empty.'
+
+                    # Check valid signals
+                    for signal in data:
+
+                        item_signal = item[signal].squeeze(0) if label == 'lhotse' else item[signal]
+                        golden_signal = data[signal][n]
+                        assert (
+                            item_signal.shape == golden_signal.shape
+                        ), f'{label} -- Signal {signal}: item shape {item_signal.shape} not matching reference shape {golden_signal.shape}'
+                        assert np.allclose(
+                            item_signal, golden_signal, atol=atol
+                        ), f'{label} -- Test 1: Failed for example {n}, signal {signal} (random seed {random_seed})'
 
     @pytest.mark.unit
     def test_audio_to_target_with_reference_dataset(self):

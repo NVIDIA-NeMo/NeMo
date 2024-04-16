@@ -21,6 +21,8 @@ import lhotse
 import numpy as np
 import pytest
 import torch
+from lhotse import CutSet, NumpyFilesWriter, Recording
+from lhotse.audio import AudioLoadingError
 from lhotse.cut import Cut
 from lhotse.cut.text import TextPairExample
 from omegaconf import OmegaConf
@@ -187,6 +189,62 @@ def test_dataloader_from_lhotse_cuts(cutset_path: Path):
     b = batches[3]
     assert set(b.keys()) == {"audio", "audio_lens", "ids"}
     assert b["audio"].shape[0] == b["audio_lens"].shape[0] == 1
+
+
+def test_dataloader_from_lhotse_cuts_truncate(cutset_path: Path):
+    config = OmegaConf.create(
+        {
+            "cuts_path": cutset_path,
+            "truncate_duration": 0.5,
+            "sample_rate": 16000,
+            "shuffle": True,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 4,
+            "seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(
+        config=config, global_rank=0, world_size=1, dataset=UnsupervisedAudioDataset()
+    )
+
+    batches = [b for b in dl]
+    assert len(batches) == 3
+    # 0.5s = 8000 samples, note the constant duration and batch size except for last batch
+    assert batches[0]["audio"].shape == (4, 8000)
+    assert batches[1]["audio"].shape == (4, 8000)
+    assert batches[2]["audio"].shape == (2, 8000)
+    # exactly 10 cuts were used
+
+
+def test_dataloader_from_lhotse_cuts_cut_into_windows(cutset_path: Path):
+    config = OmegaConf.create(
+        {
+            "cuts_path": cutset_path,
+            "cut_into_windows_duration": 0.5,
+            "sample_rate": 16000,
+            "shuffle": True,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 4,
+            "seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(
+        config=config, global_rank=0, world_size=1, dataset=UnsupervisedAudioDataset()
+    )
+
+    batches = [b for b in dl]
+    assert len(batches) == 5
+    # 0.5s = 8000 samples, note the constant duration and batch size
+    assert batches[0]["audio"].shape == (4, 8000)
+    assert batches[1]["audio"].shape == (4, 8000)
+    assert batches[2]["audio"].shape == (4, 8000)
+    assert batches[3]["audio"].shape == (4, 8000)
+    assert batches[4]["audio"].shape == (4, 8000)
+    # exactly 20 cuts were used because we cut 10x 1s cuts into 20x 0.5s cuts
 
 
 @requires_torchaudio
@@ -770,7 +828,46 @@ def test_lazy_nemo_iterator_with_relative_paths(tmp_path: Path):
     assert cut.num_samples == 8000
     assert cut.supervisions[0].text == "irrelevant"
     assert audio.shape == (1, 8000)
-    np.testing.assert_allclose(audio[0], expected_audio[:8000], atol=5e-5)
+    np.testing.assert_equal(audio[0], expected_audio[:8000])
+
+
+def test_lhotse_cuts_resolve_relative_paths(tmp_path: Path):
+    cuts_path = tmp_path / "cuts.jsonl.gz"
+    audio_path = tmp_path / "_relative_test_audio_.wav"
+    lhotse.audio.save_audio(audio_path, np.random.rand(16000) - 0.5, 16000)
+    cut = Recording.from_file(audio_path).to_cut()
+    cut.recording.sources[0].source = str(audio_path.name)  # make the path relative
+    cut.target_recording = cut.recording  # assign a custom field with relative path
+    with NumpyFilesWriter(tmp_path) as w:
+        cut.some_array = w.store_array(cut.id, np.random.randn(32))
+        cut.some_array.storage_path = ""  # relative path
+
+    with pytest.raises(AudioLoadingError):
+        cut.load_audio()  # Lhotse doesn't know about what the path should be relative to
+        cut.load_target_recording()
+
+    CutSet([cut]).to_file(cuts_path)
+
+    config = OmegaConf.create(
+        {"cuts_path": cuts_path, "sample_rate": 16000, "use_lhotse": True, "num_workers": 0, "batch_size": 2,}
+    )
+
+    class _Identity(torch.utils.data.Dataset):
+        def __getitem__(self, x):
+            return x
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())
+
+    batches = [batch for batch in dl]
+    assert len(batches) == 1
+
+    for cut in batches[0]:
+        assert cut.has_recording
+        cut.load_audio()  # works
+        assert cut.has_custom("target_recording")
+        cut.load_target_recording()
+        assert cut.has_custom("some_array")
+        cut.load_some_array()
 
 
 class Identity(torch.utils.data.Dataset):

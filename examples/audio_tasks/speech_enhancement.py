@@ -51,7 +51,7 @@ def main(cfg):
     trainer.fit(model)
 
     # Run on test data, if available
-    if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
+    if hasattr(cfg.model, 'test_ds'):
         if trainer.is_global_zero:
             # Destroy the current process group and let the trainer initialize it again with a single device.
             if torch.distributed.is_initialized():

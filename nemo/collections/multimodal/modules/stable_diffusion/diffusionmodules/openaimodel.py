@@ -22,8 +22,8 @@ import torch
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-
 from apex.contrib.group_norm import GroupNorm
+
 from nemo.collections.multimodal.modules.stable_diffusion.attention import SpatialTransformer
 from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util import (
     avg_pool_nd,
@@ -629,7 +629,7 @@ class UNetModel(nn.Module):
             linear(model_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
         )
 
-        self.time_embeddings = torch.Tensor(build_timestep_embedding(model_channels, timesteps)).to('cuda')
+        self.time_embeddings = torch.Tensor(build_timestep_embedding(model_channels, timesteps))
         if unet_precision == 'fp16-mixed' or unet_precision == 'fp16':
             self.time_embeddings = self.time_embeddings.to(torch.float16)
 
@@ -648,6 +648,7 @@ class UNetModel(nn.Module):
                 )
             elif self.num_classes == "sequential":
                 assert adm_in_channels is not None
+                self.adm_in_channels = adm_in_channels
                 self.label_emb = nn.Sequential(
                     nn.Sequential(
                         linear(adm_in_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
@@ -1058,7 +1059,7 @@ class UNetModel(nn.Module):
             state_dict['output_blocks.2.2.conv.bias'] = state_dict['output_blocks.2.1.conv.bias']
             state_dict['output_blocks.2.2.conv.weight'] = state_dict['output_blocks.2.1.conv.weight']
 
-        if 'out.1.weight' in missing_keys:
+        if 'out.1.weight' in missing_keys and 'out.2.weight' in state_dict.keys():
             state_dict['out.1.weight'] = state_dict['out.2.weight']
             state_dict['out.1.bias'] = state_dict['out.2.bias']
 
@@ -1112,14 +1113,16 @@ class UNetModel(nn.Module):
         for key_, value_ in state_dict.items():
             if key_.startswith('model.diffusion_model'):
                 re_state_dict[key_.replace('model.diffusion_model.', '')] = value_
-            if key_.startswith('model.model.diffusion_model'):
+            elif key_.startswith('model.model.diffusion_model'):
                 re_state_dict[key_.replace('model.model.diffusion_model.', '')] = value_
-            if key_.startswith('model._orig_mod.diffusion_model.'):
+            elif key_.startswith('model._orig_mod.diffusion_model.'):
                 re_state_dict[key_.replace('model._orig_mod.diffusion_model.', '')] = value_
-            if key_.startswith('model.model._orig_mod.diffusion_model.'):
+            elif key_.startswith('model.model._orig_mod.diffusion_model.'):
                 re_state_dict[key_.replace('model.model._orig_mod.diffusion_model.', '')] = value_
-            if key_.startswith('model.model.diffusion_model._orig_mod.'):
+            elif key_.startswith('model.model.diffusion_model._orig_mod.'):
                 re_state_dict[key_.replace('model.model.diffusion_model._orig_mod.', '')] = value_
+            else:
+                re_state_dict[key_] = value_
         return re_state_dict
 
     def _load_state_dict_into_model(self, state_dict):
@@ -1173,7 +1176,9 @@ class UNetModel(nn.Module):
             if context is not None:
                 context = context.type(torch.float16)
 
-        t_emb = timestep_embedding(timesteps, self.model_channels, cached_embedding=self.time_embeddings)
+        t_emb = timestep_embedding(
+            timesteps, self.model_channels, cached_embedding=self.time_embeddings.to(timesteps.device)
+        )
         emb = self.time_embed(t_emb)
         if self.num_classes is not None:
             assert y.shape[0] == x.shape[0]

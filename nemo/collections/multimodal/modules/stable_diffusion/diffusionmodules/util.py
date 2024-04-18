@@ -207,7 +207,7 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False, cach
     if not repeat_only:
         if cached_embedding is not None:
             # using cached embedding and lookup in the cache
-            embedding = cached_embedding[timesteps, :]
+            embedding = cached_embedding[timesteps.to(dtype=torch.int), :]
         else:
             half = dim // 2
             idx = get_idx(half, timesteps.device)

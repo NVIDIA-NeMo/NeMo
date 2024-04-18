@@ -33,6 +33,7 @@ from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.controlnet.controlnet import MegatronControlNet
+from nemo.collections.multimodal.models.text_to_image.stable_diffusion.diffusion_engine import MegatronDiffusionEngine
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm import MegatronLatentDiffusion
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.utils import AppState, logging
@@ -197,8 +198,13 @@ def convert(local_rank, rank, world_size, args):
         model = MegatronLatentDiffusion(cfg.model, trainer)
     elif args.model_type == 'controlnet':
         model = MegatronControlNet(cfg.model, trainer)
+    elif args.model_type == 'sdxl':
+        cfg.model.unet_config.from_pretrained = args.ckpt_path
+        model = MegatronDiffusionEngine(cfg.model, trainer)
+    else:
+        raise NotImplementedError
 
-    if 'nemo' in model.cfg.cond_stage_config._target_:
+    if model.cfg.get('cond_stage_config', None) and 'nemo' in model.cfg.cond_stage_config._target_:
         assert (
             args.nemo_clip_path is not None
         ), "To align with current hparams file, you need to provide .nemo checkpoint of clip model for stable diffusion. If you want to convert HF clip checkpoint to .nemo checkpoint first, please refer to /opt/NeMo/examples/multimodal/foundation/clip/convert_external_clip_to_nemo.py"
@@ -206,11 +212,12 @@ def convert(local_rank, rank, world_size, args):
     else:
         clip_dict = None
 
-    state_dict = mapping_hf_state_dict(checkpoint, model, clip_dict=clip_dict)
+    if args.model_type != 'sdxl':
+        state_dict = mapping_hf_state_dict(checkpoint, model, clip_dict=clip_dict)
 
-    model._save_restore_connector = NLPSaveRestoreConnector()
+        model._save_restore_connector = NLPSaveRestoreConnector()
 
-    model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict)
 
     if torch.distributed.is_initialized():
         torch.distributed.barrier()

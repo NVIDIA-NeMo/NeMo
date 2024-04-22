@@ -188,11 +188,14 @@ The NeMo Framework can be installed in a variety of ways, depending on your need
   * This is recommended for Automatic Speech Recognition (ASR) and Text-to-Speech (TTS) domains.
   * When using a Nvidia PyTorch container as the base, this is the recommended installation method for all domains.
 
-* Docker - Refer to the `Docker containers <#docker-containers>`_ section for installation instructions.
+* Docker Containers - Refer to the `Docker containers <#docker-containers>`_ section for installation instructions.
 
   * This is recommended for Large Language Models (LLM), Multimodal and Vision domains.
-  * NeMo LLM & Multimodal Container - `nvcr.io/nvidia/nemo:24.01.01.framework`
+  * NeMo LLM & Multimodal Container - `nvcr.io/nvidia/nemo:24.03.framework`
   * NeMo Speech Container - `nvcr.io/nvidia/nemo:24.01.speech`
+
+* LLM and Multimodal Dependencies - Refer to the `LLM and Multimodal dependencies <#llm-and-multimodal-dependencies>`_ section for isntallation instructions.
+  * It's higly recommended to start with a base NVIDIA PyTorch container: `nvcr.io/nvidia/pytorch:24.02-py3`
 
 Conda
 ~~~~~
@@ -330,10 +333,46 @@ Note that RNNT requires numba to be installed from conda.
   pip uninstall numba
   conda install -c conda-forge numba
 
+LLM and Multimodal Dependencies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The LLM and Multimodal domains require three additional dependencies: 
+NVIDIA Apex, NVIDIA Transformer Engine, and NVIDIA Megatron Core.
+
+When working with the `main` branch these dependencies may require a recent commit.
+The most recent working versions of these dependencies are:
+
+.. code-block:: bash
+
+  export apex_commit=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
+  export te_commit=bfe21c3d68b0a9951e5716fb520045db53419c5e
+  export mcore_commit=fbb375d4b5e88ce52f5f7125053068caff47f93f
+  export nv_pytorch_tag=24.02-py3
+
+When using a released version of NeMo, 
+please refer to the `Software Component Versions <https://docs.nvidia.com/nemo-framework/user-guide/latest/softwarecomponentversions.html>`_ 
+for the correct versions.
+
+If starting with a base NVIDIA PyTorch container first launch the container:
+
+.. code-block:: bash
+
+  docker run \
+    --gpus all \
+    -it \
+    --rm \
+    --shm-size=16g \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    nvcr.io/nvidia/pytorch:$nv_pytorch_tag
+
+Then install the dependencies:
+
 Apex
 ~~~~
-NeMo LLM Domain training requires NVIDIA Apex to be installed.
-Install it manually if not using the NVIDIA PyTorch container.
+NeMo LLM Multimodal Domains require that NVIDIA Apex to be installed.
+Apex comes installed in the NVIDIA PyTorch container but it's possible that
+NeMo LLM and Multimodal may need to be updated to a newer version.
 
 To install Apex, run
 
@@ -341,12 +380,12 @@ To install Apex, run
 
     git clone https://github.com/NVIDIA/apex.git
     cd apex
-    git checkout b496d85fb88a801d8e680872a12822de310951fd
-    pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam" ./
+    git checkout $apex_commit
+    pip install . -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam --group_norm"
 
-It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Apex or any other dependencies.
 
-While installing Apex, it may raise an error if the CUDA version on your system does not match the CUDA version torch was compiled with.
+While installing Apex outside of the NVIDIA PyTorch container,
+it may raise an error if the CUDA version on your system does not match the CUDA version torch was compiled with.
 This raise can be avoided by commenting it here: https://github.com/NVIDIA/apex/blob/master/setup.py#L32
 
 cuda-nvprof is needed to install Apex. The version should match the CUDA version that you are using:
@@ -366,35 +405,43 @@ With the latest versions of Apex, the `pyproject.toml` file in Apex may need to 
 
 Transformer Engine
 ~~~~~~~~~~~~~~~~~~
-NeMo LLM Domain has been integrated with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_
-Transformer Engine enables FP8 training on NVIDIA Hopper GPUs.
-`Install <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_ it manually if not using the NVIDIA PyTorch container.
+
+The NeMo LLM Multimodal Domains require that NVIDIA Transformer Engine to be installed.
+Transformer Engine comes installed in the NVIDIA PyTorch container but it's possible that
+NeMo LLM and Multimodal may need Transformer Engine to be updated to a newer version.
+
+Transformer Engine enables FP8 training on NVIDIA Hopper GPUs and many performance optimizations for transformer-based model training.
+Documentation for installing Transformer Engine can be found `here <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_. 
 
 .. code-block:: bash
 
-  pip install --upgrade git+https://github.com/NVIDIA/TransformerEngine.git@stable
+  git clone https://github.com/NVIDIA/TransformerEngine.git && \
+  cd TransformerEngine && \
+  git checkout $te_commit && \
+  git submodule init && git submodule update && \
+  NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
 
-It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Transformer Engine or any other dependencies.
+Transformer Engine requires PyTorch to be built with at least CUDA 11.8.
 
-Transformer Engine requires PyTorch to be built with CUDA 11.8.
+Megatron Core
+~~~~~~~~~~~~~
 
+The NeMo LLM Multimodal Domains require that NVIDIA Megatron Core to be installed.
+Megatron core is a library for scaling large transfromer base models. 
+NeMo LLM and Multimodal models leverage Megatron Core for model parallelism, 
+transformer architectures, and optimized pytorch datasets.
 
-Flash Attention
-~~~~~~~~~~~~~~~
-When traning Large Language Models in NeMo, users may opt to use Flash Attention for efficient training. Transformer Engine already supports Flash Attention for GPT models. If you want to use Flash Attention for non-causal models, please install `flash-attn <https://github.com/HazyResearch/flash-attention>`_. If you want to use Flash Attention with attention bias (introduced from position encoding, e.g. Alibi), please also install triton pinned version following the `implementation <https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/flash_attn_triton.py#L3>`_.
-
-.. code-block:: bash
-
-  pip install flash-attn
-  pip install triton==2.0.0.dev20221202
-
-NLP inference UI
-~~~~~~~~~~~~~~~~~~~~
-To launch the inference web UI server, please install the gradio `gradio <https://gradio.app/>`_.
+NeMo LLM and Multimodal may need Megatron Core to be updated to a recent version.
 
 .. code-block:: bash
 
-  pip install gradio==3.34.0
+  git clone https://github.com/NVIDIA/Megatron-LM.git && \
+  cd Megatron-LM && \
+  git checkout $mcore_commit && \
+  pip install . && \
+  cd megatron/core/datasets && \
+  make
+
 
 NeMo Text Processing
 ~~~~~~~~~~~~~~~~~~~~
@@ -404,7 +451,7 @@ Docker containers
 ~~~~~~~~~~~~~~~~~
 We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.23.0`` comes with container ``nemo:24.01.speech``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
 
-To use built container, please run
+To use a pre-built container, please run
 
 .. code-block:: bash
 

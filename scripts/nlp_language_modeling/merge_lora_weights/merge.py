@@ -28,13 +28,13 @@ python scripts/nlp_language_modeling/merge_lora_weights/merge.py \
 
 
 import os
+import re
 import tempfile
 from typing import Any, Dict, List
 
 import torch
 from omegaconf import OmegaConf, open_dict
 from pytorch_lightning.trainer.trainer import Trainer
-from scripts.nlp_language_modeling.merge_lora_weights.convert_lora_parallelism import replace_number_add_offset
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
@@ -67,6 +67,27 @@ class RequestDataSet(Dataset):
 
     def __getitem__(self, idx):
         return self.sentences[idx]
+
+
+def replace_number_add_offset(key, offset_value):
+    # This function uses regular expression to find layer number in the state dict key
+    # and replaces it with its value plus an offset value
+
+    if offset_value == 0:
+        return key
+
+    # Define the pattern to match numbers in the string
+    pattern = r'layers.(\d+)'
+
+    # Function to be used as replacement
+    # It converts the found number to integer, adds offset, and returns as string
+    def add_offset(match):
+        return "layers." + str(int(match.group(1)) + offset_value)
+
+    # Use re.sub() to replace all occurrences of the pattern with the result of add_offset
+    result_string = re.sub(pattern, add_offset, key)
+
+    return result_string
 
 
 def load_lora(lora_nemo):

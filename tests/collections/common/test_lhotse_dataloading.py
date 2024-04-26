@@ -339,6 +339,11 @@ def test_dataloader_from_nemo_manifest(nemo_manifest_path: Path):
     assert b["audio"].shape[0] == b["audio_lens"].shape[0] == 1
 
 
+class _Identity:
+    def __getitem__(self, cuts):
+        return cuts
+
+
 def test_dataloader_from_nemo_manifest_has_custom_fields(nemo_manifest_path: Path):
     config = OmegaConf.create(
         {
@@ -356,11 +361,7 @@ def test_dataloader_from_nemo_manifest_has_custom_fields(nemo_manifest_path: Pat
         }
     )
 
-    class _IdentityDataset:
-        def __getitem__(self, cuts):
-            return cuts
-
-    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_IdentityDataset())
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())
 
     batch = next(iter(dl))
     for cut in batch:
@@ -851,10 +852,6 @@ def test_lhotse_cuts_resolve_relative_paths(tmp_path: Path):
     config = OmegaConf.create(
         {"cuts_path": cuts_path, "sample_rate": 16000, "use_lhotse": True, "num_workers": 0, "batch_size": 2,}
     )
-
-    class _Identity(torch.utils.data.Dataset):
-        def __getitem__(self, x):
-            return x
 
     dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())
 

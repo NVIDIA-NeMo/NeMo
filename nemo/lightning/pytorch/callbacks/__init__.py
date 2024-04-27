@@ -1,3 +1,3 @@
-from nemo_ext.lightning.pytorch.callbacks.progress import MegatronProgressBar
+from nemo.lightning.pytorch.callbacks.progress import MegatronProgressBar
 
 __all__ = ["MegatronProgressBar"]

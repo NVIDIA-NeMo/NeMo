@@ -2,11 +2,11 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
-import lightning as L
+import pytorch_lightning as pl
 import torch
-from lightning.fabric.plugins.io.checkpoint_io import CheckpointIO
-from lightning.fabric.utilities.cloud_io import get_filesystem
-from lightning.fabric.utilities.types import _PATH
+from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
+from lightning_fabric.utilities.cloud_io import get_filesystem
+from lightning_fabric.utilities.types import _PATH
 from torch import nn
 from typing_extensions import override
 
@@ -14,7 +14,7 @@ from typing_extensions import override
 log = logging.getLogger(__name__)
 
 
-LightningModuleT = TypeVar("LightningModuleT", bound=L.LightningModule)
+LightningModuleT = TypeVar("LightningModuleT", bound=pl.LightningModule)
 ModuleT = TypeVar("ModuleT", bound=nn.Module)
 
 

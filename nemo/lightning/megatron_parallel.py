@@ -573,7 +573,7 @@ class CallbackConnector:
         """
         _pl_callback = None
         try:
-            import lightning.pytorch as pl
+            import pytorch_lightning as pl
 
             _pl_callback = pl.Callback
         except ImportError:

@@ -17,8 +17,6 @@ on:
   pull_request:
     branches: [ "main" ]
     types: [ labeled ]
-  push:
-    branches: [ "pagaray/nemo_cicd_part22" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

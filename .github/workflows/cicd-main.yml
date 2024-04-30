@@ -44,7 +44,7 @@ jobs:
 #  checkout-repository:
 #    runs-on: self-hosted-azure
 #    container:
-#      image: nvcr.io/nvidia/pytorch:24.01-py3
+#      image: nvcr.io/nvidia/pytorch:24.02-py3
 #      volumes:
 #        - ${{ github.workspace }}:/workspace
 #    steps:
@@ -60,7 +60,7 @@ jobs:
     if: ${{ github.event.label.name == 'Run CICD' }}
     # uses: actions/cache@v2
     #container:
-#      image: nvcr.io/nvidia/pytorch:24.01-py3
+#      image: nvcr.io/nvidia/pytorch:24.02-py3
 #      options: 
 #        # --user 0:128
 #        --device=/dev/nvidia0
@@ -78,7 +78,7 @@ jobs:
       run: |
         # Pull base PyTorch container
         docker pull nvcr.io/nvidia/pytorch:24.02-py3
-        docker run --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume ${{ github.workspace }}/${{ github.run_id }}:/workspace --volume /mnt/datadrive/TestData:/home/TestData nvcr.io/nvidia/pytorch:24.01-py3 /bin/bash -c '
+        docker run --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume ${{ github.workspace }}/${{ github.run_id }}:/workspace --volume /mnt/datadrive/TestData:/home/TestData nvcr.io/nvidia/pytorch:24.02-py3 /bin/bash -c '
             set -x
 
             # PyTorch version

@@ -181,6 +181,7 @@ model:
     additional_special_tokens: null # ["<extra_id_0>", "<extra_id_1>", "<extra_id_2>", "<extra_id_3>", "<extra_id_4>", "<extra_id_5>"]
 
   data:
+    packed_sequence: False
     num_workers: 8
     dataloader_type: cyclic
     data_path:

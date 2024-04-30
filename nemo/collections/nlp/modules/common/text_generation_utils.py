@@ -173,6 +173,10 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
             **strategy_args,
         )
 
+        # Middle stages of PP will return None
+        if response is None:
+            continue
+
         # Regular expression pattern to match the sequence
         pattern = re.compile(rf'{DEFAULT_IM_START_TOKEN}( ⁇ )+{DEFAULT_IM_END_TOKEN}')
         pattern_nvgpt = re.compile(rf'{DEFAULT_IM_START_TOKEN}({DEFAULT_IMAGE_PATCH_TOKEN})+{DEFAULT_IM_END_TOKEN}')

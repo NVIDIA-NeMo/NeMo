@@ -79,7 +79,8 @@ def eval_model(args):
     cfg.base_model_file = args.model_base
     cfg.inference.images_base_path = args.image_folder
     cfg.tensor_model_parallel_size = args.tp
-    cfg.trainer.devices = args.tp
+    cfg.pipeline_model_parallel_size = args.pp
+    cfg.trainer.devices = args.tp * args.pp
 
     model, image_processor = create_neva_model_and_processor(cfg)
     length_params: LengthParam = {
@@ -102,7 +103,8 @@ def eval_model(args):
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
     answers_file = os.path.expanduser(args.answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
-    ans_file = open(answers_file, "w")
+    if is_global_rank_zero():
+        ans_file = open(answers_file, "w")
     for i, line in enumerate(tqdm(questions, disable=(not is_global_rank_zero()))):
         idx = line["id"]
         question = line['conversations'][0]
@@ -123,7 +125,8 @@ def eval_model(args):
             sampling_params=sampling_params,
             inference_config=cfg,
         )
-        # import  pdb; pdb.set_trace()
+        if responses is None:
+            continue
         outputs = responses[0]["clean_response"]
 
         # prompt for answer
@@ -139,22 +142,24 @@ def eval_model(args):
             outputs = responses[0]["clean_response"]
             outputs = outputs_reasoning + '\n The answer is ' + outputs
 
-        ans_id = shortuuid.uuid()
-        ans_file.write(
-            json.dumps(
-                {
-                    "question_id": idx,
-                    "prompt": cur_prompt,
-                    "text": outputs,
-                    "answer_id": ans_id,
-                    "model_id": args.model_path,
-                    "metadata": {},
-                }
+        if is_global_rank_zero():
+            ans_id = shortuuid.uuid()
+            ans_file.write(
+                json.dumps(
+                    {
+                        "question_id": idx,
+                        "prompt": cur_prompt,
+                        "text": outputs,
+                        "answer_id": ans_id,
+                        "model_id": args.model_path,
+                        "metadata": {},
+                    }
+                )
+                + "\n"
             )
-            + "\n"
-        )
-        ans_file.flush()
-    ans_file.close()
+            ans_file.flush()
+    if is_global_rank_zero():
+        ans_file.close()
 
 
 if __name__ == "__main__":
@@ -166,6 +171,7 @@ if __name__ == "__main__":
     parser.add_argument("--answers-file", type=str, default="answer.jsonl")
     parser.add_argument("--conv-mode", type=str, default="llava_v0")
     parser.add_argument("--tp", type=int, default=1)
+    parser.add_argument("--pp", type=int, default=1)
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=0.2)

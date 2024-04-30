@@ -20,6 +20,7 @@ from torch.utils.data import Dataset
 from nemo.collections.multimodal.parts.utils import create_neva_model_and_processor
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
 from nemo.core.config import hydra_runner
+from nemo.utils.get_rank import is_global_rank_zero
 
 
 try:
@@ -121,22 +122,27 @@ def main(cfg) -> None:
         )
     # ============== Quantization End =========================
 
-    results = []
-    for response, prompt in zip(responses, final_prompts):
-        prompt['full_text'] = response["clean_text"]
-        prompt['text'] = response["clean_response"]
-        prompt['model_id'] = cfg.neva_model_file
-        if 'image_path' in prompt:
-            prompt['image'] = prompt.pop('image_path')
-        if 'answer_id' not in prompt:
-            prompt['answer_id'] = 0
-        if 'metadata' not in prompt:
-            prompt['metadata'] = {}
-        results.append(prompt)
+    # PP middle stages do not yield any responses
+    if responses is None:
+        return
 
-    with open(cfg.output_file, 'w') as f:
-        for result in results:
-            f.write(json.dumps(result) + '\n')
+    if is_global_rank_zero():
+        results = []
+        for response, prompt in zip(responses, final_prompts):
+            prompt['full_text'] = response["clean_text"]
+            prompt['text'] = response["clean_response"]
+            prompt['model_id'] = cfg.neva_model_file
+            if 'image_path' in prompt:
+                prompt['image'] = prompt.pop('image_path')
+            if 'answer_id' not in prompt:
+                prompt['answer_id'] = 0
+            if 'metadata' not in prompt:
+                prompt['metadata'] = {}
+            results.append(prompt)
+
+        with open(cfg.output_file, 'w') as f:
+            for result in results:
+                f.write(json.dumps(result) + '\n')
 
 
 if __name__ == '__main__':

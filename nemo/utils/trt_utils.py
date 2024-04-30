@@ -32,6 +32,8 @@ def build_engine(
     enable_preview=False,
     timing_cache=None,
     workspace_size=0,
+    int8=False,
+    builder_optimization_level=None,
 ):
     print(f"Building TensorRT engine for {onnx_path}: {output_path}")
     p = Profile()
@@ -53,6 +55,8 @@ def build_engine(
             profiles=[p],
             preview_features=preview_features,
             load_timing_cache=timing_cache,
+            int8=int8,
+            builder_optimization_level=builder_optimization_level,
             **config_kwargs,
         ),
         save_timing_cache=timing_cache,

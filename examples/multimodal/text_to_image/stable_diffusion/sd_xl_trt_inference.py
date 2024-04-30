@@ -22,6 +22,7 @@ import torch
 from cuda import cudart
 from transformers import CLIPTokenizer
 
+from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.denoiser import DiscreteDenoiser
 from nemo.collections.multimodal.modules.stable_diffusion.encoders.modules import ConcatTimestepEmbedderND
 from nemo.collections.multimodal.modules.stable_diffusion.quantization_utils.trt_engine import TRT_LOGGER, Engine
 from nemo.collections.multimodal.parts.stable_diffusion.sdxl_helpers import perform_save_locally
@@ -176,6 +177,7 @@ class StableDiffusionXLTRTPipeline(Serialization):
 
         with torch.inference_mode(), torch.autocast("cuda"), trt.Runtime(TRT_LOGGER):
             torch.cuda.synchronize()
+            e2e_tic = time.perf_counter()
 
             c, uc = self.encode_prompt(prompt, negative_prompt)
 
@@ -198,8 +200,9 @@ class StableDiffusionXLTRTPipeline(Serialization):
 
             samples_z = self.sampler(denoiser, randn, cond=c, uc=uc)
             samples_x = self.decode_images(samples_z)
+            e2e_tic = time.perf_counter() - e2e_tic
             samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
-
+            print(f'This batch takes {e2e_tic}s')
             perform_save_locally(self.cfg.out_path, samples)
 
 

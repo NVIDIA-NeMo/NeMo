@@ -63,6 +63,9 @@ Tutorial Overview
    * - Multimodal
      - Preparations and Advanced Applications: DreamBooth Tutorial
      - `DreamBooth Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/DreamBooth%20Tutorial.ipynb>`_
+   * - Multimodal
+     - Preparations and Advanced Applications: Stable Diffusion XL Quantization Tutorial
+     - `DreamBooth Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/SDXL%20Quantization.ipynb>`_
 
 .. list-table:: **Automatic Speech Recognition (ASR) Tutorials**
    :widths: 15 30 55

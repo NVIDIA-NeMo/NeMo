@@ -36,6 +36,8 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraHto4HAdapterConfig,
     LoraKQVAdapterConfig,
     LoraKQVAdapterWeightTyingConfig,
+    LoraUnfusedHto4HAdapterConfig,
+    LoraUnfusedKQVAdapterConfig,
     MLPInfusedAdapterConfig,
     ParallelLinearAdapterConfig,
     ParallelLinearAdapterWeightTyingConfig,
@@ -132,11 +134,26 @@ class LoraPEFTConfig(PEFTConfig):
 
         for module in target_modules:
             if module == PEFT_MODULE_MAP["qkv_module"]:
-                adapter_cfg = self._create_lora_config(
-                    cfg, lora_cfg, cfg.hidden_size, qkv_projection_size, LoraKQVAdapterConfig
-                )
-                name_key_to_cfg[AdapterName.LORA_KQV_ADAPTER] = adapter_cfg
-                name_key_to_mcore_mixins[AdapterName.LORA_KQV_ADAPTER] = [("self_attention", MCoreSelfAttentionMixin)]
+                if lora_cfg.get("variant", "nemo") == "canonical":
+                    _adapter_name = AdapterName.LORA_UNFUSED_KQV_ADAPTER
+                    _adapter_cfg_cls = LoraUnfusedKQVAdapterConfig
+                    adapter_cfg = self._create_lora_config(
+                        cfg,
+                        lora_cfg,
+                        cfg.hidden_size,
+                        qkv_projection_size,
+                        _adapter_cfg_cls,
+                        num_query_groups=num_query_groups,
+                        kv_channels=kv_channels,
+                    )
+                else:
+                    _adapter_name = AdapterName.LORA_KQV_ADAPTER
+                    _adapter_cfg_cls = LoraKQVAdapterConfig
+                    adapter_cfg = self._create_lora_config(
+                        cfg, lora_cfg, cfg.hidden_size, qkv_projection_size, _adapter_cfg_cls
+                    )
+                name_key_to_cfg[_adapter_name] = adapter_cfg
+                name_key_to_mcore_mixins[_adapter_name] = [("self_attention", MCoreSelfAttentionMixin)]
 
             elif module == PEFT_MODULE_MAP["dense_module"]:
                 adapter_cfg = self._create_lora_config(
@@ -149,11 +166,18 @@ class LoraPEFTConfig(PEFTConfig):
 
             elif module == PEFT_MODULE_MAP["hto4h_module"]:
                 hto4h_projection_size = cfg.ffn_hidden_size * 2 if fast_glu_activation else cfg.ffn_hidden_size
+                if lora_cfg.get("variant", "nemo") == "canonical":
+                    _adapter_name = AdapterName.LORA_UNFUSED_Hto4H_ADAPTER
+                    _adapter_cfg_cls = LoraUnfusedHto4HAdapterConfig
+                else:
+                    _adapter_name = AdapterName.LORA_Hto4H_ADAPTER
+                    _adapter_cfg_cls = LoraHto4HAdapterConfig
+
                 adapter_cfg = self._create_lora_config(
-                    cfg, lora_cfg, cfg.hidden_size, hto4h_projection_size, LoraHto4HAdapterConfig
+                    cfg, lora_cfg, cfg.hidden_size, hto4h_projection_size, _adapter_cfg_cls
                 )
-                name_key_to_cfg[AdapterName.LORA_Hto4H_ADAPTER] = adapter_cfg
-                name_key_to_mcore_mixins[AdapterName.LORA_Hto4H_ADAPTER] = [("mlp", MCoreMLPMixin)]
+                name_key_to_cfg[_adapter_name] = adapter_cfg
+                name_key_to_mcore_mixins[_adapter_name] = [("mlp", MCoreMLPMixin)]
             elif module == PEFT_MODULE_MAP["4htoh_module"]:
                 adapter_cfg = self._create_lora_config(
                     cfg, lora_cfg, cfg.ffn_hidden_size, cfg.hidden_size, Lora4HtoHAdapterConfig
@@ -170,7 +194,9 @@ class LoraPEFTConfig(PEFTConfig):
         self.name_key_to_mcore_mixins = name_key_to_mcore_mixins
         super().__init__(lora_cfg, name_key_to_cfg)
 
-    def _create_lora_config(self, cfg, lora_cfg, in_features, out_features, adapter_cfg_cls):
+    def _create_lora_config(
+        self, cfg, lora_cfg, in_features, out_features, adapter_cfg_cls, num_query_groups=None, kv_channels=None
+    ):
         config_args = {
             "in_features": in_features,
             "out_features": out_features,
@@ -186,6 +212,12 @@ class LoraPEFTConfig(PEFTConfig):
             "dropout_position": lora_cfg.get("dropout_position", "post"),
             "a2a_experimental": lora_cfg.get("a2a_experimental", False),
         }
+
+        if adapter_cfg_cls == LoraUnfusedKQVAdapterConfig:
+            assert num_query_groups is not None, "num_query_groups must be provided for canonical Lora"
+            assert kv_channels is not None, "kv_channels must be provided for canonical Lora"
+            config_args.update({"num_query_groups": num_query_groups, "kv_channels": kv_channels})
+            config_args.pop("out_features")
 
         if lora_cfg.weight_tying:
             position_embedding_strategy = lora_cfg.get("position_embedding_strategy", None)

@@ -37,6 +37,8 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraDenseAttentionAdapterConfig,
     LoraHto4HAdapterConfig,
     LoraKQVAdapterConfig,
+    LoraUnfusedHto4HAdapterConfig,
+    LoraUnfusedKQVAdapterConfig,
     MLPInfusedAdapterConfig,
     ParallelLinearAdapterConfig,
     PromptEncoderAdapterConfig,
@@ -67,7 +69,12 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         Setup NeMo LoRA or IA3 adapter to this MCore layer.
         """
         self.set_accepted_adapter_types(
-            [LoraKQVAdapterConfig._target_, LoraDenseAttentionAdapterConfig._target_, InfusedAdapterConfig._target_]
+            [
+                LoraUnfusedKQVAdapterConfig._target_,
+                LoraKQVAdapterConfig._target_,
+                LoraDenseAttentionAdapterConfig._target_,
+                InfusedAdapterConfig._target_,
+            ]
         )
         self.linear_qkv.return_layernorm_output = True  # need layernorm output for lora mlp
         if (
@@ -102,12 +109,20 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
 
         # LoRA logic
         if self.is_adapter_available():
+            lora_adapter = None
             lora_kqv_adapter = self.get_adapter_module(AdapterName.LORA_KQV_ADAPTER)
+            lora_unfused_kqv_adapter = self.get_adapter_module(AdapterName.LORA_UNFUSED_KQV_ADAPTER)
             if lora_kqv_adapter and self.adapter_cfg[AdapterName.LORA_KQV_ADAPTER]['enabled']:
+                lora_adapter = lora_kqv_adapter
+            if lora_unfused_kqv_adapter and self.adapter_cfg[AdapterName.LORA_UNFUSED_KQV_ADAPTER]['enabled']:
+                assert lora_adapter is None, "Expected only one of lora_kqv_adapter or lora_unfused_kqv_adapter"
+                lora_adapter = lora_unfused_kqv_adapter
+
+            if lora_adapter:
                 if layernorm_output is not None:
-                    lora_mixed_qkv = lora_kqv_adapter(layernorm_output)
+                    lora_mixed_qkv = lora_adapter(layernorm_output)
                 else:
-                    lora_mixed_qkv = lora_kqv_adapter(hidden_states)
+                    lora_mixed_qkv = lora_adapter(hidden_states)
 
                 mixed_qkv = mixed_qkv + lora_mixed_qkv
 
@@ -251,7 +266,12 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
         Setup NeMo IA3 adapter to this MCore layer.
         """
         self.set_accepted_adapter_types(
-            [LoraHto4HAdapterConfig._target_, Lora4HtoHAdapterConfig._target_, MLPInfusedAdapterConfig._target_]
+            [
+                LoraUnfusedHto4HAdapterConfig._target_,
+                LoraHto4HAdapterConfig._target_,
+                Lora4HtoHAdapterConfig._target_,
+                MLPInfusedAdapterConfig._target_,
+            ]
         )  # only self attn (packed qkv) for now
         self.linear_fc1.return_layernorm_output = True  # need layernorm output for lora mlp
         if (
@@ -274,9 +294,17 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
 
         # LoRA logic
         if self.is_adapter_available():
-            lora_linear_fc1_adapter = self.get_adapter_module(AdapterName.LORA_Hto4H_ADAPTER)
-            if lora_linear_fc1_adapter and self.adapter_cfg[AdapterName.LORA_Hto4H_ADAPTER]['enabled']:
-                lora_output = lora_linear_fc1_adapter(layernorm_output)
+            lora_adapter = None
+            lora_fc1_adapter = self.get_adapter_module(AdapterName.LORA_Hto4H_ADAPTER)
+            lora_unfused_fc1_adapter = self.get_adapter_module(AdapterName.LORA_UNFUSED_Hto4H_ADAPTER)
+            if lora_fc1_adapter and self.adapter_cfg[AdapterName.LORA_Hto4H_ADAPTER]['enabled']:
+                lora_adapter = lora_fc1_adapter
+            if lora_unfused_fc1_adapter and self.adapter_cfg[AdapterName.LORA_UNFUSED_Hto4H_ADAPTER]['enabled']:
+                assert lora_adapter is None, "Expected only one of LORA_Hto4H_ADAPTER or LORA_UNFUSED_Hto4H_ADAPTER"
+                lora_adapter = lora_unfused_fc1_adapter
+
+            if lora_adapter:
+                lora_output = lora_adapter(layernorm_output)
                 intermediate_parallel = intermediate_parallel + lora_output
 
         if self.config.bias_activation_fusion:

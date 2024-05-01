@@ -75,11 +75,13 @@ class AdapterName(str, enum.Enum):
     POST_ATTN_ADAPTER = 'adapter_2'
     PTUNING_ADAPTER = "ptuning_adapter"
     LORA_KQV_ADAPTER = "lora_kqv_adapter"
+    LORA_UNFUSED_KQV_ADAPTER = "lora_unfused_kqv_adapter"
     LORA_KV_ADAPTER = "lora_kv_adapter"
     LORA_Q_ADAPTER = "lora_q_adapter"
     MM_LINEAR_ADAPTER = "mm_linear_adapter"
     LORA_DENSE_ATTENTION_ADAPTER = "lora_dense_attention_adapter"
     LORA_Hto4H_ADAPTER = "lora_hto4h_adapter"
+    LORA_UNFUSED_Hto4H_ADAPTER = "lora_unfused_hto4h_adapter"
     LORA_4HtoH_ADAPTER = "lora_4htoh_adapter"
     MULTIMODAL_PROJECTOR_ADAPTER = "mm_projector_adapter"
     PARALLEL_LINEAR_ADAPTER = "parallel_linear_adapter"
@@ -455,6 +457,183 @@ class LoraHto4HAdapterConfig(ParallelLinearAdapterConfig):
 class Lora4HtoHAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(Lora4HtoHAdapter.__module__, Lora4HtoHAdapter.__name__)
     input_is_parallel: bool = True
+
+
+class LoraUnfusedHto4HAdapter(nn.Module, AdapterModuleUtil):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        dim: int,
+        activation: str = 'swish',
+        norm_position: Optional[str] = 'post',
+        norm_type: Optional[str] = 'mixedfusedlayernorm',
+        column_init_method: str = 'xavier',  # TODO: (@adithyare) should rename this to input_init_method to be more precise.
+        row_init_method: str = 'zero',  # TODO: (@adithyare) should rename this to output_init_method to be more precise.
+        gather_output: bool = True,
+        input_is_parallel: bool = False,  # NOTE: (@ertkonuk) we need this for LoRA adapters that are applied to RowParallelLinear layers
+        dropout: float = 0.0,
+        model_parallel_config: Optional[ModelParallelConfig] = None,
+        alpha: float | None = None,
+        dropout_position: str = 'post',
+        a2a_experimental: bool = False,  # TODO: should rename this or make it a default feature
+        **kwargs,
+    ):
+        super().__init__()
+        self.gate_adapter = ParallelLinearAdapter(
+            in_features,
+            out_features // 2,
+            dim,
+            activation,
+            norm_position,
+            norm_type,
+            column_init_method,
+            row_init_method,
+            gather_output,
+            input_is_parallel,
+            dropout,
+            model_parallel_config,
+            alpha,
+            dropout_position,
+            a2a_experimental,
+        )
+        self.up_adapter = ParallelLinearAdapter(
+            in_features,
+            out_features // 2,
+            dim,
+            activation,
+            norm_position,
+            norm_type,
+            column_init_method,
+            row_init_method,
+            gather_output,
+            input_is_parallel,
+            dropout,
+            model_parallel_config,
+            alpha,
+            dropout_position,
+            a2a_experimental,
+        )
+
+    def forward(self, x):
+        gate_x = self.gate_adapter(x)
+        up_x = self.up_adapter(x)
+        x = torch.concat([gate_x, up_x], dim=2)
+        return x
+
+
+@dataclass
+class LoraUnfusedHto4HAdapterConfig(ParallelLinearAdapterConfig):
+    _target_: str = "{0}.{1}".format(LoraUnfusedHto4HAdapter.__module__, LoraUnfusedHto4HAdapter.__name__)
+
+
+class LoraUnfusedKQVAdapter(nn.Module, AdapterModuleUtil):
+    def __init__(
+        self,
+        in_features: int,
+        dim: int,
+        activation: str = 'swish',
+        norm_position: Optional[str] = 'post',
+        norm_type: Optional[str] = 'mixedfusedlayernorm',
+        column_init_method: str = 'xavier',  # TODO: (@adithyare) should rename this to input_init_method to be more precise.
+        row_init_method: str = 'zero',  # TODO: (@adithyare) should rename this to output_init_method to be more precise.
+        gather_output: bool = True,
+        input_is_parallel: bool = False,  # NOTE: (@ertkonuk) we need this for LoRA adapters that are applied to RowParallelLinear layers
+        dropout: float = 0.0,
+        model_parallel_config: Optional[ModelParallelConfig] = None,
+        alpha: float | None = None,
+        dropout_position: str = 'post',
+        a2a_experimental: bool = False,  # TODO: should rename this or make it a default feature
+        num_query_groups: Optional[int] = None,
+        kv_channels: Optional[int] = None,
+        **kwargs,
+    ):
+        super().__init__()
+        if num_query_groups is not None and kv_channels is not None:
+            out_features = kv_channels * num_query_groups
+        else:
+            out_features = in_features
+
+        self.q_adapter = ParallelLinearAdapter(
+            in_features,
+            in_features,
+            dim,
+            activation,
+            norm_position,
+            norm_type,
+            column_init_method,
+            row_init_method,
+            gather_output,
+            input_is_parallel,
+            dropout,
+            model_parallel_config,
+            alpha,
+            dropout_position,
+            a2a_experimental,
+        )
+
+        self.k_adapter = ParallelLinearAdapter(
+            in_features,
+            out_features,
+            dim,
+            activation,
+            norm_position,
+            norm_type,
+            column_init_method,
+            row_init_method,
+            gather_output,
+            input_is_parallel,
+            dropout,
+            model_parallel_config,
+            alpha,
+            dropout_position,
+            a2a_experimental,
+        )
+        self.v_adapter = ParallelLinearAdapter(
+            in_features,
+            out_features,
+            dim,
+            activation,
+            norm_position,
+            norm_type,
+            column_init_method,
+            row_init_method,
+            gather_output,
+            input_is_parallel,
+            dropout,
+            model_parallel_config,
+            alpha,
+            dropout_position,
+            a2a_experimental,
+        )
+
+    def forward(self, x):
+        qx = self.q_adapter(x)
+        kx = self.k_adapter(x)
+        vx = self.v_adapter(x)
+        x = torch.concat([qx, kx, vx], dim=2)
+        return x
+
+
+@dataclass
+class LoraUnfusedKQVAdapterConfig(AdapterConfig):
+    in_features: int
+    dim: int
+    activation: str = 'swish'
+    norm_position: Optional[str] = 'post'
+    norm_type: Optional[str] = 'mixedfusedlayernorm'
+    column_init_method: str = 'xavier'
+    row_init_method: str = 'zero'
+    gather_output: bool = True
+    input_is_parallel: bool = False
+    dropout: float = 0.0
+    dropout_position: str = 'post'
+    alpha: float | None = None
+    network_alpha: int | None = None
+    a2a_experimental: bool = False
+    num_query_groups: Optional[int] = None
+    kv_channels: Optional[int] = None
+    _target_: str = "{0}.{1}".format(LoraUnfusedKQVAdapter.__module__, LoraUnfusedKQVAdapter.__name__)
 
 
 class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):

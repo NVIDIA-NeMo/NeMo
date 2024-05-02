@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 import pytest
+from megatron.core import parallel_state
 from torch import nn
 
 from nemo import lightning as nl
@@ -24,11 +25,10 @@ class TestMegatronParallel:
 
         return DummyModule()
 
-    # TODO (chcui): Uncomment this test when we merge mixed-precision
-    # @pytest.fixture
-    # def mock_precision_plugin(self, mocker):
-    #     """Fixture to create a mock precision plugin."""
-    #     return nl.MegatronMixedPrecision(precision="bf16-mixed")
+    @pytest.fixture
+    def mock_precision_plugin(self, mocker):
+        """Fixture to create a mock precision plugin."""
+        return nl.MegatronMixedPrecision(precision="bf16-mixed")
 
     @pytest.fixture
     def mock_callbacks(self, mocker):
@@ -64,55 +64,53 @@ class TestMegatronParallel:
         assert megatron_parallel.forward_step == mp.default_forward_step
         assert megatron_parallel.loss_reduction is None
 
-    # TODO (chcui): Uncomment this test when we merge mixed-precision
-    # def test_init_with_custom_parameters(
-    #     self,
-    #     mocker,
-    #     mock_pipeline,
-    #     mock_precision_plugin,
-    #     mock_callbacks,
-    #     mock_data_step,
-    #     mock_forward_step,
-    #     mock_loss_reduction
-    # ):
-    #     """Test __init__ with custom parameters."""
-    #     mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=1)
-    #     mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=False)
-    #
-    #     megatron_parallel = mp.MegatronParallel(
-    #         pipeline=mock_pipeline,
-    #         precision_plugin=mock_precision_plugin,
-    #         callbacks=mock_callbacks,
-    #         data_step=mock_data_step,
-    #         forward_step=mock_forward_step,
-    #         loss_reduction=mock_loss_reduction
-    #     )
-    #
-    #     assert megatron_parallel.pipeline == mock_pipeline
-    #     assert megatron_parallel.precision_plugin == mock_precision_plugin
-    #     assert megatron_parallel.callbacks == mock_callbacks
-    #     assert megatron_parallel.data_step == mock_data_step
-    #     assert megatron_parallel.forward_step == mock_forward_step
-    #     assert megatron_parallel.loss_reduction == mock_loss_reduction
+    def test_init_with_custom_parameters(
+        self,
+        mocker,
+        mock_pipeline,
+        mock_precision_plugin,
+        mock_callbacks,
+        mock_data_step,
+        mock_forward_step,
+        mock_loss_reduction,
+    ):
+        """Test __init__ with custom parameters."""
+        mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=1)
+        mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=False)
 
-    # TODO: Comment-out this test when we merge nemo.io
-    # def test_init_with_virtual_pipeline(self, mocker, mock_pipeline):
-    #     """Test __init__ with virtual pipeline model parallel world size."""
-    #     mocker.patch('torch.distributed.get_rank', return_value=1)
-    #     mocker.patch('megatron.core.parallel_state.get_tensor_model_parallel_group', return_value=1)
-    #     mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_group', return_value=1)
-    #     mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=2)
-    #     mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=True)
-    #     mocker.patch('megatron.core.parallel_state.set_virtual_pipeline_model_parallel_world_size')
-    #     mocker.patch('megatron.core.parallel_state.set_virtual_pipeline_model_parallel_rank')
-    #     mocker.patch('nemo_ext.lightning._strategy_lib.init_lightning_module', return_value=mock_pipeline)
+        megatron_parallel = mp.MegatronParallel(
+            pipeline=mock_pipeline,
+            precision_plugin=mock_precision_plugin,
+            callbacks=mock_callbacks,
+            data_step=mock_data_step,
+            forward_step=mock_forward_step,
+            loss_reduction=mock_loss_reduction,
+        )
 
-    #     megatron_parallel = mp.MegatronParallel(mock_pipeline, vp_size=2)
+        assert megatron_parallel.pipeline == mock_pipeline
+        assert megatron_parallel.precision_plugin == mock_precision_plugin
+        assert megatron_parallel.callbacks == mock_callbacks
+        assert megatron_parallel.data_step == mock_data_step
+        assert megatron_parallel.forward_step == mock_forward_step
+        assert megatron_parallel.loss_reduction == mock_loss_reduction
 
-    #     assert len(megatron_parallel.pipeline) == 2
-    #     assert all(isinstance(mod, nn.Module) for mod in megatron_parallel.pipeline)
-    #     megatron.core.parallel_state.set_virtual_pipeline_model_parallel_world_size.assert_called_once_with(2)
-    #     assert megatron.core.parallel_state.set_virtual_pipeline_model_parallel_rank.call_count == 1
+    def test_init_with_virtual_pipeline(self, mocker, mock_pipeline):
+        """Test __init__ with virtual pipeline model parallel world size."""
+        mocker.patch('torch.distributed.get_rank', return_value=1)
+        mocker.patch('megatron.core.parallel_state.get_tensor_model_parallel_group', return_value=1)
+        mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_group', return_value=1)
+        mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=2)
+        mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=True)
+        mocker.patch('megatron.core.parallel_state.set_virtual_pipeline_model_parallel_world_size')
+        mocker.patch('megatron.core.parallel_state.set_virtual_pipeline_model_parallel_rank')
+        mocker.patch('nemo.io.reinit', return_value=mock_pipeline)
+
+        megatron_parallel = mp.MegatronParallel(mock_pipeline, vp_size=2, cpu=True)
+
+        assert len(megatron_parallel.pipeline) == 2
+        assert all(isinstance(mod, nn.Module) for mod in megatron_parallel.pipeline)
+        parallel_state.set_virtual_pipeline_model_parallel_world_size.assert_called_once_with(2)
+        assert parallel_state.set_virtual_pipeline_model_parallel_rank.call_count == 1
 
 
 class TestCallbackConnector:

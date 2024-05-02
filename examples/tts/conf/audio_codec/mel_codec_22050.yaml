@@ -1,4 +1,4 @@
-# This config contains the default values for training 44.1kHz audio codec model which encodes mel spectrogram
+# This config contains the default values for training 22.05kHz audio codec model which encodes mel spectrogram
 # instead of raw audio.
 # If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
@@ -21,13 +21,13 @@ log_ds_meta: ???
 log_dir: ???
 
 # Modify these values based on your sample rate
-sample_rate: 44100
-win_length: 2048
-hop_length: 512
-train_n_samples: 16384 # ~0.37 seconds
+sample_rate: 22050
+win_length: 1024
+hop_length: 256
+train_n_samples: 8192 # ~0.37 seconds
 # The product of the up_sample_rates should match the hop_length.
-# For example 8 * 8 * 4 * 2 = 512.
-up_sample_rates: [8, 8, 4, 2]
+# For example 8 * 8 * 2 * 2 = 256.
+up_sample_rates: [8, 8, 2, 2]
 
 
 model:

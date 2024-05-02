@@ -2,7 +2,7 @@
 # If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
-name: EnCodec
+name: AudioCodec
 
 max_epochs: ???
 # Adjust batch size based on GPU memory
@@ -90,13 +90,13 @@ model:
     log_epochs: [10, 50, 100, 150, 200]
     epoch_frequency: 100
     log_tensorboard: false
-    log_wandb: true
+    log_wandb: false
 
     generators:
       - _target_: nemo.collections.tts.parts.utils.callbacks.AudioCodecArtifactGenerator
         log_audio: true
-        log_encoding: true
-        log_dequantized: true
+        log_encoding: false
+        log_dequantized: false
 
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
@@ -127,8 +127,6 @@ model:
     _target_: nemo.collections.tts.modules.encodec_modules.MultiResolutionDiscriminatorSTFT
     resolutions: [[128, 32, 128], [256, 64, 256], [512, 128, 512], [1024, 256, 1024], [2048, 512, 2048]]
 
-  # The original EnCodec uses hinged loss, but squared-GAN loss is more stable
-  # and reduces the need to tune the loss weights or use a gradient balancer.
   generator_loss:
     _target_: nemo.collections.tts.losses.audio_codec_loss.GeneratorSquaredLoss
 
@@ -162,7 +160,7 @@ exp_manager:
   exp_dir: null
   name: ${name}
   create_tensorboard_logger: false
-  create_wandb_logger: true
+  create_wandb_logger: false
   wandb_logger_kwargs:
     name: null
     project: null

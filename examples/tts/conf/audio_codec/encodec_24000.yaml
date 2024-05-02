@@ -90,13 +90,13 @@ model:
     log_epochs: [10, 50, 100, 150, 200]
     epoch_frequency: 100
     log_tensorboard: false
-    log_wandb: true
+    log_wandb: false
 
     generators:
       - _target_: nemo.collections.tts.parts.utils.callbacks.AudioCodecArtifactGenerator
         log_audio: true
-        log_encoding: true
-        log_dequantized: true
+        log_encoding: false
+        log_dequantized: false
 
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
@@ -162,7 +162,7 @@ exp_manager:
   exp_dir: null
   name: ${name}
   create_tensorboard_logger: false
-  create_wandb_logger: true
+  create_wandb_logger: false
   wandb_logger_kwargs:
     name: null
     project: null

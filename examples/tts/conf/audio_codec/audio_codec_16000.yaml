@@ -92,13 +92,13 @@ model:
     log_epochs: [1, 2, 3, 4, 5, 6]
     epoch_frequency: 1
     log_tensorboard: false
-    log_wandb: true
+    log_wandb: false
 
     generators:
       - _target_: nemo.collections.tts.parts.utils.callbacks.AudioCodecArtifactGenerator
         log_audio: true
-        log_encoding: true
-        log_dequantized: true
+        log_encoding: false
+        log_dequantized: false
 
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
@@ -129,8 +129,6 @@ model:
     _target_: nemo.collections.tts.modules.encodec_modules.MultiResolutionDiscriminatorSTFT
     resolutions: [[128, 32, 128], [256, 64, 256], [512, 128, 512], [1024, 256, 1024], [2048, 512, 2048]]
 
-  # The original EnCodec uses hinged loss, but squared-GAN loss is more stable
-  # and reduces the need to tune the loss weights or use a gradient balancer.
   generator_loss:
     _target_: nemo.collections.tts.losses.audio_codec_loss.GeneratorSquaredLoss
 

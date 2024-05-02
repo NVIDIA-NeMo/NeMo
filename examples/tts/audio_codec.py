@@ -27,6 +27,7 @@ def main(cfg):
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
     model = AudioCodecModel(cfg=cfg.model, trainer=trainer)
+    model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
     trainer.fit(model)
 
 

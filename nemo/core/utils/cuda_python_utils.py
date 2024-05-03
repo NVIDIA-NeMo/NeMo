@@ -25,7 +25,7 @@ def check_cuda_python_cuda_graphs_conditional_nodes_supported():
     try:
         from cuda import cuda
     except ImportError:
-        raise ModuleNotFoundError("Please do `pip install cuda-python>=12.3`")
+        raise ModuleNotFoundError("No `cuda-python` module. Please do `pip install cuda-python>=12.3`")
 
     from cuda import __version__ as cuda_python_version
 

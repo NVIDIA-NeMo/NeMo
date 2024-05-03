@@ -432,9 +432,14 @@ class TestEncDecRNNTModel:
     )
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+        ("greedy_class", "loop_labels"),
+        [
+            (greedy_decode.GreedyRNNTInfer, None),
+            (greedy_decode.GreedyBatchedRNNTInfer, True),
+            (greedy_decode.GreedyBatchedRNNTInfer, False),
+        ],
     )
-    def test_greedy_decoding(self, greedy_class):
+    def test_greedy_decoding(self, greedy_class, loop_labels: Optional[bool]):
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
 
@@ -454,7 +459,14 @@ class TestEncDecRNNTModel:
         for joint_type in [RNNTJoint, HATJoint]:
             joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-            greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+            additional_decoding_kwargs = {} if loop_labels is None else {"loop_labels": loop_labels}
+            greedy = greedy_class(
+                decoder,
+                joint_net,
+                blank_index=len(token_list) - 1,
+                max_symbols_per_step=5,
+                **additional_decoding_kwargs,
+            )
 
             # (B, D, T)
             enc_out = torch.randn(1, encoder_output_size, 30)

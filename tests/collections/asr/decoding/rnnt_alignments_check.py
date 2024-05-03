@@ -28,13 +28,14 @@ TEST_DATA_PATH = "/home/TestData/an4_dataset/an4_val.json"
 PRETRAINED_MODEL_NAME = "stt_en_conformer_transducer_small"
 
 
-def get_rnnt_alignments(strategy: str, loop_labels: bool = True, location="cuda"):
+def get_rnnt_alignments(strategy: str, loop_labels: bool = True, use_cuda_graph_decoder=False, location="cuda"):
     cfg = OmegaConf.structured(TranscriptionConfig(pretrained_name=PRETRAINED_MODEL_NAME))
     cfg.rnnt_decoding.confidence_cfg.preserve_frame_confidence = True
     cfg.rnnt_decoding.preserve_alignments = True
     cfg.rnnt_decoding.strategy = strategy
     if cfg.rnnt_decoding.strategy == "greedy_batch":
         cfg.rnnt_decoding.greedy.loop_labels = loop_labels
+        cfg.rnnt_decoding.greedy.use_cuda_graph_decoder = use_cuda_graph_decoder
     cfg.dataset_manifest = TEST_DATA_PATH
     filepaths = prepare_audio_data(cfg)[0][:10]  # selecting 10 files only
 
@@ -73,10 +74,15 @@ def cleanup_local_folder():
 # TODO: add the same tests for multi-blank RNNT decoding
 @pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
 @pytest.mark.parametrize("loop_labels", [True, False])
-def test_rnnt_alignments(loop_labels: bool):
+@pytest.mark.parametrize("use_cuda_graph_decoder", [True, False])
+def test_rnnt_alignments(loop_labels: bool, use_cuda_graph_decoder: bool):
+    if not loop_labels and use_cuda_graph_decoder:
+        pytest.skip("Frame-Looping algorithm with CUDA graphs does not yet support alignments")
     # using greedy as baseline and comparing all other configurations to it
     ref_transcriptions = get_rnnt_alignments("greedy")
-    transcriptions = get_rnnt_alignments("greedy_batch", loop_labels=loop_labels)
+    transcriptions = get_rnnt_alignments(
+        "greedy_batch", loop_labels=loop_labels, use_cuda_graph_decoder=use_cuda_graph_decoder
+    )
     # comparing that label sequence in alignments is exactly the same
     # we can't compare logits as well, because they are expected to be
     # slightly different in batched and single-sample mode

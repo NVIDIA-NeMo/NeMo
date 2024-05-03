@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
@@ -22,6 +23,7 @@ from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
+from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import (
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
     cu_call,
@@ -29,6 +31,7 @@ from nemo.core.utils.cuda_python_utils import (
     with_conditional_node,
 )
 from nemo.utils import logging
+from nemo.utils.enum import PrettyStrEnum
 
 try:
     from cuda import cudart
@@ -167,7 +170,17 @@ class LoopLabelsState:
         )
 
 
-class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
+@dataclass
+class SeparateGraphsLoopLabels:
+    """Class to store Cuda graphs for decoding when separate graphs are used"""
+
+    before_outer_loop: torch.cuda.CUDAGraph = field(default_factory=torch.cuda.CUDAGraph)
+    before_inner_loop: torch.cuda.CUDAGraph = field(default_factory=torch.cuda.CUDAGraph)
+    inner_loop_code: torch.cuda.CUDAGraph = field(default_factory=torch.cuda.CUDAGraph)
+    after_inner_loop: torch.cuda.CUDAGraph = field(default_factory=torch.cuda.CUDAGraph)
+
+
+class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
     """
     Label Looping algorithm implementation: optimized batched greedy decoding. Callable.
     Iterates over labels, on each step finding the next non-blank label
@@ -179,6 +192,16 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
 
     INITIAL_MAX_TIME = 375  # initial max time, used to init state for Cuda graphs
     CUDA_PROGRAM_NAME = b"while_loop_labels_conditional_tdt.cu"
+
+    class CudaGraphsMode(PrettyStrEnum):
+        FULL_GRAPH = "full_graph"  # Cuda graphs with conditional nodes, fastest implementation
+        NO_WHILE_LOOPS = "no_while_loops"  # Decoding with PyTorch while loops + partial Cuda graphs
+        NO_GRAPHS = "no_graphs"  # decoding without graphs, stateful implementation, only for testing purposes
+
+    separate_graphs: Optional[SeparateGraphsLoopLabels]
+    full_graph: Optional[torch.cuda.CUDAGraph]
+    cuda_graphs_mode: Optional[CudaGraphsMode]
+    state: Optional[LoopLabelsState]
 
     def __init__(
         self,
@@ -215,25 +238,67 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
+        self.allow_cuda_graphs = allow_cuda_graphs
         self.include_duration_confidence = include_duration_confidence
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only
 
-        self.use_cuda_graphs = allow_cuda_graphs
+        self.state = None
+        self.full_graph = None
+        self.separate_graphs = None
 
-        if self.use_cuda_graphs and self.max_symbols is None:
-            logging.warning("Max symbols is None, which is not allowed with Cuda graphs.")
-            self.use_cuda_graphs = False
+        self.cuda_graphs_mode = None
+        self.maybe_enable_cuda_graphs()
 
-        if self.use_cuda_graphs:
+    def maybe_enable_cuda_graphs(self):
+        """Enable CUDA graphs if conditions met"""
+        if self.cuda_graphs_mode is not None:
+            # CUDA graphs are enabled
+            return
+
+        if not self.allow_cuda_graphs:
+            self.cuda_graphs_mode = None
+        else:
+            # cuda graphs are allowed
+            # check basic requirements for cuda graphs
+            if self.max_symbols is None:
+                logging.warning("Max symbols per step is None, which is not allowed with Cuda graphs. Setting to `10`")
+                self.max_symbols = 10
+            # basic requirements met, need to check while loops
             try:
                 check_cuda_python_cuda_graphs_conditional_nodes_supported()
-            except ImportError as e:
-                logging.warning(f"No conditional node support. Cuda graphs will be disabled,\n{e.msg}")
-                self.use_cuda_graphs = False
+                self.cuda_graphs_mode = self.CudaGraphsMode.FULL_GRAPH
+            except (ImportError, ModuleNotFoundError) as e:
+                logging.warning(
+                    "No conditional node support for Cuda.\n"
+                    "Cuda graphs with while loops are disabled, decoding speed will be slower\n"
+                    f"Reason: {e.msg}"
+                )
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+        self.reset_cuda_graphs_state()
 
-        self.state: Optional[LoopLabelsState] = None
+    def disable_cuda_graphs(self):
+        """Disable CUDA graphs, can be used to disable graphs temporary, e.g., in training process"""
+        if self.cuda_graphs_mode is None:
+            # nothing to disable
+            return
+        self.cuda_graphs_mode = None
+        self.reset_cuda_graphs_state()
+
+    def reset_cuda_graphs_state(self):
+        """Reset state to release memory (for CUDA graphs implementations)"""
+        self.state = None
+        self.full_graph = None
+        self.separate_graphs = None
+
+    def force_cuda_graphs_mode(self, mode: Optional[Union[str, CudaGraphsMode]]):
+        """
+        Method to set graphs mode. Use only for testing purposes.
+        For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
+        """
+        self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.state = None
 
     def loop_labels_torch(
         self, encoder_output: torch.Tensor, encoder_output_length: torch.Tensor,
@@ -250,7 +315,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
 
         # do not recalculate joint projection, project only once
         encoder_output_projected = self.joint.project_encoder(encoder_output)
-        dtype = encoder_output_projected.dtype
+        float_dtype = encoder_output_projected.dtype
 
         # init output structures: BatchedHyps (for results), BatchedAlignments + last decoder state
         # init empty batched hypotheses
@@ -258,7 +323,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
             batch_size=batch_size,
             init_length=max_time * self.max_symbols if self.max_symbols is not None else max_time,
             device=device,
-            float_dtype=dtype,
+            float_dtype=float_dtype,
         )
         # sample state, will be replaced further when the decoding for hypothesis is done
         last_decoder_state = self.decoder.initialize_state(encoder_output_projected)
@@ -270,7 +335,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
             logits_dim=self.joint.num_classes_with_blank,
             init_length=max_time * 2 if use_alignments else 1,  # blank for each timestep + text tokens
             device=device,
-            float_dtype=dtype,
+            float_dtype=float_dtype,
             store_alignments=self.preserve_alignments,
             store_frame_confidence=self.preserve_frame_confidence,
             with_duration_confidence=self.include_duration_confidence,
@@ -338,16 +403,18 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
                     confidence=torch.stack(
                         (
                             self._get_confidence_tensor(F.log_softmax(logits[:, :-num_durations], dim=-1)).to(
-                                dtype=dtype
+                                dtype=float_dtype
                             ),
                             self._get_confidence_tensor(F.log_softmax(logits[:, -num_durations:], dim=-1)).to(
-                                dtype=dtype
+                                dtype=float_dtype
                             ),
                         ),
                         dim=-1,
                     )
                     if self.include_duration_confidence
-                    else self._get_confidence_tensor(F.log_softmax(logits[:, :-num_durations], dim=-1)).to(dtype=dtype)
+                    else self._get_confidence_tensor(F.log_softmax(logits[:, :-num_durations], dim=-1)).to(
+                        dtype=float_dtype
+                    )
                     if self.preserve_frame_confidence
                     else None,
                 )
@@ -390,17 +457,17 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
                         confidence=torch.stack(
                             (
                                 self._get_confidence_tensor(F.log_softmax(logits[:, :-num_durations], dim=-1)).to(
-                                    dtype=dtype
+                                    dtype=float_dtype
                                 ),
                                 self._get_confidence_tensor(F.log_softmax(logits[:, -num_durations:], dim=-1)).to(
-                                    dtype=dtype
+                                    dtype=float_dtype
                                 ),
                             ),
                             dim=-1,
                         )
                         if self.include_duration_confidence
                         else self._get_confidence_tensor(F.log_softmax(logits[:, :-num_durations], dim=-1)).to(
-                            dtype=dtype
+                            dtype=float_dtype
                         )
                         if self.preserve_frame_confidence
                         else None,
@@ -467,6 +534,8 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
             encoder_output: output from the encoder
             encoder_output_length: lengths of the utterances in `encoder_output`
         """
+        assert self.cuda_graphs_mode is not None
+
         # do not recalculate joint projection, project only once
         encoder_output = self.joint.project_encoder(encoder_output)
         current_batch_size = encoder_output.shape[0]
@@ -484,16 +553,27 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         self.state.encoder_output_length[: encoder_output_length.shape[0]].copy_(encoder_output_length)
         # set length to zero for elements outside the current batch
         self.state.encoder_output_length[current_batch_size:].fill_(0)
-        self.graph.replay()
-
-        # example manual loop (can be used instead of graph.replay())
-        # self._before_outer_loop()
-        # while self.state.active_mask_any.item():
-        #     self._before_inner_loop_get_decoder_output()
-        #     self._before_inner_loop_get_joint_output()
-        #     while self.state.advance_mask_any.item():
-        #         self._inner_loop_code()
-        #     self._after_inner_loop()
+        if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
+            self.full_graph.replay()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
+            self.separate_graphs.before_outer_loop.replay()
+            while self.state.active_mask_any.item():
+                self.separate_graphs.before_inner_loop.replay()
+                while self.state.advance_mask_any.item():
+                    self.separate_graphs.inner_loop_code.replay()
+                self.separate_graphs.after_inner_loop.replay()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
+            # this mode is only for testing purposes
+            # manual loop instead of using graphs
+            self._before_outer_loop()
+            while self.state.active_mask_any.item():
+                self._before_inner_loop_get_decoder_output()
+                self._before_inner_loop_get_joint_output()
+                while self.state.advance_mask_any.item():
+                    self._inner_loop_code()
+                self._after_inner_loop()
+        else:
+            raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
         return (
             self.state.batched_hyps,
@@ -565,12 +645,49 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         )
         # to avoid recalculation of joint projection, store decoder output in state
         self.state.decoder_output = self.joint.project_prednet(decoder_output)
+        if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
+            self._full_graph_compile()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
+            self._partial_graphs_compile()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
+            # no graphs needed
+            pass
+        else:
+            raise NotImplementedError
 
+    def _partial_graphs_compile(self):
+        """Compile decoding by parts"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)
-        self.graph = torch.cuda.CUDAGraph()
+        self.separate_graphs = SeparateGraphsLoopLabels()
         with torch.cuda.stream(stream_for_graph), torch.inference_mode(), torch.cuda.graph(
-            self.graph, stream=stream_for_graph
+            self.separate_graphs.before_outer_loop, stream=stream_for_graph
+        ):
+            self._before_outer_loop()
+
+        with torch.cuda.stream(stream_for_graph), torch.inference_mode(), torch.cuda.graph(
+            self.separate_graphs.before_inner_loop, stream=stream_for_graph
+        ):
+            self._before_inner_loop_get_decoder_output()
+            self._before_inner_loop_get_joint_output()
+
+        with torch.cuda.stream(stream_for_graph), torch.inference_mode(), torch.cuda.graph(
+            self.separate_graphs.inner_loop_code, stream=stream_for_graph
+        ):
+            self._inner_loop_code()
+
+        with torch.cuda.stream(stream_for_graph), torch.inference_mode(), torch.cuda.graph(
+            self.separate_graphs.after_inner_loop, stream=stream_for_graph
+        ):
+            self._after_inner_loop()
+
+    def _full_graph_compile(self):
+        """Compile full graph for decoding"""
+        # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
+        stream_for_graph = torch.cuda.Stream(self.state.device)
+        self.full_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.stream(stream_for_graph), torch.inference_mode(), torch.cuda.graph(
+            self.full_graph, stream=stream_for_graph
         ):
             self._before_outer_loop()
 
@@ -651,7 +768,6 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         # stage 2: get joint output, iteratively seeking for non-blank labels
         # blank label in `labels` tensor means "end of hypothesis" (for this index)
         self.state.active_mask_prev.copy_(self.state.active_mask, non_blocking=True)
-        dtype = self.state.encoder_output_projected.dtype
         logits = (
             self.joint.joint_after_projection(
                 self.state.encoder_output_projected[self.state.batch_indices, self.state.safe_time_indices].unsqueeze(
@@ -675,6 +791,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         # for blank labels force duration >= 1
         durations.masked_fill_(torch.logical_and(durations == 0, self.state.blank_mask), 1)
         if self.state.alignments is not None:
+            float_dtype = self.state.float_dtype
             self.state.alignments.add_results_masked_no_checks_(
                 active_mask=self.state.active_mask,
                 time_indices=self.state.time_indices_current_labels,
@@ -684,17 +801,17 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
                     (
                         self._get_confidence_tensor(
                             F.log_softmax(logits[:, : -self.state.all_durations.shape[0]], dim=-1)
-                        ).to(dtype=dtype),
+                        ).to(dtype=float_dtype),
                         self._get_confidence_tensor(
                             F.log_softmax(logits[:, -self.state.all_durations.shape[0] :], dim=-1)
-                        ).to(dtype=dtype),
+                        ).to(dtype=float_dtype),
                     ),
                     dim=-1,
                 )
                 if self.include_duration_confidence
                 else self._get_confidence_tensor(
                     F.log_softmax(logits[:, : -self.state.all_durations.shape[0]], dim=-1)
-                ).to(dtype=dtype)
+                ).to(dtype=float_dtype)
                 if self.preserve_frame_confidence
                 else None,
             )
@@ -720,7 +837,6 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
             self.state.time_indices_current_labels,
             out=self.state.time_indices_current_labels,
         )
-        dtype = self.state.encoder_output_projected.dtype
         logits = (
             self.joint.joint_after_projection(
                 self.state.encoder_output_projected[self.state.batch_indices, self.state.safe_time_indices].unsqueeze(
@@ -742,6 +858,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         torch.where(self.state.advance_mask, more_scores, self.state.scores, out=self.state.scores)
 
         if self.state.alignments is not None:
+            float_dtype = self.state.float_dtype
             self.state.alignments.add_results_masked_no_checks_(
                 active_mask=self.state.advance_mask,
                 time_indices=self.state.time_indices_current_labels,
@@ -751,17 +868,17 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
                     (
                         self._get_confidence_tensor(
                             F.log_softmax(logits[:, : -self.state.all_durations.shape[0]], dim=-1)
-                        ).to(dtype=dtype),
+                        ).to(dtype=float_dtype),
                         self._get_confidence_tensor(
                             F.log_softmax(logits[:, -self.state.all_durations.shape[0] :], dim=-1)
-                        ).to(dtype=dtype),
+                        ).to(dtype=float_dtype),
                     ),
                     dim=-1,
                 )
                 if self.include_duration_confidence
                 else self._get_confidence_tensor(
                     F.log_softmax(logits[:, : -self.state.all_durations.shape[0]], dim=-1)
-                ).to(dtype=dtype)
+                ).to(dtype=float_dtype)
                 if self.preserve_frame_confidence
                 else None,
             )
@@ -822,7 +939,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
     def __call__(
         self, x: torch.Tensor, out_len: torch.Tensor,
     ) -> Tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], Any]:
-        if self.use_cuda_graphs and x.device.type == "cuda":
+        if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             return self.loop_labels_cuda_graphs(encoder_output=x, encoder_output_length=out_len)
 
         return self.loop_labels_torch(encoder_output=x, encoder_output_length=out_len)

@@ -292,14 +292,21 @@ class RNNTGreedyDecodeCudaGraph:
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
     ):
         if partial_hypotheses is not None:
-            raise NotImplementedError("`partial_hypotheses` support is not available with cuda graphs (but could be)")
+            raise NotImplementedError(
+                "`partial_hypotheses` support is not available "
+                "with Frame-Looping algorithm with Cuda graphs (not implemented yet)"
+            )
 
         if self.caller.preserve_alignments:
-            raise NotImplementedError("`preserve_alignments` support is not available with cuda graphs (but could be)")
+            raise NotImplementedError(
+                "`preserve_alignments` support is not available"
+                "with Frame-Looping algorithm with Cuda graphs (not implemented yet)"
+            )
 
         if self.caller.preserve_frame_confidence:
             raise NotImplementedError(
-                "`preserve_frame_confidence` support is not available with cuda graphs (but could be)"
+                "`preserve_frame_confidence` support is not available"
+                "with Frame-Looping algorithm with Cuda graphs (not implemented yet)"
             )
 
         batch_size = x.shape[0]

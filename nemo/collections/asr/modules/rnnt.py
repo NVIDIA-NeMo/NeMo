@@ -312,7 +312,9 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         batch = y.size(0)
         # state contains context_size - 1 elements for each utterance in batch,
         # consistent with the state returned from StatelessNet.forward
-        state = [torch.ones([batch, self.context_size - 1], dtype=torch.long, device=y.device) * self.blank_idx]
+        state = [
+            torch.full([batch, self.context_size - 1], fill_value=self.blank_idx, dtype=torch.long, device=y.device)
+        ]
         return state
 
     def batch_initialize_states(self, batch_states: List[torch.Tensor], decoder_states: List[List[torch.Tensor]]):

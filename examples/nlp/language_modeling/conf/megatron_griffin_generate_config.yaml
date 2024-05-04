@@ -50,6 +50,7 @@ exp_manager:
 model:
   restore_from_path: null
   # model parallelism 
+  mcore_gpt: True
   micro_batch_size: 2
   global_batch_size: 2
   tensor_model_parallel_size: 1
@@ -209,6 +210,8 @@ model:
       tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
       ceil_to_power_2: True
+      get_attention_mask_from_fusion: True
+      pad_to_max_length: True
 
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']

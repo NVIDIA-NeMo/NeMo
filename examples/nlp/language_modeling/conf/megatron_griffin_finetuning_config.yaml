@@ -50,6 +50,7 @@ exp_manager:
 model:
   restore_from_path: 
   # model parallelism 
+  mcore_gpt: True
   micro_batch_size: 2
   global_batch_size: 2
   tensor_model_parallel_size: 1
@@ -215,6 +216,8 @@ model:
       prompt_template: "{input} {output}" # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right'] 
       ceil_to_power_2: True
+      get_attention_mask_from_fusion: True
+      pad_to_max_length: True
     validation_ds:
         file_names: null # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
         names: null # Names of the corresponding datasets used to log metrics.
@@ -239,6 +242,8 @@ model:
         tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
         truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
         ceil_to_power_2: True
+        get_attention_mask_from_fusion: True
+        pad_to_max_length: True
         metric:
           name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
           average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
@@ -266,6 +271,8 @@ model:
       prompt_template: ${model.data.train_ds.prompt_template}
       tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
+      ceil_to_power_2: True
+      get_attention_mask_from_fusion: True
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
         average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.

@@ -42,6 +42,7 @@ exp_manager:
 model:
   restore_from_path: null
   # model parallelism 
+  mcore_gpt: True
   micro_batch_size: 2
   global_batch_size: 2
   tensor_model_parallel_size: 1
@@ -153,6 +154,8 @@ model:
     masked_lm_prob: 0.15 # Probability of replacing a token with mask.
     short_seq_prob: 0.1 # Probability of producing a short sequence.
     ceil_to_power_2: True
+    get_attention_mask_from_fusion: True
+    pad_to_max_length: True
   
   optim:
     name: fused_adam

@@ -10,4 +10,4 @@ The endeavor to extend Language Models (LLMs) into multimodal domains by integra
    configs
    checkpoint
    neva
-
+   video_neva

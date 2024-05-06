@@ -21,9 +21,9 @@ import lhotse
 import numpy as np
 import pytest
 import torch
-from lhotse import CutSet, NumpyFilesWriter, Recording
+from lhotse import CutSet, MonoCut, NumpyFilesWriter, Recording
 from lhotse.audio import AudioLoadingError
-from lhotse.cut import Cut
+from lhotse.cut import Cut, MixedCut
 from lhotse.cut.text import TextPairExample
 from omegaconf import OmegaConf
 
@@ -1388,3 +1388,107 @@ def test_multimodal_text_audio_dataloading(
             assert isinstance(ex.target.text, str)
             assert isinstance(ex.source.tokens, np.ndarray)
             assert isinstance(ex.target.tokens, np.ndarray)
+
+
+def test_dataloader_with_noise_nemo_json(cutset_path: Path, nemo_manifest_path: Path):
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "noise_path": str(nemo_manifest_path),
+            "noise_mix_prob": 1.0,
+            "noise_snr": [-5.0, 5.0],
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity(),)
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 2
+    cut = batch[0]
+    assert isinstance(cut, MixedCut)
+    assert -5.0 < cut.tracks[1].snr < 5.0
+    cut = batch[1]
+    assert isinstance(cut, MixedCut)
+    assert -5.0 < cut.tracks[1].snr < 5.0
+
+
+def test_dataloader_with_noise_lhotse_jsonl(cutset_path: Path):
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "noise_path": str(cutset_path),
+            "noise_mix_prob": 1.0,
+            "noise_snr": [-5.0, 5.0],
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity(),)
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 2
+    cut = batch[0]
+    assert isinstance(cut, MixedCut)
+    assert -5.0 < cut.tracks[1].snr < 5.0
+    cut = batch[1]
+    assert isinstance(cut, MixedCut)
+    assert -5.0 < cut.tracks[1].snr < 5.0
+
+
+def test_dataloader_with_noise_nemo_tar(cutset_path: Path, nemo_tarred_manifest_path_multi: Path):
+    noise_json, noise_tar = nemo_tarred_manifest_path_multi
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "noise_path": {"manifest_filepath": noise_json, "tarred_audio_filepaths": noise_tar,},
+            "noise_mix_prob": 1.0,
+            "noise_snr": [-5.0, 5.0],
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity(),)
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 2
+    cut = batch[0]
+    assert isinstance(cut, MixedCut)
+    assert -5.0 < cut.tracks[1].snr < 5.0
+    cut = batch[1]
+    assert isinstance(cut, MixedCut)
+    assert -5.0 < cut.tracks[1].snr < 5.0
+
+
+def test_dataloader_with_synth_rir(cutset_path: Path):
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "rir_enabled": True,
+            "rir_prob": 0.5,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity(),)
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 4
+    cut = batch[0]
+    assert isinstance(cut, MonoCut)
+    assert cut.recording.transforms is None
+    cut = batch[1]
+    assert isinstance(cut, MonoCut)
+    assert cut.recording.transforms is None
+    cut = batch[2]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms, list) and len(cut.recording.transforms) == 1
+    assert cut.recording.transforms[0]["name"] == "ReverbWithImpulseResponse"
+    cut = batch[3]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms, list) and len(cut.recording.transforms) == 1
+    assert cut.recording.transforms[0]["name"] == "ReverbWithImpulseResponse"

@@ -19,7 +19,7 @@ from typing import Any, Optional, TypeVar, Union
 
 import numpy as np
 import torch
-from lhotse import CutSet
+from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
 from lhotse.cut.text import TextExample, TextPairExample
 from lhotse.dataset import (
@@ -27,6 +27,7 @@ from lhotse.dataset import (
     DynamicBucketingSampler,
     DynamicCutSampler,
     IterableDatasetWrapper,
+    ReverbWithImpulseResponse,
     make_worker_init_fn,
 )
 from lhotse.dataset.dataloading import resolve_seed
@@ -35,7 +36,7 @@ from lhotse.lazy import LazyFlattener
 from lhotse.utils import fastcopy, fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+from nemo.collections.common.data.lhotse.cutset import guess_parse_cutset, read_cutset_from_config
 from nemo.utils import logging
 
 
@@ -94,7 +95,7 @@ class LhotseDataLoadingConfig:
 
     # 4. Optional Lhotse data augmentation.
     #   a. On-the-fly noise/audio mixing.
-    noise_path: str | None = None
+    noise_path: Any | None = None  # str | dict where dict can have any of keys: manifest_filepath, tarred_audio_filepaths, cuts_path, shar_path
     noise_snr: tuple[float, float] = (10.0, 20.0)
     noise_mix_prob: float = 0.5
     #   b. On-the-fly 3-way speed perturbation.
@@ -114,6 +115,11 @@ class LhotseDataLoadingConfig:
     cut_into_windows_hop: Optional[float] = None
     #       III) common options
     keep_excessive_supervisions: bool = True  # when a cut is truncated in the middle of a supervision, should we keep them.
+    #   e. RIR augmentation (synthetic RIR if rir_path is None)
+    #   at the moment supports only Lhotse recording manifests, e.g. https://github.com/lhotse-speech/lhotse/blob/master/lhotse/recipes/rir_noise.py
+    rir_enabled: bool = False
+    rir_path: str | None = None  # str, must point to a lhotse RecordingSet manifest
+    rir_prob: float = 0.5
 
     # 5. Other Lhotse options.
     text_field: str = "text"  # key to read the transcript from
@@ -185,10 +191,10 @@ def get_lhotse_dataloader_from_config(
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
     if config.noise_path is not None:
-        noise = CutSet.from_file(config.noise_path)
+        noise = guess_parse_cutset(config.noise_path)
         cuts = cuts.mix(
             cuts=noise,
-            snr=config.noise_snr,
+            snr=tuple(config.noise_snr),
             mix_prob=config.noise_mix_prob,
             seed=config.shard_seed,
             random_mix_offset=True,
@@ -291,6 +297,14 @@ def get_lhotse_dataloader_from_config(
             sampler = sampler.map(partial(_normalize_loudness, db_norm=config.db_norm))
         if config.concatenate_merge_supervisions:
             sampler = sampler.map(_merge_supervisions)
+
+    if config.rir_enabled:
+        sampler = sampler.map(
+            ReverbWithImpulseResponse(
+                rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
+                p=config.rir_prob,
+            )
+        )
 
     # 4. Creating dataloader.
     if is_tarred:

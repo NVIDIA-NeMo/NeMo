@@ -532,6 +532,8 @@ class LoraUnfusedKQVAdapter(nn.Module, AdapterModuleUtil):
         self,
         in_features: int,
         dim: int,
+        num_query_groups: int,
+        kv_channels: int,
         activation: str = 'swish',
         norm_position: Optional[str] = 'post',
         norm_type: Optional[str] = 'mixedfusedlayernorm',
@@ -544,8 +546,6 @@ class LoraUnfusedKQVAdapter(nn.Module, AdapterModuleUtil):
         alpha: float | None = None,
         dropout_position: str = 'post',
         a2a_experimental: bool = False,  # TODO: should rename this or make it a default feature
-        num_query_groups: Optional[int] = None,
-        kv_channels: Optional[int] = None,
         **kwargs,
     ):
         super().__init__()
@@ -554,71 +554,46 @@ class LoraUnfusedKQVAdapter(nn.Module, AdapterModuleUtil):
         else:
             out_features = in_features
 
-        self.q_adapter = ParallelLinearAdapter(
-            in_features,
-            in_features,
-            dim,
-            activation,
-            norm_position,
-            norm_type,
-            column_init_method,
-            row_init_method,
-            gather_output,
-            input_is_parallel,
-            dropout,
-            model_parallel_config,
-            alpha,
-            dropout_position,
-            a2a_experimental,
-        )
+        self.kv_channels = kv_channels
+        adapter_args = {
+            "in_features": in_features,
+            "out_features": in_features,
+            "dim": dim,
+            "activation": activation,
+            "norm_position": norm_position,
+            "norm_type": norm_type,
+            "column_init_method": column_init_method,
+            "row_init_method": row_init_method,
+            "gather_output": gather_output,
+            "input_is_parallel": input_is_parallel,
+            "dropout": dropout,
+            "model_parallel_config": model_parallel_config,
+            "alpha": alpha,
+            "dropout_position": dropout_position,
+            "a2a_experimental": a2a_experimental,
+        }
 
-        self.k_adapter = ParallelLinearAdapter(
-            in_features,
-            out_features,
-            dim,
-            activation,
-            norm_position,
-            norm_type,
-            column_init_method,
-            row_init_method,
-            gather_output,
-            input_is_parallel,
-            dropout,
-            model_parallel_config,
-            alpha,
-            dropout_position,
-            a2a_experimental,
-        )
-        self.v_adapter = ParallelLinearAdapter(
-            in_features,
-            out_features,
-            dim,
-            activation,
-            norm_position,
-            norm_type,
-            column_init_method,
-            row_init_method,
-            gather_output,
-            input_is_parallel,
-            dropout,
-            model_parallel_config,
-            alpha,
-            dropout_position,
-            a2a_experimental,
-        )
+        self.q_adapter = ParallelLinearAdapter(**adapter_args)
+        adapter_args["out_features"] = out_features
+        self.k_adapter = ParallelLinearAdapter(**adapter_args)
+        self.v_adapter = ParallelLinearAdapter(**adapter_args)
 
     def forward(self, x):
         qx = self.q_adapter(x)
         kx = self.k_adapter(x)
         vx = self.v_adapter(x)
-        x = torch.concat([qx, kx, vx], dim=2)
-        return x
+        qx = qx.reshape(qx.shape[0], qx.shape[1], -1, self.kv_channels)
+        kx = kx.reshape(kx.shape[0], kx.shape[1], -1, self.kv_channels)
+        vx = vx.reshape(vx.shape[0], vx.shape[1], -1, self.kv_channels)
+        return qx, kx, vx
 
 
 @dataclass
 class LoraUnfusedKQVAdapterConfig(AdapterConfig):
     in_features: int
     dim: int
+    num_query_groups: int
+    kv_channels: int
     activation: str = 'swish'
     norm_position: Optional[str] = 'post'
     norm_type: Optional[str] = 'mixedfusedlayernorm'
@@ -631,8 +606,6 @@ class LoraUnfusedKQVAdapterConfig(AdapterConfig):
     alpha: float | None = None
     network_alpha: int | None = None
     a2a_experimental: bool = False
-    num_query_groups: Optional[int] = None
-    kv_channels: Optional[int] = None
     _target_: str = "{0}.{1}".format(LoraUnfusedKQVAdapter.__module__, LoraUnfusedKQVAdapter.__name__)
 
 

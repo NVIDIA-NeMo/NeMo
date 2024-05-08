@@ -19,19 +19,32 @@ Currently supports TP=PP=1 only.
 
 Example usage:
 python scripts/checkpoint_converters/lora_converters/convert_nemo_to_canonical.py \
-    --lora_path nemo_style_lora_model.nemo \
+    --nemo_lora_path nemo_style_lora_model.nemo \
     --output_path ./canonical_style_lora_model.nemo 
 
+Example usage to also convert into huggingface format (the script expects a adapter_config.json file which is standard in HF):
+python scripts/checkpoint_converters/lora_converters/convert_nemo_to_canonical.py \
+    --nemo_lora_path nemo_style_lora_model.nemo \
+    --output_path ./canonical_style_lora_model.nemo \
+    --hf_format --hf_config checkpoints/bin/adapter_config.json
 """
+import json
 import tempfile
 from argparse import ArgumentParser
-from typing import Dict
+from pathlib import Path
+from typing import Any, Dict
 
 import torch
 from omegaconf import OmegaConf, open_dict
 from scripts.nlp_language_modeling.merge_lora_weights.merge import replace_number_add_offset
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
+
+target_map = {
+    "all": ["gate_proj", "o_proj", "up_proj", "down_proj", "k_proj", "q_proj", "v_proj"],
+    "attention_qkv": ["k_proj", "q_proj", "v_proj"],
+    "attention_dense": ["gate_proj", "o_proj", "up_proj"],
+}
 
 
 def rename_keys(key):
@@ -43,6 +56,14 @@ def rename_keys(key):
     elif "lora_hto4h_adapter" in key:
         new_keys.append(key.replace(".lora_hto4h_adapter.", ".lora_unfused_hto4h_adapter.gate_adapter."))
         new_keys.append(key.replace(".lora_hto4h_adapter.", ".lora_unfused_hto4h_adapter.up_adapter."))
+    return new_keys
+
+
+def rename_qkv_keys(key):
+    new_keys = []
+    new_keys.append(key.replace(".lora_kqv_adapter.", ".lora_unfused_kqv_adapter.q_adapter."))
+    new_keys.append(key.replace(".lora_kqv_adapter.", ".lora_unfused_kqv_adapter.k_adapter."))
+    new_keys.append(key.replace(".lora_kqv_adapter.", ".lora_unfused_kqv_adapter.v_adapter."))
     return new_keys
 
 
@@ -72,61 +93,78 @@ def reformat_module_names_to_hf(tensors: Dict[str, torch.Tensor]) -> Dict[str, t
     return new_tensors
 
 
-def convert_hto4h(lora_weights, lora_config):
-    assert len(lora_weights) == 1, "Only single TP supported for now"
-    keys_to_update = []
-    for key in lora_weights[0].keys():
-        if "lora_hto4h_adapter" in key:
-            keys_to_update.append(key)
+def convert_lora_weights_to_canonical(
+    config: Dict[str, Any], lora_weights: Dict[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    """This function converts nemo style (fused) lora weights to canonical (unfused)
+    LoRA weights. Namely, it unfuses the QKV adapter layers and the H-to-4H adapter layers.
 
-    for key in keys_to_update:
-        if "linear_in" in key:
-            for new_key in rename_keys(key):
-                lora_weights[0][new_key] = lora_weights[0][key]
-                print(new_key, lora_weights[0][new_key].shape)
-        elif "linear_out" in key:
-            for idx, new_key in enumerate(rename_keys(key)):
-                orginal_shape = lora_weights[0][key].shape[0]
-                lora_weights[0][new_key] = lora_weights[0][key][
-                    idx * (orginal_shape // 2) : (idx + 1) * (orginal_shape // 2)
-                ]
-                print(new_key, lora_weights[0][new_key].shape)
+    Returns:
+        Dict[str, torch.Tensor]: The new LoRA weights with unfused layers.
+    """
 
-        lora_weights[0].pop(key)
-    return lora_weights
+    hidden_size = int(config["hidden_size"])
+    num_heads = int(config["num_attention_heads"])
+    head_size = hidden_size // num_heads
+    num_query_groups = int(config.get("num_query_groups", num_heads))  # num_kv_heads
 
+    heads_per_group = num_heads // num_query_groups
+    qkv_total_dim = num_heads + 2 * num_query_groups
 
-def convert_qkv(lora_weights, lora_model_cfg):
-    assert len(lora_weights) == 1, "Only single TP supported for now"
-    if (
-        lora_model_cfg.get("num_query_groups", lora_model_cfg.num_attention_heads)
-        != lora_model_cfg.num_attention_heads
-    ):
-        kv_channels = int(lora_model_cfg.hidden_size / lora_model_cfg.num_attention_heads)
-        kv_size = int(lora_model_cfg.num_query_groups * kv_channels)
-    else:
-        kv_size = int(lora_model_cfg.hidden_size)
-    q_size = lora_model_cfg.hidden_size
-    k_size, v_size = kv_size, kv_size
+    adapter_size = config['peft']['lora_tuning']['adapter_dim']
 
-    keys_to_update = []
-    for key in lora_weights[0].keys():
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * group_idx, (heads_per_group + 2) * group_idx + heads_per_group)
+            for group_idx in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, heads_per_group + 2)
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, heads_per_group + 2)
+
+    qkv_keys_to_update = []
+    hto4h_keys_to_update = []
+    for key in lora_weights.keys():
         if "lora_kqv_adapter" in key:
-            keys_to_update.append(key)
+            qkv_keys_to_update.append(key)
+        if "lora_hto4h_adapter" in key:
+            hto4h_keys_to_update.append(key)
 
-    for key in keys_to_update:
+    # unfuse QKV layer
+    for key in qkv_keys_to_update:
         if "linear_in" in key:
-            for new_key in rename_keys(key):
-                lora_weights[0][new_key] = lora_weights[0][key]
-                print(new_key, lora_weights[0][new_key].shape)
+            assert lora_weights[key].size(0) == adapter_size
+            for new_key in rename_qkv_keys(key):
+                lora_weights[new_key] = lora_weights[key]
+                assert len(lora_weights[new_key].size()) == 2
         elif "linear_out" in key:
-            srt = 0
-            for new_key, size in zip(rename_keys(key), [q_size, k_size, v_size]):
-                lora_weights[0][new_key] = lora_weights[0][key][srt : srt + size]
-                print(new_key, lora_weights[0][new_key].shape)
-                srt = srt + size
+            assert lora_weights[key].size(1) == adapter_size
+            for new_key, size in zip(rename_qkv_keys(key), [q_slice, k_slice, v_slice]):
+                lora_weights[new_key] = (
+                    lora_weights[key]
+                    .reshape((qkv_total_dim, head_size, adapter_size))[size]
+                    .reshape((-1, adapter_size))
+                )
+                assert len(lora_weights[new_key].size()) == 2
+        lora_weights.pop(key)
 
-        lora_weights[0].pop(key)
+    # This maps to gate_up_proj in HF, but we need to split it up into gate_proj and up_proj
+    for key in hto4h_keys_to_update:
+        gate_proj_key = key.replace(".lora_hto4h_adapter.", ".lora_unfused_hto4h_adapter.gate_adapter.")
+        up_proj_key = key.replace(".lora_hto4h_adapter.", ".lora_unfused_hto4h_adapter.up_adapter.")
+
+        module_weight = lora_weights[key]
+        if "linear_in" in key:
+            # lora_a gets duplicated
+            lora_weights[gate_proj_key] = module_weight
+            lora_weights[up_proj_key] = module_weight
+        elif "linear_out" in key:
+            # lora_b gets split
+            split_size = module_weight.shape[0]
+            gate_up_split = module_weight.split(split_size // 2)
+            lora_weights[gate_proj_key] = gate_up_split[0]
+            lora_weights[up_proj_key] = gate_up_split[1]
+        lora_weights.pop(key)
     return lora_weights
 
 
@@ -159,17 +197,24 @@ def convert_lora(lora_nemo, save_path, hf_format=False):
                         new_key = replace_number_add_offset(key, layer_offset)
                         lora_state_dict[tp][new_key] = value
 
-        with open_dict(lora_config):
-            lora_config.peft.lora_tuning.variant = "canonical"
-        with open(f"{tmpdir}/model_config.yaml", "w") as f:
-            OmegaConf.save(lora_config, f)
-        lora_state_dict = convert_qkv(lora_state_dict, lora_config)
-        lora_state_dict = convert_hto4h(lora_state_dict, lora_config)
         # TODO: currently suport tp=1
         lora_state_dict = lora_state_dict[0]
+        if lora_config.peft.lora_tuning.variant == "nemo":
+            with open_dict(lora_config):
+                lora_config.peft.lora_tuning.variant = "canonical"
+            with open(f"{tmpdir}/model_config.yaml", "w") as f:
+                OmegaConf.save(lora_config, f)
+            lora_state_dict = convert_lora_weights_to_canonical(lora_config, lora_state_dict)
         if hf_format:
             lora_state_dict = reformat_module_names_to_hf(lora_state_dict)
-            torch.save(lora_state_dict, f"{save_path}/model_weights_hf_formatted.pt")
+            Path(save_path).mkdir(parents=True, exist_ok=True)
+            torch.save(lora_state_dict, f"{save_path}/adapter_model.bin")
+            adapter_config = json.load(open(args.hf_config))
+            adapter_config['peft_type'] = "LORA"
+            adapter_config['r'] = lora_config.peft.lora_tuning.adapter_dim
+            adapter_config['lora_alpha'] = lora_config.peft.lora_tuning.alpha
+            with open(f"{save_path}/adapter_config.json", "w") as f:
+                json.dump(adapter_config, f, indent=4)
         else:
             torch.save(lora_state_dict, f"{tmpdir}/model_weights.ckpt")
             NLPSaveRestoreConnector._make_nemo_file_from_folder(save_path, tmpdir)
@@ -188,7 +233,7 @@ def fix_for_O2(state_dict):
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--lora_path",
+        "--nemo_lora_path",
         type=str,
         default=None,
         required=True,
@@ -202,6 +247,7 @@ def get_args():
         help="Path to save the canonical (unfused) lora .nemo file.",
     )
     parser.add_argument("--hf_format", action='store_true', help="saves tensors in huggingface naming format.")
+    parser.add_argument("--hf_config", type=str, help="the adapter config in HF-PEFT format.")
     parser.add_argument("--precision", type=str, default="16", help="Model precision")
     args = parser.parse_args()
     return args
@@ -209,4 +255,4 @@ def get_args():
 
 if __name__ == '__main__':
     args = get_args()
-    convert_lora(args.lora_path, args.output_path, args.hf_format)
+    convert_lora(args.nemo_lora_path, args.output_path, args.hf_format)

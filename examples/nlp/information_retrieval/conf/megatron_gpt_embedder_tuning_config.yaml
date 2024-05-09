@@ -83,6 +83,7 @@ model:
   mcore_gpt: True # required to be True for newer versions of Megatron-LM based models
   use_flash_attention: True
   precision: bf16
+  apply_rope_fusion: False
 
   peft:
     peft_scheme: "lora"  # can be either adapter,ia3, or ptuning

@@ -4876,7 +4876,7 @@ jobs:
         - name: Checkout repository
           uses: actions/checkout@v4
         - run: |
-            python examples/nlp/language_modeling/tuning/megatron_gpt_sft.py \
+            python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
             trainer.devices=1 \
             trainer.num_nodes=1 \
             trainer.precision=32 \
@@ -4887,6 +4887,7 @@ jobs:
             +trainer.limit_test_batches=2 \
             exp_manager.checkpoint_callback_params.save_best_model=False \
             exp_manager.exp_dir=examples/nlp/language_modeling/gpt_sft_results \
+            model.peft.peft_scheme=none \
             model.optim.name=distributed_fused_adam \
             model.restore_from_path=/home/TestData/nlp/megatron_gpt/starcoder-ci-nemo/megatron_starcoder_tp1_pp1.nemo \
             model.tensor_model_parallel_size=1 \

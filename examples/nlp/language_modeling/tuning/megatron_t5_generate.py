@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#############################
-# THIS SCRIPT IS DEPRECATED #
-#############################
 
 import asyncio
 import threading
@@ -30,7 +27,6 @@ from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-from nemo.utils.decorators import deprecated
 
 try:
     from megatron.core import parallel_state
@@ -111,14 +107,6 @@ def use_inference_server(cfg, model, trainer):
             generate(model.cuda())
 
 
-banner = '\n'.join(['' "*" * 80] * 5)
-
-
-@deprecated(
-    wait_seconds=20,
-    explanation=f"\n{banner}\nmegatron_t5_peft_eval.py is renamed to megatron_t5_generate.py with the "
-    f"same functionality. \nPlease switch to the new name.\n{banner}\n",
-)
 @hydra_runner(config_path="conf", config_name="megatron_t5_generate_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")

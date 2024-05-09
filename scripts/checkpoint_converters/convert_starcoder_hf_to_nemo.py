@@ -147,7 +147,6 @@ if __name__ == "__main__":
         "encoder_seq_length": hf_config.n_positions,
         "max_position_embeddings": hf_config.n_positions,
         "num_layers": hf_config.n_layer,
-        "cpu_offloading_num_layers": hf_config.n_layer - 1,  # @chcui temp workaround before m-lm !1124 is merged
         "num_attention_heads": hf_config.n_head,
         "ffn_hidden_size": hf_config.n_inner,
         "layernorm_epsilon": hf_config.layer_norm_epsilon,

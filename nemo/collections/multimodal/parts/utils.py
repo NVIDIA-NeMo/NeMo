@@ -366,7 +366,6 @@ def create_neva_model_and_processor(cfg):
             neva_cfg.activations_checkpoint_method = None
             neva_cfg.precision = trainer.precision
             neva_cfg.mm_cfg.llm.from_pretrained = cfg.get('base_model_file', None)
-            neva_cfg.apply_rope_fusion = False
             neva_cfg.fp8 = False
         #    neva_cfg.mm_cfg.vision_encoder.from_pretrained = None
 

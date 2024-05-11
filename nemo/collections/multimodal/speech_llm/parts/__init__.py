@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.common.metrics.classification_accuracy import TopKClassificationAccuracy
-from nemo.collections.common.metrics.global_average_loss_metric import GlobalAverageLossMetric
-from nemo.collections.common.metrics.metric_string_to_torchmetric import (
-    ClassificationMetricsSet,
-    MetricStringToTorchMetric,
-    TextMetricsSet,
+
+from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import (
+    ceil_to_nearest,
+    get_num_samples_from_files,
+    maybe_cast_to_list,
+    shift_tokens_by_multi_audios,
 )
-from nemo.collections.common.metrics.perplexity import Perplexity

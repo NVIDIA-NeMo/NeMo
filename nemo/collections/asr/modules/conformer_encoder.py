@@ -16,7 +16,7 @@ import math
 import random
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 import torch
 import torch.distributed
@@ -356,7 +356,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if reduction and reduction_factor > 1:
             assert reduction_position >= -1 and reduction_position < n_layers
             self.reduction_subsampling = SubsamplingReductionModule(
-                reduction=reduction, d_model=d_model, reduction_factor=reduction_factor,
+                reduction=reduction,
+                d_model=d_model,
+                reduction_factor=reduction_factor,
             )
             self.reduction_position = reduction_position
         else:
@@ -804,15 +806,15 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         max_context: int = 10000,
     ):
         """
-            This function sets the needed values and parameters to perform streaming. The configuration would be stored in self.streaming_cfg.
-            The streaming configuration is needed to simulate streaming inference.
+        This function sets the needed values and parameters to perform streaming. The configuration would be stored in self.streaming_cfg.
+        The streaming configuration is needed to simulate streaming inference.
 
-            Args:
-                chunk_size (int): overrides the chunk size
-                shift_size (int): overrides the shift size for chunks
-                left_chunks (int): overrides the number of left chunks visible to each chunk
-                max_context (int): the value used for the cache size of last_channel layers if left context is set to infinity (-1)
-                    Defaults to -1 (means feat_out is d_model)
+        Args:
+            chunk_size (int): overrides the chunk size
+            shift_size (int): overrides the shift size for chunks
+            left_chunks (int): overrides the number of left chunks visible to each chunk
+            max_context (int): the value used for the cache size of last_channel layers if left context is set to infinity (-1)
+                Defaults to -1 (means feat_out is d_model)
         """
         streaming_cfg = CacheAwareStreamingConfig()
 
@@ -903,12 +905,19 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             create_tensor = torch.zeros
         last_time_cache_size = self.conv_context_size[0]
         cache_last_channel = create_tensor(
-            (len(self.layers), batch_size, self.streaming_cfg.last_channel_cache_size, self.d_model,),
+            (
+                len(self.layers),
+                batch_size,
+                self.streaming_cfg.last_channel_cache_size,
+                self.d_model,
+            ),
             device=device,
             dtype=dtype,
         )
         cache_last_time = create_tensor(
-            (len(self.layers), batch_size, self.d_model, last_time_cache_size), device=device, dtype=dtype,
+            (len(self.layers), batch_size, self.d_model, last_time_cache_size),
+            device=device,
+            dtype=dtype,
         )
         if max_dim > 0:
             cache_last_channel_len = torch.randint(
@@ -934,7 +943,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         update_config: bool = True,
         device: torch.device = None,
     ):
-
         """
         Update the self_attention_model which changes the positional encoding and attention layers.
 
@@ -1053,7 +1061,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     def change_subsampling_conv_chunking_factor(self, subsampling_conv_chunking_factor: int):
         """
-        Update the conv_chunking_factor (int) 
+        Update the conv_chunking_factor (int)
         Default is 1 (auto)
         Set it to -1 (disabled) or to a specific value (power of 2) if you OOM in the conv subsampling layers
 
@@ -1098,7 +1106,9 @@ class ConformerEncoderAdapter(ConformerEncoder, adapter_mixins.AdapterModuleMixi
         cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.d_model)
         return cfg
 
-    def get_accepted_adapter_types(self,) -> Set[type]:
+    def get_accepted_adapter_types(
+        self,
+    ) -> Set[type]:
         types = super().get_accepted_adapter_types()
 
         if len(types) == 0:
@@ -1111,6 +1121,85 @@ class ConformerEncoderAdapter(ConformerEncoder, adapter_mixins.AdapterModuleMixi
             )
             types = self.get_accepted_adapter_types()
         return types
+
+
+class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin):
+    """
+    A wrapper module that extracts features from multiple layers of a ConformerEncoder,
+    by reusing existing mechanisim for interctc loss.
+    To use it, set `layer_idx_list` to  specify the indices of layers to extract from.
+    Also, you can specify an `aggretator` module to aggregate the features from different layers, default not aggregating.
+    """
+
+    def __init__(
+        self,
+        encoder: ConformerEncoder,
+        layer_idx_list: List[int],
+        aggregator: NeuralModule = None,
+        detach: bool = False,
+        convert_to_cpu: bool = False,
+    ):
+        super().__init__()
+        self.encoder = encoder
+        self.layer_idx_list = [int(l) for l in layer_idx_list]
+        for x in self.layer_idx_list:
+            if x < 0 or x >= len(encoder.layers):
+                raise ValueError(f"layer index {x} out of range [0, {len(encoder.layers)})")
+        self.enc_access_cfg = {
+            "interctc": {
+                "capture_layers": self.layer_idx_list,
+            },
+            "detach": detach,
+            "convert_to_cpu": convert_to_cpu,
+        }
+        self.aggregator = aggregator
+
+    def forward(
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        old_access_flag = self.is_access_enabled(guid=getattr(self, "model_guid", None))
+        self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
+        self.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
+
+        _ = self.encoder(
+            audio_signal=audio_signal,
+            length=length,
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
+        )
+
+        ### chunk of code adapted from ConformerEncoder.forward_internal()
+        total_registry = {}
+        for module_registry in self.get_module_registry(self.encoder).values():
+            for key in module_registry:
+                if key.startswith("interctc/") and key in total_registry:
+                    raise RuntimeError(f"layer {key} has been logged multiple times!")
+            total_registry.update(module_registry)
+
+        encoded_list = []
+        encoded_len_list = []
+        for layer_idx in self.layer_idx_list:
+            try:
+                layer_outputs = total_registry[f"interctc/layer_output_{layer_idx}"]
+                layer_lengths = total_registry[f"interctc/layer_length_{layer_idx}"]
+            except KeyError:
+                raise RuntimeError(
+                    f"Intermediate layer {layer_idx} was not captured! Check the layer index and the number of ConformerEncoder layers."
+                )
+            if len(layer_outputs) > 1 or len(layer_lengths) > 1:
+                raise RuntimeError("Make sure encoder.forward is called exactly one time")
+            encoded_list.append(layer_outputs[0])  # [B, D, T]
+            encoded_len_list.append(layer_lengths[0])  # [B]
+
+        self.encoder.reset_registry()
+        self.set_access_enabled(access_enabled=old_access_flag, guid=getattr(self, "model_guid", None))
+        ### end of adapted chunk
+
+        if self.aggregator is not None:
+            return self.aggregator(encoded_list, encoded_len_list)  # Tensor[B,D*L,T], Tensor[B]
+        else:
+            return encoded_list, encoded_len_list  # List[Tensor[B,D,T]], List[Tensor[B]]
 
 
 """

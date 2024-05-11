@@ -219,7 +219,10 @@ class Typing(ABC):
                     hasattr(value, 'neural_type')
                     and is_semantic_typecheck_enabled()
                     and not metadata.base_types[key].compare(value.neural_type)
-                    in (NeuralTypeComparisonResult.SAME, NeuralTypeComparisonResult.GREATER,)
+                    in (
+                        NeuralTypeComparisonResult.SAME,
+                        NeuralTypeComparisonResult.GREATER,
+                    )
                 ):
                     error_msg = [
                         f"{input_types[key].compare(value.neural_type)} :",
@@ -398,7 +401,10 @@ class Typing(ABC):
             hasattr(obj, 'neural_type')
             and is_semantic_typecheck_enabled()
             and not type_val.compare(obj.neural_type)
-            in (NeuralTypeComparisonResult.SAME, NeuralTypeComparisonResult.GREATER,)
+            in (
+                NeuralTypeComparisonResult.SAME,
+                NeuralTypeComparisonResult.GREATER,
+            )
         ):
             raise TypeError(
                 f"{type_val.compare(obj.neural_type)} : \n"
@@ -711,6 +717,7 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
         return_config: bool = False,
         trainer: Optional['Trainer'] = None,
         save_restore_connector: SaveRestoreConnector = None,
+        return_model_file: Optional[bool] = False,
     ):
         """
         Instantiates an instance of NeMo from NVIDIA NGC cloud
@@ -726,6 +733,7 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
             strict: Passed to torch.load_state_dict. By default true.
             return_config: If set to true, will return just the underlying config of the restored
                 model as an OmegaConf DictConfig object without instantiating the model.
+            return_model_file: If set to true, will return just the downloaded model file in cache
 
         Returns:
             A model instance of a particular model class or its underlying config (if return_config is set).
@@ -750,6 +758,9 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
             class_, nemo_model_file_in_cache = cls._get_ngc_pretrained_model_info(
                 model_name=model_name, refresh_cache=refresh_cache
             )
+
+        if return_model_file:
+            return nemo_model_file_in_cache
 
         instance = class_.restore_from(
             restore_path=nemo_model_file_in_cache,

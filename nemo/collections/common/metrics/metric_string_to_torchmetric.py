@@ -13,11 +13,13 @@
 # limitations under the License.
 
 from torchmetrics import Accuracy, AveragePrecision, F1Score, MatthewsCorrCoef, PearsonCorrCoef, SpearmanCorrCoef
+from torchmetrics.text import SacreBLEUScore
 from torchmetrics.text.rouge import ROUGEScore
+from torchmetrics.text.wer import WordErrorRate
 
 from nemo.collections.common.metrics.classification_accuracy import ExactStringMatchMetric, TokenF1Score
 
-__all__ = ['MetricStringToTorchMetric']
+__all__ = ['MetricStringToTorchMetric', 'TextMetricsSet', 'ClassificationMetricsSet']
 
 # Dictionary that maps a metric string name to its corresponding torchmetric class.
 
@@ -31,4 +33,10 @@ MetricStringToTorchMetric = {
     'matthews_corr_coef': MatthewsCorrCoef,
     'exact_string_match': ExactStringMatchMetric,
     'rouge': ROUGEScore,
+    'wer': WordErrorRate,
+    'bleu': SacreBLEUScore,
 }
+
+TextMetricsSet = set(['rouge', 'wer', 'bleu'])
+
+ClassificationMetricsSet = set(['accuracy', 'average_precision', 'f1', 'exact_string_match'])

@@ -26,12 +26,12 @@ __all__ = ['ConcatDataset', 'ConcatMapDataset', 'CodeSwitchedDataset']
 
 class ConcatDataset(IterableDataset):
     """
-    A dataset that accepts as argument multiple datasets and then samples from them based on the specified 
+    A dataset that accepts as argument multiple datasets and then samples from them based on the specified
     sampling technique.
 
     Args:
         datasets (list): A list of datasets to sample from.
-        shuffle (bool): Whether to shuffle individual datasets. Only works with non-iterable datasets. 
+        shuffle (bool): Whether to shuffle individual datasets. Only works with non-iterable datasets.
             Defaults to True.
         sampling_technique (str): Sampling technique to choose which dataset to draw a sample from.
             Defaults to 'temperature'. Currently supports 'temperature', 'random' and 'round-robin'.
@@ -73,7 +73,9 @@ class ConcatDataset(IterableDataset):
             self.sampling_kwargs['seed'] = seed
         elif sampling_technique == 'random':
             self.index_generator = ConcatDataset.random_generator
-            self.sampling_kwargs['p'] = sampling_probabilities
+            self.sampling_kwargs['p'] = (
+                sampling_probabilities if sampling_probabilities else [1 / len(datasets)] * len(datasets)
+            )
             self.sampling_kwargs['seed'] = seed
         elif sampling_technique == 'round-robin':
             self.index_generator = ConcatDataset.round_robin_generator
@@ -200,7 +202,7 @@ class ConcatDataset(IterableDataset):
 
 class ConcatMapDataset(Dataset):
     """
-    A dataset that accepts as argument multiple datasets and then samples from them based on the specified 
+    A dataset that accepts as argument multiple datasets and then samples from them based on the specified
     sampling technique.
 
     Args:
@@ -300,7 +302,7 @@ class CodeSwitchedDataset(IterableDataset):
     Args:
         datasets (list): A list of datasets
         lang_probs (list): A list of probabilities (which must sum to 1) corresponding to the sampling probability for each dataset
-        shuffle (bool): Whether to shuffle individual datasets. Only works with non-iterable datasets. 
+        shuffle (bool): Whether to shuffle individual datasets. Only works with non-iterable datasets.
             Defaults to True.
         min_duration (int): the minimum duration (secs) of each synthetic code-switched sample. Will draw randomly until this is hit.
             Defaults to 4
@@ -535,7 +537,7 @@ class CodeSwitchedDataset(IterableDataset):
                 wav = np.trim_zeros(wav)
 
             # normalise to provided DB level
-            wav_norm = wav * (10.0 ** (self.db_norm / 20.0) / np.maximum(0.01, (wav ** 2).mean(axis=0) ** 0.5))
+            wav_norm = wav * (10.0 ** (self.db_norm / 20.0) / np.maximum(0.01, (wav**2).mean(axis=0) ** 0.5))
 
             # this part appends the normed waveform to the existing waveform, and inserts pause_join amount of silence
             # if necessary, otherwise just a straight append

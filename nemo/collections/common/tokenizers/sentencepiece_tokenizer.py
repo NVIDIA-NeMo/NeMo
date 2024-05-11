@@ -28,7 +28,7 @@ __all__ = ['SentencePieceTokenizer', 'create_spt_model']
 class SentencePieceTokenizer(TokenizerSpec):
     """
     Sentencepiecetokenizer https://github.com/google/sentencepiece.
-    
+
     Args:
         model_path: path to sentence piece tokenizer model. To create the model use create_spt_model()
         special_tokens: either list of special tokens or dictionary of token name to token value
@@ -87,7 +87,7 @@ class SentencePieceTokenizer(TokenizerSpec):
 
         return self.tokenizer.encode_as_pieces(text)
 
-    def text_to_ids(self, text):
+    def text_to_ids(self, text, sample_alpha=None):
         if self.legacy:
             ids = []
             idx = 0
@@ -115,7 +115,10 @@ class SentencePieceTokenizer(TokenizerSpec):
             ids.extend(self.tokenizer.encode_as_ids(text[idx:]))
             return ids
 
-        return self.tokenizer.encode_as_ids(text)
+        if sample_alpha is not None:
+            return self.tokenizer.encode_as_ids(text, enable_sampling=True, alpha=sample_alpha, nbest_size=-1)
+        else:
+            return self.tokenizer.encode_as_ids(text)
 
     def tokens_to_text(self, tokens):
         if isinstance(tokens, np.ndarray):

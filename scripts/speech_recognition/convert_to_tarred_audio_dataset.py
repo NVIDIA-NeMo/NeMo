@@ -124,7 +124,11 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--metadata_path", required=False, default=None, type=str, help="Path to metadata file for the dataset.",
+    "--metadata_path",
+    required=False,
+    default=None,
+    type=str,
+    help="Path to metadata file for the dataset.",
 )
 
 parser.add_argument(
@@ -165,7 +169,10 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--buckets_num", type=int, default=1, help="Number of buckets to create based on duration.",
+    "--buckets_num",
+    type=int,
+    default=1,
+    help="Number of buckets to create based on duration.",
 )
 
 parser.add_argument(
@@ -617,6 +624,15 @@ class ASRTarredDatasetBuilder:
         with open(manifest_path, 'r', encoding='utf-8') as m:
             for line in m:
                 entry = json.loads(line)
+                audio_key = "audio_filepath" if "audio_filepath" in entry else "audio_file"
+                if audio_key not in entry:
+                    raise KeyError(f"Manifest entry does not contain 'audio_filepath' or  'audio_file' key: {entry}")
+                audio_filepath = entry[audio_key]
+                if not os.path.isfile(audio_filepath) and not os.path.isabs(audio_filepath):
+                    audio_filepath_abs = os.path.join(os.path.dirname(manifest_path), audio_filepath)
+                    if not os.path.isfile(audio_filepath_abs):
+                        raise FileNotFoundError(f"Could not find {audio_filepath} or {audio_filepath_abs}!")
+                    entry[audio_key] = audio_filepath_abs
                 if (config.max_duration is None or entry['duration'] < config.max_duration) and (
                     config.min_duration is None or entry['duration'] >= config.min_duration
                 ):
@@ -648,8 +664,7 @@ class ASRTarredDatasetBuilder:
             tar.addfile(ti, encoded_audio)
 
     def _create_shard(self, entries, target_dir, shard_id, manifest_folder):
-        """Creates a tarball containing the audio files from `entries`.
-        """
+        """Creates a tarball containing the audio files from `entries`."""
         if self.config.sort_in_shards:
             entries.sort(key=lambda x: x["duration"], reverse=False)
 

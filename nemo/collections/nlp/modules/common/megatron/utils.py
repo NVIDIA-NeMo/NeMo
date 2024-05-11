@@ -22,6 +22,8 @@ import torch.nn as nn
 
 from torch import Tensor
 
+from nemo.utils import logging, logging_mode
+
 try:
     from apex.normalization import MixedFusedRMSNorm
     from apex.normalization.fused_layer_norm import FusedLayerNorm  # NOQA
@@ -310,9 +312,7 @@ def make_inference_attention_mask_3d(source_block, target_block, pad_id):
 def make_inference_history_mask_3d(block):
     batch, length = block.shape
     arange = torch.arange(length, device=block.device)
-    history_mask = (arange[None,] <= arange[:, None])[
-        None,
-    ]
+    history_mask = (arange[None,] <= arange[:, None])[None,]
     history_mask = history_mask.expand(batch, length, length)
     return history_mask
 
@@ -413,14 +413,56 @@ def get_all_params_for_weight_decay_optimization(
     return tuple(filter(lambda g: len(g['params']) > 0, param_groups))
 
 
-def get_iterator_k_split(batch: List[torch.Tensor], num_microbatches: int) -> Iterator:
+def split_list(inputs, num_chunks):
+    """
+    Split a list into equal sized chunks
+    """
+    chunk_size = len(inputs) // num_chunks
+    assert len(inputs) % chunk_size == 0, "Issue with batch size configuration!"
+    return [inputs[i : i + chunk_size] for i in range(0, len(inputs), chunk_size)]
+
+
+def get_iterator_k_split(batch: Union[Dict, List[torch.Tensor]], num_microbatches: int) -> Iterator:
+    """
+    Split a batch into k microbatches, where the batch size is divisible by k. Batch could be
+    a dictionary of tensors or a list of tensors. A dictionary batch could also have items of List type,
+    as long as the length of that list is the same as the batch size.
+    """
     if isinstance(batch, dict):
-        items = list(batch.items())
+        discard_items = [k for k, v in batch.items() if not isinstance(v, (torch.Tensor, list))]
+        if len(discard_items) > 0:
+            logging.warning(
+                f"Only support splitting torch.Tensor and List[torch.Tensor]. Discarding the following keys from the batch: {discard_items}",
+                mode=logging_mode.ONCE,
+            )
+
+        batch = {k: v for k, v in batch.items() if isinstance(v, (torch.Tensor, list))}
+        tensor_items = {k: v for k, v in batch.items() if isinstance(v, torch.Tensor)}
+        list_items = {k: v for k, v in batch.items() if isinstance(v, list)}
+
+        # Split tensor items
+        items = list(tensor_items.items())
         assert items[0][1].shape[0] % num_microbatches == 0, "Issue with batch size configuration!"
         split_batch = [torch.tensor_split(item[1], num_microbatches, dim=0) for item in items]
-        microbatches = [[(items[i][0], split_batch[i][j]) for i in range(len(items))] for j in range(num_microbatches)]
+
+        if len(list_items) == 0:
+            # Only have tensor items
+            microbatches = [
+                [(items[i][0], split_batch[i][j]) for i in range(len(items))] for j in range(num_microbatches)
+            ]
+        else:
+            # Split list items
+            list_items = list(list_items.items())
+            split_list_batch = [split_list(item[1], num_microbatches) for item in list_items]
+            # Merge tensor and list items
+            all_keys = [item[0] for item in items] + [item[0] for item in list_items]
+            all_split_batch = split_batch + split_list_batch
+            microbatches = [
+                [(all_keys[i], all_split_batch[i][j]) for i in range(len(all_keys))] for j in range(num_microbatches)
+            ]
         microbatches = [dict(elem) for elem in microbatches]
     else:
+        # Split a list of torch tensors
         assert batch[0].shape[0] % num_microbatches == 0, "Issue with batch size configuration!"
         split_batch = [
             torch.tensor_split(item, num_microbatches, dim=0) if torch.is_tensor(item) else item for item in batch

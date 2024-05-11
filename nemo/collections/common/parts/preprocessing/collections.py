@@ -17,11 +17,11 @@ import json
 import os
 from itertools import combinations
 from typing import Any, Dict, Iterable, List, Optional, Union
-
+import numpy as np
 import pandas as pd
 
 from nemo.collections.common.parts.preprocessing import manifest, parsers
-from nemo.utils import logging
+from nemo.utils import logging, logging_mode
 
 
 class _Collection(collections.UserList):
@@ -320,7 +320,13 @@ class ASRAudioText(AudioText):
             **kwargs: Kwargs to pass to `AudioText` constructor.
         """
 
-        ids, audio_files, durations, texts, offsets, = (
+        (
+            ids,
+            audio_files,
+            durations,
+            texts,
+            offsets,
+        ) = (
             [],
             [],
             [],
@@ -343,6 +349,19 @@ class ASRAudioText(AudioText):
         )
 
 
+class SpeechLLMAudioTextEntity(object):
+    def __init__(self, sid, audio_file, duration, context, answer, offset, speaker, orig_sr, lang) -> None:
+        self.id = sid
+        self.audio_file = audio_file
+        self.duration = duration
+        self.context = context
+        self.answer = answer
+        self.offset = offset
+        self.speaker = speaker
+        self.orig_sr = orig_sr
+        self.lang = lang
+
+
 class ASRVideoText(VideoText):
     """`VideoText` collector from cv structured json files."""
 
@@ -356,7 +375,13 @@ class ASRVideoText(VideoText):
             **kwargs: Kwargs to pass to `VideoText` constructor.
         """
 
-        ids, video_files, durations, texts, offsets, = (
+        (
+            ids,
+            video_files,
+            durations,
+            texts,
+            offsets,
+        ) = (
             [],
             [],
             [],
@@ -379,10 +404,272 @@ class ASRVideoText(VideoText):
         )
 
 
+class SpeechLLMAudioText(object):
+    """List of audio-transcript text correspondence with preprocessing.
+
+    All of the audio, duration, context, answer are optional.
+    If answer is not present, text is treated as the answer.
+    """
+
+    def __init__(
+        self,
+        ids: List[int],
+        audio_files: List[str],
+        durations: List[float],
+        context_list: List[str],
+        answers: List[str],
+        offsets: List[str],
+        speakers: List[Optional[int]],
+        orig_sampling_rates: List[Optional[int]],
+        langs: List[Optional[str]],
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        max_number: Optional[int] = None,
+        do_sort_by_duration: bool = False,
+        index_by_file_id: bool = False,
+        max_num_samples: Optional[int] = None,
+    ):
+        """Instantiates audio-context-answer manifest with filters and preprocessing.
+
+
+        Args:
+            ids: List of examples positions.
+            audio_files: List of audio files.
+            durations: List of float durations.
+            context_list: List of raw text transcripts.
+            answers: List of raw text transcripts.
+            offsets: List of duration offsets or None.
+            speakers: List of optional speakers ids.
+            orig_sampling_rates: List of original sampling rates of audio files.
+            langs: List of language ids, one for eadh sample, or None.
+            min_duration: Minimum duration to keep entry with (default: None).
+            max_duration: Maximum duration to keep entry with (default: None).
+            max_number: Maximum number of samples to collect.
+            do_sort_by_duration: True if sort samples list by duration. Not compatible with index_by_file_id.
+            index_by_file_id: If True, saves a mapping from filename base (ID) to index in data.
+        """
+
+        data, duration_filtered, num_filtered, total_duration = [], 0.0, 0, 0.0
+        if index_by_file_id:
+            self.mapping = {}
+
+        for id_, audio_file, duration, offset, context, answer, speaker, orig_sr, lang in zip(
+            ids, audio_files, durations, offsets, context_list, answers, speakers, orig_sampling_rates, langs
+        ):
+            # Duration filters.
+            if duration is not None:
+                curr_min_dur = min(duration) if isinstance(duration, list) else duration
+                curr_max_dur = max(duration) if isinstance(duration, list) else duration
+                curr_sum_dur = sum(duration) if isinstance(duration, list) else duration
+                if min_duration is not None and curr_min_dur < min_duration:
+                    duration_filtered += curr_sum_dur
+                    num_filtered += 1
+                    continue
+
+                if max_duration is not None and curr_max_dur > max_duration:
+                    duration_filtered += curr_sum_dur
+                    num_filtered += 1
+                    continue
+                total_duration += curr_sum_dur
+
+            if answer is None:
+                duration_filtered += curr_sum_dur
+                num_filtered += 1
+                continue
+
+            data.append(
+                SpeechLLMAudioTextEntity(id_, audio_file, duration, context, answer, offset, speaker, orig_sr, lang)
+            )
+            if index_by_file_id and audio_file is not None:
+                file_id, _ = os.path.splitext(os.path.basename(audio_file))
+                if file_id not in self.mapping:
+                    self.mapping[file_id] = []
+                self.mapping[file_id].append(len(data) - 1)
+
+            # Max number of entities filter.
+            if len(data) == max_number:
+                break
+
+        if max_num_samples is not None and not index_by_file_id:
+            if max_num_samples <= len(data):
+                logging.info(f"Subsampling dataset from {len(data)} to {max_num_samples} samples")
+                data = data[:max_num_samples]
+            else:
+                logging.info(f"Oversampling dataset from {len(data)} to {max_num_samples} samples")
+                data = data * (max_num_samples // len(data))
+                res_num = max_num_samples % len(data)
+                res_data = [data[idx] for idx in np.random.choice(len(data), res_num, replace=False)]
+                data.extend(res_data)
+        elif max_num_samples is not None and index_by_file_id:
+            logging.warning("Tried to subsample dataset by max_num_samples, but cannot since index_by_file_id is set.")
+
+        if do_sort_by_duration:
+            if index_by_file_id:
+                logging.warning("Tried to sort dataset by duration, but cannot since index_by_file_id is set.")
+            else:
+                data.sort(key=lambda entity: entity.duration)
+
+        logging.info("Dataset loaded with %d files totalling %.2f hours", len(data), total_duration / 3600)
+        logging.info("%d files were filtered totalling %.2f hours", num_filtered, duration_filtered / 3600)
+
+        self.data = data
+
+    def __getitem__(self, idx):
+        if idx < 0 or idx > len(self.data):
+            raise ValueError(f"index out of range [0,{len(self.data)}), got {idx} instead")
+        return self.data[idx]
+
+    def __len__(self):
+        return len(self.data)
+
+
+class SpeechLLMAudioTextCollection(SpeechLLMAudioText):
+    """`SpeechLLMAudioText` collector from SpeechLLM json files.
+
+    This collector also keeps backward compatibility with SpeechLLMAudioText.
+    """
+
+    def __init__(
+        self,
+        manifests_files: Union[str, List[str]],
+        context_file: Optional[Union[List[str], str]] = None,
+        context_key: str = "context",
+        answer_key: str = "answer",
+        *args,
+        **kwargs,
+    ):
+        """Parse lists of audio files, durations and transcripts texts.
+
+        Args:
+            manifests_files: Either single string file or list of such -
+                manifests to yield items from.
+            *args: Args to pass to `AudioText` constructor.
+            **kwargs: Kwargs to pass to `AudioText` constructor.
+        """
+        self.context_key = context_key
+        self.answer_key = answer_key
+
+        (
+            ids,
+            audio_files,
+            durations,
+            context_list,
+            answers,
+            offsets,
+        ) = (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+        speakers, orig_srs, langs = (
+            [],
+            [],
+            [],
+        )
+        if context_file is not None:
+            question_file_list = context_file.split(",") if isinstance(context_file, str) else context_file
+            self.context_list = []
+            for filepath in question_file_list:
+                with open(filepath, 'r') as f:
+                    for line in f.readlines():
+                        line = line.strip()
+                        if line:
+                            self.context_list.append(line)
+            logging.info(f"Use random text context from {context_file} for {manifests_files}")
+        else:
+            self.context_list = None
+
+        for item in manifest.item_iter(manifests_files, parse_func=self.__parse_item):
+            ids.append(item['id'])
+            audio_files.append(item['audio_file'])
+            durations.append(item['duration'])
+            context_list.append(item['context'])
+            answers.append(item['answer'])
+            offsets.append(item['offset'])
+            speakers.append(item['speaker'])
+            orig_srs.append(item['orig_sr'])
+            langs.append(item['lang'])
+        super().__init__(
+            ids, audio_files, durations, context_list, answers, offsets, speakers, orig_srs, langs, *args, **kwargs
+        )
+
+    def __parse_item(self, line: str, manifest_file: str) -> Dict[str, Any]:
+        item = json.loads(line)
+
+        # Audio file
+        if 'audio_filename' in item:
+            item['audio_file'] = item.pop('audio_filename')
+        elif 'audio_filepath' in item:
+            item['audio_file'] = item.pop('audio_filepath')
+        elif 'audio_file' not in item:
+            item['audio_file'] = None
+
+        # If the audio path is a relative path and does not exist,
+        # try to attach the parent directory of manifest to the audio path.
+        # Revert to the original path if the new path still doesn't exist.
+        # Assume that the audio path is like "wavs/xxxxxx.wav".
+        if item['audio_file'] is not None:
+            item['audio_file'] = manifest.get_full_path(audio_file=item['audio_file'], manifest_file=manifest_file)
+
+        # Duration.
+        if 'duration' not in item:
+            item['duration'] = None
+
+        # Answer.
+        if self.answer_key in item:
+            item['answer'] = item.pop(self.answer_key)
+        elif 'text' in item:
+            # compatability with ASR manifests that uses 'text' as answer key
+            item['answer'] = item.pop('text')
+        elif 'text_filepath' in item:
+            with open(item.pop('text_filepath'), 'r') as f:
+                item['answer'] = f.read()
+        else:
+            item['answer'] = "na"
+
+        # context.
+        if self.context_key in item:
+            item['context'] = item.pop(self.context_key)
+        elif 'context_filepath' in item:
+            with open(item.pop('context_filepath'), 'r') as f:
+                item['context'] = f.read()
+        elif self.context_list is not None:
+            context = np.random.choice(self.context_list).strip()
+            item['context'] = context
+        elif 'question' in item:
+            # compatability with old manifests that uses 'question' as context key
+            logging.warning(
+                f"Neither `{self.context_key}` is found nor `context_file` is set, but found `question` in item: {item}",
+                mode=logging_mode.ONCE,
+            )
+            item['context'] = item.pop('question')
+        else:
+            # default context if nothing is found
+            item['context'] = "what does this audio mean"
+
+        item = dict(
+            audio_file=item['audio_file'],
+            duration=item['duration'],
+            context=str(item['context']),
+            answer=str(item['answer']),
+            offset=item.get('offset', None),
+            speaker=item.get('speaker', None),
+            orig_sr=item.get('orig_sample_rate', None),
+            lang=item.get('lang', None),
+        )
+        return item
+
+
 class SpeechLabel(_Collection):
     """List of audio-label correspondence with preprocessing."""
 
-    OUTPUT_TYPE = collections.namedtuple(typename='SpeechLabelEntity', field_names='audio_file duration label offset',)
+    OUTPUT_TYPE = collections.namedtuple(
+        typename='SpeechLabelEntity',
+        field_names='audio_file duration label offset',
+    )
 
     def __init__(
         self,
@@ -532,7 +819,10 @@ class ASRSpeechLabel(SpeechLabel):
 class FeatureSequenceLabel(_Collection):
     """List of feature sequence of label correspondence with preprocessing."""
 
-    OUTPUT_TYPE = collections.namedtuple(typename='FeatureSequenceLabelEntity', field_names='feature_file seq_label',)
+    OUTPUT_TYPE = collections.namedtuple(
+        typename='FeatureSequenceLabelEntity',
+        field_names='feature_file seq_label',
+    )
 
     def __init__(
         self,
@@ -614,9 +904,11 @@ class ASRFeatureSequenceLabel(FeatureSequenceLabel):
     """`FeatureSequenceLabel` collector from asr structured json files."""
 
     def __init__(
-        self, manifests_files: Union[str, List[str]], max_number: Optional[int] = None, index_by_file_id: bool = False,
+        self,
+        manifests_files: Union[str, List[str]],
+        max_number: Optional[int] = None,
+        index_by_file_id: bool = False,
     ):
-
         """Parse lists of feature files and sequences of labels.
 
         Args:
@@ -655,7 +947,10 @@ class ASRFeatureSequenceLabel(FeatureSequenceLabel):
                 f"Manifest file has invalid json line " f"structure: {line} without proper seq_label key."
             )
 
-        item = dict(feature_file=item['feature_file'], seq_label=item['seq_label'],)
+        item = dict(
+            feature_file=item['feature_file'],
+            seq_label=item['seq_label'],
+        )
 
         return item
 
@@ -759,7 +1054,8 @@ class DiarizationLabel(_Collection):
                 data.sort(key=lambda entity: entity.duration)
 
         logging.info(
-            "Filtered duration for loading collection is %f.", duration_filtered,
+            "Filtered duration for loading collection is %f.",
+            duration_filtered,
         )
         logging.info(f"Total {len(data)} session files loaded accounting to # {len(audio_files)} audio clips")
 
@@ -937,8 +1233,7 @@ class DiarizationSpeechLabel(DiarizationLabel):
 
 
 class Audio(_Collection):
-    """Prepare a list of all audio items, filtered by duration.
-    """
+    """Prepare a list of all audio items, filtered by duration."""
 
     OUTPUT_TYPE = collections.namedtuple(typename='Audio', field_names='audio_files duration offset text')
 
@@ -999,11 +1294,14 @@ class Audio(_Collection):
 
 
 class AudioCollection(Audio):
-    """List of audio files from a manifest file.
-    """
+    """List of audio files from a manifest file."""
 
     def __init__(
-        self, manifest_files: Union[str, List[str]], audio_to_manifest_key: Dict[str, str], *args, **kwargs,
+        self,
+        manifest_files: Union[str, List[str]],
+        audio_to_manifest_key: Dict[str, str],
+        *args,
+        **kwargs,
     ):
         """Instantiates a list of audio files loaded from a manifest file.
 
@@ -1045,6 +1343,7 @@ class AudioCollection(Audio):
         Returns:
             Dictionary with audio_files, duration, and offset.
         """
+
         # Local utility function
         def get_audio_file(item: Dict, manifest_key: Union[str, List[str]]):
             """Get item[key] if key is string, or a list
@@ -1117,7 +1416,10 @@ class AudioCollection(Audio):
 class FeatureLabel(_Collection):
     """List of feature sequence and their label correspondence with preprocessing."""
 
-    OUTPUT_TYPE = collections.namedtuple(typename='FeatureLabelEntity', field_names='feature_file label duration',)
+    OUTPUT_TYPE = collections.namedtuple(
+        typename='FeatureLabelEntity',
+        field_names='feature_file label duration',
+    )
 
     def __init__(
         self,
@@ -1194,7 +1496,6 @@ class ASRFeatureLabel(FeatureLabel):
         *args,
         **kwargs,
     ):
-
         """Parse lists of feature files and sequences of labels.
 
         Args:
@@ -1383,7 +1684,14 @@ class ASRFeatureText(FeatureText):
             **kwargs: Kwargs to pass to `AudioText` constructor.
         """
 
-        ids, feature_files, rttm_files, durations, texts, offsets, = (
+        (
+            ids,
+            feature_files,
+            rttm_files,
+            durations,
+            texts,
+            offsets,
+        ) = (
             [],
             [],
             [],

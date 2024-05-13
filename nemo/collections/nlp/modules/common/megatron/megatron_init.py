@@ -315,7 +315,7 @@ def fake_initialize_model_parallel(
     if expert_model_parallel_size_ is not None and expert_model_parallel_size_ > 1:
         for ranks in rank_generator.get_ranks('ep', independent_ep=True):
             if rank in ranks:
-                expert_model_parallel_rank = list(ranks).index(rank) // tensor_model_parallel_size
+                expert_model_parallel_rank = list(ranks).index(rank)
 
     # Build the pipeline model-parallel groups and embedding groups
     # (first and last rank in each pipeline model-parallel group).

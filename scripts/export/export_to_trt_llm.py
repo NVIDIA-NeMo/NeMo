@@ -78,7 +78,6 @@ def get_args(argv):
         '--use_lora_plugin',
         nargs='?',
         const=None,
-        default=False,
         choices=['float16', 'float32', 'bfloat16'],
         help="Activates the lora plugin which enables embedding sharing.",
     )
@@ -86,7 +85,16 @@ def get_args(argv):
         '--lora_target_modules',
         nargs='+',
         default=None,
-        choices=["attn_qkv", "attn_q", "attn_k", "attn_v", "attn_dense", "mlp_h_to_4h", "mlp_gate", "mlp_4h_to_h",],
+        choices=[
+            "attn_qkv",
+            "attn_q",
+            "attn_k",
+            "attn_v",
+            "attn_dense",
+            "mlp_h_to_4h",
+            "mlp_gate",
+            "mlp_4h_to_h",
+        ],
         help="Add lora in which modules. Only be activated when use_lora_plugin is enabled.",
     )
     parser.add_argument(

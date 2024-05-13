@@ -39,12 +39,12 @@ def gpu_map_location(storage, loc):
 
 
 def save_val(val, dir, key, tp_num=None):
-    suffix = "bin" if tp_num is None else f"{tp_num}.bin"
+    suffix = "" if tp_num is None else f".{tp_num}.bin"
     # Transpose linear layer weights to the correct shape.
     if len(val.shape) >= 2:
         val = np.ascontiguousarray(np.transpose(val.reshape(val.shape[0], -1), [1, 0]))
     global weights_dict
-    weights_dict[f"model.{key}.{suffix}"] = val
+    weights_dict[f"{key}{suffix}"] = val
 
 
 def save_split(split_vals, dir, key, i, split_factor):
@@ -55,10 +55,10 @@ def save_split(split_vals, dir, key, i, split_factor):
 def save_expert_split(split_vals, dir, key, i, split_factor):
     for j, val in enumerate(split_vals):
         tp_num = i * split_factor + j
-        suffix = "bin" if tp_num is None else f"{tp_num}.bin"
+        suffix = "" if tp_num is None else f".{tp_num}.bin"
 
         global weights_dict
-        weights_dict[f"model.{key}.{suffix}"] = val
+        weights_dict[f"{key}{suffix}"] = val
 
 
 def generate_int8(weights, act_range, is_qkv=False, multi_query_mode=False):
@@ -183,6 +183,9 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
 
     save_int8 = int8_outputs == "all" or int8_outputs == "kv_cache_only"
 
+    layer_num = key.split(".")[1]
+    layer_prefix = f'transformer.layers.{layer_num}'
+
     if not isinstance(vals, list):
         vals = [vals]
 
@@ -210,12 +213,27 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
         or "final_layernorm.bias" in key
     ):
         # shared weights, only need to convert the weights of rank 0
-        if "post_self_attn_layernorm.weight" in key:
-            key = key.replace("post_self_attn_layernorm.weight", "post_attention_layernorm.weight")
-        elif "mlp.linear_fc2.bias" in key:
-            key = key.replace("mlp.linear_fc2.bias", "mlp.dense_4h_to_h.bias")
-        elif "attention.linear_proj.bias" in key:
-            key = key.replace("attention.linear_proj.bias", "attention.dense.bias")
+        if "post_self_attn_layernorm" in key or "post_attention_layernorm" in key:
+            if key.endswith('weight'):
+                key = f'{layer_prefix}.post_layernorm.weight'
+            else:
+                key = f'{layer_prefix}.post_layernorm.bias'
+        elif "mlp.linear_fc2.bias" in key or "mlp.dense_4h_to_h.bias" in key:
+            key = f'{layer_prefix}.mlp.proj.bias'
+        elif "attention.linear_proj.bias" in key or "attention.dense.bias" in key:
+            key = f'{layer_prefix}.attention.dense.bias'
+        elif "final_layernorm" in key:
+            key = key.replace("final_layernorm", "transformer.ln_f")
+        elif "input_layernorm" in key:
+            if key.endswith('weight'):
+                key = f'{layer_prefix}.input_layernorm.weight'
+            else:
+                key = f'{layer_prefix}.input_layernorm.bias'
+        elif "pre_mlp_layernorm" in key:
+            if key.endswith('weight'):
+                key = f'{layer_prefix}.post_layernorm.weight'
+            else:
+                key = f'{layer_prefix}.post_layernorm.bias'
         if tp_rank == 0:
             save_val(vals[0], saved_dir, key)
 
@@ -228,10 +246,10 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
         cat_dim = 0
         val = np.concatenate(vals, axis=cat_dim)
         split_vals = np.split(val, split_factor, axis=cat_dim)
-        if "attention.linear_proj.weight" in key:
-            key = key.replace("attention.linear_proj.weight", "attention.dense.weight")
-        elif "mlp.linear_fc2.weight" in key:
-            key = key.replace("mlp.linear_fc2.weight", "mlp.dense_4h_to_h.weight")
+        if "attention.linear_proj.weight" in key or "attention.dense.weight" in key:
+            key = f'{layer_prefix}.attention.dense.weight'
+        elif "mlp.linear_fc2.weight" in key or "mlp.dense_4h_to_h.weight" in key:
+            key = f'{layer_prefix}.mlp.proj.weight'
         save_split(split_vals, saved_dir, key, tp_rank, split_factor)
         if act_range is not None and int8_outputs == "all":
             base_key = key.replace(".weight", "")
@@ -251,8 +269,10 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
         val = np.concatenate(vals, axis=cat_dim)
         split_vals = np.split(val, split_factor, axis=cat_dim)
 
-        if "mlp.linear_fc1" in key:
-            key = key.replace("mlp.linear_fc1", "mlp.dense_h_to_4h")
+        if key.endswith("weight"):
+            key = f'{layer_prefix}.mlp.fc.weight'
+        else:
+            key = f'{layer_prefix}.mlp.fc.bias'
         save_split(split_vals, saved_dir, key, tp_rank, split_factor)
         if act_range is not None and int8_outputs == "all":
             base_key = key.replace(".weight", "")
@@ -261,8 +281,10 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
 
         if split_gated_activation:
             assert not save_int8
-            prefix, dot, suffix = key.rpartition(".")
-            key = prefix + ".gate" + dot + suffix
+            if key.endswith("weight"):
+                key = f'{layer_prefix}.mlp.gate.weight'
+            else:
+                key = f'{layer_prefix}.mlp.gate.bias'
 
             gate = np.concatenate(gates, axis=cat_dim)
             split_vals = np.split(gate, split_factor, axis=cat_dim)
@@ -279,9 +301,6 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
             write_int8(vals_i8, saved_dir, base_key, cat_dim, tp_rank, split_factor)
 
     elif "attention.query_key_value.bias" in key or "attention.linear_qkv.bias" in key:
-        if "attention.linear_qkv.bias" in key:
-            key = key.replace("attention.linear_qkv.bias", "attention.query_key_value.bias")
-
         qkv_hidden_dim = vals[0].shape[0]
         size_per_head = qkv_hidden_dim // (num_attention_heads + 2 * num_kv_heads)
         q_num = num_attention_heads // num_kv_heads
@@ -304,6 +323,7 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
             np.concatenate([q_split[i].reshape(-1), k_split[i].reshape(-1), v_split[i].reshape(-1)], axis=0)
             for i in range(split_factor)
         ]
+        key = f'{layer_prefix}.attention.qkv.bias'
         save_split(split_vals, saved_dir, key, tp_rank, split_factor)
 
     elif "attention.query_key_value.weight" in key or "attention.linear_qkv.weight" in key:
@@ -342,8 +362,7 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
             for i in range(split_factor)
         ]
 
-        if "attention.linear_qkv.weight" in key:
-            key = key.replace("attention.linear_qkv.weight", "attention.query_key_value.weight")
+        key = f'{layer_prefix}.attention.qkv.weight'
         save_split(split_vals, saved_dir, key, tp_rank, split_factor)
         if save_int8:
             base_key = key.replace(".weight", "")
@@ -366,8 +385,8 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
         pass
     elif "mlp.router.weight" in key:
         val = np.concatenate(vals, axis=1)
-        split_vals = np.split(val, split_factor, axis=0)
-        save_split(split_vals, saved_dir, key, tp_rank, split_factor)
+        key = f'{layer_prefix}.mlp.router.weight'
+        save_val(val, saved_dir, key)
     elif "experts.linear_fc1.weight" in key:
         cat_dim = -1
         val = np.concatenate(vals, axis=cat_dim)
@@ -378,12 +397,14 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
         split_w3s = np.split(w3, split_factor, axis=1)
 
         split_vals = [np.concatenate(item, axis=1) for item in zip(split_w3s, split_w1s)]
+        key = f'{layer_prefix}.mlp.experts_weight_1'
         save_expert_split(split_vals, saved_dir, key, tp_rank, split_factor)
 
     elif "experts.linear_fc2.weight" in key:
         cat_dim = -1
         val = np.concatenate(vals, axis=cat_dim)
         split_vals = np.split(val, split_factor, axis=cat_dim)
+        key = f'{layer_prefix}.mlp.experts_weight_2'
         save_expert_split(split_vals, saved_dir, key, tp_rank, split_factor)
     else:
         print(f"[WARNING] {key} not handled by converter")

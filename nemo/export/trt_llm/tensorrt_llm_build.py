@@ -25,10 +25,13 @@ import tensorrt_llm
 import torch
 from tensorrt_llm import str_dtype_to_trt
 from tensorrt_llm._utils import np_dtype_to_trt
-from tensorrt_llm.builder import Builder
+from tensorrt_llm.builder import BuildConfig, Builder
+from tensorrt_llm.commands.build import build as build_trtllm
 from tensorrt_llm.logger import logger
-from tensorrt_llm.models.modeling_utils import add_lora
+from tensorrt_llm.lora_manager import LoraBuildConfig
+from tensorrt_llm.models.modeling_utils import add_lora, optimize_model, preprocess_weights
 from tensorrt_llm.network import net_guard
+from tensorrt_llm.plugin import PluginConfig
 from tensorrt_llm.plugin.plugin import ContextFMHAType
 from tensorrt_llm.quantization import QuantMode
 
@@ -57,11 +60,11 @@ def serialize_engine(engine, path):
 
 def refit_runtime_engine(params, cuda_engine):
     '''
-        @brief: Inplace refit one TensorRT cuda engine using weights from the network,
-            user should guarantee that the engine is built with REFIT flag, and the network has the same structure with the engine.
-        @param engine_buffer: A serialized TensorRT engine.
-        @param network: Network object.
-        @return: A serialized TRT engine if refit successfully, None otherwise
+    @brief: Inplace refit one TensorRT cuda engine using weights from the network,
+        user should guarantee that the engine is built with REFIT flag, and the network has the same structure with the engine.
+    @param engine_buffer: A serialized TensorRT engine.
+    @param network: Network object.
+    @return: A serialized TRT engine if refit successfully, None otherwise
     '''
     logger.info(f'Refit runtime engine')
     tik = time.time()
@@ -88,7 +91,11 @@ def refit_runtime_engine(params, cuda_engine):
 
 
 def build_rank_engine(
-    tensorrt_llm_gpt, builder: Builder, builder_config: tensorrt_llm.builder.BuilderConfig, engine_name, args,
+    tensorrt_llm_gpt,
+    builder: Builder,
+    builder_config: tensorrt_llm.builder.BuilderConfig,
+    engine_name,
+    args,
 ):
 
     str_dtype_to_trt(args.dtype)
@@ -348,3 +355,70 @@ def build(
     tok = time.time()
     t = time.strftime("%H:%M:%S", time.gmtime(tok - tik))
     logger.info(f"Total time of building all {args.mapping.world_size} engines: {t}")
+
+
+def build_and_save_engine(
+    max_input_len=1024,
+    max_output_len=1024,
+    max_batch_size=4,
+    model_dir=None,
+    model_weights=None,
+    model_config=None,
+    model_type='gpt',
+    lora_ckpt_list=None,
+    use_lora_plugin=None,
+    max_lora_rank=64,
+    lora_target_modules=None,
+    max_prompt_embedding_table_size=0,
+    enable_multi_block_mode: bool = False,
+):
+    try:
+        model_cls = getattr(tensorrt_llm.models, model_config.architecture)
+    except:
+        raise AttributeError(f"Could not find TRTLLM model type: {model_type}!")
+
+    logger.set_level("info")
+    str_dtype = model_config.dtype
+    plugin_config = PluginConfig()
+    plugin_config.set_gpt_attention_plugin(dtype=str_dtype)
+    plugin_config.set_gemm_plugin(dtype=str_dtype)
+    plugin_config.set_plugin("multi_block_mode", enable_multi_block_mode)
+    max_num_tokens = max_batch_size * max_input_len
+
+    build_dict = {
+        'max_input_len': max_input_len,
+        'max_output_len': max_output_len,
+        'max_batch_size': max_batch_size,
+        'max_beam_width': 1,
+        'max_num_tokens': max_num_tokens,
+        'opt_num_tokens': None,
+        'max_prompt_embedding_table_size': max_prompt_embedding_table_size,
+        'gather_context_logits': False,
+        'gather_generation_logits': False,
+        'strongly_typed': False,
+        'builder_opt': None,
+    }
+    build_config = BuildConfig.from_dict(build_dict, plugin_config=plugin_config)
+
+    if use_lora_plugin is not None:
+        build_config.plugin_config.set_lora_plugin(use_lora_plugin)
+        lora_config = LoraBuildConfig(
+            lora_dir=lora_ckpt_list,
+            lora_ckpt_source='nemo',
+            max_lora_rank=max_lora_rank,
+            lora_target_modules=lora_target_modules,
+        )
+        build_config.lora_config = lora_config
+
+    model = model_cls.from_config(model_config)
+    model = optimize_model(
+        model,
+        use_parallel_embedding=model_config.use_parallel_embedding,
+        share_embedding_table=model_config.share_embedding_table,
+    )
+    preprocess_weights(model_weights, model_config)
+    model.load(model_weights)
+    engine = build_trtllm(model, build_config)
+    engine.save(model_dir)
+
+    return engine

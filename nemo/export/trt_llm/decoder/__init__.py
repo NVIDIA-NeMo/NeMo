@@ -40,6 +40,14 @@ DECODER_CONFIG_REGISTRY: Dict[str, Type[DecoderLayerConfigBuilder]] = {
     DECODER_GEMMA: GemmaDecoderLayerConfigBuilder,
 }
 
+DECODER_MODEL_TYPE = {
+    DECODER_GPT2: 'GPTForCausalLM',
+    DECODER_GPTNEXT: 'GPTForCausalLM',
+    DECODER_LLAMA: 'LLaMAForCausalLM',
+    DECODER_GEMMA: 'GemmaForCausalLM',
+    DECODER_FALCON: 'FalconForCausalLM',
+}
+
 
 def build_decoder_layer_config(layer, decoder: str, dtype=trt.float16, rank=0, tensor_parallel=1):
     """Builds the decoder layer config with the input torch module."""

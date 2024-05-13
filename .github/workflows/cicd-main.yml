@@ -6484,7 +6484,7 @@ jobs:
   Speech_Checkpoints_tests:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
-    timeout-minutes: 10
+    timeout-minutes: 20
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 

@@ -331,7 +331,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         preserve_frame_confidence=self.preserve_frame_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
                         loop_labels=self.cfg.greedy.get('loop_labels', True),
-                        use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
+                        use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', False),
                     )
                 else:
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
@@ -347,7 +347,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         preserve_frame_confidence=self.preserve_frame_confidence,
                         include_duration_confidence=self.tdt_include_duration_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
-                        use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
+                        use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', False),
                     )
 
             else:
@@ -1175,7 +1175,11 @@ class RNNTDecoding(AbstractRNNTDecoding):
     """
 
     def __init__(
-        self, decoding_cfg, decoder, joint, vocabulary,
+        self,
+        decoding_cfg,
+        decoder,
+        joint,
+        vocabulary,
     ):
         # we need to ensure blank is the last token in the vocab for the case of RNNT and Multi-blank RNNT.
         blank_id = len(vocabulary) + joint.num_extra_outputs
@@ -1186,7 +1190,10 @@ class RNNTDecoding(AbstractRNNTDecoding):
         self.labels_map = dict([(i, vocabulary[i]) for i in range(len(vocabulary))])
 
         super(RNNTDecoding, self).__init__(
-            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id,
+            decoding_cfg=decoding_cfg,
+            decoder=decoder,
+            joint=joint,
+            blank_id=blank_id,
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):

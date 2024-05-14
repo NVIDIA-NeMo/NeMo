@@ -18,15 +18,6 @@ from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron.griffin.griffin_model import GriffinModel
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
-from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
-
-try:
-
-    HAVE_MEGATRON_CORE = True
-
-except (ImportError, ModuleNotFoundError):
-    TransformerConfig = ApexGuardDefaults
-    HAVE_MEGATRON_CORE = False
 
 
 class MegatronGriffinModel(MegatronGPTModel):
@@ -35,13 +26,6 @@ class MegatronGriffinModel(MegatronGPTModel):
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
-        if not HAVE_MEGATRON_CORE:
-            raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
-            )
-
-        # build the transformer config
-        # TODO: add type hint once pip package is out
 
         self.vocab_size = cfg.get('vocab_size', 256000)
         self.cfg = cfg
@@ -70,8 +54,12 @@ class MegatronGriffinModel(MegatronGPTModel):
 
     def build_transformer_config(self):
         transformer_config = super().build_transformer_config()
+        transformer_config.activations_checkpoint_recurrent = self.cfg.get('activations_checkpoint_recurrent', False)
         transformer_config.gated_linear_unit = self.cfg.get('gated_linear_unit', True)
         transformer_config.layernorm_zero_centered_gamma = self.cfg.get('layernorm_zero_centered_gamma', True)
+        assert (
+            not transformer_config.activations_checkpoint_recurrent or not transformer_config.recompute_granularity
+        ), "Either the recurrent checkpoiting or the full/custom checkpointing should be set"
 
         return transformer_config
 

@@ -17,16 +17,30 @@ from dataclasses import dataclass
 from typing import Union
 
 import torch
+import torch._dynamo
 from accelerated_scan.triton import scan
 from causal_conv1d import causal_conv1d_fn
 from einops import rearrange
-from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
-from megatron.core.jit import jit_fuser
-from megatron.core.transformer.identity_op import IdentityOp
-from megatron.core.transformer.module import MegatronModule
-from megatron.core.transformer.spec_utils import ModuleSpec, build_module
-from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import nn
+
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
+try:
+    from megatron.core import tensor_parallel
+    from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
+    from megatron.core.jit import jit_fuser
+    from megatron.core.transformer.identity_op import IdentityOp
+    from megatron.core.transformer.module import MegatronModule
+    from megatron.core.transformer.spec_utils import ModuleSpec, build_module
+    from megatron.core.transformer.transformer_config import TransformerConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+    TransformerConfig = ApexGuardDefaults
+    HAVE_MEGATRON_CORE = False
+
+torch._dynamo.config.suppress_errors = True
 
 
 # Class copied from https://github.com/google-deepmind/recurrentgemma
@@ -34,16 +48,19 @@ class BlockDiagonalLinear(nn.Module):
     """Block-diagonal linear layer."""
 
     def __init__(
-        self, width: int, num_blocks: int, w_init_variance_scale: float = 1.0,
+        self,
+        width: int,
+        num_blocks: int,
+        w_init_variance_scale: float = 1.0,
     ):
         """Initializes the BlockDiagonalLinear.
 
-    Args:
-      width: The number of dimensions of the input and output.
-      num_blocks: The number of diagonal blocks in the layer.
-      w_init_variance_scale: A parameters that scales the variance of the
-        initialization of the weights.
-    """
+        Args:
+          width: The number of dimensions of the input and output.
+          num_blocks: The number of diagonal blocks in the layer.
+          w_init_variance_scale: A parameters that scales the variance of the
+            initialization of the weights.
+        """
         super().__init__()
         self.width = width
         self.num_blocks = num_blocks
@@ -62,25 +79,46 @@ class BlockDiagonalLinear(nn.Module):
         std = math.sqrt(self.w_init_variance_scale / self.block_width)
         torch.nn.init.normal_(w, mean=0.0, std=std)
 
-    def forward(self, x):
-        """Calls the BlockDiagonalLinear."""
-        # Split x to blocks.
-        bs, seq_l = x.shape[0], x.shape[1]
+    @jit_fuser
+    def _fused_pre_reshape_(self, x, bs, seq_l):
         x = (
             x.reshape(bs, seq_l, self.num_blocks, self.block_width)
             .permute(2, 0, 1, 3)
             .reshape(self.num_blocks, bs * seq_l, self.block_width)
         )
-        x = (torch.bmm(x, self.w).permute(1, 0, 2) + self.b).reshape(bs, seq_l, self.num_blocks * self.block_width)
-        out = torch.sigmoid(x)
-        return out
+        return x
+
+    @jit_fuser
+    def _post_add_reshape_sigmoid_(self, x, bs, seq_l):
+        x = (x.permute(1, 0, 2) + self.b).reshape(bs, seq_l, self.num_blocks * self.block_width)
+        x = torch.sigmoid(x)
+        return x
+
+    def forward(self, x):
+        """Calls the BlockDiagonalLinear."""
+        # Split x to blocks.
+        bs, seq_l = x.shape[0], x.shape[1]
+        x = self._fused_pre_reshape_(x, bs, seq_l)
+
+        x = torch.bmm(x, self.w)
+        x = self._post_add_reshape_sigmoid_(x, bs, seq_l)
+
+        return x
 
 
 # Class copied from https://github.com/google-deepmind/recurrentgemma
 
 
 @jit_fuser
-def _scan_preprocess_(a, x, reset):
+def _scan_preprocess_(x, gate_a, gate_x, reset, a_params):
+
+    log_a = -8.0 * gate_a * nn.functional.softplus(a_params)
+    a = torch.exp(log_a)
+    gated_x = x * gate_x
+    multiplier = torch.sqrt((1 - torch.exp(2 * log_a)) + 1e-6)
+    multiplier = reset + (1 - reset) * multiplier
+    x = gated_x * multiplier.type(x.dtype)
+
     assert x.ndim == 3
     assert a.shape == x.shape[-a.ndim :]
     assert a.dtype == x.dtype
@@ -94,38 +132,54 @@ def _scan_preprocess_(a, x, reset):
     a = a.permute(0, 2, 1)
     x = x.contiguous()
     a = a.contiguous()
+
     return a, x
 
 
 def rnn_scan(
-    x, a, reset,
+    x,
+    gate_a,
+    gate_x,
+    reset,
+    a_params,
+    # x, a, reset,
 ):
     """Runs the recurrence of a linear RNN.
 
-  Args:
-    x: The input sequence.
-    a: The diagonal of the recurrence matrix `A`.
-    reset: Indicator of document boundaries, e.g. when to reset the hidden
-      state of the RNN.
-    h0: The initial hidden state.
+    Args:
+      x: The input sequence.
+      a: The diagonal of the recurrence matrix `A`.
+      reset: Indicator of document boundaries, e.g. when to reset the hidden
+        state of the RNN.
+      h0: The initial hidden state.
 
-  Returns:
-    The output of the linear recurrence.
-  """
-    a, x = _scan_preprocess_(a, x, reset)
+    Returns:
+      The output of the linear recurrence.
+    """
+
+    a, x = _scan_preprocess_(x, gate_a, gate_x, reset, a_params)
+
     y = scan(a.float(), x.float()).type_as(x)
+
     y = y.permute(0, 2, 1)
+
     return y, None
 
 
 # Class copied from https://github.com/google-deepmind/recurrentgemma
 
 
-def rnn_param_init(*, width: int, min_rad: float, max_rad: float, transform: str = "softplus",) -> torch.Tensor:
+def rnn_param_init(
+    *,
+    width: int,
+    min_rad: float,
+    max_rad: float,
+    transform: str = "softplus",
+) -> torch.Tensor:
     """Initializes the `A` parameter of the RG-LRU uniformly on a ring."""
     unif = torch.rand(width)
     # Proportional to area in a ring.
-    a_real = 0.5 * torch.log(unif * (max_rad ** 2 - min_rad ** 2) + min_rad ** 2 + 1e-8)
+    a_real = 0.5 * torch.log(unif * (max_rad**2 - min_rad**2) + min_rad**2 + 1e-8)
 
     if transform == "softplus":
         # Inverse transform.
@@ -141,17 +195,20 @@ class RGLRU(nn.Module):
     """A Real-Gated Linear Recurrent Unit (RG-LRU) layer."""
 
     def __init__(
-        self, width: int, num_heads: int, w_init_variance_scale: float = 1.0,
+        self,
+        width: int,
+        num_heads: int,
+        w_init_variance_scale: float = 1.0,
     ):
         """Initializes the RG-LRU.
 
-    Args:
-      width: The number of dimensions of the input and output.
-      num_heads: The number of diagonal blocks in the input and A gate layers.
-      w_init_variance_scale: Initialization parameter for the
-        BlockDiagonalLinear layers of the gates. See the `BlockDiagonalLinear`
-        layer for details.
-    """
+        Args:
+          width: The number of dimensions of the input and output.
+          num_heads: The number of diagonal blocks in the input and A gate layers.
+          w_init_variance_scale: Initialization parameter for the
+            BlockDiagonalLinear layers of the gates. See the `BlockDiagonalLinear`
+            layer for details.
+        """
         super().__init__()
         self.width = width
         self.num_heads = num_heads
@@ -160,7 +217,9 @@ class RGLRU(nn.Module):
         # Parameters and layers.
         self.a_param = nn.Parameter(self.a_param_init)
         self.input_gate = BlockDiagonalLinear(
-            width=self.width, num_blocks=self.num_heads, w_init_variance_scale=w_init_variance_scale,
+            width=self.width,
+            num_blocks=self.num_heads,
+            w_init_variance_scale=w_init_variance_scale,
         )
         self.a_gate = BlockDiagonalLinear(
             width=self.width, num_blocks=self.num_heads, w_init_variance_scale=self.w_init_variance_scale
@@ -184,18 +243,22 @@ class RGLRU(nn.Module):
         return normalized_x, a
 
     def __call__(
-        self, x, segment_pos, prev_h,
+        self,
+        x,
+        segment_pos,
+        prev_h,
     ):
         """Calls the RG-LRU.
 
-    Args:
-      x: Sequence of input activations.
-      segment_pos: Position of each token in the sequence.
-      prev_h: The previous hidden state of the RG-LRU.
+        Args:
+          x: Sequence of input activations.
+          segment_pos: Position of each token in the sequence.
+          prev_h: The previous hidden state of the RG-LRU.
 
-    Returns:
-      Output of the block together with the updated hidden state.
-    """
+        Returns:
+          Output of the block together with the updated hidden state.
+        """
+
         for param in self.parameters():
             param.data_ptr()
 
@@ -207,9 +270,7 @@ class RGLRU(nn.Module):
         gate_x = self.input_gate(x)
         gate_a = self.a_gate(x)
 
-        # Compute the parameter `A` of the recurrence.
-        normalized_x, a = self._fused_pst_gates_(x, gate_a, gate_x, reset)
-        y, last_h = rnn_scan(x=normalized_x, a=a, reset=reset)
+        y, last_h = rnn_scan(x, gate_a, gate_x, reset, self.a_param)
 
         return y, last_h
 
@@ -230,11 +291,17 @@ class Conv1D(MegatronModule):
         )
 
     def forward(
-        self, x, segment_pos=None, prev_x=None,
+        self,
+        x,
+        segment_pos=None,
+        prev_x=None,
     ):
         x = x.permute(0, 2, 1)
         output = causal_conv1d_fn(
-            x=x, weight=rearrange(self.conv_1d.weight, "d 1 w -> d w"), bias=self.conv_1d.bias, activation=None,
+            x=x,
+            weight=rearrange(self.conv_1d.weight, "d 1 w -> d w"),
+            bias=self.conv_1d.bias,
+            activation=None,
         ).permute(0, 2, 1)
         return output, None
 
@@ -314,6 +381,11 @@ class RecurrentLayer(MegatronModule):
             submodules.rg_lru, width=self.config.hidden_size, num_heads=self.config.num_attention_heads
         )
 
+    def checkpoint_handler(self, forward_func, x, segment_pos, prev_x):
+        return tensor_parallel.checkpoint(
+            forward_func, self.config.distribute_saved_activations, x, segment_pos, prev_x
+        )
+
     def forward(self, hidden_states, attention_mask=None, rotary_pos_emb=None):
 
         segment_pos = torch.arange(hidden_states.shape[0]).unsqueeze(0).repeat(hidden_states.shape[1], 1).cuda()
@@ -326,9 +398,13 @@ class RecurrentLayer(MegatronModule):
 
         x = _fused_permute_add_(x_intermidiate_parallel, x_bias_parallel)
 
-        x, _ = self.conv_1d(x=x, segment_pos=segment_pos, prev_x=None)
+        if self.config.activations_checkpoint_recurrent and self.training:
+            x, _ = self.checkpoint_handler(self.conv_1d, x=x, segment_pos=segment_pos, prev_x=None)
+            x, _ = self.checkpoint_handler(self.rg_lru, x=x, segment_pos=segment_pos, prev_x=None)
 
-        x, _ = self.rg_lru(x=x, segment_pos=segment_pos, prev_h=None,)
+        else:
+            x, _ = self.conv_1d(x=x, segment_pos=segment_pos, prev_x=None)
+            x, _ = self.rg_lru(x=x, segment_pos=segment_pos, prev_h=None)
 
         x = _fused_permute_mult_(x, y)
 

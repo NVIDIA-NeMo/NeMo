@@ -14,13 +14,21 @@
 
 from dataclasses import dataclass
 from typing import Union
-
-from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
-from megatron.core.transformer.module import MegatronModule
-from megatron.core.transformer.spec_utils import ModuleSpec, build_module
-from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.utils import make_viewless_tensor
 from torch import Tensor
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
+try:
+    from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
+    from megatron.core.transformer.module import MegatronModule
+    from megatron.core.transformer.spec_utils import ModuleSpec, build_module
+    from megatron.core.transformer.transformer_config import TransformerConfig
+    from megatron.core.utils import make_viewless_tensor
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+    TransformerConfig = ApexGuardDefaults
+    HAVE_MEGATRON_CORE = False
 
 
 @dataclass

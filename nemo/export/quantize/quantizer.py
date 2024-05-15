@@ -18,11 +18,12 @@ from typing import List, Optional
 
 import torch
 import torch.distributed as dist
-from megatron.core import parallel_state
+from megatron.core import mpu, parallel_state
 from megatron.core.transformer.module import Float16Module
 from omegaconf import OmegaConf
 from omegaconf.omegaconf import DictConfig, open_dict
 from pytorch_lightning.trainer.trainer import Trainer
+from tqdm import tqdm
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
@@ -32,18 +33,18 @@ from nemo.utils.distributed import temporary_directory
 from nemo.utils.model_utils import load_config, save_artifacts, unwrap_model
 
 try:
-    import ammo.torch.quantization as atq
-    from ammo.torch.export import export_tensorrt_llm_checkpoint
+    import modelopt.torch.quantization as mtq
+    from modelopt.torch.export import export_tensorrt_llm_checkpoint
+    from modelopt.torch.utils.distributed import set_data_parallel_group, set_tensor_parallel_group
 
-    HAVE_AMMO = True
+    HAVE_MODELOPT = True
 
 except (ImportError, ModuleNotFoundError) as e:
-    HAVE_AMMO = False
-    HAVE_AMMO_ERROR = e
+    HAVE_MODELOPT = False
+    HAVE_MODELOPT_ERROR = e
 
 
 class Quantizer:
-
     """
     Post-training quantization of Nemo checkpoints.
 
@@ -63,9 +64,9 @@ class Quantizer:
     model families is experimental and might not be fully supported.
 
     Available quantization methods are listed in QUANT_CFG_CHOICES dictionary below.
-    Please consult AMMO documentation for details. You can also inspect different choices in
-    examples/nlp/language_modeling/conf/megatron_llama_quantization.yaml for quantization algorithms and
-    calibration data as well as recommended settings.
+    Please consult Model Optimizer documentation https://nvidia.github.io/TensorRT-Model-Optimizer/ for details.
+    You can also inspect different choices in examples/nlp/language_modeling/conf/megatron_quantization.yaml
+    for quantization algorithms and calibration data as well as recommended settings.
 
     Quantization algorithm can also be conveniently set to 'null' to perform only weights export step
     for TensorRT-LLM deployment. This is useful to getting baseline results for a full-precision model.
@@ -78,14 +79,14 @@ class Quantizer:
         export_config: DictConfig,
         trainer_config: DictConfig,
     ):
-        if not HAVE_AMMO:
-            raise RuntimeError("nvidia-ammo is needed to use Quantizer") from HAVE_AMMO_ERROR
+        if not HAVE_MODELOPT:
+            raise RuntimeError("nvidia-modelopt is needed to use Quantizer") from HAVE_MODELOPT_ERROR
         QUANT_CFG_CHOICES = {
-            "int8": atq.INT8_DEFAULT_CFG,
-            "int8_sq": atq.INT8_SMOOTHQUANT_CFG,
-            "fp8": atq.FP8_DEFAULT_CFG,
-            "int4_awq": atq.INT4_AWQ_CFG,
-            "w4a8_awq": atq.W4A8_AWQ_BETA_CFG,
+            "int8": mtq.INT8_DEFAULT_CFG,
+            "int8_sq": mtq.INT8_SMOOTHQUANT_CFG,
+            "fp8": mtq.FP8_DEFAULT_CFG,
+            "int4_awq": mtq.INT4_AWQ_CFG,
+            "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
         }
         SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
         assert export_config.dtype in SUPPORTED_DTYPE
@@ -95,25 +96,30 @@ class Quantizer:
         self.export_config = export_config
         self.trainer_config = trainer_config
         if quantization_config.algorithm is not None:
-            atq_config = QUANT_CFG_CHOICES[quantization_config.algorithm]
+            quant_cfg = QUANT_CFG_CHOICES[quantization_config.algorithm]
 
             if "awq" in quantization_config.algorithm:
-                weight_quantizer = atq_config["quant_cfg"]["*weight_quantizer"]
+                weight_quantizer = quant_cfg["quant_cfg"]["*weight_quantizer"]
                 if isinstance(weight_quantizer, list):
                     weight_quantizer = weight_quantizer[0]
                 weight_quantizer["block_sizes"][-1] = quantization_config.awq_block_size
 
             # Always turn on FP8 kv cache to save memory footprint.
             # For int8_sq, we use int8 kv cache.
-            atq_config["quant_cfg"]["*output_quantizer"] = {
+            # TODO: Investigate why enabling FP8 kv cache will cause accuracy regressions for Nemotron.
+            enable_quant_kv_cache = (
+                "int8" not in quantization_config.algorithm and export_config.decoder_type != "gptnext"
+            )
+            print(f'{"Enable" if enable_quant_kv_cache else "Disable"} KV cache quantization')
+            quant_cfg["quant_cfg"]["*output_quantizer"] = {
                 "num_bits": 8 if quantization_config.algorithm == "int8_sq" else (4, 3),
                 "axis": None,
-                "enable": export_config.decoder_type != "gptnext",
+                "enable": enable_quant_kv_cache,
             }
 
-            self.atq_config = atq_config
+            self.quant_cfg = quant_cfg
         else:
-            self.atq_config = None
+            self.quant_cfg = None
 
     def _load_model(
         self,
@@ -121,14 +127,17 @@ class Quantizer:
         tensor_model_parallel_size: Optional[int] = None,
         pipeline_model_parallel_size: Optional[int] = None,
     ):
-        """Load model using AMMO layer spec for quantization."""
+        """Load model using ModelOpt layer spec for quantization."""
         model_cfg = self._load_and_modify_config(model_file, tensor_model_parallel_size, pipeline_model_parallel_size)
 
         trainer = Trainer(strategy=NLPDDPStrategy(), **self.trainer_config)
         connector = NLPSaveRestoreConnector()
 
         model = MegatronGPTModel.restore_from(
-            restore_path=model_file, trainer=trainer, override_config_path=model_cfg, save_restore_connector=connector,
+            restore_path=model_file,
+            trainer=trainer,
+            override_config_path=model_cfg,
+            save_restore_connector=connector,
         )
         model.freeze()
 
@@ -144,7 +153,8 @@ class Quantizer:
 
         return model
 
-    def _check_ddp_initialized(self, model):
+    @staticmethod
+    def _check_ddp_initialized(model):
         if not parallel_state.is_initialized():
 
             def dummy():
@@ -154,8 +164,11 @@ class Quantizer:
                 model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
             model.trainer.strategy.setup_environment()
 
+        set_data_parallel_group(mpu.get_data_parallel_group())
+        set_tensor_parallel_group(mpu.get_tensor_model_parallel_group())
+
+    @staticmethod
     def _load_and_modify_config(
-        self,
         model_file: str,
         tensor_model_parallel_size: Optional[int] = None,
         pipeline_model_parallel_size: Optional[int] = None,
@@ -170,11 +183,34 @@ class Quantizer:
                 model_cfg.tensor_model_parallel_size = tensor_model_parallel_size
             if pipeline_model_parallel_size is not None:
                 model_cfg.pipeline_model_parallel_size = pipeline_model_parallel_size
-            # Only custom AMMO spec is supported for PTQ: this custom spec is largely based on local Megatron-LM
+            # Only custom ModelOpt spec is supported for PTQ: this custom spec is largely based on local Megatron-LM
             # layer definitions to avoid Transformer Engine implementations that are currently not supported.
-            model_cfg.name = "ammo"
+            # This layer spec also requires RoPE fusion to be disabled for tensor view operations in attention
+            # layer implementation from megatron/core/transformer/dot_product_attention.py to be functional.
+            model_cfg.name = "modelopt"
+            model_cfg.apply_rope_fusion = False
 
         return model_cfg
+
+    @staticmethod
+    def _sample_output(model):
+        """Generate sample output for a model instance."""
+        if torch.distributed.get_rank() == 0:
+            print("Generating sample output for a model...")
+
+        response = model.generate(
+            inputs=[
+                "Born in north-east France, Soyer trained as a",
+                "Born in California, Soyer trained as a",
+            ],
+            length_params={
+                "max_length": 100,
+                "min_length": 100,
+            },
+        )
+
+        if torch.distributed.get_rank() == 0:
+            print(f'Example NeMo output after PTQ: {response["sentences"]}"')
 
     def quantize(
         self,
@@ -191,13 +227,12 @@ class Quantizer:
 
         model.set_inference_config(OmegaConf.to_container(self.inference_config))
 
-        def forward_loop():
-            for i, batch in enumerate(dataloader):
-                if dist.get_rank() == 0:
-                    print(f"Calibrating batch {i}")
+        def forward_loop(model):
+            print("Calibrating the model...")
+            for i, batch in enumerate(tqdm(dataloader)):
                 model.predict_step(batch, i)
 
-        model = atq.quantize(model, self.atq_config, forward_loop)
+        model = mtq.quantize(model, self.quant_cfg, forward_loop)
 
         if self.export_config == "gptnext":
             # We found squared_relu may have an under-calibration problem.
@@ -207,18 +242,20 @@ class Quantizer:
                 maxbound = 448
             elif self.quantization_config.quantization.algorithm == "int8_sq":
                 maxbound = 127
-            model = atq.postprocess_amax(
+            model = mtq.postprocess_amax(
                 model, "*input_quantizer", lambda amax: torch.clamp(amax, min=0.01 * maxbound)
             )
 
         if dist.get_rank() == 0:
-            atq.print_quant_summary(model)
+            mtq.print_quant_summary(model)
 
         return model
 
     def export(self, model, model_save: str):
         """Export model to '.qnemo' format for TensorRT-LLM engine build."""
         torch_dtype = torch_dtype_from_precision(self.export_config.dtype)
+
+        self._sample_output(model)
 
         if model.cfg.megatron_amp_O2:
             model.model = unwrap_model(model.model, Float16Module)
@@ -239,6 +276,8 @@ class Quantizer:
                 export_dir=export_dir,
                 inference_tensor_parallel=self.export_config.inference_tensor_parallel,
                 inference_pipeline_parallel=self.export_config.inference_pipeline_parallel,
+                use_nfs_workspace=self.export_config.inference_pipeline_parallel == 1
+                and model.cfg.pipeline_model_parallel_size > 1,
             )
             dist.barrier()  # Wait until all ranks complete export_model_config step
             if dist.get_rank() == 0:

@@ -96,13 +96,13 @@ This section details the steps to clone and install the Megatron Core.
     git checkout a5415fcfacef2a37416259bd38b7c4b673583675 && \
     pip install .
 
-AMMO Installation
+Model Optimizer Installation
 
-This final step involves installing the AMMO package.
+This final step involves installing the Model Optimizer package.
 
 .. code-block:: bash
 
-    pip install nvidia-ammo~=0.7.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir
+    pip install nvidia-modelopt[torch]~=0.11.0 --extra-index-url https://pypi.nvidia.com
 
 
 .. code-block:: bash

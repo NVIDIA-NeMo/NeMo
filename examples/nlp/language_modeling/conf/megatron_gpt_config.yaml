@@ -52,6 +52,7 @@ exp_manager:
     save_nemo_on_train_end: False # not recommended when training large models on clusters with short time limits
     filename: 'megatron_gpt--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
+    async_save: False # Set to True to enable async checkpoint save. Currently works only with distributed checkpoints
 
 model:
   # use GPTModel from megatron.core

@@ -22,6 +22,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from nemo.collections.asr.data.audio_to_text import _speech_collate_fn
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.mixins import TranscribeConfig, TranscriptionMixin
 from nemo.collections.asr.parts.mixins.transcription import GenericTranscriptionType
@@ -119,6 +120,27 @@ class TranscribableDummy(DummyModel, TranscriptionMixin):
     def _transcribe_on_end(self, trcfg: TranscribeConfig):
         super()._transcribe_on_end(trcfg)
         self.flag_end = True
+
+
+class DummyDataset(Dataset):
+    def __init__(self, audio_tensors: List[str], config: Dict = None):
+        self.audio_tensors = audio_tensors
+        self.config = config
+
+    def __getitem__(self, index):
+        data = self.audio_tensors[index]
+        samples = torch.tensor(data)
+        # Calculate seq length
+        seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
+
+        # Dummy text tokens
+        text_tokens = torch.tensor([0], dtype=torch.long)
+        text_tokens_len = torch.tensor(1, dtype=torch.long)
+
+        return (samples, seq_len, text_tokens, text_tokens_len)
+
+    def __len__(self):
+        return len(self.audio_tensors)
 
 
 @pytest.fixture()
@@ -323,6 +345,30 @@ class TestTranscriptionMixin:
 
         # Numpy array test
         outputs = model.transcribe([audio, audio_2], batch_size=2)
+        assert len(outputs) == 2
+        assert isinstance(outputs[0], str)
+        assert isinstance(outputs[1], str)
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_transcribe_dataloader(self, test_data_dir):
+        model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")
+
+        # Load audio file
+        import soundfile as sf
+
+        audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
+        audio, sr = sf.read(audio_file, dtype='float32')
+
+        audio_file2 = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an152-mwhw-b.wav")
+        audio2, sr = sf.read(audio_file2, dtype='float32')
+
+        dataset = DummyDataset([audio, audio2])
+        collate_fn = lambda x: _speech_collate_fn(x, pad_id=0)
+        dataloader = DataLoader(dataset, batch_size=2, shuffle=False, num_workers=0, collate_fn=collate_fn)
+
+        # DataLoader test
+        outputs = model.transcribe(dataloader, batch_size=1)
         assert len(outputs) == 2
         assert isinstance(outputs[0], str)
         assert isinstance(outputs[1], str)

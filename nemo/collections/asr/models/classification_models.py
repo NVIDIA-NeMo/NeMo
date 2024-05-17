@@ -15,7 +15,6 @@
 import copy
 import json
 import os
-import tempfile
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from math import ceil, floor
@@ -24,6 +23,7 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from pytorch_lightning import Trainer
+from torch.utils.data import DataLoader
 from torchmetrics import Accuracy
 from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError
 
@@ -169,7 +169,8 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):
 
         if not has_processed_signal:
             processed_signal, processed_signal_length = self.preprocessor(
-                input_signal=input_signal, length=input_signal_length,
+                input_signal=input_signal,
+                length=input_signal_length,
             )
         # Crop or pad is always applied
         if self.crop_or_pad is not None:
@@ -355,7 +356,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):
     @torch.no_grad()
     def transcribe(
         self,
-        audio: List[str],
+        audio: Union[List[str], DataLoader],
         batch_size: int = 4,
         logprobs=None,
         override_config: Optional[ClassificationInferConfig] | Optional[RegressionInferConfig] = None,
@@ -364,7 +365,8 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):
         Generate class labels for provided audio files. Use this method for debugging and prototyping.
 
         Args:
-            audio: (a single or list) of paths to audio files or a np.ndarray audio sample. \
+            audio: (a single or list) of paths to audio files or a np.ndarray audio array.
+                Can also be a dataloader object that provides values that can be consumed by the model.
                 Recommended length per file is approximately 1 second.
             batch_size: (int) batch size to use during inference. \
                 Bigger will result in better throughput performance but would use more memory.
@@ -952,7 +954,10 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
 
             shuffle_n = config.get('shuffle_n', 4 * config['batch_size']) if shuffle else 0
             dataset = audio_to_label_dataset.get_tarred_audio_multi_label_dataset(
-                cfg=config, shuffle_n=shuffle_n, global_rank=self.global_rank, world_size=self.world_size,
+                cfg=config,
+                shuffle_n=shuffle_n,
+                global_rank=self.global_rank,
+                world_size=self.world_size,
             )
             shuffle = False
             if hasattr(dataset, 'collate_fn'):
@@ -1022,7 +1027,8 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
 
         if not has_processed_signal:
             processed_signal, processed_signal_length = self.preprocessor(
-                input_signal=input_signal, length=input_signal_length,
+                input_signal=input_signal,
+                length=input_signal_length,
             )
 
         # Crop or pad is always applied
@@ -1124,7 +1130,7 @@ class EncDecFrameClassificationModel(EncDecClassificationModel):
     def reshape_labels(self, logits, labels, logits_len, labels_len):
         """
         Reshape labels to match logits shape. For example, each label is expected to cover a 40ms frame, while each frme prediction from the
-        model covers 20ms. If labels are shorter than logits, labels are repeated, otherwise labels are folded and argmax is applied to obtain 
+        model covers 20ms. If labels are shorter than logits, labels are repeated, otherwise labels are folded and argmax is applied to obtain
         the label of each frame. When lengths of labels and logits are not factors of each other, labels are truncated or padded with zeros.
         The ratio_threshold=0.2 is used to determine whether to pad or truncate labels, where the value 0.2 is not important as in real cases the ratio
         is very close to either ceil(ratio) or floor(ratio). We use 0.2 here for easier unit-testing. This implementation does not allow frame length

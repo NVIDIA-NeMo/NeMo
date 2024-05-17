@@ -186,7 +186,7 @@ class TranscriptionMixin(ABC):
     @torch.no_grad()
     def transcribe(
         self,
-        audio: Union[str, List[str], np.ndarray],
+        audio: Union[str, List[str], np.ndarray, DataLoader],
         batch_size: int = 4,
         return_hypotheses: bool = False,
         num_workers: int = 0,
@@ -201,6 +201,7 @@ class TranscriptionMixin(ABC):
 
         Args:
             audio: (a single or list) of paths to audio files or a np.ndarray audio array.
+                Can also be a dataloader object that provides values that can be consumed by the model.
                 Recommended length per file is between 5 and 25 seconds.
                 But it is possible to pass a few hours long file if enough GPU memory is available.
             batch_size: (int) batch size to use during inference.
@@ -368,7 +369,11 @@ class TranscriptionMixin(ABC):
             with tempfile.TemporaryDirectory() as tmpdir:
                 transcribe_cfg._internal.temp_dir = tmpdir
 
-                dataloader = self._transcribe_input_processing(audio, transcribe_cfg)
+                # Create a DataLoader if not already present
+                if not isinstance(audio, DataLoader):
+                    dataloader = self._transcribe_input_processing(audio, transcribe_cfg)
+                else:
+                    dataloader = audio
 
                 if hasattr(transcribe_cfg, 'verbose'):
                     verbose = transcribe_cfg.verbose

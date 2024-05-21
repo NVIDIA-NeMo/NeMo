@@ -24,6 +24,7 @@ import tensorrt as trt
 import tensorrt_llm
 import torch
 from tensorrt_llm import str_dtype_to_trt
+from tensorrt_llm._common import check_max_num_tokens
 from tensorrt_llm._utils import np_dtype_to_trt
 from tensorrt_llm.builder import BuildConfig, Builder
 from tensorrt_llm.commands.build import build as build_trtllm
@@ -371,6 +372,12 @@ def build_and_save_engine(
     lora_target_modules=None,
     max_prompt_embedding_table_size=0,
     enable_multi_block_mode: bool = False,
+    paged_kv_cache: bool = True,
+    remove_input_padding: bool = True,
+    max_num_tokens: int = None,
+    opt_num_tokens: int = None,
+    max_beam_width: int = 1,
+    tokens_per_block: int = 128,
 ):
     try:
         model_cls = getattr(tensorrt_llm.models, model_config.architecture)
@@ -383,15 +390,30 @@ def build_and_save_engine(
     plugin_config.set_gpt_attention_plugin(dtype=str_dtype)
     plugin_config.set_gemm_plugin(dtype=str_dtype)
     plugin_config.set_plugin("multi_block_mode", enable_multi_block_mode)
-    max_num_tokens = max_batch_size * max_input_len
+    if paged_kv_cache:
+        plugin_config.enable_paged_kv_cache(tokens_per_block=tokens_per_block)
+    else:
+        plugin_config.paged_kv_cache = False
+    plugin_config.remove_input_padding = remove_input_padding
+
+    max_num_tokens, opt_num_tokens = check_max_num_tokens(
+        max_num_tokens=max_num_tokens,
+        opt_num_tokens=opt_num_tokens,
+        max_batch_size=max_batch_size,
+        max_input_len=max_input_len,
+        max_beam_width=max_beam_width,
+        remove_input_padding=remove_input_padding,
+        enable_context_fmha=plugin_config.context_fmha,
+        tokens_per_block=tokens_per_block,
+    )
 
     build_dict = {
         'max_input_len': max_input_len,
         'max_output_len': max_output_len,
         'max_batch_size': max_batch_size,
-        'max_beam_width': 1,
+        'max_beam_width': max_beam_width,
         'max_num_tokens': max_num_tokens,
-        'opt_num_tokens': None,
+        'opt_num_tokens': opt_num_tokens,
         'max_prompt_embedding_table_size': max_prompt_embedding_table_size,
         'gather_context_logits': False,
         'gather_generation_logits': False,

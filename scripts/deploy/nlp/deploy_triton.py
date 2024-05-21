@@ -27,7 +27,8 @@ LOGGER = logging.getLogger("NeMo")
 
 def get_args(argv):
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description=f"Deploy nemo models to Triton",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=f"Deploy nemo models to Triton",
     )
     parser.add_argument("-nc", "--nemo_checkpoint", type=str, help="Source .nemo file")
     parser.add_argument(
@@ -73,6 +74,8 @@ def get_args(argv):
     parser.add_argument("-mil", "--max_input_len", default=256, type=int, help="Max input length of the model")
     parser.add_argument("-mol", "--max_output_len", default=256, type=int, help="Max output length of the model")
     parser.add_argument("-mbs", "--max_batch_size", default=8, type=int, help="Max batch size of the model")
+    parser.add_argument("-mnt", "--max_num_tokens", default=None, type=int, help="Max number of tokens")
+    parser.add_argument("-ont", "--opt_num_tokens", default=None, type=int, help="Optimum number of tokens")
     parser.add_argument(
         "-mpet", "--max_prompt_embedding_table_size", default=None, type=int, help="Max prompt embedding table size"
     )
@@ -80,11 +83,11 @@ def get_args(argv):
         "-upkc", "--use_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
     )
     parser.add_argument(
-        "-dcf",
-        "--disable_context_fmha",
+        "-drip",
+        "--disable_remove_input_padding",
         default=False,
         action='store_true',
-        help="Disable fused Context MultiHeadedAttention (required for V100 support).",
+        help="Disables the remove input padding option.",
     )
     parser.add_argument(
         "-mbm",
@@ -101,7 +104,6 @@ def get_args(argv):
         '--use_lora_plugin',
         nargs='?',
         const=None,
-        default=False,
         choices=['float16', 'float32', 'bfloat16'],
         help="Activates the lora plugin which enables embedding sharing.",
     )
@@ -109,7 +111,16 @@ def get_args(argv):
         '--lora_target_modules',
         nargs='+',
         default=None,
-        choices=["attn_qkv", "attn_q", "attn_k", "attn_v", "attn_dense", "mlp_h_to_4h", "mlp_gate", "mlp_4h_to_h",],
+        choices=[
+            "attn_qkv",
+            "attn_q",
+            "attn_k",
+            "attn_v",
+            "attn_dense",
+            "mlp_h_to_4h",
+            "mlp_gate",
+            "mlp_4h_to_h",
+        ],
         help="Add lora in which modules. Only be activated when use_lora_plugin is enabled.",
     )
     parser.add_argument(
@@ -198,6 +209,29 @@ def nemo_deploy(argv):
     trt_llm_exporter = TensorRTLLM(model_dir=trt_llm_path, lora_ckpt_list=args.lora_ckpt)
 
     if args.nemo_checkpoint is not None:
+
+        trt_llm_exporter.export(
+            nemo_checkpoint_path=args.nemo_checkpoint,
+            model_type=args.model_type,
+            n_gpus=args.num_gpus,
+            tensor_parallel_size=args.num_gpus,
+            pipeline_parallel_size=1,
+            max_input_token=args.max_input_len,
+            max_output_token=args.max_output_len,
+            max_batch_size=args.max_batch_size,
+            max_num_tokens=args.max_num_tokens,
+            opt_num_tokens=args.opt_num_tokens,
+            max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
+            paged_kv_cache=args.use_paged_kv_cache,
+            remove_input_padding=(not args.disable_remove_input_padding),
+            dtype=args.dtype,
+            enable_multi_block_mode=args.multi_block_mode,
+            use_lora_plugin=args.use_lora_plugin,
+            lora_target_modules=args.lora_target_modules,
+            max_lora_rank=args.max_lora_rank,
+            save_nemo_model_config=True,
+        )
+
         try:
             LOGGER.info("Export operation will be started to export the nemo checkpoint to TensorRT-LLM.")
             trt_llm_exporter.export(
@@ -209,9 +243,11 @@ def nemo_deploy(argv):
                 max_input_token=args.max_input_len,
                 max_output_token=args.max_output_len,
                 max_batch_size=args.max_batch_size,
+                max_num_tokens=args.max_num_tokens,
+                opt_num_tokens=args.opt_num_tokens,
                 max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
                 paged_kv_cache=args.use_paged_kv_cache,
-                enable_context_fmha=not args.disable_context_fmha,
+                remove_input_padding=(not args.disable_remove_input_padding),
                 dtype=args.dtype,
                 enable_multi_block_mode=args.multi_block_mode,
                 use_lora_plugin=args.use_lora_plugin,
@@ -236,7 +272,8 @@ def nemo_deploy(argv):
                 )
             )
             trt_llm_exporter.add_prompt_table(
-                task_name=str(task_id), prompt_embeddings_checkpoint_path=prompt_embeddings_checkpoint_path,
+                task_name=str(task_id),
+                prompt_embeddings_checkpoint_path=prompt_embeddings_checkpoint_path,
             )
     except Exception as error:
         LOGGER.error("An error has occurred during adding the prompt embedding table(s). Error message: " + str(error))

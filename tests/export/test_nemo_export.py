@@ -214,6 +214,8 @@ def run_trt_llm_inference(
             max_prompt_embedding_table_size=max_prompt_embedding_table_size,
             use_lora_plugin=use_lora_plugin,
             lora_target_modules=lora_target_modules,
+            max_num_tokens=int(max_input_token * max_batch_size * 0.2),
+            opt_num_tokens=60,
             save_nemo_model_config=True,
         )
 

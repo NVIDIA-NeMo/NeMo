@@ -53,18 +53,20 @@ def get_args(argv):
     parser.add_argument("-mil", "--max_input_len", default=256, type=int, help="Max input length of the model")
     parser.add_argument("-mol", "--max_output_len", default=256, type=int, help="Max output length of the model")
     parser.add_argument("-mbs", "--max_batch_size", default=8, type=int, help="Max batch size of the model")
+    parser.add_argument("-mnt", "--max_num_tokens", default=None, type=int, help="Max number of tokens")
+    parser.add_argument("-ont", "--opt_num_tokens", default=None, type=int, help="Optimum number of tokens")
     parser.add_argument(
         "-mpet", "--max_prompt_embedding_table_size", default=None, type=int, help="Max prompt embedding table size"
     )
     parser.add_argument(
-        "-uib",
-        "--use_inflight_batching",
-        default=False,
-        action='store_true',
-        help="Enable inflight batching for TensorRT-LLM Triton backend.",
+        "-upkc", "--use_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
     )
     parser.add_argument(
-        "-upkc", "--use_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
+        "-drip",
+        "--disable_remove_input_padding",
+        default=False,
+        action='store_true',
+        help="Disables the remove input padding option.",
     )
     parser.add_argument(
         "-mbm",
@@ -141,9 +143,12 @@ def nemo_export_trt_llm(argv):
             max_input_token=args.max_input_len,
             max_output_token=args.max_output_len,
             max_batch_size=args.max_batch_size,
+            max_num_tokens=args.max_num_tokens,
+            opt_num_tokens=args.opt_num_tokens,
             max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
-            use_inflight_batching=args.use_inflight_batching,
             paged_kv_cache=args.use_paged_kv_cache,
+            remove_input_padding=(not args.disable_remove_input_padding),
+            dtype=args.dtype,
             enable_multi_block_mode=args.multi_block_mode,
             use_lora_plugin=args.use_lora_plugin,
             lora_target_modules=args.lora_target_modules,

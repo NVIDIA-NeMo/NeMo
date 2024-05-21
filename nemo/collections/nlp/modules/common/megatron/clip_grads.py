@@ -142,7 +142,7 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
                 grad_norm = torch.zeros(1, device='cuda', dtype=torch.float32).squeeze()
             # Since we will be summing across data parallel groups,
             # we need the pow(norm-type).
-            total_norm = grad_norm ** norm_type
+            total_norm = grad_norm**norm_type
             if use_fsdp:
                 if len(sharded_grads_for_norm) > 0:
                     sharded_grad_norm, _ = multi_tensor_applier(
@@ -150,20 +150,22 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
                     )
                 else:
                     sharded_grad_norm = torch.zeros(1, device='cuda', dtype=torch.float32).squeeze()
-                total_sharded_norm = sharded_grad_norm ** norm_type
+                total_sharded_norm = sharded_grad_norm**norm_type
         else:
             for grad in grads_for_norm:
                 grad_norm = torch.norm(grad, norm_type)
-                total_norm += grad_norm ** norm_type
+                total_norm += grad_norm**norm_type
             if use_fsdp:
                 for grad in sharded_grads_for_norm:
                     grad_norm = torch.norm(grad, norm_type)
-                    total_sharded_norm += grad_norm ** norm_type
+                    total_sharded_norm += grad_norm**norm_type
 
         if use_fsdp:
             # Sum norm of grad shards across data-parallel GPUs.
             torch.distributed.all_reduce(
-                total_sharded_norm, op=torch.distributed.ReduceOp.SUM, group=parallel_state.get_data_parallel_group(),
+                total_sharded_norm,
+                op=torch.distributed.ReduceOp.SUM,
+                group=parallel_state.get_data_parallel_group(with_context_parallel=True),
             )
             total_norm += total_sharded_norm.squeeze()
 

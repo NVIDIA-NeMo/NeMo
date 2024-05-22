@@ -20,6 +20,7 @@ import PIL.Image
 from omegaconf import OmegaConf
 
 from nemo.collections.multimodal.parts.utils import create_neva_model_and_processor
+from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
 
 CFG_STRING = """
 trainer:

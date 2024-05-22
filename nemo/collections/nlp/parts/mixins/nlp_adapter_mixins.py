@@ -30,6 +30,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import PromptEncoderAdapterConfig
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.peft_config import (
     PEFT_CONFIG_MAP,
     CanonicalAdaptersPEFTConfig,
@@ -38,11 +39,13 @@ from nemo.collections.nlp.parts.peft_config import (
     PtuningPEFTConfig,
 )
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
-from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging, model_utils
 
 try:
-    from megatron.core import parallel_state
+    from megatron.core import dist_checkpointing, parallel_state
+
+    HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE = False
 
@@ -56,7 +59,7 @@ def replace_prefix(name, old_prefix, new_prefix):
 
 
 class NLPAdapterModelMixin:
-    """ NLP Adapter Mixin that can augment any transformer-based model with Adapter module support.
+    """NLP Adapter Mixin that can augment any transformer-based model with Adapter module support.
     This mixin class should be used only with a top level ModelPT subclass, that includes either a `model` or an `enc_dec_model` submodule.
     This mixin class adds several utility methods to add, load and save adapters.
 
@@ -92,7 +95,9 @@ class NLPAdapterModelMixin:
         logging.warning("no attribute named model or no model.pre_process found. Can not detect stage of pipeline...")
         return False
 
-    def _get_all_keys(self,):
+    def _get_all_keys(
+        self,
+    ):
         """
         Returns all the keys in the model
         """
@@ -216,15 +221,18 @@ class NLPAdapterModelMixin:
             if hasattr(cfg, "tunable_base_param_names") and cfg.tunable_base_param_names:
                 self.set_tunable_base_params(cfg)
 
-    def _get_config_and_state_dict_from_nemo(self, filepath, map_location):
+    def _get_config_and_state_dict_from_nemo(self, filepath, map_location, sharded_state_dict=None):
         cwd = os.getcwd()
+        save_restore_connector = NLPSaveRestoreConnector()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
-                SaveRestoreConnector._unpack_nemo_file(filepath, tmpdir)
+                if os.path.isfile(filepath):
+                    save_restore_connector._unpack_nemo_file(path2file=filepath, out_folder=tmpdir)
+                else:
+                    tmpdir = filepath
 
                 os.chdir(tmpdir)
-
                 config_yaml = "model_config.yaml"
                 model_weights_ckpt = "model_weights.ckpt"
 
@@ -233,7 +241,22 @@ class NLPAdapterModelMixin:
                 os.chdir(cwd)
                 model_weights = os.path.join(tmpdir, model_weights_ckpt)
                 model_weights = inject_model_parallel_rank(model_weights)
-                state_dict = torch.load(model_weights, map_location=map_location)
+                state_dict = save_restore_connector._load_state_dict_from_disk(
+                    model_weights, map_location=map_location
+                )
+
+                # distributed checkpointing
+                if state_dict is None and sharded_state_dict is not None:
+                    checkpoint = dict(state_dict=sharded_state_dict)
+                    tmp_model_weights_ckpt = os.path.join(tmpdir, save_restore_connector.model_weights_ckpt)
+                    tmp_model_weights_dir = os.path.splitext(tmp_model_weights_ckpt)[0]
+                    assert os.path.isdir(tmp_model_weights_dir), f'Expected {tmp_model_weights_dir} to be a directory.'
+                    checkpoint = dist_checkpointing.load(
+                        sharded_state_dict=checkpoint,
+                        checkpoint_dir=tmp_model_weights_dir,
+                    )
+                    state_dict = checkpoint["state_dict"]
+
                 return conf, state_dict
             finally:
                 os.chdir(cwd)
@@ -271,7 +294,10 @@ class NLPAdapterModelMixin:
             super().setup_optimizer_param_groups()
 
     def load_adapters(
-        self, filepath: str, peft_cfgs: Optional[Union[PEFTConfig, List[PEFTConfig]]] = None, map_location: str = None,
+        self,
+        filepath: str,
+        peft_cfgs: Optional[Union[PEFTConfig, List[PEFTConfig]]] = None,
+        map_location: str = None,
     ):
         """
         Utility method that restores only the adapter module(s), and not the entire model itself.

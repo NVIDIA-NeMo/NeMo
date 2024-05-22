@@ -78,6 +78,7 @@ try:
     from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     from nemo.core.optim.distributed_adam import MegatronDistributedFusedAdam
+    from nemo.core.optim.mcore_optim import McoreDistributedOptimizer
 
     HAVE_APEX = True
 
@@ -183,6 +184,7 @@ class NLPDDPStrategy(DDPStrategy):
         no_ddp_communication_hook: bool = False,
         nccl_communicator_config_path: Optional[str] = None,
         sharp: bool = False,
+        dist_ckpt_parallel_save: bool = False,
         **kwargs: Union[Any, Dict[str, Any]],
     ) -> None:
         if not HAVE_APEX:
@@ -199,6 +201,7 @@ class NLPDDPStrategy(DDPStrategy):
         self.no_ddp_communication_hook = no_ddp_communication_hook
         self.nccl_communicator_config_path = nccl_communicator_config_path
         self.sharp = sharp
+        self._dist_ckpt_parallel_save = dist_ckpt_parallel_save
 
     def setup(self, trainer: "pl.Trainer") -> None:
         """
@@ -276,7 +279,7 @@ class NLPDDPStrategy(DDPStrategy):
             else:
                 super().configure_ddp()
 
-    def optimizer_sharded_state_dict(self, unsharded_optim_state=None):
+    def optimizer_sharded_state_dict(self, unsharded_optim_state=None, is_loading=False):
         """
         Sharded state dictionary for an MainParamsOptimizerWrapper.
         Used to save and load the optimizer state when training with distributed_checkpoint.
@@ -294,8 +297,14 @@ class NLPDDPStrategy(DDPStrategy):
         model_sharded_state_dict = {
             key: value for key, value in model_sharded_state_dict.items() if not key.endswith('_extra_state')
         }
-
-        if isinstance(optimizer, MegatronDistributedFusedAdam):
+        if isinstance(optimizer, McoreDistributedOptimizer):
+            return optimizer.sharded_state_dict(
+                model_sharded_state_dict,
+                unsharded_optim_state,
+                is_loading=is_loading,
+                dist_ckpt_parallel_save=self._dist_ckpt_parallel_save,
+            )
+        elif isinstance(optimizer, MegatronDistributedFusedAdam):
             return optimizer.sharded_state_dict(model_sharded_state_dict, unsharded_optim_state)
         elif not isinstance(optimizer, MainParamsOptimizerWrapper):
             # Regular optimizer, e.g. Adam or FusedAdam
@@ -501,7 +510,7 @@ class NLPDDPStrategy(DDPStrategy):
 
             # after dist_checkpointing.load, sharded tensors will be replaced with tensors
             checkpoint['state_dict'] = sharded_state_dict
-            checkpoint['optimizer_states'] = [self.optimizer_sharded_state_dict()]
+            checkpoint['optimizer_states'] = [self.optimizer_sharded_state_dict(is_loading=True)]
 
             if self._check_param_groups_mismatch(checkpoint_path, checkpoint):
                 return self._fix_param_groups(checkpoint_path, checkpoint)

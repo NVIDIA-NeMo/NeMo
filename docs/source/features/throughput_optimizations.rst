@@ -71,8 +71,8 @@ target length (i.e. efficient packing), then use shuffle. Otherwise try *first_f
         python scripts/nlp_language_modeling/prepare_packed_ft_dataset.py \
            model.data.train_ds.file_names=[/path/to/training.jsonl] \
            model.data.train_ds.max_seq_length=2048 \
-           model.restore_from_path=<path/to/nemo_model> \
-           +output_dir=<output_folder>
+           +tokenizer_path=/path/to/tokenizer.model \
+           +output_dir=/path/to/output_folder \
            +pack_sizes=[2048,4096,8192] \
         [  +packing_algorithm=first_fit_shuffle \  ]
         [  +seed=0                                 ]
@@ -86,10 +86,7 @@ target length (i.e. efficient packing), then use shuffle. Otherwise try *first_f
     to the size of packed sequence (``pack_size``). ``max_seq_length`` should be set to the same value as unpacked data,
     and can be determined by examining the distribution of sequence lengths in the dataset.
 
-    Note 3. Currently, we require a full nemo model file for simplicity and readability of code, but in theory only a
-    tokenizer file is needed. This part can be improved in a future iteration of the script.
-
-    Note 4. ``pack_sizes`` is a list of packed sequence lengths. In this example, there will be three output files, one for
+    Note 3. ``pack_sizes`` is a list of packed sequence lengths. In this example, there will be three output files, one for
     each pack size. The output files are named ``<output_folder>/packed_{pack_size}_seed{seed}.npy``.
     This argument is a list because you will likely want to experiment with a few ``pack_sizes`` to find out which length
     can fill the GPU memory without exceeding it. Adjusting ``pack_size`` is analogous to adjusting the micro batch size in

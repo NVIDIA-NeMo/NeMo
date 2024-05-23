@@ -12,19 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import collections
 import os
 from dataclasses import dataclass
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
-from tqdm import tqdm
 
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
-from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset import GPTSFTDataset
+from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-from nemo.utils.exp_manager import exp_manager
+from nemo.utils.sequence_packing_utils import create_hist, create_packing_strategy, fill_packing_strategy
+
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
 
 """ 
 Script to prepare packed dataset from a SFT/PEFT dataset in the jsonl format.
@@ -45,146 +46,71 @@ Example usage:
 python scripts/nlp_language_modeling/prepare_packed_ft_dataset.py \
    model.data.train_ds.file_names=[/path/to/training.jsonl] \
    model.data.train_ds.max_seq_length=2048 \
-   model.restore_from_path=<path/to/nemo_model> \
-   +output_dir=<output_folder> 
+   +tokenizer_path=/path/to/tokenizer.model
+   +output_dir=/path/to/output_folder
    +pack_sizes=[2048,4096,8192]
    
 Note: 
-- pack_sizes can take in a list 
-- model.data.train_ds.max_seq_length is the length to truncate long sequences before packing, and is different from the packing sizes
-- currenlty, we require a full nemo model file for simplicity and readability of code, but in theory only a tokenizer file is needed.
-  This part can be improved in a future iteration of the script.
+  - If your model or dataset requires non-default configs for conventional SFT/PEFT training in NeMo, you will
+    need to pass in the same configs to ``model.data.train_ds`` as you would for training with unpacked dataset.
+
+  - ``model.data.train_ds.max_seq_length`` is the length to truncate each sequence before packing multiple sequences
+    to the size of packed sequence (``pack_size``). ``max_seq_length`` should be set to the same value as unpacked data,
+    and can be determined by examining the distribution of sequence lengths in the dataset.
+
+  - ``pack_sizes`` is a list of packed sequence lengths. In this example, there will be three output files, one for
+    each pack size. The output files are named ``<output_folder>/packed_{pack_size}_seed{seed}.npy``.
+    This argument is a list because you will likely want to experiment with a few ``pack_sizes`` to find out which length
+    can fill the GPU memory without exceeding it. Adjusting ``pack_size`` is analogous to adjusting the micro batch size in
+    the unpacked case.
 """
 
-PACKING_ALGOS = ['first_fit_decreasing', 'first_fit_shuffle']
 
+def tokenize_dataset(cfg: 'DictConfig'):
+    """
+    Tokenizes a dataset using the same configuration file as finetuninng with GPTSFTDataset.
 
-def find_first_bin_that_fits(bins, s, bin_size):
-    for i, abin in enumerate(bins):
-        if sum(abin) + s <= bin_size:
-            return i
-    return -1
+    This function reads a dataset and tokenizes it using SentencePiece tokenizer based on the provided configuration.
 
+    Args:
+      cfg: A Hydra configuration object containing parameters for tokenization.
 
-def first_fit(seqlens, pack_size):
-    res = []
-    for s in seqlens:
-        first_bin = find_first_bin_that_fits(res, s, pack_size)
-        if first_bin == -1:  # open a new bin
-            res.append([s])
-        else:
-            res[first_bin].append(s)
-    return res
+    Returns:
+      A NumPy array containing the tokenized sequences from the dataset.
+    """
 
-
-def first_fit_decreasing(seqlens, pack_size):
-    sorted_seqlens = sorted(seqlens, reverse=True)
-    return first_fit(sorted_seqlens, pack_size)
-
-
-def first_fit_shuffle(seqlens, pack_size):
-    shuffled_seqlens = seqlens[:]
-    np.random.shuffle(shuffled_seqlens)
-    return first_fit(shuffled_seqlens, pack_size)
-
-
-def create_assignment(output_path, assignments, ifile_handles):
-    n_samples_in_this_shard = len(assignments)
-    input_ids, loss_mask, seq_start_id = {}, {}, {}
-
-    for oindex, assignment in tqdm(enumerate(assignments), total=n_samples_in_this_shard):
-        _input_ids, _loss_mask, _seq_start_id = [], [], [0]
-
-        for seq_length in assignment:
-            _input_ids.extend(ifile_handles[seq_length][0].pop())
-            _loss_mask.extend(ifile_handles[seq_length][1].pop())
-            _seq_start_id.append(len(_input_ids))
-
-        input_ids[oindex] = _input_ids
-        loss_mask[oindex] = _loss_mask
-        seq_start_id[oindex] = _seq_start_id[:-1]
-
-    output_data = []
-    for i in range(len(input_ids)):
-        item_dict = {'input_ids': input_ids[i], 'loss_mask': loss_mask[i], 'seq_start_id': seq_start_id[i]}
-        output_data.append(item_dict)
-
-    assert all(not seq[0] for seq in ifile_handles.values()), "Error: There are items left over from the assignment"
-    assert all(not seq[1] for seq in ifile_handles.values()), "Error: There are items left over from the assignment"
-    np.save(output_path, output_data)
-    logging.info(f"Done, output written to {output_path}")
-
-
-def tokenize_dataset(cfg):
     logging.info("Tokenizing dataset...")
     # using the same template as SFT/PEFT script. This may be overkill but guarantees the preprocess settings
     # are identical to normal SFT training
-    trainer = MegatronLMPPTrainerBuilder(cfg).create_trainer()
-    exp_manager(trainer, cfg.exp_manager)
-
-    model_cfg = MegatronGPTSFTModel.merge_cfg_with(cfg.model.restore_from_path, cfg)
-    model = MegatronGPTSFTModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
-
-    # we set is_train=False to turn off samples mapping and get the actual length of train dataset
-    train_ds = model._build_dataset(cfg.model.data.train_ds, is_train=False)[0]
-    return np.array([train_ds[i] for i in range(len(train_ds))])
-
-
-def create_hist(dataset, truncate_seq_len):
-    logging.info("Creating histogram from tokenized dataset...")
-
-    sequences = collections.defaultdict(list)
-    counts = [0] * truncate_seq_len
-
-    for item_dict in dataset:
-        seq_len = len(item_dict['input_ids']) - 1
-        sequences[seq_len].append(item_dict)
-        counts[seq_len] += 1
-
-    logging.info("Histogram of sequence lengths")
-    logging.info(counts)
-
-    histogram = []
-    for seq_len in range(truncate_seq_len):
-        histogram.append(len(sequences[seq_len]))
-
-    return sequences, histogram
-
-
-def run_packing(sequences, histogram, output_dir, pack_size, packing_algorithm, seed=0):
-    logging.info(f"Packing sequences to length {pack_size}...")
-
-    all_seq_lens = []
-    for i, count in enumerate(histogram):
-        all_seq_lens.extend([i] * count)
-
-    packing_fn = globals()[packing_algorithm]
-    assignments = packing_fn(all_seq_lens, pack_size)
-    packed_seq_lens = [sum(x) for x in assignments]
-    packing_factor = len(all_seq_lens) / len(packed_seq_lens)
-
-    logging.info("Packed sequence lengths:")
-    logging.info(packed_seq_lens)
-    logging.info(
-        f">>>>> For pack size {pack_size}, average number of sequences per pack is n = {packing_factor} <<<<<"
+    data_cfg = cfg.model.data.train_ds
+    dataset = GPTSFTDataset(
+        file_path=data_cfg.file_names[0],
+        tokenizer=get_nmt_tokenizer(library="sentencepiece", tokenizer_model=cfg.tokenizer_path),
+        max_seq_length=data_cfg.max_seq_length,
+        min_seq_length=data_cfg.min_seq_length,
+        pad_seq_length_to_mult=16,  # adds padding in collate_fn so this value is irrelevant here
+        add_bos=data_cfg.get('add_bos', False),
+        add_eos=data_cfg.get('add_eos', True),
+        add_sep=data_cfg.get('add_sep', False),
+        sep_id=cfg.get('sep_id', 49704),
+        max_num_samples=None,
+        seed=data_cfg.get('seed', 1234),
+        label_key=data_cfg.get('label_key', 'answer'),
+        answer_only_loss=cfg.get('answer_only_loss', True),
+        truncation_field=data_cfg.get('truncation_field', 'text'),
+        pad_to_max_length=data_cfg.get('pad_to_max_length', False),
+        index_mapping_dir=data_cfg.get('index_mapping_dir', None),
+        prompt_template=data_cfg.get('prompt_template', None),
+        virtual_tokens=0,
+        tokens_to_generate=data_cfg.get('tokens_to_generate', 0),
+        memmap_workers=data_cfg.get('memmap_workers', None),
+        hf_dataset=data_cfg.get('hf_dataset', False),
+        truncation_method=data_cfg.get('truncation_method', 'right'),
+        special_tokens=data_cfg.get('chat_prompt_tokens', None),
+        is_test=True,
     )
 
-    ifile_handles = {}
-    for seq_len in tqdm(range(pack_size + 1)):
-        per_seq_data = sequences[seq_len]
-        if len(per_seq_data) > 0:
-            input_ids = np.array([x['input_ids'] for x in per_seq_data])
-            loss_mask = np.array(
-                [[idx >= x['answer_start_idx'] for idx in range(len(x['input_ids']))] for x in per_seq_data]
-            )
-            perm = np.random.permutation(len(input_ids))
-            ifile_handles[seq_len] = (input_ids[perm].tolist(), loss_mask[perm].tolist())
-        else:
-            ifile_handles[seq_len] = [], []
-
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f'packed_{pack_size}_seed{seed}.npy')
-    create_assignment(output_path, assignments, ifile_handles)
+    return np.array([dataset[i] for i in range(len(dataset))])
 
 
 @dataclass
@@ -194,7 +120,7 @@ class PackingArgs:
     packing_algorithm: str = "first_fit_shuffle"
     seed: int = 0
 
-    def from_config(self, cfg):
+    def from_config(self, cfg: 'DictConfig'):
         for required_arg in ('output_dir', 'pack_sizes'):
             assert cfg.get(required_arg, None), f"Please specify +{required_arg}=..."
         self.output_dir = cfg.output_dir
@@ -207,12 +133,20 @@ class PackingArgs:
 @hydra_runner(
     config_path="../../examples/nlp/language_modeling/tuning/conf", config_name="megatron_gpt_finetuning_config"
 )
-def main(cfg) -> None:
+def main(cfg: 'DictConfig') -> None:
     args = PackingArgs().from_config(cfg)
     dataset = tokenize_dataset(cfg)
     sequences, histogram = create_hist(dataset, cfg.model.data.train_ds.max_seq_length)
     for pack_size in args.pack_sizes:
-        run_packing(sequences, histogram, args.output_dir, pack_size, args.packing_algorithm, args.seed)
+        assignments = create_packing_strategy(histogram, pack_size, args.packing_algorithm)
+        output_data = fill_packing_strategy(assignments, sequences, pack_size)
+
+        # save output data
+        os.makedirs(args.output_dir, exist_ok=True)
+        output_path = os.path.join(args.output_dir, f'packed_{pack_size}_seed{args.seed}.npy')
+        np.save(output_path, output_data)
+        logging.info(f"Done, output written to {output_path}")
+
     logging.info(
         f"""
 ✅ Packed datasets with pack sizes {args.pack_sizes} are prepared successfully.
@@ -221,7 +155,9 @@ To train with packed sequences, you need to change three things in the SFT/PEFT 
    > +model.data.train_ds.packed_sequence=True
 2. Use the new dataset file instead of the original jsonl file
    > model.data.train_ds.file_names=/path/to/packed_dataset.npy
-3. Adjust the batch sizes. 
+3. Specify the packed sequence length. This should be one of the ``pack_sizes`` you specified during data preparation.
+   > model.data.train_ds.max_seq_length=<pack_size>
+4. Adjust the batch sizes. 
    Micro batch size has to be set to 1 as a nominal constraint. This is because batches are now concatenated 
    in the preprocessing step. You can increase the pack_size to achieve the same purpose of increasing micro batch size.
    Global batch size has to be reduced by the average number of sequences per pack `n`, 

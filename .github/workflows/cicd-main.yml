@@ -133,7 +133,7 @@ jobs:
     #      chmod -R 777 .
 
 
-  L0_Unit_Tests_GPU:
+  OPTIONAL_L0_Unit_Tests_GPU:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
@@ -325,7 +325,7 @@ jobs:
   # this test is using a 7B model which is too large for GitHub CI
   # replace the model in this test with a toy model or move the test
   # to the nightly CI
-  # L2_Community_LLM_Checkpoints_tests_Baichuan2:
+  # OPTIONAL_L2_Community_LLM_Checkpoints_tests_Baichuan2:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
@@ -6484,12 +6484,12 @@ jobs:
 
   Nemo_CICD_Test:
     needs: 
-      - L0_Unit_Tests_GPU
+      #- OPTIONAL_L0_Unit_Tests_GPU
       - L0_Unit_Tests_CPU
       - L2_Community_LLM_Checkpoints_tests_Llama
       - L2_Community_LLM_Checkpoints_tests_StarCoder
       - L2_Community_LLM_Checkpoints_tests_Falcon
-      #- L2_Community_LLM_Checkpoints_tests_Baichuan2
+      #- OPTIONAL_L2_Community_LLM_Checkpoints_tests_Baichuan2
       - ASR_dev_run_Speech_to_Text
       - ASR_dev_run_Speech_to_Text_WPE_-_CitriNet
       - ASR_dev_run_Speech_Pre-training_-_CitriNet

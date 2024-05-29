@@ -61,7 +61,7 @@ def load_config(hf_model_name, nemo_config):
     hf_config.num_key_value_heads = nemo_config.num_query_groups
     hf_config.num_local_experts = nemo_config.num_moe_experts
     assert hf_config.num_local_experts > 0, "num_experts must be greater than zero."
-    hf_config.num_experts_per_tok = nemo_config.num_experts_per_token
+    hf_config.num_experts_per_tok = nemo_config.moe_router_topk
     assert hf_config.num_experts_per_tok > 0, "num_experts_per_token must be greater than zero."
     if nemo_config.activation == 'fast-swiglu':
         hf_config.activation = 'silu'
@@ -122,6 +122,7 @@ def convert(in_file, precision=None) -> None:
         embed_weights_base_name = f'model.language_model.embedding.word_embeddings.weight'
     state_dict[hf_embed_weight_name] = param_to_weights(ckpt[embed_weights_base_name])
 
+    head_num = model.cfg.num_attention_heads
     if nemo_config.num_query_groups is None or nemo_config.num_query_groups == head_num:
         num_query_groups = head_num
     else:

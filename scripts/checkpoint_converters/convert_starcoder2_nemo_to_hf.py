@@ -266,7 +266,7 @@ if __name__ == '__main__':
     config = load_config(args.hf_model_name, nemo_config)
     model = AutoModelForCausalLM.from_config(config)
     model.load_state_dict(hf_state_dict, strict=True)
-    model.save_pretrained(args.out_file)
+    model.save_pretrained(args.output_path)
     hf_tokenizer = AutoTokenizer.from_pretrained('bigcode/starcoder2-tokenizer')
     hf_tokenizer.save_pretrained(args.output_path)
     logging.info(f'HF checkpoint saved to: {args.output_path}')

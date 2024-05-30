@@ -23,9 +23,23 @@ import yaml
 from transformers import FalconConfig, GPT2Config, LlamaConfig
 
 from nemo.export.tarutils import TarPath
-from nemo.export.trt_llm.nemo.convert import cpu_map_location, gpu_map_location
 
 LOGGER = logging.getLogger("NeMo")
+
+
+def cpu_map_location(storage, loc):
+    return storage.cpu()
+
+
+def gpu_map_location(storage, loc):
+    if loc.startswith("cuda"):
+        training_gpu_idx = int(loc.split(":")[1])
+        inference_gpu_idx = training_gpu_idx % torch.cuda.device_count()
+        return storage.cuda(inference_gpu_idx)
+    elif loc.startswith("cpu"):
+        return storage.cpu()
+    else:
+        raise ValueError(f"Not handled {loc}")
 
 
 def nemo_to_llm_config(nemo_model_config, vocab_size, eos_id, bos_id, decoder_type):

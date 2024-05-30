@@ -28,14 +28,11 @@ import wrapt
 
 from nemo.deploy import ITritonDeployable
 from nemo.export.tarutils import TarPath, unpack_tarball
-from nemo.export.trt_llm.model_config_trt import model_config_to_tensorrt_llm
-from nemo.export.trt_llm.nemo.nemo_ckpt_convert import build_tokenizer
-from nemo.export.trt_llm.nemo_utils import get_tokenzier, nemo_llm_model_to_model_config, nemo_to_trtllm_config
+from nemo.export.trt_llm.nemo_utils import get_tokenzier, is_nemo_file, nemo_to_trtllm_config
 from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
 from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
-from nemo.export.trt_llm.tensorrt_llm_run import generate, generate_streaming, load, load_refit
-from nemo.export.trt_llm.utils import is_nemo_file
+from nemo.export.trt_llm.tensorrt_llm_run import generate, generate_streaming, load
 
 use_deploy = True
 try:
@@ -277,70 +274,6 @@ class TensorRTLLM(ITritonDeployable):
 
         if load_model:
             self._load()
-
-    def build(
-        self,
-        nemo_model,
-        nemo_model_config,
-        tokenizer=None,
-        max_input_token: int = 256,
-        max_output_token: int = 256,
-        max_batch_size: int = 8,
-        use_refit: bool = False,
-        model_type: str = "gptnext",
-    ):
-        from megatron.core import parallel_state
-
-        self.use_refit = use_refit
-        self.stream = torch.cuda.Stream()
-        self.model_type = model_type
-        self.tokenizer = build_tokenizer(tokenizer)
-
-        # Each model shard has its own directory
-        if parallel_state.get_data_parallel_world_size() > 1:
-            self.model_dir = os.path.join(self.model_dir, f"dp{parallel_state.get_data_parallel_rank()}")
-        if parallel_state.get_tensor_model_parallel_world_size() > 1:
-            self.model_dir = os.path.join(self.model_dir, f"tp{parallel_state.get_tensor_model_parallel_rank()}")
-        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
-            self.model_dir = os.path.join(self.model_dir, f"pp{parallel_state.get_pipeline_model_parallel_rank()}")
-
-        # Build or refit TRT-LLM engine from a nemo model.
-        model_configs = nemo_llm_model_to_model_config(
-            nemo_model=nemo_model,
-            decoder_type=model_type,
-            nemo_model_config=nemo_model_config,
-        )
-
-        model_config_to_tensorrt_llm(
-            model_configs,
-            self.model_dir,
-            max_input_len=max_input_token,
-            max_output_len=max_output_token,
-            max_batch_size=max_batch_size,
-            max_beam_width=1,
-            max_prompt_embedding_table_size=0,
-            use_refit=self.use_refit,
-        )
-        # Use load_refit to handle multiprocessed environment
-        self.model = load_refit(
-            tokenizer=self.tokenizer, engine_dir=self.model_dir, model_configs=model_configs, stream=self.stream
-        )
-
-    def refit(
-        self,
-        nemo_model,
-        nemo_model_config,
-    ):
-        assert self.use_refit, "TRT-LLM model must be built() with refit=True"
-
-        # Build or refit TRT-LLM engine from a nemo model.
-        model_configs = nemo_llm_model_to_model_config(
-            nemo_model=nemo_model, decoder_type=self.model_type, nemo_model_config=nemo_model_config
-        )
-
-        self.model = load_refit(
-            tokenizer=self.tokenizer, engine_dir=self.model_dir, model_configs=model_configs, stream=self.stream
-        )
 
     def forward(
         self,

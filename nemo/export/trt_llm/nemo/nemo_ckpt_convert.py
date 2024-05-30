@@ -35,7 +35,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, GPT2Tokenizer, LlamaConfig
 
 from nemo.export.tarutils import TarPath, ZarrPathStore
-from nemo.export.trt_llm.nemo.convert import save_weight_torch, split_and_save_weight
+from nemo.export.trt_llm.nemo.convert import split_and_save_weight
 from nemo.export.trt_llm.nemo.nemo import UnpackedNemoCheckpointDir, extract_layers_with_prefix, nemo_to_llm_config
 from nemo.export.trt_llm.nemo.sentencepiece_tokenizer import SentencePieceTokenizer
 

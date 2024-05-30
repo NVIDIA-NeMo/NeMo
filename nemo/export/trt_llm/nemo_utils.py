@@ -14,20 +14,16 @@
 
 
 import argparse
-import copy
 import csv
 import datetime
 import logging
 import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import tensorrt_llm
-from tensorrt_llm import str_dtype_to_trt
 from tensorrt_llm._utils import pad_vocab_size
 from tensorrt_llm.functional import non_gated_version
 from tensorrt_llm.layers import MoeConfig
@@ -35,22 +31,77 @@ from tensorrt_llm.models.modeling_utils import PretrainedConfig
 from transformers import AutoTokenizer, LlamaConfig, PreTrainedTokenizer
 
 from nemo.export.tarutils import TarPath
-from nemo.export.trt_llm.decoder import DECODER_MODEL_TYPE
-from nemo.export.trt_llm.model_config import (
-    LAYERNORM_DEFAULT,
-    LAYERNORM_RMS,
-    LINEAR_COLUMN,
-    DecoderLayerConfig,
-    EmbeddingConfig,
-    LayernormConfig,
-    LinearConfig,
-    ModelConfig,
-)
 from nemo.export.trt_llm.nemo.nemo import UnpackedNemoCheckpointDir
-from nemo.export.trt_llm.nemo.nemo_ckpt_convert import build_tokenizer, convert_dist_checkpoint, convert_nemo_model
-from nemo.export.trt_llm.tensor_utils import get_tensor_from_dict, get_tensor_parallel_group, split
+from nemo.export.trt_llm.nemo.nemo_ckpt_convert import build_tokenizer, convert_dist_checkpoint
+
+
+DECODER_MODEL_TYPE = {
+    "gptj": 'GPTForCausalLM',
+    "gptnext": 'GPTForCausalLM',
+    "llama": 'LLaMAForCausalLM',
+    "gemma": 'GemmaForCausalLM',
+    "falcon": 'FalconForCausalLM',
+}
 
 LOGGER = logging.getLogger("NeMo")
+
+
+def prompt_convert(prompt_config, prompt_weights):
+    if "task_templates" in prompt_config:
+        prompt_templates = prompt_config["task_templates"]
+        actual_task_id = 0
+        vtokens_embeddings = []
+        vtokens_len = []
+        for task_name_id, prompt_task in enumerate(prompt_templates):
+            prompt_task_name = prompt_task["taskname"]
+            LOGGER.info(f"Task {actual_task_id}: {prompt_task['taskname']}")
+            prompt_task_weights = prompt_weights["prompt_table"].get(
+                f"prompt_table.{prompt_task_name}.prompt_embeddings.weight"
+            )
+            if prompt_task_weights is None:
+                continue
+            vtokens_embeddings.append(prompt_task_weights)
+            vtokens_len.append(prompt_task_weights.shape[0])
+            actual_task_id += 1
+
+        max_vtoken_len = max(vtokens_len)
+        embedding_dim = vtokens_embeddings[0].shape[1]
+
+        # pad tasks to longest task embedding table
+        for i, vtoken_emb_table in enumerate(vtokens_embeddings):
+            padded_table = torch.zeros((max_vtoken_len, embedding_dim))
+            padded_table[: vtoken_emb_table.shape[0], :] = vtoken_emb_table
+            vtokens_embeddings[i] = padded_table
+
+        vtokens_embeddings = torch.stack(vtokens_embeddings)
+    else:
+        vtokens_embeddings = prompt_weights["prompt_embeddings_weights"]
+
+    return vtokens_embeddings
+
+
+def is_nemo_file(path):
+    flag = False
+
+    if path is not None:
+        if len(path) > 5:
+            pc = pathlib.Path(path)
+            if pc.exists():
+                if pc.is_file():
+                    if path[-5 : len(path)] == ".nemo":
+                        flag = True
+
+    return flag
+
+
+def split(v, tp_size, idx, dim=0):
+    """Splits the np tensor v on dim and return the idx's slice."""
+    if tp_size == 1:
+        return v
+    if len(v.shape) == 1:
+        return np.ascontiguousarray(np.split(v, tp_size)[idx])
+    else:
+        return np.ascontiguousarray(np.split(v, tp_size, axis=dim)[idx])
 
 
 def _nemo_llm_decode(
@@ -123,83 +174,6 @@ def get_tokenzier(tokenizer_dir_or_path: Path) -> PreTrainedTokenizer:
     return build_tokenizer(tokenizer_config)
 
 
-def nemo_llm_to_model_config(
-    in_file: str,
-    decoder_type: str,
-    nemo_export_dir: Union[str, Path],
-    dtype: str = "bfloat16",
-    tensor_parallel_size: int = 1,
-    pipeline_parallel_size: int = 1,
-    save_nemo_model_config: bool = False,
-) -> Tuple[List[ModelConfig], PreTrainedTokenizer]:
-    """Converts the NEMO file and construct the `ModelConfig` before tensorrt_llm deployment."""
-    dtype_str = dtype
-
-    weights_dict, llm_model_config, tokenizer = _nemo_llm_decode(
-        in_file=in_file,
-        out_dir=nemo_export_dir,
-        tensor_parallelism=tensor_parallel_size,
-        processes=1,
-        storage_type=dtype_str,
-        load_checkpoints_on_gpu=False,
-        decoder_type=decoder_type,
-        save_nemo_model_config=save_nemo_model_config,
-    )
-
-    world_size = tensor_parallel_size * pipeline_parallel_size
-    model_config_template = ModelConfig()
-    model_config_template.dtype = dtype_str
-
-    str_dtype_to_trt(dtype_str)
-
-    model_configs = []
-    for i in range(world_size):
-
-        model_configs.append(copy.deepcopy(model_config_template))
-
-        model_configs[i].vocab_embedding = EmbeddingConfig(weight=get_tensor_from_dict(weights_dict, "wte"))
-
-        model_configs[i].positional_embedding = EmbeddingConfig(weight=get_tensor_from_dict(weights_dict, "wpe"))
-
-        model_configs[i].final_layernorm = LayernormConfig(
-            weight=get_tensor_from_dict(weights_dict, "final_layernorm.weight"),
-            bias=get_tensor_from_dict(weights_dict, "final_layernorm.bias"),
-        )
-        model_configs[i].final_layernorm.layernorm_type = (
-            LAYERNORM_RMS if isinstance(llm_model_config, LlamaConfig) else LAYERNORM_DEFAULT
-        )
-        model_configs[i].mapping = tensorrt_llm.Mapping(
-            world_size=world_size, rank=i, tp_size=tensor_parallel_size, pp_size=pipeline_parallel_size
-        )
-
-    for i in range(llm_model_config.n_layer):
-        for j in range(world_size):
-            model_configs[j].layers.append(
-                DecoderLayerConfig.from_nemo(
-                    weights_dict=weights_dict,
-                    llm_config=llm_model_config,
-                    decoder_type=decoder_type,
-                    layer_id=i,
-                    rank=model_configs[j].mapping.tp_rank,
-                    is_mcore=llm_model_config.is_mcore,
-                )
-            )
-
-    lm_head_weight = get_tensor_from_dict(weights_dict, "lm_head.weight")
-
-    if model_configs[0].vocab_size_padded != model_configs[0].vocab_size:
-        pad_width = model_configs[0].vocab_size_padded - model_configs[0].vocab_size
-        lm_head_weight = np.pad(lm_head_weight, ((0, pad_width), (0, 0)), "constant", constant_values=0)
-
-    for i in range(world_size):
-        model_configs[i].lm_head = LinearConfig(linear_type=LINEAR_COLUMN)
-        model_configs[i].lm_head.weight = np.ascontiguousarray(
-            split(lm_head_weight, model_configs[i].mapping.tp_size, model_configs[i].mapping.tp_rank)
-        )
-
-    return model_configs, tokenizer
-
-
 def to_word_list_format(
     word_dict: List[List[str]],
     tokenizer=None,
@@ -256,83 +230,6 @@ def to_word_list_format(
         offsets[i] = np.pad(offs, (0, pad_to - len(offs)), constant_values=-1)
 
     return np.array([flat_ids, offsets], dtype="int32").transpose((1, 0, 2))
-
-
-def nemo_llm_model_to_model_config(
-    nemo_model: str,
-    decoder_type: str,
-    nemo_model_config: str,
-    dtype_str: str = "float32",
-) -> Tuple[List[ModelConfig], PreTrainedTokenizer]:
-    """Converts the NEMO model object and construct the `ModelConfig` before tensorrt_llm deployment."""
-    from megatron.core import parallel_state
-
-    assert nemo_model_config is not None, "gpt_model_config must be provided when in is a nemo model"
-
-    weights_dict, llm_model_config = convert_nemo_model(nemo_model, nemo_model_config, dtype_str, decoder_type)
-    is_mcore = nemo_model_config.get("mcore_gpt", False)
-    llm_model_config.is_mcore = is_mcore
-
-    model_config = ModelConfig()
-    model_config.use_prompt_tuning = False
-    model_config.dtype = dtype_str
-    model_config.use_parallel_embedding = True
-    str_dtype_to_trt(dtype_str)
-
-    model_config.vocab_embedding = EmbeddingConfig(weight=get_tensor_from_dict(weights_dict, "wte"), is_local=True)
-
-    model_config.positional_embedding = EmbeddingConfig(
-        weight=get_tensor_from_dict(weights_dict, "wpe"), is_local=True
-    )
-
-    model_config.final_layernorm = LayernormConfig(
-        weight=get_tensor_from_dict(weights_dict, "final_layernorm.weight"),
-        bias=get_tensor_from_dict(weights_dict, "final_layernorm.bias"),
-    )
-    model_config.final_layernorm.layernorm_type = (
-        LAYERNORM_RMS if isinstance(llm_model_config, LlamaConfig) else LAYERNORM_DEFAULT
-    )
-
-    tensor_parallel_size = nemo_model_config.tensor_model_parallel_size
-    pipeline_parallel_size = 1
-    world_size = tensor_parallel_size * pipeline_parallel_size
-
-    # hack since tensorrt_llm doesnt support DP natively so init all ranks with DP=1
-    model_config.mapping = tensorrt_llm.Mapping(
-        world_size=tensor_parallel_size * pipeline_parallel_size,
-        rank=tensorrt_llm.mpi_rank() % world_size,
-        tp_size=tensor_parallel_size,
-        pp_size=pipeline_parallel_size,
-    )
-    model_config.mapping.rank = tensorrt_llm.mpi_rank()
-    model_config.mapping.tp_group = get_tensor_parallel_group(tensor_parallel_size)
-
-    LOGGER.info(
-        f'''Resharing: Rank {tensorrt_llm.mpi_rank()} mapping:
-        tp_rank  {parallel_state.get_tensor_model_parallel_rank()} -> {model_config.mapping.tp_rank},
-        pp_rank  {parallel_state.get_pipeline_model_parallel_rank()} -> {model_config.mapping.pp_rank},
-        tp_group {model_config.mapping.tp_group}'''
-    )
-
-    for i in range(llm_model_config.n_layer):
-        model_config.layers.append(
-            DecoderLayerConfig.from_nemo(
-                weights_dict=weights_dict,
-                llm_config=llm_model_config,
-                decoder_type=decoder_type,
-                layer_id=i,
-                rank=model_config.mapping.tp_rank,
-                is_mcore=llm_model_config.is_mcore,
-            )
-        )
-    lm_head_weight = get_tensor_from_dict(weights_dict, "lm_head.weight")
-
-    assert model_config.vocab_size_padded == model_config.vocab_size
-
-    model_config.lm_head = LinearConfig(linear_type=LINEAR_COLUMN)
-    model_config.lm_head.weight = lm_head_weight
-
-    return [model_config]
 
 
 def nemo_to_trtllm_config(

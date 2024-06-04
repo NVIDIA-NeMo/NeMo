@@ -88,7 +88,9 @@ class TranscriptionConfig:
 
     # Chunked configs
     chunk_len_in_secs: float = 40.0  # Chunk length in seconds
-    model_stride: int = 8  # Model downsampling factor, 8 for Citrinet and FasConformer models and 4 for Conformer models.
+    model_stride: int = (
+        8  # Model downsampling factor, 8 for Citrinet and FasConformer models and 4 for Conformer models.
+    )
 
     # Decoding strategy for MultitaskAED models
     decoding: MultiTaskDecodingConfig = MultiTaskDecodingConfig()
@@ -209,7 +211,12 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     with autocast(dtype=amp_dtype):
         with torch.no_grad():
             hyps = get_buffered_pred_feat_multitaskAED(
-                frame_asr, model_cfg.preprocessor, model_stride_in_secs, asr_model.device, manifest, filepaths,
+                frame_asr,
+                model_cfg.preprocessor,
+                model_stride_in_secs,
+                asr_model.device,
+                manifest,
+                filepaths,
             )
 
     output_filename, pred_text_attr_name = write_transcription(

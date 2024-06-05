@@ -129,7 +129,10 @@ In addition to supervised fine-tuning (SFT), NeMo also supports the latest param
 LLMs and MMs Deployment and Optimization
 ########################################
 
-NeMo LLMs and MMs can be deployed and optimized with `NVIDIA Inference Microservices (Early Access) <https://developer.nvidia.com/nemo-microservices-early-access>`_, in short, NIMs.
+NeMo LLMs and MMs can be deployed and optimized with `NVIDIA NeMo Microservices <https://developer.nvidia.com/nemo-microservices-early-access>`_.
+
+Speech AI
+#########
 
 NeMo ASR and TTS models can be optimized for inference and deployed for production use cases with `NVIDIA Riva <https://developer.nvidia.com/riva>`_.
 
@@ -198,7 +201,7 @@ The NeMo Framework can be installed in a variety of ways, depending on your need
 
 * Conda / Pip - Refer to `Conda <#conda>`_ and `Pip <#pip>`_ for installation instructions.
 
-  * This is the recommended method for Automatic Speech Recognition (ASR) and Text-to-Speech (TTS) domains.
+  * This is the recommended method for ASR and TTS domains.
   * When using a Nvidia PyTorch container as the base, this is the recommended method for all domains.
 
 * Docker Containers - Refer to `Docker containers <#docker-containers>`_ for installation instructions.
@@ -207,7 +210,7 @@ The NeMo Framework can be installed in a variety of ways, depending on your need
 
 * LLMs and MMs Dependencies - Refer to `LLMs and MMs Dependencies <#install-llms-and-mms-dependencies>`_ for installation instructions.
 
-**Important: We strongly recommended that you start with a base NVIDIA PyTorch container: `nvcr.io/nvidia/pytorch:24.02-py3`**
+**Important: We strongly recommended that you start with a base NVIDIA PyTorch container: nvcr.io/nvidia/pytorch:24.02-py3.**
 
 Conda
 ^^^^^^
@@ -439,11 +442,7 @@ Transformer Engine requires PyTorch to be built with at least CUDA 11.8.
 Megatron Core
 ^^^^^^^^^^^^^
 
-Megatron Core is required for LLM and MM domains.
-
-Megatron Core is a library for scaling large Transformer-based models. NeMo LLMs and MMs leverage Megatron Core for model parallelism, 
-
-transformer architectures, and optimized PyTorch datasets.
+Megatron Core is required for LLM and MM domains. Megatron Core is a library for scaling large Transformer-based models. NeMo LLMs and MMs leverage Megatron Core for model parallelism, transformer architectures, and optimized PyTorch datasets.
 
 To install Megatron Core, run the following code:
 
@@ -464,18 +463,13 @@ NeMo Text Processing, specifically Inverse Text Normalization, is now a separate
 Docker Containers
 -----------------
 
-NeMo containers are launched concurrently with NeMo version updates. For example, the release of NeMo ``r1.23.0`` comes with the container ``nemo:24.01.speech``. The latest containers are:
-
-* NeMo LLM and MM container - `nvcr.io/nvidia/nemo:24.03.framework`
-* NeMo Speech container - `nvcr.io/nvidia/nemo:24.01.speech`
-
-You can find additional information about released containers on the `NeMo releases page <https://github.com/NVIDIA/NeMo/releases>`_.
+NeMo containers are launched concurrently with NeMo version updates. NeMo Framework now supports LLMs, MMs, ASR, and TTS in a single consolidated Docker container. You can find additional information about released containers on the `NeMo releases page <https://github.com/NVIDIA/NeMo/releases>`_.
 
 To use a pre-built container, run the following code:
 
 .. code-block:: bash
 
-    docker pull nvcr.io/nvidia/nemo:24.01.speech
+    docker pull nvcr.io/nvidia/nemo:24.05
 
 To build a nemo container with Dockerfile from a branch, run the following code:
 

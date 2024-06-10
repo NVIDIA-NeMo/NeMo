@@ -37,7 +37,7 @@ class Mistral7BConfig(GPTConfig):
 
 class Mistral7BModel(GPTModel):
     def __init__(self, config: Optional[Mistral7BConfig] = None, tokenizer=None):
-        _tokenizer = tokenizer or HFMistral7BImporter().tokenizer
+        _tokenizer = tokenizer or HFMistral7BImporter("mistralai/Mistral-7B-v0.1").tokenizer
 
         super().__init__(config or Mistral7BConfig(), _tokenizer)
 
@@ -55,6 +55,8 @@ class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
         self.nemo_save(output_path, trainer)
+
+        print(f"Converted Mistral 7B model to Nemo, model saved to {output_path}")
 
         teardown(trainer, target)
         del trainer, target

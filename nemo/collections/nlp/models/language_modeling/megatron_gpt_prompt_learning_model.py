@@ -44,6 +44,7 @@ from nemo.collections.nlp.modules.common.transformer.text_generation import Leng
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler, NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
+from nemo.utils.decorators import deprecated_warning
 
 try:
     from apex.transformer.pipeline_parallel.utils import get_micro_batch_size, get_num_microbatches
@@ -72,25 +73,28 @@ __all__ = ['MegatronGPTPromptLearningModel']
 
 class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
     """
-    Model class for prompt-tuning or p-tuning a pretrained Megatron GPT model. 
+    Model class for prompt-tuning or p-tuning a pretrained Megatron GPT model.
 
     Prompt Tuning initalizes virtual prompt embeddings directly from a copy of
     certain token embeddings from the the pretrained GPT model's vocabulary
-    and directly tunes these embedding weights. The token embeddings used in 
-    initalization are specified by the user in the config file. The model can 
-    be prompt-tuned for multiple tasks at once. virtual prompts are stored in a 
-    prompt table and can be added or deleted without disrupting virtual prompts 
-    for other tasks. 
+    and directly tunes these embedding weights. The token embeddings used in
+    initalization are specified by the user in the config file. The model can
+    be prompt-tuned for multiple tasks at once. virtual prompts are stored in a
+    prompt table and can be added or deleted without disrupting virtual prompts
+    for other tasks.
 
     P-tuning initializes an LSTM encoder model that generates virtual prompt
     embeddings for every task. Each task shares the same encoder. After ptuning
     is compelete, the learned virtual prompts can be saved to the prompt table
-    using add_ptuned_prompts_to_prompt_table(). Thus, if a user wants to add a 
-    new virtual prompt via p-tuning, they do not need to retrain on all previous 
+    using add_ptuned_prompts_to_prompt_table(). Thus, if a user wants to add a
+    new virtual prompt via p-tuning, they do not need to retrain on all previous
     tasks. This gives p-tuning the same task flexiblity as prompt-tuning.
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
+        # deprecation warning
+        deprecated_warning("MegatronGPTPromptLearningModel")
+
         super().__init__(cfg, trainer)
 
         self.inference_params = None
@@ -305,8 +309,8 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
 
     def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
         """
-            Dataloader produces a global batch which is turned into an iterator of microbatches.
-            The iterator of microbatches is then piped through the pipeline using Core's fwd/bwd functions.
+        Dataloader produces a global batch which is turned into an iterator of microbatches.
+        The iterator of microbatches is then piped through the pipeline using Core's fwd/bwd functions.
         """
         # Get seq length of batch
         batch, _, _ = next(dataloader_iter)
@@ -361,15 +365,15 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         return loss_mean
 
     def backward(self, *args, **kwargs):
-        """ LightningModule hook to do backward.
-            We want this to do nothing since we run backward in the fwd/bwd functions from megatron-core.
-            No need to call it here.
+        """LightningModule hook to do backward.
+        We want this to do nothing since we run backward in the fwd/bwd functions from megatron-core.
+        No need to call it here.
         """
         return
 
     def optimizer_zero_grad(self, *args, **kwargs):
-        """ LightningModule hook to zero grad.
-            We want this to do nothing as we are zeroing grads during the training_step.
+        """LightningModule hook to zero grad.
+        We want this to do nothing as we are zeroing grads during the training_step.
         """
         return
 
@@ -415,11 +419,19 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
                 labels_text.append(label)
             if mode == 'val':
                 self.validation_step_outputs.append(
-                    {'loss': loss_mean, 'preds': preds_text, 'labels': labels_text,}
+                    {
+                        'loss': loss_mean,
+                        'preds': preds_text,
+                        'labels': labels_text,
+                    }
                 )
             else:
                 self.test_step_outputs.append(
-                    {'loss': loss_mean, 'preds': preds_text, 'labels': labels_text,}
+                    {
+                        'loss': loss_mean,
+                        'preds': preds_text,
+                        'labels': labels_text,
+                    }
                 )
             return {
                 'loss': loss_mean,
@@ -427,8 +439,10 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
                 'labels': labels_text,
             }
 
-        self.validation_step_outputs.append({'loss': loss_mean}) if mode == 'val' else self.test_step_outputs.append(
-            {'loss': loss_mean}
+        (
+            self.validation_step_outputs.append({'loss': loss_mean})
+            if mode == 'val'
+            else self.test_step_outputs.append({'loss': loss_mean})
         )
         return {'loss': loss_mean}
 
@@ -481,7 +495,8 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
                 gather_results_dedup = list(set(itertools.chain(*gather_results)))
 
                 val_metric_dict = self.validation_metric.get_score(
-                    [i[1] for i in gather_results_dedup], [i[0] for i in gather_results_dedup],
+                    [i[1] for i in gather_results_dedup],
+                    [i[0] for i in gather_results_dedup],
                 )
 
                 for metric, val in val_metric_dict.items():
@@ -638,9 +653,9 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             drop_last=drop_last,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            persistent_workers=True
-            if num_workers > 0
-            else False,  # (@adithyare and @eharper) We need this to make spawn=True to work.
+            persistent_workers=(
+                True if num_workers > 0 else False
+            ),  # (@adithyare and @eharper) We need this to make spawn=True to work.
         )
 
         return dataset, dataloader
@@ -815,7 +830,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
 def get_pseudo_tokens(num_virtual_tokens):
     """
     Takes in an integer and returns a list of strings where each string
-    is a numbered virtual token placeholder. If 
+    is a numbered virtual token placeholder. If
     num_virtual_tokens = 3, then this function returns:
 
     ["<prompt_0>", "<prompt_1>", "<prompt_2>"]
@@ -823,7 +838,7 @@ def get_pseudo_tokens(num_virtual_tokens):
     Args:
         num_virtual_tokens: (int) Number of virtual token strings you want to make
 
-    returns a list of string. 
+    returns a list of string.
 
     """
     pseudo_tokens = [

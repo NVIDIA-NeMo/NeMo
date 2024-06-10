@@ -21,27 +21,31 @@ import torch
 
 from nemo.collections.nlp.data.dialogue.dataset.dialogue_dataset import DialogueDataset
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 
 class DialogueGPTClassificationDataset(DialogueDataset):
     '''
     Designed for classification tasks such as intent/domain classification as well as slot tagging
 
-    Dataset Class 
+    Dataset Class
         1. Performs Model-dependent (but Data-independent) operations (tokenization etc)
         2. This can allow the same model preprocessing for multiple datasources
-        3. Users can configurate which labels to use for modelling 
+        3. Users can configurate which labels to use for modelling
             (e.g. intent classification, slot filling or both together etc)
     '''
 
     def __init__(self, dataset_split: str, dialogues_processor: object, tokenizer, cfg):
-        """ Constructor
+        """Constructor
         Args:
             dataset_split: dataset split
             dialogues_processor: Data generator for SGD dialogues
             tokenizer: tokenizer
             cfg: cfg container for dataset
         """
+        # deprecation warning
+        deprecated_warning("DialogueGPTClassificationDataset")
+
         self.cfg = cfg
 
         if self.cfg.target_template == "with_slots" and self.cfg.eval_mode != "generation":
@@ -229,19 +233,18 @@ class DialogueGPTClassificationDataset(DialogueDataset):
         return all_items
 
     def __getitem__(self, idx: int):
-
         '''
         State how the input and output samples look like
 
         This template can be changed
 
-        Training example: 
+        Training example:
             e.g. <utterance> service: restaurant
             e.g. <task description> <utterance> service: restaurant
             e.g. <utterance>\nintent: set alarm\nslots: <slot_name1>(<slot_value1>), <slot_name1>(<slot_value1>)
 
         Generation example:
-            e.g. <utterance> service: 
+            e.g. <utterance> service:
 
         '''
         ex = self.features[idx].data

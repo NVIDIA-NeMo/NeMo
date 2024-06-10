@@ -21,12 +21,12 @@ from nemo.collections.nlp.data.data_utils import get_stats
 from nemo.collections.nlp.data.dialogue.dataset.dialogue_dataset import DialogueDataset
 from nemo.core.neural_types import ChannelType, LabelsType, MaskType, NeuralType
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueBERTDataset', 'DialogueIntentSlotInferenceDataset']
 
 
 class DialogueBERTDataset(DialogueDataset):
-
     """
     Creates a dataset to use for the task of joint intent
     and slot classification with pretrained model.
@@ -37,8 +37,7 @@ class DialogueBERTDataset(DialogueDataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-               """
+        """Returns definitions of module output ports."""
         return {
             'input_ids': NeuralType(('B', 'T'), ChannelType()),
             'segment_ids': NeuralType(('B', 'T'), ChannelType()),
@@ -57,6 +56,9 @@ class DialogueBERTDataset(DialogueDataset):
             tokenizer: tokenizer
             cfg: config container for dataset
         """
+        # deprecation warning
+        deprecated_warning("DialogueBERTDataset")
+
         self.cfg = cfg
         self.all_possible_labels = dialogues_processor.intents
         self.label_to_label_id = {self.all_possible_labels[i]: i for i in range(len(self.all_possible_labels))}
@@ -183,7 +185,7 @@ class DialogueBERTDataset(DialogueDataset):
         ignore_start_end=False,
     ):
         """
-        Convert queries (utterance, intent label and slot labels) to BERT input format 
+        Convert queries (utterance, intent label and slot labels) to BERT input format
         """
 
         all_subtokens = []
@@ -297,7 +299,7 @@ class DialogueIntentSlotInferenceDataset(DialogueBERTDataset):
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """
-            Returns definitions of module output ports.
+        Returns definitions of module output ports.
         """
         return {
             'input_ids': NeuralType(('B', 'T'), ChannelType()),
@@ -308,6 +310,9 @@ class DialogueIntentSlotInferenceDataset(DialogueBERTDataset):
         }
 
     def __init__(self, queries, max_seq_length, tokenizer, do_lower_case):
+        # deprecation warning
+        deprecated_warning("DialogueIntentSlotInferenceDataset")
+
         if do_lower_case:
             queries = [query.lower() for query in queries]
 

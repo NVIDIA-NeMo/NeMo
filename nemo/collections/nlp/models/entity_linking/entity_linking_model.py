@@ -26,6 +26,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.neural_types import LogitsType, NeuralType
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['EntityLinkingModel']
 
@@ -43,6 +44,9 @@ class EntityLinkingModel(NLPModel, Exportable):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         """Initializes the SAP-BERT model for entity linking."""
+
+        # deprecation warning
+        deprecated_warning("EntityLinkingModel")
 
         # tokenizer needed before super().__init__() so dataset and loader can process data
         self._setup_tokenizer(cfg.tokenizer)
@@ -123,7 +127,7 @@ class EntityLinkingModel(NLPModel, Exportable):
         Args:
             outputs: list of individual outputs of each validation step.
         Returns:
-            
+
         """
         if self.validation_step_outputs:
             avg_loss = torch.stack(

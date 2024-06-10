@@ -13,6 +13,6 @@
 # limitations under the License.
 
 
-from nemo.utils.decorators.deprecated import deprecated
+from nemo.utils.decorators.deprecated import deprecated, deprecated_warning
 from nemo.utils.decorators.experimental import experimental
 from nemo.utils.decorators.port_docs import add_port_docs

@@ -19,15 +19,16 @@ from ast import literal_eval
 
 from nemo.collections.nlp.data.dialogue.data_processor.data_processor import DialogueDataProcessor
 from nemo.collections.nlp.data.dialogue.input_example.input_example import DialogueInputExample
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueMSMarcoDataProcessor']
 
 
 class DialogueMSMarcoDataProcessor(DialogueDataProcessor):
     """Data Processor for MS Marco dialogues. (https://github.com/microsoft/MSMARCO-Question-Answering)
-       Please agree to the Terms of Use before downloading data at 
-       https://msmarco.blob.core.windows.net/msmarco/train_v2.1.json.gz
-       https://msmarco.blob.core.windows.net/msmarco/dev_v2.1.json.gz
+    Please agree to the Terms of Use before downloading data at
+    https://msmarco.blob.core.windows.net/msmarco/train_v2.1.json.gz
+    https://msmarco.blob.core.windows.net/msmarco/dev_v2.1.json.gz
     """
 
     def __init__(self, data_dir: str, tokenizer: object, cfg=None):
@@ -39,6 +40,9 @@ class DialogueMSMarcoDataProcessor(DialogueDataProcessor):
             debug_mode: reduce number of samples to load in order to increase speed of processing
             cfg: cfg container for dataset
         """
+        # deprecation warning
+        deprecated_warning("DialogueMSMarcoDataProcessor")
+
         self.data_dir = data_dir
         self._tokenizer = tokenizer
         self.cfg = cfg
@@ -55,7 +59,7 @@ class DialogueMSMarcoDataProcessor(DialogueDataProcessor):
     def get_dialog_examples(self, dataset_split: str):
         """
         Process raw files into DialogueInputExample
-        Args: 
+        Args:
             dataset_split: {train, dev, test}
         For the MS Marco dataset, there is no explicit dev set (instead uses the test set as the dev set)
         Therefore, this function creates a dev set and a new train set from the train set.

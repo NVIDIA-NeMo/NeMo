@@ -5,7 +5,7 @@ trainer:
   devices: 1
   num_nodes: 1
   accelerator: gpu
-  precision: 16
+  precision: bf16
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
@@ -41,7 +41,7 @@ exp_manager:
 
 model:
   # model parallelism 
-  mcore_bert: False
+  mcore_bert: True
   micro_batch_size: 4
   global_batch_size: 8
   tensor_model_parallel_size: 1
@@ -85,7 +85,7 @@ model:
   fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
 
   # Megatron O2-style half-precision
-  megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
+  megatron_amp_O2: True # Enable O2-level automatic mixed precision using main parameters
   grad_allreduce_chunk_size_mb: 125
   grad_div_ar_fusion: False 
 

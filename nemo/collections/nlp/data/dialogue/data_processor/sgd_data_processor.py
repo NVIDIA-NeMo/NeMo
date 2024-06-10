@@ -28,6 +28,7 @@ from nemo.collections.nlp.data.dialogue.data_processor.data_processor import Dia
 from nemo.collections.nlp.data.dialogue.input_example.input_example import DialogueInputExample
 from nemo.collections.nlp.data.dialogue.sgd.schema import Schema
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 from nemo.utils.get_rank import is_global_rank_zero
 
 __all__ = ['DialogueSGDDataProcessor']
@@ -51,7 +52,7 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
         #   git clone https://github.com/google-research-datasets/dstc8-schema-guided-dialogue.git
 
     ***Data format***
-    SGD data comes with a JSON schema file and dialogue files for each dataset split. 
+    SGD data comes with a JSON schema file and dialogue files for each dataset split.
 
     In the following we will show an example for a service entry in the schema file.
     * service_name
@@ -70,7 +71,7 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
         * result_slots (not used)
 
 
-    In the following we will show an example for a dialogue. 
+    In the following we will show an example for a dialogue.
     * dialogue_id
     * services
     * turns
@@ -87,14 +88,18 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
             * state
                 * active_intent
                 * requeste_slots
-                * slot_values 
+                * slot_values
         * speaker - [USER, SYSTEM]
         * utterance
 
     """
 
     def __init__(
-        self, data_dir: str, dialogues_example_dir: str, tokenizer: object, cfg=None,
+        self,
+        data_dir: str,
+        dialogues_example_dir: str,
+        tokenizer: object,
+        cfg=None,
     ):
         """
         Constructs DialogueSGDDataProcessor
@@ -104,6 +109,9 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
             tokenizer: tokenizer object
             cfg: cfg container for dataset
         """
+        # deprecation warning
+        deprecated_warning("DialogueSGDDataProcessor")
+
         self.data_dir = data_dir
         self.cfg = cfg
 
@@ -213,7 +221,7 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
 
     def get_dialog_examples(self, dataset_split: str) -> List[object]:
         """
-        Loads preprocessed dialogue examples from disk. 
+        Loads preprocessed dialogue examples from disk.
         Args:
             dataset_split: dataset split
         Returns:
@@ -260,7 +268,7 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
         Returns a list of `InputExample`s of the data splits' dialogues.
         Args:
             dataset_split: data split, can be "train", "dev", or "test".
-            schemas: schema for all services of all datasets 
+            schemas: schema for all services of all datasets
             subsample: whether to balance postive and negative samples in the dataset
         Returns:
             examples: a list of `InputExample`s.
@@ -447,9 +455,9 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
                 "example_id_num": example_id_num,
                 "utterance": user_utterance,
                 "system_utterance": system_utterance,
-                "system_slots": {slot["slot"]: slot for slot in system_frame["slots"]}
-                if system_frame is not None
-                else None,
+                "system_slots": (
+                    {slot["slot"]: slot for slot in system_frame["slots"]} if system_frame is not None else None
+                ),
                 "system_actions": system_frame["actions"] if system_frame is not None else None,
                 "labels": {
                     "service": service,
@@ -464,9 +472,11 @@ class DialogueSGDDataProcessor(DialogueDataProcessor):
                         for intent in schemas.get_service_schema(service).intents
                     ],
                     "slots": {
-                        slot: schemas.get_service_schema(service).get_categorical_slot_values(slot)
-                        if slot in categorical_slots
-                        else []
+                        slot: (
+                            schemas.get_service_schema(service).get_categorical_slot_values(slot)
+                            if slot in categorical_slots
+                            else []
+                        )
                         for slot in all_possible_slots
                     },
                 },

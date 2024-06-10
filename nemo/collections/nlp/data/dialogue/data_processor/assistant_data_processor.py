@@ -17,6 +17,7 @@ import os
 
 from nemo.collections.nlp.data.dialogue.data_processor.data_processor import DialogueDataProcessor
 from nemo.collections.nlp.data.dialogue.input_example.input_example import DialogueInputExample
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueAssistantDataProcessor']
 
@@ -31,6 +32,9 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
             data_dir: path to data directory
             tokenizer: tokenizer object
         """
+        # deprecation warning
+        deprecated_warning("DialogueAssistantDataProcessor")
+
         self.data_dir = data_dir
         self._tokenizer = tokenizer
         self.cfg = cfg
@@ -69,16 +73,15 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
 
     @staticmethod
     def get_continuous_slots(slot_ids, empty_slot_id, bio_slot_ids_to_unified_slot_ids):
-
         """
         Extract continuous spans of slot_ids
 
-        To accomodate slots with distinct labels for B-label1 and I-label1, 
+        To accomodate slots with distinct labels for B-label1 and I-label1,
         slot_id = self.bio_slot_ids_to_unified_slot_ids[slot_id] is called to map them both to label1
-        
+
         Args:
             Slot: list of int representing slot of each word token
-            For instance, 54 54 54 54 54 54 54 54 18 54 44 44 54 46 46 54 12 
+            For instance, 54 54 54 54 54 54 54 54 18 54 44 44 54 46 46 54 12
             Corresponds to "please set an alarm clock for my next meeting with the team at three pm next friday"
             Except for the empty_slot_id (54 in this case), we hope to extract the continuous spans of tokens,
             each containing a start position and an exclusive end position
@@ -124,7 +127,7 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
     def get_dialog_examples(self, dataset_split: str):
         """
         Process raw files into DialogueInputExample
-        Args: 
+        Args:
             dataset_split: {train, dev, test}
         For the assistant dataset, there is no explicit dev set (instead uses the test set as the dev set)
         Therefore, this function creates a dev set and a new train set from the train set.
@@ -177,7 +180,11 @@ class DialogueAssistantDataProcessor(DialogueDataProcessor):
                 "labels": {"service": intent.split('_')[0], "intent": intent, "slots": slot_to_words},
                 "label_positions": {
                     "slots": {
-                        slot: {"start": position[0], "exclusive_end": position[1], "slot": slot,}
+                        slot: {
+                            "start": position[0],
+                            "exclusive_end": position[1],
+                            "slot": slot,
+                        }
                         for slot, position in slot_to_start_and_exclusive_end.items()
                     }
                 },

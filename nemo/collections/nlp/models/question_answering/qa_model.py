@@ -32,6 +32,7 @@ from nemo.collections.nlp.modules.common import TokenClassifier
 from nemo.collections.nlp.parts.utils_funcs import tensor2list
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['QAModel']
 
@@ -42,6 +43,9 @@ class QAModel(NLPModel):
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        # deprecation warning
+        deprecated_warning("QAModel")
+
         super().__init__(cfg=cfg, trainer=trainer)
         self.classifier = TokenClassifier(
             hidden_size=self.hidden_size,
@@ -186,7 +190,7 @@ class QAModel(NLPModel):
             num_samples: number of samples to use of inference data. Default: -1 if all data should be used.
             output_nbest_file: optional output file for writing out nbest list
             output_prediction_file: optional output file for writing out predictions
-            
+
         Returns:
             model predictions, model nbest list
         """

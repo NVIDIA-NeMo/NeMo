@@ -17,6 +17,7 @@
 import torch
 
 from nemo.collections.nlp.data.dialogue.dataset.dialogue_dataset import DialogueDataset
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueNearestNeighbourDataset']
 
@@ -33,6 +34,9 @@ class DialogueNearestNeighbourDataset(DialogueDataset):
             dialogues_processor: Data generator for dialogues
             tokenizer: tokenizer to split text into sub-word tokens
         """
+        # deprecation warning
+        deprecated_warning("DialogueNearestNeighbourDataset")
+
         self.cfg = cfg
         self.tokenizer = tokenizer
         self.raw_features = dialogues_processor.get_dialog_examples(dataset_split)

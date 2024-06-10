@@ -28,10 +28,13 @@ from nemo.collections.nlp.models.language_modeling.megatron_t5_model import Mega
 from nemo.collections.nlp.models.question_answering.qa_base_model import BaseQAModel
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 
 class S2SQAModel(BaseQAModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        # deprecation warning
+        deprecated_warning("S2SQAModel")
 
         self.cfg = cfg
 
@@ -120,7 +123,11 @@ class S2SQAModel(BaseQAModel):
 
         eval_dataset = self._test_dl.dataset if self.trainer.testing else self._validation_dl.dataset
         eval_results, _, _ = self.evaluate(
-            eval_dataset.features, eval_dataset.examples, unique_ids, per_sample_perplexity, generated_answers,
+            eval_dataset.features,
+            eval_dataset.examples,
+            unique_ids,
+            per_sample_perplexity,
+            generated_answers,
         )
 
         self.log(f'{prefix}_loss', avg_loss)
@@ -145,7 +152,11 @@ class S2SQAModel(BaseQAModel):
             labels = torch.where(labels != -100, labels, torch.zeros_like(labels))
             output_attn_masks = torch.where(labels > 0, torch.ones_like(labels), torch.zeros_like(labels))
             unmasked_unreduced_loss = self.language_model(
-                input_ids, labels[:, :-1], input_attn_mask, output_attn_masks[:, :-1], lm_labels=labels[:, 1:],
+                input_ids,
+                labels[:, :-1],
+                input_attn_mask,
+                output_attn_masks[:, :-1],
+                lm_labels=labels[:, 1:],
             )
             loss = self.language_model.loss_func(output_attn_masks[:, 1:], unmasked_unreduced_loss)
             per_sample_perplexity = torch.exp(unmasked_unreduced_loss)
@@ -210,10 +221,19 @@ class S2SQAModel(BaseQAModel):
         return all_predictions, all_nbest_predictions
 
     def evaluate(
-        self, features, examples, unique_ids, per_sample_perplexity, generated_texts,
+        self,
+        features,
+        examples,
+        unique_ids,
+        per_sample_perplexity,
+        generated_texts,
     ):
         all_predictions, all_nbest_json = self._get_predictions(
-            features, examples, unique_ids, per_sample_perplexity, generated_texts,
+            features,
+            examples,
+            unique_ids,
+            per_sample_perplexity,
+            generated_texts,
         )
 
         eval_results = QAMetrics.evaluate_predictions(examples, all_predictions)
@@ -251,7 +271,12 @@ class S2SQAModel(BaseQAModel):
         return data_loader
 
     def _get_predictions(
-        self, features, examples: List, unique_ids: List[int], per_sample_perplexity: List, generated_texts: List,
+        self,
+        features,
+        examples: List,
+        unique_ids: List[int],
+        per_sample_perplexity: List,
+        generated_texts: List,
     ):
 
         unique_id_to_pos = {}
@@ -268,7 +293,7 @@ class S2SQAModel(BaseQAModel):
 
         all_predictions = collections.OrderedDict()
         all_nbest_json = collections.OrderedDict()
-        for (example_index, example) in enumerate(examples):
+        for example_index, example in enumerate(examples):
 
             # finish this loop if we went through all batch examples
             if example_index >= len(unique_ids):
@@ -276,7 +301,7 @@ class S2SQAModel(BaseQAModel):
 
             curr_features = example_index_to_features[example_index]
             prelim_predictions = []
-            for (feature_index, feature) in enumerate(curr_features):
+            for feature_index, feature in enumerate(curr_features):
                 pos = unique_id_to_pos[feature.unique_id]
                 curr_perplexity = per_sample_perplexity[pos]
                 curr_generated_text = generated_texts[pos]
@@ -339,7 +364,10 @@ class S2SQAModel(BaseQAModel):
                 "max_length": num_tokens_to_generate,
             }
             generated_tokens = self.language_model.generate(**param_dict)
-            generated_answers = self.tokenizer.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True,)
+            generated_answers = self.tokenizer.tokenizer.batch_decode(
+                generated_tokens,
+                skip_special_tokens=True,
+            )
             generated_answers = [ans.strip() for ans in generated_answers]
 
         elif self.cfg.library == 'megatron':

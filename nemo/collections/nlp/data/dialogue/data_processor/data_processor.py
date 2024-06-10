@@ -17,6 +17,7 @@
 import random
 
 from nemo.collections.nlp.data.data_utils.data_preprocessing import DataProcessor
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueDataProcessor']
 
@@ -40,6 +41,9 @@ class DialogueDataProcessor(DataProcessor):
     """
 
     def __init__(self):
+        # deprecation warning
+        deprecated_warning("DialogueDataProcessor")
+
         raise NotImplementedError()
 
     def get_train_examples(self):
@@ -58,8 +62,8 @@ class DialogueDataProcessor(DataProcessor):
     def get_relevant_idxs(dataset_split, n_samples, dev_proportion):
         """
         Obtain indexes for each dataset_split, when train and dev sets are not in separate files
-        
-        Args: 
+
+        Args:
             dataset_split: train, dev or test
             n_samples: total number of samples
             dev_proportion: value from 1 to 99 that represent proportion of data in dev set

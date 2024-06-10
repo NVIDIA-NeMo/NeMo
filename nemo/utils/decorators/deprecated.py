@@ -30,14 +30,14 @@ _PRINTED_WARNING = {}
 
 def deprecated(wrapped=None, version=None, explanation=None, wait_seconds=0):
     """
-        Decorator which can be used for indicating that a function/class is deprecated and going to be removed.
-        Tracks down which function/class printed the warning and will print it only once per call.
+    Decorator which can be used for indicating that a function/class is deprecated and going to be removed.
+    Tracks down which function/class printed the warning and will print it only once per call.
 
-        Args:
-          version: Version in which the function/class will be removed (optional).
-          explanation: Additional explanation, e.g. "Please, ``use another_function`` instead." (optional).
-          wait_seconds: Sleep for a few seconds after the deprecation message appears in case it gets drowned
-          with subsequent logging messages.
+    Args:
+      version: Version in which the function/class will be removed (optional).
+      explanation: Additional explanation, e.g. "Please, ``use another_function`` instead." (optional).
+      wait_seconds: Sleep for a few seconds after the deprecation message appears in case it gets drowned
+      with subsequent logging messages.
     """
 
     if wrapped is None:
@@ -71,3 +71,26 @@ def deprecated(wrapped=None, version=None, explanation=None, wait_seconds=0):
         return wrapped(*args, **kwargs)
 
     return wrapper(wrapped)
+
+
+def deprecated_warning(old_method=None, new_method=None, wait_seconds=2):
+    """
+    Function which can be used for indicating that a function/class is deprecated and going to be removed.
+
+    Args:
+      old_method: Name of deprecated class/function.
+      new_method: Name of new class/function to use.
+      wait_seconds: Sleep for a few seconds after the deprecation message appears in case it gets drowned
+      with subsequent logging messages.
+    """
+
+    # Create a banner
+    if new_method is not None:
+        msg = f"*****  {old_method} is deprecated. Please, use {new_method} instead.  *****"
+    else:
+        msg = f"*****  {old_method} is deprecated and will be removed soon.  *****"
+    banner = '\n'.join(['*' * len(msg)] * 2 + [msg] + ['*' * len(msg)] * 2)
+
+    logging.warning(f"\n\n{banner}\n")
+    logging.warning(f"Waiting for {wait_seconds} seconds before this message disappears.")
+    time.sleep(wait_seconds)

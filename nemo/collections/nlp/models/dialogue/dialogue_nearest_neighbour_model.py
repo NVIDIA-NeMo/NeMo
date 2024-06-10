@@ -34,14 +34,18 @@ from nemo.collections.nlp.metrics.dialogue_metrics import DialogueGenerationMetr
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueNearestNeighbourModel']
 
 
 class DialogueNearestNeighbourModel(NLPModel):
-    """Dialogue Nearest Neighbour Model identifies the intent of an utterance using the cosine similarity between sentence embeddings of the utterance and various label descriptions """
+    """Dialogue Nearest Neighbour Model identifies the intent of an utterance using the cosine similarity between sentence embeddings of the utterance and various label descriptions"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        # deprecation warning
+        deprecated_warning("DialogueNearestNeighbourModel")
+
         self.cfg = cfg
         super().__init__(cfg=cfg, trainer=trainer)
         if self.cfg.library == "huggingface":
@@ -155,7 +159,10 @@ class DialogueNearestNeighbourModel(NLPModel):
         filename = os.path.join(self.cfg.dataset.dialogues_example_dir, "test_predictions.jsonl")
 
         DialogueGenerationMetrics.save_predictions(
-            filename, predicted_labels, ground_truth_labels, decoded_inputs,
+            filename,
+            predicted_labels,
+            ground_truth_labels,
+            decoded_inputs,
         )
 
         label_to_ids = {label: idx for idx, label in enumerate(list(set(predicted_labels + ground_truth_labels)))}

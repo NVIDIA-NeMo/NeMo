@@ -28,14 +28,24 @@ from nemo.collections.nlp.data.question_answering.data_processor.qa_processing i
 )
 from nemo.core.classes import Dataset
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 
 class QADataset(Dataset):
-    ''' Abstract base class for QA Datasets with common utility methods '''
+    '''Abstract base class for QA Datasets with common utility methods'''
 
     def __init__(
-        self, data_file: str, processor: object, tokenizer: object, mode: str, num_samples: int, **kwargs,
+        self,
+        data_file: str,
+        processor: object,
+        tokenizer: object,
+        mode: str,
+        num_samples: int,
+        **kwargs,
     ):
+        # deprecation warning
+        deprecated_warning("QADataset")
+
         self.mode = mode
         self.data_file = data_file
         self.processor = processor
@@ -100,7 +110,7 @@ class QADataset(Dataset):
 
         best_score = None
         best_span_index = None
-        for (span_index, doc_span) in enumerate(doc_spans):
+        for span_index, doc_span in enumerate(doc_spans):
             end = doc_span.start + doc_span.length - 1
             if position < doc_span.start:
                 continue
@@ -150,7 +160,7 @@ class QADataset(Dataset):
             all_doc_tokens: list of all tokens in document
             max_tokens_for_doc: maximum number of tokens in each doc span
             doc_stride: stride size which sliding window moves with
-        
+
         Returns:
             doc_spans: all possible doc_spans from document
         """
@@ -179,7 +189,7 @@ class QADataset(Dataset):
             doc_span
             tok_start_position: start position of answer in document
             tok_end_position: end position of answer in document
-        
+
         Returns:
             average distance of doc_span to answer
         """
@@ -193,7 +203,7 @@ class QADataset(Dataset):
     @staticmethod
     def keep_relevant_docspans(doc_spans, tok_start_position, tok_end_position, mode):
         """
-        Filters out doc_spans, which might not be relevant to answering question, 
+        Filters out doc_spans, which might not be relevant to answering question,
         which can be helpful when document is extremely long leading to many doc_spans with no answers
 
         Args:
@@ -204,7 +214,7 @@ class QADataset(Dataset):
                 all: do not filter
                 only_positive: only keep doc_spans containing the answer
                 limited_negative: only keep 10 doc_spans that are nearest to answer
-        
+
         Returns:
             doc_spans: doc_spans after filtering
         """
@@ -282,9 +292,13 @@ class QADataset(Dataset):
 
     @staticmethod
     def improve_answer_span(
-        doc_tokens: List[str], input_start: int, input_end: int, tokenizer: object, orig_answer_text: str,
+        doc_tokens: List[str],
+        input_start: int,
+        input_end: int,
+        tokenizer: object,
+        orig_answer_text: str,
     ):
-        """ Returns tokenized answer spans that better match the annotated answer """
+        """Returns tokenized answer spans that better match the annotated answer"""
 
         tok_answer_text = " ".join(tokenizer.text_to_tokens(orig_answer_text))
 

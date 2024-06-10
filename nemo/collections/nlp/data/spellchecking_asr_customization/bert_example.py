@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from transformers import PreTrainedTokenizerBase
 
+from nemo.utils.decorators import deprecated_warning
+
 """Build BERT Examples from asr hypothesis, customization candidates, target labels, span info.
 """
 
@@ -52,7 +54,7 @@ class BertExample(object):
             input_ids: indices of single characters (treated as subwords)
             input_mask: list of bools with 0s in place of input_ids to be masked
             segment_ids: list of ints from 0 to 10 to denote the text segment type (
-                0 - for tokens of ASR hypothesis, 
+                0 - for tokens of ASR hypothesis,
                 1 - for tokens of the first candidate
                 ...
                 10 - for tokens of the tenth candidate
@@ -60,7 +62,7 @@ class BertExample(object):
             input_ids_for_subwords: indices of real subwords (as tokenized by bert tokenizer)
             input_mask_for_subwords: list of bools with 0s in place of input_ids_for_subwords to be masked
             segment_ids_for_subwords: same as segment_ids but for input_ids_for_subwords
-            character_pos_to_subword_pos: list of size=len(input_ids), value=(position of corresponding subword in input_ids_for_subwords) 
+            character_pos_to_subword_pos: list of size=len(input_ids), value=(position of corresponding subword in input_ids_for_subwords)
             fragment_indices: list of tuples (start_position, end_position, candidate_id), end is exclusive, candidate_id can be -1 if not set
             labels_mask: bool tensor with 0s in place of label tokens to be masked
             labels: indices of semiotic classes which should be predicted from each of the
@@ -68,6 +70,9 @@ class BertExample(object):
             spans: list of tuples (class_id, start_position, end_position), end is exclusive, class is always 1(CUSTOM)
             default_label: The default label
         """
+        # deprecation warning
+        deprecated_warning("BertExample")
+
         input_len = len(input_ids)
         if not (
             input_len == len(input_mask)
@@ -123,6 +128,9 @@ class BertExampleBuilder(object):
             tokenizer: Tokenizer object.
             max_seq_length: Maximum sequence length.
         """
+        # deprecation warning
+        deprecated_warning("BertExampleBuilder")
+
         self._label_map = label_map
         self._semiotic_classes = semiotic_classes
         self._tokenizer = tokenizer
@@ -183,9 +191,15 @@ class BertExampleBuilder(object):
                 tags[start:end] = [t for i in range(end - start)]
 
         # get input features for characters
-        (input_ids, input_mask, segment_ids, labels_mask, labels, _, _,) = self._get_input_features(
-            hyp=hyp, ref=ref, tags=tags
-        )
+        (
+            input_ids,
+            input_mask,
+            segment_ids,
+            labels_mask,
+            labels,
+            _,
+            _,
+        ) = self._get_input_features(hyp=hyp, ref=ref, tags=tags)
 
         # get input features for words
         hyp_with_words = hyp.replace(" ", "").replace("_", " ")
@@ -243,11 +257,11 @@ class BertExampleBuilder(object):
         return example
 
     def _get_spans(self, span_info_parts: List[str]) -> List[Tuple[int, int, int]]:
-        """ Converts span_info string into a list of (class_id, start, end) where start, end are coordinates of starting and ending(exclusive) tokens in input_ids of BertExample
-            
-            Example:
-                span_info_parts: ["CUSTOM 37 41", "CUSTOM 47 52", "CUSTOM 42 46", "CUSTOM 0 7"]
-                result: [(1, 38, 42), (1, 48, 53), (1, 43, 47), (1, 1, 8)]
+        """Converts span_info string into a list of (class_id, start, end) where start, end are coordinates of starting and ending(exclusive) tokens in input_ids of BertExample
+
+        Example:
+            span_info_parts: ["CUSTOM 37 41", "CUSTOM 47 52", "CUSTOM 42 46", "CUSTOM 0 7"]
+            result: [(1, 38, 42), (1, 48, 53), (1, 43, 47), (1, 1, 8)]
         """
         result_spans = []
 
@@ -267,26 +281,26 @@ class BertExampleBuilder(object):
     def _get_fragment_indices(
         self, hyp: str, targets: List[int], span_info_parts: List[str]
     ) -> Tuple[List[Tuple[int, int, int]]]:
-        """ Build fragment indices for real candidates.
-            This is used only at inference.
-            After external candidate retrieval we know approximately, where the candidate is located in the text (from the positions of matched n-grams).
-            In this function we 
-               1) adjust start/end positions to match word borders (possibly in multiple ways). 
-               2) generate content for fragment_indices tensor (it will be used during inference to average all predictions inside each fragment). 
+        """Build fragment indices for real candidates.
+        This is used only at inference.
+        After external candidate retrieval we know approximately, where the candidate is located in the text (from the positions of matched n-grams).
+        In this function we
+           1) adjust start/end positions to match word borders (possibly in multiple ways).
+           2) generate content for fragment_indices tensor (it will be used during inference to average all predictions inside each fragment).
 
-            Args:
-                hyp: ASR-hypothesis where space separates single characters (real space is replaced to underscore).
-                targets: list of candidate ids (only for real candidates, not dummy)
-                span_info_parts: list of strings of format like "CUSTOM 12 25", corresponding to each of targets, with start/end coordinates in text.
-            Returns:
-                List of tuples (start, end, target) where start and end are positions in ASR-hypothesis, target is candidate_id.
-                Note that returned fragments can be unsorted and can overlap, it's ok.
-            Example:
-                hyp: "a s t r o n o m e r s _ d i d i e _ s o m o n _ a n d _ t r i s t i a n _ g l l o"
-                targets: [1 2 3 4 6 7 9]
-                span_info_parts: ["CUSTOM 12 25", "CUSTOM 0 10", "CUSTOM 27 42", ...], where numbers are EXPECTED start/end positions of corresponding target candidates in the text. These positions will be adjusted in this functuion.
-                fragment_indices: [(1, 12, 2), (13, 24, 1), (13, 28, 1), ..., (29, 42, 3)]
-            """
+        Args:
+            hyp: ASR-hypothesis where space separates single characters (real space is replaced to underscore).
+            targets: list of candidate ids (only for real candidates, not dummy)
+            span_info_parts: list of strings of format like "CUSTOM 12 25", corresponding to each of targets, with start/end coordinates in text.
+        Returns:
+            List of tuples (start, end, target) where start and end are positions in ASR-hypothesis, target is candidate_id.
+            Note that returned fragments can be unsorted and can overlap, it's ok.
+        Example:
+            hyp: "a s t r o n o m e r s _ d i d i e _ s o m o n _ a n d _ t r i s t i a n _ g l l o"
+            targets: [1 2 3 4 6 7 9]
+            span_info_parts: ["CUSTOM 12 25", "CUSTOM 0 10", "CUSTOM 27 42", ...], where numbers are EXPECTED start/end positions of corresponding target candidates in the text. These positions will be adjusted in this functuion.
+            fragment_indices: [(1, 12, 2), (13, 24, 1), (13, 28, 1), ..., (29, 42, 3)]
+        """
 
         fragment_indices = []
 
@@ -337,18 +351,18 @@ class BertExampleBuilder(object):
         return fragment_indices
 
     def _map_characters_to_subwords(self, input_ids: List[int], input_ids_for_subwords: List[int]) -> List[int]:
-        """ Maps each single character to the position of its corresponding subword.
+        """Maps each single character to the position of its corresponding subword.
 
-            Args:
-                input_ids: List of character token ids.
-                input_ids_for_subwords: List of subword token ids.
-            Returns:
-                List of subword positions in input_ids_for_subwords. Its length is equal to len(input_ids)
+        Args:
+            input_ids: List of character token ids.
+            input_ids_for_subwords: List of subword token ids.
+        Returns:
+            List of subword positions in input_ids_for_subwords. Its length is equal to len(input_ids)
 
-            Example:
-                input_ids: [101, 1037, 1055, 1056, 1054, 1051, 1050, ..., 1051, 102, 1040, ..., 1050, 102, 1037, ..., 1041, 102, ..., 102]
-                input_ids_for_subwords: [101, 26357, 2106, 2666, 2061, 8202, 1998, 13012, 16643, 2319, 1043, 7174, 102, 2106, 3771, 7842, 2819, 2239, 102, ..., 102]
-                result: [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 5, ... , 45, 46, 46, 46, 46, 46, 47]
+        Example:
+            input_ids: [101, 1037, 1055, 1056, 1054, 1051, 1050, ..., 1051, 102, 1040, ..., 1050, 102, 1037, ..., 1041, 102, ..., 102]
+            input_ids_for_subwords: [101, 26357, 2106, 2666, 2061, 8202, 1998, 13012, 16643, 2319, 1043, 7174, 102, 2106, 3771, 7842, 2819, 2239, 102, ..., 102]
+            result: [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 5, ... , 45, 46, 46, 46, 46, 46, 47]
         """
         character_pos_to_subword_pos = [0 for _ in input_ids]
 
@@ -453,7 +467,7 @@ class BertExampleBuilder(object):
             ref:  "didier saumon;astronomie;tristan guillot;tristesse;monade;christian;astronomer;solomon;dididididi;mercy"
             tags: None (not used for word-based case)
 
-            resulting token sequence: 
+            resulting token sequence:
                 '[CLS]', 'astronomers', 'did', '##ie', 'so', '##mon', 'and', 'tri', '##sti', '##an', 'g', '##llo', '[SEP]', 'did', '##ier', 'sa', '##um', '##on', '[SEP]', 'astro', '##no', '##mie', '[SEP]', 'tristan', 'gui', '##llo', '##t', '[SEP]', ..., '[SEP]', 'mercy', '[SEP]']
         """
 
@@ -542,9 +556,9 @@ class BertExampleBuilder(object):
             infer: If true, input examples do not contain target info.
 
         Returns:
-            examples: List of converted examples (BertExample). 
+            examples: List of converted examples (BertExample).
                or
-            (examples, hyps_refs): If infer==true, returns h 
+            (examples, hyps_refs): If infer==true, returns h
         """
 
         if not path.exists(input_filename):

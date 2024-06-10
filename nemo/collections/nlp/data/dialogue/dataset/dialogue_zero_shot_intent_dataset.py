@@ -23,6 +23,7 @@ from nemo.collections.nlp.data.glue_benchmark.data_processors import InputExampl
 from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import GLUEDataset
 from nemo.core.neural_types import CategoricalValuesType, ChannelType, MaskType, NeuralType
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueZeroShotIntentDataset']
 
@@ -36,8 +37,7 @@ class DialogueZeroShotIntentDataset(GLUEDataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-               """
+        """Returns definitions of module output ports."""
         return {
             'input_ids': NeuralType(('B', 'T'), ChannelType()),
             'segment_ids': NeuralType(('B', 'T'), ChannelType()),
@@ -55,6 +55,9 @@ class DialogueZeroShotIntentDataset(GLUEDataset):
                 num_classes: number of classes in the data (should be either 2 or 3, corresponding to
                 labels ['entailment', 'not_entailment'] or ["contradiction", "entailment", "neutral"])
         """
+        # deprecation warning
+        deprecated_warning("DialogueZeroShotIntentDataset")
+
         self.cfg = cfg
         self.tokenizer = tokenizer
         if self.cfg.num_classes not in [2, 3]:
@@ -69,9 +72,9 @@ class DialogueZeroShotIntentDataset(GLUEDataset):
             'eos_token': tokenizer.eos_token,
             'pad_token': tokenizer.pad_token,
             'cls_token': tokenizer.cls_token,
-            'sep_token_extra': tokenizer.eos_token
-            if hasattr(tokenizer, 'name') and 'roberta' in tokenizer.name.lower()
-            else None,
+            'sep_token_extra': (
+                tokenizer.eos_token if hasattr(tokenizer, 'name') and 'roberta' in tokenizer.name.lower() else None
+            ),
         }
 
         self.raw_features = dialogues_processor.get_dialog_examples(dataset_split)
@@ -128,9 +131,9 @@ class DialogueZeroShotIntentDataset(GLUEDataset):
             * True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
 
         The `cls_token_segment_id` defines the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
-        
+
         The convention in BERT is:
-        
+
             a. For sequence pairs:
                 * tokens:   [CLS] is this jack ##ville ? [SEP] no it is not . [SEP]
                 * type_ids:   0   0  0    0    0       0   0   1  1  1  1   1   1
@@ -148,9 +151,9 @@ class DialogueZeroShotIntentDataset(GLUEDataset):
         For classification tasks, the first vector (corresponding to [CLS])
         is used as as the "sentence vector". Note that this only makes sense
         because the entire model is fine-tuned.
-        
+
         The convention for NMT is:
-        
+
             a. For sequence pairs:
                 * tokens:<BOS> is this jack ##ville ? <EOS> <BOS> no it is not . <EOS>
                 * type_ids:0   0  0    0    0       0   0     1   1  1  1  1   1   1

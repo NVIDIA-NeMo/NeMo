@@ -23,6 +23,7 @@ from nemo.collections.nlp.modules.common import VirtualPromptSource
 from nemo.collections.nlp.modules.common.megatron.utils import build_position_ids
 from nemo.core import Dataset
 from nemo.utils import AppState, logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['GPTPromptLearningDataset']
 
@@ -30,7 +31,7 @@ __all__ = ['GPTPromptLearningDataset']
 class GPTPromptLearningDataset(Dataset):
     """
     The dataset class for prompt-tuning or p-tuning pretrained GPT models.
-    
+
     Args:
         data (list[strings], list[dicts]): (1) paths to .jsonl or .json files, (2) dict objects corresponding to each input example
         tokenizer (tokenizer): Tokenizer from frozen language model
@@ -39,7 +40,7 @@ class GPTPromptLearningDataset(Dataset):
         pseudo_tokens (list[strings]): A list of virtual prompt token placeholders e.g [<prompt_1>, <prompt_2>, ...] up to max num virtual tokens
         pad_token_id (int): ID of pad token from tokenizer
         max_seq_length (int): maximum sequence length for each dataset examples. Examples will either be truncated to fit this length or dropped if they cannot be truncated.
-        min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements. 
+        min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements.
         add_bos (bool): Whether to add a beginning of sentence token to each data example
         add_eos (bool): Whether to add an end of sentence token to each data example
         for_train (bool): Whether you're creating a dataset for training or inference
@@ -63,6 +64,9 @@ class GPTPromptLearningDataset(Dataset):
         cache_data_path: str = None,  # the cache file
         load_cache: bool = True,  # whether to load from the cache if it is available
     ):
+        # deprecation warning
+        deprecated_warning("GPTPromptLearningDataset")
+
         self.tokenizer = tokenizer
         self.virtual_prompt_source = virtual_prompt_source
         self.task_templates = task_templates
@@ -112,9 +116,9 @@ class GPTPromptLearningDataset(Dataset):
     def load_data(self, dataset):
         """
         Loads a dataset by filling in the task templates specified in the config file
-        with the information from each training/inference example. Converts all input 
-        text into token ids. Also replaces the <|VIRTUAL_PROMPT_#|> placeholders in 
-        the task templates with the actual virtual prompt token ids. 
+        with the information from each training/inference example. Converts all input
+        text into token ids. Also replaces the <|VIRTUAL_PROMPT_#|> placeholders in
+        the task templates with the actual virtual prompt token ids.
 
         params:
             dataset: A list of json objects or a dictionary objects each
@@ -241,7 +245,7 @@ class GPTPromptLearningDataset(Dataset):
             assert prompt_template[placeholder_start:] == answer_placeholder, "Answer field must be at prompt end"
 
     def _insert_text_in_template(self, input_example, prompt_template_fields, doc):
-        """ Format the input example according to the template """
+        """Format the input example according to the template"""
         for field in prompt_template_fields:
             if field in doc.keys():
                 field_text = doc[field]
@@ -255,7 +259,7 @@ class GPTPromptLearningDataset(Dataset):
         return input_example.strip(" ")
 
     def _insert_virtual_token_placeholders(self, input_example, virtual_token_splits):
-        """ Insert the correct number of pseudo tokens at the <|VIRTUAL_PROMPT_n|> markers """
+        """Insert the correct number of pseudo tokens at the <|VIRTUAL_PROMPT_n|> markers"""
         total_inserted_tokens = 0
 
         for idx in range(len(virtual_token_splits)):
@@ -270,7 +274,7 @@ class GPTPromptLearningDataset(Dataset):
     def _truncate_input(
         self, truncation_field, input_ids, taskname, doc, prompt_template, prompt_template_fields, virtual_token_splits
     ):
-        """ Try to truncate input text to fit into the max sequence length """
+        """Try to truncate input text to fit into the max sequence length"""
         logging.info(
             f"Input greater than max sequence length. Attempting to truncate: '{truncation_field}' in task: '{taskname}'"
         )
@@ -297,8 +301,8 @@ class GPTPromptLearningDataset(Dataset):
         return input_ids
 
     def _find_answer_start(self, taskname, input_ids, answer_field, doc):
-        """ Find the token ids corresponding to the answer start, for loss masking purposes.
-            Assumes the answer is always at the end of the prompt.
+        """Find the token ids corresponding to the answer start, for loss masking purposes.
+        Assumes the answer is always at the end of the prompt.
         """
         answer_text = doc[answer_field]
         answer_text = self._add_leading_space(taskname, answer_field, answer_text)
@@ -313,7 +317,7 @@ class GPTPromptLearningDataset(Dataset):
         return answer_start_idx
 
     def _add_leading_space(self, taskname, field_name, field_text):
-        """ Add leading space to text if there is a space before it in the template """
+        """Add leading space to text if there is a space before it in the template"""
         prompt_template = self.task_templates[taskname]["prompt_template"]
         field_text_start = prompt_template.find("{" + field_name + "}")
         if field_text_start != 0 and prompt_template[field_text_start - 1] == " ":
@@ -331,7 +335,7 @@ class GPTPromptLearningDataset(Dataset):
         return (n + m - 1) // m * m
 
     def collate_fn(self, batch, tp_workers=0):
-        """ Prepares input_ids, labels, loss mask, attention_mask, and position ids for global batch """
+        """Prepares input_ids, labels, loss mask, attention_mask, and position ids for global batch"""
         taskname_ids, input_ids, answer_starts = zip(*batch)
 
         # Pad taskname_ids to be the same length for the prompt encoder
@@ -380,7 +384,7 @@ class GPTPromptLearningDataset(Dataset):
         return input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids
 
     def pad_batch_and_build_loss_mask(self, input_ids, batch_max, answer_starts):
-        """ Pad input_ids in batch to max batch length while building loss mask """
+        """Pad input_ids in batch to max batch length while building loss mask"""
         batch_loss_masks = []
         padded_input_ids = []
         for ids, answer_start_idx in zip(input_ids, answer_starts):
@@ -410,7 +414,7 @@ class GPTPromptLearningDataset(Dataset):
 
     def inference_collate_fn(self, batch):
         """
-        Used for loading inference data. 
+        Used for loading inference data.
         """
         task_id_nums, input_ids, answer_starts = zip(*batch)
         input_lengths = torch.cuda.LongTensor([len(inputs) for inputs in input_ids])

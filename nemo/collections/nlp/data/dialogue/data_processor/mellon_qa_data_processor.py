@@ -19,13 +19,13 @@ import pandas as pd
 
 from nemo.collections.nlp.data.dialogue.data_processor.data_processor import DialogueDataProcessor
 from nemo.collections.nlp.data.dialogue.input_example.input_example import DialogueInputExample
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueMellonQADataProcessor']
 
 
 class DialogueMellonQADataProcessor(DialogueDataProcessor):
-    """Data Processor for Mellon QA dialogues. 
-    """
+    """Data Processor for Mellon QA dialogues."""
 
     def __init__(self, data_dir: str, tokenizer: object, cfg=None):
         """
@@ -35,6 +35,9 @@ class DialogueMellonQADataProcessor(DialogueDataProcessor):
             tokenizer: tokenizer object
             cfg: cfg container for dataset
         """
+        # deprecation warning
+        deprecated_warning("DialogueMellonQADataProcessor")
+
         self.data_dir = data_dir
         self._tokenizer = tokenizer
         self.cfg = cfg
@@ -51,7 +54,7 @@ class DialogueMellonQADataProcessor(DialogueDataProcessor):
     def get_dialog_examples(self, dataset_split: str):
         """
         Process raw files into DialogueInputExample
-        Args: 
+        Args:
             dataset_split: {train, dev, test}
         For the Mellon QA dataset, there is no explicit dev set (instead uses the test set as the dev set)
         Therefore, this function creates a dev set and a new train set from the train set.
@@ -82,7 +85,11 @@ class DialogueMellonQADataProcessor(DialogueDataProcessor):
             input_example = {
                 "utterance": utterance,
                 "example_id": i,
-                "labels": {"response": answer, "fluent_response": well_formed_answer, "passage": passage,},
+                "labels": {
+                    "response": answer,
+                    "fluent_response": well_formed_answer,
+                    "passage": passage,
+                },
             }
             example = DialogueInputExample(input_example)
             examples.append(example)

@@ -46,6 +46,7 @@ from nemo.collections.nlp.data.question_answering_squad.qa_squad_processing impo
 )
 from nemo.core.classes import Dataset
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['SquadDataset', 'InputFeatures', '_check_is_max_context']
 
@@ -114,7 +115,7 @@ def get_best_span_index(doc_spans, position):
     """
     best_score = None
     best_span_index = None
-    for (span_index, doc_span) in enumerate(doc_spans):
+    for span_index, doc_span in enumerate(doc_spans):
         end = doc_span.start + doc_span.length - 1
         if position < doc_span.start:
             continue
@@ -165,6 +166,9 @@ class SquadDataset(Dataset):
         mode: str,
         use_cache: bool,
     ):
+        # deprecation warning
+        deprecated_warning("SquadDataset")
+
         self.tokenizer = tokenizer
         self.version_2_with_negative = version_2_with_negative
         self.processor = SquadProcessor(data_file=data_file, mode=mode)
@@ -337,7 +341,7 @@ class SquadDataset(Dataset):
             all_doc_tokens: list of all tokens in document
             max_tokens_for_doc: maximum number of tokens in each doc span
             doc_stride: stride size which sliding window moves with
-        
+
         Returns:
             doc_spans: all possible doc_spans from document
         """
@@ -375,7 +379,7 @@ class SquadDataset(Dataset):
             doc_span
             tok_start_position: start position of answer in document
             tok_end_position: end position of answer in document
-        
+
         Returns:
             average distance of doc_span to answer
         """
@@ -387,7 +391,7 @@ class SquadDataset(Dataset):
     @staticmethod
     def keep_relevant_docspans(doc_spans, tok_start_position, tok_end_position, mode):
         """
-        Filters out doc_spans, which might not be relevant to answering question, 
+        Filters out doc_spans, which might not be relevant to answering question,
         which can be helpful when document is extremely long leading to many doc_spans with no answers
 
         Args:
@@ -398,7 +402,7 @@ class SquadDataset(Dataset):
                 all: do not filter
                 only_positive: only keep doc_spans containing the answer
                 limited_negative: only keep 10 doc_spans that are nearest to answer
-        
+
         Returns:
             doc_spans: doc_spans after filtering
         """
@@ -481,7 +485,7 @@ class SquadDataset(Dataset):
             if self.mode != TRAINING_MODE:
                 example.doc_tokens = doc_tokens
             # the text to tokens step is the slowest step
-            for (i, token) in enumerate(doc_tokens):
+            for i, token in enumerate(doc_tokens):
                 orig_to_tok_index.append(len(all_doc_tokens))
                 if token not in text_to_tokens_dict:
                     text_to_tokens_dict[token] = tokenizer.text_to_tokens(token)
@@ -521,7 +525,7 @@ class SquadDataset(Dataset):
             # make compatible for hashing
             doc_spans = tuple(doc_spans)
 
-            for (doc_span_index, doc_span) in enumerate(doc_spans):
+            for doc_span_index, doc_span in enumerate(doc_spans):
 
                 tokens = [tokenizer.cls_token] + query_tokens + [tokenizer.sep_token]
                 segment_ids = [0 for i in range(len(tokens))]
@@ -681,7 +685,7 @@ class SquadDataset(Dataset):
         all_predictions = collections.OrderedDict()
         all_nbest_json = collections.OrderedDict()
         scores_diff_json = collections.OrderedDict()
-        for (example_index, example) in enumerate(self.examples):
+        for example_index, example in enumerate(self.examples):
 
             # finish this loop if we went through all batch examples
             if example_index >= len(unique_ids):
@@ -706,7 +710,7 @@ class SquadDataset(Dataset):
             null_start_logit = 0
             # end logit at the slice with min null score
             null_end_logit = 0
-            for (feature_index, feature) in enumerate(features):
+            for feature_index, feature in enumerate(features):
                 pos = unique_id_to_pos[feature.unique_id]
                 start_indexes = get_best_indexes(start_logits[pos], n_best_size)
                 end_indexes = get_best_indexes(end_logits[pos], n_best_size)
@@ -825,7 +829,7 @@ class SquadDataset(Dataset):
             probs = _compute_softmax(total_scores)
 
             nbest_json = []
-            for (i, entry) in enumerate(nbest):
+            for i, entry in enumerate(nbest):
                 output = collections.OrderedDict()
                 output["question"] = example.question_text
                 output["text"] = entry.text

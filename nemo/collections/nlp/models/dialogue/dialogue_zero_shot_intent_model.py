@@ -36,6 +36,7 @@ from nemo.collections.nlp.metrics.dialogue_metrics import DialogueGenerationMetr
 from nemo.collections.nlp.models import TextClassificationModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated_warning
 
 __all__ = ['DialogueZeroShotIntentModel']
 
@@ -44,6 +45,9 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
     """TextClassificationModel to be trained on two- or three-class textual entailment data, to be used for zero shot intent recognition."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        # deprecation warning
+        deprecated_warning("DialogueZeroShotIntentModel")
+
         self.cfg = cfg
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -275,7 +279,10 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
         filename = os.path.join(self.cfg.dataset.dialogues_example_dir, "test_predictions.jsonl")
 
         DialogueGenerationMetrics.save_predictions(
-            filename, predicted_labels, ground_truth_labels, utterances,
+            filename,
+            predicted_labels,
+            ground_truth_labels,
+            utterances,
         )
 
         label_to_ids = {label: idx for idx, label in enumerate(list(set(predicted_labels + ground_truth_labels)))}
@@ -316,7 +323,6 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
         entailment_idx=1,
         contradiction_idx=0,
     ) -> List[Dict]:
-
         """
         Given a list of queries and a list of candidate labels, return a ranked list of labels and scores for each query.
 

@@ -23,6 +23,7 @@ try:
         MCoreGPTEmbeddingMixin,
         MCoreMLPMixin,
         MCoreSelfAttentionMixin,
+        MCoreSequentialMLPMixin,
         MCoreTransformerLayerMixin,
     )
 except (ImportError, ModuleNotFoundError):
@@ -36,6 +37,8 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraHto4HAdapterConfig,
     LoraKQVAdapterConfig,
     LoraKQVAdapterWeightTyingConfig,
+    LoraMoe4HtoHAdapterConfig,
+    LoraMoeHto4HAdapterConfig,
     LoraUnfusedHto4HAdapterConfig,
     LoraUnfusedKQVAdapterConfig,
     MLPInfusedAdapterConfig,
@@ -176,7 +179,10 @@ class LoraPEFTConfig(PEFTConfig):
 
             elif module == PEFT_MODULE_MAP["hto4h_module"]:
                 hto4h_projection_size = cfg.ffn_hidden_size * 2 if fast_glu_activation else cfg.ffn_hidden_size
-                if lora_cfg.get("variant", "nemo") == "canonical":
+                if cfg.get('num_moe_experts', None):
+                    _adapter_name = AdapterName.LORA_MOE_Hto4H_ADAPTER
+                    _adapter_cfg_cls = LoraMoeHto4HAdapterConfig
+                elif lora_cfg.get("variant", "nemo") == "canonical":
                     _adapter_name = AdapterName.LORA_UNFUSED_Hto4H_ADAPTER
                     _adapter_cfg_cls = LoraUnfusedHto4HAdapterConfig
                 else:
@@ -187,13 +193,35 @@ class LoraPEFTConfig(PEFTConfig):
                     cfg, lora_cfg, cfg.hidden_size, hto4h_projection_size, _adapter_cfg_cls
                 )
                 name_key_to_cfg[_adapter_name] = adapter_cfg
-                name_key_to_mcore_mixins[_adapter_name] = [("mlp", MCoreMLPMixin)]
+                if _adapter_name == AdapterName.LORA_MOE_Hto4H_ADAPTER:
+                    name_key_to_mcore_mixins[_adapter_name] = [("mlp.experts", MCoreSequentialMLPMixin)]
+                    for i in range(int(cfg.num_moe_experts)):
+                        name_key_to_mcore_mixins[_adapter_name].append(
+                            (f"mlp.experts.local_experts.{i}", MCoreMLPMixin)
+                        )
+                else:
+                    name_key_to_mcore_mixins[_adapter_name] = [("mlp", MCoreMLPMixin)]
+
             elif module == PEFT_MODULE_MAP["4htoh_module"]:
+                if cfg.get('num_moe_experts', None):
+                    _adapter_name = AdapterName.LORA_MOE_4HtoH_ADAPTER
+                    _adapter_cfg_cls = LoraMoe4HtoHAdapterConfig
+                else:
+                    _adapter_name = AdapterName.LORA_4HtoH_ADAPTER
+                    _adapter_cfg_cls = Lora4HtoHAdapterConfig
+
                 adapter_cfg = self._create_lora_config(
-                    cfg, lora_cfg, cfg.ffn_hidden_size, cfg.hidden_size, Lora4HtoHAdapterConfig
+                    cfg, lora_cfg, cfg.ffn_hidden_size, cfg.hidden_size, _adapter_cfg_cls
                 )
-                name_key_to_cfg[AdapterName.LORA_4HtoH_ADAPTER] = adapter_cfg
-                name_key_to_mcore_mixins[AdapterName.LORA_4HtoH_ADAPTER] = [("mlp", MCoreMLPMixin)]
+                name_key_to_cfg[_adapter_name] = adapter_cfg
+                if _adapter_name == AdapterName.LORA_MOE_4HtoH_ADAPTER:
+                    name_key_to_mcore_mixins[_adapter_name] = [("mlp.experts", MCoreSequentialMLPMixin)]
+                    for i in range(int(cfg.num_moe_experts)):
+                        name_key_to_mcore_mixins[_adapter_name].append(
+                            (f"mlp.experts.local_experts.{i}", MCoreMLPMixin)
+                        )
+                else:
+                    name_key_to_mcore_mixins[_adapter_name] = [("mlp", MCoreMLPMixin)]
             else:
                 logging.error(
                     f"Unrecognized target_module string: {module}.\n"
@@ -228,6 +256,8 @@ class LoraPEFTConfig(PEFTConfig):
             assert kv_channels is not None, "kv_channels must be provided for canonical Lora"
             config_args.update({"num_query_groups": num_query_groups, "kv_channels": kv_channels})
             config_args.pop("out_features")
+        elif adapter_cfg_cls in (LoraMoeHto4HAdapterConfig, LoraMoe4HtoHAdapterConfig):
+            config_args.update({'num_moe_experts': cfg.num_moe_experts})
 
         if lora_cfg.weight_tying:
             position_embedding_strategy = lora_cfg.get("position_embedding_strategy", None)

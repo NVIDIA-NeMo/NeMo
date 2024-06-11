@@ -14,19 +14,16 @@
 
 import torch
 import torch.nn.functional as F
-from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.fusions.fused_bias_geglu import bias_geglu_impl
 from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
 from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import apply_rotary_pos_emb
+from megatron.core.tensor_parallel import ColumnParallelLinear
 from megatron.core.transformer.attention import SelfAttention
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    SplitAlongDim,
-    TEColumnParallelLinear,
-    TELayerNormColumnParallelLinear,
-)
+from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
 from megatron.core.transformer.mlp import MLP
+from megatron.core.transformer.moe.experts import SequentialMLP
 from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.utils import make_viewless_tensor
 
@@ -37,6 +34,8 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraDenseAttentionAdapterConfig,
     LoraHto4HAdapterConfig,
     LoraKQVAdapterConfig,
+    LoraMoe4HtoHAdapterConfig,
+    LoraMoeHto4HAdapterConfig,
     LoraUnfusedHto4HAdapterConfig,
     LoraUnfusedKQVAdapterConfig,
     MLPInfusedAdapterConfig,
@@ -281,13 +280,15 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
 class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
     def mcore_register_adapters(self):
         """
-        Setup NeMo IA3 adapter to this MCore layer.
+        Setup NeMo IA3 and LoRA adapter to this MCore layer.
         """
         self.set_accepted_adapter_types(
             [
                 LoraUnfusedHto4HAdapterConfig._target_,
                 LoraHto4HAdapterConfig._target_,
                 Lora4HtoHAdapterConfig._target_,
+                LoraMoeHto4HAdapterConfig._target_,
+                LoraMoe4HtoHAdapterConfig._target_,
                 MLPInfusedAdapterConfig._target_,
             ]
         )  # only self attn (packed qkv) for now
@@ -302,9 +303,12 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
             # overlap is used.
             self.linear_fc1.return_layernorm_output_gathered = True
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, expert_idx=None):
         # [s, b, 4 * h/p]
-        if self.linear_fc1.te_return_bias:
+        if isinstance(self.linear_fc1, ColumnParallelLinear):
+            layernorm_output = hidden_states
+            intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
+        elif self.linear_fc1.te_return_bias:
             intermediate_parallel, bias_parallel, layernorm_output = self.linear_fc1(hidden_states)
         else:
             # bias_parallel is None
@@ -315,15 +319,19 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
             lora_adapter = None
             lora_fc1_adapter = self.get_adapter_module(AdapterName.LORA_Hto4H_ADAPTER)
             lora_unfused_fc1_adapter = self.get_adapter_module(AdapterName.LORA_UNFUSED_Hto4H_ADAPTER)
+            lora_moe_fc1_adapter = self.get_adapter_module(AdapterName.LORA_MOE_Hto4H_ADAPTER)
             if lora_fc1_adapter and self.adapter_cfg[AdapterName.LORA_Hto4H_ADAPTER]['enabled']:
                 lora_adapter = lora_fc1_adapter
             if lora_unfused_fc1_adapter and self.adapter_cfg[AdapterName.LORA_UNFUSED_Hto4H_ADAPTER]['enabled']:
                 assert lora_adapter is None, "Expected only one of LORA_Hto4H_ADAPTER or LORA_UNFUSED_Hto4H_ADAPTER"
                 lora_adapter = lora_unfused_fc1_adapter
 
+            lora_output = 0
             if lora_adapter:
                 lora_output = lora_adapter(layernorm_output)
-                intermediate_parallel = intermediate_parallel + lora_output
+            elif lora_moe_fc1_adapter and self.adapter_cfg[AdapterName.LORA_MOE_Hto4H_ADAPTER]['enabled']:
+                lora_output = lora_moe_fc1_adapter(layernorm_output, expert_idx)
+            intermediate_parallel = intermediate_parallel + lora_output
 
         if self.config.bias_activation_fusion:
             if self.activation_func == F.gelu:
@@ -363,12 +371,49 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
 
         # LoRA logic
         if self.is_adapter_available():
-            lora_linear_fc2_adapter = self.get_adapter_module(AdapterName.LORA_4HtoH_ADAPTER)
-            if lora_linear_fc2_adapter and self.adapter_cfg[AdapterName.LORA_4HtoH_ADAPTER]['enabled']:
-                lora_output = lora_linear_fc2_adapter(intermediate_parallel)
-                output = output + lora_output
+            lora_fc2_adapter = self.get_adapter_module(AdapterName.LORA_4HtoH_ADAPTER)
+            lora_moe_fc2_adapter = self.get_adapter_module(AdapterName.LORA_MOE_4HtoH_ADAPTER)
+
+            lora_output = 0
+            if lora_fc2_adapter and self.adapter_cfg[AdapterName.LORA_4HtoH_ADAPTER]['enabled']:
+                lora_output = lora_fc2_adapter(intermediate_parallel)
+            elif lora_moe_fc2_adapter and self.adapter_cfg[AdapterName.LORA_MOE_4HtoH_ADAPTER]['enabled']:
+                lora_output = lora_moe_fc2_adapter(intermediate_parallel, expert_idx)
+
+            output = output + lora_output
 
         return output, output_bias
+
+
+class MCoreSequentialMLPMixin(SequentialMLP, MCoreAdapterModuleMixin):
+    def mcore_register_adapters(self):
+        """
+        We don't want the SequentialMLP layer to take any adapters. We only want to override the forward() behavior
+        """
+        pass
+
+    def forward(self, permuted_local_hidden_states, tokens_per_expert):
+        output_local = torch.zeros_like(permuted_local_hidden_states)
+        output_bias_local = None
+        if self.add_bias:
+            output_bias_local = torch.zeros_like(permuted_local_hidden_states)
+
+        cumsum_num_tokens = torch.cumsum(tokens_per_expert, dim=0)
+        # Insert zero at the begining for offset index's convenience
+        zero_tensor = torch.zeros(1, dtype=torch.long, device=cumsum_num_tokens.device)
+        cumsum_num_tokens = torch.cat((zero_tensor, cumsum_num_tokens))
+        for expert_num, expert in enumerate(self.local_experts):
+            start = cumsum_num_tokens[expert_num]
+            end = cumsum_num_tokens[expert_num + 1]
+            hidden = permuted_local_hidden_states[start:end]
+            output, output_bias = expert(hidden, expert_num)  # expert: MLP
+
+            output_local[start:end] = output
+            if self.add_bias:
+                output_bias = output_bias.expand_as(output)
+                output_bias_local[start:end, :] = output_bias
+
+        return output_local, output_bias_local
 
 
 class MCoreGPTEmbeddingMixin(LanguageModelEmbedding, MCoreAdapterModuleMixin):

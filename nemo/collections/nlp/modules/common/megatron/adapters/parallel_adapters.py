@@ -83,6 +83,8 @@ class AdapterName(str, enum.Enum):
     LORA_Hto4H_ADAPTER = "lora_hto4h_adapter"
     LORA_UNFUSED_Hto4H_ADAPTER = "lora_unfused_hto4h_adapter"
     LORA_4HtoH_ADAPTER = "lora_4htoh_adapter"
+    LORA_MOE_Hto4H_ADAPTER = "lora_moe_hto4h_adapter"
+    LORA_MOE_4HtoH_ADAPTER = "lora_moe_4htoh_adapter"
     MULTIMODAL_PROJECTOR_ADAPTER = "mm_projector_adapter"
     PARALLEL_LINEAR_ADAPTER = "parallel_linear_adapter"
 
@@ -611,6 +613,80 @@ class LoraUnfusedKQVAdapterConfig(AdapterConfig):
     _target_: str = "{0}.{1}".format(LoraUnfusedKQVAdapter.__module__, LoraUnfusedKQVAdapter.__name__)
 
 
+class LoraMoeAdapter(nn.Module, AdapterModuleUtil):
+    def __init__(
+        self,
+        num_moe_experts: int,
+        in_features: int,
+        out_features: int,
+        dim: int,
+        activation: str = 'identity',
+        norm_position: Optional[str] = None,
+        norm_type: Optional[str] = None,
+        column_init_method: str = 'xavier',
+        row_init_method: str = 'zero',
+        gather_output: bool = False,
+        input_is_parallel: bool = False,
+        dropout: float = 0.0,
+        model_parallel_config: Optional[ModelParallelConfig] = None,
+        alpha: float | None = None,
+        dropout_position: str = 'post',
+        a2a_experimental: bool = False,
+        **kwargs,
+    ):
+        super().__init__()
+
+        self.num_moe_experts = num_moe_experts
+        adapter_args = {
+            "in_features": in_features,
+            "out_features": out_features,
+            "dim": dim,
+            "activation": activation,
+            "norm_position": norm_position,
+            "norm_type": norm_type,
+            "column_init_method": column_init_method,
+            "row_init_method": row_init_method,
+            "gather_output": gather_output,
+            "input_is_parallel": input_is_parallel,
+            "dropout": dropout,
+            "model_parallel_config": model_parallel_config,
+            "alpha": alpha,
+            "dropout_position": dropout_position,
+            "a2a_experimental": a2a_experimental,
+        }
+        self.expert_adapters = nn.ModuleList()
+        for i in range(num_moe_experts):
+            self.expert_adapters.append(ParallelLinearAdapter(**adapter_args))
+
+    def forward(self, x, expert_idx):
+        return self.expert_adapters[expert_idx](x)
+
+
+@dataclass
+class LoraMoeHto4HAdapterConfig(AdapterConfig):
+    num_moe_experts: int
+    in_features: int
+    out_features: int
+    dim: int
+    activation: str = 'identity'
+    norm_position: Optional[str] = None
+    norm_type: Optional[str] = None
+    column_init_method: str = 'xavier'
+    row_init_method: str = 'zero'
+    gather_output: bool = False
+    input_is_parallel: bool = False
+    dropout: float = 0.0
+    dropout_position: str = 'post'
+    alpha: float | None = None
+    a2a_experimental: bool = False
+    _target_: str = "{0}.{1}".format(LoraMoeAdapter.__module__, LoraMoeAdapter.__name__)
+
+
+@dataclass
+class LoraMoe4HtoHAdapterConfig(LoraMoeHto4HAdapterConfig):
+    input_is_parallel: bool = True
+
+
 class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
     """
     The Tensor Parallel MLP prompt encoder network that is used to generate the virtual
@@ -690,20 +766,14 @@ class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
         self.is_inference_ready = True
         return True
 
-    def clear_inference_table(
-        self,
-    ):
+    def clear_inference_table(self):
         self.inference_table.fill_(0.0)
         self.is_inference_ready = False
 
-    def get_inference_table(
-        self,
-    ):
+    def get_inference_table(self):
         return self.inference_table.data
 
-    def inner_forward(
-        self,
-    ):
+    def inner_forward(self):
         input_embeds = self.embedding(self.indices).unsqueeze(0)
         intermediate_parallel, bias_parallel = self.first(input_embeds)
         intermediate_parallel = fused_bias_gelu(intermediate_parallel, bias_parallel)

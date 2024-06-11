@@ -211,15 +211,18 @@ def convert(in_file, precision=None, cpu_only=True) -> None:
     else:
         output_layer_base_name = 'model.language_model.output_layer.weight'
     state_dict[hf_output_layer_weight_name] = param_to_weights(ckpt[output_layer_base_name])
-    return state_dict, nemo_config
+    return state_dict, nemo_config, dtype
 
 
 if __name__ == '__main__':
     args = get_args()
-    hf_state_dict, nemo_config = convert(args.input_name_or_path, args.precision)
+    hf_state_dict, nemo_config, dtype = convert(args.input_name_or_path, args.precision)
 
     config = load_config(args.hf_model_name, nemo_config)
-    model = AutoModelForCausalLM.from_config(config)
+    model = AutoModelForCausalLM.from_config(
+        config,
+        torch_dtype=dtype,
+    )
     model.load_state_dict(hf_state_dict)
     model.save_pretrained(args.output_path)
     hf_tokenizer = AutoTokenizer.from_pretrained(args.hf_model_name)

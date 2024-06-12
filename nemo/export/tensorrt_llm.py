@@ -33,6 +33,7 @@ from nemo.export.trt_llm.converter.model_converter import model_to_trtllm_ckpt
 from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import get_tokenzier, is_nemo_file, load_nemo_model
 from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
 from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
+from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
 from nemo.export.trt_llm.tensorrt_llm_run import generate, generate_streaming, load
 
@@ -229,7 +230,7 @@ class TensorRTLLM(ITritonDeployable):
             tmp_dir = tempfile.TemporaryDirectory()
             nemo_export_dir = Path(tmp_dir.name)
 
-            if nemo_checkpoint_path.endswith("qnemo"):
+            if is_qnemo_checkpoint(nemo_checkpoint_path):
                 if os.path.isdir(nemo_checkpoint_path):
                     nemo_export_dir = nemo_checkpoint_path
                 else:
@@ -244,7 +245,17 @@ class TensorRTLLM(ITritonDeployable):
                     max_output_len=max_output_len,
                     max_batch_size=max_batch_size,
                     max_prompt_embedding_table_size=max_prompt_embedding_table_size,
+                    tensor_parallel_size=tensor_parallel_size,
+                    pipeline_parallel_size=pipeline_parallel_size,
+                    use_parallel_embedding=use_parallel_embedding,
+                    paged_kv_cache=paged_kv_cache,
+                    remove_input_padding=remove_input_padding,
+                    enable_multi_block_mode=enable_multi_block_mode,
+                    use_lora_plugin=use_lora_plugin,
                     lora_target_modules=lora_target_modules,
+                    max_lora_rank=max_lora_rank,
+                    max_num_tokens=max_num_tokens,
+                    opt_num_tokens=opt_num_tokens,
                 )
             else:
                 model, model_configs, self.tokenizer = load_nemo_model(nemo_checkpoint_path, nemo_export_dir)

@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-import os
-import subprocess
 
+import glob
+import os
+import warnings
 from typing import List, Optional
 
-CONFIG_NAME = "config.json"
+from modelopt.deploy.llm import build_tensorrt_llm
+
+from nemo.export.trt_llm.qnemo.utils import CONFIG_NAME, WEIGHTS_NAME
 
 
 def qnemo_to_tensorrt_llm(
@@ -28,50 +30,48 @@ def qnemo_to_tensorrt_llm(
     max_output_len: int,
     max_batch_size: int,
     max_prompt_embedding_table_size: int,
+    tensor_parallel_size: int = None,
+    pipeline_parallel_size: int = None,
+    use_parallel_embedding: bool = False,
+    paged_kv_cache: bool = True,
+    remove_input_padding: bool = True,
+    enable_multi_block_mode: bool = False,
+    use_lora_plugin: str = None,
     lora_target_modules: Optional[List[str]] = None,
+    max_lora_rank: int = 64,
+    max_num_tokens: int = None,
+    opt_num_tokens: int = None,
 ):
-    """Build TRT-LLM engine via trtllm-build CLI API in a subprocess."""
+    """Build TensorRT-LLM engine with ModelOpt build_tensorrt_llm function."""
     assert not lora_target_modules, f"LoRA is not supported for quantized checkpoints, got {lora_target_modules}"
-    print(
-        "Note that setting n_gpus, tensor_parallel_size and pipeline_parallel_size parameters"
-        " for quantized models is possible only on export step via nemo.export.quantize module."
-        " These parameters are ignored when building and running TensorRT-LLM engine below."
-    )
-    # Load config to explicitly pass selected parameters to trtllm-build command:
-    with open(os.path.join(nemo_checkpoint_path, CONFIG_NAME), "r") as f:
-        model_config = json.load(f)
-    command = [
-        "trtllm-build",
-        "--checkpoint_dir",
-        nemo_checkpoint_path,
-        "--output_dir",
-        engine_dir,
-        "--max_batch_size",
-        str(max_batch_size),
-        "--max_input_len",
-        str(max_input_len),
-        "--max_output_len",
-        str(max_output_len),
-        "--max_prompt_embedding_table_size",
-        str(max_prompt_embedding_table_size),
-        "--gemm_plugin",
-        model_config["dtype"],
-        "--gpt_attention_plugin",
-        model_config["dtype"],
-        "--strongly_typed",
-        "--use_custom_all_reduce",
-        "disable",
-        "--workers",
-        str(model_config["mapping"]["world_size"]),
-    ]
-    command_str = " ".join(command)
-    print(f"Build command is:\n{command_str}")
-    print("Running trtllm-build, this may take a while...")
-    result = subprocess.run(command, capture_output=True)  # TODO: consider streaming logs
-    if result.returncode != 0:
-        print(result.stdout.decode())
-        print(result.stderr.decode())
-        raise RuntimeError("Error encountered for trtllm-build command, please check logs.")
 
-    print("Building engine done. Full logs are:")
-    print(result.stdout.decode())
+    warnings.warn(
+        "Note that setting tensor_parallel_size and pipeline_parallel_size parameters"
+        " for quantized models should be done on calibration step with nemo.export.quantize module."
+        " These parameters are ignored when building and running TensorRT-LLM engine below.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+    warnings.warn(
+        "Also use_parallel_embedding, paged_kv_cache, remove_input_padding, enable_multi_block_mode, max_num_tokens"
+        " and opt_num_tokens parameters are set by ModelOpt build_tensorrt_llm function in the optimal way and are"
+        " ignored on engine build step.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+    num_build_workers = len(glob.glob(os.path.join(nemo_checkpoint_path, WEIGHTS_NAME.format("*"))))
+    assert num_build_workers, f"No TensorRT-LLM weight files found in {nemo_checkpoint_path}"
+
+    build_tensorrt_llm(
+        pretrained_config=os.path.join(nemo_checkpoint_path, CONFIG_NAME),
+        engine_dir=engine_dir,
+        max_input_len=max_input_len,
+        max_output_len=max_output_len,
+        max_batch_size=max_batch_size,
+        max_beam_width=1,
+        num_build_workers=num_build_workers,
+        enable_sparsity=False,
+        max_prompt_embedding_table_size=max_prompt_embedding_table_size,
+    )

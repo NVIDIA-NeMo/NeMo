@@ -387,8 +387,6 @@ class NLPModel(ModelPT, Exportable):
 
             # if the checkpoint is distributed, we deferred loading the state_dict until now
             if checkpoint_dir is not None:
-                sharded_state_dict = model.sharded_state_dict()
-                checkpoint['state_dict'] = sharded_state_dict
                 # dist checkpointing needs torch.distributed to load the checkpoint
                 if not parallel_state.is_initialized():
 
@@ -398,6 +396,8 @@ class NLPModel(ModelPT, Exportable):
                     if model.trainer.strategy.launcher is not None:
                         model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
                     model.trainer.strategy.setup_environment()
+                sharded_state_dict = model.sharded_state_dict()
+                checkpoint['state_dict'] = sharded_state_dict
                 # load the checkpoint from disk
                 checkpoint = dist_checkpointing.load(sharded_state_dict=checkpoint, checkpoint_dir=checkpoint_dir)
                 # restore the weights

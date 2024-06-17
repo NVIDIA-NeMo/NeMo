@@ -9,14 +9,9 @@ import lightning_fabric as fl
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
 
-from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
-from nemo.utils.env_var_parsing import get_envbool
-from nemo.utils.exp_manager import check_explicit_log_dir
-from nemo.utils.get_rank import is_global_rank_zero
-from nemo.utils.mcore_logger import add_handlers_to_mcore_logger
 
 
 @dataclass
@@ -67,6 +62,12 @@ class NeMoLogger:
         Returns:
             AppState: The application state with updated log directory and other settings.
         """
+        from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
+        from nemo.utils.env_var_parsing import get_envbool
+        from nemo.utils.exp_manager import check_explicit_log_dir
+        from nemo.utils.get_rank import is_global_rank_zero
+        from nemo.utils.mcore_logger import add_handlers_to_mcore_logger
+
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         global_rank = trainer.node_rank * trainer.world_size + local_rank
         logging.rank = global_rank

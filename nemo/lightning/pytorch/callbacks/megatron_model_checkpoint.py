@@ -15,7 +15,6 @@
 import os
 import re
 import shutil
-from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Union
@@ -27,12 +26,8 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLM
 from pytorch_lightning.callbacks.model_checkpoint import _is_local_file_protocol
 from pytorch_lightning.utilities import rank_zero_info
 
-from nemo.collections.common.callbacks import EMA
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
-from nemo.utils.exp_manager import get_git_diff, get_git_hash
-from nemo.utils.get_rank import is_global_rank_zero
-from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
 from nemo.utils.model_utils import ckpt_to_dir
 
 
@@ -74,6 +69,10 @@ class ModelCheckpoint(PTLModelCheckpoint):
         )
 
     def on_train_start(self, trainer, pl_module):
+        from nemo.utils.exp_manager import get_git_diff, get_git_hash
+        from nemo.utils.get_rank import is_global_rank_zero
+        from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
+
         app_state = AppState()
         if self.save_top_k != -1 and app_state.restore:
             logging.debug("Checking previous runs")
@@ -205,6 +204,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
         self._remove_invalid_entries_from_topk()
 
     def setup(self, *args, **kwargs) -> None:
+        from nemo.utils.get_rank import is_global_rank_zero
+
         if is_global_rank_zero():
             logging.debug("Removing unfinished checkpoints if any...")
             ModelCheckpoint._remove_unfinished_checkpoints(self.dirpath)
@@ -260,6 +261,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
                 trainer._checkpoint_connector.restore(self.best_model_path)
 
     def _del_model_without_trainer(self, filepath: str) -> None:
+        from nemo.utils.get_rank import is_global_rank_zero
 
         filepath = Path(filepath)
 
@@ -273,7 +275,9 @@ class ModelCheckpoint(PTLModelCheckpoint):
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
-    def _ema_callback(self, trainer: 'pytorch_lightning.Trainer') -> Optional[EMA]:
+    def _ema_callback(self, trainer: 'pytorch_lightning.Trainer'):
+        from nemo.collections.common.callbacks import EMA
+
         ema_callback = None
         for callback in trainer.callbacks:
             if isinstance(callback, EMA):
@@ -321,6 +325,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
             barrier_after: Synchronize ranks after writing the marker file.
               Defaults to False.
         """
+        from nemo.utils.get_rank import is_global_rank_zero
+
         if is_global_rank_zero():
             marker_path = ModelCheckpoint.format_checkpoint_unfinished_marker_path(checkpoint_path)
             marker_path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,6 +344,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
             barrier_before: Synchronize ranks before removing the marker file.
               Defaults to False.
         """
+        from nemo.utils.get_rank import is_global_rank_zero
+
         try:
             if barrier_before and torch.distributed.is_initialized():
                 torch.distributed.barrier()
@@ -434,6 +442,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
     @staticmethod
     def _remove_unfinished_checkpoints(checkpoint_dir: Union[Path, str]) -> None:
+        from nemo.utils.get_rank import is_global_rank_zero
 
         # Delete unfinished checkpoints from the filesystems.
         # "Unfinished marker" files are removed as well.

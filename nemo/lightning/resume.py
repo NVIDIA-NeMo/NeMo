@@ -6,7 +6,6 @@ import pytorch_lightning as pl
 
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
-from nemo.utils.exp_manager import NotFoundError, _filter_out_unfinished_checkpoints
 
 
 class Resume:
@@ -70,6 +69,7 @@ class AutoResume(Resume):
         self.resume_ignore_no_checkpoint = resume_ignore_no_checkpoint
 
     def nemo_path(self, model=None) -> Optional[Path]:
+        from nemo.utils.exp_manager import NotFoundError, _filter_out_unfinished_checkpoints
 
         if self.import_path:
             if model is None:

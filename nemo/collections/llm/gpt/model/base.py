@@ -23,7 +23,7 @@ class GPTConfig(TransformerConfig):
     # From megatron.core.models.gpt.gpt_model.GPTModel
     fp16_lm_cross_entropy: bool = False
     parallel_output: bool = True
-    share_embeddings_and_output_weights: bool = False
+    share_embeddings_and_output_weights: bool = True
     make_vocab_size_divisible_by: int = 128
     position_embedding_type: Literal["learned_absolute", "rope"] = "learned_absolute"
     rotary_base: int = 10000

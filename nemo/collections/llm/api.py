@@ -49,14 +49,7 @@ def train(
         >>> train(model, data, trainer, tokenizer='data', source='path/to/ckpt.ckpt', export='final.ckpt')
         PosixPath('/path/to/log_dir')
     """
-    if not isinstance(trainer.strategy, MegatronStrategy):
-        raise ValueError("Only MegatronStrategy is supported")
-
     _log = log or NeMoLogger()
-
-    if tokenizer:  # TODO: Improve this
-        _use_tokenizer(model, data, tokenizer)
-
     app_state = _log.setup(
         trainer,
         resume_if_exists=getattr(resume, "resume_if_exists", False),
@@ -65,8 +58,8 @@ def train(
         resume.setup(model, trainer)
     if opt:
         opt.connect(model)
-
-    trainer.fit(model, data)
+    if tokenizer:  # TODO: Improve this
+        _use_tokenizer(model, data, tokenizer)
 
     if hasattr(train, "__io__"):
         _save_config_img(app_state.exp_dir, train.__io__)

@@ -110,6 +110,7 @@ class MegatronParallel(nn.ModuleList):
         vp_size: Optional[int] = None,
         ddp_config: Optional[DistributedDataParallelConfig] = None,
         cpu: bool = False,
+        convert_module_fn: Optional[Callable[[nn.Module], nn.Module]] = None,
     ) -> None:
         from apex.transformer.tensor_parallel.layers import set_defaults_if_not_set_tensor_model_parallel_attributes
         from megatron.core import parallel_state
@@ -133,6 +134,10 @@ class MegatronParallel(nn.ModuleList):
                     if hasattr(_model, "configure_model"):
                         _model.configure_model()
                     _pipeline.append(_model)
+
+        if convert_module_fn:
+            for i in range(len(_pipeline)):
+                _pipeline[i] = convert_module_fn(_pipeline[i])
 
         if isinstance(ddp_config, DistributedDataParallelConfig):
             for model_chunk_idx, model_chunk in enumerate(_pipeline):
@@ -279,12 +284,6 @@ class MegatronParallel(nn.ModuleList):
 
         if loss_mean == []:
             loss_mean = None
-
-        ## TODO: is this where logging should go?
-        model = pipeline
-        if isinstance(pipeline, list):
-            model = pipeline[0]
-        pipeline.log('train_loss', loss_mean)
 
         return loss_mean
 

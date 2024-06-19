@@ -84,6 +84,16 @@ class MegatronOptimizerModule(OptimizerModule):
 
         from nemo.core.optim import McoreDistributedOptimizer
 
+        class McoreOpt(McoreDistributedOptimizer):
+            def sharded_state_dict(
+                self,
+                model_sharded_state_dict,
+                optimizer_state_dict=None,
+                is_loading=False,
+                dist_ckpt_parallel_save=False,
+            ):
+                return self.mcore_optimizer.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)
+
         mcore_opt = get_megatron_optimizer(
             self.config,
             list(model),
@@ -92,7 +102,7 @@ class MegatronOptimizerModule(OptimizerModule):
             lr_mult=self.lr_mult,
         )
 
-        return [McoreDistributedOptimizer(mcore_opt)]
+        return [McoreOpt(mcore_opt)]
 
     def finalize_model_grads(self, *args, **kwargs):
         return finalize_model_grads(*args, **kwargs)

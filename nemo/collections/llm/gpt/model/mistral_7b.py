@@ -111,7 +111,7 @@ class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel
             hidden_size=source.hidden_size,
             ffn_hidden_size=source.intermediate_size,
             num_attention_heads=source.num_attention_heads,
-            max_position_embeddings=source.max_position_embeddings,
+            # max_position_embeddings=source.max_position_embeddings,
             init_method_std=source.initializer_range,
             layernorm_epsilon=source.rms_norm_eps,
             num_query_groups=source.num_key_value_heads,
@@ -119,6 +119,7 @@ class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel
             gated_linear_unit=True,
             make_vocab_size_divisible_by=make_vocab_size_divisible_by(source.vocab_size),
             window_size=[source.sliding_window, 0],
+            share_embeddings_and_output_weights=False,
         )
 
         return output

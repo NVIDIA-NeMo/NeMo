@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any, Callable, Generator, List, Literal, Tuple, TypeVar, Union
 
 import pytorch_lightning as pl
@@ -57,7 +58,7 @@ class MegatronMixedPrecision(MixedPrecision):
             raise ValueError("precision must be '16-mixed' or 'bf16-mixed'")
 
         self.dtype = dtype
-        torch.set_autocast_gpu_dtype(dtype)
+        # torch.set_autocast_gpu_dtype(dtype)
         self.float16_convertor = float16_convertor
         self.amp_O2 = amp_O2
 
@@ -81,10 +82,15 @@ class MegatronMixedPrecision(MixedPrecision):
         This is optional and depends on the precision limitations during optimization.
 
         """
-        if self.precision == "bf16-mixed":
-            return module.bfloat16()
-        if self.precision == "16-mixed":
-            return module.half()
+        from megatron.core.distributed import DistributedDataParallel
+        from megatron.core.transformer.module import Float16Module
+        from megatron.core.utils import get_model_config
+
+        if self.precision in ["16-mixed", "bf16-mixed"]:
+            config = get_model_config(module.module)
+            config.fp16 = self.precision == "16-mixed"
+            config.bf16 = self.precision == "bf16-mixed"
+            module.module = Float16Module(config, module.module)
 
         return module
 
@@ -112,6 +118,8 @@ class MegatronMixedPrecision(MixedPrecision):
             parallel_state.is_pipeline_first_stage()
 
         """
+        return data
+
         from megatron.core.transformer.module import fp32_to_float16
 
         return fp32_to_float16(data, self.float16_convertor)
@@ -123,6 +131,8 @@ class MegatronMixedPrecision(MixedPrecision):
             parallel_state.is_pipeline_last_stage()
 
         """
+        return data
+
         from megatron.core.transformer.module import float16_to_fp32
 
         return float16_to_fp32(data)

@@ -8,7 +8,6 @@ import torch
 from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
 from lightning_fabric.utilities.cloud_io import get_filesystem
 from lightning_fabric.utilities.types import _PATH
-from megatron.core.dist_checkpointing.strategies import tensorstore
 from torch import nn
 from typing_extensions import Self, override
 

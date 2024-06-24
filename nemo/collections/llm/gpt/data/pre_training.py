@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 import pytorch_lightning as pl
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
+from torch.utils import data
 from torch.utils.data import DataLoader
 
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
@@ -121,7 +122,7 @@ class PreTrainingDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
-            collate_fn=dataset.collate_fn,
+            collate_fn=getattr(dataset, 'collate_fn', data.dataloader.default_collate),
             **kwargs,
         )
 

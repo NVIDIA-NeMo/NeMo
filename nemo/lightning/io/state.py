@@ -217,15 +217,15 @@ class StateDictTransform(Generic[F]):
                 source_key_dict = source_key
             source_matches_dict = {k: _match_keys(list(source_dict.keys()), v) for k, v in source_key_dict.items()}
             target_matches = _match_keys(list(target_dict.keys()), target_key)
-
-            for target_index, target_match in np.ndenumerate(target_matches):
-                kwargs = {}
-                for param in fn_params:
-                    if param in source_matches_dict:
-                        source_match = source_matches_dict[param][target_index[:-1]]
-                        kwargs[param] = source_dict[source_match[target_index]]
-
-                target_dict[target_match] = self.call_transform(ctx, **kwargs)
+            param_names = list(filter(lambda x: x in source_matches_dict, fn_params))
+            for layer_names_group in zip(*([source_matches_dict[v] for v in param_names] + [target_matches])):
+                # Wrap in a list if it's a single layer (ie non-expert)
+                if isinstance(layer_names_group[0], str):
+                    layer_names_group = [[x] for x in layer_names_group]
+                for layer_names in zip(*layer_names_group):
+                    target_dict[layer_names[-1]] = self.call_transform(
+                        ctx, **dict(zip(param_names, [source_dict[x] for x in layer_names[:-1]]))
+                    )
         else:
             source_keys = list(source_dict.keys())
             target_keys = list(target_dict.keys())

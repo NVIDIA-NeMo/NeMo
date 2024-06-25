@@ -22,7 +22,7 @@ import torch
 
 class SentencePieceTokenizer:
     """
-    Sentencepiecetokenizer https://github.com/google/sentencepiece
+    SentencePieceTokenizer https://github.com/google/sentencepiece
 
         Args:
         model_path: path to sentence piece tokenizer model.
@@ -247,3 +247,21 @@ class SentencePieceTokenizer:
             for i in range(self.vocab_size - self.original_vocab_size)
         ]
         return main_vocab + special_tokens
+
+    ### Below are a few methods that mimic transformers.PreTrainedTokenizer for vLLM
+
+    def convert_ids_to_tokens(self, ids, skip_special_tokens: bool = False):
+        return self.ids_to_tokens(ids)  # TODO: support skip_special_tokens
+
+    def convert_tokens_to_string(self, tokens: List[str]):
+        return self.tokens_to_text(tokens)
+
+    def __len__(self):
+        return self.vocab_size
+
+    @property
+    def is_fast(self):
+        return True
+
+    def get_added_vocab(self):
+        return None

@@ -16,13 +16,33 @@ import argparse
 import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from nemo.deploy import DeployPyTriton
-from nemo.deploy.nlp import MegatronLLMDeployable
-from nemo.export import TensorRTLLM
 
 LOGGER = logging.getLogger("NeMo")
+
+megatron_llm_supported = True
+try:
+    from nemo.deploy.nlp import MegatronLLMDeployable
+except Exception as e:
+    LOGGER.warning(f"Cannot import MegatronLLMDeployable, it will not be available. {type(e).__name__}: {e}")
+    megatron_llm_supported = False
+
+trt_llm_supported = True
+try:
+    from nemo.export.tensorrt_llm import TensorRTLLM
+except Exception as e:
+    LOGGER.warning(f"Cannot import the TensorRTLLM exporter, it will not be available. {type(e).__name__}: {e}")
+    trt_llm_supported = False
+
+vllm_supported = True
+try:
+    from nemo.export.vllm_exporter import vLLMExporter
+except Exception as e:
+    LOGGER.warning(f"Cannot import the vLLM exporter, it will not be available. {type(e).__name__}: {e}")
+    vllm_supported = False
 
 
 def get_args(argv):
@@ -69,7 +89,7 @@ def get_args(argv):
         choices=["bfloat16", "float16", "fp8", "int8"],
         default="bfloat16",
         type=str,
-        help="dtype of the model on TensorRT-LLM",
+        help="dtype of the model on TensorRT-LLM or vLLM",
     )
     parser.add_argument("-mil", "--max_input_len", default=256, type=int, help="Max input length of the model")
     parser.add_argument("-mol", "--max_output_len", default=256, type=int, help="Max output length of the model")
@@ -150,7 +170,23 @@ def get_args(argv):
         help="Different options to deploy nemo model.",
     )
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
-
+    parser.add_argument(
+        '-ws',
+        '--weight_storage',
+        default='auto',
+        choices=['auto', 'cache', 'file', 'memory'],
+        help='Strategy for storing converted weights for vLLM: "file" - always write weights into a file, '
+        '"memory" - always do an in-memory conversion, "cache" - reuse existing files if they are '
+        'newer than the nemo checkpoint, "auto" - use "cache" for multi-GPU runs and "memory" '
+        'for single-GPU runs.',
+    )
+    parser.add_argument(
+        "-gmu",
+        '--gpu_memory_utilization',
+        default=0.9,
+        type=float,
+        help="GPU memory utilization percentage for vLLM.",
+    )
     args = parser.parse_args(argv)
     return args
 
@@ -160,8 +196,8 @@ def get_trtllm_deployable(args):
         trt_llm_path = "/tmp/trt_llm_model_dir/"
         LOGGER.info(
             "/tmp/trt_llm_model_dir/ path will be used as the TensorRT LLM folder. "
-            "Please set this parameter if you'd like to use a path that has already "
-            "included the TensorRT LLM model files."
+            "Please set the --triton_model_repository parameter if you'd like to use a path that already "
+            "includes the TensorRT LLM model files."
         )
         Path(trt_llm_path).mkdir(parents=True, exist_ok=True)
     else:
@@ -261,6 +297,45 @@ def get_trtllm_deployable(args):
     return trt_llm_exporter
 
 
+def get_vllm_deployable(args):
+    if args.ptuning_nemo_checkpoint is not None:
+        raise ValueError("vLLM backend doesn't support P-tuning at this time.")
+    if args.lora_ckpt is not None:
+        raise ValueError("vLLM backend doesn't support LoRA at this time.")
+
+    tempdir = None
+    model_dir = args.triton_model_repository
+    if model_dir is None:
+        tempdir = tempfile.TemporaryDirectory()
+        model_dir = tempdir.name
+        LOGGER.info(
+            f"{model_dir} path will be used as the vLLM intermediate folder. "
+            + "Please set the --triton_model_repository parameter if you'd like to use a path that already "
+            + "includes the vLLM model files."
+        )
+    elif not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+
+    try:
+        exporter = vLLMExporter()
+        exporter.export(
+            nemo_checkpoint=args.nemo_checkpoint,
+            model_dir=model_dir,
+            model_type=args.model_type,
+            tensor_parallel_size=args.num_gpus,
+            max_model_len=args.max_input_len + args.max_output_len,
+            dtype=args.dtype,
+            weight_storage=args.weight_storage,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+        )
+        return exporter
+    except Exception as error:
+        raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))
+    finally:
+        if tempdir is not None:
+            tempdir.cleanup()
+
+
 def get_nemo_deployable(args):
     if args.nemo_checkpoint is None:
         raise ValueError("In-Framework deployment requires a .nemo checkpoint")
@@ -282,11 +357,17 @@ def nemo_deploy(argv):
 
     backend = args.backend.lower()
     if backend == 'tensorrt-llm':
+        if not trt_llm_supported:
+            raise ValueError("TensorRT-LLM engine is not supported in this environment.")
         triton_deployable = get_trtllm_deployable(args)
     elif backend == 'in-framework':
+        if not megatron_llm_supported:
+            raise ValueError("MegatronLLMDeployable is not supported in this environment.")
         triton_deployable = get_nemo_deployable(args)
     elif backend == 'vllm':
-        raise ValueError("vLLM will be supported in the next release.")
+        if not vllm_supported:
+            raise ValueError("vLLM engine is not supported in this environment.")
+        triton_deployable = get_vllm_deployable(args)
     else:
         raise ValueError("Backend: {0} is not supported.".format(backend))
 

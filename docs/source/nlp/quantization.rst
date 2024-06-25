@@ -103,7 +103,7 @@ The TensorRT-LLM engine can be conveniently built and run using ``TensorRTLLM`` 
 
 .. code-block:: python
 
-    from nemo.export import TensorRTLLM
+    from nemo.export.tensorrt_llm import TensorRTLLM
 
 
     trt_llm_exporter = TensorRTLLM(model_dir="/path/to/trt_llm_engine_folder")

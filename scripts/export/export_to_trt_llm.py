@@ -16,7 +16,7 @@ import argparse
 import logging
 import sys
 
-from nemo.export import TensorRTLLM
+from nemo.export.tensorrt_llm import TensorRTLLM
 
 LOGGER = logging.getLogger("NeMo")
 

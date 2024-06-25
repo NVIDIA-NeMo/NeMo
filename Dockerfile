@@ -66,8 +66,7 @@ WORKDIR /workspace/
 # We leave it here in case we need to work off of a specific commit in main
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
   cd Megatron-LM && \
-  git checkout 36e9b6bf3d8034b10c9bbd9fc357c2df2bd1515c && \
-  git cherry-pick -n e69187bc3679ea5841030a165d587bb48b56ee77 && \
+  git checkout 02871b4df8c69fac687ab6676c4246e936ce92d0 && \
   pip install .
 
 # Performance optimizations for distributed optimizer: https://github.com/NVIDIA/apex/pull/1771

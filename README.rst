@@ -431,7 +431,7 @@ The most recent working versions of these dependencies are here:
 
   export apex_commit=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
   export te_commit=bfe21c3d68b0a9951e5716fb520045db53419c5e
-  export mcore_commit=fbb375d4b5e88ce52f5f7125053068caff47f93f
+  export mcore_commit=02871b4df8c69fac687ab6676c4246e936ce92d0
   export nv_pytorch_tag=24.02-py3
 
 When using a released version of NeMo, please refer to the `Software Component Versions <https://docs.nvidia.com/nemo-framework/user-guide/latest/softwarecomponentversions.html>`_ for the correct versions.

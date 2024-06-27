@@ -4435,7 +4435,9 @@ jobs:
         name: Checkout repository
         uses: actions/checkout@v4
       
-      - if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' }}
+      - if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' && env.SLACK_WEBHOOK != '' }}
+        env: 
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
           set -x
 

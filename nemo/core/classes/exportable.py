@@ -20,12 +20,13 @@ from pytorch_lightning.core.module import _jit_is_scripting
 from nemo.core.classes import typecheck
 from nemo.core.neural_types import NeuralType
 from nemo.core.utils.neural_type_utils import get_dynamic_axes, get_io_names
-from nemo.utils import logging
+from nemo.utils import logging, monkeypatched
 from nemo.utils.export_utils import (
     ExportFormat,
     augment_filename,
     get_export_format,
     parse_input_example,
+    rename_onnx_io,
     replace_for_export,
     verify_runtime,
     verify_torchscript,
@@ -68,6 +69,7 @@ class Exportable(ABC):
         check_tolerance=0.01,
         export_modules_as_functions=False,
         keep_initializers_as_inputs=None,
+        use_dynamo=False,
     ):
         """
         Exports the model to the specified format. The format is inferred from the file extension of the output file.
@@ -99,6 +101,7 @@ class Exportable(ABC):
                 ONNX specific.
             keep_initializers_as_inputs (bool): If True, will keep the model's initializers as inputs in the onnx graph.
                 This is ONNX specific.
+            use_dynamo (bool): If True, use onnx.dynamo_export() instead of onnx.export(). This is ONNX specific.
 
         Returns:
             A tuple of two outputs.
@@ -122,6 +125,7 @@ class Exportable(ABC):
                 check_tolerance=check_tolerance,
                 export_modules_as_functions=export_modules_as_functions,
                 keep_initializers_as_inputs=keep_initializers_as_inputs,
+                use_dynamo=use_dynamo,
             )
             # Propagate input example (default scenario, may need to be overriden)
             if input_example is not None:
@@ -143,6 +147,7 @@ class Exportable(ABC):
         check_tolerance=0.01,
         export_modules_as_functions=False,
         keep_initializers_as_inputs=None,
+        use_dynamo=False,
     ):
         my_args = locals().copy()
         my_args.pop('self')
@@ -162,7 +167,7 @@ class Exportable(ABC):
 
         # Pytorch's default opset version is too low, using reasonable latest one
         if onnx_opset_version is None:
-            onnx_opset_version = 16
+            onnx_opset_version = 17
 
         try:
             # Disable typechecks
@@ -189,14 +194,16 @@ class Exportable(ABC):
                 input_list, input_dict = parse_input_example(input_example)
                 input_names = self.input_names
                 output_names = self.output_names
-                output_example = tuple(self.forward(*input_list, **input_dict))
+                output_example = self.forward(*input_list, **input_dict)
+                if not isinstance(output_example, tuple):
+                    output_example = (output_example,)
 
                 if check_trace:
                     if isinstance(check_trace, bool):
                         check_trace_input = [input_example]
                     else:
                         check_trace_input = check_trace
-                jitted_model = self
+
                 if format == ExportFormat.TORCHSCRIPT:
                     jitted_model = torch.jit.trace_module(
                         self,
@@ -216,27 +223,64 @@ class Exportable(ABC):
                 elif format == ExportFormat.ONNX:
                     # dynamic axis is a mapping from input/output_name => list of "dynamic" indices
                     if dynamic_axes is None:
-                        dynamic_axes = get_dynamic_axes(self.input_module.input_types_for_export, input_names)
-                        dynamic_axes.update(get_dynamic_axes(self.output_module.output_types_for_export, output_names))
-                    torch.onnx.export(
-                        jitted_model,
-                        input_example,
-                        output,
-                        input_names=input_names,
-                        output_names=output_names,
-                        verbose=verbose,
-                        do_constant_folding=do_constant_folding,
-                        dynamic_axes=dynamic_axes,
-                        opset_version=onnx_opset_version,
-                        keep_initializers_as_inputs=keep_initializers_as_inputs,
-                        export_modules_as_functions=export_modules_as_functions,
-                    )
+                        dynamic_axes = self.dynamic_shapes_for_export(use_dynamo)
+                    if use_dynamo:
+                        typecheck.enable_wrapping(enabled=False)
+                        # https://github.com/pytorch/pytorch/issues/126339
+                        with monkeypatched(torch.nn.RNNBase, "flatten_parameters", lambda *args: None):
+                            logging.info(f"Running export.export, dynamic shapes:{dynamic_axes}\n")
+
+                            # We have to use different types of arguments for dynamo_export to achieve
+                            # same external weights behaviour as onnx.export :
+                            # https://github.com/pytorch/pytorch/issues/126479
+                            # https://github.com/pytorch/pytorch/issues/126269
+                            mem_params = sum([param.nelement() * param.element_size() for param in self.parameters()])
+                            mem_bufs = sum([buf.nelement() * buf.element_size() for buf in self.buffers()])
+                            mem = mem_params + mem_bufs
+
+                            if mem > 2 * 1000 * 1000 * 1000:
+                                ex_model = torch.export.export(
+                                    self,
+                                    tuple(input_list),
+                                    kwargs=input_dict,
+                                    dynamic_shapes=dynamic_axes,
+                                    strict=False,
+                                )
+                                ex_model = ex_model.run_decompositions()
+                                model_state = ex_model.state_dict
+                            else:
+                                model_state = None
+                                ex_model = self
+
+                            options = torch.onnx.ExportOptions(dynamic_shapes=True, op_level_debug=True)
+                            ex = torch.onnx.dynamo_export(ex_model, *input_list, **input_dict, export_options=options)
+                            ex.save(output, model_state=model_state)
+
+                            del ex
+                            del ex_model
+                            # Rename I/O after save - don't want to risk modifying ex._model_proto
+                            rename_onnx_io(output, input_names, output_names)
+                    else:
+                        torch.onnx.export(
+                            self,
+                            input_example,
+                            output,
+                            input_names=input_names,
+                            output_names=output_names,
+                            verbose=verbose,
+                            do_constant_folding=do_constant_folding,
+                            dynamic_axes=dynamic_axes,
+                            opset_version=onnx_opset_version,
+                            keep_initializers_as_inputs=keep_initializers_as_inputs,
+                            export_modules_as_functions=export_modules_as_functions,
+                        )
 
                     if check_trace:
                         verify_runtime(self, output, check_trace_input, input_names, check_tolerance=check_tolerance)
                 else:
                     raise ValueError(f'Encountered unknown export format {format}.')
         finally:
+            typecheck.enable_wrapping(enabled=True)
             typecheck.set_typecheck_enabled(enabled=True)
             if forward_method:
                 type(self).forward = old_forward_method
@@ -288,9 +332,12 @@ class Exportable(ABC):
     def output_types_for_export(self):
         return self.output_types
 
+    def dynamic_shapes_for_export(self, use_dynamo=False):
+        return get_dynamic_axes(self.input_module.input_types_for_export, self.input_names, use_dynamo)
+
     def get_export_subnet(self, subnet=None):
         """
-        Returns Exportable subnet model/module to export 
+        Returns Exportable subnet model/module to export
         """
         if subnet is None or subnet == 'self':
             return self

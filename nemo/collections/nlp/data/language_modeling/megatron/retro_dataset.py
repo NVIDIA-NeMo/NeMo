@@ -122,7 +122,11 @@ class RETRODataset(Dataset):
 
 
 def build_train_valid_test_datasets(
-    cfg, retro_config: RetroConfig, train_valid_test_num_samples, seq_length, tokenizer,
+    cfg,
+    retro_config: RetroConfig,
+    train_valid_test_num_samples,
+    seq_length,
+    tokenizer,
 ):
 
     # gpt dataset
@@ -135,7 +139,10 @@ def build_train_valid_test_datasets(
     }
 
     retro_train_ds, retro_valid_ds, retro_test_ds = get_retro_datasets(
-        config=retro_config, gpt_datasets=gpt_datasets, sample_length=seq_length, eod_token_id=tokenizer.eos_id,
+        config=retro_config,
+        gpt_datasets=gpt_datasets,
+        sample_length=seq_length,
+        eod_token_id=tokenizer.eos_id,
     )
 
     train_ds = (

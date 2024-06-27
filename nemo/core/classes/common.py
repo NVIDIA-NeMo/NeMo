@@ -1015,8 +1015,14 @@ class typecheck:
 
         self.ignore_collections = ignore_collections
 
+    def __call__(self, wrapped):
+        return self.wrapped_call(wrapped)
+
+    def unwrapped_call(self, wrapped):
+        return wrapped
+
     @wrapt.decorator(enabled=is_typecheck_enabled)
-    def __call__(self, wrapped, instance: Typing, args, kwargs):
+    def wrapped_call(self, wrapped, instance: Typing, args, kwargs):
         """
         Wrapper method that can be used on any function of a class that implements :class:`~nemo.core.Typing`.
         By default, it will utilize the `input_types` and `output_types` properties of the class inheriting Typing.
@@ -1125,3 +1131,11 @@ class typecheck:
             yield
         finally:
             typecheck.set_semantic_check_enabled(enabled=True)
+
+    @staticmethod
+    def enable_wrapping(enabled: bool = True):
+        typecheck.set_typecheck_enabled(enabled)
+        if enabled:
+            typecheck.__call__ = nemo.core.classes.common.typecheck.wrapped_call
+        else:
+            typecheck.__call__ = nemo.core.classes.common.typecheck.unwrapped_call

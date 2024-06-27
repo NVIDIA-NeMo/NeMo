@@ -240,12 +240,12 @@ class ExportableEncDecModel(Exportable):
         if getattr(self.input_module, 'export_cache_support', False):
             in_types = self.input_module.output_types
             otypes = {n: t for (n, t) in list(otypes.items())[:1]}
-            for (n, t) in list(in_types.items())[1:]:
+            for n, t in list(in_types.items())[1:]:
                 otypes[n] = t
         return get_io_names(otypes, self.disabled_deployment_output_names)
 
     def forward_for_export(
-        self, input, length=None, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length=None, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
     ):
         """
         This forward is used when we need to export the model to ONNX format.
@@ -264,12 +264,12 @@ class ExportableEncDecModel(Exportable):
         """
         enc_fun = getattr(self.input_module, 'forward_for_export', self.input_module.forward)
         if cache_last_channel is None:
-            encoder_output = enc_fun(audio_signal=input, length=length)
+            encoder_output = enc_fun(audio_signal=audio_signal, length=length)
             if isinstance(encoder_output, tuple):
                 encoder_output = encoder_output[0]
         else:
             encoder_output, length, cache_last_channel, cache_last_time, cache_last_channel_len = enc_fun(
-                audio_signal=input,
+                audio_signal=audio_signal,
                 length=length,
                 cache_last_channel=cache_last_channel,
                 cache_last_time=cache_last_time,

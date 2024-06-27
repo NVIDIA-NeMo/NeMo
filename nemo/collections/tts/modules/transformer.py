@@ -102,7 +102,7 @@ class MultiHeadAttn(nn.Module):
         self.n_head = n_head
         self.d_model = d_model
         self.d_head = d_head
-        self.scale = 1 / (d_head ** 0.5)
+        self.scale = 1 / (d_head**0.5)
         self.pre_lnorm = pre_lnorm
 
         self.qkv_net = nn.Linear(d_model, 3 * n_head * d_head)
@@ -125,13 +125,17 @@ class MultiHeadAttn(nn.Module):
 
         head_q, head_k, head_v = torch.chunk(self.qkv_net(inp), 3, dim=2)
 
-        head_q = head_q.view(inp.size(0), inp.size(1), n_head, d_head)
-        head_k = head_k.view(inp.size(0), inp.size(1), n_head, d_head)
-        head_v = head_v.view(inp.size(0), inp.size(1), n_head, d_head)
+        s0 = inp.size(0)
+        s1 = inp.size(1)
+        s2 = s0 * n_head
 
-        q = head_q.permute(2, 0, 1, 3).reshape(-1, inp.size(1), d_head)
-        k = head_k.permute(2, 0, 1, 3).reshape(-1, inp.size(1), d_head)
-        v = head_v.permute(2, 0, 1, 3).reshape(-1, inp.size(1), d_head)
+        head_q = head_q.view(s0, s1, n_head, d_head)
+        head_k = head_k.view(s0, s1, n_head, d_head)
+        head_v = head_v.view(s0, s1, n_head, d_head)
+
+        q = head_q.permute(2, 0, 1, 3).reshape(s2, s1, d_head)
+        k = head_k.permute(2, 0, 1, 3).reshape(s2, s1, d_head)
+        v = head_v.permute(2, 0, 1, 3).reshape(s2, s1, d_head)
 
         attn_score = torch.bmm(q, k.transpose(1, 2))
         attn_score.mul_(self.scale)
@@ -145,8 +149,8 @@ class MultiHeadAttn(nn.Module):
         attn_prob = self.dropatt(attn_prob)
         attn_vec = torch.bmm(attn_prob, v)
 
-        attn_vec = attn_vec.view(n_head, inp.size(0), inp.size(1), d_head)
-        attn_vec = attn_vec.permute(1, 2, 0, 3).contiguous().view(inp.size(0), inp.size(1), n_head * d_head)
+        attn_vec = attn_vec.view(n_head, s0, s1, d_head)
+        attn_vec = attn_vec.permute(1, 2, 0, 3).contiguous().view(s0, s1, n_head * d_head)
 
         # linear projection
         attn_out = self.o_net(attn_vec)

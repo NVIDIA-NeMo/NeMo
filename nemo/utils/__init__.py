@@ -21,6 +21,7 @@ from nemo.utils.cast_utils import (
     avoid_float16_autocast_context,
     cast_all,
     cast_tensor,
+    monkeypatched,
 )
 from nemo.utils.dtype import str_to_dtype
 from nemo.utils.nemo_logging import Logger as _Logger

@@ -21,6 +21,12 @@ import torch
 import wget
 from omegaconf import DictConfig, OmegaConf
 
+# WAR for https://github.com/pytorch/pytorch/issues/125462
+# Has to be applied before first import of NeMo
+from nemo.core.classes import typecheck
+
+typecheck.enable_wrapping(enabled=False)
+
 from nemo.collections import nlp as nemo_nlp
 from nemo.collections.nlp.models import IntentSlotClassificationModel
 from nemo.collections.nlp.modules.common import (
@@ -35,7 +41,7 @@ def classifier_export(obj):
     with tempfile.TemporaryDirectory() as tmpdir:
         filename = os.path.join(tmpdir, obj.__class__.__name__ + '.onnx')
         obj = obj.cuda()
-        obj.export(output=filename)
+        obj.export(output=filename, use_dynamo=True, check_trace=True)
 
 
 class TestExportableClassifiers:
@@ -175,7 +181,8 @@ class TestExportableClassifiers:
             trainer = pl.Trainer(**config.trainer)
             model = IntentSlotClassificationModel(config.model, trainer=trainer)
             filename = os.path.join(tmpdir, 'isc.onnx')
-            model.export(output=filename, check_trace=True)
+            model.export(output=filename, check_trace=True, use_dynamo=False)
+            model.export(output=filename, check_trace=True, use_dynamo=True)
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
             assert onnx_model.graph.input[0].name == 'input_ids'
@@ -191,7 +198,8 @@ class TestExportableClassifiers:
         model = nemo_nlp.models.TokenClassificationModel.from_pretrained(model_name="ner_en_bert")
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'ner.onnx')
-            model.export(output=filename, check_trace=True)
+            model.export(output=filename, check_trace=True, use_dynamo=False)
+            model.export(output=filename, check_trace=True, use_dynamo=True)
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
             assert onnx_model.graph.input[0].name == 'input_ids'
@@ -206,7 +214,9 @@ class TestExportableClassifiers:
         model = nemo_nlp.models.PunctuationCapitalizationModel.from_pretrained(model_name="punctuation_en_distilbert")
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'puncap.onnx')
-            model.export(output=filename, check_trace=True)
+            model.export(output=filename, check_trace=True, use_dynamo=False)
+            # Unsupported FX nodes: {'call_function': ['aten.detach_.default']}.
+            # model.export(output=filename, check_trace=True, use_dynamo=True)
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
             assert onnx_model.graph.input[0].name == 'input_ids'
@@ -221,7 +231,8 @@ class TestExportableClassifiers:
         model = nemo_nlp.models.QAModel.from_pretrained(model_name="qa_squadv2.0_bertbase")
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'qa.onnx')
-            model.export(output=filename, check_trace=True)
+            model.export(output=filename, check_trace=True, use_dynamo=False)
+            model.export(output=filename, check_trace=True, use_dynamo=True)
             onnx_model = onnx.load(filename)
             assert onnx_model.graph.input[0].name == 'input_ids'
             assert onnx_model.graph.input[1].name == 'attention_mask'

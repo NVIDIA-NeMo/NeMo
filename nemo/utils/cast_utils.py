@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
 import torch
 
@@ -91,3 +91,12 @@ class CastToFloatAll(torch.nn.Module):
                 return cast_all(ret, from_dtype=torch.float32, to_dtype=from_dtype)
         else:
             return self.mod.forward(*args)
+
+
+@contextmanager
+def monkeypatched(object, name, patch):
+    """Temporarily monkeypatches an object."""
+    pre_patched_value = getattr(object, name)
+    setattr(object, name, patch)
+    yield object
+    setattr(object, name, pre_patched_value)

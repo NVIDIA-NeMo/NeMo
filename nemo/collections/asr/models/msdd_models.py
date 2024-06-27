@@ -163,8 +163,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
             del cfg.speaker_model_cfg.validation_ds
 
     def _init_segmentation_info(self):
-        """Initialize segmentation settings: window, shift and multiscale weights.
-        """
+        """Initialize segmentation settings: window, shift and multiscale weights."""
         self._diarizer_params = self.cfg_msdd_model.diarizer
         self.multiscale_args_dict = parse_scale_configs(
             self._diarizer_params.speaker_embeddings.parameters.window_length_in_sec,
@@ -275,10 +274,14 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         )
 
     def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
-        self._train_dl = self.__setup_dataloader_from_config(config=train_data_config,)
+        self._train_dl = self.__setup_dataloader_from_config(
+            config=train_data_config,
+        )
 
     def setup_validation_data(self, val_data_layer_config: Optional[Union[DictConfig, Dict]]):
-        self._validation_dl = self.__setup_dataloader_from_config(config=val_data_layer_config,)
+        self._validation_dl = self.__setup_dataloader_from_config(
+            config=val_data_layer_config,
+        )
 
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
         if self.pairwise_infer:
@@ -338,32 +341,32 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
                 Merged embeddings without zero-padding in the batch. See `ms_seg_counts` for details.
                 Shape: (Total number of segments in the batch, emb_dim)
             scale_mapping (Tensor):
-		The element at the m-th row and the n-th column of the scale mapping matrix indicates the (m+1)-th scale
-		segment index which has the closest center distance with (n+1)-th segment in the base scale.
-		Example:
-		    scale_mapping_argmat[2][101] = 85
-		In the above example, it means that 86-th segment in the 3rd scale (python index is 2) is mapped with
-		102-th segment in the base scale. Thus, the longer segments bound to have more repeating numbers since
-		multiple base scale segments (since the base scale has the shortest length) fall into the range of the
-		longer segments. At the same time, each row contains N numbers of indices where N is number of
-		segments in the base-scale (i.e., the finest scale).
+                The element at the m-th row and the n-th column of the scale mapping matrix indicates the (m+1)-th scale
+                segment index which has the closest center distance with (n+1)-th segment in the base scale.
+                Example:
+                    scale_mapping_argmat[2][101] = 85
+                In the above example, it means that 86-th segment in the 3rd scale (python index is 2) is mapped with
+                102-th segment in the base scale. Thus, the longer segments bound to have more repeating numbers since
+                multiple base scale segments (since the base scale has the shortest length) fall into the range of the
+                longer segments. At the same time, each row contains N numbers of indices where N is number of
+                segments in the base-scale (i.e., the finest scale).
                 Shape: (batch_size, scale_n, self.diar_window_length)
             ms_seg_counts (Tensor):
                 Cumulative sum of the number of segments in each scale. This information is needed to reconstruct
                 the multi-scale input matrix during forward propagating.
 
-		Example: `batch_size=3, scale_n=6, emb_dim=192`
-                    ms_seg_counts =  
-                     [[8,  9, 12, 16, 25, 51],  
-                      [11, 13, 14, 17, 25, 51],  
-                      [ 9,  9, 11, 16, 23, 50]]  
+                Example: `batch_size=3, scale_n=6, emb_dim=192`
+                    ms_seg_counts =
+                     [[8,  9, 12, 16, 25, 51],
+                      [11, 13, 14, 17, 25, 51],
+                      [ 9,  9, 11, 16, 23, 50]]
 
-		In this function, `ms_seg_counts` is used to get the actual length of each embedding sequence without
-		zero-padding.
+                In this function, `ms_seg_counts` is used to get the actual length of each embedding sequence without
+                zero-padding.
 
         Returns:
             ms_emb_seq (Tensor):
-	        Multi-scale embedding sequence that is mapped, matched and repeated. The longer scales are less repeated,
+                Multi-scale embedding sequence that is mapped, matched and repeated. The longer scales are less repeated,
                 while shorter scales are more frequently repeated following the scale mapping tensor.
         """
         scale_n, batch_size = scale_mapping[0].shape[0], scale_mapping.shape[0]
@@ -409,9 +412,9 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
                                 [ 9,  9, 11, 16, 23, 50]
                             ]
 
-                    Counts of merged segments: (121, 131, 118)  
-                    embs has shape of (370, 192)  
-                    clus_label_index has shape of (3, 131)  
+                    Counts of merged segments: (121, 131, 118)
+                    embs has shape of (370, 192)
+                    clus_label_index has shape of (3, 131)
 
                 Shape: (batch_size, scale_n)
 
@@ -553,7 +556,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         with torch.no_grad():
             self.msdd._speaker_model.eval()
             logits, embs_d = self.msdd._speaker_model.forward_for_export(
-                processed_signal=audio_signal[detach_ids[1]], processed_signal_len=audio_signal_len[detach_ids[1]]
+                audio_signal=audio_signal[detach_ids[1]], length=audio_signal_len[detach_ids[1]]
             )
             embs = torch.zeros(audio_signal.shape[0], embs_d.shape[1]).to(embs_d.device)
             embs[detach_ids[1], :] = embs_d.detach()
@@ -854,9 +857,9 @@ class ClusterEmbedding(torch.nn.Module):
         os.makedirs(self.out_rttm_dir, exist_ok=True)
 
         self.clus_diar_model._cluster_params = self.cfg_diar_infer.diarizer.clustering.parameters
-        self.clus_diar_model.multiscale_args_dict[
-            "multiscale_weights"
-        ] = self.cfg_diar_infer.diarizer.speaker_embeddings.parameters.multiscale_weights
+        self.clus_diar_model.multiscale_args_dict["multiscale_weights"] = (
+            self.cfg_diar_infer.diarizer.speaker_embeddings.parameters.multiscale_weights
+        )
         self.clus_diar_model._diarizer_params.speaker_embeddings.parameters = (
             self.cfg_diar_infer.diarizer.speaker_embeddings.parameters
         )
@@ -1076,7 +1079,6 @@ class NeuralDiarizer(LightningModule):
         return _speaker_model
 
     def _init_msdd_model(self, cfg: Union[DictConfig, NeuralDiarizerInferenceConfig]):
-
         """
         Initialized MSDD model with the provided config. Load either from `.nemo` file or `.ckpt` checkpoint files.
         """
@@ -1128,7 +1130,7 @@ class NeuralDiarizer(LightningModule):
         digit_map = dict(zip(sorted(set(all_tups)), range(n_est_spks)))
         total_len = max([sess[1].shape[1] for sess in data_list])
         sum_pred = torch.zeros(total_len, n_est_spks)
-        for (_dim_tup, pred_mat) in data_list:
+        for _dim_tup, pred_mat in data_list:
             dim_tup = [digit_map[x] for x in _dim_tup]
             if len(pred_mat.shape) == 3:
                 pred_mat = pred_mat.squeeze(0)
@@ -1167,8 +1169,7 @@ class NeuralDiarizer(LightningModule):
         return output_list
 
     def get_emb_clus_infer(self, cluster_embeddings):
-        """Assign dictionaries containing the clustering results from the class instance `cluster_embeddings`.
-        """
+        """Assign dictionaries containing the clustering results from the class instance `cluster_embeddings`."""
         self.msdd_model.emb_sess_test_dict = cluster_embeddings.emb_sess_test_dict
         self.msdd_model.clus_test_label_dict = cluster_embeddings.clus_test_label_dict
         self.msdd_model.emb_seq_test = cluster_embeddings.emb_seq_test
@@ -1456,7 +1457,10 @@ class NeuralDiarizer(LightningModule):
         """
         logging.setLevel(logging.INFO if verbose else logging.WARNING)
         cfg = NeuralDiarizerInferenceConfig.init_config(
-            diar_model_path=model_name, vad_model_path=vad_model_name, map_location=map_location, verbose=verbose,
+            diar_model_path=model_name,
+            vad_model_path=vad_model_name,
+            map_location=map_location,
+            verbose=verbose,
         )
         return cls(cfg)
 

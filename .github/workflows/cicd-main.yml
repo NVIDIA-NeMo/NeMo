@@ -95,12 +95,12 @@ jobs:
         ### \'\'
 
 
-  OPTIONAL_L0_Unit_Tests_GPU:
+  L0_Unit_Tests_GPU:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
-      TIMEOUT: 30
+      TIMEOUT: 60
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --with_downloads
       IS_OPTIONAL: true
@@ -4236,7 +4236,7 @@ jobs:
 
   Nemo_CICD_Test:
     needs: 
-      #- OPTIONAL_L0_Unit_Tests_GPU
+      - L0_Unit_Tests_GPU
       - L0_Unit_Tests_CPU
       - L2_Community_LLM_Checkpoints_tests_Llama
       - L2_Community_LLM_Checkpoints_tests_StarCoder

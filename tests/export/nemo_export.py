@@ -26,14 +26,14 @@ import torch
 
 # Import infer_data_path from the parent folder assuming that the 'tests' package is not installed.
 sys.path.append(str(Path(__file__).parent.parent))
-from infer_data_path import get_infer_test_data
+from tests.infer_data_path import get_infer_test_data
 
 LOGGER = logging.getLogger("NeMo")
 
 triton_supported = True
 try:
     from nemo.deploy import DeployPyTriton
-    from nemo.deploy.nlp import NemoQueryLLM
+    from nemo.deploy.nlp import MegatronLLMDeployable, NemoQueryLLM
 except Exception as e:
     LOGGER.warning(f"Cannot import Triton, deployment will not be available. {type(e).__name__}: {e}")
     triton_supported = False
@@ -180,11 +180,11 @@ def run_inference(
     checkpoint_path,
     model_dir,
     use_vllm,
-    n_gpu=1,
     max_batch_size=8,
     use_embedding_sharing=False,
     max_input_len=128,
     max_output_len=128,
+    use_parallel_embedding=False,
     ptuning=False,
     p_tuning_checkpoint=None,
     lora=False,
@@ -204,10 +204,10 @@ def run_inference(
     save_trt_engine=False,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
     if Path(checkpoint_path).exists():
-        if n_gpu > torch.cuda.device_count():
+        if tp_size > torch.cuda.device_count():
             print(
-                "Path: {0} and model: {1} with {2} gpus won't be tested since available # of gpus = {3}".format(
-                    checkpoint_path, model_name, n_gpu, torch.cuda.device_count()
+                "Path: {0} and model: {1} with {2} tps won't be tested since available # of gpus = {3}".format(
+                    checkpoint_path, model_name, tp_size, torch.cuda.device_count()
                 )
             )
             return (None, None)
@@ -222,7 +222,7 @@ def run_inference(
             )
             print("")
 
-            print("Path: {0} and model: {1} with {2} gpus will be tested".format(checkpoint_path, model_name, n_gpu))
+            print("Path: {0} and model: {1} with {2} tps will be tested".format(checkpoint_path, model_name, tp_size))
 
         prompt_embeddings_checkpoint_path = None
         task_ids = None
@@ -273,12 +273,12 @@ def run_inference(
             exporter.export(
                 nemo_checkpoint_path=checkpoint_path,
                 model_type=model_type,
-                n_gpus=n_gpu,
-                tensor_parallel_size=tp_size,
-                pipeline_parallel_size=pp_size,
+                tensor_parallelism_size=tp_size,
+                pipeline_parallelism_size=pp_size,
                 max_input_len=max_input_len,
                 max_output_len=max_output_len,
                 max_batch_size=max_batch_size,
+                use_parallel_embedding=use_parallel_embedding,
                 max_prompt_embedding_table_size=max_prompt_embedding_table_size,
                 use_lora_plugin=use_lora_plugin,
                 lora_target_modules=lora_target_modules,
@@ -398,9 +398,9 @@ def run_inference(
 def run_existing_checkpoints(
     model_name,
     use_vllm,
-    n_gpus,
-    tp_size=None,
-    pp_size=None,
+    tp_size,
+    pp_size,
+    use_parallel_embedding=False,
     ptuning=False,
     lora=False,
     streaming=False,
@@ -410,8 +410,9 @@ def run_existing_checkpoints(
     stop_words_list=None,
     test_data_path=None,
     save_trt_engine=False,
+    in_framework=False,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
-    if n_gpus > torch.cuda.device_count():
+    if tp_size > torch.cuda.device_count():
         print("Skipping the test due to not enough number of GPUs")
         return (None, None)
 
@@ -421,8 +422,8 @@ def run_existing_checkpoints(
 
     model_info = test_data[model_name]
 
-    if n_gpus < model_info["min_gpus"]:
-        print("Min n_gpus for this model is {0}".format(n_gpus))
+    if tp_size < model_info["min_tps"]:
+        print("Min tps for this model is {0}".format(tp_size))
         return (None, None)
 
     p_tuning_checkpoint = None
@@ -445,37 +446,107 @@ def run_existing_checkpoints(
     else:
         use_embedding_sharing = False
 
-    return run_inference(
-        model_name=model_name,
-        model_type=model_info["model_type"],
-        prompts=model_info["prompt_template"],
-        expected_outputs=model_info["expected_keyword"],
-        checkpoint_path=model_info["checkpoint"],
-        model_dir=model_info["model_dir"],
-        use_vllm=use_vllm,
-        n_gpu=n_gpus,
-        max_batch_size=model_info["max_batch_size"],
-        use_embedding_sharing=use_embedding_sharing,
-        max_input_len=512,
-        max_output_len=model_info["max_output_len"],
-        ptuning=ptuning,
-        p_tuning_checkpoint=p_tuning_checkpoint,
-        lora=lora,
-        lora_checkpoint=lora_checkpoint,
-        tp_size=tp_size,
-        pp_size=pp_size,
-        top_k=1,
-        top_p=0.0,
-        temperature=1.0,
-        run_accuracy=run_accuracy,
-        debug=True,
-        streaming=streaming,
-        stop_words_list=stop_words_list,
-        test_cpp_runtime=test_cpp_runtime,
-        test_deployment=test_deployment,
-        test_data_path=test_data_path,
-        save_trt_engine=save_trt_engine,
-    )
+    if in_framework:
+        return run_in_framework_inference(
+            model_name=model_name,
+            prompts=model_info["model_type"],
+            checkpoint_path=model_info["checkpoint"],
+            num_gpus=tp_size,
+            max_output_len=model_info["max_output_len"],
+            run_accuracy=run_accuracy,
+            debug=True,
+            test_data_path=test_data_path,
+        )
+    else:
+        return run_inference(
+            model_name=model_name,
+            model_type=model_info["model_type"],
+            prompts=model_info["prompt_template"],
+            expected_outputs=model_info["expected_keyword"],
+            checkpoint_path=model_info["checkpoint"],
+            model_dir=model_info["model_dir"],
+            use_vllm=use_vllm,
+            max_batch_size=model_info["max_batch_size"],
+            use_embedding_sharing=use_embedding_sharing,
+            use_parallel_embedding=use_parallel_embedding,
+            max_input_len=512,
+            max_output_len=model_info["max_output_len"],
+            ptuning=ptuning,
+            p_tuning_checkpoint=p_tuning_checkpoint,
+            lora=lora,
+            lora_checkpoint=lora_checkpoint,
+            tp_size=tp_size,
+            pp_size=pp_size,
+            top_k=1,
+            top_p=0.0,
+            temperature=1.0,
+            run_accuracy=run_accuracy,
+            debug=True,
+            streaming=streaming,
+            stop_words_list=stop_words_list,
+            test_cpp_runtime=test_cpp_runtime,
+            test_deployment=test_deployment,
+            test_data_path=test_data_path,
+            save_trt_engine=save_trt_engine,
+        )
+
+
+def run_in_framework_inference(
+    model_name,
+    prompts,
+    checkpoint_path,
+    num_gpus=1,
+    max_output_len=128,
+    top_k=1,
+    top_p=0.0,
+    temperature=1.0,
+    run_accuracy=False,
+    debug=True,
+    test_data_path=None,
+) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
+    if Path(checkpoint_path).exists():
+        if debug:
+            print("")
+            print("")
+            print(
+                "################################################## NEW TEST ##################################################"
+            )
+            print("")
+
+            print("Path: {0} and model: {1} will be tested".format(checkpoint_path, model_name))
+
+        deployed_model = MegatronLLMDeployable(checkpoint_path, num_gpus)
+
+        nm = DeployPyTriton(
+            model=deployed_model,
+            triton_model_name=model_name,
+            port=8000,
+        )
+        nm.deploy()
+        nm.run()
+        nq = NemoQueryLLM(url="localhost:8000", model_name=model_name)
+
+        output_deployed = nq.query_llm(
+            prompts=[prompts],
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+        )
+
+        # Unwrap the generator if needed
+        output_deployed = list(output_deployed)
+        print("\n --------- Output: ", output_deployed)
+
+        accuracy_result = None
+        if run_accuracy:
+            print("Start model accuracy testing ...")
+            accuracy_result = get_accuracy_with_lambada(None, nq, None, None, test_data_path)
+
+        nm.stop()
+
+        return (None, accuracy_result)
+    else:
+        raise Exception("Checkpoint {0} could not be found.".format(checkpoint_path))
 
 
 def get_args():
@@ -500,14 +571,19 @@ def get_args():
         required=False,
     )
     parser.add_argument(
-        "--min_gpus",
+        "--min_tps",
         type=int,
         default=1,
         required=True,
     )
     parser.add_argument(
-        "--max_gpus",
+        "--max_tps",
         type=int,
+    )
+    parser.add_argument(
+        "--pps",
+        type=int,
+        default=1,
     )
     parser.add_argument(
         "--checkpoint_dir",
@@ -535,6 +611,11 @@ def get_args():
         default=128,
     )
     parser.add_argument(
+        "--use_parallel_embedding",
+        type=str,
+        default="False",
+    )
+    parser.add_argument(
         "--p_tuning_checkpoint",
         type=str,
     )
@@ -551,16 +632,6 @@ def get_args():
         "--lora",
         default=False,
         action='store_true',
-    )
-    parser.add_argument(
-        "--tp_size",
-        default=1,
-        type=int,
-    )
-    parser.add_argument(
-        "--pp_size",
-        default=1,
-        type=int,
     )
     parser.add_argument(
         "--top_k",
@@ -599,11 +670,6 @@ def get_args():
         action='store_true',
     )
     parser.add_argument(
-        "--ci_upload_test_results_to_cloud",
-        default=False,
-        action='store_true',
-    )
-    parser.add_argument(
         "--test_data_path",
         type=str,
         default=None,
@@ -615,6 +681,11 @@ def get_args():
     )
     parser.add_argument(
         "--use_vllm",
+        type=str,
+        default="False",
+    )
+    parser.add_argument(
+        "--in_framework",
         type=str,
         default="False",
     )
@@ -635,6 +706,8 @@ def get_args():
     args.save_trt_engine = str_to_bool("save_trt_engin", args.save_trt_engine)
     args.run_accuracy = str_to_bool("run_accuracy", args.run_accuracy)
     args.use_vllm = str_to_bool("use_vllm", args.use_vllm)
+    args.use_parallel_embedding = str_to_bool("use_parallel_embedding", args.use_parallel_embedding)
+    args.in_framework = str_to_bool("in_framework", args.in_framework)
 
     return args
 
@@ -658,76 +731,92 @@ def run_inference_tests(args):
     result_dic: Dict[int, Tuple[FunctionalResult, Optional[AccuracyResult]]] = {}
 
     if args.existing_test_models:
-        n_gpus = args.min_gpus
-        if args.max_gpus is None:
-            args.max_gpus = args.min_gpus
+        tps = args.min_tps
+        if args.max_tps is None:
+            args.max_tps = args.min_tps
 
-        while n_gpus <= args.max_gpus:
-            result_dic[n_gpus] = run_existing_checkpoints(
+        while tps <= args.max_tps:
+            result_dic[tps] = run_existing_checkpoints(
                 model_name=args.model_name,
                 use_vllm=args.use_vllm,
-                n_gpus=n_gpus,
                 ptuning=args.ptuning,
                 lora=args.lora,
-                tp_size=args.tp_size,
-                pp_size=args.pp_size,
+                tp_size=tps,
+                pp_size=args.pps,
+                use_parallel_embedding=args.use_parallel_embedding,
                 streaming=args.streaming,
                 test_deployment=args.test_deployment,
                 test_cpp_runtime=args.test_cpp_runtime,
                 run_accuracy=args.run_accuracy,
                 test_data_path=args.test_data_path,
                 save_trt_engine=args.save_trt_engine,
+                in_framework=args.in_framework,
             )
 
-            n_gpus = n_gpus * 2
+            tps = tps * 2
     else:
         if args.model_dir is None:
             raise Exception("When using custom checkpoints, --model_dir is required.")
 
         prompts = ["The capital of France is", "Largest animal in the sea is"]
         expected_outputs = ["Paris", "blue whale"]
-        n_gpus = args.min_gpus
-        if args.max_gpus is None:
-            args.max_gpus = args.min_gpus
+        tps = args.min_tps
+        if args.max_tps is None:
+            args.max_tps = args.min_tps
 
-        while n_gpus <= args.max_gpus:
-            result_dic[n_gpus] = run_inference(
-                model_name=args.model_name,
-                model_type=args.model_type,
-                prompts=prompts,
-                expected_outputs=expected_outputs,
-                checkpoint_path=args.checkpoint_dir,
-                model_dir=args.model_dir,
-                use_vllm=args.use_vllm,
-                n_gpu=n_gpus,
-                max_batch_size=args.max_batch_size,
-                max_input_len=args.max_input_len,
-                max_output_len=args.max_output_len,
-                ptuning=args.ptuning,
-                p_tuning_checkpoint=args.p_tuning_checkpoint,
-                lora=args.lora,
-                lora_checkpoint=args.lora_checkpoint,
-                tp_size=args.tp_size,
-                pp_size=args.pp_size,
-                top_k=args.top_k,
-                top_p=args.top_p,
-                temperature=args.temperature,
-                run_accuracy=args.run_accuracy,
-                debug=args.debug,
-                streaming=args.streaming,
-                test_deployment=args.test_deployment,
-                test_cpp_runtime=args.test_cpp_runtime,
-                test_data_path=args.test_data_path,
-                save_trt_engine=args.save_trt_engine,
-            )
+        while tps <= args.max_tps:
+            if args.in_framework:
+                result_dic[tps] = run_in_framework_inference(
+                    model_name=args.model_name,
+                    prompts=prompts,
+                    checkpoint_path=args.checkpoint_dir,
+                    num_gpus=tps,
+                    max_output_len=args.max_output_len,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    temperature=args.temperature,
+                    run_accuracy=args.run_accuracy,
+                    debug=True,
+                    test_data_path=args.test_data_path,
+                )
+            else:
+                result_dic[tps] = run_inference(
+                    model_name=args.model_name,
+                    model_type=args.model_type,
+                    prompts=prompts,
+                    expected_outputs=expected_outputs,
+                    checkpoint_path=args.checkpoint_dir,
+                    model_dir=args.model_dir,
+                    use_vllm=args.use_vllm,
+                    tp_size=tps,
+                    pp_size=args.pps,
+                    max_batch_size=args.max_batch_size,
+                    max_input_len=args.max_input_len,
+                    max_output_len=args.max_output_len,
+                    use_parallel_embedding=args.use_parallel_embedding,
+                    ptuning=args.ptuning,
+                    p_tuning_checkpoint=args.p_tuning_checkpoint,
+                    lora=args.lora,
+                    lora_checkpoint=args.lora_checkpoint,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    temperature=args.temperature,
+                    run_accuracy=args.run_accuracy,
+                    debug=args.debug,
+                    streaming=args.streaming,
+                    test_deployment=args.test_deployment,
+                    test_cpp_runtime=args.test_cpp_runtime,
+                    test_data_path=args.test_data_path,
+                    save_trt_engine=args.save_trt_engine,
+                )
 
-            n_gpus = n_gpus * 2
+            tps = tps * 2
 
     functional_test_result = "PASS"
     accuracy_test_result = "PASS"
     print_separator = False
     print("============= Test Summary ============")
-    for num_gpus, results in result_dic.items():
+    for num_tps, results in result_dic.items():
         functional_result, accuracy_result = results
 
         if print_separator:
@@ -739,7 +828,7 @@ def run_inference_tests(args):
                 return "N/A"
             return "PASS" if b else "FAIL"
 
-        print(f"Number of GPUS:                  {num_gpus}")
+        print(f"Number of tps:                  {num_tps}")
 
         if functional_result is not None:
             print(f"Functional Test:                 {optional_bool_to_pass_fail(functional_result.regular_pass)}")

@@ -83,6 +83,8 @@ def get_args(argv):
         "-tmr", "--triton_model_repository", default=None, type=str, help="Folder for the trt-llm conversion"
     )
     parser.add_argument("-ng", "--num_gpus", default=1, type=int, help="Number of GPUs for the deployment")
+    parser.add_argument("-tps", "--tensor_parallelism_size", default=1, type=int, help="Tensor parallelism size")
+    parser.add_argument("-pps", "--pipeline_parallelism_size", default=1, type=int, help="Pipeline parallelism size")
     parser.add_argument(
         "-dt",
         "--dtype",
@@ -108,6 +110,13 @@ def get_args(argv):
         default=False,
         action='store_true',
         help="Disables the remove input padding option.",
+    )
+    parser.add_argument(
+        "-upe",
+        "--use_parallel_embedding",
+        default=False,
+        action='store_true',
+        help='Use parallel embedding feature of TensorRT-LLM.',
     )
     parser.add_argument(
         "-mbm",
@@ -254,13 +263,14 @@ def get_trtllm_deployable(args):
                 nemo_checkpoint_path=args.nemo_checkpoint,
                 model_type=args.model_type,
                 n_gpus=args.num_gpus,
-                tensor_parallel_size=args.num_gpus,
-                pipeline_parallel_size=1,
+                tensor_parallelism_size=args.tensor_parallelism_size,
+                pipeline_parallelism_size=args.pipeline_parallelism_size,
                 max_input_len=args.max_input_len,
                 max_output_len=args.max_output_len,
                 max_batch_size=args.max_batch_size,
                 max_num_tokens=args.max_num_tokens,
                 opt_num_tokens=args.opt_num_tokens,
+                use_parallel_embedding=args.use_parallel_embedding,
                 max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
                 paged_kv_cache=(not args.no_paged_kv_cache),
                 remove_input_padding=(not args.disable_remove_input_padding),

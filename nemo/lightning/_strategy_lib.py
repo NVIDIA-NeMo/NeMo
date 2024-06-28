@@ -375,7 +375,9 @@ def enable_nvidia_optimizations() -> None:
         pass
 
 
-def optimizer_sharded_state_dict(model: SharedStateDictProtocol, optimizer: "Optimizable") -> Dict[str, torch.Tensor]:
+def optimizer_sharded_state_dict(
+    model: SharedStateDictProtocol, optimizer: "Optimizable", is_loading=False
+) -> Dict[str, torch.Tensor]:
     """
     Sharded state dictionary for an MainParamsOptimizerWrapper.
     Used to save and load the optimizer state when training with distributed_checkpoint.
@@ -403,7 +405,7 @@ def optimizer_sharded_state_dict(model: SharedStateDictProtocol, optimizer: "Opt
     }
 
     if hasattr(optimizer, "sharded_state_dict"):
-        return optimizer.sharded_state_dict(model_sharded_state_dict)
+        return optimizer.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)
 
     if not isinstance(optimizer, MainParamsOptimizerWrapper):
         # Regular optimizer, e.g. Adam or FusedAdam

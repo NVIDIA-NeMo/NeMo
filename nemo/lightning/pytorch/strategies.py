@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import torch
 import torch.distributed
 from lightning_fabric.plugins import CheckpointIO, ClusterEnvironment
-from lightning_fabric.utilities.optimizer import _optimizers_to_device
+from lightning_fabric.utilities.optimizer import _optimizer_to_device, _optimizers_to_device
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
 from pytorch_lightning.accelerators import CPUAccelerator
@@ -466,7 +466,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     callback.__class__ = MegatronProgressBar
                     break
 
-    def optimizer_sharded_state_dict(self):
+    def optimizer_sharded_state_dict(self, is_loading=False):
         """
         Sharded state dictionary for an MainParamsOptimizerWrapper.
         Used to save and load the optimizer state when training with distributed_checkpoint.
@@ -481,7 +481,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
         optimizer = self.lightning_module.optimizers(use_pl_optimizer=False)
 
-        return _strategy_lib.optimizer_sharded_state_dict(self.megatron_parallel, optimizer)
+        return _strategy_lib.optimizer_sharded_state_dict(self.megatron_parallel, optimizer, is_loading=is_loading)
 
     @override
     def save_checkpoint(
@@ -509,11 +509,18 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
         if self.ckpt_include_optimizer and self.trainer.state.fn == TrainerFn.FITTING:
             if self.lightning_module.optimizers(use_pl_optimizer=False):
-                sharded_state_dict["optimizer"] = [self.optimizer_sharded_state_dict()]
+                sharded_state_dict["optimizer"] = [self.optimizer_sharded_state_dict(is_loading=True)]
 
         checkpoint = self.checkpoint_io.load_checkpoint(checkpoint_path, sharded_state_dict=sharded_state_dict)
 
         return checkpoint
+
+    @override
+    def load_optimizer_state_dict(self, checkpoint: Mapping[str, Any]) -> None:
+        optimizer_states = checkpoint["optimizer"]
+        for optimizer, opt_state in zip(self.optimizers, optimizer_states):
+            optimizer.load_state_dict(opt_state)
+            _optimizer_to_device(optimizer, self.root_device)
 
     def remove_checkpoint(self, filepath: Union[str, Path]) -> None:
         if self.is_global_zero:
@@ -530,8 +537,11 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 checkpoint_state_dict = checkpoint['state_dict']
 
             mcore_model = self.lightning_module.module
+            while hasattr(mcore_model, "module"):
+                mcore_model = mcore_model.module
+
             current = self.model[0]
-            n_nesting = 2
+            n_nesting = 0
             while current != mcore_model:
                 current = current.module
                 n_nesting += 1

@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Mapping, Optional
 
 import pytorch_lightning as pl
 from megatron.core.distributed import finalize_model_grads
@@ -90,9 +90,14 @@ class MegatronOptimizerModule(OptimizerModule):
                 model_sharded_state_dict,
                 optimizer_state_dict=None,
                 is_loading=False,
-                dist_ckpt_parallel_save=False,
+                # dist_ckpt_parallel_save=False, ## TODO: fix!
             ):
-                return self.mcore_optimizer.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)
+                # sharding_type = 'fully_sharded_model_space' if dist_ckpt_parallel_save else 'dp_zero_gather_scatter'
+                sharding_type = 'dp_zero_gather_scatter'
+                state_dict = self.mcore_optimizer.sharded_state_dict(
+                    model_sharded_state_dict, is_loading=is_loading, sharding_type=sharding_type
+                )
+                return state_dict
 
         mcore_opt = get_megatron_optimizer(
             self.config,

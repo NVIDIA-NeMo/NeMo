@@ -34,6 +34,13 @@ TTS:
 - tests/collections/tts/**
 - tests/collections/common/tokenizers/text_to_speech/**
 
+Audio:
+- nemo/collections/audio/**/*
+- examples/audio/**/*
+- tutorials/audio/**/*
+- docs/source/audio/**/*
+- tests/collections/audio/**
+
 core:
 - nemo/core/**/*
 - tests/core/**

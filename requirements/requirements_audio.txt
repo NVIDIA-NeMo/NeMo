@@ -1,0 +1,9 @@
+einops
+lhotse>=1.22.0
+librosa>=0.10.0
+matplotlib
+pesq
+pystoi
+scipy>=0.14
+soundfile
+sox

@@ -14,7 +14,7 @@
 
 import argparse
 
-from nemo.collections.asr.data.audio_to_audio_lhotse import convert_manifest_nemo_to_lhotse
+from nemo.collections.audio.data.audio_to_audio_lhotse import convert_manifest_nemo_to_lhotse
 
 
 def parse_args():

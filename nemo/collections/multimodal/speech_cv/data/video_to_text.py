@@ -19,7 +19,7 @@ import torch
 import webdataset as wds
 
 from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_sharded_filepaths
-from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
+from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.collections.multimodal.speech_cv.parts.preprocessing.features import VideoFeaturizer
@@ -123,8 +123,7 @@ class _VideoTextDataset(Dataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-               """
+        """Returns definitions of module output ports."""
         return {
             'video_signal': NeuralType(('B', 'C', 'T', 'H', 'W'), VideoSignal()),
             'video_sig_length': NeuralType(tuple('B'), LengthsType()),
@@ -307,8 +306,7 @@ class VideoToBPEDataset(_VideoTextDataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-               """
+        """Returns definitions of module output ports."""
         return {
             'video_signal': NeuralType(('B', 'C', 'T', 'H', 'W'), VideoSignal()),
             'video_sig_length': NeuralType(tuple('B'), LengthsType()),
@@ -411,8 +409,7 @@ class VideoToCharDataset(_VideoTextDataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-               """
+        """Returns definitions of module output ports."""
         return {
             'video_signal': NeuralType(('B', 'C', 'T', 'H', 'W'), VideoSignal()),
             'video_sig_length': NeuralType(tuple('B'), LengthsType()),
@@ -641,8 +638,7 @@ class _TarredVideoToTextDataset(IterableDataset):
         return TarredAudioFilter(self.manifest_processor.collection)
 
     def _loop_offsets(self, iterator):
-        """This function is used to iterate through utterances with different offsets for each file.
-        """
+        """This function is used to iterate through utterances with different offsets for each file."""
 
         class TarredAudioLoopOffsets:
             def __init__(self, collection):
@@ -675,8 +671,7 @@ class _TarredVideoToTextDataset(IterableDataset):
         return _video_speech_collate_fn(batch, self.pad_id)
 
     def _build_sample(self, tup):
-        """Builds the training sample by combining the data from the WebDataset with the manifest info.
-        """
+        """Builds the training sample by combining the data from the WebDataset with the manifest info."""
         video_tuple, audio_filename, offset_id = tup
 
         # Grab manifest entry from self.manifest_preprocessor.collection

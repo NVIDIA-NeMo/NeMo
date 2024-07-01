@@ -30,8 +30,8 @@ from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
+from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
-from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.multimodal.speech_cv.data import video_to_text_dataset
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -89,7 +89,10 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
 
         # Setup decoding objects
         self.decoding = RNNTDecoding(
-            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
+            decoding_cfg=self.cfg.decoding,
+            decoder=self.decoder,
+            joint=self.joint,
+            vocabulary=self.joint.vocabulary,
         )
         # Setup WER calculation
         self.wer = WER(
@@ -364,7 +367,10 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
             self.decoding = RNNTDecoding(
-                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
+                decoding_cfg=decoding_cfg,
+                decoder=self.decoder,
+                joint=self.joint,
+                vocabulary=self.joint.vocabulary,
             )
 
             self.wer = WER(
@@ -419,7 +425,10 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
         self.decoding = RNNTDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
+            decoding_cfg=decoding_cfg,
+            decoder=self.decoder,
+            joint=self.joint,
+            vocabulary=self.joint.vocabulary,
         )
 
         self.wer = WER(

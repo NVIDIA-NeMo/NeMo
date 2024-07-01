@@ -90,6 +90,7 @@ extras_require = {
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
     'multimodal': req_file("requirements_multimodal.txt"),
+    'audio': req_file("requirements_audio.txt"),
 }
 
 
@@ -135,6 +136,7 @@ extras_require['multimodal'] = list(
         ]
     )
 )
+extras_require['audio'] = list(chain([extras_require['audio'], extras_require['core'], extras_require['common']]))
 
 # TTS has extra dependencies
 extras_require['tts'] = list(chain([extras_require['tts'], extras_require['asr']]))

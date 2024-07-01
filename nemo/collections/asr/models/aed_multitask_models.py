@@ -37,10 +37,10 @@ from nemo.collections.asr.parts.mixins.transcription import (
     InternalTranscribeConfig,
     TranscribeConfig,
 )
+from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
 from nemo.collections.asr.parts.utils import manifest_utils
-from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common import tokenizers
 from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config

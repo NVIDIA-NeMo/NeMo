@@ -23,13 +23,13 @@ from omegaconf import OmegaConf
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models import EncDecCTCModel, EncDecCTCModelBPE
+from nemo.collections.asr.parts.preprocessing.segment import get_samples
 from nemo.collections.asr.parts.submodules.ctc_decoding import (
     CTCBPEDecoding,
     CTCBPEDecodingConfig,
     CTCDecoding,
     CTCDecodingConfig,
 )
-from nemo.collections.asr.parts.utils.audio_utils import get_samples
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map, get_uniqname_from_filepath
 from nemo.collections.asr.parts.utils.streaming_utils import AudioFeatureIterator, FrameBatchASR
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
@@ -197,7 +197,9 @@ class WER_TS(WER):
         return token_list, timestamp_list
 
     def ctc_decoder_predictions_tensor_with_ts(
-        self, predictions: torch.Tensor, predictions_len: torch.Tensor = None,
+        self,
+        predictions: torch.Tensor,
+        predictions_len: torch.Tensor = None,
     ) -> List[str]:
         """
         A shortened version of the original function ctc_decoder_predictions_tensor().
@@ -286,7 +288,9 @@ class FrameBatchASRLogits(FrameBatchASR):
             del predictions
 
     def transcribe_with_ts(
-        self, tokens_per_chunk: int, delay: int,
+        self,
+        tokens_per_chunk: int,
+        delay: int,
     ):
         self.infer_logits()
         self.unmerged = []
@@ -720,7 +724,10 @@ class ASRDecoderTimeStamps:
         elif len(spaces_in_sec) > 0:
             # word_timetamps_middle should be an empty list if len(spaces_in_sec) == 1.
             word_timetamps_middle = [
-                [round(spaces_in_sec[k][1], 2), round(spaces_in_sec[k + 1][0], 2),]
+                [
+                    round(spaces_in_sec[k][1], 2),
+                    round(spaces_in_sec[k + 1][0], 2),
+                ]
                 for k in range(len(spaces_in_sec) - 1)
             ]
             word_timestamps = (

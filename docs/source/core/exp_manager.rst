@@ -248,9 +248,76 @@ You might also want to adjust the callback parameters:
 
 Straggler detection might involve inter-rank synchronization, and should be invoked with reasonable frequency (e.g. every few minutes).
 
+Fault Tolerance
+---------------
+
+.. _exp_manager_fault_tolerance_support-label:
+
+.. note::
+    Fault Tolerance feature is included in the optional NeMo resiliency package.
+
+When training DNN models, faults may occur, hindering the progress of the entire training process. 
+This is particularly common in distributed, multi-node training scenarios, with many nodes and GPUs involved. 
+
+NeMo incorporates a fault tolerance mechanism to detect training halts. 
+In response, it can terminate a hung workload and, if requested, restart it from the last checkpoint.
+
+Fault tolerance ("FT") relies on a special launcher (``ft_launcher``), which is a modified ``torchrun``. 
+The FT launcher runs background processes called rank monitors. **You need to use ft_launcher to start 
+your workload if you are using FT**. I.e., `NeMo-Framework-Launcher <https://github.com/NVIDIA/NeMo-Framework-Launcher>`_  
+can be used to generate SLURM batch scripts with FT support. 
+
+Each training process (rank) sends `heartbeats` to its monitor during training and validation steps.
+If a rank monitor stops receiving `heartbeats`, a training failure is detected.
+
+Fault detection is implemented in the ``FaultToleranceCallback`` and is disabled by default. 
+To enable it, add a ``create_fault_tolerance_callback: True`` option under ``exp_manager`` in the 
+config YAML file. Additionally, you can customize FT parameters by adding ``fault_tolerance`` section:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_fault_tolerance_callback: True
+        fault_tolerance:
+            initial_rank_heartbeat_timeout: 600  # wait for 10 minutes for the initial heartbeat
+            rank_heartbeat_timeout: 300  # wait for 5 minutes for subsequent heartbeats
+            calculate_timeouts: True # estimate more accurate timeouts based on observed intervals
+
+Timeouts for fault detection need to be adjusted for a given workload:
+    * ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization.
+    * ``rank_heartbeat_timeout`` should be at least as long as the longest possible interval between steps. 
+
+**Importantly, `heartbeats` are not sent during checkpoint loading and saving**, so time for 
+checkpointing related operations should be taken into account.
+
+If ``calculate_timeouts: True`` timeouts will be automatically estimated based on observed intervals. 
+Estimated timeouts take precedence over timeouts defined in the config file. **Timeouts are estimated after 
+checkpoint loading and saving was observed**. For example, in multi-part training started from scratch, 
+estimated timeouts won't be available during the first run. Estimated timeouts are stored in the checkpoint. 
+
+``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster. 
+This feature requires SLURM job to be scheduled with ``NeMo-Framework-Launcher``. If ``max_subsequent_job_failures`` 
+value is `>0` continuation job is prescheduled. It will continue  the work until ``max_subsequent_job_failures`` 
+subsequent jobs failed (SLURM job exit code is `!= 0`) or the training is completed successfully 
+("end of training" marker file is produced by the ``FaultToleranceCallback``, i.e. due to iters or time limit reached).
+
+All FT configuration items summary:
+    * ``workload_check_interval`` (float, default=5.0) Periodic workload check interval [seconds] in the workload monitor.
+    * ``initial_rank_heartbeat_timeout`` (Optional[float], default=60.0 * 60.0) Timeout for the first heartbeat from a rank. 
+    * ``rank_heartbeat_timeout`` (Optional[float], default=45.0 * 60.0) Timeout for subsequent heartbeats from a rank. 
+    * ``calculate_timeouts`` (bool, default=True) Try to calculate ``rank_heartbeat_timeout`` and ``initial_rank_heartbeat_timeout`` 
+      based on the observed heartbeat intervals.
+    * ``rank_termination_signal`` (signal.Signals, default=signal.SIGKILL) Signal used to terminate the rank when failure is detected.
+    * ``log_level`` (str, default='INFO') Log level for the FT client and server(rank monitor).
+    * ``max_rank_restarts`` (int, default=0) Used by FT launcher. Max number of restarts for a rank. 
+      If ``>0`` ranks will be restarted on existing nodes in case of a failure.
+    * ``max_subsequent_job_failures`` (int, default=0) Used by FT launcher. How many subsequent job failures are allowed until stopping autoresuming. 
+      ``0`` means do not autoresume.
+    * ``additional_ft_launcher_args`` (str, default='') Additional FT launcher params (for advanced use).
+
+
 .. _nemo_multirun-label:
-
-
 Hydra Multi-Run with NeMo
 -------------------------
 

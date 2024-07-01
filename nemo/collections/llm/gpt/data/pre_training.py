@@ -34,6 +34,7 @@ class PreTrainingDataModule(pl.LightningDataModule):
         eod_mask_loss: bool = False,
         seed: int = 1234,
         split: str = "900,50,50",
+        index_mapping_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.path = path
@@ -50,6 +51,7 @@ class PreTrainingDataModule(pl.LightningDataModule):
         self.eod_mask_loss = eod_mask_loss
         self.seed = seed
         self.split = split
+        self.index_mapping_dir = index_mapping_dir
 
         from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
@@ -136,7 +138,7 @@ class PreTrainingDataModule(pl.LightningDataModule):
             sequence_length=self.seq_length,
             tokenizer=self.tokenizer,
             split=self.split,
-            path_to_cache=None,
+            path_to_cache=self.index_mapping_dir,
             reset_position_ids=self.reset_position_ids,
             reset_attention_mask=self.reset_attention_mask,
             eod_mask_loss=self.eod_mask_loss,

@@ -103,6 +103,10 @@ class _LinearNF4(torch.autograd.Function):
         return grad_output @ weight.dequantize().to(grad_output.device), None
 
 
+def nf4_quantize(x: torch.Tensor):
+    return NF4Weight(x).cuda()
+
+
 class NF4LinearWrapper(nn.Module):
     """
     NF4 Linear Layer for QLoRA as introduced in `QLORA: Efficient Finetuning of Quantized LLMs <https://arxiv.org/abs/2305.14314>`_.
@@ -117,7 +121,7 @@ class NF4LinearWrapper(nn.Module):
         super().__init__()
 
         # quantize the weight upon initialization
-        self.weight = NF4Weight(bf16_linear_weight).cuda()
+        self.weight = nf4_quantize(bf16_linear_weight)
 
     def forward(self, x: torch.Tensor):
         """

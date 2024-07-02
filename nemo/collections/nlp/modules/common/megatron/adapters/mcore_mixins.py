@@ -19,7 +19,6 @@ from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
 from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import apply_rotary_pos_emb
-from megatron.core.tensor_parallel import ColumnParallelLinear
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
 from megatron.core.transformer.mlp import MLP
@@ -305,14 +304,16 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
 
     def forward(self, hidden_states, expert_idx=None):
         # [s, b, 4 * h/p]
-        if isinstance(self.linear_fc1, ColumnParallelLinear):
-            layernorm_output = hidden_states
-            intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
-        elif self.linear_fc1.te_return_bias:
-            intermediate_parallel, bias_parallel, layernorm_output = self.linear_fc1(hidden_states)
+        output = self.linear_fc1(hidden_states)
+        if isinstance(output, tuple) and len(output) == 2:
+            intermediate_parallel, bias_parallel = output
+            if isinstance(intermediate_parallel, tuple) and len(intermediate_parallel) == 2:
+                intermediate_parallel, layernorm_output = intermediate_parallel
+            else:
+                layernorm_output = hidden_states
         else:
-            # bias_parallel is None
-            (intermediate_parallel, layernorm_output), bias_parallel = self.linear_fc1(hidden_states)
+            # self.linear_fc1.te_return_bias == True
+            intermediate_parallel, bias_parallel, layernorm_output = output
 
         # LoRA logic
         if self.is_adapter_available():

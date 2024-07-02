@@ -462,6 +462,7 @@ class NLPModel(ModelPT, Exportable):
         return_config: bool = False,
         save_restore_connector: SaveRestoreConnector = None,
         trainer: Optional[Trainer] = None,
+        validate_access_integrity: bool = True,
     ):
         if save_restore_connector is None:
             save_restore_connector = NLPSaveRestoreConnector()
@@ -475,5 +476,12 @@ class NLPModel(ModelPT, Exportable):
             logging.info('use_cpu_initialization is True, loading checkpoint on CPU')
             map_location = 'cpu'
         return super().restore_from(
-            restore_path, override_config_path, map_location, strict, return_config, save_restore_connector, trainer
+            restore_path,
+            override_config_path,
+            map_location,
+            strict,
+            return_config,
+            save_restore_connector,
+            trainer,
+            validate_access_integrity,
         )

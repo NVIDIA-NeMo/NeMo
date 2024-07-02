@@ -1233,6 +1233,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         strict: bool = True,
         return_config: bool = False,
         trainer: Trainer = None,
+        validate_access_integrity: bool = True,
     ):
         """
         Restores model instance (weights and configuration) into .nemo file
@@ -1267,6 +1268,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
             strict,
             return_config,
             trainer,
+            validate_access_integrity,
         )
         if not isinstance(loaded_params, tuple) or return_config is True:
             return loaded_params
@@ -1316,7 +1318,10 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
 
                 checkpoint_io = DistributedCheckpointIO.from_config(conf)
                 checkpoint = checkpoint_io.load_checkpoint(
-                    tmp_model_weights_dir, sharded_state_dict=checkpoint, strict=strict
+                    tmp_model_weights_dir,
+                    sharded_state_dict=checkpoint,
+                    strict=strict,
+                    validate_access_integrity=validate_access_integrity,
                 )
                 instance.on_load_checkpoint(checkpoint)
                 if hasattr(instance, 'setup_transformer_engine_tp_groups'):

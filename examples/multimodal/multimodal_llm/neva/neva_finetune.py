@@ -42,6 +42,7 @@ def main(cfg) -> None:
             override_config_path=cfg.model,
             save_restore_connector=NLPSaveRestoreConnector(),
             strict=False,
+            validate_access_integrity=False if cfg.model.pipeline_model_parallel_size > 1 else True,
         )
 
     trainer.fit(model)

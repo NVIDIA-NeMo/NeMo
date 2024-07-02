@@ -422,6 +422,7 @@ class ModelPT(LightningModule, Model):
         return_config: bool = False,
         save_restore_connector: SaveRestoreConnector = None,
         trainer: Optional[Trainer] = None,
+        validate_access_integrity: bool = True,
     ):
         """
         Restores model instance (weights and configuration) from .nemo file.
@@ -465,7 +466,14 @@ class ModelPT(LightningModule, Model):
 
         cls.update_save_restore_connector(save_restore_connector)
         instance = cls._save_restore_connector.restore_from(
-            cls, restore_path, override_config_path, map_location, strict, return_config, trainer
+            cls,
+            restore_path,
+            override_config_path,
+            map_location,
+            strict,
+            return_config,
+            trainer,
+            validate_access_integrity,
         )
         if isinstance(instance, ModelPT):
             instance._save_restore_connector = save_restore_connector

@@ -12,6 +12,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -525,7 +526,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                 # virtual pipline rank must be set so that GPTModel returns the correct sharded state dict
                 parallel_state.set_virtual_pipeline_model_parallel_rank(index)
                 module_sharded_state_dict = self._module_sharded_state_dict(module)
-                sharded_state_dict[f"megatron_module_{index}"] = module_sharded_state_dict
+                sharded_state_dict[f"model_{index}"] = module_sharded_state_dict
             else:
                 module_sharded_state_dict = self._module_sharded_state_dict(module)
                 sharded_state_dict.update(module_sharded_state_dict)

@@ -11,13 +11,14 @@ from fiddle._src.experimental import serialization
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
 from pytorch_lightning.loggers import Logger, TensorBoardLogger, WandbLogger
 
+from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 
 
 @dataclass
-class NeMoLogger:
+class NeMoLogger(IOMixin):
     """Logger for NeMo runs.
 
     Args:
@@ -219,6 +220,3 @@ class NeMoLogger:
 
         app_state.files_to_move = files_to_move
         app_state.files_to_copy = self.files_to_copy
-
-    def teardown(self):
-        pass

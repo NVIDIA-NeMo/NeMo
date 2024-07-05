@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Annotated, Callable, Optional
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
@@ -103,8 +104,9 @@ class LlamaModel(GPTModel):
         config: Annotated[Optional[LlamaConfig], Config[LlamaConfig]] = None,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
+        model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
-        super().__init__(config or LlamaConfig(), optim=optim, tokenizer=tokenizer)
+        super().__init__(config or LlamaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
 
 
 @io.model_importer(LlamaModel, "hf")

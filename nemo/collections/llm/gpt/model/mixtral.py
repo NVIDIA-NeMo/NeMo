@@ -4,15 +4,17 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.lightning import io, teardown
 from nemo.lightning.pytorch.optim import OptimizerModule
 
 if TYPE_CHECKING:
-    from transformers import MistralConfig, MistralForCausalLM
+    from transformers import MixtralForCausalLM
 
     from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
+    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
 @dataclass
@@ -53,8 +55,11 @@ class MixtralModel(GPTModel):
         config: Optional[MixtralConfig8x7B] = None,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
+        model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
-        super().__init__(config or MixtralConfig8x7B(), optim=optim, tokenizer=tokenizer)
+        super().__init__(
+            config or MixtralConfig8x7B(), optim=optim, tokenizer=tokenizer, model_transform=model_transform
+        )
 
 
 @io.model_importer(MixtralModel, ext="hf")

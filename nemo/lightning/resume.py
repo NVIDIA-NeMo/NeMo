@@ -1,16 +1,24 @@
-from pathlib import Path
+import os
+from pathlib import Path, PosixPath, WindowsPath
 from typing import Optional, Union
 
 import lightning_fabric as fl
 import pytorch_lightning as pl
 
 from nemo.lightning import io
+from nemo.lightning.io.mixin import IOMixin
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.model_utils import uninject_model_parallel_rank
 
+# Dynamically inherit from the correct Path subclass based on the operating system.
+if os.name == 'nt':
+    BasePath = WindowsPath
+else:
+    BasePath = PosixPath
 
-class Resume:
+
+class Resume(IOMixin):
     def nemo_path(self, model) -> Optional[Path]:
         raise NotImplementedError
 
@@ -34,6 +42,7 @@ class AutoResume(Resume, io.IOMixin):
         path: Optional[str] = None,  ## old resume_from_checkpoint
         dirpath: Optional[str] = None,  ## optional path to checkpoint directory
         import_path: Optional[str] = None,  ## for importing from hf or other checkpoint formats
+        adapter_path: Optional[str] = None,
         resume_if_exists: bool = False,
         resume_past_end: bool = False,
         resume_ignore_no_checkpoint: bool = False,
@@ -66,6 +75,7 @@ class AutoResume(Resume, io.IOMixin):
         self.path = path
         self.dirpath = dirpath
         self.import_path = import_path
+        self.adapter_path = adapter_path
         self.resume_if_exists = resume_if_exists
         self.resume_past_end = resume_past_end
         self.resume_ignore_no_checkpoint = resume_ignore_no_checkpoint
@@ -76,7 +86,10 @@ class AutoResume(Resume, io.IOMixin):
         if self.import_path:
             if model is None:
                 raise ValueError("Model is needed to import checkpoint from HF or other non-NeMo checkpoint format.")
-            return model.import_ckpt(self.import_path)
+            output = model.import_ckpt(self.import_path)
+            if self.adapter_path:
+                return AdapterPath(output, adapter_path=Path(self.adapter_path))
+            return output
 
         ### refactored from exp_manager
         checkpoint = None
@@ -131,6 +144,17 @@ class AutoResume(Resume, io.IOMixin):
                 checkpoint = last_checkpoints[0]
 
         if checkpoint:
+            if self.adapter_path:
+                return AdapterPath(checkpoint, adapter_path=Path(self.adapter_path))
             return Path(checkpoint)
 
         return None
+
+
+class AdapterPath(BasePath):
+    adapter_path: Optional[Path]
+
+    def __new__(cls, *args, adapter_path: Optional[Path] = None, **kwargs):
+        output = super().__new__(cls, *args, **kwargs)
+        output.adapter_path = adapter_path
+        return output

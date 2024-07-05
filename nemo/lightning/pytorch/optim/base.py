@@ -1,5 +1,6 @@
 import types
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing import List, Optional
 
 import pytorch_lightning as L
@@ -134,7 +135,7 @@ class OptimizerModule(L.Callback, CallbackMethods, IOMixin, ABC):
 
         if hasattr(self, "__io__") and hasattr(model, "__io__"):
             if hasattr(model.__io__, "optim"):
-                model.__io__.optim = self.__io__
+                model.__io__.optim = deepcopy(self.__io__)
 
     @abstractmethod
     def optimizers(self, model) -> List[Optimizer]:

@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
+from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from nemo.collections.common.parts.adapter_modules import AdapterModuleUtil
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_bias_gelu
@@ -321,6 +322,16 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         x = x * (self.alpha / self.dim)
 
         return x
+
+    def sharded_state_dict(
+        self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[dict] = None
+    ) -> ShardedStateDict:
+        sharded_state_dict = {}
+        sharded_state_dict.update(self.linear_in.sharded_state_dict(f"{prefix}linear_in.", sharded_offsets, metadata))
+        sharded_state_dict.update(
+            self.linear_out.sharded_state_dict(f"{prefix}linear_out.", sharded_offsets, metadata)
+        )
+        return sharded_state_dict
 
 
 class _All2AllHp2Sp(torch.autograd.Function):

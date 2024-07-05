@@ -2,7 +2,7 @@ import itertools
 import os
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Dict, Generator, Optional, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Generator, Mapping, Optional, Protocol, TypeVar
 
 import torch
 from torch import nn
@@ -472,3 +472,42 @@ def optimizer_sharded_state_dict(
     optim_state_to_sharding_state(optimizer_state_dict["optimizer"], id_to_sharded_param_map)
 
     return optimizer_state_dict
+
+
+def load_model_state_dict(megatron_parallel, checkpoint: Mapping[str, Any], strict: bool = True) -> None:
+    from megatron.core import parallel_state
+
+    for index, module in enumerate(megatron_parallel):
+        if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+            if "state_dict" in checkpoint:
+                checkpoint_state_dict = checkpoint["state_dict"][f"model_{index}"]
+            else:
+                checkpoint_state_dict = checkpoint[f"model_{index}"]
+        else:
+            if "state_dict" in checkpoint:
+                checkpoint_state_dict = checkpoint["state_dict"]
+            else:
+                checkpoint_state_dict = checkpoint
+
+        n_nesting = 0
+        mcore_model = megatron_parallel.module
+        while hasattr(mcore_model, "module"):
+            mcore_model = mcore_model.module
+            n_nesting += 1
+
+        _state_dict = {}
+        for key, value in checkpoint_state_dict.items():
+            # Count the number of "module." at the start of the key
+            count, _key = 0, key
+            while _key.startswith("module."):
+                _key = _key[len("module.") :]
+                count += 1
+
+            # Adjust the number of "module." prefixes
+            if count < n_nesting:
+                to_add = "module." * (n_nesting - count)
+                _state_dict[f"{to_add}{key}"] = value
+            elif count > n_nesting:
+                to_remove = "module." * (count - n_nesting)
+                _state_dict[key[len(to_remove) :]] = value
+        module.load_state_dict(_state_dict, strict=strict)

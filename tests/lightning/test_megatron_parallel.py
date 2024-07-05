@@ -1,4 +1,5 @@
 from collections import defaultdict
+from unittest.mock import MagicMock
 
 import pytest
 from megatron.core import parallel_state
@@ -123,13 +124,14 @@ class TestCallbackConnector:
         assert callback in callback_connector.callbacks["on_megatron_step_start"]
         assert callback in callback_connector.callbacks["on_megatron_microbatch_start"]
 
-    def test_event(self, mocker) -> None:
+    def test_event(self) -> None:
         callback_connector = mp.CallbackConnector()
         callback = TestCallback()
         callback_connector.add(callback)
 
-        mocker.spy(callback, "on_megatron_step_start")
-        mocker.spy(callback, "on_megatron_microbatch_start")
+        # Replace mocker.spy with manual mocking
+        callback.on_megatron_step_start = MagicMock()
+        callback.on_megatron_microbatch_start = MagicMock()
 
         callback_connector.event("on_megatron_step_start")
         callback_connector.event("on_megatron_microbatch_start")

@@ -286,4 +286,9 @@ setuptools.setup(
     keywords=__keywords__,
     # Custom commands.
     cmdclass={'style': StyleCommand},
+    entry_points={
+        "sdk.factories": [
+            "llm = nemo.collections.llm",
+        ],
+    },
 )

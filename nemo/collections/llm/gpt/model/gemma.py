@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Optional
 
 import torch
+from torch import nn
 
 from nemo.collections.llm.fn.activation import openai_gelu
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
@@ -68,8 +69,9 @@ class GemmaModel(GPTModel):
         config: Annotated[Optional[GemmaConfig], Config[GemmaConfig]] = None,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
+        model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
-        super().__init__(config or GemmaConfig(), optim=optim, tokenizer=tokenizer)
+        super().__init__(config or GemmaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
 
 
 @io.model_importer(GemmaModel, "hf")

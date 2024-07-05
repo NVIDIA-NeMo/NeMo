@@ -51,11 +51,13 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         save_best_model: bool = False,
         save_on_train_epoch_end: Optional[bool] = False,  # Save after training, not after validation
         enable_nemo_ckpt_io: bool = True,
+        try_restore_best_ckpt: bool = True,
         **kwargs,
     ):
         self.save_best_model = save_best_model
         self.previous_best_path = ""
         self.enable_nemo_ckpt_io = enable_nemo_ckpt_io
+        self.try_restore_best_ckpt = try_restore_best_ckpt
 
         # Call the parent class constructor with the remaining kwargs.
         super().__init__(
@@ -266,8 +268,9 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
             else:
                 if os.path.isdir(self.best_model_path.split('.ckpt')[0]):
                     self.best_model_path = self.best_model_path.split('.ckpt')[0]
-                self.best_model_path = trainer.strategy.broadcast(self.best_model_path)
-                trainer._checkpoint_connector.restore(self.best_model_path)
+                if self.try_restore_best_ckpt:
+                    self.best_model_path = trainer.strategy.broadcast(self.best_model_path)
+                    trainer._checkpoint_connector.restore(self.best_model_path)
 
     def _del_model_without_trainer(self, filepath: str) -> None:
         from nemo.utils.get_rank import is_global_rank_zero

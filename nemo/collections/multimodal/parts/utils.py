@@ -525,8 +525,8 @@ def create_image_processor(mm_cfg):
         else:
             raise (ValueError("Currently only support CLIPImageProcessor and SiglipImageProcessor from Huggingface"))
 
-        crop_size = mm_cfg.vision_encoder.get("crop_size", (224, 224))
-        if hasattr(image_processor, 'crop_size'):
+        crop_size = mm_cfg.vision_encoder.get("crop_size")
+        if hasattr(image_processor, 'crop_size') and crop_size is not None:
             assert crop_size == (
                 image_processor.crop_size['height'],
                 image_processor.crop_size['width'],

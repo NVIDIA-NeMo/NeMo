@@ -4,6 +4,8 @@ from nemo.collections.llm.gpt.model.base import (
     MaskedTokenLossReduction,
     gpt_data_step,
     gpt_forward_step,
+    local_layer_spec,
+    transformer_engine_layer_spec,
 )
 from nemo.collections.llm.gpt.model.gemma import (
     CodeGemmaConfig2B,
@@ -56,4 +58,6 @@ __all__ = [
     "MaskedTokenLossReduction",
     "gpt_data_step",
     "gpt_forward_step",
+    "transformer_engine_layer_spec",
+    "local_layer_spec",
 ]

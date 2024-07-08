@@ -426,6 +426,7 @@ def preprocess_llama_2(
     sources: dict,
     tokenizer,
     cfg,
+    is_mistral: bool = False,
 ) -> Dict:
     """
     Preprocesses sources for the LLaMA 2 model configuration.
@@ -442,7 +443,10 @@ def preprocess_llama_2(
     - Dict: A dictionary containing tokenized and labeled data suitable for the LLaMA 2 model.
       This includes tokens, labels, and any special processing as defined in the configuration.
     """
-    conv = conversation_lib.conv_llava_llama_2.copy()
+    if is_mistral:
+        conv = conversation_lib.conv_mistral.copy()
+    else:
+        conv = conversation_lib.conv_llava_llama_2.copy()
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
 
     # Apply prompt templates
@@ -477,7 +481,10 @@ def preprocess_llama_2(
     labels = tokens.clone().detach()
 
     # Mask labels
-    sep = "[/INST] "
+    if is_mistral:
+        sep = "[/INST]"
+    else:
+        sep = "[/INST] "
     for conversation, target in zip(conversations, labels):
         rounds = conversation.split(conv.sep2)
         cur_len = 0
@@ -492,18 +499,23 @@ def preprocess_llama_2(
             parts[0] += sep
 
             round_len = len(tokenizer.text_to_ids(rou + conv.sep2))
-            instruction_len = len(tokenizer.text_to_ids(parts[0])) - 2
+
+            if is_mistral:
+                instruction_len = len(tokenizer.text_to_ids(parts[0])) - 1
+            else:
+                instruction_len = len(tokenizer.text_to_ids(parts[0])) - 2
+
             if i > 0:
                 round_len -= 1  # Remove extra token added by sp tokenizer
             else:
                 instruction_len += 1
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
-
             cur_len += round_len
         target[cur_len:] = IGNORE_INDEX
 
     # Check if masking working correctly
-    # print([x for x in zip(tokens[0].numpy().tolist(), labels[0].numpy().tolist())])
+    # masking_test =[x for x in zip(tokens[0].numpy().tolist(), labels[0].numpy().tolist())]
+    # print(masking_test)
 
     if add_extra_token:
         tokens = tokens[:, :-1].contiguous()
@@ -990,7 +1002,10 @@ class LazySupervisedDataset(Dataset):
                                 result.paste(pil_img, ((height - width) // 2, 0))
                                 return result
 
-                        frames = expand2square(frames, tuple(int(x * 255) for x in self.processor.image_mean))
+                        frames = [
+                            expand2square(frame, tuple(int(x * 255) for x in self.processor.image_mean))
+                            for frame in frames
+                        ]
                         frames = self.processor.preprocess(frames, return_tensors='pt')['pixel_values']
                     else:
                         frames = self.processor.preprocess(frames, return_tensors='pt')['pixel_values']
@@ -1056,6 +1071,13 @@ class LazySupervisedDataset(Dataset):
                 sources,
                 self.tokenizer,
                 self.multimodal_cfg,
+            )
+        elif self.conv_template == "mistral":
+            data_dict = preprocess_llama_2(
+                sources,
+                self.tokenizer,
+                self.multimodal_cfg,
+                is_mistral=True,
             )
         elif self.conv_template == "plain":
             data_dict = preprocess_plain(

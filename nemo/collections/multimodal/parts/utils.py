@@ -135,8 +135,10 @@ def load_nemo_model_weights(nemo_path, sharded_state_dict=None):
 
             # distributed checkpointing
             if state_dict is None and sharded_state_dict is not None:
+
                 is_dist_ckpt = True
                 checkpoint = dict(state_dict=sharded_state_dict)
+
                 tmp_model_weights_ckpt = os.path.join(tmpdir, save_restore_connector.model_weights_ckpt)
                 tmp_model_weights_dir = os.path.splitext(tmp_model_weights_ckpt)[0]
                 assert os.path.isdir(tmp_model_weights_dir), f'Expected {tmp_model_weights_dir} to be a directory.'
@@ -501,7 +503,7 @@ def create_neva_model_and_processor(cfg):
                     result.paste(pil_img, ((height - width) // 2, 0))
                     return result
 
-            frames = expand2square(frames, tuple(int(x * 255) for x in processor.image_mean))
+            frames = [expand2square(frame, tuple(int(x * 255) for x in self.processor.image_mean)) for frame in frames]
             frames = processor.preprocess(frames, return_tensors='pt')['pixel_values']
         else:
             frames = processor.preprocess(frames, return_tensors='pt')['pixel_values']

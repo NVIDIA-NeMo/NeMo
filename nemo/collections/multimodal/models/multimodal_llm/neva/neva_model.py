@@ -75,7 +75,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
-    from megatron.core import InferenceParams, dist_checkpointing, parallel_state
+    from megatron.core import InferenceParams, dist_checkpointing, parallel_state, tensor_parallel
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
     from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -154,10 +154,34 @@ class NevaWordEmbeddingMixin(torch.nn.Module, adapter_mixins.AdapterModuleMixin)
         self.media = media
 
     def forward(self, input_ids, **kwargs):
-        media = self.media  # avoid change the signature of embedding forward function
-        words_embeddings = super().forward(input_ids, **kwargs)
+        media = self.media  # avoid changing the signature of embedding forward function
 
-        return self.replace_media_embeddings(input_ids, words_embeddings, media)
+        # TODO: Refactor replace_media_embedding to account for MCore's embedding communication optimization
+        # https://github.com/NVIDIA/Megatron-LM/commit/ee423e7 changes the way we handle embeddings with sequence parallelism
+        # When using reduce_scatter_embeddings, word_embedding_tensor is now in the following shape: [sequence/tp, batch_size, hidden_size]
+        # replace_media_embedding currently expects [batch_size, sequence, hidden_size]
+
+        # Check if reduce_scatter_embeddings is enabled in the embedding forward function
+        apply_reduce_scatter = getattr(self, 'reduce_scatter_embeddings', False)
+
+        # Set reduce_scatter_embeddings to false to keep words_embedding's
+        # tensor dimesion the same for replace_media_embedding
+        if apply_reduce_scatter:
+            self.reduce_scatter_embeddings = False
+
+        words_embeddings = super().forward(input_ids, **kwargs)
+        words_embeddings = self.replace_media_embeddings(input_ids, words_embeddings, media)
+
+        # Scatter embeddings back to each TP rank if reduce_scatter_embeddings is enabled
+        if apply_reduce_scatter:
+            words_embeddings = self._apply_reduce_scatter(words_embeddings)
+            self.reduce_scatter_embeddings = True
+
+        return words_embeddings
+
+    def _apply_reduce_scatter(self, embeddings):
+        embeddings = embeddings.transpose(0, 1).contiguous()
+        return tensor_parallel.mappings.scatter_to_sequence_parallel_region(embeddings)
 
     def encode_vision_x(self, vision_x: torch.Tensor):
         """
@@ -193,7 +217,6 @@ class NevaWordEmbeddingMixin(torch.nn.Module, adapter_mixins.AdapterModuleMixin)
     def replace_media_embeddings(self, input_ids, inputs_embeds, media):
         if media is None:
             return inputs_embeds
-
         batch_size, sequence_length, hidden_size = inputs_embeds.shape
 
         # calculate media features without gradients
@@ -550,7 +573,12 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
                 media_end_id=media_end_id,
                 mcore_gpt=self.mcore_gpt,
                 config=self.transformer_config,
-                transformer_layer_spec=get_specs(self.spec_name),
+                transformer_layer_spec=get_specs(
+                    self.spec_name,
+                    self.transformer_config.num_moe_experts,
+                    self.transformer_config.moe_grouped_gemm,
+                    self.transformer_engine,
+                ),
                 vocab_size=self.cfg.get('override_vocab_size', self.padded_vocab_size),
                 max_sequence_length=self.cfg.get('encoder_seq_length', 512),
                 pre_process=pre_process,

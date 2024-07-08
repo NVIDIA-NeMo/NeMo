@@ -565,7 +565,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         self.msdd._speaker_model.train()
         if len(detach_ids[0]) > 1:
             logits, embs_a = self.msdd._speaker_model.forward_for_export(
-                processed_signal=audio_signal[detach_ids[0]], processed_signal_len=audio_signal_len[detach_ids[0]]
+                audio_signal=audio_signal[detach_ids[0]], length=audio_signal_len[detach_ids[0]]
             )
             embs[detach_ids[0], :] = embs_a
 

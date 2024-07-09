@@ -34,6 +34,13 @@ on:
         description: Last 2000 characters of the test step's log
         value: ${{ jobs.main.outputs.log }} 
 jobs:
+  runner-auto-clean:
+    runs-on: ${{ inputs.RUNNER }}
+    steps:
+        - name: Docker system cleanup
+          run: |
+            docker system prune -a --filter "until=48h" --force
+
   main:
     runs-on: ${{ inputs.RUNNER }} 
     outputs:

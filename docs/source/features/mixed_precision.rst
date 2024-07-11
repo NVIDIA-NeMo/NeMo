@@ -3,11 +3,21 @@
 Mixed Precision Training
 ------------------------
 
-Mixed precision training significantly enhances computational efficiency by conducting operations in half-precision and fp8 formats, while selectively maintaining minimal data in single-precision to preserve critical information throughout key areas of the network. NeMo now supports FP16, BF16, and FP8 (via Transformer Engine) across most models. Further details will be provided shortly.
+Mixed precision training significantly enhances computational efficiency by conducting operations in low-precision format, while selectively maintaining minimal data in single-precision to preserve critical information throughout key areas of the network. NeMo now supports FP16, BF16, and FP8 (via Transformer Engine) across most models. Further details will be provided shortly.
 
 
-FP8 usage
-=========
+Half-precision Training
+=======================
+
+NeMo supports half-precision (FP16 and BF16) computation training via Megatron Core and the distributed optimizer.
+This training recipe uses half-precision in all layer computation keeping the model states (optimizer states and master parameters) in single-precision.
+To avoid repeated data type casting at each layer computation, Megatron Core keeps a separate copy of half-precision parameters that is updated after each optimizer.step.
+
+Half-precision training is enabled when setting ``precision`` to either of ``fp16-mixed`` or ``bf16-mixed`` along with  ``megatron_amp_O2=true``.
+The parameter gradients are computed in the same half-precision, and the precision of gradient reduce-scatter across data-parallel GPUs can be set by ``optim.grad_sync_dtype``.
+
+FP8 Training
+============
 
 Overview
 ^^^^^^^^

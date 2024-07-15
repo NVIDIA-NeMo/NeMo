@@ -32,15 +32,8 @@ from nemo.collections.nlp.models.language_modeling.megatron_t5_model import Mega
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.apex_utils import _reconfigure_microbatch_calculator
 from nemo.utils.decorators import deprecated_warning
-
-try:
-    from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
-
-    HAVE_APEX = True
-except:
-    HAVE_APEX = False
-
 
 __all__ = ['DialogueS2SGenerationModel']
 

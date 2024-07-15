@@ -41,16 +41,8 @@ from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
 try:
-    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
-
-    HAVE_APEX = True
-
-except (ImportError, ModuleNotFoundError):
-
-    HAVE_APEX = False
-
-try:
     from megatron.core import parallel_state
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -113,10 +105,6 @@ class MegatronVitClassificationModel(MegatronBaseModel):
     """Megatron Vision Transformer Model."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
-        if not HAVE_APEX:
-            raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
-            )
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
                 "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
@@ -286,7 +274,10 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         grad_sync_func = None
         param_sync_func = None
         if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
+            no_sync_func = partial(
+                self._optimizer.no_sync,
+                greedy_grad_copy=self.megatron_amp_O2,
+            )
             grad_sync_func = self.reduce_overlap_gradients
             param_sync_func = self.sync_overlap_parameters
 
@@ -357,12 +348,12 @@ class MegatronVitClassificationModel(MegatronBaseModel):
 
     def training_step(self, dataloader_iter):
         """
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            Batch should be a list of microbatches and those microbatches should on CPU.
-            Microbatches are then moved to GPU during the pipeline.
-            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        Batch should be a list of microbatches and those microbatches should on CPU.
+        Microbatches are then moved to GPU during the pipeline.
+        The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
         # Initialize userbuffer communicators.
         if self.initialize_ub:
@@ -425,20 +416,20 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         return loss_mean
 
     def backward(self, *args, **kwargs):
-        """ LightningModule hook to do backward.
-            We want this to do nothing since we run backward in the fwd/bwd functions from apex.
-            No need to call it here.
+        """LightningModule hook to do backward.
+        We want this to do nothing since we run backward in the fwd/bwd functions from apex.
+        No need to call it here.
         """
         pass
 
     def optimizer_zero_grad(self, *args, **kwargs):
-        """ LightningModule hook to zero grad.
-            We want this to do nothing as we are zeroing grads during the training_step.
+        """LightningModule hook to zero grad.
+        We want this to do nothing as we are zeroing grads during the training_step.
         """
         pass
 
     def _append_sequence_parallel_module_grads(self, module, grads):
-        """ Helper method for allreduce_sequence_parallel_gradients"""
+        """Helper method for allreduce_sequence_parallel_gradients"""
 
         for param in module.parameters():
             sequence_parallel_param = getattr(param, 'sequence_parallel', False)
@@ -450,9 +441,9 @@ class MegatronVitClassificationModel(MegatronBaseModel):
                 grads.append(grad.data)
 
     def allreduce_sequence_parallel_gradients(self):
-        """ All-reduce layernorm parameters across model parallel nodes when sequence parallelism is used.
-            Modified from megatron-lm:
-            https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/blob/3f91f09bb2ab32f9904b47f46f19d2fc3f518ed8/megatron/training.py#L425
+        """All-reduce layernorm parameters across model parallel nodes when sequence parallelism is used.
+        Modified from megatron-lm:
+        https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/blob/3f91f09bb2ab32f9904b47f46f19d2fc3f518ed8/megatron/training.py#L425
         """
 
         grads = []
@@ -512,10 +503,10 @@ class MegatronVitClassificationModel(MegatronBaseModel):
 
     def validation_step(self, dataloader_iter):
         """
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            The list of microbatches is then piped through the pipeline using megatron-core fwd/bwd functions.
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        The list of microbatches is then piped through the pipeline using megatron-core fwd/bwd functions.
         """
         mode = 'test' if self.trainer.testing else 'val'
 
@@ -525,8 +516,10 @@ class MegatronVitClassificationModel(MegatronBaseModel):
 
         loss, accuracy = self.fwd_bwd_step(dataloader_iter, True)
 
-        self.validation_step_outputs.append((loss, accuracy)) if mode == 'val' else self.test_step_outputs.append(
-            (loss, accuracy)
+        (
+            self.validation_step_outputs.append((loss, accuracy))
+            if mode == 'val'
+            else self.test_step_outputs.append((loss, accuracy))
         )
         return loss, accuracy
 
@@ -569,7 +562,9 @@ class MegatronVitClassificationModel(MegatronBaseModel):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
 
         self._train_ds, self._validation_ds = build_train_valid_datasets(
-            model_cfg=self.cfg, data_path=self.cfg.data.data_path, image_size=(self.cfg.img_h, self.cfg.img_w),
+            model_cfg=self.cfg,
+            data_path=self.cfg.data.data_path,
+            image_size=(self.cfg.img_h, self.cfg.img_w),
         )
         self._test_ds = None
 
@@ -709,16 +704,16 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         raise NotImplementedError
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
-        """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
-            When using pipeline parallelism, we need the global batch to remain on the CPU,
-            since the memory overhead will be too high when using a large number of microbatches.
-            Microbatches are transferred from CPU to GPU inside the pipeline.
+        """PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+        When using pipeline parallelism, we need the global batch to remain on the CPU,
+        since the memory overhead will be too high when using a large number of microbatches.
+        Microbatches are transferred from CPU to GPU inside the pipeline.
         """
         return batch
 
     def _validate_trainer(self):
-        """ Certain trainer configurations can break training.
-            Here we try to catch them and raise an error.
+        """Certain trainer configurations can break training.
+        Here we try to catch them and raise an error.
         """
         if self.trainer.accumulate_grad_batches > 1:
             raise ValueError(

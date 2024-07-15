@@ -28,15 +28,7 @@ from nemo.collections.multimodal.speech_llm.modules.common.audio_text_generation
 )
 from nemo.collections.nlp.modules.common.transformer.text_generation import OutputType
 from nemo.utils import AppState
-
-try:
-    from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
-
-    HAVE_APEX = True
-
-except (ImportError, ModuleNotFoundError):
-
-    HAVE_APEX = False
+from nemo.utils.apex_utils import _reconfigure_microbatch_calculator
 
 try:
     from megatron.core import parallel_state, tensor_parallel

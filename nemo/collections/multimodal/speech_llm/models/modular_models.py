@@ -55,18 +55,13 @@ from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import AppState, logging, model_utils
+from nemo.utils.apex_utils import _reconfigure_microbatch_calculator
 from nemo.utils.model_utils import inject_model_parallel_rank
-
-try:
-    from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator, get_num_microbatches
-
-    HAVE_APEX = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
 
 try:
     from megatron.core import InferenceParams, parallel_state, tensor_parallel
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
 
     HAVE_MEGATRON_CORE = True
 

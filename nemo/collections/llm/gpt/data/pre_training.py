@@ -173,10 +173,8 @@ class PreTrainingDataModule(pl.LightningDataModule):
             state_dict: the datamodule state returned by ``state_dict``.
 
         """
-        try:
-            from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
-        except ModuleNotFoundError:
-            from nemo.lightning.apex_utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+        from megatron.core.num_microbatches_calculator import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+
         consumed_samples = state_dict['consumed_samples']
         self.data_sampler.init_consumed_samples = consumed_samples
         self.data_sampler.prev_consumed_samples = consumed_samples

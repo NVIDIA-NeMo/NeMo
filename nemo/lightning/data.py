@@ -53,14 +53,14 @@ def setup_microbatch_calculator(
     else:
         init_global_rank = global_rank
 
-    from apex.transformer.microbatches import ConstantNumMicroBatches
-    from apex.transformer.pipeline_parallel.utils import (
+    from megatron.core.num_microbatches_calculator import (
         _GLOBAL_NUM_MICROBATCHES_CALCULATOR,
-        setup_microbatch_calculator,
+        ConstantNumMicroBatchesCalculator,
+        init_num_microbatches_calculator,
     )
 
     if _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None:
-        setup_microbatch_calculator(
+        init_num_microbatches_calculator(
             rank=init_global_rank,
             global_batch_size=global_batch_size,
             micro_batch_size=micro_batch_size,
@@ -68,7 +68,7 @@ def setup_microbatch_calculator(
             rampup_batch_size=rampup_batch_size,
         )
     else:
-        if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatches):
+        if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):
             assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.current_global_batch_size == global_batch_size
             assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.micro_batch_size == micro_batch_size
             assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.num_micro_batches == global_batch_size // (

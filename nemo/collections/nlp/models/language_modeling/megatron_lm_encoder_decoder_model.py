@@ -36,7 +36,6 @@ from nemo.collections.nlp.modules.common.megatron.token_level_encoder_decoder im
     MegatronTokenLevelEncoderDecoderModule,
 )
 from nemo.collections.nlp.modules.common.megatron.utils import (
-    ApexGuardDefaults,
     average_losses_across_data_parallel_group,
     build_attention_mask_3d,
     get_params_for_weight_decay_optimization,
@@ -47,19 +46,7 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
 )
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
-
-try:
-    from apex.transformer.pipeline_parallel.utils import (
-        _reconfigure_microbatch_calculator,
-        get_micro_batch_size,
-        get_num_microbatches,
-    )
-
-    HAVE_APEX = True
-
-except (ImportError, ModuleNotFoundError):
-
-    HAVE_APEX = False
+from nemo.utils.apex_utils import _reconfigure_microbatch_calculator, get_micro_batch_size
 
 try:
     from megatron.core import parallel_state, tensor_parallel
@@ -71,6 +58,7 @@ try:
         get_t5_encoder_with_local_block_spec,
         get_t5_encoder_with_transformer_engine_block_spec,
     )
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_config import TransformerConfig
@@ -1512,7 +1500,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                         pad_profile = torch.zeros_like(scores).long()
                         decoder_seq_lengths = torch.zeros_like(scores).fill_(predicted_tokens_dec.size(1) + 1)
 
-                        # reconfigure batch size for apex since the tensor have been augmented with beam size
+                        # reconfigure batch size since the tensor have been augmented with beam size
                         global_batch_per_gpu = token_ids.shape[0]
                         tensor_shape[1] = global_batch_per_gpu
                         _reconfigure_microbatch_calculator(

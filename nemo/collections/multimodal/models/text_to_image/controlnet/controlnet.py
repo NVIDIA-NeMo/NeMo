@@ -48,7 +48,6 @@ from nemo.utils import logging
 try:
     from apex import amp
     from apex.transformer.enums import AttnMaskType
-    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -56,6 +55,7 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core import parallel_state
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -380,7 +380,9 @@ class ControlNet(nn.Module):
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
-            linear(model_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
+            linear(model_channels, time_embed_dim),
+            nn.SiLU(),
+            linear(time_embed_dim, time_embed_dim),
         )
 
         self.input_blocks = nn.ModuleList(
@@ -505,24 +507,26 @@ class ControlNet(nn.Module):
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
-            AttentionBlock(
-                ch,
-                use_checkpoint=use_checkpoint,
-                num_heads=num_heads,
-                num_head_channels=dim_head,
-                use_new_attention_order=use_new_attention_order,
-            )
-            if not use_spatial_transformer
-            else SpatialTransformer(  # always uses a self-attn
-                ch,
-                num_heads,
-                dim_head,
-                depth=transformer_depth,
-                context_dim=context_dim,
-                disable_self_attn=disable_middle_self_attn,
-                use_linear=use_linear_in_transformer,
-                use_checkpoint=use_checkpoint,
-                use_flash_attention=use_flash_attention,
+            (
+                AttentionBlock(
+                    ch,
+                    use_checkpoint=use_checkpoint,
+                    num_heads=num_heads,
+                    num_head_channels=dim_head,
+                    use_new_attention_order=use_new_attention_order,
+                )
+                if not use_spatial_transformer
+                else SpatialTransformer(  # always uses a self-attn
+                    ch,
+                    num_heads,
+                    dim_head,
+                    depth=transformer_depth,
+                    context_dim=context_dim,
+                    disable_self_attn=disable_middle_self_attn,
+                    use_linear=use_linear_in_transformer,
+                    use_checkpoint=use_checkpoint,
+                    use_flash_attention=use_flash_attention,
+                )
             ),
             ResBlock(
                 ch,
@@ -684,7 +688,10 @@ class MegatronControlNet(MegatronBaseModel):
         # handle asynchronous grad reduction
         no_sync_func = None
         if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
+            no_sync_func = partial(
+                self._optimizer.no_sync,
+                greedy_grad_copy=self.megatron_amp_O2,
+            )
 
         # pipeline schedules will get these from self.model.config
         for module in self.get_module_list():
@@ -728,12 +735,12 @@ class MegatronControlNet(MegatronBaseModel):
 
     def training_step(self, dataloader_iter):
         """
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            Batch should be a list of microbatches and those microbatches should on CPU.
-            Microbatches are then moved to GPU during the pipeline.
-            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        Batch should be a list of microbatches and those microbatches should on CPU.
+        Microbatches are then moved to GPU during the pipeline.
+        The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
         # we zero grads here because we also call backward in the apex fwd/bwd functions
         self._optimizer.zero_grad()
@@ -777,20 +784,20 @@ class MegatronControlNet(MegatronBaseModel):
         return loss_mean
 
     def backward(self, *args, **kwargs):
-        """ LightningModule hook to do backward.
-            We want this to do nothing since we run backward in the fwd/bwd functions from apex.
-            No need to call it here.
+        """LightningModule hook to do backward.
+        We want this to do nothing since we run backward in the fwd/bwd functions from apex.
+        No need to call it here.
         """
         pass
 
     def optimizer_zero_grad(self, *args, **kwargs):
-        """ LightningModule hook to zero grad.
-            We want this to do nothing as we are zeroing grads during the training_step.
+        """LightningModule hook to zero grad.
+        We want this to do nothing as we are zeroing grads during the training_step.
         """
         pass
 
     def _append_sequence_parallel_module_grads(self, module, grads):
-        """ Helper method for allreduce_sequence_parallel_gradients"""
+        """Helper method for allreduce_sequence_parallel_gradients"""
 
         for param in module.parameters():
             sequence_parallel_param = getattr(param, 'sequence_parallel', False)
@@ -803,8 +810,8 @@ class MegatronControlNet(MegatronBaseModel):
 
     def get_forward_output_and_loss_func(self):
         def process_batch(batch):
-            """ Prepares the global batch for apex fwd/bwd functions.
-                Global batch is a list of micro batches.
+            """Prepares the global batch for apex fwd/bwd functions.
+            Global batch is a list of micro batches.
             """
             # noise_map, condition
             batch[self.cfg.first_stage_key] = batch[self.cfg.first_stage_key].cuda(non_blocking=True)
@@ -814,7 +821,8 @@ class MegatronControlNet(MegatronBaseModel):
 
             # SD has more dedicated structure for encoding, so we enable autocasting here as well
             with torch.cuda.amp.autocast(
-                self.autocast_dtype in (torch.half, torch.bfloat16), dtype=self.autocast_dtype,
+                self.autocast_dtype in (torch.half, torch.bfloat16),
+                dtype=self.autocast_dtype,
             ):
                 x, c = self.model.get_input(batch, self.cfg.first_stage_key)
 
@@ -881,7 +889,7 @@ class MegatronControlNet(MegatronBaseModel):
         self.log_dict(val_loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True)
 
     def setup(self, stage=None):
-        """ PTL hook that is executed after DDP spawns.
+        """PTL hook that is executed after DDP spawns.
             We setup datasets here as megatron datasets require DDP to instantiate.
             See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
         Args:
@@ -935,7 +943,8 @@ class MegatronControlNet(MegatronBaseModel):
 
         if self.cfg.first_stage_key.endswith("encoded"):
             self._train_ds, self._validation_ds = build_train_valid_precached_datasets(
-                model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0),
+                model_cfg=self.cfg,
+                consumed_samples=self.compute_consumed_samples(0),
             )
         else:
             self._train_ds, self._validation_ds = build_train_valid_datasets(
@@ -989,20 +998,23 @@ class MegatronControlNet(MegatronBaseModel):
                 f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
             )
             self._test_dl = torch.utils.data.DataLoader(
-                self._test_ds, batch_size=self._micro_batch_size, num_workers=cfg.num_workers, pin_memory=True,
+                self._test_ds,
+                batch_size=self._micro_batch_size,
+                num_workers=cfg.num_workers,
+                pin_memory=True,
             )
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
-        """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
-            When using pipeline parallelism, we need the global batch to remain on the CPU,
-            since the memory overhead will be too high when using a large number of microbatches.
-            Microbatches are transferred from CPU to GPU inside the pipeline.
+        """PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+        When using pipeline parallelism, we need the global batch to remain on the CPU,
+        since the memory overhead will be too high when using a large number of microbatches.
+        Microbatches are transferred from CPU to GPU inside the pipeline.
         """
         return batch
 
     def _validate_trainer(self):
-        """ Certain trainer configurations can break training.
-            Here we try to catch them and raise an error.
+        """Certain trainer configurations can break training.
+        Here we try to catch them and raise an error.
         """
         if self.trainer.accumulate_grad_batches > 1:
             raise ValueError(

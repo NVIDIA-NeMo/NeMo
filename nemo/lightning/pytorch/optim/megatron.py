@@ -1,3 +1,4 @@
+import inspect
 from typing import Callable, List, Optional
 
 import pytorch_lightning as pl
@@ -92,8 +93,12 @@ class MegatronOptimizerModule(OptimizerModule):
                 is_loading=False,
                 sharding_type='fully_sharded_model_space',
             ):
+                mcore_optimizer_sig = inspect.signature(self.mcore_optimizer.sharded_state_dict).parameters
+                distrib_optim_kwargs = {}
+                if "sharding_type" in mcore_optimizer_sig:
+                    distrib_optim_kwargs["sharding_type"] = sharding_type
                 state_dict = self.mcore_optimizer.sharded_state_dict(
-                    model_sharded_state_dict, is_loading=is_loading, sharding_type=sharding_type
+                    model_sharded_state_dict, is_loading=is_loading, **distrib_optim_kwargs
                 )
                 return state_dict
 

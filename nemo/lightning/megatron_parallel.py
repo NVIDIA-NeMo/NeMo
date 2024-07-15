@@ -151,6 +151,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         convert_module_fn: Optional[Callable[[ModelT], nn.Module]] = None,
     ) -> None:
         from megatron.core import parallel_state
+        from megatron.core.tensor_parallel import set_defaults_if_not_set_tensor_model_parallel_attributes
 
         _pipeline: List[nn.Module]
         if isinstance(pipeline, nn.ModuleList):

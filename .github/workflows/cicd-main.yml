@@ -4516,6 +4516,48 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf examples/multimodal/text_to_image/sd_train_results
 
+  L2_NeMo_2_GPT_Pretraining_no_transformer_engine:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    timeout-minutes: 10
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options:
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            pip uninstall -y apex ## TODO: remove when apex is no longer a dependency
+            pip uninstall -y transformer_engine
+
+            python examples/llm/megatron_gpt_pretraining.py \
+            --devices=2 \
+            --max-steps=3 \
+            --experiment-dir=examples/llm/gpt_pretrain_results \
+            --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+            --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+            --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+            --index-mapping-dir=examples/llm/gpt_index_mappings
+
+            python examples/llm/megatron_gpt_pretraining.py \
+            --devices=2 \
+            --max-steps=6 \
+            --experiment-dir=examples/llm/gpt_pretrain_results \
+            --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+            --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+            --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+            --index-mapping-dir=examples/llm/gpt_index_mappings
+
+            rm -rf examples/llm/gpt_pretrain_results
+            rm -rf examples/llm/gpt_index_mappings
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
   Nemo_CICD_Test:
     needs: 
       - L0_Unit_Tests_GPU
@@ -4616,6 +4658,7 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests
       - L2_Stable_Diffusion_Training
+      - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
     if: always()
     runs-on: ubuntu-latest
     steps:  

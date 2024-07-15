@@ -34,7 +34,6 @@ from nemo.utils import logging
 
 try:
     from apex import amp
-    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -42,6 +41,7 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core import parallel_state
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -218,8 +218,8 @@ class MegatronImagen(MegatronBaseModel):
 
     def get_forward_output_and_loss_func(self):
         def process_batch(batch):
-            """ Prepares the batch for megatron fwd/bwd functions.
-                Global batch is a list of micro batches.
+            """Prepares the batch for megatron fwd/bwd functions.
+            Global batch is a list of micro batches.
             """
             # Base model and SR models have slightly different batch input:
             # Base model would only require images (64x64),
@@ -323,7 +323,10 @@ class MegatronImagen(MegatronBaseModel):
                 f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
             )
             self._test_dl = torch.utils.data.DataLoader(
-                self._test_ds, batch_size=self._micro_batch_size, num_workers=cfg.num_workers, pin_memory=True,
+                self._test_ds,
+                batch_size=self._micro_batch_size,
+                num_workers=cfg.num_workers,
+                pin_memory=True,
             )
 
     def fwd_bwd_step(self, dataloader_iter, forward_only):
@@ -332,7 +335,10 @@ class MegatronImagen(MegatronBaseModel):
         # handle asynchronous grad reduction
         no_sync_func = None
         if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
+            no_sync_func = partial(
+                self._optimizer.no_sync,
+                greedy_grad_copy=self.megatron_amp_O2,
+            )
 
         # pipeline schedules will get these from self.model.config
         for module in self.get_module_list():
@@ -379,12 +385,12 @@ class MegatronImagen(MegatronBaseModel):
 
     def training_step(self, dataloader_iter):
         """
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            Batch should be a list of microbatches and those microbatches should on CPU.
-            Microbatches are then moved to GPU during the pipeline.
-            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        Batch should be a list of microbatches and those microbatches should on CPU.
+        Microbatches are then moved to GPU during the pipeline.
+        The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
 
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
@@ -434,20 +440,20 @@ class MegatronImagen(MegatronBaseModel):
         return loss_mean
 
     def backward(self, *args, **kwargs):
-        """ LightningModule hook to do backward.
-            We want this to do nothing since we run backward in the fwd/bwd functions from apex.
-            No need to call it here.
+        """LightningModule hook to do backward.
+        We want this to do nothing since we run backward in the fwd/bwd functions from apex.
+        No need to call it here.
         """
         pass
 
     def optimizer_zero_grad(self, *args, **kwargs):
-        """ LightningModule hook to zero grad.
-            We want this to do nothing as we are zeroing grads during the training_step.
+        """LightningModule hook to zero grad.
+        We want this to do nothing as we are zeroing grads during the training_step.
         """
         pass
 
     def _append_sequence_parallel_module_grads(self, module, grads):
-        """ Helper method for allreduce_sequence_parallel_gradients"""
+        """Helper method for allreduce_sequence_parallel_gradients"""
 
         for param in module.parameters():
             sequence_parallel_param = getattr(param, 'sequence_parallel', False)
@@ -460,10 +466,10 @@ class MegatronImagen(MegatronBaseModel):
 
     def validation_step(self, dataloader_iter):
         """
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            The list of microbatches is then piped through the pipeline using megatron-core fwd/bwd functions.        """
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        The list of microbatches is then piped through the pipeline using megatron-core fwd/bwd functions."""
 
         loss, val_loss_dict = self.fwd_bwd_step(dataloader_iter, True)
 
@@ -471,7 +477,7 @@ class MegatronImagen(MegatronBaseModel):
         return loss
 
     def setup(self, stage=None):
-        """ PTL hook that is executed after DDP spawns.
+        """PTL hook that is executed after DDP spawns.
             We setup datasets here as megatron datasets require DDP to instantiate.
             See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
         Args:
@@ -520,16 +526,16 @@ class MegatronImagen(MegatronBaseModel):
         self.model.setup_rng()
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
-        """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
-            When using pipeline parallelism, we need the global batch to remain on the CPU,
-            since the memory overhead will be too high when using a large number of microbatches.
-            Microbatches are transferred from CPU to GPU inside the pipeline.
+        """PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+        When using pipeline parallelism, we need the global batch to remain on the CPU,
+        since the memory overhead will be too high when using a large number of microbatches.
+        Microbatches are transferred from CPU to GPU inside the pipeline.
         """
         return batch
 
     def _validate_trainer(self):
-        """ Certain trainer configurations can break training.
-            Here we try to catch them and raise an error.
+        """Certain trainer configurations can break training.
+        Here we try to catch them and raise an error.
         """
         if self.trainer.accumulate_grad_batches > 1:
             raise ValueError(
@@ -558,7 +564,10 @@ class MegatronImagen(MegatronBaseModel):
         inductor_enabled = self.cfg.get('inductor', False)
         state_dict = checkpoint['state_dict']
         inductor_checkpoint = False
-        for k, v, in state_dict.items():
+        for (
+            k,
+            v,
+        ) in state_dict.items():
             if '_orig_mod' in k:
                 inductor_checkpoint = True
                 break

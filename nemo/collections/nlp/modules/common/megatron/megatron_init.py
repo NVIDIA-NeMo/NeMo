@@ -16,15 +16,18 @@ import random
 
 import numpy as np
 import torch
+from megatron.core.num_microbatches_calculator import (
+    ConstantNumMicroBatchesCalculator,
+    init_num_microbatches_calculator,
+)
 
 from nemo.utils import AppState, logging
 
 try:
     from apex.transformer.log_util import set_logging_level
-    from apex.transformer.microbatches import ConstantNumMicroBatches
-    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
 
     HAVE_APEX = True
+
 except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
@@ -136,10 +139,10 @@ def initialize_model_parallel_for_nemo(
 
     if global_batch_size and micro_batch_size is not None:
         # TODO: add rampup_batch_size here when we have it implemented
-        from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+        from megatron.core.num_microbatches_calculator import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
 
         if _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None:
-            setup_microbatch_calculator(
+            init_num_microbatches_calculator(
                 rank=global_rank,
                 global_batch_size=global_batch_size,
                 micro_batch_size=micro_batch_size,
@@ -147,7 +150,7 @@ def initialize_model_parallel_for_nemo(
                 rampup_batch_size=rampup_batch_size,
             )
         else:
-            if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatches):
+            if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):
                 assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.current_global_batch_size == global_batch_size
                 assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.micro_batch_size == micro_batch_size
                 assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.num_micro_batches == global_batch_size // (
@@ -158,7 +161,8 @@ def initialize_model_parallel_for_nemo(
 
     app_state._is_megatron_initialized = True
 
-    set_logging_level(apex_transformer_log_level)
+    if HAVE_APEX:
+        set_logging_level(apex_transformer_log_level)
 
 
 def _set_random_seed(seed_):

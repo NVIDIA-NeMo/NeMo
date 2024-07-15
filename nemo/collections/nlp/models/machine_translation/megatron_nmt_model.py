@@ -51,22 +51,11 @@ from nemo.collections.nlp.parts.nlp_overrides import GlobalBatchDataFetcher
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes import Exportable
 from nemo.utils import AppState, logging, timers
-
-try:
-    from apex.transformer.pipeline_parallel.utils import (
-        _reconfigure_microbatch_calculator,
-        get_micro_batch_size,
-        get_num_microbatches,
-    )
-
-    HAVE_APEX = True
-
-except (ImportError, ModuleNotFoundError):
-
-    HAVE_APEX = False
+from nemo.utils.apex_utils import _reconfigure_microbatch_calculator, get_micro_batch_size
 
 try:
     from megatron.core import parallel_state
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -210,17 +199,21 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
         self.encoder_tokenizer, self.decoder_tokenizer = MTEncDecModel.setup_enc_dec_tokenizers(
             encoder_tokenizer_library=self.encoder_tokenizer_library,
             encoder_tokenizer_model=encoder_tokenizer_model,
-            encoder_bpe_dropout=self._cfg.encoder_tokenizer.get('bpe_dropout', 0.0)
-            if self._cfg.encoder_tokenizer.get('bpe_dropout', 0.0) is not None
-            else 0.0,
+            encoder_bpe_dropout=(
+                self._cfg.encoder_tokenizer.get('bpe_dropout', 0.0)
+                if self._cfg.encoder_tokenizer.get('bpe_dropout', 0.0) is not None
+                else 0.0
+            ),
             encoder_model_name=self._cfg.encoder_tokenizer.get('type', None),
             encoder_r2l=self._cfg.encoder_tokenizer.get('r2l', False),
             decoder_tokenizer_library=self.decoder_tokenizer_library,
             encoder_tokenizer_vocab_file=self._cfg.encoder_tokenizer.get('vocab_file', None),
             decoder_tokenizer_model=decoder_tokenizer_model,
-            decoder_bpe_dropout=self._cfg.decoder_tokenizer.get('bpe_dropout', 0.0)
-            if self._cfg.decoder_tokenizer.get('bpe_dropout', 0.0) is not None
-            else 0.0,
+            decoder_bpe_dropout=(
+                self._cfg.decoder_tokenizer.get('bpe_dropout', 0.0)
+                if self._cfg.decoder_tokenizer.get('bpe_dropout', 0.0) is not None
+                else 0.0
+            ),
             decoder_model_name=self._cfg.encoder_tokenizer.get('type', None),
             decoder_r2l=self._cfg.decoder_tokenizer.get('r2l', False),
             encoder_sentencepiece_legacy=self._cfg.encoder_tokenizer.get('sentencepiece_legacy', False),
@@ -252,10 +245,14 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
                     f"NMT-XLM objective requires sentencepiece tokenizer, but got decoder tokenizer library : {self.cfg.decoder_tokenizer.library}"
                 )
             MegatronT5Model.add_special_tokens_to_tokenizer(
-                tokenizer=self.encoder_tokenizer, tokenizer_cfg=self.cfg.encoder_tokenizer, dataset_type='ul2',
+                tokenizer=self.encoder_tokenizer,
+                tokenizer_cfg=self.cfg.encoder_tokenizer,
+                dataset_type='ul2',
             )
             MegatronT5Model.add_special_tokens_to_tokenizer(
-                tokenizer=self.decoder_tokenizer, tokenizer_cfg=self.cfg.decoder_tokenizer, dataset_type='ul2',
+                tokenizer=self.decoder_tokenizer,
+                tokenizer_cfg=self.cfg.decoder_tokenizer,
+                dataset_type='ul2',
             )
 
         # Set up pre and post processors as well.
@@ -277,7 +274,10 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
         else:
             # After this call, the model will have  self.source_processor and self.target_processor objects
             self.source_processor, self.target_processor = MTEncDecModel.setup_pre_and_post_processing_utils(
-                self.src_language, self.tgt_language, self.encoder_tokenizer_library, self.decoder_tokenizer_library,
+                self.src_language,
+                self.tgt_language,
+                self.encoder_tokenizer_library,
+                self.decoder_tokenizer_library,
             )
             self.multilingual_ids = [None]
 
@@ -289,8 +289,8 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
 
     def fwd_bwd_step(self, dataloader_iter, forward_only):
         """
-            Dataloader produces a global batch which is turned into a list of microbatches.
-            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
+        Dataloader produces a global batch which is turned into a list of microbatches.
+        The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
         # If tuple, 1st element in it is the batch since dataloader_iter returns batch, batch_idx, dataloader_idx
         batch = next(dataloader_iter)
@@ -351,13 +351,19 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
 
         # Post-process the translations and inputs to log.
         preds = self.postprocess_outputs(
-            outputs=predicted_tokens_ids, tokenizer=self.decoder_tokenizer, processor=target_processor,
+            outputs=predicted_tokens_ids,
+            tokenizer=self.decoder_tokenizer,
+            processor=target_processor,
         )
         labels = self.postprocess_outputs(
-            outputs=labels, tokenizer=self.decoder_tokenizer, processor=target_processor,
+            outputs=labels,
+            tokenizer=self.decoder_tokenizer,
+            processor=target_processor,
         )
         encoder_inputs = self.postprocess_outputs(
-            outputs=tokens_enc, tokenizer=self.encoder_tokenizer, processor=source_processor,
+            outputs=tokens_enc,
+            tokenizer=self.encoder_tokenizer,
+            processor=source_processor,
         )
 
         loss_dict = {
@@ -781,12 +787,12 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
                     tgt_file=tgt_file,
                     num_samples=num_samples,
                     prepend_id=multilingual_ids[idx],
-                    src_language=self.src_language
-                    if not isinstance(self.src_language, ListConfig)
-                    else self.src_language[idx],
-                    tgt_language=self.tgt_language
-                    if not isinstance(self.tgt_language, ListConfig)
-                    else self.tgt_language[idx],
+                    src_language=(
+                        self.src_language if not isinstance(self.src_language, ListConfig) else self.src_language[idx]
+                    ),
+                    tgt_language=(
+                        self.tgt_language if not isinstance(self.tgt_language, ListConfig) else self.tgt_language[idx]
+                    ),
                 )
                 datasets.append(dataset)
             dataset = BlendableDataset(

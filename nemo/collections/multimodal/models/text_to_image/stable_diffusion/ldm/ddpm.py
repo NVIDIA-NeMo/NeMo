@@ -78,7 +78,6 @@ from nemo.utils import logging, model_utils
 try:
     from apex import amp
     from apex.transformer.enums import AttnMaskType
-    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -86,6 +85,7 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core import parallel_state
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -163,7 +163,9 @@ class DDPM(torch.nn.Module):
         cuda_graph_enabled = cfg.get("capture_cudagraph_iters", -1) >= 0
         if not cuda_graph_enabled:
             logging.info("Use custom random generator")
-            self.rng = torch.Generator(device=torch.cuda.current_device(),)
+            self.rng = torch.Generator(
+                device=torch.cuda.current_device(),
+            )
         else:
             logging.info("Use system random generator since CUDA graph enabled")
             self.rng = None
@@ -222,14 +224,12 @@ class DDPM(torch.nn.Module):
         )
 
         if self.parameterization == "eps":
-            lvlb_weights = self.betas ** 2 / (
-                2 * self.posterior_variance * to_torch(alphas) * (1 - self.alphas_cumprod)
-            )
+            lvlb_weights = self.betas**2 / (2 * self.posterior_variance * to_torch(alphas) * (1 - self.alphas_cumprod))
         elif self.parameterization == "x0":
             lvlb_weights = 0.5 * np.sqrt(torch.Tensor(alphas_cumprod)) / (2.0 * 1 - torch.Tensor(alphas_cumprod))
         elif self.parameterization == "v":
             lvlb_weights = torch.ones_like(
-                self.betas ** 2 / (2 * self.posterior_variance * to_torch(alphas) * (1 - self.alphas_cumprod))
+                self.betas**2 / (2 * self.posterior_variance * to_torch(alphas) * (1 - self.alphas_cumprod))
             )
         else:
             raise NotImplementedError("mu not supported")
@@ -239,7 +239,13 @@ class DDPM(torch.nn.Module):
         assert not torch.isnan(self.lvlb_weights).all()
 
     def init_from_ckpt(
-        self, path, ignore_keys=list(), only_model=False, load_vae=True, load_unet=True, load_encoder=True,
+        self,
+        path,
+        ignore_keys=list(),
+        only_model=False,
+        load_vae=True,
+        load_unet=True,
+        load_encoder=True,
     ):
         pl_sd = torch.load(path, map_location="cpu")
         if "state_dict" in list(pl_sd.keys()):
@@ -561,7 +567,11 @@ class LatentDiffusion(DDPM, Serialization):
             load_encoder = True if cfg.get("load_encoder", None) is None else cfg.load_encoder
 
             self.init_from_ckpt(
-                ckpt_path, ignore_keys, load_vae=load_vae, load_unet=load_unet, load_encoder=load_encoder,
+                ckpt_path,
+                ignore_keys,
+                load_vae=load_vae,
+                load_unet=load_unet,
+                load_encoder=load_encoder,
             )
             self.restarted_from_ckpt = True
 
@@ -569,7 +579,9 @@ class LatentDiffusion(DDPM, Serialization):
             self.first_stage_model = self.first_stage_model.to(memory_format=torch.channels_last)
             self.model = self.model.to(memory_format=torch.channels_last)
 
-    def make_cond_schedule(self,):
+    def make_cond_schedule(
+        self,
+    ):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
         ids = torch.round(torch.linspace(0, self.num_timesteps - 1, self.num_timesteps_cond)).long()
         self.cond_ids[: self.num_timesteps_cond] = ids
@@ -686,7 +698,9 @@ class LatentDiffusion(DDPM, Serialization):
     def get_weighting(self, h, w, Ly, Lx, device):
         weighting = self.delta_border(h, w)
         weighting = torch.clip(
-            weighting, self.split_input_params["clip_min_weight"], self.split_input_params["clip_max_weight"],
+            weighting,
+            self.split_input_params["clip_min_weight"],
+            self.split_input_params["clip_max_weight"],
         )
         weighting = weighting.view(1, h * w, 1).repeat(1, 1, Ly * Lx).to(device)
 
@@ -1322,9 +1336,11 @@ class LatentDiffusion(DDPM, Serialization):
         if cond is not None:
             if isinstance(cond, dict):
                 cond = {
-                    key: cond[key][:batch_size]
-                    if not isinstance(cond[key], list)
-                    else list(map(lambda x: x[:batch_size], cond[key]))
+                    key: (
+                        cond[key][:batch_size]
+                        if not isinstance(cond[key], list)
+                        else list(map(lambda x: x[:batch_size], cond[key]))
+                    )
                     for key in cond
                 }
             else:
@@ -1458,9 +1474,11 @@ class LatentDiffusion(DDPM, Serialization):
         if cond is not None:
             if isinstance(cond, dict):
                 cond = {
-                    key: cond[key][:batch_size]
-                    if not isinstance(cond[key], list)
-                    else list(map(lambda x: x[:batch_size], cond[key]))
+                    key: (
+                        cond[key][:batch_size]
+                        if not isinstance(cond[key], list)
+                        else list(map(lambda x: x[:batch_size], cond[key]))
+                    )
                     for key in cond
                 }
             else:
@@ -1731,7 +1749,10 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         # handle asynchronous grad reduction
         no_sync_func = None
         if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
+            no_sync_func = partial(
+                self._optimizer.no_sync,
+                greedy_grad_copy=self.megatron_amp_O2,
+            )
 
         # pipeline schedules will get these from self.model.config
         for module in self.get_module_list():
@@ -1779,29 +1800,31 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
                 if self.loss_broadcast_src_rank is None:
                     self.loss_broadcast_src_rank = parallel_state.get_pipeline_model_parallel_last_rank()
                 torch.distributed.broadcast(
-                    loss_mean, self.loss_broadcast_src_rank, group=parallel_state.get_pipeline_model_parallel_group(),
+                    loss_mean,
+                    self.loss_broadcast_src_rank,
+                    group=parallel_state.get_pipeline_model_parallel_group(),
                 )
 
         return loss_mean, loss_dict
 
     def training_step(self, batch):
         """
-            Notice: `training_step` used to have the following signature to support pipeline
-            parallelism:
+        Notice: `training_step` used to have the following signature to support pipeline
+        parallelism:
 
-                def training_step(self, dataloader_iter, batch_idx):
+            def training_step(self, dataloader_iter, batch_idx):
 
-            However, full iteration CUDA Graph callback is not compatible with this signature
-            right now, due to we need to wrap the dataloader to generate static tensor outside
-            the CUDA Graph. This signature moves `next(dataloader)` into the CUDA Graph
-            capturing region, thus we disabled it.
+        However, full iteration CUDA Graph callback is not compatible with this signature
+        right now, due to we need to wrap the dataloader to generate static tensor outside
+        the CUDA Graph. This signature moves `next(dataloader)` into the CUDA Graph
+        capturing region, thus we disabled it.
 
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            Batch should be a list of microbatches and those microbatches should on CPU.
-            Microbatches are then moved to GPU during the pipeline.
-            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        Batch should be a list of microbatches and those microbatches should on CPU.
+        Microbatches are then moved to GPU during the pipeline.
+        The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
 
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
@@ -1875,20 +1898,20 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         self.log("timestamp", ts, batch_size=1, rank_zero_only=True)
 
     def backward(self, *args, **kwargs):
-        """ LightningModule hook to do backward.
-            We want this to do nothing since we run backward in the fwd/bwd functions from apex.
-            No need to call it here.
+        """LightningModule hook to do backward.
+        We want this to do nothing since we run backward in the fwd/bwd functions from apex.
+        No need to call it here.
         """
         pass
 
     def optimizer_zero_grad(self, *args, **kwargs):
-        """ LightningModule hook to zero grad.
-            We want this to do nothing as we are zeroing grads during the training_step.
+        """LightningModule hook to zero grad.
+        We want this to do nothing as we are zeroing grads during the training_step.
         """
         pass
 
     def _append_sequence_parallel_module_grads(self, module, grads):
-        """ Helper method for allreduce_sequence_parallel_gradients"""
+        """Helper method for allreduce_sequence_parallel_gradients"""
 
         for param in module.parameters():
             sequence_parallel_param = getattr(param, 'sequence_parallel', False)
@@ -1901,8 +1924,8 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
 
     def get_forward_output_and_loss_func(self):
         def process_batch(batch):
-            """ Prepares the global batch for apex fwd/bwd functions.
-                Global batch is a list of micro batches.
+            """Prepares the global batch for apex fwd/bwd functions.
+            Global batch is a list of micro batches.
             """
             # noise_map, condition
             batch[self.cfg.first_stage_key] = batch[self.cfg.first_stage_key].cuda(non_blocking=True)
@@ -1912,7 +1935,8 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
 
             # SD has more dedicated structure for encoding, so we enable autocasting here as well
             with torch.cuda.amp.autocast(
-                self.autocast_dtype in (torch.half, torch.bfloat16), dtype=self.autocast_dtype,
+                self.autocast_dtype in (torch.half, torch.bfloat16),
+                dtype=self.autocast_dtype,
             ):
                 x, c = self.model.get_input(batch, self.cfg.first_stage_key)
 
@@ -1959,7 +1983,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         return loss
 
     def setup(self, stage=None):
-        """ PTL hook that is executed after DDP spawns.
+        """PTL hook that is executed after DDP spawns.
             We setup datasets here as megatron datasets require DDP to instantiate.
             See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
         Args:
@@ -2016,11 +2040,13 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         if self.cfg.first_stage_key.endswith("encoded") or self.cfg.first_stage_key.endswith("moments"):
             if self.cfg.cond_stage_key.endswith("clip_encoded"):
                 self._train_ds, self._validation_ds = build_train_valid_precached_clip_datasets(
-                    model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0),
+                    model_cfg=self.cfg,
+                    consumed_samples=self.compute_consumed_samples(0),
                 )
             else:
                 self._train_ds, self._validation_ds = build_train_valid_precached_datasets(
-                    model_cfg=self.cfg, consumed_samples=self.compute_consumed_samples(0),
+                    model_cfg=self.cfg,
+                    consumed_samples=self.compute_consumed_samples(0),
                 )
         else:
             self._train_ds, self._validation_ds = build_train_valid_datasets(
@@ -2045,7 +2071,8 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
             )
             if self.cfg.cond_stage_key.endswith("clip_encoded"):
                 collate_fn = get_collate_fn(
-                    first_stage_key=self.cfg.first_stage_key, cond_stage_key=self.cfg.cond_stage_key,
+                    first_stage_key=self.cfg.first_stage_key,
+                    cond_stage_key=self.cfg.cond_stage_key,
                 )
             else:
                 collate_fn = None
@@ -2082,20 +2109,23 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
                 f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
             )
             self._test_dl = torch.utils.data.DataLoader(
-                self._test_ds, batch_size=self._micro_batch_size, num_workers=cfg.num_workers, pin_memory=True,
+                self._test_ds,
+                batch_size=self._micro_batch_size,
+                num_workers=cfg.num_workers,
+                pin_memory=True,
             )
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
-        """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
-            When using pipeline parallelism, we need the global batch to remain on the CPU,
-            since the memory overhead will be too high when using a large number of microbatches.
-            Microbatches are transferred from CPU to GPU inside the pipeline.
+        """PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+        When using pipeline parallelism, we need the global batch to remain on the CPU,
+        since the memory overhead will be too high when using a large number of microbatches.
+        Microbatches are transferred from CPU to GPU inside the pipeline.
         """
         return batch
 
     def _validate_trainer(self):
-        """ Certain trainer configurations can break training.
-            Here we try to catch them and raise an error.
+        """Certain trainer configurations can break training.
+        Here we try to catch them and raise an error.
         """
         if self.trainer.accumulate_grad_batches > 1:
             raise ValueError(
@@ -2253,23 +2283,26 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
                 )
 
     def load_adapters(
-        self, filepath: str, peft_cfgs: Optional[Union[PEFTConfig, List[PEFTConfig]]] = None, map_location: str = None,
+        self,
+        filepath: str,
+        peft_cfgs: Optional[Union[PEFTConfig, List[PEFTConfig]]] = None,
+        map_location: str = None,
     ):
         """
-                Utility method that restores only the adapter module(s), and not the entire model itself.
-                This allows the sharing of adapters which are often just a fraction of the size of the full model,
-                enabling easier deliver.
+        Utility method that restores only the adapter module(s), and not the entire model itself.
+        This allows the sharing of adapters which are often just a fraction of the size of the full model,
+        enabling easier deliver.
 
-                .. note::
+        .. note::
 
-                    During restoration, assumes that the model does not currently already have one or more adapter modules.
+            During restoration, assumes that the model does not currently already have one or more adapter modules.
 
-                Args:
-                    filepath: Filepath of the .ckpt or .nemo file.
-                    peft_cfgs: One or more PEFTConfig objects that specify the PEFT method configuration.
-                        If none, will infer from the .nemo checkpoint
-                    map_location: Pytorch flag, where to place the adapter(s) state dict(s).
-                """
+        Args:
+            filepath: Filepath of the .ckpt or .nemo file.
+            peft_cfgs: One or more PEFTConfig objects that specify the PEFT method configuration.
+                If none, will infer from the .nemo checkpoint
+            map_location: Pytorch flag, where to place the adapter(s) state dict(s).
+        """
 
         def _modify_state_dict(state_dict):
             # Modify state key for Dreambooth inference
@@ -2310,7 +2343,11 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
 
 class DiffusionWrapper(pl.LightningModule, Serialization):
     def __init__(
-        self, diff_model_config, conditioning_key, inductor: bool = False, inductor_cudagraphs: bool = False,
+        self,
+        diff_model_config,
+        conditioning_key,
+        inductor: bool = False,
+        inductor_cudagraphs: bool = False,
     ):
         super().__init__()
         self.diffusion_model = DiffusionWrapper.from_config_dict(diff_model_config)

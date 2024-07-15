@@ -32,6 +32,7 @@ from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.common.parts.utils import extend_instance
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
+    MegatronCorePretrainingSampler,
     MegatronPretrainingRandomSampler,
     MegatronPretrainingSampler,
 )
@@ -1605,8 +1606,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         logging.info(f'Building dataloader with consumed samples: {consumed_samples}')
         # Megatron sampler
         if hasattr(self.cfg.data, 'dataloader_type') and self.cfg.data.dataloader_type is not None:
+            data_sampler = (
+                MegatronPretrainingSampler
+                if self.cfg.data.get('legacy_dataset', False)
+                else MegatronCorePretrainingSampler
+            )
             if self.cfg.data.dataloader_type == 'single':
-                batch_sampler = MegatronPretrainingSampler(
+                batch_sampler = data_sampler(
                     total_samples=len(dataset),
                     consumed_samples=consumed_samples,
                     micro_batch_size=self.cfg.micro_batch_size,

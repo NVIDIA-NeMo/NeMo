@@ -92,10 +92,12 @@ echo "Installing torchaudio from branch: ${INSTALL_BRANCH}"
 pip install parameterized
 
 # Build torchaudio and run MFCC test
+# NB: setting PYTORCH_VERSION is a workaround for the case where PYTORCH_VERSION is set, but contains incorrect value
+# e.g., in container nvcr.io/nvidia/pytorch:24.03-py3
 git clone --depth 1 --branch ${INSTALL_BRANCH} https://github.com/pytorch/audio.git && \
 cd audio && \
 git submodule update --init --recursive && \
-USE_FFMPEG=1 BUILD_SOX=1 BUILD_VERSION=${TORCHAUDIO_BUILD_VERSION} python setup.py install && \
+PYTORCH_VERSION=${TORCH_FULL_VERSION} USE_FFMPEG=1 BUILD_SOX=1 BUILD_VERSION=${TORCHAUDIO_BUILD_VERSION} python setup.py install && \
 cd .. && \
 pytest -rs audio/test/torchaudio_unittest/transforms/torchscript_consistency_cpu_test.py -k 'test_MFCC' || \
 { echo "ERROR: Failed to install torchaudio!"; exit 1; };

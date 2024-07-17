@@ -58,10 +58,10 @@ For more information, browse the developer docs for your area of interest in the
 
 .. toctree::
    :maxdepth: 1
-   :caption: Community Model Converters
-   :name: CheckpointConverters
+   :caption: Model Checkpoints
+   :name: Checkpoints
 
-   ckpt_converters/intro
+   checkpoints/intro
 
 .. toctree::
    :maxdepth: 1

@@ -45,6 +45,7 @@ jobs:
           branch: bump-ci-container-${{ steps.ref.outputs.date }}
           base: main
           title: 'Bump `Dockerfile.ci` (${{ steps.ref.outputs.date }})'
+          token: ${{ secrets.PAT }}
           body: |
             🚀 PR to Bump `Dockerfile.ci`.  
 

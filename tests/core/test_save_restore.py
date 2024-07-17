@@ -15,7 +15,7 @@ import filecmp
 import os
 import shutil
 import tempfile
-from typing import Dict, Optional, Set, Union
+from typing import Callable, Dict, Optional, Set, Union
 
 import pytest
 import torch
@@ -126,11 +126,15 @@ class MockModelWithChildren(MockModel):
         self.child1_model: Optional[MockModel]  # annotate type for IDE autocompletion and type checking
         if cfg.get("child1_model") is not None:
             self.register_nemo_submodule(
-                "child1_model", config_field="child1_model", model=MockModel(self.cfg.child1_model),
+                "child1_model",
+                config_field="child1_model",
+                model=MockModel(self.cfg.child1_model),
             )
         elif cfg.get("child1_model_path") is not None:
             self.register_nemo_submodule(
-                "child1_model", config_field="child1_model", model=MockModel.restore_from(self.cfg.child1_model_path),
+                "child1_model",
+                config_field="child1_model",
+                model=MockModel.restore_from(self.cfg.child1_model_path),
             )
         else:
             self.child1_model = None
@@ -140,7 +144,9 @@ class MockModelWithChildren(MockModel):
         self.child2_model: Optional[MockModelWithChildren]  # annotate type for IDE autocompletion and type checking
         if cfg.get("child2_model") is not None:
             self.register_nemo_submodule(
-                "child2_model", config_field="child2_model", model=MockModelWithChildren(self.cfg.child2_model),
+                "child2_model",
+                config_field="child2_model",
+                model=MockModelWithChildren(self.cfg.child2_model),
             )
         elif cfg.get("child2_model_path") is not None:
             self.register_nemo_submodule(
@@ -169,7 +175,9 @@ class MockModelWithChildEncDecCTCBPE(MockModel):
 
         if cfg.get("ctc_model", None) is not None:
             self.register_nemo_submodule(
-                "ctc_model", config_field="ctc_model", model=EncDecCTCModelBPE(self.cfg.ctc_model),
+                "ctc_model",
+                config_field="ctc_model",
+                model=EncDecCTCModelBPE(self.cfg.ctc_model),
             )
         else:
             # model is mandatory
@@ -196,7 +204,9 @@ class MockModelWithChildCustomConfigPath(MockModel):
         self.child1_model: Optional[MockModel]  # annotate type for IDE autocompletion and type checking
         if cfg.get("child1_model_config") is not None:
             self.register_nemo_submodule(
-                "child1_model", config_field="child1_model_config", model=MockModel(self.cfg.child1_model_config),
+                "child1_model",
+                config_field="child1_model_config",
+                model=MockModel(self.cfg.child1_model_config),
             )
         else:
             self.child1_model = None
@@ -764,7 +774,10 @@ class TestSaveRestore:
             my_connector = MySaveRestoreConnector()
 
             with tempfile.TemporaryDirectory() as config_tmpdir:
-                my_connector._unpack_nemo_file(true_save_path, out_folder=config_tmpdir, extract_config_only=True)
+                config_members = my_connector._filtered_tar_info(
+                    true_save_path, filter_fn=lambda name: '.yaml' in name
+                )
+                my_connector._unpack_nemo_file(true_save_path, out_folder=config_tmpdir, members=config_members)
                 current_files = list(os.listdir(config_tmpdir))
 
                 assert len(current_files) == 1  # only config file should have been extracted, no pytorch params
@@ -900,11 +913,12 @@ class TestSaveRestore:
             child2_model_from_path: if child2_model_from_path is True, child2 model is restored from .nemo checkpoint,
                 otherwise constructed directly from config. Child1 model always loaded from checkpoint.
         """
-        with tempfile.NamedTemporaryFile('w') as file_child1, tempfile.NamedTemporaryFile(
-            'w'
-        ) as file_child2, tempfile.NamedTemporaryFile('w') as file_child2_other, tempfile.NamedTemporaryFile(
-            'w'
-        ) as file_parent:
+        with (
+            tempfile.NamedTemporaryFile('w') as file_child1,
+            tempfile.NamedTemporaryFile('w') as file_child2,
+            tempfile.NamedTemporaryFile('w') as file_child2_other,
+            tempfile.NamedTemporaryFile('w') as file_parent,
+        ):
             # write text data, use these files as resources
             parent_data = ["*****\n"]
             child1_data = ["+++++\n"]
@@ -988,11 +1002,12 @@ class TestSaveRestore:
         Test nested model with 2 children: multiple save-restore passes
         child models and parent model itself contain resources
         """
-        with tempfile.NamedTemporaryFile('w') as file_child1, tempfile.NamedTemporaryFile(
-            'w'
-        ) as file_child2, tempfile.NamedTemporaryFile('w') as file_child2_other, tempfile.NamedTemporaryFile(
-            'w'
-        ) as file_parent:
+        with (
+            tempfile.NamedTemporaryFile('w') as file_child1,
+            tempfile.NamedTemporaryFile('w') as file_child2,
+            tempfile.NamedTemporaryFile('w') as file_child2_other,
+            tempfile.NamedTemporaryFile('w') as file_parent,
+        ):
             # write text data, use these files as resources
             parent_data = ["*****\n"]
             child1_data = ["+++++\n"]
@@ -1019,7 +1034,12 @@ class TestSaveRestore:
             child2 = MockModelWithChildren(cfg=cfg_child2.model, trainer=None)
             child2 = child2.to('cpu')
 
-            with tempfile.TemporaryDirectory() as tmpdir_parent1, tempfile.TemporaryDirectory() as tmpdir_parent2, tempfile.TemporaryDirectory() as tmpdir_parent3, tempfile.TemporaryDirectory() as tmpdir_parent4:
+            with (
+                tempfile.TemporaryDirectory() as tmpdir_parent1,
+                tempfile.TemporaryDirectory() as tmpdir_parent2,
+                tempfile.TemporaryDirectory() as tmpdir_parent3,
+                tempfile.TemporaryDirectory() as tmpdir_parent4,
+            ):
                 parent_path1 = os.path.join(tmpdir_parent1, "parent.nemo")
                 parent_path2 = os.path.join(tmpdir_parent2, "parent.nemo")
                 with tempfile.TemporaryDirectory() as tmpdir_child:
@@ -1074,9 +1094,11 @@ class TestSaveRestore:
         test nested model: parent -> child_with_child -> child; model and each child can be saved/restored separately
         all models can contain resources
         """
-        with tempfile.NamedTemporaryFile('w') as file_child, tempfile.NamedTemporaryFile(
-            'w'
-        ) as file_child_with_child, tempfile.NamedTemporaryFile('w') as file_parent:
+        with (
+            tempfile.NamedTemporaryFile('w') as file_child,
+            tempfile.NamedTemporaryFile('w') as file_child_with_child,
+            tempfile.NamedTemporaryFile('w') as file_parent,
+        ):
             # write text data, use these files as resources
             parent_data = ["*****\n"]
             child_with_child_data = ["+++++\n"]
@@ -1353,3 +1375,60 @@ class TestSaveRestore:
         new_model_infos = ModelPT.search_huggingface_models(model_filter=filt)
         assert len(new_model_infos) <= 5
         assert len(new_model_infos) < len(model_infos)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "filter_method,tar_input",
+        [
+            (save_restore_connector.SaveRestoreConnector._filtered_recursive_walk, False),
+            (save_restore_connector.SaveRestoreConnector._filtered_tar_info, True),
+        ],
+    )
+    def test_filtering_methods(self, filter_method: Callable, tar_input: bool):
+        def touch(path):
+            with open(path, 'a'):
+                os.utime(path, None)
+
+        def filter_even_children(path: str):
+            if not path[-1].isdigit():
+                return False
+            return int(path[-1]) % 2 == 0
+
+        cwd = os.getcwd()
+        # Since we os.chdir to a temp directory. Tests can fail if we don't jump back to the CWD.
+        # This try:finally block ensures we don't get left in an ephemeral directory
+        try:
+            with tempfile.TemporaryDirectory() as output_dir, tempfile.TemporaryDirectory() as nemo_base_dir:
+                os.chdir(output_dir)
+                os.makedirs('grand/parent', exist_ok=True)
+                os.makedirs('grand/aunt', exist_ok=True)
+                for i in range(3):
+                    touch(f'grand/parent/child_{i}')
+                    touch(f'grand/aunt/child_{i}')
+
+                if tar_input:
+                    path = f'{nemo_base_dir}/model.nemo'
+                    save_restore_connector.SaveRestoreConnector._make_nemo_file_from_folder(
+                        filename=path, source_dir=output_dir
+                    )
+                else:
+                    path = '.'
+
+                expected_paths = set(
+                    (
+                        './grand/aunt/child_0',
+                        './grand/aunt/child_2',
+                        './grand/parent/child_0',
+                        './grand/parent/child_2',
+                    )
+                )
+
+                observed_paths = filter_method(path, filter_fn=filter_even_children)
+                if tar_input:
+                    observed_paths = set((p.name for p in observed_paths))
+                else:
+                    observed_paths = set(observed_paths)
+
+                assert expected_paths == observed_paths
+        finally:
+            os.chdir(cwd)

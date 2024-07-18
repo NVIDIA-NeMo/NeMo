@@ -1,47 +1,47 @@
 {
     "categories": [
       {
-        "title": "## ASR \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "## ASR\n\n<details><summary>Changelog</summary>",
         "labels": ["asr"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## TTS \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## TTS\n\n<details><summary>Changelog</summary>",
         "labels": ["tts"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## NLP / NMT \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## NLP / NMT\n\n<details><summary>Changelog</summary>",
         "labels": ["nlp", "nmt", "megatron"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## Text Normalization / Inverse Text Normalization \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## Text Normalization / Inverse Text Normalization\n\n<details><summary>Changelog</summary>",
         "labels": ["tn", "itn"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## NeMo Tools \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## NeMo Tools\n\n<details><summary>Changelog</summary>",
         "labels": ["tools"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## Export \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## Export\n\n<details><summary>Changelog</summary>",
         "labels": ["export"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## Documentation \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## Documentation\n\n<details><summary>Changelog</summary>",
         "labels": ["docs"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## Bugfixes \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## Bugfixes\n\n<details><summary>Changelog</summary>",
         "labels": ["bug"],
         "exclude_labels": ["cherry-pick"]
       },
       {
-        "title": "## Cherrypick \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
+        "title": "</details>\n\n## Cherrypick\n\n<details><summary>Changelog</summary>",
         "labels": ["cherry-pick"],
         "exclude_labels": ["cherry-pick"]
       }
@@ -50,7 +50,7 @@
       "ignore"
     ],
     "sort": "ASC",
-    "template": "\n${{CHANGELOG}}\nUncategorized:\n${{UNCATEGORIZED}}\n\n",
+    "template": "\n${{CHANGELOG}}</details>\n\n## Uncategorized:\n\n<details><summary>Changelog</summary>\n\n${{UNCATEGORIZED}}\n</details>\n",
     "pr_template": "- ${{TITLE}} by @${{AUTHOR}} :: PR: #${{NUMBER}}",
     "empty_template": "${{OWNER}}\n${{REPO}}\n${{FROM_TAG}}\n${{TO_TAG}}",
     "label_extractor": [

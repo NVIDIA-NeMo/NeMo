@@ -17,4 +17,5 @@ from nemo.collections.multimodal.speech_llm.modules.perception_modules import (
     AudioPerceptionModule,
     MultiAudioPerceptionModule,
     MultiFeatureAggregator,
+    TransformerCrossAttention,
 )

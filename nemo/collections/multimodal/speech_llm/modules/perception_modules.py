@@ -29,7 +29,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
 from nemo.utils.decorators import experimental
 
-__all__ = ["AudioPerceptionModule", "MultiAudioPerceptionModule"]
+__all__ = ["AudioPerceptionModule", "MultiAudioPerceptionModule", "TransformerCrossAttention"]
 
 
 class AudioPerceptionModule(NeuralModule, Exportable):

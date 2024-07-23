@@ -38,6 +38,7 @@ from nemo.collections.multimodal.speech_llm.modules.perception_modules import (
     MultiAudioPerceptionModule,
 )
 from nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model import MegatronT5LoraModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common.megatron.utils import (
@@ -62,7 +63,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE = False
 
 
-__all__ = ["ModularizedAudioT5Model"]
+__all__ = ["ModularizedAudioT5Model", "DecoderTextPromptModularizedAudioT5Model"]
 
 
 default_inference_config = {'tokens_to_generate': 30}

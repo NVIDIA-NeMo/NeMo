@@ -11,3 +11,18 @@ The endeavor to extend Language Models (LLMs) into multimodal domains by integra
    neva
    video_neva
    sequence_packing
+
+
+Speech-agumented Large Language Models (SpeechLLM)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The endeavor to extend Language Models (LLMs) with the ability to understand speech and audio inputs, detailed examples can be found in the `SpeechLLM example <https://github.com/NVIDIA/NeMo/blob/main/examples/multimodal/speech_llm/README.md>`_.. 
+
+.. toctree::
+   :maxdepth: 1
+
+   ../speech_llm/intro
+   ../speech_llm/datasets
+   ../speech_llm/configs
+   ../speech_llm/api
+

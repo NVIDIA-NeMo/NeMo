@@ -35,58 +35,36 @@ To load a local ``.nemo`` checkpoint:
 
 Replace `<MODEL_BASE_CLASS>` with the appropriate MM model class.
 
-Converting Local Checkpoints
-----------------------------
-
-Only the last checkpoint is automatically saved in the ``.nemo`` format. If intermediate training checkpoints evaluation is required, a ``.nemo`` conversion might be necessary. For this, refer to the script at `script <http://TODOURL>`_:
-
-.. code-block:: python
-
-   python -m torch.distributed.launch --nproc_per_node=<tensor_model_parallel_size> * <pipeline_model_parallel_size> \
-       examples/multimodal/convert_ckpt_to_nemo.py \
-       --checkpoint_folder <path_to_PTL_checkpoints_folder> \
-       --checkpoint_name <checkpoint_name> \
-       --nemo_file_path <path_to_output_nemo_file> \
-       --tensor_model_parallel_size <tensor_model_parallel_size> \
-       --pipeline_model_parallel_size <pipeline_model_parallel_size>
-
 Converting Community Checkpoints
 --------------------------------
 
 CLIP Checkpoints
 ^^^^^^^^^^^^^^^^
 
-To migrate community checkpoints:
 
-.. code-block:: python
+To migrate community checkpoints, use the following command:
 
-   python examples/multimodal/foundation/clip/convert_external_clip_to_nemo.py \
-       --arch=ViT-H-14 \
-       --version=laion2b_s32b_b79k \
-       --hparams_file=path/to/saved.yaml \
-       --nemo_file_path=open_clip.nemo
+.. code-block:: bash
+
+    torchrun --nproc-per-node=1 /opt/NeMo/scripts/checkpoint_converters/convert_clip_hf_to_nemo.py \
+        --input_name_or_path=openai/clip-vit-large-patch14 \
+        --output_path=openai_clip.nemo \
+        --hparams_file=/opt/NeMo/examples/multimodal/vision_language_foundation/clip/conf/megatron_clip_VIT-L-14.yaml
 
 Ensure the NeMo hparams file has the correct model architectural parameters, placed at `path/to/saved.yaml`. An example can be found in `examples/multimodal/foundation/clip/conf/megatron_clip_config.yaml`.
 
-For OpenCLIP migrations, provide the architecture (`arch`) and version (`version`) according to the OpenCLIP `model list <https://github.com/mlfoundations/open_clip#usage>`_. For Hugging Face conversions, set the version to `huggingface` and the architecture (`arch`) to the specific Hugging Face model identifier, e.g., `yuvalkirstain/PickScore_v1`.
+After conversion, you can verify the model with the following command:
 
-Model Parallelism Adjustment
-----------------------------
+.. code-block:: bash
 
-CLIP Checkpoints
-^^^^^^^^^^^^^^^^
+    wget https://upload.wikimedia.org/wikipedia/commons/0/0f/1665_Girl_with_a_Pearl_Earring.jpg
+    torchrun --nproc-per-node=1 /opt/NeMo/examples/multimodal/vision_language_foundation/clip/megatron_clip_infer.py \
+        model.restore_from_path=./openai_clip.nemo \
+        image_path=./1665_Girl_with_a_Pearl_Earring.jpg \
+        texts='["a dog", "a boy", "a girl"]'
 
-To adjust model parallelism from original model parallelism size to a new model parallelism size (Note: NeMo CLIP currently only supports `pipeline_model_parallel_size=1`):
+It should generate a high probability for the "a girl" tag. For example:
 
-.. code-block:: python
+.. code-block:: text
 
-   python examples/nlp/language_modeling/megatron_change_num_partitions.py \
-    --model_file=/path/to/source.nemo \
-    --target_file=/path/to/target.nemo \
-    --tensor_model_parallel_size=??? \
-    --target_tensor_model_parallel_size=??? \
-    --pipeline_model_parallel_size=-1 \
-    --target_pipeline_model_parallel_size=1 \
-    --precision=32 \
-    --model_class="nemo.collections.multimodal.models.clip.megatron_clip_models.MegatronCLIPModel" \
-    --tp_conversion_only
+    Given image's CLIP text probability:  [('a dog', 0.0049710185), ('a boy', 0.002258187), ('a girl', 0.99277073)]

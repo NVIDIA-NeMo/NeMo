@@ -8,7 +8,6 @@ The endeavor to extend Language Models (LLMs) into multimodal domains by integra
 
    datasets
    configs
-   checkpoint
    neva
    video_neva
    sequence_packing

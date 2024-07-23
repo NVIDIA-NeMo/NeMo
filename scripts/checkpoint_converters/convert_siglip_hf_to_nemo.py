@@ -13,11 +13,10 @@
 # limitations under the License.
 
 """
-Requires HF transformers updated to support Gemma Models
-   python3 /opt/NeMo/scripts/nlp_language_modeling/convert_gemma_hf_to_nemo.py \
-   --input_name_or_path /path/to/gemma/checkpoints/hf/7b \
-   --output_path /path/to/gemma-7b.nemo \
-   --tokenizer_path /path/to/tokenizer.model
+Requires HF transformers updated to support Siglip Models
+    python /opt/NeMo/scripts/checkpoint_converters/convert_siglip_hf_to_nemo.py \
+      --input_name_or_path=google/siglip-so400m-patch14-384 \
+      --output_path=test.nemo
 """
 
 import os
@@ -352,7 +351,7 @@ def get_args():
 def convert(args):
     logging.info(f"Loading checkpoint from HF: `{args.input_name_or_path}`")
     hf_model = AutoModel.from_pretrained(args.input_name_or_path)
-    # hf_processor = AutoProcessor.from_pretrained(args.input_name_or_path)
+    hf_processor = AutoProcessor.from_pretrained(args.input_name_or_path)
     logging.info("HF Model loading done.")
 
     nemo_config = OmegaConf.load(args.hparams_file)
@@ -368,6 +367,35 @@ def convert(args):
 
     nemo_state_dict = adjust_tensor_shapes(model, new_state_dict)
     model.load_state_dict(nemo_state_dict, strict=False)
+
+    logging.info(f'=' * 100)
+    # Verifications
+    import requests
+    from PIL import Image
+
+    url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    image = Image.open(requests.get(url, stream=True).raw)
+
+    texts = ["a photo of 2 cats", "a photo of 2 dogs"]
+    inputs = hf_processor(text=texts, images=image, padding="max_length", return_tensors="pt")
+
+    tokens = inputs["input_ids"].cuda()
+    text_model = model.model.text_encoder.cuda()
+    hf_text_model = hf_model.text_model.cuda()
+    text_model_output = text_model(tokens)
+    hf_text_model_output = hf_text_model(tokens).pooler_output
+    assert torch.allclose(text_model_output, hf_text_model_output, atol=0.01)
+    logging.info(f'! Text model results matched.')
+
+    pixels = inputs["pixel_values"].cuda()
+    vision_model = model.model.vision_encoder.cuda()
+    hf_vision_model = hf_model.vision_model.cuda()
+    vision_model_output = vision_model(pixels)
+    hf_vision_model_output = hf_vision_model(pixels).pooler_output
+    assert torch.allclose(vision_model_output, hf_vision_model_output, atol=0.01)
+    logging.info(f'! Vision model results matched.')
+
+    logging.info(f'=' * 100)
 
     dtype = torch_dtype_from_precision(args.precision)
     model = model.to(dtype=dtype)

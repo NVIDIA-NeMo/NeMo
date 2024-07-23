@@ -57,8 +57,9 @@ def tokenize(texts: Union[str, List[str]], tokenizer: Any, context_length: int =
 
     bos_id = tokenizer.bos_id
     eos_id = tokenizer.eos_id
-    all_tokens = [[bos_id] + tokenizer.text_to_ids(text) + [eos_id] for text in texts]
-    result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
+    pad_id = tokenizer.pad_id
+    all_tokens = [([bos_id] if bos_id is not None else []) + tokenizer.text_to_ids(text) + [eos_id] for text in texts]
+    result = torch.ones(len(all_tokens), context_length, dtype=torch.long) * pad_id
 
     for i, tokens in enumerate(all_tokens):
         if len(tokens) > context_length:

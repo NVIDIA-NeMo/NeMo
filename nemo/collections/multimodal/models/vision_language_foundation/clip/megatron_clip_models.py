@@ -984,6 +984,7 @@ class MegatronCLIPModel(MegatronBaseModel):
             for module in modules:
                 if isinstance(module, (Float16Module, MCoreFloat16Module)):
                     module = module.module
+                module = module.text_encoder
                 if not self.mcore_gpt:
                     module = module.language_model
                 if hasattr(module, 'embedding'):

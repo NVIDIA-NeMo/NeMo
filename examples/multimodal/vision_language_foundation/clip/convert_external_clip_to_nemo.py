@@ -283,7 +283,10 @@ def convert(local_rank, rank, world_size, args):
 
 
 if __name__ == '__main__':
-    logging.warning("This script is going to be deprecated soon. Please use ")
+    logging.warning(
+        "This script is going to be deprecated soon. Please use "
+        "`scripts/checkpoint_converters/convert_clip_hf_to_nemo.py`"
+    )
     args = get_args()
     local_rank, rank, world_size = initialize_distributed(args)
     convert(local_rank, rank, world_size, args)

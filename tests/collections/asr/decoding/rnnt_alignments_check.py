@@ -17,29 +17,66 @@
 #       these tests outside of the CI machines environment, where test data is
 #       stored
 
-import os
+from pathlib import Path
+from typing import Union
+
 import pytest
+import torch.cuda
 from examples.asr.transcribe_speech import TranscriptionConfig
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.parts.utils.transcribe_utils import prepare_audio_data, setup_model
+from nemo.collections.asr.models import EncDecRNNTBPEModel
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
+from nemo.collections.asr.parts.utils.transcribe_utils import prepare_audio_data
 
-TEST_DATA_PATH = "/home/TestData/an4_dataset/an4_val.json"
-PRETRAINED_MODEL_NAME = "stt_en_conformer_transducer_small"
+DEVICES = []
+
+if torch.cuda.is_available():
+    DEVICES.append('cuda')
 
 
-def get_rnnt_alignments(strategy: str, loop_labels: bool = True, use_cuda_graph_decoder=False, location="cuda"):
-    cfg = OmegaConf.structured(TranscriptionConfig(pretrained_name=PRETRAINED_MODEL_NAME))
+@pytest.fixture(scope="module")
+def stt_en_conformer_transducer_small_model():
+    model = EncDecRNNTBPEModel.from_pretrained(model_name="stt_en_conformer_transducer_small", map_location="cpu")
+    return model
+
+
+@pytest.fixture(scope="module")
+def an4_val_manifest_corrected(tmp_path_factory, test_data_dir):
+    """
+    Correct an4_val manifest audio filepaths, e.g.,
+    "tests/data/asr/test/an4/wav/an440-mjgm-b.wav" -> test_data_dir / "test/an4/wav/an440-mjgm-b.wav"
+    """
+    an4_val_manifest_orig_path = Path(test_data_dir) / "asr/an4_val.json"
+    an4_val_manifest_corrected_path = tmp_path_factory.mktemp("manifests") / "an4_val_corrected.json"
+    an4_val_records = read_manifest(an4_val_manifest_orig_path)
+    for record in an4_val_records:
+        record["audio_filepath"] = record["audio_filepath"].replace(
+            "tests/data/asr", str(an4_val_manifest_orig_path.resolve().parent)
+        )
+    write_manifest(an4_val_manifest_corrected_path, an4_val_records)
+    return an4_val_manifest_corrected_path
+
+
+def get_rnnt_alignments(
+    strategy: str,
+    manifest_path: Union[Path, str],
+    model: EncDecRNNTBPEModel,
+    loop_labels: bool = True,
+    use_cuda_graph_decoder=False,
+    device="cuda",
+):
+    cfg = OmegaConf.structured(TranscriptionConfig())
     cfg.rnnt_decoding.confidence_cfg.preserve_frame_confidence = True
     cfg.rnnt_decoding.preserve_alignments = True
     cfg.rnnt_decoding.strategy = strategy
     if cfg.rnnt_decoding.strategy == "greedy_batch":
         cfg.rnnt_decoding.greedy.loop_labels = loop_labels
         cfg.rnnt_decoding.greedy.use_cuda_graph_decoder = use_cuda_graph_decoder
-    cfg.dataset_manifest = TEST_DATA_PATH
+    cfg.dataset_manifest = str(manifest_path)
     filepaths = prepare_audio_data(cfg)[0][:10]  # selecting 10 files only
 
-    model = setup_model(cfg, map_location=location)[0]
+    model = model.to(device)
     model.change_decoding_strategy(cfg.rnnt_decoding)
 
     transcriptions = model.transcribe(
@@ -72,16 +109,35 @@ def cleanup_local_folder():
 
 
 # TODO: add the same tests for multi-blank RNNT decoding
-@pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("loop_labels", [True, False])
 @pytest.mark.parametrize("use_cuda_graph_decoder", [True, False])
-def test_rnnt_alignments(loop_labels: bool, use_cuda_graph_decoder: bool):
+@pytest.mark.with_downloads
+def test_rnnt_alignments(
+    loop_labels: bool,
+    use_cuda_graph_decoder: bool,
+    device: str,
+    an4_val_manifest_corrected,
+    stt_en_conformer_transducer_small_model,
+):
+    if use_cuda_graph_decoder and device != "cuda":
+        pytest.skip("CUDA decoder works only with CUDA")
     if not loop_labels and use_cuda_graph_decoder:
         pytest.skip("Frame-Looping algorithm with CUDA graphs does not yet support alignments")
     # using greedy as baseline and comparing all other configurations to it
-    ref_transcriptions = get_rnnt_alignments("greedy")
+    ref_transcriptions = get_rnnt_alignments(
+        "greedy",
+        manifest_path=an4_val_manifest_corrected,
+        model=stt_en_conformer_transducer_small_model,
+        device=device,
+    )
     transcriptions = get_rnnt_alignments(
-        "greedy_batch", loop_labels=loop_labels, use_cuda_graph_decoder=use_cuda_graph_decoder
+        "greedy_batch",
+        loop_labels=loop_labels,
+        use_cuda_graph_decoder=use_cuda_graph_decoder,
+        manifest_path=an4_val_manifest_corrected,
+        model=stt_en_conformer_transducer_small_model,
+        device=device,
     )
     # comparing that label sequence in alignments is exactly the same
     # we can't compare logits as well, because they are expected to be

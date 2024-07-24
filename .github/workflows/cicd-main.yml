@@ -810,7 +810,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        pytest tests/collections/asr/decoding/rnnt_alignments_check.py --durations=-1
+        pytest tests/collections/asr/decoding/rnnt_alignments_check.py --durations=-1 --with_downloads
 
   # L2: Segmentation Tool
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav:

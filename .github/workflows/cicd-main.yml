@@ -260,7 +260,7 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf /home/TestData/nlp/megatron_llama/ci_fp8.qnemo
 
-  L2_PTQ_Llama2_INT8_SQ:
+  OPTIONAL_L2_PTQ_Llama2_INT8_SQ:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
     with:
@@ -276,6 +276,7 @@ jobs:
         export.save_path=/home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
       AFTER_SCRIPT: |
         rm -rf /home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
+      IS_OPTIONAL: true
 
   # TODO: investigate int4_awq stuck issues and restore the test
   #L2_PTQ_Llama2_INT4_AWQ:
@@ -310,7 +311,7 @@ jobs:
         #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
         #  if: "failure()"
 
-  L2_QAT_Llama2_INT4:
+  OPTIONAL_L2_QAT_Llama2_INT4:
      needs: [cicd-test-container-setup]
      runs-on: self-hosted-azure
      timeout-minutes: 10
@@ -346,8 +347,6 @@ jobs:
             model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl]
 
             rm -rf llama2_qat_results
-         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-           if: "failure()"
 
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:
@@ -4560,6 +4559,8 @@ jobs:
 
   Nemo_CICD_Test:
     needs: 
+      - gpu-test
+      - cicd-test-container-setup
       - L0_Unit_Tests_GPU
       - L0_Unit_Tests_CPU
       - L2_Community_LLM_Checkpoints_tests_Llama

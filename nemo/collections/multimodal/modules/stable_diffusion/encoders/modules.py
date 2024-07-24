@@ -689,6 +689,8 @@ class FrozenMegatronCLIPEmbedder(AbstractEmbModel):
             model_cfg=cfg,
             model_parallel_config=ModelParallelConfig(),
             padded_vocab_size=padded_vocab_size,
+            vision_transformer_config=None,  # assumed mcore to be false
+            text_transformer_config=None,
             pre_process=cfg.text.pre_process,
             post_process=cfg.text.post_process,
         )

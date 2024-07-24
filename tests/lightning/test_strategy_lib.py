@@ -1,8 +1,9 @@
 from unittest.mock import ANY, MagicMock, patch
 
+import torch
 from torch import nn
 
-from nemo.lightning import _strategy_lib  # , DataConfig
+from nemo.lightning import MegatronStrategy, _strategy_lib  # , DataConfig
 
 
 class Identity(nn.Identity):
@@ -13,6 +14,33 @@ class Identity(nn.Identity):
 class WithCopy(nn.Identity):
     def copy(self):
         return WithCopy()
+
+
+def test_set_model_parallel_attributes() -> None:
+    strategy = MegatronStrategy(
+        pipeline_model_parallel_size=2,
+        expert_model_parallel_size=2,
+        sequence_parallel=False,
+        pipeline_dtype=torch.float32,
+    )
+    from megatron.core.transformer.transformer_config import TransformerConfig
+
+    class DummyModel:
+        def __init__(self):
+            self.config = TransformerConfig(hidden_size=128, num_attention_heads=2, num_layers=2)
+
+        def configure_model(self):
+            pass
+
+    model = DummyModel()
+    assert model.config.pipeline_model_parallel_size != 2
+    assert model.config.expert_model_parallel_size != 2
+    assert model.config.pipeline_dtype != torch.float32
+    _strategy_lib.set_model_parallel_attributes(model, strategy.parallelism)
+    assert model.config.pipeline_model_parallel_size == 2
+    assert model.config.expert_model_parallel_size == 2
+    assert model.config.sequence_parallel == False
+    assert model.config.pipeline_dtype == torch.float32
 
 
 @patch('nemo.collections.nlp.modules.common.megatron.megatron_init.initialize_model_parallel_for_nemo')
@@ -34,7 +62,12 @@ def test_init_parallel_ranks(mock_initialize_model_parallel) -> None:
     mock_parallel_config.pipeline_model_parallel_split_rank = None
 
     _strategy_lib.init_parallel_ranks(
-        world_size=2, global_rank=1, local_rank=0, parallel_config=mock_parallel_config, seed=1234, fp8=False,
+        world_size=2,
+        global_rank=1,
+        local_rank=0,
+        parallel_config=mock_parallel_config,
+        seed=1234,
+        fp8=False,
     )
     mock_initialize_model_parallel.assert_called_once_with(
         world_size=2,

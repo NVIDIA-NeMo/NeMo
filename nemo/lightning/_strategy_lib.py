@@ -124,19 +124,19 @@ def set_model_parallel_attributes(model, parallelism):
     # Given Lightning's structure it would be better if parallelism is a different object
     # Since then it can be passed to the Strategy
 
+    from megatron.core.model_parallel_config import ModelParallelConfig
     from megatron.core.transformer.transformer_config import TransformerConfig
 
+    assert isinstance(
+        parallelism, ModelParallelConfig
+    ), f"Expected parallelism config to be of type ModelParallelConfig, but got {type(parallelism)}"
     has_mcore_config = isinstance(getattr(model, "config", None), TransformerConfig)
     if has_mcore_config and hasattr(model, "configure_model"):
         config: TransformerConfig = model.config
-        config.tensor_model_parallel_size = parallelism.tensor_model_parallel_size
-        config.pipeline_model_parallel_size = parallelism.pipeline_model_parallel_size
-        config.virtual_pipeline_model_parallel_size = parallelism.virtual_pipeline_model_parallel_size
-        config.context_parallel_size = parallelism.context_parallel_size
-        config.expert_model_parallel_size = parallelism.expert_model_parallel_size
-        config.moe_extended_tp = parallelism.moe_extended_tp
-        config.sequence_parallel = parallelism.sequence_parallel
-        config.pipeline_dtype = parallelism.pipeline_dtype
+        for attr_name in filter(lambda x: not x.startswith('__'), dir(parallelism)):
+            if not hasattr(config, attr_name):
+                continue
+            setattr(config, attr_name, getattr(parallelism, attr_name))
 
         return config
 

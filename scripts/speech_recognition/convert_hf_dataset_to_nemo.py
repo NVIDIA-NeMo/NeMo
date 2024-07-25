@@ -362,6 +362,7 @@ def main(cfg: HFDatasetConversionConfig):
             cache_dir=None,
             streaming=cfg.streaming,
             token=cfg.use_auth_token,
+            trust_remote_code=True,
         )
 
     except Exception as e:

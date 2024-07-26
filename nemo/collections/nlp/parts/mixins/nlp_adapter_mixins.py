@@ -223,8 +223,6 @@ class NLPAdapterModelMixin:
             peft_cfgs: One or more PEFTConfig objects that specify the PEFT method configuration
         """
 
-        if self.cfg.get('virtual_pipeline_model_parallel_size', None):
-            raise ValueError('Virtual pipeline model parallel is not supported when using PEFT')
         if self.cfg.optim.name == "distributed_fused_adam":
             raise ValueError('distributed_fused_adam is not supported for PEFT. Please use fused_adam')
 

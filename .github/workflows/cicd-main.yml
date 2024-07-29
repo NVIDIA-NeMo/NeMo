@@ -3304,6 +3304,62 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf /home/TestData/nlp/lora_tuning_tp2
 
+  L2_Megatron_GPT_PEFT_Lora_TP2SP1:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure-gpus-2-h100
+      SCRIPT: |
+        rm -rf /home/TestData/nlp/lora_tuning_tp2_sp1
+
+        CUDA_DEVICE_MAX_CONNECTIONS=1 NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=1 python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
+        trainer.devices=2 \
+        trainer.log_every_n_steps=1 \
+        trainer.max_epochs=9999 \
+        trainer.max_steps=3 \
+        trainer.val_check_interval=3 \
+        ++trainer.limit_val_batches=2 \
+        trainer.precision=bf16 \
+        exp_manager.exp_dir=/home/TestData/nlp/lora_tuning_tp2_sp1 \
+        +model.mcore_gpt=True \
+        model.pipeline_model_parallel_size=1 \
+        model.tensor_model_parallel_size=2 \
+        model.sequence_parallel=True \
+        model.megatron_amp_O2=True \
+        model.restore_from_path=/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo \
+        +model.fp8=True \
+        +model.fp8_params=True \
+        +model.fp8_hybrid=True \
+        +model.fp8_e4m3=False \
+        +model.fp8_interval=1 \
+        +model.fp8_margin=0 \
+        +model.fp8_amax_history_len=32 \
+        +model.fp8_amax_compute_algo=max \
+        +model.reduce_amax=False \
+        +model.ub_tp_comm_overlap=False \
+        +model.tp_comm_overlap_ag=False \
+        +model.tp_comm_overlap_rs=False \
+        +model.tp_comm_overlap_disable_qkv=True \
+        model.peft.peft_scheme='lora' \
+        model.peft.lora_tuning.adapter_dim=16 \
+        model.peft.lora_tuning.alpha=32 \
+        model.peft.lora_tuning.column_init_method="kaiming" \
+        +model.peft.lora_tuning.dropout_position='pre' \
+        model.peft.lora_tuning.target_modules=['attention'] \
+        model.peft.lora_tuning.adapter_dropout=0.1 \
+        +model.peft.lora_tuning.a2a_experimental=1 \
+        model.answer_only_loss=True \
+        model.micro_batch_size=1 \
+        model.global_batch_size=1 \
+        model.data.train_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.train_ds.concat_sampling_probabilities=[1.0] \
+        model.data.train_ds.num_workers=0 \
+        model.data.validation_ds.num_workers=0 \
+        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.validation_ds.names=[quarel]
+      AFTER_SCRIPT: |
+        rm -rf /home/TestData/nlp/lora_tuning_tp2_sp1        
+
   L2_Megatron_GPT_Eval:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4631,6 +4687,7 @@ jobs:
       - L2_Megatron_GPT_Embedding 
       - L2_Megatron_GPT_PEFT_Lora_PP2_O2
       - L2_Megatron_GPT_PEFT_Lora_TP2_O1
+      - L2_Megatron_GPT_PEFT_Lora_TP2SP1
       - L2_Megatron_GPT_Eval
       - L2_Megatron_GPT_Eval_PP2
       - L2_Megatron_GPT_SFT_Eval_inference_seq_len_greaterThan_training_seq_len

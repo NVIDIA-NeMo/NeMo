@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import json
 import logging
 import os
@@ -437,6 +438,8 @@ class TensorRTLLM(ITritonDeployable):
             tokenizer_vocab_size=self.tokenizer.vocab_size,
         )
         load_distributed(self.model_dir, self.mp_rank, self.gpus_per_node)
+        gc.collect()
+        torch.cuda.empty_cache()
         refit(weights_dict)
 
     def forward(

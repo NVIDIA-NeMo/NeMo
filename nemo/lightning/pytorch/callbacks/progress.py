@@ -22,7 +22,7 @@ class MegatronProgressBar(TQDMProgressBar):
         Override bar_format to not have 's/it'.
         """
         self.bar = super().init_train_tqdm()
-        self.bar.bar_format = "{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]"
+        self.bar.bar_format = "{desc} {n_fmt}/{total_fmt}{postfix}"
         return self.bar
 
     def on_train_epoch_start(self, trainer, *_):

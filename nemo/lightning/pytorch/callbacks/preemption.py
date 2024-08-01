@@ -14,16 +14,19 @@
 
 import contextlib
 import signal
+import sys
 from typing import Optional
 
 import torch
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.trainer.trainer import Trainer
 
+from nemo.lightning.io.mixin import IOMixin
+from nemo.lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from nemo.utils import logging
 
 
-class PreemptionCallback(Callback):
+class PreemptionCallback(Callback, IOMixin):
     """
     PreemptionCallback checks for preemption during training at the end of every step.
     Upon preemption, it signals the trainer to stop gracefully.
@@ -61,13 +64,12 @@ class PreemptionCallback(Callback):
 
     def on_train_batch_end(self, trainer: Trainer, pl_module, outputs, batch, batch_idx: int) -> None:
         if self.interrupted:
-            logging.info("Preemption detected, signaling trainer to stop")
+            logging.info("Preemption detected, saving checkpoint and exiting")
             trainer.should_stop = True
-
-    def on_exception(self, trainer: Trainer, pl_module, exception: BaseException) -> None:
-        if isinstance(exception, PreemptionException):
-            logging.info("Handling PreemptionException")
-            trainer.should_stop = True
+            if trainer.checkpoint_callback:
+                monitor_candidates = trainer.checkpoint_callback._monitor_candidates(trainer)
+                trainer.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+                sys.exit(0)
 
     @contextlib.contextmanager
     def _preemption_handler(self):
@@ -81,7 +83,6 @@ class PreemptionCallback(Callback):
         def master_handler(signum, frame):
             logging.info(f"Received signal {signum}, initiating graceful stop")
             self._interrupted = True
-            raise PreemptionException("Preemption signal received")
 
         def ignoring_handler(signum, frame):
             logging.debug(f"Received signal {signum} on non-master rank, ignoring")
@@ -109,7 +110,3 @@ class PreemptionCallback(Callback):
         interrupted = torch.tensor(self._interrupted, device=torch.cuda.current_device(), dtype=torch.int32)
         torch.distributed.broadcast(interrupted, 0)
         return bool(interrupted.item())
-
-
-class PreemptionException(Exception):
-    """Custom exception for preemption events."""

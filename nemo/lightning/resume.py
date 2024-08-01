@@ -139,7 +139,11 @@ class AutoResume(Resume, io.IOMixin):
                     checkpoint = last_checkpoints[0]
                     checkpoint = uninject_model_parallel_rank(checkpoint)
                 else:
-                    raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
+                    # Select the checkpoint with the latest modified time
+                    checkpoint = sorted(last_checkpoints, key=lambda pth: pth.lstat().st_mtime, reverse=True)[0]
+                    logging.warning(
+                        f"Multiple checkpoints {last_checkpoints} matches *last.ckpt. Selecting one with the latest modified time."
+                    )
             else:
                 checkpoint = last_checkpoints[0]
 

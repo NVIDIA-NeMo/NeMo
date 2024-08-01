@@ -1,4 +1,3 @@
-import logging
 import signal
 from unittest.mock import MagicMock, PropertyMock, patch
 
@@ -6,7 +5,7 @@ import pytest
 import torch
 from pytorch_lightning import Trainer
 
-from nemo.lightning.pytorch.callbacks.preemption import PreemptionCallback, PreemptionException
+from nemo.lightning.pytorch.callbacks.preemption import PreemptionCallback
 
 
 class TestPreemptionCallback:
@@ -100,15 +99,9 @@ class TestPreemptionCallback:
     @pytest.mark.parametrize("interrupted", [True, False])
     def test_on_train_batch_end(self, callback, mock_trainer, interrupted):
         with patch.object(PreemptionCallback, 'interrupted', new_callable=lambda: property(lambda self: interrupted)):
-            callback.on_train_batch_end(mock_trainer, None, None, None, 0)
+            if interrupted:
+                with pytest.raises(SystemExit):
+                    callback.on_train_batch_end(mock_trainer, None, None, None, 0)
+            else:
+                callback.on_train_batch_end(mock_trainer, None, None, None, 0)
             assert mock_trainer.should_stop == interrupted
-
-    def test_on_exception_preemption(self, callback, mock_trainer):
-        exception = PreemptionException("Test preemption")
-        callback.on_exception(mock_trainer, None, exception)
-        assert mock_trainer.should_stop
-
-    def test_on_exception_other(self, callback, mock_trainer):
-        exception = ValueError("Some other exception")
-        callback.on_exception(mock_trainer, None, exception)
-        assert not mock_trainer.should_stop

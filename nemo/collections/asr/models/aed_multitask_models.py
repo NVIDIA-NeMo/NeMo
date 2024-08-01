@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
     PromptedAudioToTextLhotseDataset,
+    PromptedAudioToTextMiniBatch,
     get_prompt_format_fn,
 )
 from nemo.collections.asr.metrics import BLEU, WER
@@ -498,7 +499,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         return super().transcribe(audio=audio, override_config=trcfg)
 
-    def _setup_dataloader_from_config(self, config: Optional[Dict], inference: bool = False):
+    def _setup_dataloader_from_config(self, config: Optional[Dict]):
         assert config.get("use_lhotse", False), (
             "Multi-task model only supports dataloading with Lhotse. "
             "Please set config.{train,validation,test}_ds.use_lhotse=True"
@@ -510,7 +511,6 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             dataset=PromptedAudioToTextLhotseDataset(
                 tokenizer=self.tokenizer,
                 prompt_format_fn=get_prompt_format_fn(self.prompt_format),
-                inference=inference,
             ),
         )
 
@@ -554,7 +554,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         # preserve config
         self._update_dataset_config(dataset_name='validation', config=val_data_config)
-        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config, inference=True)
+        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config)
 
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
         """
@@ -570,7 +570,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         # preserve config
         self._update_dataset_config(dataset_name='test', config=test_data_config)
-        self._test_dl = self._setup_dataloader_from_config(config=test_data_config, inference=True)
+        self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
@@ -664,20 +664,18 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         return transf_log_probs, encoded_len, enc_states, enc_mask
 
     # PTL-specific methods
-    def training_step(self, batch, batch_nb):
+    def training_step(self, batch: PromptedAudioToTextMiniBatch, batch_nb):
 
         if batch is None:
             return torch.tensor([0.0])
 
-        # During training prompt and prompt_len are null, ignore.
-        signal, signal_len, transcript, transcript_len, prompt, prompt_len = batch
-        input_ids, labels = transcript[:, :-1], transcript[:, 1:]
+        input_ids, labels = batch.get_decoder_inputs_outputs()
 
         transf_log_probs, encoded_len, enc_states, enc_mask = self.forward(
-            input_signal=signal,
-            input_signal_length=signal_len,
+            input_signal=batch.audio,
+            input_signal_length=batch.audio_lens,
             transcript=input_ids,
-            transcript_length=transcript_len,
+            transcript_length=batch.prompted_transcript_lens,
         )
 
         audio_loss = self.loss(log_probs=transf_log_probs, labels=labels)
@@ -689,16 +687,14 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         return {'loss': audio_loss, 'log': tensorboard_logs}
 
-    def validation_pass(self, batch, batch_idx, dataloader_idx=0, eval_mode="val"):
-        # During inference, dataloader passes pure prompt without transcript text.
-        signal, signal_len, transcript, transcript_len, prompt, prompt_len = batch
-        input_ids, labels = transcript[:, :-1], transcript[:, 1:]
+    def validation_pass(self, batch: PromptedAudioToTextMiniBatch, batch_idx, dataloader_idx=0, eval_mode="val"):
+        input_ids, labels = batch.get_decoder_inputs_outputs()
 
         transf_log_probs, encoded_len, enc_states, enc_mask = self.forward(
-            input_signal=signal,
-            input_signal_length=signal_len,
+            input_signal=batch.audio,
+            input_signal_length=batch.audio_lens,
             transcript=input_ids,
-            transcript_length=transcript_len,
+            transcript_length=batch.prompted_transcript_lens,
         )
 
         transf_loss = self.loss(log_probs=transf_log_probs, labels=labels)
@@ -710,10 +706,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         self.wer.update(
             predictions=enc_states,
             predictions_lengths=encoded_len,
-            targets=transcript,
-            targets_lengths=transcript_len,
+            targets=batch.transcript,
+            targets_lengths=batch.transcript_lens,
             predictions_mask=enc_mask,
-            input_ids=prompt,
+            input_ids=batch.prompt,
         )
         wer, wer_num, wer_denom = self.wer.compute()
         output_dict.update({"val_wer": wer, "val_wer_num": wer_num, "val_wer_denom": wer_denom})
@@ -722,10 +718,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         self.bleu.update(
             predictions=enc_states,
             predictions_lengths=encoded_len,
-            targets=transcript,
-            targets_lengths=transcript_len,
+            targets=batch.transcript,
+            targets_lengths=batch.transcript_lens,
             predictions_mask=enc_mask,
-            input_ids=prompt,
+            input_ids=batch.prompt,
         )
         bleu_metrics = self.bleu.compute(prefix=f"{eval_mode}_")
         output_dict.update(bleu_metrics)
@@ -823,7 +819,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         return super()._transcribe_input_manifest_processing(audio_files, temp_dir, trcfg)
 
-    def _transcribe_forward(self, batch: Any, trcfg: MultiTaskTranscriptionConfig):
+    def _transcribe_forward(
+        self, batch: PromptedAudioToTextMiniBatch | tuple[torch.Tensor, ...], trcfg: MultiTaskTranscriptionConfig
+    ) -> dict:
         """
         Internal function to perform the model's custom forward pass to return outputs that are processed by
         `_transcribe_output_processing()`.
@@ -836,13 +834,25 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         Returns:
             The model's outputs that are processed by `_transcribe_output_processing()`.
         """
-        log_probs, encoded_len, enc_states, enc_mask = self.forward(
-            input_signal=batch[0], input_signal_length=batch[1]
-        )
-        if len(batch) == 6:
-            # Prompt provided by the dataloader.
-            decoder_input_ids = batch[4]
+        if isinstance(batch, PromptedAudioToTextMiniBatch):
+            # Handling regular Canary DataLoader
+            audio = batch.audio
+            audio_lens = batch.audio_lens
+            decoder_input_ids = batch.prompted_transcript
         else:
+            # Handling TensorDataset / external DataLoader
+            audio, audio_lens = batch[0], batch[1]
+            if len(batch) == 6:
+                # Prompt provided by the user.
+                decoder_input_ids = batch[4]
+            else:
+                # Prompt to be built dynamically.
+                decoder_input_ids = None
+        batch_size = audio.shape[0]
+
+        log_probs, encoded_len, enc_states, enc_mask = self.forward(input_signal=audio, input_signal_length=audio_lens)
+
+        if decoder_input_ids is None:
             # The dataloader provided only audio + audio_lens, so we
             # are constructing the prompt dynamically using TranscribeConfig.
 
@@ -877,17 +887,17 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             decoder_input_ids = (
                 self.prompt.encode_dialog(turns=turns)["context_ids"]
                 .unsqueeze(0)
-                .repeat(batch[0].shape[0], 1)
+                .repeat(batch_size, 1)
                 .to(trcfg._internal.device)
             )
-        output = dict(
+
+        return dict(
             log_probs=log_probs,
             encoded_lengths=encoded_len,
             encoder_states=enc_states,
             encoder_mask=enc_mask,
             decoder_input_ids=decoder_input_ids,
         )
-        return output
 
     def _transcribe_output_processing(self, outputs, trcfg: MultiTaskTranscriptionConfig) -> GenericTranscriptionType:
         """
@@ -954,7 +964,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             'channel_selector': config.get('channel_selector', None),
         }
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config), inference=True)
+        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
 
     def _transcribe_on_end(self, trcfg: MultiTaskTranscriptionConfig):
@@ -1017,34 +1027,36 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         """
         return MultiTaskTranscriptionConfig()
 
-    def predict_step(self, batch, batch_idx=0, dataloader_idx=0, has_processed_signal=False):
-        signal, signal_len, _, _, prompt, prompt_len = batch
-
-        processed_signal = None
-        processed_signal_length = None
+    def predict_step(
+        self, batch: PromptedAudioToTextMiniBatch, batch_idx=0, dataloader_idx=0, has_processed_signal=False
+    ):
         if has_processed_signal:
-            processed_signal = signal
-            processed_signal_length = signal_len
+            processed_signal = batch.audio
+            processed_signal_length = batch.audio_lens
             signal = None
             signal_len = None
+        else:
+            processed_signal = None
+            processed_signal_length = None
+            signal = batch.audio
+            signal_len = batch.audio_lens
 
         transf_log_probs, encoded_len, enc_states, enc_mask = self.forward(
             input_signal=signal,
             input_signal_length=signal_len,
             processed_signal=processed_signal,
             processed_signal_length=processed_signal_length,
-            transcript=prompt,
-            transcript_length=prompt_len,
+            transcript=batch.prompt,
+            transcript_length=batch.prompt_lens,
         )
 
         text = self.decoding.decode_predictions_tensor(
             encoder_hidden_states=enc_states,
             encoder_input_mask=enc_mask,
-            decoder_input_ids=prompt,
+            decoder_input_ids=batch.prompt,
             return_hypotheses=False,
         )[0]
 
-        text = [self.decoding.strip_special_tokens(t) for t in text]
         return text
 
     @property

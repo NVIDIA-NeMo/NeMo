@@ -11,16 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+import torch
 from torch import nn as nn
 
 from nemo.collections.asr.parts.submodules.classifier import Classifier
 from nemo.collections.common.parts import MultiLayerPerceptron
 from nemo.core.classes import typecheck
-from nemo.core.neural_types import LogitsType, LogprobsType, NeuralType
+from nemo.core.neural_types import ChannelType, FloatType, LogitsType, LogprobsType, NeuralType
 
 __all__ = ['BertPretrainingTokenClassifier', 'TokenClassifier']
 
@@ -42,11 +43,17 @@ class TokenClassifier(Classifier):
     """
 
     @property
-    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+    def input_types(self) -> Dict[str, NeuralType]:
+        return {
+            "hidden_states": NeuralType(('B', 'T', 'D'), ChannelType()),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
         """
         Returns definitions of module output ports.
         """
-        if not self.log_softmax:
+        if not self.mlp.log_softmax:
             return {"logits": NeuralType(('B', 'T', 'C'), LogitsType())}
         else:
             return {"log_probs": NeuralType(('B', 'T', 'C'), LogprobsType())}
@@ -61,7 +68,6 @@ class TokenClassifier(Classifier):
         dropout: float = 0.0,
         use_transformer_init: bool = True,
     ) -> None:
-
         """
         Initializes the Token Classifier module.
 
@@ -75,14 +81,24 @@ class TokenClassifier(Classifier):
             use_transformer_init: whether to initialize the weights of the classifier head with the same approach used in Transformer
         """
         super().__init__(hidden_size=hidden_size, dropout=dropout)
-        self.log_softmax = log_softmax
         self.mlp = MultiLayerPerceptron(
             hidden_size, num_classes, num_layers=num_layers, activation=activation, log_softmax=log_softmax
         )
         self.post_init(use_transformer_init=use_transformer_init)
 
+    @property
+    def log_softmax(self) -> bool:
+        return self.mlp.log_softmax
+
+    @contextmanager
+    def with_log_softmax_enabled(self, value: bool) -> "TokenClassifier":
+        prev = self.mlp.log_softmax
+        self.mlp.log_softmax = value
+        yield self
+        self.mlp.log_softmax = prev
+
     @typecheck()
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
         Performs the forward step of the module.
         Args:
@@ -101,11 +117,17 @@ class BertPretrainingTokenClassifier(Classifier):
     """
 
     @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        return {
+            "hidden_states": NeuralType(('B', 'T', 'D'), ChannelType()),
+        }
+
+    @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """
         Returns definitions of module output ports.
         """
-        if not self.log_softmax:
+        if not self.mlp.log_softmax:
             return {"logits": NeuralType(('B', 'T', 'C'), LogitsType())}
         else:
             return {"log_probs": NeuralType(('B', 'T', 'C'), LogprobsType())}
@@ -120,7 +142,6 @@ class BertPretrainingTokenClassifier(Classifier):
         dropout: float = 0.0,
         use_transformer_init: bool = True,
     ) -> None:
-
         """
         Initializes the Token Classifier module.
 
@@ -135,8 +156,6 @@ class BertPretrainingTokenClassifier(Classifier):
         """
         super().__init__(hidden_size=hidden_size, dropout=dropout)
 
-        self.log_softmax = log_softmax
-
         if activation not in ACT2FN:
             raise ValueError(f'activation "{activation}" not found')
         self.dense = nn.Linear(hidden_size, hidden_size)
@@ -147,8 +166,19 @@ class BertPretrainingTokenClassifier(Classifier):
         )
         self.post_init(use_transformer_init=use_transformer_init)
 
+    @property
+    def log_softmax(self) -> bool:
+        return self.mlp.log_softmax
+
+    @contextmanager
+    def with_log_softmax_enabled(self, value: bool) -> "TokenClassifier":
+        prev = self.mlp.log_softmax
+        self.mlp.log_softmax = value
+        yield self
+        self.mlp.log_softmax = prev
+
     @typecheck()
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
         Performs the forward step of the module.
         Args:

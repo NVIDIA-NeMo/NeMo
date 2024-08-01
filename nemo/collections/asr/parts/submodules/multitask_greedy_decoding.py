@@ -18,7 +18,7 @@ from typing import List, Optional
 
 import torch
 
-from nemo.collections.asr.modules.transformer import BeamSearchSequenceGenerator
+from nemo.collections.asr.modules.transformer import GreedySequenceGenerator
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core import Typing, typecheck
@@ -56,14 +56,13 @@ def _states_to_device(dec_state, device='cpu'):
     return dec_state
 
 
-class AEDBeamInfer(ABC):
+class AEDGreedyInfer(ABC):
     def __init__(
         self,
         transformer_decoder: torch.nn.Module,
         log_softmax_module: torch.nn.Module,
         tokenizer: TokenizerSpec,
         search_type: str = 'default',
-        return_best_hypothesis: bool = True,
         preserve_alignments: bool = False,
     ):
         super().__init__()
@@ -71,9 +70,8 @@ class AEDBeamInfer(ABC):
         self.transformer_decoder = transformer_decoder
         self.log_softmax_module = log_softmax_module
         self.tokenizer = tokenizer
-
         self.search_type = search_type
-        self.return_best_hypothesis = return_best_hypothesis
+
         self.preserve_alignments = preserve_alignments
 
     def __call__(self, *args, **kwargs):
@@ -93,11 +91,9 @@ class AEDBeamInfer(ABC):
         self.decoding_type = decoding_type
 
 
-class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
-    """A beam decoder engine for AED Transformer models.
-
-    Provides a common abstraction for batch level beam decoding.
-
+class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
+    """
+    A greedy decoder engine for AED Transformer models with support for temperature sampling.
     """
 
     @property
@@ -123,36 +119,33 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         transformer_decoder: torch.nn.Module,
         log_softmax_module: torch.nn.Module,
         tokenizer: TokenizerSpec,
-        search_type: str = 'default',
-        beam_size: int = 1,
-        length_penalty: float = 0.0,
+        temperature: float | None = None,
         max_generation_delta: int = 50,
-        return_best_hypothesis: bool = True,
         preserve_alignments: bool = False,
+        n_samples: int = 1,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
             log_softmax_module=log_softmax_module,
             tokenizer=tokenizer,
-            search_type=search_type,
-            return_best_hypothesis=return_best_hypothesis,
             preserve_alignments=preserve_alignments,
         )
-        self.beam_size = beam_size
+        self.temperature = temperature
+        self.n_samples = n_samples
         self.bos = tokenizer.bos
         self.pad = tokenizer.pad
         self.eos = tokenizer.eos
-        self.beam_search = BeamSearchSequenceGenerator(
+        self.greedy_search = GreedySequenceGenerator(
             embedding=transformer_decoder.embedding,
             decoder=transformer_decoder.decoder,
-            log_softmax=log_softmax_module,
+            classifier=log_softmax_module,
             max_sequence_length=transformer_decoder.max_sequence_length,
-            beam_size=beam_size,
             bos=self.bos,
             pad=self.pad,
             eos=self.eos,
-            len_pen=length_penalty,
             max_delta_length=max_generation_delta,
+            temperature=self.temperature,
+            n_samples=n_samples,
         )
 
         self.preserve_alignments = preserve_alignments
@@ -183,26 +176,26 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             packed list containing batch number of sentences (Hypotheses).
         """
         with torch.inference_mode():
-            topk_hypotheses, beam_scores, best_hypo = self.beam_search(
+            best_hypo, topk_hypotheses = self.greedy_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
-                return_beam_scores=True,
             )
 
-            if not self.return_best_hypothesis:
+            if topk_hypotheses is not None:
                 topk_hypotheses = [x.detach().cpu() for x in topk_hypotheses]  # each item is [beam, seq_len]
-                beam_scores = [x.detach().cpu() for x in beam_scores]  # each item is [beam,]
+                beam_scores = [[None] * self.n_samples for _ in topk_hypotheses]  # each item is [beam,]
                 packed_result = []
                 for i in range(len(topk_hypotheses)):
-                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(self.beam_size)]
                     # Pack results into Hypotheses
-                    hypotheses = pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i])
+                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(self.n_samples)]
                     self.format_hypotheses(hypotheses, decoder_input_ids)
-                    packed_result.append(NBestHypotheses(hypotheses))
+                    packed_result.append(
+                        NBestHypotheses(pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i]))
+                    )
             else:
                 beam_scores = [None for _ in range(len(best_hypo))]
-                best_hypo = best_hypo.detach().cpu()
+                best_hypo = best_hypo.cpu()
                 hypotheses = [
                     Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]
@@ -242,10 +235,8 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
 
 
 @dataclass
-class AEDBeamInferConfig:
-    beam_size: int = 1
-    search_type: str = 'default'
-    len_pen: float = 1.0
+class AEDGreedyInferConfig:
+    temperature: float | None = None
     max_generation_delta: int = -1  # -1 means up to the max length of the decoder
-    return_best_hypothesis: bool = True
     preserve_alignments: bool = False
+    n_samples: int = 1

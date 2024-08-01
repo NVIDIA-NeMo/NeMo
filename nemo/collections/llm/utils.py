@@ -3,10 +3,10 @@ from typing import Any, Callable, Generic, TypeVar, Union, overload
 T = TypeVar('T', bound=Callable[..., Any])
 
 try:
-    import nemo_sdk as sdk
+    import nemo_run as run
 
-    Config = sdk.Config
-    Partial = sdk.Partial
+    Config = run.Config
+    Partial = run.Partial
 except ImportError:
     _T = TypeVar('_T')
 
@@ -19,9 +19,9 @@ except ImportError:
 
 def task(*args: Any, **kwargs: Any) -> Callable[[T], T]:
     try:
-        import nemo_sdk as sdk
+        import nemo_run as run
 
-        return sdk.task(*args, **kwargs)
+        return run.task(*args, **kwargs)
     except ImportError:
         # Return a no-op function
         def noop_decorator(func: T) -> T:
@@ -40,13 +40,13 @@ def factory(*args: Any, **kwargs: Any) -> Callable[[T], T]: ...
 
 def factory(*args: Any, **kwargs: Any) -> Union[Callable[[T], T], T]:
     try:
-        import nemo_sdk as sdk
+        import nemo_run as run
 
         if not args:
-            return sdk.factory(**kwargs)
+            return run.factory(**kwargs)
         else:
             # Used as @factory(*args, **kwargs)
-            return sdk.factory(*args, **kwargs)
+            return run.factory(*args, **kwargs)
     except ImportError:
         # Return a no-op function
         def noop_decorator(func: T) -> T:

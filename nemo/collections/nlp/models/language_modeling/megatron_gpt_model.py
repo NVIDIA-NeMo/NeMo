@@ -630,11 +630,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                 # Initialize a bucket for each virtual pipeline stage
                 for module in self.model:
-                    if isinstance(module, (Float16Module, MCoreFloat16Module)):
-                        module = module.module
-                    stage_bucket = []
-                    layers = module.decoder.layers if self.mcore_gpt else module.language_model.encoder.layers
-                    buckets.extend(make_parameter_bucket(layer) for layer in layers)
+                    buckets.append(make_parameter_bucket(module))
             else:
                 # Initialize a bucket for each Transformer layer
                 modules = self.model if isinstance(self.model, list) else [self.model]

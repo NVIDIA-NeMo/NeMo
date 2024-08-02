@@ -24,6 +24,7 @@ from pytorch_lightning.trainer.trainer import Trainer
 from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from nemo.utils import logging
+from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 
 
 class PreemptionCallback(Callback, IOMixin):
@@ -69,6 +70,9 @@ class PreemptionCallback(Callback, IOMixin):
             if trainer.checkpoint_callback:
                 monitor_candidates = trainer.checkpoint_callback._monitor_candidates(trainer)
                 trainer.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+                if isinstance(trainer.strategy.checkpoint_io, AsyncFinalizableCheckpointIO):
+                    logging.info("Async checkpointing detected, waiting for it to complete")
+                    trainer.strategy.checkpoint_io.maybe_finalize_save_checkpoint(blocking=True)
                 sys.exit(0)
 
     @contextlib.contextmanager

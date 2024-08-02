@@ -6,10 +6,6 @@ init_from_nemo_model: null # path to nemo model
 
 model:
   sample_rate: 16000
-  compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
-  log_prediction: true # enables logging sample predictions in the output during training
-  rnnt_reduction: 'mean_volume'
-  skip_nan_grad: false
 
   train_ds:
     manifest_filepath: ???

@@ -19,7 +19,11 @@ One can mention the pretrained model in two ways:
 1) `init_from_nemo_model` or 
 2) `init_from_pretrained_model` in the configuration.
 
-To update the model architecture in conjunction with other modifications, it is advisable to use the primary 'speech_to_text_rnnt/ctc_*.py' script.
+****************************************************************************************
+This script is mainly intended for changing the dataset, optim, spec_augment, vocabulary/tokenizer of the model.
+To update the model architecture in conjunction with other modifications, 
+it is advisable to use the primary 'speech_to_text_rnnt/ctc_*.py' script.
+****************************************************************************************
 
 Note: To create a single script for all model types, we currently only support two types of 
 initializations:
@@ -135,7 +139,7 @@ def check_vocabulary(asr_model, cfg):
 
 def update_tokenizer(asr_model, tokenizer_dir, tokenizer_type):
     """
-    Updates the tokenizer of the model and also reinitializes the decoder if the vocabulary size 
+    Updates the tokenizer of the model and also reinitializes the decoder if the vocabulary size
     of the new tokenizer differs from that of the loaded model.
     Args:
         asr_model: ASRModel instance

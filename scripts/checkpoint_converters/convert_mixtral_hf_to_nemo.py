@@ -17,7 +17,8 @@ Conversion script to convert Huggingface Mixtral checkpoints into NeMo checkpoin
   Example to run this conversion script:
     python3 convert_mixtral_hf_to_nemo.py \
      --input_name_or_path <path_to_mixtral_checkpoints_folder> \
-     --output_path <path_to_output_nemo_file> 
+     --output_path <path_to_output_nemo_file> \
+     --precision=bf16
 """
 
 import json

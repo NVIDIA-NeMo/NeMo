@@ -132,6 +132,11 @@ class LhotseDataLoadingConfig:
     # Enables iteration of NeMo non-tarred manifests that don't have a "sampling_rate" key without performing any I/O.
     # Note that this will not allow actual dataloading; it's only for manifest iteration as Lhotse objects.
     metadata_only: bool = False
+    # Forces the resulting CutSet to be finite, so that the iteration will end after a full single epoch.
+    # Do not turn this on unless you're sure that you know what you're doing.
+    # In most cases (such as regular multi-GPU training) it will result in a deadlock due to
+    # a different number of steps on different DDP ranks.
+    force_finite: bool = False
 
 
 def get_lhotse_dataloader_from_config(

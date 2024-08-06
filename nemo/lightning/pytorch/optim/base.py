@@ -152,7 +152,7 @@ class OptimizerModule(L.Callback, CallbackMethods, IOMixin, ABC):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx) -> None:
         if self._optimizers is not None:
             lr = self._optimizers[0].param_groups[0]['lr']
-            pl_module.log('lr', lr, rank_zero_only=True, batch_size=1)
+            pl_module.log('lr', lr, rank_zero_only=True, batch_size=1, prog_bar=True)
 
     def __call__(self, model: L.LightningModule, megatron_parallel=None) -> OptimizerLRScheduler:
         """Calls the setup and optimizers methods.

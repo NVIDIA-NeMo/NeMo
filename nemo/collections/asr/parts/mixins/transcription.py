@@ -17,7 +17,7 @@ import os
 import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -69,13 +69,18 @@ class TranscribeConfig:
 def move_to_device(batch, device, non_blocking=False):
     """
     Recursively move all tensors in `batch` to `device`.
+    Supports tensors, lists, tuples, dictionaries, and dataclasses.
     """
     if isinstance(batch, torch.Tensor):
         return batch.to(device, non_blocking=non_blocking)
     elif isinstance(batch, (list, tuple)):
-        return [move_to_device(x, device, non_blocking) for x in batch]
+        return type(batch)(move_to_device(x, device, non_blocking) for x in batch)
     elif isinstance(batch, dict):
         return {k: move_to_device(v, device, non_blocking) for k, v in batch.items()}
+    elif is_dataclass(batch):
+        return type(batch)(
+            **{field.name: move_to_device(getattr(batch, field.name), device, non_blocking) for field in fields(batch)}
+        )
     else:
         return batch  # do nothing if not supported type
 

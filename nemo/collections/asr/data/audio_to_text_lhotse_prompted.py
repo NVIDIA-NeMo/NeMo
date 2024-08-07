@@ -19,6 +19,7 @@ from lhotse import CutSet
 from lhotse.cut import MixedCut, MonoCut
 from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_vectors
+from lhotse.utils import ifnone
 
 from nemo.collections.asr.data.audio_to_text_lhotse import TokenizerWrapper
 from nemo.collections.common.prompts.canary import CanaryPromptFormatter
@@ -186,30 +187,38 @@ def canary(
                 f"Please ensure that every utterance in the input manifests contains these keys."
             )
 
-        encoded = formatter.encode_dialog(
-            turns=[
-                dict(
-                    role="user",
-                    slots={
-                        **{slot: cut.custom[slot] for slot in expected_slots},
-                        formatter.PROMPT_LANGUAGE_SLOT: CANARY_SPECIAL_TOKENIZER,
-                    },
-                ),
+        turns = [
+            dict(
+                role="user",
+                slots={
+                    **{slot: cut.custom[slot] for slot in expected_slots},
+                    formatter.PROMPT_LANGUAGE_SLOT: CANARY_SPECIAL_TOKENIZER,
+                },
+            )
+        ]
+        if text := ' '.join(s.text for s in cut.supervisions if s.text is not None):
+            # Create answer_ids only if there is some transcript in the data.
+            turns.extend(
                 dict(
                     role="assistant",
                     slots={
-                        "text": ' '.join(s.text for s in cut.supervisions),
-                        formatter.PROMPT_LANGUAGE_SLOT: cut.supervisions[0].language,
+                        "text": text,
+                        formatter.PROMPT_LANGUAGE_SLOT: ifnone(
+                            cut.supervisions[0].language, cut.custom.get("target_lang")
+                        ),
                     },
                 ),
-            ]
-        )
+            )
+        encoded = formatter.encode_dialog(turns)
         prompts_with_answers.append(encoded["input_ids"])
         prompts.append(encoded["context_ids"])
-        assert (
-            encoded["answer_ids"][-1].item() == formatter.tokenizer.eos
-        ), f"Expected the last token in answer_ids to be EOS, but we got {encoded['answer_ids']=}"
-        answers.append(encoded["answer_ids"][:-1])  # Strip Canary's EOS
+        if "answer_ids" in encoded:
+            assert (
+                encoded["answer_ids"][-1].item() == formatter.tokenizer.eos
+            ), f"Expected the last token in answer_ids to be EOS, but we got {encoded['answer_ids']=}"
+            answers.append(encoded["answer_ids"][:-1])  # Strip Canary's EOS
+        else:
+            answers.append([])
 
     return prompts_with_answers, prompts, answers
 

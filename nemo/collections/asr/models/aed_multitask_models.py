@@ -838,7 +838,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             # Handling regular Canary DataLoader
             audio = batch.audio
             audio_lens = batch.audio_lens
-            decoder_input_ids = batch.prompted_transcript
+            decoder_input_ids = batch.prompt
         else:
             # Handling TensorDataset / external DataLoader
             audio, audio_lens = batch[0], batch[1]
@@ -999,13 +999,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 entry = {
                     'audio_filepath': item,
                     'duration': 100000,
-                    trcfg.text_field: 'nothing',
                 }
             elif isinstance(item, dict):
                 entry = item
                 entry['audio_filepath'] = get_full_path(entry['audio_filepath'], manifest_file=manifest_path)
-                if trcfg.text_field not in entry:
-                    entry[trcfg.text_field] = 'nothing'
             else:
                 raise ValueError(f"Expected str or dict, got {type(item)}")
             default_turn = [t for t in trcfg.prompt if t["role"] == "user"]

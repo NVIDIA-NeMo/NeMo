@@ -5,6 +5,7 @@ import os
 import shutil
 from collections import OrderedDict
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Literal, Mapping, Optional, TypeVar, Union, cast
 
@@ -43,6 +44,18 @@ ConfigT = TypeVar("ConfigT")
 
 
 DDPLiteral = Literal["megatron", "pytorch"]
+
+
+@dataclass
+class ParallelismConfig:
+    tensor_model_parallel_size: int
+    pipeline_model_parallel_size: int
+    virtual_pipeline_model_parallel_size: int
+    context_parallel_size: int
+    sequence_parallel: bool
+    expert_model_parallel_size: int
+    moe_extended_tp: bool
+    pipeline_dtype: torch.dtype
 
 
 class MegatronStrategy(DDPStrategy, io.IOMixin):
@@ -696,10 +709,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         return True
 
     @property
-    def parallelism(self):
-        from megatron.core.model_parallel_config import ModelParallelConfig
-
-        return ModelParallelConfig(
+    def parallelism(self) -> ParallelismConfig:
+        return ParallelismConfig(
             tensor_model_parallel_size=self.tensor_model_parallel_size,
             pipeline_model_parallel_size=self.pipeline_model_parallel_size,
             virtual_pipeline_model_parallel_size=self.virtual_pipeline_model_parallel_size,

@@ -65,7 +65,9 @@ jobs:
             
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: failure() && inputs.IS_OPTIONAL == false
-          
+
         - name: after_script
           if: always() && inputs.AFTER_SCRIPT != ':'
-          run: ${{ inputs.AFTER_SCRIPT }}
+          run: |
+            docker run --rm --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume /mnt/datadrive/TestData:/home/TestData nemoci.azurecr.io/nemo_container_${{ github.run_id }} bash -c '${{ inputs.AFTER_SCRIPT }}'
+            

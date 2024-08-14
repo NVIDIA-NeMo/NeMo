@@ -23,7 +23,7 @@ class MegatronDataSampler(DataSampler):
         micro_batch_size: int = 4,
         global_batch_size: int = 8,
         rampup_batch_size: Optional[List[int]] = None,
-        dataloader_type: Literal["single", "cyclic"] = "single",
+        dataloader_type: Literal["single", "cyclic", "batch"] = "single",
         init_consumed_samples: int = 0,
     ):
         self.seq_len = seq_len

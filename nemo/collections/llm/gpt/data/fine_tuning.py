@@ -1,3 +1,4 @@
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union
@@ -32,6 +33,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         num_workers (int, optional): The number of worker processes for data loading. Defaults to 8.
         pin_memory (bool, optional): Whether to pin memory during data loading for faster GPU training. Defaults to True.
         persistent_workers (bool, optional): Whether to keep data loading workers persistent across epochs. Defaults to False.
+        max_train_steps (int, optional): Maximum number of steps to train. Used to calculate samples mapping for the mmap dataset
     """
 
     def __init__(
@@ -60,18 +62,40 @@ class FineTuningDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
+        self.micro_batch_size = micro_batch_size
+        self.global_batch_size = global_batch_size
+        self.rampup_batch_size = rampup_batch_size
+        self.data_sampler = None
+        self.max_train_samples = None
+
+    def setup(self, stage: str):
         self.data_sampler = MegatronDataSampler(
             seq_len=self.seq_length,
-            micro_batch_size=micro_batch_size,
-            global_batch_size=global_batch_size,
-            rampup_batch_size=rampup_batch_size,
+            micro_batch_size=self.micro_batch_size,
+            global_batch_size=self.global_batch_size,
+            rampup_batch_size=self.rampup_batch_size,
+            dataloader_type="batch",
         )
 
+        # Follows the calculation in nemo.collections.nlp.data.language_modeling.megatron.
+        # base_dataset_utils.get_datasets_weights_and_num_samples
+        self.max_train_samples = int(math.ceil(self.global_batch_size * self.trainer.max_steps * 1.005))
+
     def train_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self._create_dataset(str(self.train_path)))
+        return self._create_dataloader(
+            self._create_dataset(
+                str(self.train_path),
+                max_num_samples=self.max_train_samples,
+            )
+        )
 
     def val_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self._create_dataset(str(self.validation_path)))
+        return self._create_dataloader(
+            self._create_dataset(
+                str(self.validation_path),
+                is_test=True,
+            ),
+        )
 
     def test_dataloader(self) -> DataLoader:
         return self._create_dataloader(
@@ -85,7 +109,12 @@ class FineTuningDataModule(pl.LightningDataModule):
     @lru_cache
     def _create_dataset(self, path, **kwargs):
         return create_sft_dataset(
-            path, tokenizer=self.tokenizer, seq_length=self.seq_length, memmap_workers=self.memmap_workers, **kwargs
+            path,
+            tokenizer=self.tokenizer,
+            seq_length=self.seq_length,
+            memmap_workers=self.memmap_workers,
+            seed=self.seed,
+            **kwargs,
         )
 
     def _create_dataloader(self, dataset, **kwargs) -> DataLoader:

@@ -230,6 +230,20 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         _num_microbatches: int = num_microbatches or self.infer_num_microbatches(data)
 
         pipeline = self.pipeline
+
+        use_global_batch_sampler = self.trainer.datamodule.data_sampler.dataloader_type == 'batch'
+        if use_global_batch_sampler:
+            from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
+
+            # The current way of using a batch sampler + split to micro iterator results in
+            # extraneous padding, and is only implemented to ensure bit-exactness with NeMo 1.
+            # This part in NeMo 1 was written when megatron fwd_bwd_function did not support unequal
+            # sequence lengths, but it does now. Hence this part should be revisited in the future.
+            batch = next(data)
+            if isinstance(batch, tuple) and len(batch) == 3:
+                batch = batch[0]
+            data = get_iterator_k_split(batch, _num_microbatches, True)
+
         data_iterator: List[Iterator[DataT]] = self.to_data_iterator_list(data)
         context = self._build_context({**locals()})
 

@@ -208,7 +208,10 @@ def build_neva_engine(
             return vision_x
 
     encoder = AutoModel.from_pretrained(
-        vision_config["from_pretrained"], torch_dtype=torch.bfloat16, trust_remote_code=True
+        vision_config["from_pretrained"],
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+        attn_implementation='eager',
     )
     vision_encoder = encoder.vision_model
     hf_config = encoder.config
@@ -326,7 +329,10 @@ def build_video_neva_engine(
             return vision_x
 
     encoder = AutoModel.from_pretrained(
-        vision_config["from_pretrained"], torch_dtype=torch.bfloat16, trust_remote_code=True
+        vision_config["from_pretrained"],
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+        attn_implementation='eager',
     )
     vision_encoder = encoder.vision_model
     hf_config = encoder.config

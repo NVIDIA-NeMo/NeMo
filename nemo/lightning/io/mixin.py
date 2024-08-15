@@ -514,6 +514,10 @@ def _io_path_elements_fn(x):
 def _artifact_transform(cfg: fdl.Config, output_path: Path):
     for artifact in getattr(cfg.__fn_or_cls__, "__io_artifacts__", []):
         current_val = getattr(cfg, artifact.attr)
+        if current_val is None:
+            if artifact.required:
+                raise ValueError(f"Artifact '{artifact.attr}' is required but not provided")
+            continue
         new_val = artifact.dump(current_val, output_path)
         setattr(cfg, artifact.attr, new_val)
 

@@ -91,6 +91,14 @@ class Connector(BasePath, Generic[SourceT, TargetT]):
             logging.error(f"An error occurred: {e}")
             raise
 
+        finally:
+            # Delete the lock file if it exists
+            if lock_path.exists():
+                try:
+                    os.remove(lock_path)
+                except OSError as e:
+                    logging.warning(f"Failed to remove lock file {lock_path}: {e}")
+
         return _output_path
 
     def local_path(self, base_path: Optional[Path] = None) -> Path:
@@ -152,18 +160,25 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
         return _trainer
 
-    def nemo_save(self, output_path: Path, trainer: pl.Trainer) -> None:
+    def nemo_save(self, output_path: Path, trainer: pl.Trainer, dump_io: bool = True) -> None:
         """
         Saves the model's state to the specified path using the trainer's current strategy.
 
         Args:
             output_path (Path): The path where the model checkpoint will be saved.
             trainer (pl.Trainer): The trainer with the strategy to save the model.
+            dump_io (bool): If True, the IO configuration will be saved to the output path.
         """
         trainer.strategy._setup_optimizers = False
         trainer.strategy._init_model_parallel = False
         trainer.strategy.setup(trainer)
         trainer.save_checkpoint(output_path)
+
+        from nemo.lightning.io.pl import TrainerContext
+        from nemo.utils.get_rank import is_global_rank_zero
+
+        if is_global_rank_zero() and dump_io:
+            TrainerContext.from_trainer(trainer).io_dump(output_path)
 
     def nemo_load(
         self, path: Path, trainer: Optional[pl.Trainer] = None, cpu: bool = True

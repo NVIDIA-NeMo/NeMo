@@ -9,8 +9,8 @@ try:
     track_io(
         AutoTokenizer,
         artifacts=[
-            FileArtifact("vocab_file"),
-            FileArtifact("merges_file"),
+            FileArtifact("vocab_file", required=False),
+            FileArtifact("merges_file", required=False),
         ],
     )
     __all__.append("AutoTokenizer")

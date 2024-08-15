@@ -30,7 +30,7 @@ from lhotse.cut import Cut
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.lazy import LazyIteratorChain, LazyJsonlIterator
 from lhotse.serialization import open_best
-from lhotse.utils import compute_num_samples
+from lhotse.utils import compute_num_samples, ifnone
 
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
@@ -332,14 +332,16 @@ class LazyNeMoTarredIterator:
 
         # Handle NeMo tarred manifests with offsets.
         # They have multiple JSONL entries where audio paths end with '-sub1', '-sub2', etc. for each offset.
-        offset_pattern = re.compile(r'^.+(-sub\d+)$')
+        offset_pattern = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
 
         for sid in shard_ids:
             manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
 
             def basename(d: dict) -> str:
                 return (
-                    k[: -len(m.group(1))] if (m := offset_pattern.match(k := d["audio_filepath"])) is not None else k
+                    m.group("stem") + ifnone(m.group("ext"), "")
+                    if (m := offset_pattern.match(k := d["audio_filepath"])) is not None
+                    else k
                 )
 
             shard_manifest: dict[str, list[dict]] = groupby(basename, self.shard_id_to_manifest[sid])

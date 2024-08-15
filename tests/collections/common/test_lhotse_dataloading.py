@@ -1735,10 +1735,14 @@ def nemo_tarred_manifest_path_with_offset(tmp_path_factory) -> Tuple[str, str]:
         TarWriter(f"{root}/audios_0.tar", shard_size=None) as tar_writer,
         SequentialJsonlWriter(root / "tarred_audio_filepaths.jsonl") as mft_writer,
     ):
-        tar_writer.write(recording.id, BytesIO(recording.sources[0].source))
+
+        def audio_path(n: int = None):
+            return recording.id + ("" if n is None else f"-sub{n}") + ".wav"
+
+        tar_writer.write(audio_path(), BytesIO(recording.sources[0].source))
         mft_writer.write(
             {  # segment 0-3s
-                "audio_filepath": recording.id,
+                "audio_filepath": audio_path(),
                 "offset": 0.0,
                 "duration": 3.0,
                 "text": "irrelevant",
@@ -1748,7 +1752,7 @@ def nemo_tarred_manifest_path_with_offset(tmp_path_factory) -> Tuple[str, str]:
         )
         mft_writer.write(
             {  # segment 4-9s
-                "audio_filepath": recording.id + "-sub1",
+                "audio_filepath": audio_path(1),
                 "offset": 4.0,
                 "duration": 5.0,
                 "text": "irrelevant-2",
@@ -1758,7 +1762,7 @@ def nemo_tarred_manifest_path_with_offset(tmp_path_factory) -> Tuple[str, str]:
         )
         mft_writer.write(
             {  # full recording - for reference
-                "audio_filepath": recording.id + "-sub2",
+                "audio_filepath": audio_path(2),
                 "offset": 0.0,
                 "duration": 10.0,
                 "text": "irrelevant irrelevant-2",
@@ -1794,7 +1798,7 @@ def test_dataloader_from_tarred_nemo_manifest_with_offset(nemo_tarred_manifest_p
     assert len(batch) == 3
 
     # Validate example containing full 10s recording.
-    full_cut = batch[-1]
+    full_cut = batch[1]
     assert full_cut.start == 0.0
     assert full_cut.duration == 10.0
     assert full_cut.supervisions[0].text == "irrelevant irrelevant-2"
@@ -1803,7 +1807,7 @@ def test_dataloader_from_tarred_nemo_manifest_with_offset(nemo_tarred_manifest_p
     assert full_audio.shape[1] == full_cut.num_samples == 160000  # 10s * 16kHz
 
     # Validate segment 0-3s.
-    cut = batch[0]
+    cut = batch[2]
     assert cut.start == 0.0
     assert cut.duration == 3.0
     assert cut.supervisions[0].text == "irrelevant"
@@ -1817,7 +1821,7 @@ def test_dataloader_from_tarred_nemo_manifest_with_offset(nemo_tarred_manifest_p
     # Note: LazyNeMoTarredIterator removes the offset information, as it creates a new recording
     # that's a "subset" of the original recording as a memory saving optimization.
     # Hence, we will not see cut.start == 4.0.
-    cut = batch[1]
+    cut = batch[0]
     assert cut.start == 0.0
     assert cut.duration == 5.0
     assert cut.supervisions[0].text == "irrelevant-2"

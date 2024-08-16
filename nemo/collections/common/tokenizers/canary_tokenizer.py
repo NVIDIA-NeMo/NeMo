@@ -71,7 +71,7 @@ class CanaryTokenizer(AggregateTokenizer):
             return self._tokenize_special_prompt(text)
         if text.endswith(CANARY_EOS):
             return super().text_to_ids(text[: -len(CANARY_EOS)], lang_id) + [self.eos_id]
-        return super().text_to_ids(text[-len(CANARY_EOS) :], lang_id)
+        return super().text_to_ids(text, lang_id)
 
     def _tokenize_special_prompt(self, text: str) -> list[int]:
         """

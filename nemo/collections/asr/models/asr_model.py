@@ -22,6 +22,7 @@ from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.core.utils.neural_type_utils import get_io_names
 from nemo.utils import logging, model_utils
 from nemo.utils.cast_utils import cast_all
@@ -217,6 +218,26 @@ class ASRModel(ModelPT, ABC):
         EncDecRNNTModel.decoding.decoding is the inference class with CUDA graphs
         """
         WithOptionalCudaGraphs.enable_cuda_graphs_recursive(self, attribute_path="decoding.decoding")
+
+    @property
+    def oomptimizer_schema(self) -> dict:
+        """
+        Return a typing schema for optimal batch size calibration for various
+        sequence lengths using OOMptimizer.
+        """
+        return {
+            "cls": tuple,
+            "inputs": [
+                {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
+                {"type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
+                {
+                    "type": NeuralType(("B", "T"), LabelsType()),
+                    "seq_length": "output",
+                    "vocab_size": self.tokenizer.vocab_size,
+                },
+                {"type": NeuralType(("B",), LengthsType()), "seq_length": "output"},
+            ],
+        }
 
 
 class ExportableEncDecModel(Exportable):

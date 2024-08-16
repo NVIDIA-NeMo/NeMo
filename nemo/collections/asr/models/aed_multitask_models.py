@@ -28,7 +28,6 @@ from torch.utils.data import DataLoader
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
     PromptedAudioToTextLhotseDataset,
     PromptedAudioToTextMiniBatch,
-    get_prompt_format_fn,
 )
 from nemo.collections.asr.metrics import BLEU, WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
@@ -48,6 +47,7 @@ from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader
 from nemo.collections.common.metrics import GlobalAverageLossMetric
 from nemo.collections.common.parts import transformer_weights_init
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+from nemo.collections.common.prompts.fn import get_prompt_format_fn
 from nemo.collections.common.prompts.formatter import PromptFormatter
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import (
@@ -512,6 +512,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 tokenizer=self.tokenizer,
                 prompt_format_fn=get_prompt_format_fn(self.prompt_format),
             ),
+            tokenizer=self.tokenizer,
         )
 
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
@@ -680,9 +681,18 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         audio_loss = self.loss(log_probs=transf_log_probs, labels=labels)
 
+        num_frames = batch.audio_lens.sum()
+        num_tokens = batch.prompted_transcript_lens.sum()
+        tot_frames = batch.audio.numel()
+        tot_tokens = batch.prompted_transcript.numel()
         tensorboard_logs = {
             'train_loss': audio_loss,
             'learning_rate': self._optimizer.param_groups[0]['lr'],
+            'batch_size': batch.audio.shape[0],
+            'num_frames': num_frames,
+            'num_tokens': num_tokens,
+            'input_to_padding_ratio': num_frames / tot_frames,
+            'output_to_padding_ratio': num_tokens / tot_tokens,
         }
 
         return {'loss': audio_loss, 'log': tensorboard_logs}
@@ -1057,6 +1067,35 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
     @property
     def adapter_module_names(self) -> List[str]:
         return ['', 'encoder', 'transf_encoder', 'transf_decoder']
+
+    @property
+    def oomptimizer_schema(self) -> dict:
+        """
+        Return a typing schema for optimal batch size calibration for various
+        sequence lengths using OOMptimizer.
+        """
+        return {
+            "cls": PromptedAudioToTextMiniBatch,
+            "inputs": [
+                {"name": "audio", "type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
+                {"name": "audio_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
+                {
+                    "name": "prompted_transcript",
+                    "type": NeuralType(("B", "T"), LabelsType()),
+                    "seq_length": "output",
+                    "vocab_size": self.tokenizer.vocab_size,
+                },
+                {
+                    "name": "prompted_transcript_lens",
+                    "type": NeuralType(("B",), LengthsType()),
+                    "seq_length": "output",
+                },
+                {"name": "transcript", "type": "dummy"},
+                {"name": "transcript_lens", "type": "dummy"},
+                {"name": "prompt", "type": "dummy"},
+                {"name": "prompt_lens", "type": "dummy"},
+            ],
+        }
 
 
 def parse_multitask_prompt(prompt: dict | None) -> list[dict]:

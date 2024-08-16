@@ -96,7 +96,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding object
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=self.cfg.decoding,
+            decoder=self.decoder,
+            joint=self.joint,
+            tokenizer=self.tokenizer,
         )
 
         # Setup wer object
@@ -139,7 +142,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 config,
                 global_rank=self.global_rank,
                 world_size=self.world_size,
-                dataset=LhotseSpeechToTextBpeDataset(tokenizer=self.tokenizer,),
+                dataset=LhotseSpeechToTextBpeDataset(
+                    tokenizer=self.tokenizer,
+                ),
+                tokenizer=self.tokenizer,
             )
 
         dataset = audio_to_text_dataset.get_audio_to_text_bpe_dataset_from_config(
@@ -322,7 +328,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=decoding_cfg,
+            decoder=self.decoder,
+            joint=self.joint,
+            tokenizer=self.tokenizer,
         )
 
         self.wer = WER(
@@ -429,7 +438,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
             self.decoding = RNNTBPEDecoding(
-                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+                decoding_cfg=decoding_cfg,
+                decoder=self.decoder,
+                joint=self.joint,
+                tokenizer=self.tokenizer,
             )
 
             self.wer = WER(

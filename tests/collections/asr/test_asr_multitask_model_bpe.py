@@ -24,13 +24,12 @@ from omegaconf import DictConfig
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
     PromptedAudioToTextLhotseDataset,
     PromptedAudioToTextMiniBatch,
-    canary,
 )
 from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
 from nemo.collections.asr.parts.submodules import multitask_beam_decoding as beam_decode
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchMultiTaskAED
-from nemo.collections.common.prompts.canary import CanaryPromptFormatter
+from nemo.collections.common.prompts.canary import CanaryPromptFormatter, canary
 from nemo.collections.common.tokenizers import CanaryTokenizer
 
 

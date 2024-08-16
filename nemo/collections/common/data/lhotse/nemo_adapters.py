@@ -382,6 +382,8 @@ class LazyNeMoTarredIterator:
                             )
                         )
                         cut.custom = _to_custom_attr_dict(data)
+                        cut.manifest_origin = manifest_path
+                        cut.tar_origin = tar_path
                         for extra_field in extra_fields:
                             extra_field.attach_to(cut)
                         cuts_for_recording.append(cut)

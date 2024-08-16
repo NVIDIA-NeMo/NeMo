@@ -100,6 +100,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
                 global_rank=self.global_rank,
                 world_size=self.world_size,
                 dataset=LhotseSpeechToTextBpeDataset(tokenizer=self.tokenizer),
+                tokenizer=self.tokenizer,
             )
 
         dataset = audio_to_text_dataset.get_audio_to_text_bpe_dataset_from_config(
@@ -324,7 +325,10 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
-        self.decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer,)
+        self.decoding = CTCBPEDecoding(
+            decoding_cfg=decoding_cfg,
+            tokenizer=self.tokenizer,
+        )
 
         self.wer = WER(
             decoding=self.decoding,

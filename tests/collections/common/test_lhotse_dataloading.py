@@ -200,6 +200,7 @@ def test_dataloader_from_lhotse_cuts(cutset_path: Path):
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -355,6 +356,7 @@ def test_dataloader_from_lhotse_shar_cuts(cutset_shar_path: Path):
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -401,6 +403,7 @@ def test_dataloader_from_nemo_manifest(nemo_manifest_path: Path):
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -478,6 +481,7 @@ def test_dataloader_from_tarred_nemo_manifest(nemo_tarred_manifest_path: tuple[s
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -525,6 +529,7 @@ def test_dataloader_from_tarred_nemo_manifest_weighted_combination(nemo_tarred_m
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -557,6 +562,7 @@ def test_dataloader_from_tarred_nemo_manifest_multi(nemo_tarred_manifest_path_mu
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -604,6 +610,7 @@ def test_dataloader_from_tarred_nemo_manifest_multi_max_open_streams(nemo_tarred
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "max_open_streams": 1,
             "drop_last": False,
@@ -694,6 +701,7 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_unweighted(
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -746,6 +754,7 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_weighted(
             "num_workers": 0,
             # lhotse specific
             "use_bucketing": True,
+            "concurrent_bucketing": False,
             "num_buckets": 2,
             "drop_last": False,
             "batch_duration": 4.0,  # seconds
@@ -1578,6 +1587,69 @@ def test_dataloader_with_synth_rir(cutset_path: Path):
         assert isinstance(tfnm, ReverbWithImpulseResponse)
 
 
+def test_dataloader_bucket_batch_size(nemo_tarred_manifest_path_multi: tuple[str, str]):
+    json_mft, tar_mft = nemo_tarred_manifest_path_multi
+    config = OmegaConf.create(
+        {
+            "manifest_filepath": json_mft,
+            "tarred_audio_filepaths": tar_mft,
+            "sample_rate": 16000,
+            "shuffle": True,
+            "use_lhotse": True,
+            "num_workers": 0,
+            # lhotse specific
+            "use_bucketing": True,
+            "concurrent_bucketing": False,
+            # Note: all input cuts belong to the first bucket so the batch size will always be 2.
+            "bucket_duration_bins": [2.0, 4.0],
+            "bucket_batch_size": [2, 1],
+            "drop_last": False,
+            "shuffle_buffer_size": 10,
+            "bucket_buffer_size": 100,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    for b in islice(dl, 10):
+        assert len(b) == 2
+
+
+def test_dataloader_2d_bucketing(nemo_tarred_manifest_path_multi: tuple[str, str], en_es_tokenizer):
+    json_mft, tar_mft = nemo_tarred_manifest_path_multi
+    config = OmegaConf.create(
+        {
+            "manifest_filepath": json_mft,
+            "tarred_audio_filepaths": tar_mft,
+            "sample_rate": 16000,
+            "shuffle": True,
+            "use_lhotse": True,
+            "num_workers": 0,
+            # lhotse specific
+            "use_bucketing": True,
+            "concurrent_bucketing": False,
+            # Here each bin has the format: [audio_duration, token_sequence_length]
+            "bucket_duration_bins": [[0.5, 1], [0.5, 2], [2.0, 5], [2.0, 15], [4.0, 10], [4.0, 20]],
+            "bucket_batch_size": [7, 6, 5, 4, 3, 2],
+            "drop_last": False,
+            "shuffle_buffer_size": 10,
+            "bucket_buffer_size": 100,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(
+        config=config, global_rank=0, world_size=1, dataset=Identity(), tokenizer=en_es_tokenizer
+    )
+
+    # All of our data have duration 1.0 and 10 tokens so they will fall to bin[3] with batch_size=4
+    for b in islice(dl, 10):
+        assert len(b) == 4
+
+
 @pytest.fixture(scope="session")
 def questions_path(tmp_path_factory) -> Path:
     """A text file with 10 lines containing question values"""
@@ -1615,6 +1687,7 @@ def test_dataloader_from_nemo_nontarred_manifest_with_extra_questions_field_iter
     )
 
     dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
     b = next(iter(dl))
     c = b[0]
     assert isinstance(c, MonoCut)

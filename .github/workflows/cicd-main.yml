@@ -841,6 +841,67 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf examples/asr/speech_to_text_adapters_mha_results
 
+  # L2: OOMptimizer
+  L2_Speech_Estimate_Duration_Bins:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        set -x
+        # 1D buckets [SSL, CTC]
+        python scripts/speech_recognition/estimate_duration_bins.py \
+          /home/TestData/an4_dataset/an4_train.json \
+          --buckets 5 
+        # 2D buckets [CTC, RNNT, TDT] / with tokenizer
+        python scripts/speech_recognition/estimate_duration_bins_2d.py \
+          /home/TestData/an4_dataset/an4_train_lang.json \
+          --tokenizer /home/TestData/asr_tokenizers/canary/en/tokenizer_spe_bpe_v1024_max_4/tokenizer.model \
+          --buckets 5 \
+          --sub-buckets 2
+        # TODO(pzelasko): Figure out how to quote the value in the test properly for CI to accept it...
+        # 2D buckets with prompt [AED/Canary, SpeechLM] / with aggregate tokenizer + prompt format 
+        # python scripts/speech_recognition/estimate_duration_bins_2d.py \
+        #   /home/TestData/an4_dataset/an4_train_lang.json \
+        #   --tokenizer /home/TestData/asr_tokenizers/canary/canary_spl_tokenizer_v32/tokenizer.model \
+        #      /home/TestData/asr_tokenizers/canary/en/tokenizer_spe_bpe_v1024_max_4/tokenizer.model \
+        #      /home/TestData/asr_tokenizers/canary/es/tokenizer_spe_bpe_v1024_max_4/tokenizer.model \
+        #   --langs spl_tokens en es \
+        #   --prompt-format canary \
+        #   --prompt '[{"role":"user","slots":{"source_lang":"en","target_lang":"en","task":"asr","pnc":"yes"}}]' \
+        #   --buckets 5 \
+        #   --sub-buckets 2
+
+  # L2: OOMptimizer
+  L2_Speech_Batch_Size_OOMptimizer:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        # 1D bucketing
+        python scripts/speech_recognition/oomptimizer.py \
+          -c /home/TestData/oomptimizer/fast-conformer_ctc_bpe.yaml \
+          -m nemo.collections.asr.models.EncDecCTCModelBPE \
+          -b "[5.0,10.0]"
+        # 2D bucketing
+        python scripts/speech_recognition/oomptimizer.py \
+          -c /home/TestData/oomptimizer/fast-conformer_ctc_bpe.yaml \
+          -m nemo.collections.asr.models.EncDecCTCModelBPE \
+          -b "[[5.0,30],[5.0,45],[10.0,57],[10.0,71]]"
+
+  # L2: OOMptimizer Canary (has a different batch schema)
+  L2_Speech_Batch_Size_OOMptimizer_Canary:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python scripts/speech_recognition/oomptimizer.py \
+          -c /home/TestData/oomptimizer/fast-conformer_aed.yaml \
+          -m nemo.collections.asr.models.EncDecMultiTaskModel \
+          -b "[[5.0,30],[5.0,45],[10.0,57],[10.0,71]]"
+
   # L2: Speech Transcription
   L2_Speech_Transcription_Speech_to_Text_Transcribe:
     needs: [cicd-test-container-setup]

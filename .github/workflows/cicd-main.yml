@@ -19,13 +19,32 @@ on:
       - 'main'
       - 'r**'
     types: [ labeled ]
+  workflow_dispatch:
+    inputs:
+      test_to_run:
+        required: false
+        default: all
+        type: string
+        description: Comma-separated list of tests to run. Use "all" to run the full test suite.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  pre-flight:
+    runs-on: ubuntu-latest
+    outputs:
+      test_to_run: ${{ steps.main.outputs.test_to_run }}
+    steps:
+      - name: Parse test_to_run
+        id: main
+        run: |
+          parsed_string=$(echo ${{ inputs.test_to_run }} | jq -c --raw-input 'split(",")')
+          echo "test_to_run=${parsed_string}" >> "$GITHUB_ENV""
+
   gpu-test:
+    needs: [pre-flight]
     runs-on: self-hosted-azure
     if: ${{ github.event.label.name == 'Run CICD' }}
     steps:
@@ -36,6 +55,7 @@ jobs:
 
   cicd-cluster-clean:
     runs-on: self-hosted-azure-builder
+    needs: [pre-flight]
     if: ${{ github.event.label.name == 'Run CICD' }}
     steps:
     - name: Clean server from old files
@@ -93,7 +113,6 @@ jobs:
           exit 0
         '
         ### \'\'
-  
   
   L0_Unit_Tests_GPU:
     needs: [cicd-test-container-setup]

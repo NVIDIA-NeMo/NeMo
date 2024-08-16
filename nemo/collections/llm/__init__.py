@@ -15,6 +15,13 @@ from nemo.collections.llm.gpt.data import (
 )
 from nemo.collections.llm.gpt.data.api import dolly, mock, squad
 from nemo.collections.llm.gpt.model import (
+    Baichuan2Config,
+    Baichuan2Config7B,
+    Baichuan2Model,
+    ChatGLM2Config6B,
+    ChatGLM3Config6B,
+    ChatGLMConfig,
+    ChatGLMModel,
     CodeGemmaConfig2B,
     CodeGemmaConfig7B,
     CodeLlamaConfig7B,
@@ -74,6 +81,13 @@ __all__ = [
     "CodeGemmaConfig2B",
     "CodeGemmaConfig7B",
     "GemmaModel",
+    "Baichuan2Config",
+    "Baichuan2Config7B",
+    "Baichuan2Model",
+    "ChatGLMConfig",
+    "ChatGLM2Config6B",
+    "ChatGLM3Config6B",
+    "ChatGLMModel",
     "PreTrainingDataModule",
     "FineTuningDataModule",
     "SquadDataModule",

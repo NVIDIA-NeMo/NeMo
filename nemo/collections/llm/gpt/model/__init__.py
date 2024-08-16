@@ -1,3 +1,4 @@
+from nemo.collections.llm.gpt.model.baichuan import Baichuan2Config, Baichuan2Config7B, Baichuan2Model
 from nemo.collections.llm.gpt.model.base import (
     GPTConfig,
     GPTModel,
@@ -7,6 +8,7 @@ from nemo.collections.llm.gpt.model.base import (
     local_layer_spec,
     transformer_engine_layer_spec,
 )
+from nemo.collections.llm.gpt.model.chatglm import ChatGLM2Config6B, ChatGLM3Config6B, ChatGLMConfig, ChatGLMModel
 from nemo.collections.llm.gpt.model.gemma import (
     CodeGemmaConfig2B,
     CodeGemmaConfig7B,
@@ -55,6 +57,13 @@ __all__ = [
     "CodeGemmaConfig7B",
     "GemmaModel",
     "LlamaModel",
+    "Baichuan2Config",
+    "Baichuan2Config7B",
+    "Baichuan2Model",
+    "ChatGLMConfig",
+    "ChatGLM2Config6B",
+    "ChatGLM3Config6B",
+    "ChatGLMModel",
     "MaskedTokenLossReduction",
     "gpt_data_step",
     "gpt_forward_step",

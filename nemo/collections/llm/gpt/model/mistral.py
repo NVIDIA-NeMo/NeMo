@@ -35,6 +35,9 @@ class MistralConfig7B(GPTConfig):
     num_query_groups: int = 8
     ffn_hidden_size: int = 14336
     seq_length: int = 32768
+    attention_dropout: float = 0.0
+    hidden_dropout: float = 0.0
+    share_embeddings_and_output_weights: bool = False
 
     init_method_std: float = 0.02
     layernorm_epsilon: float = 1e-5

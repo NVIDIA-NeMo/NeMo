@@ -105,6 +105,9 @@ class GPTConfig(TransformerConfig, io.IOMixin):
     rotary_percent: float = 1.0
     seq_len_interpolation_factor: Optional[float] = None
     seq_length: int = 1024
+    attention_softmax_in_fp32: bool = False
+    masked_softmax_fusion: bool = True
+    deallocate_pipeline_outputs = True
 
     # TODO: Move this to better places?
     get_attention_mask_from_fusion: bool = False

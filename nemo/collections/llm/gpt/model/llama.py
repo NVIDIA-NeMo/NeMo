@@ -29,6 +29,9 @@ class LlamaConfig(GPTConfig):
     position_embedding_type: str = "rope"
     add_bias_linear: bool = False
     seq_length: int = 4096
+    attention_dropout: float = 0.0
+    hidden_dropout: float = 0.0
+    share_embeddings_and_output_weights: bool = False
 
 
 @dataclass
@@ -60,6 +63,7 @@ class Llama2Config70B(LlamaConfig):
 
 @dataclass
 class Llama3Config8B(Llama2Config7B):
+    rotary_base: int = 500_000
     seq_length: int = 8192
     num_query_groups: int = 8
     ffn_hidden_size: int = 14336
@@ -67,6 +71,7 @@ class Llama3Config8B(Llama2Config7B):
 
 @dataclass
 class Llama3Config70B(Llama2Config70B):
+    rotary_base: int = 500_000
     seq_length: int = 8192
 
 

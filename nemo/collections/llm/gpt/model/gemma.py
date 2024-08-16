@@ -30,6 +30,8 @@ class GemmaConfig(GPTConfig):
     add_bias_linear: bool = False
     seq_length: int = 8192
     kv_channels: int = 256
+    attention_dropout: float = 0.0
+    hidden_dropout: float = 0.0
     share_embeddings_and_output_weights: bool = True
     # Note: different behavior compared to Legacy NeMo
     # Legacy NeMo does not set layernorm_zero_centered_gamma and instead adds 1 in the HF -> NeMo conversion script
@@ -72,6 +74,13 @@ class GemmaModel(GPTModel):
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
         super().__init__(config or GemmaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
+
+    def configure_model(self):
+        from nemo.collections.common.parts.utils import extend_instance
+        from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import EmbeddingScalingMixin
+
+        super().configure_model()
+        extend_instance(self.module.embedding, EmbeddingScalingMixin)
 
 
 @io.model_importer(GemmaModel, "hf")

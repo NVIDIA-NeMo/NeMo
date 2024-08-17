@@ -185,8 +185,8 @@ def get_args(argv):
     parser.add_argument(
         "-srs",
         "--start_rest_service",
-        default="False",
-        type=str,
+        default=False,
+        type=bool,
         help="Starts the REST service for OpenAI API support",
     )
     parser.add_argument(

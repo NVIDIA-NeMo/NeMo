@@ -52,6 +52,13 @@ from nemo.collections.llm.gpt.model import (
     gpt_forward_step,
 )
 from nemo.collections.llm.recipes import *  # noqa
+from nemo.utils import logging
+
+try:
+    from nemo.collections.llm.api import deploy
+except ImportError as error:
+    deploy = None
+    logging.warning(f"The deploy module could not be imported: {error}")
 
 __all__ = [
     "MockDataModule",
@@ -106,3 +113,7 @@ __all__ = [
     "dolly",
     "peft",
 ]
+
+# add 'deploy' to __all__ if it was successfully imported
+if deploy is not None:
+    __all__.append("deploy")

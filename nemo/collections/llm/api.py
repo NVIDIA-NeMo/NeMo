@@ -1,3 +1,5 @@
+import json
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
@@ -6,10 +8,24 @@ import pytorch_lightning as pl
 from typing_extensions import Annotated
 
 from nemo.collections.llm.utils import Config, task
+from nemo.deploy import DeployPyTriton
 from nemo.lightning import AutoResume, NeMoLogger, OptimizerModule, Trainer, io
 from nemo.lightning.pytorch.callbacks import PEFT, ModelTransform
 from nemo.utils import logging
 
+trt_llm_supported = True
+try:
+    from nemo.export.tensorrt_llm import TensorRTLLM
+except ImportError as error:
+    logging.warning(f"TensorRTLLM could not be imported from nemo.export: {error}")
+    trt_llm_supported = False
+
+uvicorn_supported = True
+try:
+    import uvicorn
+except ImportError as error:
+    logging.warning(f"uvicorn could not be imported: {error}")
+    uvicorn_supported = False
 
 TokenizerType = Any
 
@@ -223,6 +239,157 @@ def validate(
     trainer.validate(model, data)
 
     return app_state.exp_dir
+
+
+def get_trtllm_deployable(
+    nemo_checkpoint,
+    model_type,
+    triton_model_repository,
+    num_gpus,
+    tensor_parallelism_size,
+    pipeline_parallelism_size,
+    max_input_len,
+    max_output_len,
+    max_batch_size,
+    dtype,
+):
+    if triton_model_repository is None:
+        trt_llm_path = "/tmp/trt_llm_model_dir/"
+        Path(trt_llm_path).mkdir(parents=True, exist_ok=True)
+    else:
+        trt_llm_path = triton_model_repository
+
+    if nemo_checkpoint is None and triton_model_repository is None:
+        raise ValueError(
+            "The provided model repository is not a valid TensorRT-LLM model "
+            "directory. Please provide a --nemo_checkpoint or a TensorRT-LLM engine."
+        )
+
+    if nemo_checkpoint is None and not os.path.isdir(triton_model_repository):
+        raise ValueError(
+            "The provided model repository is not a valid TensorRT-LLM model "
+            "directory. Please provide a --nemo_checkpoint or a valid TensorRT-LLM engine."
+        )
+
+    if nemo_checkpoint is not None and model_type is None:
+        raise ValueError("Model type is required to be defined if a nemo checkpoint is provided.")
+
+    if not trt_llm_supported:
+        raise ValueError("TensorRT-LLM engine is not supported in this environment.")
+    trt_llm_exporter = TensorRTLLM(
+        model_dir=trt_llm_path,
+        load_model=(nemo_checkpoint is None),
+    )
+
+    if nemo_checkpoint is not None:
+        try:
+            logging.info("Export operation will be started to export the nemo checkpoint to TensorRT-LLM.")
+            trt_llm_exporter.export(
+                nemo_checkpoint_path=nemo_checkpoint,
+                model_type=model_type,
+                n_gpus=num_gpus,
+                tensor_parallelism_size=tensor_parallelism_size,
+                pipeline_parallelism_size=pipeline_parallelism_size,
+                max_input_len=max_input_len,
+                max_output_len=max_output_len,
+                max_batch_size=max_batch_size,
+                dtype=dtype,
+            )
+        except Exception as error:
+            raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))
+
+    return trt_llm_exporter
+
+
+def store_args_to_json(triton_http_address, triton_port, triton_request_timeout, openai_format_response):
+    args_dict = {
+        "triton_service_ip": triton_http_address,
+        "triton_service_port": triton_port,
+        "triton_request_timeout": triton_request_timeout,
+        "openai_format_response": openai_format_response,
+    }
+    with open("nemo/deploy/service/config.json", "w") as f:
+        json.dump(args_dict, f)
+
+
+@task(namespace="llm")
+def deploy(
+    nemo_checkpoint: Path = None,
+    model_type: str = "llama",
+    triton_model_name: str = "xxx",
+    triton_model_version: Optional[int] = 1,
+    triton_port: int = 8080,
+    triton_http_address: str = "0.0.0.0",
+    triton_request_timeout: int = 60,
+    triton_model_repository: Path = None,
+    num_gpus: int = 1,
+    tensor_parallelism_size: int = 1,
+    pipeline_parallelism_size: int = 1,
+    dtype: str = "bfloat16",
+    max_input_len: int = 256,
+    max_output_len: int = 256,
+    max_batch_size: int = 8,
+    start_rest_service: bool = False,
+    rest_service_http_address: str = "0.0.0.0",
+    rest_service_port: int = 8000,
+    openai_format_response: bool = False,
+):
+    if start_rest_service:
+        if triton_port == rest_service_port:
+            logging.error("REST service port and Triton server port cannot use the same port.")
+            return
+        # Store triton ip, port and other args relevant for REST API in config.json to be accessible by rest_model_api.py
+        store_args_to_json(triton_http_address, triton_port, triton_request_timeout, openai_format_response)
+
+    triton_deployable = get_trtllm_deployable(
+        nemo_checkpoint,
+        model_type,
+        triton_model_repository,
+        num_gpus,
+        tensor_parallelism_size,
+        pipeline_parallelism_size,
+        max_input_len,
+        max_output_len,
+        max_batch_size,
+        dtype,
+    )
+
+    try:
+        nm = DeployPyTriton(
+            model=triton_deployable,
+            triton_model_name=triton_model_name,
+            triton_model_version=triton_model_version,
+            max_batch_size=max_batch_size,
+            port=triton_port,
+            address=triton_http_address,
+        )
+
+        logging.info("Triton deploy function will be called.")
+        nm.deploy()
+    except Exception as error:
+        logging.error("Error message has occurred during deploy function. Error message: " + str(error))
+        return
+
+    try:
+        logging.info("Model serving on Triton is will be started.")
+        if start_rest_service and uvicorn_supported:
+            try:
+                logging.info("REST service will be started.")
+                uvicorn.run(
+                    'nemo.deploy.service.rest_model_api:app',
+                    host=rest_service_http_address,
+                    port=rest_service_port,
+                    reload=True,
+                )
+            except Exception as error:
+                logging.error("Error message has occurred during REST service start. Error message: " + str(error))
+        nm.serve()
+    except Exception as error:
+        logging.error("Error message has occurred during deploy function. Error message: " + str(error))
+        return
+
+    logging.info("Model serving will be stopped.")
+    nm.stop()
 
 
 @task(name="import", namespace="llm")

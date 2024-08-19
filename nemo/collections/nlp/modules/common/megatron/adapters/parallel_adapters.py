@@ -253,7 +253,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         if self._sequence_parallel and not input_is_parallel:
             from importlib.metadata import version
 
-            from pkg_resources import packaging
+            import packaging
 
             te_version = packaging.version.Version(version("transformer-engine"))
             if te_version >= packaging.version.Version("1.5.0dev") and (

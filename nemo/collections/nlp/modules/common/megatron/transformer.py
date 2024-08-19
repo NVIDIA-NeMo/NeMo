@@ -18,10 +18,10 @@ from contextlib import nullcontext
 from importlib.metadata import version
 from typing import Any, Callable, Optional
 
+import packaging
 import torch
 import torch.nn as nn
 from einops import rearrange
-from pkg_resources import packaging
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (

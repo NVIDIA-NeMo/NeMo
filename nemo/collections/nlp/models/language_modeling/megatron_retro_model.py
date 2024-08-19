@@ -431,7 +431,7 @@ class MegatronRetroModel(MegatronGPTModel):
         # Validate Transformer Engine version.
         from importlib.metadata import version
 
-        from pkg_resources import packaging
+        import packaging
 
         te_version = packaging.version.Version(version("transformer-engine"))
         if te_version >= packaging.version.Version("1.3"):

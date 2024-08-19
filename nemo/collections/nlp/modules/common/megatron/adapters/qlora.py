@@ -15,9 +15,9 @@
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Dict, Optional
 
+import packaging
 import torch
 import torch.nn.functional as F
-from pkg_resources import packaging
 from torch import Tensor, nn
 
 from nemo.collections.nlp.parts.peft_config import LORA_CONFIG_TO_MCORE_MAP, get_target_modules

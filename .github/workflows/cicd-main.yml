@@ -221,6 +221,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
+        mkdir /home/TestData/multimodal/video_neva/llama3-ci-hf/${{ github.run_id }}
         export PYTHONPATH=/home/TestData/multimodal/video_neva/LLaVA:$PYTHONPATH
         CUDA_VISIBLE_DEVICES=0 python examples/multimodal/multimodal_llm/neva/convert_llava_to_neva.py \
           --in-file /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/llm \
@@ -228,12 +229,11 @@ jobs:
           --mm-vision-tower /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/vision_tower \
           --tokenizer-model /home/TestData/multimodal/video_neva/vita-tokenizer/ \
           --config-file vita_config.yaml \
-          --out-file=/home/TestData/multimodal/video_neva/llama3-ci-hf/llama3_ci.nemo \
+          --out-file=/home/TestData/multimodal/video_neva/llama3-ci-hf/${{ github.run_id }}/llama3_ci.nemo \
           --model-type VITA \
           --conv-template llama_3
       AFTER_SCRIPT: |
-        rm -f /home/TestData/multimodal/video_neva/llama3-ci-hf/llama3_ci.nemo
-        rm -rf /home/TestData/multimodal/video_neva/llama3-ci-hf/model_weights
+        rm -rf /home/TestData/multimodal/video_neva/llama3-ci-hf/${{ github.run_id }}
   
   # this test is using a 7B model which is too large for GitHub CI
   # replace the model in this test with a toy model or move the test

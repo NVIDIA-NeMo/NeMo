@@ -4722,7 +4722,8 @@ jobs:
         --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
         --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
         --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
-        --index-mapping-dir=examples/llm/gpt_index_mappings
+        --index-mapping-dir=examples/llm/gpt_index_mappings \
+        --no-masked-softmax-fusion
 
         python examples/llm/megatron_gpt_pretraining.py \
         --devices=2 \
@@ -4731,7 +4732,8 @@ jobs:
         --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
         --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
         --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
-        --index-mapping-dir=examples/llm/gpt_index_mappings
+        --index-mapping-dir=examples/llm/gpt_index_mappings \
+        --no-masked-softmax-fusion
       AFTER_SCRIPT: |
         rm -rf examples/llm/gpt_pretrain_results
         rm -rf examples/llm/gpt_index_mappings

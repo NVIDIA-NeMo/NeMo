@@ -105,7 +105,7 @@ def qnemo_to_tensorrt_llm(
     if max_seq_len:
         build_cmd += f"--max_seq_len {max_seq_len} "
 
-    if max_num_tokens:
+    if max_num_tokens is not None:
         build_cmd += f"--max_num_tokens {max_num_tokens} "
     else:
         build_cmd += f"--max_num_tokens {max_batch_size * max_input_len} "

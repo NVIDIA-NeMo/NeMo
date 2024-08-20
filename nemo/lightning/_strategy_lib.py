@@ -140,6 +140,8 @@ def set_model_parallel_attributes(model, parallelism):
             if not hasattr(config, attr_name):
                 continue
             setattr(config, attr_name, getattr(parallelism, attr_name))
+            if hasattr(config, "__io__"):
+                setattr(config.__io__, attr_name, getattr(parallelism, attr_name))
 
         return config
 

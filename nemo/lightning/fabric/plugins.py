@@ -124,6 +124,4 @@ class FabricMegatronMixedPrecision(MixedPrecision):
 def _convert_megatron_mixed_precision(plugin: MegatronMixedPrecision) -> FabricMegatronMixedPrecision:
     return FabricMegatronMixedPrecision(
         precision=plugin.precision,
-        device=plugin.device,
-        scaler=plugin.scaler,
     )

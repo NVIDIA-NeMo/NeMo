@@ -219,6 +219,12 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         if _maybe_mcore_config:
             self._mcore_config = _maybe_mcore_config
 
+        dtype_config = getattr(self._precision_plugin, 'dtype_config', None)
+        if dtype_config:
+            from nemo.lightning.pytorch.plugins.mixed_precision import update_config_with_dtype_overrides
+
+            model.config = update_config_with_dtype_overrides(dtype_config, model.config)
+
         has_optim = getattr(model, "optim", None)
         if has_optim:
             opt_config = getattr(model.optim, "config", None)
@@ -227,6 +233,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 if not self.ddp_config:
                     raise ValueError("PyTorch DDP is not enabled for mcore optimizer")
                 ddp_config = cast(DistributedDataParallelConfig, self.ddp_config)
+
+                if dtype_config:
+                    model.optim.config = update_config_with_dtype_overrides(dtype_config, model.optim.config)
+                    self.ddp_config = update_config_with_dtype_overrides(dtype_config, self.ddp_config)
 
                 if mcore_opt_config.use_distributed_optimizer != ddp_config.use_distributed_optimizer:
                     from nemo.utils import logging

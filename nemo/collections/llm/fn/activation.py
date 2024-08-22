@@ -9,3 +9,9 @@ def gelu_impl(x):
 
 def openai_gelu(x):
     return gelu_impl(x)
+
+
+@torch.jit.script
+def squared_relu(x):
+    """Squared ReLU activation function."""
+    return torch.pow(torch.nn.functional.relu(x), 2)

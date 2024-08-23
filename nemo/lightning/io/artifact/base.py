@@ -11,7 +11,7 @@ class Artifact(ABC, Generic[ValueT]):
         self.required = required
 
     @abstractmethod
-    def dump(self, value: ValueT, path: Path) -> ValueT:
+    def dump(self, value: ValueT, absolute_dir: Path, relative_dir: Path) -> ValueT:
         pass
 
     @abstractmethod

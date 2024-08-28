@@ -59,7 +59,7 @@ class NeMoLogger(IOMixin):
     def __post_init__(self):
         if self.log_local_rank_0_only is True and self.log_global_rank_0_only is True:
             raise ValueError(
-                f"Cannot set both log_local_rank_0_only and log_global_rank_0_only to True. Please set either one or neither."
+                "Cannot set both log_local_rank_0_only and log_global_rank_0_only to True. Please set either one or neither."
             )
 
     def setup(self, trainer: Union[pl.Trainer, fl.Fabric], resume_if_exists: bool = False, task_config=None):
@@ -73,7 +73,6 @@ class NeMoLogger(IOMixin):
             AppState: The application state with updated log directory and other settings.
         """
         from nemo.constants import NEMO_ENV_VARNAME_VERSION
-        from nemo.utils.exp_manager import check_explicit_log_dir
         from nemo.utils.get_rank import is_global_rank_zero
 
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -100,7 +99,7 @@ class NeMoLogger(IOMixin):
             # Default dir to ./nemo_experiments if None was passed
             _dir = self.dir
             if self.dir is None:
-                _dir = str(Path.cwd() / 'nemo_experiments')
+                _dir = str(Path.cwd() / "nemo_experiments")
 
             if not self.name:
                 self.name = "default"
@@ -114,7 +113,7 @@ class NeMoLogger(IOMixin):
                     version = None
                 elif is_global_rank_zero():
                     if self.use_datetime_version:
-                        version = time.strftime('%Y-%m-%d_%H-%M-%S')
+                        version = time.strftime("%Y-%m-%d_%H-%M-%S")
             if version:
                 if is_global_rank_zero():
                     os.environ[NEMO_ENV_VARNAME_VERSION] = version
@@ -130,7 +129,7 @@ class NeMoLogger(IOMixin):
         app_state.cmd_args = sys.argv
 
         os.makedirs(log_dir, exist_ok=True)  # Cannot limit creation to global zero as all ranks write to own log file
-        logging.info(f'Experiments will be logged at {log_dir}')
+        logging.info(f"Experiments will be logged at {log_dir}")
 
         if task_config and is_global_rank_zero():
             self._handle_task_config(task_config, log_dir)
@@ -158,7 +157,6 @@ class NeMoLogger(IOMixin):
                 if isinstance(logger, TensorBoardLogger):
                     logger._version = version or ""
                     logger._root_dir = Path(dir) / os.path.relpath(logger.save_dir)
-                    trainer.logger._name = self.name
                     logging.warning(
                         f'"update_logger_directory" is True. Overwriting tensorboard logger "save_dir" to {logger._root_dir}'
                     )
@@ -166,8 +164,6 @@ class NeMoLogger(IOMixin):
                     logger._id = version or ""
                     logger._save_dir = Path(dir) / logger.save_dir
                     logger._wandb_init["dir"] = Path(dir) / logger.save_dir
-                    logger._wandb_init["name"] = self.name
-                    logger._name = self.name
                     logging.warning(
                         f'"update_logger_directory" is True. Overwriting wandb logger "save_dir" to {logger._save_dir}'
                     )
@@ -211,8 +207,8 @@ class NeMoLogger(IOMixin):
                 if callback.dirpath is None:
                     callback.dirpath = Path(log_dir / "checkpoints")
                 if callback.filename is None:
-                    callback.filename = f'{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}'
-                ModelCheckpoint.CHECKPOINT_NAME_LAST = callback.filename + '-last'
+                    callback.filename = f"{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}"
+                ModelCheckpoint.CHECKPOINT_NAME_LAST = callback.filename + "-last"
 
     def _handle_task_config(self, task_config, log_dir):
         try:
@@ -223,7 +219,7 @@ class NeMoLogger(IOMixin):
             with open(log_dir / "task.json", "w") as f:
                 f.write(task_json)
         except Exception as e:
-            logging.warning(f'Saving task config failed: {e}. Skipping saving')
+            logging.warning(f"Saving task config failed: {e}. Skipping saving")
 
     def _setup_file_logging(self, log_dir):
         """Set up file logging based on rank settings."""
@@ -233,7 +229,7 @@ class NeMoLogger(IOMixin):
 
         # This is set if the env var NEMO_TESTING is set to True.
         nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
-        log_file = log_dir / f'nemo_log_globalrank-{self.global_rank}_localrank-{self.local_rank}.txt'
+        log_file = log_dir / f"nemo_log_globalrank-{self.global_rank}_localrank-{self.local_rank}.txt"
 
         if self.log_local_rank_0_only and not nemo_testing and self.local_rank == 0:
             logging.add_file_handler(log_file)

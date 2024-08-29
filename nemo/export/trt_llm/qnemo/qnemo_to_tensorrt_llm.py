@@ -27,7 +27,6 @@ def qnemo_to_tensorrt_llm(
     nemo_checkpoint_path: str,
     engine_dir: str,
     max_input_len: int,
-    max_output_len: int,
     max_seq_len: Optional[int],
     max_batch_size: int,
     max_prompt_embedding_table_size: int,
@@ -35,6 +34,7 @@ def qnemo_to_tensorrt_llm(
     pipeline_parallel_size: Optional[int] = None,
     use_parallel_embedding: bool = False,
     paged_kv_cache: bool = True,
+    paged_context_fmha: bool = False,
     remove_input_padding: bool = True,
     use_lora_plugin: Optional[str] = None,
     lora_target_modules: Optional[List[str]] = None,
@@ -43,6 +43,7 @@ def qnemo_to_tensorrt_llm(
     opt_num_tokens: Optional[int] = None,
     max_beam_width: int = 1,
     multiple_profiles: bool = False,
+    reduce_fusion: bool = True,
 ):
     """Build TensorRT-LLM engine with trtllm-build command in a subprocess."""
     assert not lora_target_modules, f"LoRA is not supported for quantized checkpoints, got {lora_target_modules}"
@@ -82,17 +83,16 @@ def qnemo_to_tensorrt_llm(
     build_cmd += f"--workers {num_build_workers} "
     build_cmd += f"--max_batch_size {max_batch_size} "
     build_cmd += f"--max_input_len {max_input_len} "
-    build_cmd += f"--max_output_len {max_output_len} "
     build_cmd += f"--max_beam_width {max_beam_width} "
-    build_cmd += f"--tp_size {config.mapping.tp_size} "
-    build_cmd += f"--pp_size {config.mapping.pp_size} "
     build_cmd += f"--max_prompt_embedding_table_size {max_prompt_embedding_table_size} "
     build_cmd += f"--builder_opt {builder_opt} "
     build_cmd += f"--gpt_attention_plugin {config.dtype} "
     build_cmd += f"--nccl_plugin {config.dtype} "
     build_cmd += f"--paged_kv_cache {'enable' if paged_kv_cache else 'disable'} "
+    build_cmd += f"--use_paged_context_fmha {'enable' if paged_context_fmha else 'disable'} "
     build_cmd += f"--remove_input_padding {'enable' if remove_input_padding else 'disable'} "
     build_cmd += f"--multiple_profiles {'enable' if multiple_profiles else 'disable'} "
+    build_cmd += f"--reduce_fusion {'enable' if reduce_fusion else 'disable'} "
 
     if use_fused_mlp:
         build_cmd += "--use_fused_mlp " if "RecurrentGemma" not in config.architecture else ""
@@ -100,7 +100,7 @@ def qnemo_to_tensorrt_llm(
     if not use_qdq:
         build_cmd += f"--gemm_plugin {config.dtype} "
 
-    if max_seq_len:
+    if max_seq_len is not None:
         build_cmd += f"--max_seq_len {max_seq_len} "
 
     if max_num_tokens is not None:

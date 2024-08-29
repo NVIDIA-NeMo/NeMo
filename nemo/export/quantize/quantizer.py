@@ -31,7 +31,15 @@ from nemo.utils.model_utils import save_artifacts, unwrap_model
 try:
     import modelopt.torch.quantization as mtq
     from modelopt.torch.export import export_tensorrt_llm_checkpoint
-    from modelopt.torch.utils.distributed import set_data_parallel_group, set_tensor_parallel_group
+
+    QUANT_CFG_CHOICES = {
+        "int8": mtq.INT8_DEFAULT_CFG,
+        "int8_sq": mtq.INT8_SMOOTHQUANT_CFG,
+        "fp8": mtq.FP8_DEFAULT_CFG,
+        "int4_awq": mtq.INT4_AWQ_CFG,
+        "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
+        "int4": mtq.INT4_BLOCKWISE_WEIGHT_ONLY_CFG,
+    }
 
     HAVE_MODELOPT = True
 
@@ -41,14 +49,6 @@ except (ImportError, ModuleNotFoundError) as e:
 
 
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
-QUANT_CFG_CHOICES = {
-    "int8": mtq.INT8_DEFAULT_CFG,
-    "int8_sq": mtq.INT8_SMOOTHQUANT_CFG,
-    "fp8": mtq.FP8_DEFAULT_CFG,
-    "int4_awq": mtq.INT4_AWQ_CFG,
-    "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
-    "int4": mtq.INT4_BLOCKWISE_WEIGHT_ONLY_CFG,
-}
 
 
 class Quantizer:
@@ -156,9 +156,6 @@ class Quantizer:
             if model.trainer.strategy.launcher is not None:
                 model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
             model.trainer.strategy.setup_environment()
-
-        set_data_parallel_group(mpu.get_data_parallel_group())
-        set_tensor_parallel_group(mpu.get_tensor_model_parallel_group())
 
     @staticmethod
     def modify_model_config(model_cfg: DictConfig) -> DictConfig:

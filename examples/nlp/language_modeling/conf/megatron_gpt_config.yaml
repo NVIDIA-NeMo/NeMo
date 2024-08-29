@@ -175,7 +175,7 @@ model:
   fsdp_sharded_checkpoint: False # Store and load FSDP shared checkpoint.
 
   # Distributed checkpoint setup
-  dist_ckpt_format: 'zarr' # Set to 'torch_dist' to use PyTorch distributed checkpoint format.
+  dist_ckpt_format: 'torch_dist' # Set to 'torch_dist' to use PyTorch distributed checkpoint format.
   dist_ckpt_load_on_device: True # whether to load checkpoint weights directly on GPU or to CPU
   dist_ckpt_parallel_save: True # if true, each worker will write its own part of the dist checkpoint
   dist_ckpt_parallel_save_within_dp: False # if true, save will be parallelized only within a DP group (whole world otherwise), which might slightly reduce the save overhead

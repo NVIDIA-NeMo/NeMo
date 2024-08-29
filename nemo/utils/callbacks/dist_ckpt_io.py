@@ -242,7 +242,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
                 it should be provided separately. Defaults to False.
         """
         return cls(
-            save_ckpt_format=model_cfg.get('dist_ckpt_format', 'zarr'),
+            save_ckpt_format=model_cfg.get('dist_ckpt_format', 'torch_dist'),
             load_directly_on_device=model_cfg.get('dist_ckpt_load_on_device', True),
             load_strictness=model_cfg.get('dist_ckpt_load_strictness', None),
             async_save=async_save,
@@ -390,6 +390,13 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         are passed in config or in case of a fully parallel save in which case
         a parallelization wrapper is applied.
         """
+        if self.save_ckpt_format == 'zarr':
+            logging.warning(
+                f'`zarr` distributed checkpoint backend is deprecated.'
+                f' Distributed optimizer checkpoint saving might be extremely slow.'
+                f' Please switch to PyTorch Distributed format (model.dist_ckpt_format=torch_dist).'
+            )
+
         if self.async_save and self.save_ckpt_format != 'torch_dist':
             raise ValueError('Async dist-ckpt save supported only for torch_dist format')
 

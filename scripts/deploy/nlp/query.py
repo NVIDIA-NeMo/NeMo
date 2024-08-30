@@ -23,7 +23,7 @@ from pytriton.client import DecoupledModelClient, ModelClient
 def get_args(argv):
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description=f"Exports nemo models stored in nemo checkpoints to TensorRT-LLM",
+        description=f"Sends a single query to an LLM hosted on a Triton server.",
     )
     parser.add_argument("-u", "--url", default="0.0.0.0", type=str, help="url for the triton server")
     parser.add_argument("-mn", "--model_name", required=True, type=str, help="Name of the triton model")

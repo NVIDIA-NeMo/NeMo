@@ -140,7 +140,7 @@ def main():
     # Uses configs from NeMo directly
     pretrain = MODEL_SIZE_MAPPING[args.size]["nemo"]["pretrain"](
         name=exp_name,
-        ckpt_dir=f"/{exp_name}/checkpoints",
+        ckpt_dir="/nemo_run/checkpoints",
     )
 
     # Overwrite the dataloader in the recipe to use your custom dataloader.
@@ -170,8 +170,6 @@ def main():
         executor = local_executor_torchrun(nodes=pretrain.trainer.num_nodes, devices=pretrain.trainer.devices)
 
     with run.Experiment(f"{exp_name}{args.tag}") as exp:
-        pretrain.log.dir = f"/{exp_name}/checkpoints"
-
         for i in range(1):
             exp.add(
                 pretrain,

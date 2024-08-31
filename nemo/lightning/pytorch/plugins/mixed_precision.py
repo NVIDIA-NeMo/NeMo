@@ -28,8 +28,15 @@ AnyT = TypeVar("AnyT")
 
 
 def get_optim_config(optimizer: Optimizer):
+    extract_config = lambda x: x.config
     try:
-        return optimizer.mcore_optimizer.config
+        from megatron.core.optimizer import ChainedOptimizer
+
+        if isinstance(optimizer.mcore_optimizer, ChainedOptimizer):
+            opts = optimizer.mcore_optimizer.chained_optimizers
+        else:
+            opts = [optimizer.mcore_optimizer]
+        yield from map(extract_config, opts)
     except:
         raise ValueError("Failed to extract optimizer config from module.")
 
@@ -149,9 +156,9 @@ class MegatronMixedPrecision(Precision):
         This is optional and depends on the precision limitations during optimization.
 
         """
-        optim_config = get_optim_config(optimizer)
-        assert optim_config.bf16 == self.dtype_config.bf16, "BF16 enabled on model but not on optimizer"
-        assert optim_config.fp16 == self.dtype_config.fp16, "BF16 enabled on model but not on optimizer"
+        for optim_config in get_optim_config(optimizer):
+            assert optim_config.bf16 == self.dtype_config.bf16, "BF16 model/optim config mismatch"
+            assert optim_config.fp16 == self.dtype_config.fp16, "FP16 model/optim config mismatch"
         return optimizer
 
     def convert_input(self, data: AnyT) -> AnyT:

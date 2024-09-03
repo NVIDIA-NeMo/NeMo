@@ -1945,6 +1945,8 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
 
         def fwd_output_and_loss_func(dataloader_iter, model):
             batch = next(dataloader_iter)
+            if isinstance(batch, tuple):
+                batch, _, _ = batch  # PTL dataloader iter fix
             batch = process_batch(batch)
             batch = [x.cuda(non_blocking=True) for x in batch]
             if len(self.conditioning_keys) == 0:

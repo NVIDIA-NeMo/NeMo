@@ -45,7 +45,6 @@ def trainer(
         context_parallel_size=context_parallelism,
         sequence_parallel=sequence_parallelism,
         gradient_as_bucket_view=True,
-        ckpt_include_optimizer=True,
         ckpt_async_save=True,
         ckpt_parallel_load=True,
     )
@@ -95,7 +94,10 @@ def pretrain_recipe(
 
 
 def hf_resume() -> Config[nl.AutoResume]:
-    return Config(nl.AutoResume, import_path="hf://meta-llama/Meta-Llama-3.1-70B")
+    return Config(
+        nl.AutoResume,
+        restore_config=Config(nl.RestoreConfig, path="hf://meta-llama/Meta-Llama-3-70B"),
+    )
 
 
 def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node: int) -> Partial:

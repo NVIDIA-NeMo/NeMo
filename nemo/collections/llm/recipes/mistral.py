@@ -32,7 +32,7 @@ def trainer(devices=8) -> nl.Trainer:
 
 @factory(name=NAME + "_hf")
 def hf_resume() -> nl.AutoResume:
-    return nl.AutoResume(import_path="hf://mistralai/Mistral-7B-v0.3")
+    return nl.AutoResume(restore_config=nl.RestoreConfig(path="hf://mistralai/Mistral-7B-v0.3"))
 
 
 @factory(name=NAME, for_task="llm.pretrain")

@@ -68,10 +68,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         self.seq_length = seq_length
         self.seed = seed
         self.dataset_root = Path(dataset_root)
-
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
-
-        self.tokenizer = tokenizer or get_nmt_tokenizer("megatron", "GPT2BPETokenizer")
+        self.tokenizer = tokenizer
         self.memmap_workers = memmap_workers
         self.num_workers = num_workers
         self.pin_memory = pin_memory

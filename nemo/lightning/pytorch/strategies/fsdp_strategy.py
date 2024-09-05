@@ -70,14 +70,16 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
         self,
         auto_wrap_policy={TransformerLayer},
         state_dict_type="sharded",
-        ckpt_include_optimizer=False,
+        ckpt_load_optimizer: bool = True,
+        ckpt_save_optimizer: bool = True,
         data_sampler=None,
         **kwargs,
     ):
         super().__init__(auto_wrap_policy=auto_wrap_policy, state_dict_type=state_dict_type, **kwargs)
 
         self.data_sampler = data_sampler
-        self.ckpt_include_optimizer = ckpt_include_optimizer
+        self.ckpt_load_optimizer = ckpt_load_optimizer
+        self.ckpt_save_optimizer = ckpt_save_optimizer
 
     @override
     def setup_environment(self) -> None:
@@ -210,7 +212,7 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
         for optim_state in checkpoint['optimizer_states']:
             optim_state.pop("state")
 
-        if self.trainer.state.fn == TrainerFn.FITTING and self.ckpt_include_optimizer:
+        if self.trainer.state.fn == TrainerFn.FITTING and self.ckpt_save_optimizer:
             checkpoint['optimizer'] = get_optimizer_state_dict(self.model, self.optimizers)
             pyt_to_mcore_state_dict(checkpoint['optimizer']['state'], prefix="optimizer.state.")
 
@@ -241,7 +243,7 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
             pyt_to_mcore_state_dict(msd)
             sharded_state_dict["sharded_state_dict"] = msd
 
-        if self.ckpt_include_optimizer and self.trainer.state.fn == TrainerFn.FITTING:
+        if self.ckpt_load_optimizer and self.trainer.state.fn == TrainerFn.FITTING:
             osd = get_optimizer_state_dict(self.model, self.optimizers, options=StateDictOptions(cpu_offload=True))
             pyt_to_mcore_state_dict(osd['state'], prefix="optimizer.state.")
             sharded_state_dict["optimizer"] = osd
@@ -249,14 +251,14 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
         checkpoint = self.checkpoint_io.load_checkpoint(path, sharded_state_dict=sharded_state_dict)
         mcore_to_pyt_sharded_state_dict(checkpoint['sharded_state_dict'], msd)
 
-        if self.ckpt_include_optimizer and self.trainer.state.fn == TrainerFn.FITTING:
+        if self.ckpt_load_optimizer and self.trainer.state.fn == TrainerFn.FITTING:
             mcore_to_pyt_sharded_state_dict(checkpoint['optimizer']['state'], osd['state'])
 
         set_state_dict(
             self.model,
-            self.optimizers if self.ckpt_include_optimizer else [],
+            self.optimizers if self.ckpt_load_optimizer else [],
             model_state_dict=checkpoint['sharded_state_dict'],
-            optim_state_dict=checkpoint['optimizer'] if self.ckpt_include_optimizer else None,
+            optim_state_dict=checkpoint['optimizer'] if self.ckpt_load_optimizer else None,
         )
 
         return checkpoint

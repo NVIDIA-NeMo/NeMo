@@ -182,6 +182,60 @@ class GPTConfig(TransformerConfig, io.IOMixin):
         )
 
 
+@dataclass
+class GPTConfig126M(GPTConfig):
+    seq_length: int = 2048
+    num_layers: int = 12
+    hidden_size: int = 768
+    ffn_hidden_size: int = 3072
+    num_attention_heads: int = 12
+
+
+@dataclass
+class GPTConfig5B(GPTConfig):
+    seq_length: int = 2048
+    num_layers: int = 24
+    hidden_size: int = 4096
+    ffn_hidden_size: int = 16384
+    num_attention_heads: int = 32
+
+
+@dataclass
+class GPTConfig7B(GPTConfig):
+    seq_length: int = 2048
+    num_layers: int = 32
+    hidden_size: int = 4096
+    ffn_hidden_size: int = 10880
+    num_attention_heads: int = 32
+
+
+@dataclass
+class GPTConfig20B(GPTConfig):
+    seq_length: int = 2048
+    num_layers: int = 44
+    hidden_size: int = 6144
+    ffn_hidden_size: int = 24576
+    num_attention_heads: int = 48
+
+
+@dataclass
+class GPTConfig40B(GPTConfig):
+    seq_length: int = 2048
+    num_layers: int = 48
+    hidden_size: int = 8192
+    ffn_hidden_size: int = 32768
+    num_attention_heads: int = 64
+
+
+@dataclass
+class GPTConfig175B(GPTConfig):
+    seq_length: int = 2048
+    num_layers: int = 96
+    hidden_size: int = 12288
+    ffn_hidden_size: int = 49152
+    num_attention_heads: int = 96
+
+
 class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
     def __init__(
         self,

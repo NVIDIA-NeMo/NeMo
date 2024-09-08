@@ -22,7 +22,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT }}
         run: |
-          set -x
+          set -x  
+
+          git config --global user.email "nemo-bot@nvidia.com"
+          git config --global user.name "NeMo Bot"
           
           SHA=$(git rev-list --no-merges -n 1 HEAD)
           MESSAGE=$(git log -n 1 --pretty=format:%s $SHA)

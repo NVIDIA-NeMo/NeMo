@@ -22,6 +22,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT }}
         run: |
+          set -x
+          
           SHA=$(git rev-list --no-merges -n 1 HEAD)
           MESSAGE=$(git log -n 1 --pretty=format:%s $SHA)
           PR_ID=$(echo $MESSAGE | awk -F'#' '{print $2}' | awk -F')' '{print $1}' )

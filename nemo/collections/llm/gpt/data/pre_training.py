@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+import os
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -32,6 +33,66 @@ if TYPE_CHECKING:
     from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+
+
+def is_number_tryexcept(s):
+    """Returns True if string is a number."""
+    if s is None:
+        return False
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def is_zipped_list(paths):
+    # ["30", "path/to/dataset_1_prefix", "70", "path/to/dataset_2_prefix"]
+    even = paths[::2]
+    if len(even) == 0:
+        return False
+    is_num = list(map(is_number_tryexcept, even))
+    if any(is_num):
+        assert all(is_num), "Got malformatted zipped list"
+    return is_num[0]
+
+
+def validate_dataset_asset_accessibility(paths):
+    if paths is None:
+        raise ValueError("Expected path to have a value.")
+
+    if isinstance(paths, tuple) or isinstance(paths, list):
+        if is_zipped_list(paths):
+            # remove weights from paths.
+            paths = paths[1::2]
+        for p in paths:
+            validate_dataset_asset_accessibility(p)
+        return
+    elif isinstance(paths, dict):
+        for p in paths.values():
+            validate_dataset_asset_accessibility(p)
+        return
+
+    if not isinstance(paths, str) and not isisntance(paths, Path):
+        raise ValueError("Expected path to be of string or Path type.")
+
+    path = Path(paths)
+    suffices = ('.bin', '.idx')
+    if path.is_dir():
+        if not os.access(path, os.R_OK):
+            raise PermissionError(f"Expected {str(path)} to be readable.")
+        # Will let the downstream class confirm contents are ok.
+        return
+    if path.exists():
+        if not os.access(path, os.R_OK):
+            raise PermissionError(f"Expected {str(path)} to be readable.")
+        return
+    for suffix in suffices:
+        file_path = Path(str(path) + suffix)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Expected {str(file_path)} to exist.")
+        if not os.access(file_path, os.R_OK):
+            raise PermissionError(f"Expected {str(file_path)} to be readable.")
 
 
 class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
@@ -99,6 +160,8 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
             paths = [paths]
 
         from megatron.core.datasets.utils import get_blend_from_list
+
+        validate_dataset_asset_accessibility(paths)
 
         build_kwargs = {}
         if isinstance(paths, dict):

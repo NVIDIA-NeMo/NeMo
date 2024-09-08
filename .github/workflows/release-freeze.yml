@@ -32,6 +32,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: main
+          token: ${{ secrets.PAT }}
 
       - name: Get release branch ref
         id: release-branch
@@ -46,6 +47,9 @@ jobs:
 
           echo "Release version r$VERSION" > version
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          git switch --force-create r$VERSION origin/main
+          git push -u origin r$VERSION --force
 
       - name: Pin branch name in Notebooks
         run: |
@@ -62,7 +66,8 @@ jobs:
         id: create-pull-request
         with:
           path: ${{ github.run_id }}
-          branch: r${{ steps.release-branch.outputs.version }}
+          base: r${{ steps.release-branch.outputs.version }}
+          branch: ci/release-r${{ steps.release-branch.outputs.version }}
           title: 'Release `${{ steps.release-branch.outputs.version }}`'
           body: |
             🚀 PR to release NeMo `${{ steps.release-branch.outputs.version }}`.
@@ -79,22 +84,6 @@ jobs:
           signoff: true
           assignees: okoenig
           labels: 'Run CICD'
-
-      - name: Add Summary comment
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          issue-number: ${{ steps.create-pull-request.outputs.pull-request-number }}
-          body: |
-            # Highlights
-            _<here-goes-the-summary...>_
-
-      - name: Add Changelog comment
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          issue-number: ${{ steps.create-pull-request.outputs.pull-request-number }}
-          body: |
-            # Detailed Changelogs
-            ${{ steps.build-changelog.outputs.changelog }}
 
   bump-next-version:
     runs-on: ubuntu-latest

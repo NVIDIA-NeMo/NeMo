@@ -39,7 +39,7 @@ jobs:
       - name: github-cherry-pick-action v1.0.3
         uses: carloscastrojumo/github-cherry-pick-action@bb0869df47c27be4ae4c7a2d93d22827aa5a0054
         with:
-          branch: ${{ matrix.branch }}
+          branch: r${{ matrix.branch }}
           labels: |
             cherry-pick
           reviewers: |

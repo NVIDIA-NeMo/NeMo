@@ -7,6 +7,11 @@ on:
         description: 'MAJOR.MINOR.PATCH[rcN] (Example: 2.0.0rc1, or 2.1.0)'
         required: true
         type: string
+      is_prelease:
+        description: Whether to keep and bump the pre-release label
+        required: false
+        default: false
+        type: boolean
       mcore_version:
         description: 'Version of MCore to use (must be a valid git ref)'
         required: true
@@ -34,7 +39,12 @@ jobs:
           cd ${{ github.run_id }}
           
           VERSION=$(python -c 'import nemo; print(nemo.__version__)')
-                    echo "Release version r$VERSION" > version
+          
+          if [[ "${{ inputs.is_prelease }}" == "false" ]]; then
+            sed -i '/^PRE_RELEASE/c\PRE_RELEASE =  '\''' nemo/package_info.py 
+          fi
+
+          echo "Release version r$VERSION" > version
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Pin branch name in Notebooks

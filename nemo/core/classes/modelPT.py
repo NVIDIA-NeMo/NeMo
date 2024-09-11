@@ -615,8 +615,9 @@ class ModelPT(LightningModule, Model):
             adam_beta2=optim_config['betas'][1],
             clip_grad=self.trainer.gradient_clip_val,
             use_distributed_optimizer=self.use_mcore_dist_optim,
-            overlap_grad_reduce=self.cfg.optim.get('overlap_grad_sync', False),
-            overlap_param_gather=self.cfg.optim.get('overlap_param_sync', False),
+            overlap_param_gather_with_optimizer_step=self.cfg.optim.get(
+                'overlap_param_gather_with_optimizer_step', False
+            ),
         )
         return megatron_optim_config
 

@@ -558,6 +558,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 # using bucket_cap_mb to configure bucket_size here
                 bucket_size=self.cfg.optim.get('ddp_bucket_size', None),
                 average_in_collective=self.cfg.optim.get('average_in_collective', True),
+                overlap_param_gather=self.cfg.optim.get('overlap_param_gather', False),
+                align_param_gather=self.cfg.optim.get('align_param_gather', False),
+                fp8_param_gather=self.cfg.get('fp8_params', False),
             )
             self.model = [
                 McoreDDP(
@@ -566,7 +569,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     model_chunk,
                     # Turn off bucketing for model_chunk 2 onwards, since communication for these
                     # model chunks is overlapped with compute anyway.
-                    disable_bucketing=(model_chunk_idx > 0),
+                    disable_bucketing=(model_chunk_idx > 0)
+                    or self.cfg.optim.get('overlap_param_gather_with_optimizer_step', False),
                 )
                 for (model_chunk_idx, model_chunk) in enumerate(self.model)
             ]
@@ -685,14 +689,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     no_sync_func = [model_chunk.no_sync for model_chunk in self.model]
                     no_sync_func = no_sync_func[0] if len(self.model) == 1 else no_sync_func
 
-                    if self.cfg.optim.get("delay_grad_reduce", True):
+                    if self.cfg.optim.get("align_grad_reduce", True):
                         grad_sync_func = [model_chunk.start_grad_sync for model_chunk in self.model]
                         grad_sync_func = grad_sync_func[0] if len(self.model) == 1 else grad_sync_func
-                if self.cfg.optim.get("overlap_param_sync", False) and self.cfg.optim.get("delay_param_gather", False):
-                    param_sync_func = [
-                        lambda x, model_index=model_index: self._optimizer.finish_param_sync(model_index, x)
-                        for model_index in range(len(self.model))
-                    ]
+                if self.cfg.optim.get("overlap_param_sync", False) and self.cfg.optim.get("align_param_gather", False):
+                    param_sync_func = [model_chunk.start_param_sync for model_chunk in self.model]
                     param_sync_func = param_sync_func[0] if len(self.model) == 1 else param_sync_func
 
         # pipeline schedules will get these from self.model.config

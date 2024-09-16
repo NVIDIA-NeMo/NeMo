@@ -75,7 +75,7 @@ jobs:
                 -d '{"title":"Cherry-pick '$PR_ID' into '$RELEASE_BRANCH'","head":"cherry-pick-'$PR_ID'-'$RELEASE_BRANCH'","base":"'$RELEASE_BRANCH'"}'
 
             else
-              URL=https://github.com/NVIDIA/NeMo/pull/${{ github.event.number }}
+              URL="https://github.com/NVIDIA/NeMo/pull/$PR_ID"
 
               MESSAGE='{
                 "blocks": [
@@ -83,7 +83,7 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": ":alert: Cherrypick bot 🤖: Cherry-pick of <'$URL'|#'${{ github.event.number }}'> failed"
+                      "text": ":alert: Cherrypick bot 🤖: Cherry-pick of <'$URL'|#'$PR_ID'> failed"
                     }
                   }
                 ]

@@ -15,8 +15,8 @@
 from importlib.metadata import version
 from typing import Any, Callable, Optional
 
-import packaging
 import torch
+from pkg_resources import packaging
 
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.parts import utils_funcs
@@ -30,6 +30,7 @@ if not HAVE_TE:
 try:
     from megatron.core import parallel_state, tensor_parallel
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
+    from megatron.core.transformer.cuda_graphs import CudaGraphManager
     from megatron.core.transformer.spec_utils import ModuleSpec
     from megatron.core.transformer.transformer_block import TransformerBlockSubmodules, get_num_layers_to_build
     from megatron.core.transformer.transformer_layer import BaseTransformerLayer
@@ -235,6 +236,10 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
             transformer_layer_args["ub_atomic_gemm_rs"] = config.tp_comm_atomic_rs
         super().__init__(**transformer_layer_args)
 
+        if self.config.enable_cuda_graph and self.training:
+            assert not config.cpu_offloading and config.recompute_granularity is None, "Cudagraphs not supported"
+            self.add_module('cudagraph_manager', CudaGraphManager())
+
     # Called by MCore's TransformerBlock.forward
     # megatron/core/transformer/transformer_block.py
     def forward(
@@ -261,8 +266,8 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
         self.is_first_microbatch = False
         context = None
 
-        # CUDA graph requires returned values to be Tensors
-        if self.config.enable_cuda_graph and self.training:
+        # External CUDA graph requires returned values to be Tensors
+        if hasattr(self.config, 'external_cuda_graph') and self.config.external_cuda_graph and self.training:
             return hidden_states
         return hidden_states, context
 
@@ -317,6 +322,11 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
         #    apply_prefix_mapping(sharded_state_dict, prefixed_map)
 
         return sharded_state_dict
+
+    def __call__(self, *args, **kwargs):
+        if hasattr(self, 'cudagraph_manager'):
+            return self.cudagraph_manager(self, args, kwargs)
+        return super().__call__(*args, **kwargs)
 
 
 # Use this spec to use the full Transformer layer from Transformer Engine

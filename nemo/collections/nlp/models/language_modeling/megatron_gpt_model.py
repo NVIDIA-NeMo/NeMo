@@ -832,6 +832,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     module = module.module
                 if not self.mcore_gpt:
                     module = module.language_model
+
                 if hasattr(module, 'embedding'):
                     for param in module.embedding.parameters():
                         param.data_ptr()
@@ -2115,6 +2116,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         else:
             raise ValueError(f"fp8 enabled but fp8_format (fp8_e4m3 | fp8_hybrid) is not set.")
 
+        if self.cfg.get('enable_cuda_graph', False):
+            assert HAVE_TE, "Transformer Engine is required for cudagraphs."
+            assert self.cfg.get(
+                'use_te_rng_tracker', False
+            ), "Transformer engine's RNG tracker is required for cudagraphs, this can be enabled with \
+                'use_te_rng_tracker=True'."
+
         # any configs that are not in the nemo model config will be added here
         model_specific_configs = {
             'layernorm_zero_centered_gamma': layernorm_zero_centered_gamma,
@@ -2132,6 +2140,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'moe_z_loss_coeff': self.cfg.get('moe_z_loss_coeff', None),  # 1e-3 would be a good start value for z-loss
             'moe_input_jitter_eps': self.cfg.get('moe_input_jitter_eps', None),
             'moe_token_dropping': self.cfg.get('moe_token_dropping', False),  # TODO: Support token dropping.
+            'enable_cuda_graph': self.cfg.get('enable_cuda_graph', False),
         }
         if model_specific_configs['num_moe_experts'] is not None:
             assert mcore_supports_moe(), 'Megatron-core >= v0.5.0 is required for MoE'

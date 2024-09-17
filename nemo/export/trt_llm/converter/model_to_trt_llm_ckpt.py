@@ -41,7 +41,7 @@ layer_names = {
 def extract_layers_with_prefix(model_, prefix):
     length_to_trim = len(prefix)
     model_state = model_.get("state_dict", model_)
-    return {key[length_to_trim:]: model_state[key] for key in model_state.keys() if prefix in key}
+    return {key[length_to_trim:]: model_state[key] for key in model_state.keys() if key.startswith(prefix)}
 
 
 def get_layer_name(layer_type: str, prefix: str):
@@ -56,7 +56,7 @@ def get_layer_prefix(layer_names, is_mcore):
     transformer_layer_prefix = None
 
     for layer_name in layer_names:
-        if 'self_attention' in layer_name:
+        if not layer_name.startswith('optimizer') and 'self_attention' in layer_name:
             transformer_layer_prefix = layer_name.split('layers')[0]
             break
     assert transformer_layer_prefix is not None, f"Cannot extract transformer layer prefix from {layer_name}"

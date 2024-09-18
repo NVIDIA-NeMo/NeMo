@@ -5146,28 +5146,28 @@ jobs:
         pip uninstall -y apex ## TODO: remove when apex is no longer a dependency
         pip uninstall -y transformer_engine
 
-        python examples/llm/megatron_gpt_pretraining.py \
+        python tests/collections/llm/megatron_gpt_pretraining.py \
         --devices=2 \
         --max-steps=3 \
-        --experiment-dir=examples/llm/gpt_pretrain_results \
+        --experiment-dir=tests/collections/llm/gpt_pretrain_results \
         --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
         --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
         --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
-        --index-mapping-dir=examples/llm/gpt_index_mappings \
+        --index-mapping-dir=tests/collections/llm/gpt_index_mappings \
         --no-masked-softmax-fusion
 
-        python examples/llm/megatron_gpt_pretraining.py \
+        python tests/collections/llm/megatron_gpt_pretraining.py \
         --devices=2 \
         --max-steps=6 \
-        --experiment-dir=examples/llm/gpt_pretrain_results \
+        --experiment-dir=tests/collections/llm/gpt_pretrain_results \
         --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
         --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
         --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
-        --index-mapping-dir=examples/llm/gpt_index_mappings \
+        --index-mapping-dir=tests/collections/llm/gpt_index_mappings \
         --no-masked-softmax-fusion
       AFTER_SCRIPT: |
-        rm -rf examples/llm/gpt_pretrain_results
-        rm -rf examples/llm/gpt_index_mappings
+        rm -rf tests/collections/llm/gpt_pretrain_results
+        rm -rf tests/collections/llm/gpt_index_mappings
 
   L2_NeMo_2_GPT_DDP_Param_Parity_check:
     needs: [cicd-test-container-setup]
@@ -5183,8 +5183,8 @@ jobs:
         --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document
 
       AFTER_SCRIPT: |
-        rm -rf examples/llm/gpt_pretrain_results
-        rm -rf examples/llm/gpt_index_mappings
+        rm -rf tests/collections/llm/gpt_pretrain_results
+        rm -rf tests/collections/llm/gpt_index_mappings
       
   OPTIONAL_L2_NeMo_2_SSM_Pretraining:
     needs: [cicd-test-container-setup]

@@ -125,6 +125,7 @@ class CallbackParams:
     model_parallel_size: Optional[int] = None  # tensor parallel size * pipeline parallel size
     save_on_train_epoch_end: Optional[bool] = False  # Save after training, not after validation
     async_save: Optional[bool] = False  # save the checkpoint asynchronously
+    save_last_n_optim_states: Optional[int] = -1  # a number of last checkpoints to be saved with optimizer states
 
 
 @dataclass

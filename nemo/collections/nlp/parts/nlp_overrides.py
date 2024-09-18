@@ -391,7 +391,13 @@ class NLPDDPStrategy(DDPStrategy):
             sharded_optim_state = self.optimizer_sharded_state_dict(
                 unsharded_optim_state=checkpoint['optimizer_states'][0]
             )
-            checkpoint['optimizer_states'] = [sharded_optim_state]
+
+            # Check whether to save optim states
+            include_optimizer = True if not storage_options else storage_options.get('include_optimizer', True)
+            if include_optimizer:
+                checkpoint['optimizer_states'] = [sharded_optim_state]
+            else:
+                checkpoint['optimizer_states'] = None
             # remove device state_dict
             checkpoint['state_dict'] = OrderedDict([])
 
@@ -468,7 +474,9 @@ class NLPDDPStrategy(DDPStrategy):
         """
         common_state_dict = dist_checkpointing.load_common_state_dict(checkpoint_path)
         # @akoumparouli: check if it contains an mcore dist opt
-        if common_state_dict.get('optimizer_states', [{}])[0].get('param_groups', None) is None:
+        if sharded_state_dict.get('optimizer_states') is None:
+            return False
+        if common_state_dict['optimizer_states'][0].get('param_groups', None) is None:
             return False
         model_param_groups = self._get_param_group(common_state_dict)
         checkpoint_param_groups = self._get_param_group(sharded_state_dict)
@@ -519,7 +527,7 @@ class NLPDDPStrategy(DDPStrategy):
                 loaded_state_dict['optimizer_states'][0]['param_groups'].pop(expert_index)
         return loaded_state_dict
 
-    def load_checkpoint(self, checkpoint_path: Union[str, Path]) -> Dict[str, Any]:
+    def load_checkpoint(self, checkpoint_path: Union[str, Path], load_optimizer_states: bool = True) -> Dict[str, Any]:
         """PTL method which we override to integrate distributed checkpoints for model parallel models.
         In order to load distributed checkpoints we need to provide the sharded_state_dict to
         the distributed load function. We get the sharded_state_dict from self.lightning_module
@@ -545,7 +553,9 @@ class NLPDDPStrategy(DDPStrategy):
 
             # after dist_checkpointing.load, sharded tensors will be replaced with tensors
             checkpoint['state_dict'] = sharded_state_dict
-            checkpoint['optimizer_states'] = [self.optimizer_sharded_state_dict(is_loading=True)]
+            # Check whether to load optim states
+            if load_optimizer_states:
+                checkpoint['optimizer_states'] = [self.optimizer_sharded_state_dict(is_loading=True)]
             if self._check_param_groups_mismatch(checkpoint_path, checkpoint):
                 checkpoint = self._fix_param_groups(checkpoint_path, checkpoint)
             else:

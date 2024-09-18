@@ -63,6 +63,7 @@ exp_manager:
     filename: 'megatron_gpt--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
     async_save: False # Set to True to enable async checkpoint save. Currently works only with distributed checkpoints
+    save_last_n_optim_states: -1 # a number of last checkpoints to be saved with optimizer states
 
 model:
   # The following two settings are used for continual training:

@@ -1622,6 +1622,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 dataset_type = GPTFIMDataset
             else:
                 dataset_config = GPTDatasetConfig(**kwargs)
+                dataset_config.mock = mock_dataset
                 dataset_type = MockGPTDataset if mock_dataset else GPTDataset
 
             self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(

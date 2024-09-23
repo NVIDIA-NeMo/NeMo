@@ -31,6 +31,7 @@ jobs:
           SHA=$(git rev-list --no-merges -n 1 HEAD)
           MESSAGE=$(git log -n 1 --pretty=format:%s $SHA)
           PR_ID=$(echo $MESSAGE | awk -F'#' '{print $2}' | awk -F')' '{print $1}' )
+          USERNAME=$(git log -n 1 --pretty=format:%ae $SHA | awk -F'@' '{print $1}')
 
           PR=$(curl -L \
             -H "Accept: application/vnd.github+json" \
@@ -110,7 +111,7 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": ":alert: Cherrypick bot 🤖: Cherry-pick of <'$URL'|#'$PR_ID'> failed"
+                      "text": ":alert: Cherrypick bot 🤖: Hey @'$USERNAME': Cherry-pick of <'$URL'|#'$PR_ID'> failed (3-way merge impossible). Please resolve manually and create a PR.\n\ncc: @okoenig"
                     }
                   }
                 ]

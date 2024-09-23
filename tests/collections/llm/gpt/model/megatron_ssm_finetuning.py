@@ -32,7 +32,9 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train a small GPT model using NeMo 2.0')
     parser.add_argument('--devices', type=int, help="Number of devices to use for training")
     parser.add_argument('--max-steps', type=int, help="Number of steps to train for")
-    parser.add_argument('--experiment-dir', type=str, help="directory to write results and checkpoints to")
+    parser.add_argument(
+        '--experiment-dir', type=str, default=None, help="directory to write results and checkpoints to"
+    )
     parser.add_argument('--model-path', type=str, help="Path to model checkpoint")
     parser.add_argument(
         '--tokenizer-model-path', type=str, default=None, help="Path to tokenizer model, defaults to None"
@@ -98,7 +100,7 @@ if __name__ == "__main__":
     )
 
     nemo_logger = NeMoLogger(
-        dir=args.experiment_dir,
+        log_dir=args.experiment_dir,
     )
 
     data = llm.SquadDataModule(

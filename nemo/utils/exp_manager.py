@@ -116,7 +116,7 @@ class CallbackParams:
     auto_insert_metric_name: bool = True
     every_n_epochs: Optional[int] = 1
     every_n_train_steps: Optional[int] = None
-    train_time_interval: Optional[str] = None
+    train_time_interval: Optional[Any] = None
     prefix: Optional[str] = None  # If None, exp_manager will attempt to handle the filepath
     postfix: str = ".nemo"
     save_best_model: bool = False
@@ -374,6 +374,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             - max_time (str): The maximum wall clock time *per run*. This is intended to be used on clusters where you want
                 a checkpoint to be saved after this specified time and be able to resume from that checkpoint. Defaults to None.
             - seconds_to_sleep (float): seconds to sleep non rank 0 processes for. Used to give enough time for rank 0 to initialize
+            - train_time_interval (timedelta): pass an object of timedelta to save the model every timedelta. Defaults to None.
+                (use _target_ with hydra to achieve this)
 
     returns:
         log_dir (Path): The final logging directory where logging files are saved. Usually the concatenation of

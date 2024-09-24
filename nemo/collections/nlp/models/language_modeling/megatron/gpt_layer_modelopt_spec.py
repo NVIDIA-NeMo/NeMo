@@ -13,11 +13,10 @@
 # limitations under the License.
 
 try:
-    from megatron.core.extensions.transformer_engine import TENorm
+    from megatron.core.extensions.transformer_engine import TEDotProductAttention, TENorm
     from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
     from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
     from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
-    from megatron.core.transformer.dot_product_attention import DotProductAttention
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.mlp import MLP, MLPSubmodules
@@ -31,25 +30,23 @@ except (ImportError, ModuleNotFoundError) as e:
 
     from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 
-    TransformerLayer = TransformerLayerSubmodules = ApexGuardDefaults
-    MLP = MLPSubmodules = ModuleSpec = IdentityOp = ApexGuardDefaults
-    AttnMaskType = DotProductAttention = TENorm = ApexGuardDefaults
-    ColumnParallelLinear = RowParallelLinear = SelfAttention = SelfAttentionSubmodules = ApexGuardDefaults
-
+    ModuleSpec = ApexGuardDefaults
     HAVE_MEGATRON_CORE = False
     IMPORT_ERROR = e
 
 
 # Use this spec for Model Optimizer PTQ and TensorRT-LLM export
 def get_gpt_layer_modelopt_spec(num_experts: int = None) -> ModuleSpec:
-    """Mix the native spec with TENorm.
+    """Mix the native spec with TENorm and TEDotProductAttention.
 
     This is essentially the native local spec except for the layernorm implementation
     is using TENorm from Transformer-Engine. This TENorm supports both FusedLayerNorm and RMSNorm and
     prevents the apex dependency.
+
+    TEDotProductAttention is used to support sliding window attention.
     """
     if not HAVE_MEGATRON_CORE:
-        raise Exception(IMPORT_ERROR)
+        raise IMPORT_ERROR
 
     return ModuleSpec(
         module=TransformerLayer,
@@ -60,7 +57,7 @@ def get_gpt_layer_modelopt_spec(num_experts: int = None) -> ModuleSpec:
                 params={"attn_mask_type": AttnMaskType.causal},
                 submodules=SelfAttentionSubmodules(
                     linear_qkv=ColumnParallelLinear,
-                    core_attention=DotProductAttention,
+                    core_attention=TEDotProductAttention,
                     linear_proj=RowParallelLinear,
                     q_layernorm=IdentityOp,
                     k_layernorm=IdentityOp,

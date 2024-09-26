@@ -1068,16 +1068,19 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                 torch.distributed.barrier()
 
             # create nemo file from folder with all mp_ranks checkpoints
-            if (
-                app_state.pipeline_model_parallel_rank == 0
-                and app_state.tensor_model_parallel_rank == 0
-                and app_state.data_parallel_rank == 0
-            ):
-                with tempfile.TemporaryDirectory() as tmpdir:
+            if dist_ckpt:
+                should_move_data = is_global_rank_zero()
+            else:
+                should_move_data = (
+                    app_state.pipeline_model_parallel_rank == 0
+                    and app_state.tensor_model_parallel_rank == 0
+                    and app_state.data_parallel_rank == 0
+                )
 
+            if should_move_data:
+                with tempfile.TemporaryDirectory() as tmpdir:
                     if dist_ckpt:
                         shutil.move(str(dist_ckpt_dir), tmpdir)
-
                     elif app_state.pipeline_model_parallel_size == 1:
                         # move weights to the tmpdir
                         for tp_rank in range(app_state.tensor_model_parallel_size):
@@ -1122,6 +1125,9 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
 
                         for file in os.listdir(tmpdir):
                             shutil.move(os.path.join(tmpdir, file), folder_path)
+
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
 
         else:
             return super().save_to(model, save_path)

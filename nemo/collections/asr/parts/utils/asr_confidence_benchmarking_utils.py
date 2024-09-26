@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 import copy
 import os
 from pathlib import Path
@@ -68,7 +67,7 @@ def run_confidence_benchmark(
     batch_size: int = 8,
     num_workers: int = 4,
     plot_dir: Optional[Union[str, Path]] = None,
-    autocast: Optional = None,
+    use_amp: Optional[bool] = False,
 ):
     """Run benchmark and plot histograms and curves, if plot_dir is provided.
 
@@ -81,15 +80,8 @@ def run_confidence_benchmark(
         plot_dir = Path(plot_dir)
     is_rnnt = isinstance(model, EncDecRNNTModel)
 
-    # setup autocast if necessary
-    if autocast is None:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
-
     # transcribe audio
-    with autocast():
+    with torch.amp.autocast(model.device.type, enabled=use_amp):
         with torch.no_grad():
             transcriptions = model.transcribe(
                 audio=filepaths, batch_size=batch_size, return_hypotheses=True, num_workers=num_workers

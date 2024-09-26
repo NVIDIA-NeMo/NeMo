@@ -504,7 +504,7 @@ class TTSDataset(Dataset):
             raise NotImplementedError(f"Reference audio type \"{reference_audio_type}\" is not supported.")
 
     def get_spec(self, audio):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(audio.device.type, enabled=False):
             spec = self.stft(audio)
             if spec.dtype in [torch.cfloat, torch.cdouble]:
                 spec = torch.view_as_real(spec)
@@ -512,7 +512,7 @@ class TTSDataset(Dataset):
         return spec
 
     def get_log_mel(self, audio):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(audio.device.type, enabled=False):
             spec = self.get_spec(audio)
             mel = torch.matmul(self.fb.to(spec.dtype), spec)
             log_mel = torch.log(torch.clamp(mel, min=torch.finfo(mel.dtype).tiny))
@@ -652,7 +652,7 @@ class TTSDataset(Dataset):
                 sr=self.sample_rate,
                 fill_na=0.0,
             )
-            for (i, voiced_name, voiced_filepath) in non_exist_voiced_index:
+            for i, voiced_name, voiced_filepath in non_exist_voiced_index:
                 my_var.__setitem__(voiced_name, torch.from_numpy(voiced_tuple[i]).float())
                 torch.save(my_var.get(voiced_name), voiced_filepath)
 
@@ -859,9 +859,9 @@ class TTSDataset(Dataset):
                 durations_list.append(general_padding(durations, len(durations), max_durations_len))
 
             if AlignPriorMatrix in self.sup_data_types_set:
-                align_prior_matrices[
-                    i, : align_prior_matrix.shape[0], : align_prior_matrix.shape[1]
-                ] = align_prior_matrix
+                align_prior_matrices[i, : align_prior_matrix.shape[0], : align_prior_matrix.shape[1]] = (
+                    align_prior_matrix
+                )
 
             if Pitch in self.sup_data_types_set:
                 pitches.append(general_padding(pitch, pitch_length.item(), max_pitches_len))
@@ -901,9 +901,9 @@ class TTSDataset(Dataset):
             "p_voiced": torch.stack(p_voiceds) if P_voiced in self.sup_data_types_set else None,
             "audio_shifted": torch.stack(audios_shifted) if audio_shifted is not None else None,
             "reference_audio": torch.stack(reference_audios) if ReferenceAudio in self.sup_data_types_set else None,
-            "reference_audio_lens": torch.stack(reference_audio_lengths)
-            if ReferenceAudio in self.sup_data_types_set
-            else None,
+            "reference_audio_lens": (
+                torch.stack(reference_audio_lengths) if ReferenceAudio in self.sup_data_types_set else None
+            ),
         }
 
         return data_dict
@@ -1162,7 +1162,8 @@ class VocoderDataset(Dataset):
 
 class PairedRealFakeSpectrogramsDataset(Dataset):
     def __init__(
-        self, manifest_filepath: Union[str, Path],
+        self,
+        manifest_filepath: Union[str, Path],
     ):
         manifest_filepath = Path(manifest_filepath)
         with Path(manifest_filepath).open() as f:
@@ -1215,7 +1216,6 @@ class FastPitchSSLDataset(Dataset):
         speaker_stats_pitch_fp: Optional[Union[str, Path]] = None,
         speaker_conditioning_type: Optional[str] = "per_sample",  # per_sample, mean, interpolate,
     ):
-
         """Dataset used for training FastPitchModel_SSL model.
         Requires supplementary data created using scripts/ssl_tts/make_supdata.py
         Args:
@@ -1226,7 +1226,7 @@ class FastPitchSSLDataset(Dataset):
                 "speaker" : <SPEAKER NUM>
                 "duration": <Duration of audio clip in seconds> (Optional)
             sample_rate (int): The sample rate of the audio. Or the sample rate that we will resample all files to.
-            ssl_content_emb_type (str): One of ["probs", "embedding", "log_probs", "embedding_and_probs"]. 
+            ssl_content_emb_type (str): One of ["probs", "embedding", "log_probs", "embedding_and_probs"].
                 Indicated which output to use as content embedding.
             max_duration (Optional[float]): Max duration of audio clips in seconds. All samples exceeding this will be
                 pruned prior to training. Note: Requires "duration" to be set in the manifest file. It does not load
@@ -1239,18 +1239,18 @@ class FastPitchSSLDataset(Dataset):
             trim (bool): Whether to apply `librosa.effects.trim` to trim leading and trailing silence from an audio
                 signal. Defaults to False.
             pitch_conditioning (bool): Whether to load pitch contour or not
-            pitch_mean (Optional[float]): If using global normalization, normalize using these statistics. 
+            pitch_mean (Optional[float]): If using global normalization, normalize using these statistics.
                 Also used if speaker stats are not available for the given speaker
-            pitch_std (Optional[float]): If using global normalization, normalize using these statistics. 
+            pitch_std (Optional[float]): If using global normalization, normalize using these statistics.
                 Also used if speaker stats are not available for the given speaker
             pitch_normalization (str): Can be one of ['speaker_wise', 'global', 'none']. Indicates the kind of pitch normalization.
-            sup_data_dir (Optional[Union[str, Path]]): Data directory containing pre-computed embeddings/statistics. If set as 
-            speaker_stats_pitch_fp (Optional[Union[str, Path]]): Path to the json containing speaker pitch stats. 
-                If set as None, tries to lookup for a default filename (speaker_pitch_stats.json) in sup_data_dir. 
+            sup_data_dir (Optional[Union[str, Path]]): Data directory containing pre-computed embeddings/statistics. If set as
+            speaker_stats_pitch_fp (Optional[Union[str, Path]]): Path to the json containing speaker pitch stats.
+                If set as None, tries to lookup for a default filename (speaker_pitch_stats.json) in sup_data_dir.
                 Needed if we use pitch_normalization is "speaker_wise"
             speaker_conditioning_type (Optional[str]): Can be one of ["per_sample", "mean", "interpolate"]. Defaults to "per_sample"
                 per_sample: Speaker embedding computed from the same utterance
-                mean: Speaker embedding for all utterances of a given speaker is the same and equal to the mean speaker embedding. 
+                mean: Speaker embedding for all utterances of a given speaker is the same and equal to the mean speaker embedding.
                 interpolate: Interpolate b/w per_sample and mean speaker embedding.
         """
         assert ssl_content_emb_type in ["probs", "embedding", "log_probs", "embedding_and_probs"]
@@ -1328,7 +1328,10 @@ class FastPitchSSLDataset(Dataset):
 
     def _get_wav_from_filepath(self, audio_filepath):
         features = AudioSegment.segment_from_file(
-            audio_filepath, target_sr=self.sample_rate, n_segments=-1, trim=self.trim,
+            audio_filepath,
+            target_sr=self.sample_rate,
+            n_segments=-1,
+            trim=self.trim,
         )
         audio_samples = features.samples
 
@@ -1531,7 +1534,7 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
     Maintain similar input lengths in a batch.
     Length groups are specified by boundaries.
     Ex) boundaries = [b1, b2, b3] -> any batch is included either {x | b1 < length(x) <=b2} or {x | b2 < length(x) <= b3}.
-  
+
     It removes samples which are not included in the boundaries.
     Ex) boundaries = [b1, b2, b3] -> any x s.t. length(x) <= b1 or length(x) > b3 are discarded.
     """

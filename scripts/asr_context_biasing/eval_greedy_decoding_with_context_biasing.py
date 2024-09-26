@@ -254,7 +254,9 @@ def decoding_step(
                         probs_batch[prob_index].unsqueeze(0), device=packed_batch.device, dtype=packed_batch.dtype
                     )
                 best_hyp_batch, beams_batch = asr_model.decoding.rnnt_decoder_predictions_tensor(
-                    packed_batch, probs_lens, return_hypotheses=True,
+                    packed_batch,
+                    probs_lens,
+                    return_hypotheses=True,
                 )
             beams_batch = [[x] for x in best_hyp_batch]
 
@@ -356,17 +358,8 @@ def main(cfg: EvalContextBiasingConfig):
             durations.append(data['duration'])
             audio_file_paths.append(str(audio_file.absolute()))
 
-    if cfg.use_amp:
-        if torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-            logging.info("AMP is enabled!\n")
-            autocast = torch.cuda.amp.autocast
-        else:
-            autocast = contextlib.nullcontext
-    else:
-        autocast = contextlib.nullcontext
-
     # manual calculation of encoder_embeddings
-    with autocast():
+    with torch.amp.autocast(asr_model.device.type, enabled=cfg.use_amp):
         with torch.no_grad():
             asr_model.eval()
             asr_model.encoder.freeze()

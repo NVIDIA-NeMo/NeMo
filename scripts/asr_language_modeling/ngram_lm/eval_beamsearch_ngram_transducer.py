@@ -177,7 +177,9 @@ def decoding_step(
                     probs_batch[prob_index].unsqueeze(0), device=packed_batch.device, dtype=packed_batch.dtype
                 )
             best_hyp_batch, beams_batch = model.decoding.rnnt_decoder_predictions_tensor(
-                packed_batch, probs_lens, return_hypotheses=True,
+                packed_batch,
+                probs_lens,
+                return_hypotheses=True,
             )
         if cfg.decoding_strategy == "greedy_batch":
             beams_batch = [[x] for x in best_hyp_batch]
@@ -296,23 +298,8 @@ def main(cfg: EvalBeamSearchNGramConfig):
             )
     else:
 
-        @contextlib.contextmanager
-        def default_autocast():
-            yield
-
-        if cfg.use_amp:
-            if torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-                logging.info("AMP is enabled!\n")
-                autocast = torch.cuda.amp.autocast
-
-            else:
-                autocast = default_autocast
-        else:
-
-            autocast = default_autocast
-
         # manual calculation of encoder_embeddings
-        with autocast():
+        with torch.amp.autocast(asr_model.device.type, enabled=cfg.use_amp):
             with torch.no_grad():
                 asr_model.eval()
                 asr_model.encoder.freeze()

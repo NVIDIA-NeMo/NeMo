@@ -43,20 +43,15 @@ TRT_LOGGER = trt.Logger()
 
 can_gpu = torch.cuda.is_available()
 
-try:
-    from torch.cuda.amp import autocast
-except ImportError:
-    from contextlib import contextmanager
-
-    @contextmanager
-    def autocast(enabled=None):
-        yield
-
 
 def main():
     parser = ArgumentParser()
     parser.add_argument(
-        "--asr_model", type=str, default="QuartzNet15x5Base-En", required=True, help="Pass: 'QuartzNet15x5Base-En'",
+        "--asr_model",
+        type=str,
+        default="QuartzNet15x5Base-En",
+        required=True,
+        help="Pass: 'QuartzNet15x5Base-En'",
     )
     parser.add_argument(
         "--asr_onnx",
@@ -145,9 +140,11 @@ def build_trt_engine(asr_model, onnx_path, qat):
         network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         if qat:
             network_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_PRECISION)
-        with builder.create_network(flags=network_flags) as network, trt.OnnxParser(
-            network, TRT_LOGGER
-        ) as parser, builder.create_builder_config() as builder_config:
+        with (
+            builder.create_network(flags=network_flags) as network,
+            trt.OnnxParser(network, TRT_LOGGER) as parser,
+            builder.create_builder_config() as builder_config,
+        ):
             parser.parse_from_file(onnx_path)
             builder_config.max_workspace_size = workspace_size * (1024 * 1024)
             if qat:

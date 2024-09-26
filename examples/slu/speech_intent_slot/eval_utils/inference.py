@@ -14,7 +14,6 @@
 # limitations under the License.
 
 
-import contextlib
 import glob
 import json
 import os
@@ -60,7 +59,12 @@ class InferenceConfig:
     sequence_generator: SequenceGeneratorConfig = SequenceGeneratorConfig(type="greedy")
 
 
-def slurp_inference(model, path2manifest: str, batch_size: int = 4, num_workers: int = 0,) -> List[str]:
+def slurp_inference(
+    model,
+    path2manifest: str,
+    batch_size: int = 4,
+    num_workers: int = 0,
+) -> List[str]:
 
     if num_workers is None:
         num_workers = min(batch_size, os.cpu_count() - 1)
@@ -178,16 +182,6 @@ def run_inference(cfg: InferenceConfig) -> InferenceConfig:
 
     logging.info(f"\nStart inference with {len(filepaths)} files...\n")
 
-    # setup AMP (optional)
-    if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-        logging.info("AMP enabled!\n")
-        autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
-
     # Compute output filename
     if cfg.output_filename is None:
         # create default output filename
@@ -206,7 +200,7 @@ def run_inference(cfg: InferenceConfig) -> InferenceConfig:
         return cfg
 
     # transcribe audio
-    with autocast():
+    with torch.amp.autocast(model.device.type, enabled=cfg.amp):
         with torch.no_grad():
             predictions = slurp_inference(
                 model=model,

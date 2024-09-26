@@ -170,16 +170,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     # Disable config overwriting
     OmegaConf.set_struct(model_cfg.preprocessor, True)
 
-    # setup AMP (optional)
-    if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-        logging.info("AMP enabled!\n")
-        autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast(*args, **kwargs):
-            yield
-
     # Compute output filename
     cfg = compute_output_filename(cfg, model_name)
 
@@ -208,7 +198,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
     amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
 
-    with autocast(dtype=amp_dtype):
+    with torch.amp.autocast(asr_model.device.type, enabled=cfg.amp, dtype=amp_dtype):
         with torch.no_grad():
             hyps = get_buffered_pred_feat_multitaskAED(
                 frame_asr,

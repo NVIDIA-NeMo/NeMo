@@ -224,23 +224,13 @@ def main():
     dataset = BeamScoresDataset(args.beams_file, model_tokenizer, args.eval_manifest, args.beam_size, max_seq_length)
     data_loader = torch.utils.data.DataLoader(dataset=dataset, batch_size=args.batch_size)
 
-    if args.use_amp:
-        if torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-            logging.info("AMP is enabled!\n")
-            autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
-
     if "attention_mask" in inspect.getfullargspec(model.forward).args:
         support_att_mask = True
     else:
         support_att_mask = False
     logging.info(f"Rescoring with beam_size: {args.beam_size}")
     logging.info("Calculating the scores...")
-    with autocast():
+    with torch.amp.autocast(model.device.type, enabled=args.use_amp):
         with torch.no_grad():
             am_scores, lm_scores, dists, ref_lens, lens_in_chars = [], [], [], [], []
             for batch in tqdm.tqdm(data_loader):

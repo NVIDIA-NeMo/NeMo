@@ -48,7 +48,8 @@ except ImportError:
 
 def get_args(argv):
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description=f"Export NeMo models to ONNX/Torchscript",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=f"Export NeMo models to ONNX/Torchscript",
     )
     parser.add_argument("source", help="Source .nemo file")
     parser.add_argument("out", help="Location to write result to")
@@ -154,11 +155,8 @@ def nemo_export(argv):
             kv[k] = v
         model.set_export_config(kv)
 
-    autocast = nullcontext
-    if args.autocast:
-        autocast = torch.cuda.amp.autocast
     try:
-        with autocast(), torch.no_grad(), torch.inference_mode():
+        with torch.amp.autocast(args.device, enabled=args.autocast), torch.no_grad(), torch.inference_mode():
             model.to(device=args.device).freeze()
             model.eval()
             input_example = None

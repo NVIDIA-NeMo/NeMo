@@ -127,7 +127,7 @@ def perform_streaming(
         # would pass the whole audio at once through the model like offline mode in order to compare the results with the stremaing mode
         # the output of the model in the offline and streaming mode should be exactly the same
         with torch.inference_mode():
-            with autocast():
+            with autocast:
                 processed_signal, processed_signal_length = streaming_buffer.get_all_audios()
                 with torch.no_grad():
                     (
@@ -156,7 +156,7 @@ def perform_streaming(
     pred_out_stream = None
     for step_num, (chunk_audio, chunk_lengths) in enumerate(streaming_buffer_iter):
         with torch.inference_mode():
-            with autocast():
+            with autocast:
                 # keep_all_outputs needs to be True for the last step of streaming when model is trained with att_context_style=regular
                 # otherwise the last outputs would get dropped
 
@@ -313,19 +313,7 @@ def main():
             raise ValueError("Model does not support multiple lookaheads.")
 
     global autocast
-    if (
-        args.use_amp
-        and torch.cuda.is_available()
-        and hasattr(torch.cuda, 'amp')
-        and hasattr(torch.cuda.amp, 'autocast')
-    ):
-        logging.info("AMP enabled!\n")
-        autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
+    autocast = torch.amp.autocast(asr_model.device.type, enabled=args.use_amp)
 
     # configure the decoding config
     decoding_cfg = asr_model.cfg.decoding

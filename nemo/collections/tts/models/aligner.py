@@ -117,12 +117,14 @@ class AlignerModel(ModelPT):
 
             if "phoneme_dict" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["phoneme_dict"] = self.register_artifact(
-                    'text_tokenizer.g2p.phoneme_dict', cfg.text_tokenizer.g2p.phoneme_dict,
+                    'text_tokenizer.g2p.phoneme_dict',
+                    cfg.text_tokenizer.g2p.phoneme_dict,
                 )
 
             if "heteronyms" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["heteronyms"] = self.register_artifact(
-                    'text_tokenizer.g2p.heteronyms', cfg.text_tokenizer.g2p.heteronyms,
+                    'text_tokenizer.g2p.heteronyms',
+                    cfg.text_tokenizer.g2p.heteronyms,
                 )
 
             text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
@@ -130,7 +132,7 @@ class AlignerModel(ModelPT):
         self.tokenizer = instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
 
     def forward(self, *, spec, spec_len, text, text_len, attn_prior=None):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(self.device.type, enabled=False):
             attn_soft, attn_logprob = self.alignment_encoder(
                 queries=spec,
                 keys=self.embed(text).transpose(1, 2),
@@ -236,7 +238,9 @@ class AlignerModel(ModelPT):
             text_tokenizer=self.tokenizer,
         )
         return torch.utils.data.DataLoader(  # noqa
-            dataset=dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params,
+            dataset=dataset,
+            collate_fn=dataset.collate_fn,
+            **cfg.dataloader_params,
         )
 
     def setup_training_data(self, cfg):

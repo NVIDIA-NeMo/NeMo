@@ -42,15 +42,6 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.utils import logging
 
-try:
-    from torch.cuda.amp import autocast
-except ImportError:
-    from contextlib import contextmanager
-
-    @contextmanager
-    def autocast(enabled=None):
-        yield
-
 
 def score_with_sctk(sctk_dir, ref_fname, hyp_fname, out_dir, glm=""):
     sclite_path = os.path.join(sctk_dir, "bin", "sclite")
@@ -91,7 +82,11 @@ def get_utt_info(manifest_path):
 def main():
     parser = ArgumentParser()
     parser.add_argument(
-        "--asr_model", type=str, default="QuartzNet15x5Base-En", required=False, help="Pass: 'QuartzNet15x5Base-En'",
+        "--asr_model",
+        type=str,
+        default="QuartzNet15x5Base-En",
+        required=False,
+        help="Pass: 'QuartzNet15x5Base-En'",
     )
     parser.add_argument("--dataset", type=str, required=True, help="path to evaluation data")
     parser.add_argument("--batch_size", type=int, default=4)
@@ -123,7 +118,7 @@ def main():
     references = [data['text'] for data in manifest_data]
     audio_filepaths = [data['audio_filepath'] for data in manifest_data]
 
-    with autocast():
+    with torch.amp.autocast(asr_model.device.type):
         hypotheses = asr_model.transcribe(audio_filepaths, batch_size=args.batch_size)
 
         # if transcriptions form a tuple (from RNNT), extract just "best" hypothesis

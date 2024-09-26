@@ -162,16 +162,6 @@ def main(cfg: TranslationConfig) -> Union[TranslationConfig, List[str]]:
     # prepare audio filepaths and decide wether it's partial audio
     filepaths, partial_audio = prepare_audio_data(cfg)
 
-    # setup AMP (optional)
-    if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-        logging.info("AMP enabled!\n")
-        autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
-
     # Compute output filename
     cfg = compute_output_filename(cfg, model_name)
 
@@ -184,10 +174,12 @@ def main(cfg: TranslationConfig) -> Union[TranslationConfig, List[str]]:
         return cfg
 
     # translate audio
-    with autocast():
+    with torch.amp.autocast(asr_model.device.type, enabled=cfg.amp):
         with torch.no_grad():
             translations = asr_model.translate(
-                paths2audio_files=filepaths, batch_size=cfg.batch_size, return_hypotheses=return_hypotheses,
+                paths2audio_files=filepaths,
+                batch_size=cfg.batch_size,
+                return_hypotheses=return_hypotheses,
             )
 
     logging.info(f"Finished translating {len(filepaths)} files !")

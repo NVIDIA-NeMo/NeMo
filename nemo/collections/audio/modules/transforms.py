@@ -143,7 +143,7 @@ class AudioToSpectrogram(NeuralModule):
         input = input.view(B, -1, T)
 
         # STFT output (B, C, F, N)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(input.device.type, enabled=False):
             output = self.stft(input.float())
 
             if self.magnitude_power != 1:
@@ -265,7 +265,7 @@ class AudioToSpectrogramTA(NeuralModule):
         input = input.view(B, -1, T)
 
         # STFT output (B, C, F, N)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(input.device.type, enabled=False):
             output = self.stft(input.float())
 
             if self.magnitude_power != 1:
@@ -414,7 +414,7 @@ class SpectrogramToAudio(NeuralModule):
         input = input.view(B, -1, F, N)
 
         # iSTFT output (B, C, T)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(input.device.type, enabled=False):
             output = input.cfloat()
 
             if self.scale != 1:
@@ -533,7 +533,7 @@ class SpectrogramToAudioTA(NeuralModule):
         input = input.view(B, -1, F, N)
 
         # iSTFT output (B, C, T)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(input.device.type, enabled=False):
             output = input.cfloat()
 
             if self.scale != 1:

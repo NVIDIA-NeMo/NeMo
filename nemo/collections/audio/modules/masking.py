@@ -668,6 +668,7 @@ class MaskEstimatorGSS(NeuralModule):
         """
         B, num_inputs, F, T = input.shape
         num_outputs = activity.size(1)
+        device = input.device.type
 
         if activity.size(0) != B:
             raise ValueError(f'Batch dimension mismatch: activity {activity.shape} vs input {input.shape}')
@@ -678,7 +679,7 @@ class MaskEstimatorGSS(NeuralModule):
         if num_outputs == 1:
             raise ValueError(f'Expecting multiple outputs, got {num_outputs}')
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(device, enabled=False):
             input = input.to(dtype=self.dtype)
 
             assert input.is_complex(), f'Expecting complex input, got {input.dtype}'
@@ -1039,8 +1040,9 @@ class MaskBasedDereverbWPE(NeuralModule):
             shape (B, C, F, T).
         """
         io_dtype = input.dtype
+        device = input.device.type
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(device, enabled=False):
             output = input.to(dtype=self.dtype)
 
             if not output.is_complex():

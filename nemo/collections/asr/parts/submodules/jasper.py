@@ -473,7 +473,7 @@ class SqueezeExcite(nn.Module):
             self.set_max_len(max_len)
         dtype = x.dtype
         # Computes in float32 to avoid instabilities during training with AMP.
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(x.device.type, enabled=False):
             # Create sample mask - 1 represents value, 0 represents pad
             mask = self.make_pad_mask(lengths, max_audio_length=max_len, device=x.device)
             mask = ~mask  # 0 represents value, 1 represents pad

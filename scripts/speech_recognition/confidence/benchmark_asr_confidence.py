@@ -209,12 +209,6 @@ def main(cfg: ConfidenceBenchmarkingConfig):
             filepaths.append(str(audio_file.absolute()))
             reference_texts.append(item['text'])
 
-    # setup AMP (optional)
-    autocast = None
-    if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
-        logging.info("AMP enabled!\n")
-        autocast = torch.cuda.amp.autocast
-
     # do grid-based benchmarking if grid_params is provided, otherwise a regular one
     work_dir = Path(cfg.output_dir)
     os.makedirs(work_dir, exist_ok=True)
@@ -275,7 +269,7 @@ def main(cfg: ConfidenceBenchmarkingConfig):
                     cfg.batch_size,
                     cfg.num_workers,
                     plot_dir,
-                    autocast,
+                    cfg.amp,
                 )
                 for level, result in results.items():
                     f.write(f"{model_typename},{','.join(param_list)},{level},{','.join([str(r) for r in result])}\n")
@@ -303,7 +297,7 @@ def main(cfg: ConfidenceBenchmarkingConfig):
                 filepaths,
                 reference_texts,
                 plot_dir,
-                autocast,
+                cfg.amp,
             )
             for level, result in results.items():
                 f.write(f"{model_typename},{','.join(param_list)},{level},{','.join([str(r) for r in result])}\n")

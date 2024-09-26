@@ -449,7 +449,7 @@ class ASRDecoderTimeStamps:
             log_prediction=asr_model._cfg.get("log_prediction", False),
         )
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(asr_model.device.type):
             transcript_hyps_list = asr_model.transcribe(
                 self.audio_file_list, batch_size=self.asr_batch_size, return_hypotheses=True
             )  # type: List[nemo_asr.parts.Hypothesis]
@@ -577,7 +577,7 @@ class ASRDecoderTimeStamps:
             log_prediction=asr_model._cfg.get("log_prediction", False),
         )
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(asr_model.device.type):
             transcript_hyps_list = asr_model.transcribe(
                 self.audio_file_list, batch_size=self.asr_batch_size, return_hypotheses=True
             )  # type: List[nemo_asr.parts.Hypothesis]
@@ -671,7 +671,7 @@ class ASRDecoderTimeStamps:
         onset_delay, mid_delay, tokens_per_chunk = self.set_buffered_infer_params(asr_model)
         onset_delay_in_sec = round(onset_delay * self.model_stride_in_secs, 2)
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(asr_model.device.type):
             logging.info(f"Running ASR model {self.ASR_model_name}")
 
             for idx, audio_file_path in enumerate(self.audio_file_list):

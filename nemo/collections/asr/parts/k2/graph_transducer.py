@@ -25,7 +25,7 @@ from nemo.core.utils.k2_guard import k2
 def force_float32_context() -> ContextManager:
     """Get context manager to force float32 precision in autocast mode."""
     if torch.is_autocast_enabled():
-        return torch.cuda.amp.autocast(dtype=torch.float32)
+        return torch.amp.autocast('cuda', dtype=torch.float32)
     return nullcontext()
 
 
@@ -159,7 +159,10 @@ class GraphTransducerLossBase(Loss):
 
             # composed version
             text_fsas = [
-                self.get_unit_schema(units_tensor=targets[i, : target_lengths[i].item()], vocab_size=vocab_size,)
+                self.get_unit_schema(
+                    units_tensor=targets[i, : target_lengths[i].item()],
+                    vocab_size=vocab_size,
+                )
                 for i in range(batch_size)
             ]
             temporal_fsas = [
@@ -192,7 +195,8 @@ class GraphTransducerLossBase(Loss):
         scores_to_batch_i = torch.repeat_interleave(
             torch.arange(batch_size, device=device, dtype=torch.int64),
             torch.tensor(
-                [target_fsas_vec.arcs.index(0, i)[0].values().shape[0] for i in range(batch_size)], device=device,
+                [target_fsas_vec.arcs.index(0, i)[0].values().shape[0] for i in range(batch_size)],
+                device=device,
             ),
         )
         indices = (
@@ -442,7 +446,11 @@ class GraphRnntLoss(GraphTransducerLossBase):
         return rnnt_graph
 
     def forward(
-        self, acts: torch.Tensor, labels: torch.Tensor, act_lens: torch.Tensor, label_lens: torch.Tensor,
+        self,
+        acts: torch.Tensor,
+        labels: torch.Tensor,
+        act_lens: torch.Tensor,
+        label_lens: torch.Tensor,
     ) -> torch.Tensor:
         """
         Compute forward method for RNN-T.

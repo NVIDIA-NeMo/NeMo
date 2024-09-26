@@ -40,16 +40,6 @@ from nemo.collections.asr.models import EncDecClassificationModel, EncDecFrameCl
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
 
-try:
-    from torch.cuda.amp import autocast
-except ImportError:
-    from contextlib import contextmanager
-
-    @contextmanager
-    def autocast(enabled=None):
-        yield
-
-
 """
 This file contains all the utility functions required for voice activity detection. 
 """
@@ -1127,7 +1117,7 @@ def generate_vad_frame_pred(
     status = get_vad_stream_status(data)
     for i, test_batch in enumerate(tqdm(vad_model.test_dataloader(), total=len(vad_model.test_dataloader()))):
         test_batch = [x.to(vad_model.device) for x in test_batch]
-        with autocast():
+        with torch.amp.autocast(vad_model.device.type):
             if use_feat:
                 log_probs = vad_model(processed_signal=test_batch[0], processed_signal_length=test_batch[1])
             else:

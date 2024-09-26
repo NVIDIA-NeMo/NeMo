@@ -264,6 +264,8 @@ class WarmupAnnealingScheduler(LRSchedulerModule):
 
     def __init__(
         self,
+        warmup_steps: int = 750,
+        warmup_ratio: Optional[float] = None,
         max_steps: int = 10,
         min_lr: float = 0.0,
         interval: str = "step",
@@ -271,6 +273,8 @@ class WarmupAnnealingScheduler(LRSchedulerModule):
         monitor: str = "val_loss",
     ):
         super().__init__()
+        self.warmup_steps = warmup_steps
+        self.warmup_ratio = warmup_ratio
         self.max_steps = max_steps
         self.min_lr = min_lr
         self.interval = interval
@@ -278,7 +282,13 @@ class WarmupAnnealingScheduler(LRSchedulerModule):
         self.monitor = monitor
 
     def scheduler(self, model, optimizer):
-        lr_scheduler = WarmupAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
+        lr_scheduler = WarmupAnnealing(
+            optimizer,
+            warmup_steps=self.warmup_steps,
+            warmup_ratio=self.warmup_ratio,
+            max_steps=self.max_steps,
+            min_lr=self.min_lr,
+        )
         return {
             "optimizer": optimizer,
             "lr_scheduler": {

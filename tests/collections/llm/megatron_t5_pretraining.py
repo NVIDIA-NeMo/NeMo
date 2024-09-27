@@ -77,6 +77,7 @@ if __name__ == '__main__':
     )
     checkpoint_callback = ModelCheckpoint(
         every_n_train_steps=5000,
+        save_optim_on_train_end=True,
     )
     callbacks = [checkpoint_callback]
 

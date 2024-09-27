@@ -5245,13 +5245,19 @@ jobs:
         NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_pretraining.py \
         --devices=2 \
         --max-steps=3 \
-        --experiment-dir=tests/collections/llm/t5_pretrain_results \
+        --experiment-dir=tests/collections/llm/t5_pretrain_results/${{ github.run_id }} \
         --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document \
-        --index-mapping-dir=tests/collections/llm/t5_index_mappings
+        --index-mapping-dir=tests/collections/llm/t5_index_mappings/${{ github.run_id }}
 
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_pretraining.py \
+        --devices=2 \
+        --max-steps=6 \
+        --experiment-dir=tests/collections/llm/t5_pretrain_results/${{ github.run_id }} \
+        --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document \
+        --index-mapping-dir=tests/collections/llm/t5_index_mappings/${{ github.run_id }}
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/t5_pretrain_results
-        rm -rf tests/collections/llm/t5_index_mappings
+        rm -rf tests/collections/llm/t5_pretrain_results/${{ github.run_id }}
+        rm -rf tests/collections/llm/t5_index_mappings/${{ github.run_id }}
 
   Nemo_CICD_Test:
     needs: 

@@ -18,11 +18,11 @@ from itertools import chain
 from typing import Any, Optional
 
 import numpy as np
+import packaging
 import torch
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from pkg_resources import packaging
 from pytorch_lightning.trainer.trainer import Trainer
 from transformers import CLIPVisionModel, SiglipVisionModel
 

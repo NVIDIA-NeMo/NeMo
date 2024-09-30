@@ -39,7 +39,6 @@ except (ImportError, ModuleNotFoundError):
     HAVE_FA = False
 
 try:
-    import pkg_resources
     import triton
 
     HAVE_TRITON = True
@@ -80,7 +79,13 @@ class TestFlashAttention:
         MB_SIZE = 4
         GB_SIZE = 8
         SEED = 1234
-        trainer = Trainer(strategy=NLPDDPStrategy(), devices=GPUS, accelerator='gpu', num_nodes=1, logger=None,)
+        trainer = Trainer(
+            strategy=NLPDDPStrategy(),
+            devices=GPUS,
+            accelerator='gpu',
+            num_nodes=1,
+            logger=None,
+        )
 
         initialize_model_parallel_for_nemo(
             world_size=trainer.world_size,

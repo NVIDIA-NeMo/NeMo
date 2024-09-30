@@ -67,10 +67,9 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     # Flash Attention Triton
-    import pkg_resources
     from flash_attn.flash_attn_triton import flash_attn_func as flash_attn_func_triton
 
-except (ImportError, ModuleNotFoundError, pkg_resources.DistributionNotFound):
+except (ImportError, ModuleNotFoundError):
 
     flash_attn_func_triton = None
 
@@ -202,7 +201,12 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         else:
             assert attention_type == AttnType.cross_attn
             self.query = tensor_parallel.ColumnParallelLinear(
-                hidden_size, projection_size, config=config, gather_output=False, init_method=init_method, bias=bias,
+                hidden_size,
+                projection_size,
+                config=config,
+                gather_output=False,
+                init_method=init_method,
+                bias=bias,
             )
 
             self.key_value = tensor_parallel.ColumnParallelLinear(
@@ -336,7 +340,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             """[s, b, num_splits * np * hn]
             -->(view) [s, b, num_splits, np, hn]
             -->(tranpose) [s, b, np, num_splits, hn]
-            -->(view) [s, b, np * num_splits * hn] """
+            -->(view) [s, b, np * num_splits * hn]"""
 
             intermediate_shape = input_shape[:-1] + (
                 num_splits,
@@ -350,7 +354,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             """[s, b, np * hn * num_splits]
             -->(view) [s, b, np, hn, num_splits]
             -->(tranpose) [s, b, np, num_splits, hn]
-            -->(view) [s, b, np * num_splits * hn] """
+            -->(view) [s, b, np * num_splits * hn]"""
 
             intermediate_shape = input_shape[:-1] + (
                 self.num_attention_heads_per_partition,
@@ -535,7 +539,10 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             )
             v = _cast_if_autocast_enabled(rearrange(value_layer, 'sk b np hn -> b sk np hn'))
             context_layer = flash_attn_with_kvcache(
-                q=q, k_cache=k, v_cache=v, causal=self.attn_mask_type == AttnMaskType.causal,
+                q=q,
+                k_cache=k,
+                v_cache=v,
+                causal=self.attn_mask_type == AttnMaskType.causal,
             )
             context_layer = rearrange(context_layer, 'b sq np hn -> sq b (np hn)')
 
@@ -742,9 +749,9 @@ class ParallelChunkedCrossAttention(MegatronModule):
 
 
 class CoreAttention(MegatronModule):
-    """ Region where selective activation recomputation is applied.
-        See Figure 3. in Reducing Activation Recomputation in Large Transformer Models
-        https://arxiv.org/pdf/2205.05198.pdf for more details.
+    """Region where selective activation recomputation is applied.
+    See Figure 3. in Reducing Activation Recomputation in Large Transformer Models
+    https://arxiv.org/pdf/2205.05198.pdf for more details.
 
     """
 
@@ -994,10 +1001,21 @@ class CoreAttention(MegatronModule):
 
         if attention_bias is not None:
             return self.flash_attention_triton(
-                query_layer, key_layer, value_layer, attention_mask, attention_bias, is_causal,
+                query_layer,
+                key_layer,
+                value_layer,
+                attention_mask,
+                attention_bias,
+                is_causal,
             )
         else:
-            return self.flash_attention_cuda(query_layer, key_layer, value_layer, attention_mask, is_causal,)
+            return self.flash_attention_cuda(
+                query_layer,
+                key_layer,
+                value_layer,
+                attention_mask,
+                is_causal,
+            )
 
     def flash_attention_cuda(self, query_layer, key_layer, value_layer, attention_mask, is_causal):
         batch_size, seqlen, nheads, _ = query_layer.shape
@@ -1071,7 +1089,13 @@ class CoreAttention(MegatronModule):
             if attention_bias.shape[3] == attention_mask_kv.shape[3]:
                 attention_bias = attention_bias.masked_fill(~attention_mask_kv, torch.finfo(query_layer.dtype).min)
 
-        context_layer = flash_attn_func_triton(query_layer, key_layer, value_layer, attention_bias, is_causal,)
+        context_layer = flash_attn_func_triton(
+            query_layer,
+            key_layer,
+            value_layer,
+            attention_bias,
+            is_causal,
+        )
 
         # [b, sq, np, hn] -> [b, np, sq, hn]
         context_layer = context_layer.permute(0, 2, 1, 3)

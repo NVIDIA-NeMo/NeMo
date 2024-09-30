@@ -15,8 +15,8 @@
 from importlib.metadata import version
 from typing import Any, Callable, Optional
 
+import packaging
 import torch
-from pkg_resources import packaging
 
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.parts import utils_funcs

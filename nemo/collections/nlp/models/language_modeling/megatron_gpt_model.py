@@ -580,7 +580,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 # using bucket_cap_mb to configure bucket_size here
                 bucket_size=self.cfg.optim.get('ddp_bucket_size', None),
                 average_in_collective=self.cfg.optim.get('average_in_collective', True),
-                overlap_param_gather=self.cfg.optim.get('overlap_param_gather', False),
+                overlap_param_gather=self.cfg.optim.get('overlap_param_sync', False),
                 align_param_gather=self.cfg.optim.get('align_param_gather', False),
                 fp8_param_gather=self.cfg.get('fp8_params', False),
             )

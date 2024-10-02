@@ -89,6 +89,9 @@ jobs:
         # trivial (non-multi-stage) builds.
         driver: docker
 
+    - name: Restore cache
+      run: docker pull nemoci.azurecr.io/nemo_container:latest
+
     - name: Build and push
       uses: docker/build-push-action@v5
       with:

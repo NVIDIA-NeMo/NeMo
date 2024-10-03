@@ -5353,7 +5353,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:  
-      - if: ${{ always() }}
+      - name: Evaluate conclusion
+        if: ${{ always() }}
         id: pipeline-conclusion
         run: |
           # Slack notifications are send only on test failure (not cancelled):
@@ -5365,19 +5366,23 @@ jobs:
           echo "SUCCESS=$SUCCESS" >> $GITHUB_OUTPUT
 
       # This should depend on all the tests so we block/unblock based on all tests passing
-      - if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' }}
+      - name: Pipeline successful, set exit code to 0 
+        if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' }}
         run: exit 0
 
-      - if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' && github.event_name == 'pull_request' && env.SLACK_WEBHOOK != '' }}
+      - name: Pipeline successful, add PR comment 
+        if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' && github.event_name == 'pull_request' && env.SLACK_WEBHOOK != '' }}
         uses: peter-evans/create-or-update-comment@v4
         env: 
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         with:
           issue-number: ${{ github.event.number }}
           body: |
             [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
             
-            I just wanted to let you know that, you know, a [CICD pipeline](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for this PR just finished successfully ✨
+            I just wanted to let you know that, you know, a [CICD pipeline](https://github.com/$REPOSITORY/actions/runs/$RUN_ID) for this PR just finished successfully ✨
 
             So it might be time to merge this PR or like to get some approvals 🚀
 
@@ -5387,26 +5392,28 @@ jobs:
 
             //cc @ko3n1g
 
-      - if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' }}
-        name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' && env.SLACK_WEBHOOK != '' }}
+      - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
+        if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' && env.SLACK_WEBHOOK != '' }}
         env: 
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.number }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           set -x
 
           PR_INFO=$(curl -L \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}
+            https://api.github.com/repos/$REPOSITORY/pulls/$PR_NUMBER
           )
           PR_URL=$(echo -E $PR_INFO | jq '.html_url' | tr -d '"')
           PR_TITLE=$(echo -E $PR_INFO | jq '.title' | tr -d '"')
           
-          PIPELINE_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PIPELINE_URL=$SERVER_URL/$REPOSITORY/actions/runs/$RUN_ID
           BASE_MESSAGE='
             {
               "blocks": [
@@ -5421,22 +5428,37 @@ jobs:
             }
           '
 
-          # We are close to reaching 100 jobs: Once we break that barrier, we have to iterate pages
-          JOBS_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100"  
+          # Since this workflow contains more than 100 jobs, we need to iterate over job pages
+          JOBS='[]'
+          PAGE=1
+          while : ; do
+            JOBS_URL="https://api.github.com/repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?page=$PAGE&per_page=100"  
+            RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" $JOBS_URL | jq '.jobs')
+            JOBS=$(echo -e "$JOBS\n$RESPONSE" | jq -cs 'add')
+            if [[ $(echo $RESPONSE | jq 'length') -lt 100 ]]; then
+              break
+            else
+              PAGE=$(( PAGE + 1))
+            fi
+          done
+          
           SUMMARY="[]"
+          echo "Failed jobs: " | tee -a $GITHUB_STEP_SUMMARY
           while IFS= read -r JOB; do
             JOB_NAME="$(echo $JOB | jq '.key' | tr -d '"') / main"
-            JOB_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $JOBS_URL | jq --arg job_name "$JOB_NAME" -r '.jobs[] | select(.name == $job_name) | .id')
-            JOB_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/$JOB_ID"
+            JOB_ID=$(echo $JOBS | jq --arg job_name "$JOB_NAME" '.[] | select(.name == $job_name) | .id')
+            JOB_URL="https://github.com/$REPOSITORY/actions/runs/$RUN_ID/job/$JOB_ID"
+
+            echo "* [$JOB_NAME]($JOB_URL)" | tee -a $GITHUB_STEP_SUMMARY
 
             LOGS=$(echo $JOB | yq '(.value.outputs.log | @base64d)' | tr -d '"')
-
+            
             SUMMARY=$(echo "$SUMMARY" | jq \
               --arg pr "<$PR_URL|$PR_TITLE>" \
               --arg job "<$JOB_URL|$JOB_NAME>" \
               --arg logs "$LOGS" \
               --arg author "<https://github.com/${{ github.actor }}|${{ github.actor }}>" \
-              --arg branch "<https://github.com/${{ github.repository }}/tree/${{ github.head_ref || github.ref_name }}|${{ github.head_ref || github.ref_name }}>"\
+              --arg branch "<https://github.com/$REPOSITORY/tree/${{ github.head_ref || github.ref_name }}|${{ github.head_ref || github.ref_name }}>"\
               '. += [
               {
                 "type": "section",
@@ -5457,8 +5479,8 @@ jobs:
 
           MESSAGE=$(echo $BASE_MESSAGE | jq -c --argjson summary "$SUMMARY" '.blocks += $summary')
 
-          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_WEBHOOK }}
+          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" $SLACK_WEBHOOK
 
-      - if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'false' }}
-        run: |
-          exit 1
+      - name: "Pipeline not successful, set exit code to 1"
+        if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'false' }}
+        run: exit 1

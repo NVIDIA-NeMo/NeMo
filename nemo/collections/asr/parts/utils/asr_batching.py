@@ -37,22 +37,22 @@ class SemiSortBatchSampler(DistributedSampler):
         seed: int = 42,
     ) -> None:
         """
-        Semi Sorted Batching, as proposed in _SSB ("Speed up training with variable 
+        Semi Sorted Batching, as proposed in _SSB ("Speed up training with variable
         length inputs by efficient batching strategies.", Zhenhao Ge et al. (2021).).
 
-        The Semi Sorted Batch Sampler (SSB) samples the indices by their duration 
-        with the addition of pseudo noise that is sampled from the uniform 
-        distribution \mathbb{U}\left[ -delta * r, delta * r \right], where delta is 
-        defined as the difference between the maximum and minimum duration and r is 
-        the randomization factor that controls the strength of the noise (when r = 0, 
-        there will be a strong sorting). The heuristic value of the r according to 
-        the experiments from paper is 0.2. 
+        The Semi Sorted Batch Sampler (SSB) samples the indices by their duration
+        with the addition of pseudo noise that is sampled from the uniform
+        distribution \mathbb{U}\left[ -delta * r, delta * r \right], where delta is
+        defined as the difference between the maximum and minimum duration and r is
+        the randomization factor that controls the strength of the noise (when r = 0,
+        there will be a strong sorting). The heuristic value of the r according to
+        the experiments from paper is 0.2.
 
-        The torch calls the set_epoch method from the distributed data loader sampler 
-        at the end of each epoch to shuffle the samples according to the seed and 
-        epoch number. So the SSB is passed to the dataloader as a sampler with the 
-        dataloader's batch size options and the batch_sampler option set to None to 
-        disable automatical batching. In this case, the sampler has become an iterator 
+        The torch calls the set_epoch method from the distributed data loader sampler
+        at the end of each epoch to shuffle the samples according to the seed and
+        epoch number. So the SSB is passed to the dataloader as a sampler with the
+        dataloader's batch size options and the batch_sampler option set to None to
+        disable automatical batching. In this case, the sampler has become an iterator
         that returns a list of batch indices.
 
         Args:
@@ -61,7 +61,7 @@ class SemiSortBatchSampler(DistributedSampler):
             durations: Sample durations parsed from `dataset.manifest_processor`.
             batch_size: Micro batch size or batch size per singe gpu.
             batch_shuffle: Batch sort before each epoch.
-            drop_last: Drop the last batch if the number of samples is less than batch 
+            drop_last: Drop the last batch if the number of samples is less than batch
                 size. Defaults to False.
             randomization_factor: The strength of noise that will be added to the sample
                 duration. If no value is passed, the value 0.2 will be used.
@@ -71,8 +71,8 @@ class SemiSortBatchSampler(DistributedSampler):
             ValueError: Wrong randomization factor value.
             RuntimeError: Unexpected behavior.
 
-        .. SSB_: 
-            https://www.isca-speech.org/archive/pdfs/interspeech_2021/ge21_interspeech.pdf
+        .. SSB_:
+            https://www.isca-archive.org/interspeech_2021/ge21_interspeech.pdf
         """
         if randomization_factor is None:
             randomization_factor = 0.1
@@ -160,10 +160,13 @@ class SemiSortBatchSampler(DistributedSampler):
         if pad_batches_num != 0:
             # randomly select batch indeces to pad and concatenate them
             batch_indeces_pad: np.array = np.random.randint(
-                low=0, high=len(sorted_indices), size=pad_batches_num * self.micro_batch_size,
+                low=0,
+                high=len(sorted_indices),
+                size=pad_batches_num * self.micro_batch_size,
             )
             sorted_indices: np.array = np.concatenate(
-                (sorted_indices, sorted_indices[batch_indeces_pad]), axis=0,
+                (sorted_indices, sorted_indices[batch_indeces_pad]),
+                axis=0,
             )
 
         # local indeces are selected by world size and local rank

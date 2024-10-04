@@ -279,7 +279,7 @@ Semi sorted batching is supported by the following models:
     nemo.collections.asr.models.EncDecHybridRNNTCTCModel
     nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModel
 
-For more details about this algorithm, see the `paper <https://www.isca-speech.org/archive/pdfs/interspeech_2021/ge21_interspeech.pdf>`_ .
+For more details about this algorithm, see the `paper <https://www.isca-archive.org/interspeech_2021/ge21_interspeech.pdf>`_ .
 
 Bucketing Datasets
 ---------------------

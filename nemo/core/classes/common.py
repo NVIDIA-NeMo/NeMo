@@ -133,7 +133,7 @@ class TypecheckMetadata:
                 while isinstance(type_val, (list, tuple)):
                     if len(type_val) > 1:
                         raise TypeError(
-                            f"Neural Type `{type_key}`: {type_val} definition contains more than one element when"
+                            f"Neural Type `{type_key}`: {type_val} definition contains more than one element when "
                             "declaring the nested container structure.\n"
                             "Please ensure that you have only 1 NeuralType inside of the entire nested structure "
                             "definition."

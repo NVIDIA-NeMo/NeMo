@@ -234,7 +234,7 @@ def build_neva_engine(
         # extract NeMo checkpoint
         with tempfile.TemporaryDirectory() as temp:
             temp_path = Path(temp)
-        mp0_weights, nemo_config, _ = load_nemo_model(visual_checkpoint_path, temp_path)
+            mp0_weights, nemo_config, _ = load_nemo_model(visual_checkpoint_path, temp_path)
 
     vision_config = nemo_config["mm_cfg"]["vision_encoder"]
 

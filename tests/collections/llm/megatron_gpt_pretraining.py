@@ -3,6 +3,7 @@
 
 import argparse
 
+import torch
 from megatron.core.optimizer import OptimizerConfig
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -12,7 +13,7 @@ from nemo.collections.llm.api import train
 from nemo.collections.llm.gpt.data import PreTrainingDataModule
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning import AutoResume, NeMoLogger
-from nemo.lightning.pytorch.callbacks import ModelCheckpoint
+from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ParameterDebugger
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 
 
@@ -73,7 +74,19 @@ if __name__ == '__main__':
         every_n_train_steps=5000,
         save_optim_on_train_end=True,
     )
-    callbacks = [checkpoint_callback]
+
+    def create_verify_precision(precision: torch.dtype):
+        def verify_precision(tensor: torch.Tensor) -> None:
+            assert tensor.dtype == precision
+
+        return verify_precision
+
+    debugger = ParameterDebugger(
+        param_fn=create_verify_precision(torch.bfloat16),
+        grad_fn=create_verify_precision(torch.float32),
+        log_on_hooks=["on_train_start", "on_train_end"],
+    )
+    callbacks = [checkpoint_callback, debugger]
 
     loggers = []
     tensorboard_logger = TensorBoardLogger(

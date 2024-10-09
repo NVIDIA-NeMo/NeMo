@@ -17,6 +17,7 @@ nltk>=3.6.5
 numpy<2  # tensorstore has an implicit compiled dependency on numpy<2
 opencc<1.1.7
 pangu
+prettytable
 rapidfuzz
 rouge_score
 sacrebleu  # manually install sacrebleu[ja] for Japanese support; MeCab is unsupported in Python 3.11+

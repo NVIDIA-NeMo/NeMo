@@ -74,6 +74,7 @@ class FabricMegatronStrategy(DDPStrategy):
         no_ddp_communication_hook: bool = True,
         output_data_idx: bool = False,
         pipeline_dtype: Optional[torch.dtype] = None,
+        init_model_parallel: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -97,6 +98,7 @@ class FabricMegatronStrategy(DDPStrategy):
         self.virtual_pipeline_model_parallel_size = virtual_pipeline_model_parallel_size
         self.sequence_parallel = sequence_parallel
         self.pipeline_dtype = pipeline_dtype
+        self._init_model_parallel = init_model_parallel
 
         self.no_ddp_communication_hook = no_ddp_communication_hook
         self.megatron_callbacks = CallbackConnector()
@@ -179,6 +181,9 @@ class FabricMegatronStrategy(DDPStrategy):
             ddp_config=self.ddp_config,
             convert_module_fn=convert_module_fn,
         )
+
+        if self._init_model_parallel:
+            megatron_parallel.init_model_parallel()
 
         if not self.ddp_config:
             from megatron.core import mpu

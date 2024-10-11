@@ -1127,7 +1127,7 @@ class MegatronStep(Generic[ModelT, DataT]):
             List[Iterator[DataT]]: A list of iterators created from the input data.
         """
         if isinstance(data, Iterator):
-            return _make_data_iterator_list(self.pipeline, data)
+            return _make_data_iterator_list(self.model, data)
         elif isinstance(data, list) and all(isinstance(item, Iterator) for item in data):
             # If data is already a list of iterators, return it as is
             return cast(List[Iterator[DataT]], data)

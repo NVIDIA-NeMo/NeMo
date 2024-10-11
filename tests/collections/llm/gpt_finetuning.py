@@ -25,7 +25,7 @@ from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenize
 
 
 @dataclass
-class Llama3Config96M(llm.Llama3Config8B):
+class Llama3ConfigCI(llm.Llama3Config8B):
     seq_length: int = 2048
     num_layers: int = 2
     hidden_size: int = 768
@@ -37,7 +37,9 @@ def get_args():
     parser = argparse.ArgumentParser(description='Finetune a small GPT model using NeMo 2.0')
     parser.add_argument('--restore_path', type=str, help="Path to model to be finetuned")
     parser.add_argument('--experiment_dir', type=str, help="directory to write results and checkpoints to")
+    parser.add_argument('--peft', type=str, default='none', help="none | lora")
     parser.add_argument('--devices', type=int, default=1, help="number of devices")
+    parser.add_argument('--max_steps', type=int, default=1, help="number of devices")
     parser.add_argument('--mbs', type=int, default=1, help="micro batch size")
     parser.add_argument('--tp_size', type=int, default=1, help="tensor parallel size")
     parser.add_argument('--pp_size', type=int, default=1, help="pipeline parallel size")
@@ -55,7 +57,7 @@ if __name__ == '__main__':
 
     trainer = nl.Trainer(
         devices=args.devices,
-        max_steps=2,
+        max_steps=args.max_steps,
         accelerator="gpu",
         strategy=strategy,
         plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
@@ -90,14 +92,15 @@ if __name__ == '__main__':
         ),
     )
 
-    lora = llm.peft.LoRA()
+    if args.peft == 'lora':
+        peft = llm.peft.LoRA()
+    else:
+        peft = None
 
     squad = llm.SquadDataModule(seq_length=2048, micro_batch_size=args.mbs, global_batch_size=8, num_workers=0)
 
-    tokenizer = get_nmt_tokenizer(
-        tokenizer_model="/lustre/fsw/coreai_dlalgo_llm/nemo_home/models/llama_96M/dummy_tokenizer.model"
-    )
-    llama3_8b = llm.LlamaModel(Llama3Config96M(), tokenizer=tokenizer)
+    tokenizer = get_nmt_tokenizer(tokenizer_model=os.path.join(args.restore_path, "dummy_tokenizer.model"))
+    llama3_8b = llm.LlamaModel(Llama3ConfigCI(), tokenizer=tokenizer)
 
     resume = nl.AutoResume(
         restore_config=nl.RestoreConfig(path=args.restore_path),
@@ -108,7 +111,7 @@ if __name__ == '__main__':
         model=llama3_8b,
         data=squad,
         trainer=trainer,
-        peft=lora,
+        peft=peft,
         log=logger,
         optim=adam,
         resume=resume,

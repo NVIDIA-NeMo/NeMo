@@ -5183,15 +5183,263 @@ jobs:
         rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
 
   L2_NeMo_2_Mixtral_Pretraining:
+      needs: [cicd-test-container-setup]
+      uses: ./.github/workflows/_test_template.yml
+      if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_Mixtral_Pretraining') || needs.cicd-test-container-setup.outputs.all == 'true'
+      with:
+        RUNNER: self-hosted-azure
+        SCRIPT: |
+          NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python3 tests/collections/llm/megatron_mixtral_pretraining.py \
+          --experiment-dir=/tmp/mixtral_pretrain_results \
+          --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document
+
+  L2_NeMo_2_GPT_SFT_TP1PP1_MBS1:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_Mixtral_Pretraining') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_SFT_TP1PP1_MBS1') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python3 tests/collections/llm/megatron_mixtral_pretraining.py \
-        --experiment-dir=/tmp/mixtral_pretrain_results \
-        --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 1
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 1
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_SFT_TP1PP1_MBS2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_SFT_TP1PP1_MBS2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 2
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_SFT_TP1PP2_MBS2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_SFT_TP1PP2_MBS2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 1 \
+        --pp_size 2 \
+        --mbs 2
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 1 \
+        --pp_size 2 \
+        --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_SFT_TP2PP1_MBS2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_SFT_TP2PP1_MBS2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 2 \
+        --pp_size 1 \
+        --mbs 2
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft none \
+        --tp_size 2 \
+        --pp_size 1 \
+        --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 1
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 1
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_LoRA_TP1PP1_MBS2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_LoRA_TP1PP1_MBS2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 2
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_LoRA_TP1PP2_MBS2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_LoRA_TP1PP2_MBS2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 1 \
+        --pp_size 2 \
+        --mbs 2
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 1 \
+        --pp_size 2 \
+        --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
+
+  L2_NeMo_2_GPT_LoRA_TP2PP1_MBS2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_LoRA_TP2PP1_MBS2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 2 \
+        --pp_size 1 \
+        --mbs 2
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --peft lora \
+        --tp_size 2 \
+        --pp_size 1 \
+        --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/${{ github.run_id }}
 
   L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact:
     needs: [cicd-test-container-setup]
@@ -5341,6 +5589,14 @@ jobs:
       - L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining
       - L2_NeMo_2_T5_Finetuning
+      - L2_NeMo_2_GPT_SFT_TP1PP1_MBS1
+      - L2_NeMo_2_GPT_SFT_TP1PP1_MBS2
+      - L2_NeMo_2_GPT_SFT_TP1PP2_MBS2
+      - L2_NeMo_2_GPT_SFT_TP2PP1_MBS2
+      - L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1
+      - L2_NeMo_2_GPT_LoRA_TP1PP1_MBS2
+      - L2_NeMo_2_GPT_LoRA_TP1PP2_MBS2
+      - L2_NeMo_2_GPT_LoRA_TP2PP1_MBS2
       - L2_NeMo_2_Mixtral_Pretraining
       - L2_PTQ_Llama2_INT8_SQ
       - L2_PTQ_Llama2_FP8

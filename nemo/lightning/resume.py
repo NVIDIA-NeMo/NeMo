@@ -149,9 +149,6 @@ class AutoResume:
             metadata = json.load(f)
 
         assert self.restore_config, "PEFT resume requires specifying restore_config"
-        assert (
-            "://" in self.restore_config.path
-        ), "For now PEFT resume requires specifying the import path instead of local path"
         base_model_path = self._extract_path(model, self.restore_config.path)
         if base_model_path != Path(metadata['model_ckpt_path']):
             raise ValueError(

@@ -70,6 +70,7 @@ from nemo.lightning.pytorch.strategies.utils import (
     setup_data_sampler,
     setup_parallel_ranks,
 )
+from nemo.lightning.resume import AdapterPath
 from nemo.utils import logging
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizerCallback
 
@@ -684,9 +685,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             if self.lightning_module.optimizers(use_pl_optimizer=False):
                 sharded_state_dict["optimizer"] = [self.optimizer_sharded_state_dict(is_loading=True)]
 
-        checkpoint = self.checkpoint_io.load_checkpoint(
-            ckpt_to_weights_subdir(checkpoint_path), sharded_state_dict=sharded_state_dict
-        )
+        # Load from ckpt_path/weights (new format) if it exists, otherwise load from ckpt_path (legacy format)
+        load_dir = ckpt_to_weights_subdir(checkpoint_path)
+        if not load_dir.exists():
+            load_dir = checkpoint_path
+        if isinstance(load_dir, AdapterPath) and not load_dir.base_model_path.exists():
+            load_dir.base_model_path = load_dir.base_model_path.parent
+        checkpoint = self.checkpoint_io.load_checkpoint(load_dir, sharded_state_dict=sharded_state_dict)
 
         return checkpoint
 

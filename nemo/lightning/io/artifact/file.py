@@ -17,6 +17,10 @@ class PathArtifact(Artifact[Path]):
 
 class FileArtifact(Artifact[str]):
     def dump(self, value: str, absolute_dir: Path, relative_dir: Path) -> str:
+        if not pathize(value).exists():
+            # This is Artifact is just a string.
+            self.skip = True
+            return value
         new_value = copy_file(value, absolute_dir, relative_dir)
         return str(new_value)
 

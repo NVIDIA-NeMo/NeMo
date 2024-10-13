@@ -11,7 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Literal
+
+import logging
+from typing import Any, Dict, Literal
 
 from megatron.energon import DefaultTaskEncoder, get_train_dataset
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS
@@ -127,3 +129,18 @@ class DiffusionDataModule(SimpleMultiModalDataModule):
         if self.use_train_split_for_val:
             return self.train_dataloader()
         return super().val_dataloader()
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        """
+        Load the state of the data module from a checkpoint.
+
+        This method is called when loading a checkpoint. It restores the state of the data module,
+        including the state of the dataloader and the number of consumed samples.
+
+        Parameters:
+        state_dict (Dict[str, Any]): The state dictionary containing the saved state of the data module.
+        """
+        try:
+            super().load_state_dict(state_dict)
+        except Exception as e:
+            logging.warning(f"datamodule.load_state_dict failed  {e}")

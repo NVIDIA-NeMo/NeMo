@@ -166,7 +166,7 @@ def main(cluster_cfg):
             cmd=cmd,
             task_name=job_name,
             cluster_config=cluster_cfg,
-            container=cluster_cfg.containers['asr'],
+            container=cluster_cfg['containers']['asr'],
             num_tasks=cluster_cfg.get('num_tasks', cluster_cfg.get('num_tasks_per_node', 1)),
             num_gpus=num_gpus,
             num_nodes=num_nodes,

@@ -98,7 +98,14 @@ class AutoResume:
             trainer.checkpoint_callback.last_model_path = trainer_ckpt_path
             # Load artifacts
             if getattr(self.restore_config, 'load_artifacts', False):
-                context_path = self.get_context_path(model)
+                if isinstance(trainer_ckpt_path, AdapterPath):
+                    # load tokenizer from the base model during peft resume, in case the first peft checkpoint
+                    # is deleted before the current peft checkpoint is saved
+                    context_path = trainer_ckpt_path.base_model_path / "context"
+                    if not context_path.exists():
+                        context_path = trainer_ckpt_path.base_model_path
+                else:
+                    context_path = self.get_context_path(model)
                 model = _try_restore_tokenizer(model, context_path)
 
         elif self.restore_config:
@@ -150,9 +157,9 @@ class AutoResume:
 
         assert self.restore_config, "PEFT resume requires specifying restore_config"
         base_model_path = self._extract_path(model, self.restore_config.path)
-        if base_model_path != Path(metadata['model_ckpt_path']):
-            raise ValueError(
-                f"When trying to resume a PEFT training run, found mismatching values: "
+        if base_model_path not in [Path(metadata['model_ckpt_path']), Path(metadata['model_ckpt_path']).parent]:
+            logging.warning(
+                f"⚠️ When trying to resume a PEFT training run, found mismatching values: "
                 f"your specified restore_path points to {base_model_path}, "
                 f"but the PEFT checkpoint was trained with "
                 f"model_ckpt_path={metadata['model_ckpt_path']}"

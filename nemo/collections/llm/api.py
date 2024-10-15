@@ -16,15 +16,22 @@ import json
 import os
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import nemo_run as run
 import pytorch_lightning as pl
+import torch
 from typing_extensions import Annotated
 
+import nemo.lightning as nl
 from nemo.lightning import AutoResume, NeMoLogger, OptimizerModule, Trainer, io
 from nemo.lightning.pytorch.callbacks import PEFT, ModelTransform
 from nemo.utils import logging
+
+if TYPE_CHECKING:
+    from megatron.core.inference.common_inference_params import CommonInferenceParams
+    from megatron.core.inference.inference_request import InferenceRequest
+
 
 TokenizerType = Any
 
@@ -384,7 +391,7 @@ def deploy(
             try:
                 logging.info("REST service will be started.")
                 uvicorn.run(
-                    'nemo.deploy.service.rest_model_api:app',
+                    "nemo.deploy.service.rest_model_api:app",
                     host=rest_service_http_address,
                     port=rest_service_port,
                     reload=True,
@@ -423,6 +430,38 @@ def export_ckpt(
     load_connector: Callable[[Path, str], io.ModelConnector] = load_connector_from_trainer_ckpt,
 ) -> Path:
     return io.export_ckpt(path, target, output_path, overwrite, load_connector)
+
+
+@run.cli.entrypoint(name="generate", namespace="llm")
+def generate(
+    path: Union[Path, str],
+    prompts: list[str],
+    trainer: Optional[nl.Trainer] = None,
+    params_dtype: torch.dtype = torch.bfloat16,
+    max_batch_size: int = 4,
+    random_seed: Optional[int] = None,
+    inference_batch_times_seqlen_threshold: int = 1000,
+    inference_params: Optional["CommonInferenceParams"] = None,
+    text_only: bool = False,
+) -> list[Union["InferenceRequest", str]]:
+    from nemo.collections.llm import inference
+
+    inference_wrapped_model, mcore_tokenizer = inference.setup_model_and_tokenizer(
+        path=path,
+        trainer=trainer,
+        params_dtype=params_dtype,
+        inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
+    )
+    results = inference.generate(
+        model=inference_wrapped_model,
+        tokenizer=mcore_tokenizer,
+        prompts=prompts,
+        max_batch_size=max_batch_size,
+        random_seed=random_seed,
+        inference_params=inference_params,
+    )
+
+    return [r.generated_text if text_only else r for r in results]
 
 
 def _use_tokenizer(model: pl.LightningModule, data: pl.LightningDataModule, tokenizer: TokenizerType) -> None:

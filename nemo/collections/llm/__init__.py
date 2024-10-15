@@ -188,7 +188,7 @@ from nemo.utils import logging
 try:
     import nemo_run as run
 
-    from nemo.collections.llm.api import export_ckpt, finetune, import_ckpt, pretrain, train, validate
+    from nemo.collections.llm.api import export_ckpt, finetune, generate, import_ckpt, pretrain, train, validate
     from nemo.collections.llm.recipes import *  # noqa
 
     __all__.extend(
@@ -199,6 +199,7 @@ try:
             "pretrain",
             "validate",
             "finetune",
+            "generate",
         ]
     )
 except ImportError as error:

@@ -18,6 +18,7 @@ import subprocess
 import warnings
 from typing import List, Optional
 
+import tensorrt_llm
 from tensorrt_llm.models import PretrainedConfig
 
 from nemo.export.trt_llm.qnemo.utils import CONFIG_NAME, WEIGHTS_NAME
@@ -65,10 +66,14 @@ def qnemo_to_tensorrt_llm(
 
     quant_algo = config.quantization.quant_algo
 
-    use_fused_mlp = quant_algo in [
-        "FP8",
-        None,
-    ] and config.hidden_act in ["silu", "swiglu", "fast-swiglu", "gelu", "geglu"]
+    use_fused_mlp = True
+    if config.quantization.exclude_modules:
+        for module_name in config.quantization.exclude_modules:
+            # For AutoQuant, fc and gate might not be quantized at the same time
+            # TODO: relax this limitation on the TRT-LLM side
+            if "gate" in module_name or "fc" in module_name:
+                use_fused_mlp = False
+    use_fused_mlp = use_fused_mlp and 'RecurrentGemma' not in config.architecture
 
     use_qdq = quant_algo in ["FP8", "W8A8_SQ_PER_CHANNEL"]
 
@@ -86,19 +91,19 @@ def qnemo_to_tensorrt_llm(
     build_cmd += f"--max_beam_width {max_beam_width} "
     build_cmd += f"--max_prompt_embedding_table_size {max_prompt_embedding_table_size} "
     build_cmd += f"--builder_opt {builder_opt} "
-    build_cmd += f"--gpt_attention_plugin {config.dtype} "
-    build_cmd += f"--nccl_plugin {config.dtype} "
     build_cmd += f"--paged_kv_cache {'enable' if paged_kv_cache else 'disable'} "
     build_cmd += f"--use_paged_context_fmha {'enable' if paged_context_fmha else 'disable'} "
     build_cmd += f"--remove_input_padding {'enable' if remove_input_padding else 'disable'} "
     build_cmd += f"--multiple_profiles {'enable' if multiple_profiles else 'disable'} "
     build_cmd += f"--reduce_fusion {'enable' if reduce_fusion else 'disable'} "
-
-    if use_fused_mlp:
-        build_cmd += "--use_fused_mlp " if "RecurrentGemma" not in config.architecture else ""
+    # TODO: resolve version check for setting use_fused_mlp once we move to 0.13.0 in the NeMo container
+    if tensorrt_llm.__version__ >= "0.13.0":
+        build_cmd += f"--use_fused_mlp {'enable' if use_fused_mlp else 'disable'} "
+    else:
+        build_cmd += "--use_fused_mlp " if use_fused_mlp else ""
 
     if not use_qdq:
-        build_cmd += f"--gemm_plugin {config.dtype} "
+        build_cmd += f"--gemm_plugin auto "
 
     if max_seq_len is not None:
         build_cmd += f"--max_seq_len {max_seq_len} "

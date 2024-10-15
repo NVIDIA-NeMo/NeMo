@@ -18,7 +18,7 @@ from typing import Callable, Optional
 
 import torch
 import torch.distributed as dist
-from megatron.core import mpu, parallel_state
+from megatron.core import parallel_state
 from megatron.core.transformer.module import Float16Module
 from omegaconf.omegaconf import DictConfig, open_dict
 

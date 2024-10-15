@@ -61,7 +61,7 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
             model_sharded_state_dict, is_loading=is_loading, sharding_type=sharding_type
         )
 
-    def step(self, closure):
+    def step(self, closure=None):
         """Clip gradients (if needed) and step the base optimizer.
         Always return successful since there is no overflow."""
         # Apply closure

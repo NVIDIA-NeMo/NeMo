@@ -82,7 +82,7 @@ class MegatronDataSampler(DataSampler):
         from nemo.lightning.pytorch.strategies import MegatronStrategy
         from nemo.utils import AppState
 
-        if not isinstance(self.trainer.strategy, MegatronStrategy):
+        if not hasattr(self, "trainer") or not isinstance(self.trainer.strategy, MegatronStrategy):
             return 0
 
         app_state = AppState()
@@ -107,6 +107,9 @@ class MegatronDataSampler(DataSampler):
         )
 
     def on_megatron_microbatches_start(self, step: MegatronStep) -> None:
+        if not step.trainer:
+            return
+
         # do validation and save the checkpoint when gbs is changed
         if (
             self.rampup_batch_size is not None
@@ -128,23 +131,24 @@ class MegatronDataSampler(DataSampler):
 
         self.prev_global_batch_size = self.current_global_batch_size
 
-        consumed_samples = self.compute_consumed_samples(trainer.global_step + 1 - self.init_global_step)
-        if self.output_log and self.trainer.training:
-            # You may need to turn off logging, for example when doing trainer.predict(model, data)
-            pl_module.log(
-                'consumed_samples',
-                consumed_samples,
-                prog_bar=True,
-                batch_size=1,
+        if step.step_i:
+            consumed_samples = self.compute_consumed_samples(step.step_i + 1 - self.init_global_step)
+            if self.output_log and trainer and getattr(trainer, "training", False):
+                # You may need to turn off logging, for example when doing trainer.predict(model, data)
+                pl_module.log(
+                    'consumed_samples',
+                    consumed_samples,
+                    prog_bar=True,
+                    batch_size=1,
+                )
+
+            self.prev_consumed_samples = consumed_samples
+
+            update_num_microbatches(
+                consumed_samples=consumed_samples,
+                consistency_check=False,
             )
-
-        self.prev_consumed_samples = consumed_samples
-
-        update_num_microbatches(
-            consumed_samples=consumed_samples,
-            consistency_check=False,
-        )
-        if self.output_log:
+        if self.output_log and trainer:
             # You may need to turn off logging, for example when doing trainer.predict(model, data)
             pl_module.log(
                 "global_batch_size",

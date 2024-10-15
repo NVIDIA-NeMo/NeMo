@@ -26,6 +26,7 @@ from lightning_fabric.strategies.strategy import _validate_keys_for_strict_loadi
 from lightning_fabric.utilities.types import _PATH, _Stateful
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
+from pytorch_lightning import LightningDataModule
 from pytorch_lightning.loops.fetchers import _DataFetcher
 from pytorch_lightning.plugins.io.wrapper import _WrappingCheckpointIO
 from pytorch_lightning.utilities.combined_loader import CombinedLoader
@@ -106,6 +107,7 @@ class FabricMegatronStrategy(DDPStrategy):
         if megatron_callbacks:
             self.megatron_callbacks.add(megatron_callbacks)
         self.output_data_idx = output_data_idx
+        self.data_sampler: Optional["DataSampler"] = data_sampler
 
         # used in NVIDIA NGC PyTorch containers
         _strategy_lib.enable_nvidia_optimizations()
@@ -141,13 +143,25 @@ class FabricMegatronStrategy(DDPStrategy):
         #     _strategy_lib.initialize_data(self.cluster_environment.global_rank(), self.data_config)
         _strategy_lib.init_model_parallel()
 
+    def process_datamodule(self, datamodule: LightningDataModule) -> LightningDataModule:
+        datamodule.setup()
+
+        if not self.data_sampler and hasattr(datamodule, "data_sampler"):
+            self.data_sampler = datamodule.data_sampler
+
+        if self.data_sampler:
+            self.data_sampler.setup(self.cluster_environment.global_rank())
+
+        return datamodule
+
     @override
     def process_dataloader(self, dataloader: DataLoader) -> Iterator:
-        loader = _strategy_lib.process_dataloader(dataloader, self.data_config)
+        if self.data_sampler:
+            dataloader = self.data_sampler.transform_dataloader(dataloader)
 
         # Code taken from: https://github.com/Lightning-AI/pytorch-lightning/blob/6cbe9ceb560d798892bdae9186291acf9bf5d2e3/src/lightning/pytorch/loops/fit_loop.py#L258-L260
-        output = _MegatronDataLoaderIterDataFetcher(self.data_config, output_data_idx=self.output_data_idx)
-        output.setup(CombinedLoader(loader, "max_size_cycle"))
+        output = _MegatronDataLoaderIterDataFetcher(output_data_idx=self.output_data_idx)
+        output.setup(CombinedLoader(dataloader, "max_size_cycle"))
         iter(output)
 
         return output
@@ -160,6 +174,11 @@ class FabricMegatronStrategy(DDPStrategy):
         scale_lr_cond: Optional[Callable] = None,
         lr_mult: float = 1.0,
     ) -> Optimizer:
+        if hasattr(self.precision, "convert_config"):
+            optimizer_config = self.precision.convert_config(optimizer_config)
+
+        assert optimizer_config.lr is not None, "Learning rate must be set in optimizer config"
+
         return _strategy_lib.setup_megatron_optimizer(
             model,
             optimizer_config,
@@ -180,15 +199,22 @@ class FabricMegatronStrategy(DDPStrategy):
 
     @override
     def setup_module(self, module: Module) -> MegatronParallel:
-        _strategy_lib.set_model_parallel_attributes(module, self.parallelism)
+        from megatron.core.utils import get_model_config
 
-        # Call configure_model if it's overridden (relevant for LightningModules with lazy initialization)
-        if hasattr(module, "configure_model"):
-            module.configure_model()
+        _strategy_lib.set_model_parallel_attributes(module, self.parallelism)
 
         convert_module_fn = None
         if hasattr(self.precision, "convert_module"):
             convert_module_fn = self.precision.convert_module
+
+        if hasattr(self.precision, "convert_config"):
+            self.precision.convert_config(get_model_config(module))
+            if self.ddp_config:
+                self.precision.convert_config(self.ddp_config)
+
+        # Call configure_model if it's overridden (relevant for LightningModules with lazy initialization)
+        if hasattr(module, "configure_model"):
+            module.configure_model()
 
         megatron_parallel = MegatronParallel(
             module,
@@ -201,6 +227,9 @@ class FabricMegatronStrategy(DDPStrategy):
 
         if self._init_model_parallel:
             megatron_parallel.init_model_parallel()
+
+        if self.data_sampler:
+            megatron_parallel.callbacks.add(self.data_sampler)
 
         if not self.ddp_config:
             from megatron.core import mpu
@@ -364,9 +393,8 @@ class FabricMegatronStrategy(DDPStrategy):
 
 # TODO: Fix this
 class _MegatronDataLoaderIterDataFetcher(_DataFetcher):
-    def __init__(self, data_config, *args: Any, output_data_idx: bool = False, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, output_data_idx: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.data_config = data_config
         self.output_data_idx = output_data_idx
         self._batch: Any = None
         self._batch_idx: int = 0

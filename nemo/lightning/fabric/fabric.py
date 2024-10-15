@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING, Optional, Protocol, Sequence, Type, TypeVar, U
 
 import fiddle as fdl
 import lightning_fabric as lb
+import pytorch_lightning as pl
 from torch import nn
-from torch.optim import Optimizer
+
 from typing_extensions import Self, override
 
 from nemo.lightning.io.mixin import IOMixin, serialization, track_io
@@ -129,6 +130,14 @@ class Fabric(lb.Fabric, IOMixin):
             return out._forward_module
 
         return out
+
+    def setup_datamodule(self, datamodule: pl.LightningDataModule, stage: str = "") -> pl.LightningDataModule:
+        datamodule.setup(stage)
+
+        if hasattr(self.strategy, "process_datamodule"):
+            datamodule = self.strategy.process_datamodule(datamodule)
+
+        return datamodule
 
 
 @runtime_checkable

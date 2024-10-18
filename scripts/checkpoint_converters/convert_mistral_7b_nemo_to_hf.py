@@ -65,6 +65,7 @@ def load_config(hf_model_name, nemo_config):
         logging.warning(f"Got unknown activation function {nemo_config.activation}")
 
     hf_config.rope_theta = nemo_config['rotary_base']
+    hf_config.tie_word_embeddings = getattr(nemo_config, "share_embeddings_and_output_weights", False)
     return hf_config
 
 
@@ -213,7 +214,13 @@ def convert(in_file, precision=None, cpu_only=True) -> None:
         output_layer_base_name = 'model.output_layer.weight'
     else:
         output_layer_base_name = 'model.language_model.output_layer.weight'
-    state_dict[hf_output_layer_weight_name] = param_to_weights(ckpt[output_layer_base_name])
+
+    if getattr(nemo_config, "share_embeddings_and_output_weights", False):
+        # tie_word_embeddings: True
+        state_dict[hf_output_layer_weight_name] = state_dict[embed_weights_base_name]
+    else:
+        # tie_word_embeddings: False
+        state_dict[hf_output_layer_weight_name] = param_to_weights(ckpt[output_layer_base_name])
     return state_dict, nemo_config, dtype
 
 

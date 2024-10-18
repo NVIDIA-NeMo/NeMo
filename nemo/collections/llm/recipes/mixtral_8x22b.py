@@ -117,6 +117,9 @@ def trainer(
             DistributedDataParallelConfig,
             check_for_nan_in_grad=True,
             grad_reduce_in_fp32=True,
+            overlap_grad_reduce=True,
+            overlap_param_gather=True,
+            average_in_collective=True,
         ),
     )
 
@@ -215,10 +218,20 @@ def pretrain_recipe_performance(
         It may not be suitable for all hardware configurations or use cases.
     """
     recipe = pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn)
+
+    # 'overlap_param_gather_with_optimizer_step' and 'align_param_gather' params are set automatically by MegatronCommOverlapCallback
+    # They are added here for user's knowledge
+    # overlap_param_gather_with_optimizer_step- If true, overlap param all-gather of first bucket with optimizer step.
+    # align_param_gather- If true, all PP stages launch param all-gathers simultaneously, else each PP stage launches independently as needed
+
     recipe.trainer.callbacks.extend(
         [
-            run.Config(MegatronTokenDropCallback),
-            run.Config(MegatronCommOverlapCallback),
+            run.Config(
+                MegatronTokenDropCallback,
+            ),
+            run.Config(
+                MegatronCommOverlapCallback, overlap_param_gather_with_optimizer_step=True, align_param_gather=True
+            ),
         ]
     )
 

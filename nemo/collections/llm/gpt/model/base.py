@@ -204,6 +204,9 @@ class GPTConfig5B(GPTConfig):
     ffn_hidden_size: int = 16384
     num_attention_heads: int = 32
 
+    bias_activation_fusion: bool = True
+    bias_dropout_add_fusion: bool = True
+
 
 @dataclass
 class GPTConfig7B(GPTConfig):
@@ -222,6 +225,9 @@ class GPTConfig20B(GPTConfig):
     ffn_hidden_size: int = 24576
     num_attention_heads: int = 48
 
+    bias_activation_fusion: bool = True
+    bias_dropout_add_fusion: bool = True
+
 
 @dataclass
 class GPTConfig40B(GPTConfig):
@@ -239,6 +245,9 @@ class GPTConfig175B(GPTConfig):
     hidden_size: int = 12288
     ffn_hidden_size: int = 49152
     num_attention_heads: int = 96
+
+    bias_activation_fusion: bool = True
+    bias_dropout_add_fusion: bool = True
 
 
 class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):

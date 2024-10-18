@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Callable, Optional
 
 import nemo_run as run
 import pytorch_lightning as pl
@@ -26,6 +26,7 @@ from nemo.collections.llm.peft.lora import LoRA
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.nemotron import nemotron_model, nemotron_trainer
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
+from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.utils.exp_manager import TimingCallback
 
 NAME = "nemotron3_8b"
@@ -172,6 +173,52 @@ def pretrain_recipe(
         ),
         resume=default_resume(),
     )
+
+
+@run.cli.factory(target=pretrain, name=NAME + "_performance")
+def pretrain_recipe_performance(
+    dir: Optional[str] = None,
+    name: str = "default",
+    num_nodes: int = 1,
+    num_gpus_per_node: int = 8,
+    fn: Callable = pretrain,
+) -> run.Partial:
+    """
+    Create a performance-optimized pre-training recipe for Nemotron3 8B model.
+
+    This recipe enables performance optimizations that may not be suitable for all use cases.
+    It builds upon the standard pre-training recipe and adds additional performance enhancements.
+
+    Args:
+        dir (Optional[str]): Directory for saving logs and checkpoints.
+        name (str): Name of the pre-training run.
+        num_nodes (int): Number of compute nodes to use.
+        num_gpus_per_node (int): Number of GPUs per node.
+        fn (Callable): The pre-training function to use.
+
+    Returns:
+        run.Partial: Partial configuration for performance-optimized pre-training.
+
+    Examples:
+            $ nemo llm pretrain --factory nemotron3_8b_optimized
+
+        Python API usage:
+            >>> recipe = pretrain_recipe_performance(name="nemotron3_8b_perf", num_nodes=4)
+            >>> print(recipe)
+
+    Note:
+        Use this recipe with caution and only when you need maximum performance.
+        It may not be suitable for all hardware configurations or use cases.
+    """
+    recipe = pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn)
+
+    recipe.trainer.callbacks.append(
+        run.Config(
+            MegatronCommOverlapCallback,
+            tp_comm_overlap=True,
+        )
+    )
+    return recipe
 
 
 @run.cli.factory(name=NAME + "_nemo")

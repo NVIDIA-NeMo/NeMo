@@ -24,56 +24,54 @@ from pytorch_lightning.callbacks.callback import Callback
 from nemo import lightning as nl
 from nemo.collections.llm.api import pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
-from nemo.collections.llm.gpt.model.llama import Llama31Config405B, LlamaModel
+from nemo.collections.llm.gpt.model import GPTConfig175B, GPTModel
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
-    userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192,
+    userbuffers_bf16_h100_h12288_tp4_mbs1_seqlen2048,
 )
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.utils.exp_manager import TimingCallback
 
-NAME = "llama31_405b"
+NAME = "gpt3_175b"
 
 
 @run.cli.factory(name=NAME)
 def model() -> run.Config[pl.LightningModule]:
     """
-    Factory function to create a Llama3.1 405B model configuration.
+    Factory function to create a GPT3 175B model configuration.
 
     Returns:
-        run.Config[pl.LightningModule]: Configuration for the Llama3.1 405B model.
+        run.Config[pl.LightningModule]: Configuration for the GPT3 175B model.
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain model=llama31_405b ...
+            $ nemo llm pretrain model=gpt3_175b ...
 
         Python API usage:
             >>> model_config = model()
             >>> print(model_config)
     """
-    conf = run.Config(Llama31Config405B)
-    conf.seq_length = 8192
-    return run.Config(LlamaModel, config=conf)
+    return run.Config(GPTModel, config=run.Config(GPTConfig175B))
 
 
 def trainer(
-    tensor_parallelism: int = 8,
-    pipeline_parallelism: int = 9,
+    tensor_parallelism: int = 4,
+    pipeline_parallelism: int = 8,
     pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
-    virtual_pipeline_parallelism: Optional[int] = 2,
-    context_parallelism: int = 4,
+    virtual_pipeline_parallelism: Optional[int] = 6,
+    context_parallelism: int = 1,
     sequence_parallelism: bool = True,
-    num_nodes: int = 72,
+    num_nodes: int = 64,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
     callbacks: Optional[list[run.Config[Callback]]] = None,
 ) -> run.Config[nl.Trainer]:
     """
-    Configure the NeMo Lightning Trainer for Llama3.1 405B model.
+    Configure the NeMo Lightning Trainer for GPT3 175B model.
 
-    This function sets up the distributed training strategy optimized for the large 405B model.
+    This function sets up the distributed training strategy optimized for the large 175B model.
 
     Args:
         tensor_parallelism (int): Degree of tensor model parallelism.
@@ -92,10 +90,10 @@ def trainer(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain trainer=llama31_405b ...
+            $ nemo llm pretrain trainer=gpt3_175b ...
 
         Python API usage:
-            >>> trainer_config = trainer(num_nodes=4, num_gpus_per_node=8)
+            >>> trainer_config = trainer(num_nodes=64, num_gpus_per_node=8)
             >>> print(trainer_config)
 
     Note:
@@ -147,7 +145,7 @@ def pretrain_recipe(
     dir: Optional[str] = None, name: str = "default", num_nodes: int = 1, num_gpus_per_node: int = 8, fn=pretrain
 ) -> run.Partial:
     """
-    Create a pre-training recipe for Llama3.1 405B model.
+    Create a pre-training recipe for GPT3 175B model.
 
     This function sets up a complete configuration for pre-training, including
     model, trainer, data, logging, optimization, and resumption settings.
@@ -164,15 +162,15 @@ def pretrain_recipe(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory llama31_405b
-            $ nemo llm pretrain --factory "llama31_405b(num_nodes=4, name='my_405b_pretrain')"
+            $ nemo llm pretrain --factory gpt3_175b
+            $ nemo llm pretrain --factory "gpt3_175b(num_nodes=64, name='my_175b_pretrain')"
 
         Python API usage:
-            >>> recipe = pretrain_recipe(name="llama31_405b_pretrain", num_nodes=4)
+            >>> recipe = pretrain_recipe(name="gpt3_175b_pretrain", num_nodes=64)
             >>> print(recipe)
 
     Note:
-        This recipe is optimized for the large 405B model and requires significant computational resources.
+        This recipe is optimized for the large 175B model and requires significant computational resources.
     """
     return run.Partial(
         fn,
@@ -182,9 +180,9 @@ def pretrain_recipe(
             num_gpus_per_node=num_gpus_per_node,
             callbacks=[run.Config(TimingCallback)],
         ),
-        data=run.Config(MockDataModule, seq_length=8192, global_batch_size=512, micro_batch_size=1),
+        data=run.Config(MockDataModule, seq_length=2048, global_batch_size=2048, micro_batch_size=2),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
-        optim=distributed_fused_adam_with_cosine_annealing(max_lr=3e-4),
+        optim=distributed_fused_adam_with_cosine_annealing(max_lr=0.9e-4),
         resume=default_resume(),
     )
 
@@ -198,7 +196,7 @@ def pretrain_recipe_performance(
     fn: Callable = pretrain,
 ) -> run.Partial:
     """
-    Create a performance-optimized pre-training recipe for Llama3.1 405B model.
+    Create a performance-optimized pre-training recipe for GPT3 175B model.
 
     This recipe enables performance optimizations that may not be suitable for all use cases.
     It builds upon the standard pre-training recipe and adds additional performance enhancements.
@@ -215,10 +213,10 @@ def pretrain_recipe_performance(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory "llama31_405b.pretrain_recipe_performance(num_nodes=4, name='perf_pretrain')"
+            $ nemo llm pretrain --factory "gpt3_175b.pretrain_recipe_performance(num_nodes=64, name='perf_pretrain')"
 
         Python API usage:
-            >>> recipe = pretrain_recipe_performance(name="llama31_405b_perf", num_nodes=4)
+            >>> recipe = pretrain_recipe_performance(name="gpt3_175b_perf", num_nodes=64)
             >>> print(recipe)
 
     Note:
@@ -236,7 +234,7 @@ def pretrain_recipe_performance(
         run.Config(
             MegatronCommOverlapCallback,
             tp_comm_overlap=True,
-            tp_comm_overlap_cfg=userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192,
+            tp_comm_overlap_cfg=userbuffers_bf16_h100_h12288_tp4_mbs1_seqlen2048,
             defer_embedding_wgrad_compute=True,
             wgrad_deferral_limit=50,
             overlap_param_gather_with_optimizer_step=True,

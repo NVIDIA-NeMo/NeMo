@@ -29,6 +29,7 @@ from pytorch_lightning.loops import _TrainingEpochLoop
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
+from nemo.utils.app_state import AppState
 from nemo.utils.callbacks import NeMoModelCheckpoint
 from nemo.utils.exp_manager import (
     CheckpointMisconfigurationError,
@@ -1097,3 +1098,74 @@ class TestExpManager:
                 restored_trainer,
                 {"resume_if_exists": True, "resume_ignore_no_checkpoint": True, "explicit_log_dir": str(test_dir)},
             )
+
+    @pytest.mark.unit
+    def test_save_nemo_not_comp_with_model_parallel(self, tmp_path):
+        """
+        Ensure that always_save_nemo is not compatible with model parallelism.
+        """
+
+        test_dir = tmp_path / "test"
+
+        with pytest.raises(LoggerMisconfigurationError):
+            appstate = AppState()
+            appstate.tensor_model_parallel_size = 2
+            appstate.pipeline_model_parallel_size = 1
+            appstate.context_parallel_size = 1
+            test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1)
+            exp_manager(
+                test_trainer,
+                {
+                    "checkpoint_callback_params": {
+                        "always_save_nemo": True,
+                    },
+                    "explicit_log_dir": str(test_dir),
+                }
+            )
+
+        with pytest.raises(LoggerMisconfigurationError):
+            appstate = AppState()
+            appstate.tensor_model_parallel_size = 1
+            appstate.pipeline_model_parallel_size = 2
+            appstate.context_parallel_size = 1
+            test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1)
+            exp_manager(
+                test_trainer,
+                {
+                    "checkpoint_callback_params": {
+                        "always_save_nemo": True,
+                    },
+                    "explicit_log_dir": str(test_dir),
+                },
+            )
+
+        with pytest.raises(LoggerMisconfigurationError):
+            appstate = AppState()
+            appstate.tensor_model_parallel_size = 1
+            appstate.pipeline_model_parallel_size = 1
+            appstate.context_parallel_size = 2
+            test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1)
+            exp_manager(
+                test_trainer,
+                {
+                    "checkpoint_callback_params": {
+                        "always_save_nemo": True,
+                    },
+                    "explicit_log_dir": str(test_dir),
+                },
+            )
+
+        appstate = AppState()
+        appstate.tensor_model_parallesl_size = 1
+        appstate.pipeline_model_parallel_size = 1
+        appstate.context_parallel_size = 1
+        test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1)
+        exp_manager(
+            test_trainer,
+            {
+                "checkpoint_callback_params": {
+                    "always_save_nemo": True,
+                },
+                "explicit_log_dir": str(test_dir),
+            },
+        )

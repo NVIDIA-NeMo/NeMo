@@ -130,7 +130,7 @@ def pretrain_recipe(
     model_name: str = '',
 ) -> run.Partial:
     """
-    Create a pre-training recipe for Mistral 7B model.
+    Create a pre-training recipe for a HfAutoModelForCausalLM model.
 
     This function sets up a complete configuration for pre-training, including
     model, trainer, data, logging, optimization, and resumption settings.
@@ -155,7 +155,7 @@ def pretrain_recipe(
     """
     return run.Partial(
         fn,
-        model=model(model_name),
+        model=model(model_name, load_pretrained_weights=False),
         trainer=trainer(
             num_nodes=num_nodes,
             num_gpus_per_node=num_gpus_per_node,
@@ -166,3 +166,65 @@ def pretrain_recipe(
         optim=pytorch_adam_with_cosine_annealing(max_lr=3e-4),
         resume=default_resume(),
     )
+
+
+@run.cli.factory(target=finetune, name=NAME)
+def finetune_recipe(
+    dir: Optional[str] = None,
+    name: str = "default",
+    num_nodes: int = 1,
+    num_gpus_per_node: int = 8,
+    peft_scheme: Optional[str] = 'lora',
+    model_name: str = '',
+) -> run.Partial:
+    """
+    Create a fine-tuning recipe for a HfAutoModelForCausalLM model.
+
+    This function sets up a complete configuration for fine-tuning, including
+    model, trainer, data, logging, optimization, and resumption settings.
+    The recipe uses LoRA (Low-Rank Adaptation) for efficient fine-tuning, unless peft_scheme is set to None.
+
+    Args:
+        dir (Optional[str]): Directory for saving logs and checkpoints.
+        name (str): Name of the fine-tuning run.
+        num_nodes (int): Number of compute nodes to use.
+        num_gpus_per_node (int): Number of GPUs per node.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
+
+    Returns:
+        run.Partial: Partial configuration for fine-tuning.
+
+    Examples:
+        CLI usage:
+            $ nemo llm finetune --factory hf_auto_model_for_causal_lm
+
+        Python API usage:
+            >>> recipe = finetune_recipe(name="llama3_8b_finetune", num_nodes=2)
+            >>> print(recipe)
+
+    Note:
+        This recipe uses the SQuAD dataset for fine-tuning. For more information
+        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
+        `examples/llm/finetune/` directory.
+    """
+    recipe = run.Partial(
+        finetune,
+        model=model(model_name, load_pretrained_weights=True),
+        trainer=trainer(
+            num_nodes=num_nodes,
+            num_gpus_per_node=num_gpus_per_node,
+            callbacks=[run.Config(TimingCallback)],
+        ),
+        data=run.Config(MockDataModule, seq_length=4096, global_batch_size=512, micro_batch_size=1),
+        log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
+        optim=pytorch_adam_with_cosine_annealing(max_lr=3e-4),
+        resume=default_resume(),
+    )
+    if peft_scheme is None or peft_scheme.lower() == 'none':
+        recipe.optim.config.lr = 5e-6
+    elif peft_scheme.lower() == 'lora':
+        recipe.peft = run.Config(LoRA)
+        recipe.optim.config.lr = 1e-4
+    else:
+        raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
+    return recipe

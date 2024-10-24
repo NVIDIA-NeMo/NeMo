@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
+from nemo.collections.llm import fn
 from nemo.lightning import io
 
 
@@ -33,7 +34,7 @@ def masked_cross_entropy(logits, targets, mask=None):
         return F.cross_entropy(logits, targets)
 
 
-class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin):
+class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     def __init__(self, model_name='gpt2', load_pretrained_weights=True, tokenizer=None, loss_fn=masked_cross_entropy):
         super().__init__()
         self.save_hyperparameters()

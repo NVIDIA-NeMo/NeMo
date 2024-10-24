@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import List, Literal
 
+import torch
 from megatron.core import parallel_state
 from megatron.core.tensor_parallel import ColumnParallelLinear, RowParallelLinear
 from torch import nn
@@ -67,6 +69,49 @@ class AdapterParallelAdd(AdapterWrapper):
 
         adapter_output = self.adapter(x.contiguous())
         return linear_output + adapter_output, bias
+
+
+class LinearAdapter(nn.Module):
+    def __init__(
+        self, orig_linear, dim=8, alpha=32, dropout=0.1, dropout_position='post', lora_A_init_method='xavier'
+    ):
+        super(LinearAdapter, self).__init__()
+        assert isinstance(orig_linear, nn.Linear)
+
+        self.orig_linear = orig_linear
+        self.dim = dim
+        self.scale = alpha / dim
+
+        # Freezer
+        device = self.orig_linear.weight.device
+        self.orig_linear.weight.requires_grad = False
+        if self.orig_linear.bias is not None:
+            self.orig_linear.bias.requires_grad = False
+
+        in_features = self.orig_linear.in_features
+        out_features = self.orig_linear.out_features
+        dtype = self.orig_linear.weight.dtype
+        self.lora_a = nn.Parameter(torch.zeros((in_features, dim), dtype=dtype, device=device))
+        self.lora_b = nn.Parameter(torch.zeros((dim, out_features), dtype=dtype, device=device))
+        if lora_A_init_method == 'xavier':
+            torch.nn.init.uniform_(self.lora_a)
+        else:
+            nn.init.kaiming_uniform_(self.lora_a, a=math.sqrt(5))
+
+        self.dropout = nn.Dropout(p=dropout)
+        assert dropout_position in ['pre', 'post'], dropout_position
+        self.dropout_position = dropout_position
+
+    def forward(self, x):
+        res = self.orig_linear(x)
+        if self.dropout_position == 'pre':
+            x = self.dropout(x)
+        lora_res = x @ self.lora_a
+        lora_res = lora_res @ self.lora_b
+        lora_res = lora_res * self.scale
+        if self.dropout_position == 'post':
+            lora_res = self.dropout(lora_res)
+        return res + lora_res
 
 
 @dataclass
@@ -142,13 +187,13 @@ class LoRA(PEFT):
             match = regex_pattern.match(key)
             return match is not None
 
-        tp_size = parallel_state.get_tensor_model_parallel_world_size()
         full_name = f"{prefix}.{name}" if prefix else name
         if name in self.target_modules or any(wildcard_match(pattern, full_name) for pattern in self.target_modules):
             if HAVE_TE and isinstance(m, TEColumnParallelLinear) or isinstance(m, TELayerNormColumnParallelLinear):
                 input_is_parallel = False
                 # m.in_features and m.out_features are divided by tp_size already,
                 # but in_features and out_features passed to ParallelLinearAdapter are not.
+                tp_size = parallel_state.get_tensor_model_parallel_world_size()
                 in_features = m.in_features
                 out_features = m.out_features * tp_size
                 # LoRA is applied after layernorm, so layernorm output must be returned
@@ -158,6 +203,7 @@ class LoRA(PEFT):
                     m.return_layernorm_output_gathered = True
             elif HAVE_TE and isinstance(m, TERowParallelLinear):
                 input_is_parallel = True
+                tp_size = parallel_state.get_tensor_model_parallel_world_size()
                 in_features = m.in_features * tp_size
                 out_features = m.out_features
             elif isinstance(m, ColumnParallelLinear):
@@ -168,6 +214,10 @@ class LoRA(PEFT):
                 input_is_parallel = True
                 in_features = m.input_size
                 out_features = m.output_size
+            elif isinstance(m, nn.Linear):
+                return LinearAdapter(
+                    m, dim=self.dim, alpha=self.alpha, dropout=self.dropout, lora_A_init_method=self.lora_A_init_method
+                )
             else:
                 raise NotImplementedError(f"Layer type is unrecognized for LoRA: {type(m)}")
 

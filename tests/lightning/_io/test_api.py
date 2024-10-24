@@ -16,6 +16,7 @@ import os
 from functools import partial
 from pathlib import Path
 
+import fiddle as fdl
 import pytest
 import yaml
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -69,9 +70,9 @@ class TestLoad:
         loaded_func = loaded.extra["dummy"]
         assert loaded_func(b=2) == partial_function_with_pos_and_key_args(b=2)
 
-        model_yaml = Path(tmpdir) / "model.yaml"
-        assert model_yaml.exists()
-
-        observed = yaml.safe_load(model_yaml.read_text())
-        expected = yaml.safe_load((Path(ARTIFACTS_DIR) / "model.yaml").read_text())
-        assert observed.keys() == expected.keys()
+        config = io.load_context(tmpdir, build=False)
+        assert isinstance(config, fdl.Config)
+        assert config.model.config.seq_length == ckpt.model.config.seq_length
+        assert config.model.tokenizer.vocab_file.startswith(str(tmpdir))
+        assert config.model.tokenizer.merges_file.startswith(str(tmpdir))
+        assert config.extra["dummy"] == fdl.Partial(dummy_extra, 10, c=15)

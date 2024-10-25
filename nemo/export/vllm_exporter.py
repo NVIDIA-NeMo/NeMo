@@ -92,6 +92,7 @@ class vLLMExporter(ITritonDeployable):
         log_stats: bool = True,
         weight_storage: str = 'auto',
         gpu_memory_utilization: float = 0.9,
+        quantization: Optional[str] = None,
     ):
         """
         Exports the Nemo checkpoint to vLLM and initializes the engine.
@@ -122,10 +123,14 @@ class vLLMExporter(ITritonDeployable):
                 "auto" - use "cache" for multi-GPU runs and "memory" for single-GPU runs.
             gpu_memory_utilization (float): The fraction of GPU memory to be used for the model
                 executor, which can range from 0 to 1.
+            quantization (str): quantization method that is used to quantize the model weights.
+                Possible choices are None (weights not quantized, default) and "fp8".
         """
 
         # Pouplate the basic configuration structures
         device_config = DeviceConfig(device)
+
+        assert quantization in {None, 'fp8'}
 
         model_config = NemoModelConfig(
             nemo_checkpoint,
@@ -138,7 +143,7 @@ class vLLMExporter(ITritonDeployable):
             code_revision=None,
             tokenizer_revision=None,
             max_model_len=max_model_len,
-            quantization=None,  # TODO ???
+            quantization=quantization,
             quantization_param_path=None,
             enforce_eager=False,
             max_seq_len_to_capture=None,
@@ -157,6 +162,11 @@ class vLLMExporter(ITritonDeployable):
         if model_config.model and not os.path.exists(os.path.join(model_config.model, 'config.json')):
             with open(os.path.join(model_config.model, 'config.json'), "w") as f:
                 json.dump(model_config.hf_text_config.to_dict(), f)
+
+        # Dynamic online FP8 quantization currently does not support in-memory conversion [TODO]
+        if quantization is not None and weight_storage in {'auto', 'memory'}:
+            LOGGER.warning(f'Setting weight_storage = "file" for FP8 quantization')
+            weight_storage = 'file'
 
         # See if we have an up-to-date safetensors file
         safetensors_file = os.path.join(model_config.model, 'model.safetensors')

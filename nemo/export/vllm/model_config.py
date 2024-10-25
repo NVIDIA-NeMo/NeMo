@@ -81,6 +81,7 @@ class NemoModelConfig(ModelConfig):
         self.disable_sliding_window = disable_sliding_window
         self.served_model_name = nemo_checkpoint
         self.multimodal_config = None
+        self.mm_processor_kwargs = {}
         self.use_async_output_proc = use_async_output_proc
 
         self.model_converter = get_model_converter(model_type)
@@ -134,6 +135,9 @@ class NemoModelConfig(ModelConfig):
             disable_sliding_window=self.disable_sliding_window,
             sliding_window_len=self.get_hf_config_sliding_window(),
         )
+        self.is_attention_free = self._init_attention_free()
+        self.has_inner_state = self._init_has_inner_state()
+
         self._verify_tokenizer_mode()
         self._verify_embedding_mode()
         self._verify_quantization()

@@ -93,6 +93,12 @@ def get_args(argv):
         type=float,
         help="GPU memory utilization percentage for vLLM.",
     )
+    parser.add_argument(
+        "-q",
+        "--quantization",
+        choices=["fp8"],
+        help="Quantization method for vLLM.",
+    )
     args = parser.parse_args(argv)
     return args
 
@@ -111,6 +117,7 @@ def get_vllm_deployable(args, model_dir):
             dtype=args.dtype,
             weight_storage=args.weight_storage,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            quantization=args.quantization,
         )
         return exporter
     except Exception as error:

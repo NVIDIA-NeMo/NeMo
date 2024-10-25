@@ -1,3 +1,17 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import functools
 import inspect
 import json
@@ -64,6 +78,21 @@ def _config_representer_with_defaults(dumper, data, type_name="Config"):
 
 def _partial_representer_with_defaults(dumper, data):
     return _config_representer_with_defaults(dumper, data, type_name="Partial")
+
+
+def _safe_object_representer(dumper, data):
+    if not inspect.isclass(data):
+        cls = data.__class__
+        call = True
+    else:
+        cls = data
+        call = False
+
+    value = {
+        "_target_": f"{inspect.getmodule(cls).__name__}.{cls.__qualname__}",  # type: ignore
+        "_call_": call,
+    }
+    return dumper.represent_data(value)
 
 
 class IOMixin:
@@ -208,14 +237,14 @@ class IOMixin:
         original_representers = yaml.SafeDumper.yaml_representers.copy()
 
         from nemo_run.config import Config, Partial
-        from nemo_run.core.serialization.yaml import YamlSerializer, _function_representer
+        from nemo_run.core.serialization.yaml import YamlSerializer
 
         yaml.SafeDumper.add_representer(config_lib.Config, _config_representer_with_defaults)
         yaml.SafeDumper.add_representer(partial.Partial, _partial_representer_with_defaults)
         yaml.SafeDumper.add_representer(Config, _config_representer_with_defaults)
         yaml.SafeDumper.add_representer(Partial, _partial_representer_with_defaults)
 
-        yaml.SafeDumper.add_multi_representer(object, _function_representer)
+        yaml.SafeDumper.add_multi_representer(object, _safe_object_representer)
 
         serializer = YamlSerializer()
         result = {}

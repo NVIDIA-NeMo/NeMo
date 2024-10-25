@@ -23,6 +23,7 @@ import pytorch_lightning as pl
 
 from nemo.lightning import io
 from nemo.lightning.base import NEMO_MODELS_CACHE
+from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
 from nemo.lightning.pytorch.strategies.utils import RestoreConfig
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
@@ -279,9 +280,7 @@ class AutoResume:
             if self.adapter_path:
                 return AdapterPath(Path(self.adapter_path), base_model_path=checkpoint)
             else:
-                from nemo.lightning.pytorch.callbacks.peft import _ADAPTER_META_FILENAME
-
-                adapter_meta_path = checkpoint / _ADAPTER_META_FILENAME
+                adapter_meta_path = checkpoint / ADAPTER_META_FILENAME
                 if adapter_meta_path.exists():
                     base_model_path = self._resume_peft(adapter_meta_path, model)
                     return AdapterPath(checkpoint, base_model_path=base_model_path)

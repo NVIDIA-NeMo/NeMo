@@ -1,5 +1,20 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import pytorch_lightning as pl
 import torch
@@ -15,8 +30,9 @@ from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
 from pytorch_lightning.trainer.states import TrainerFn
 
 import nemo.lightning as nl
+from nemo.collections.llm.peft import LoRA
 from nemo.lightning import io
-from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
+from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME, ckpt_to_context_subdir, ckpt_to_weights_subdir
 from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
 from nemo.lightning.pytorch.strategies.utils import RestoreConfig
 
@@ -39,11 +55,21 @@ class MCoreTokenizerWrappper:
 def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.LightningModule):
     assert isinstance(trainer.strategy, MegatronStrategy), "Only MegatronStrategy is supported for trainer.strategy."
     assert trainer.strategy.context_parallel_size <= 1, "Context parallelism is not supported for inference."
-    restore_config = RestoreConfig(
-        path=path,
-        load_model_state=True,
-        load_optim_state=False,
-    )
+    if (adapter_meta_path := ckpt_to_weights_subdir(path) / ADAPTER_META_FILENAME).exists():
+        with open(adapter_meta_path, "r") as f:
+            metadata = json.load(f)
+        restore_config = RestoreConfig(
+            path=metadata['model_ckpt_path'],
+            load_model_state=True,
+            load_optim_state=False,
+        )
+    else:
+        restore_config = RestoreConfig(
+            path=path,
+            load_model_state=True,
+            load_optim_state=False,
+        )
+
     trainer.strategy.restore_config = restore_config
     trainer.strategy._setup_optimizers = False
     trainer.ckpt_path = None
@@ -59,6 +85,15 @@ def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.
     trainer.strategy.setup_megatron_parallel(trainer=trainer)
     trainer.strategy.trainer = trainer
     trainer.strategy.selective_restore()
+
+    lora: Union[io.TrainerContext, LoRA] = io.load_context(ckpt_to_context_subdir(path), "model.model_transform")
+    if isinstance(lora, LoRA):
+        model = lora(model)
+        adapter_sharded_state_dict = {k: v for k, v in model.sharded_state_dict().items() if ".adapter." in k}
+        adapter_state = trainer.strategy.checkpoint_io.load_checkpoint(
+            ckpt_to_weights_subdir(path), sharded_state_dict=adapter_sharded_state_dict
+        )
+        trainer.strategy.load_model_state_dict(adapter_state, strict=False)
 
 
 def setup_model_and_tokenizer(

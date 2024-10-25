@@ -286,17 +286,16 @@ class BaseMegatronSampler:
         )
 
     def __len__(self):
-        num_available_samples: int = self.total_samples - self.consumed_samples
         if self.global_batch_size is not None:
             if self.drop_last:
-                num_global_batches = num_available_samples // self.global_batch_size
+                num_global_batches = self.total_samples // self.global_batch_size
             else:
-                num_global_batches = (num_available_samples + self.global_batch_size - 1) // self.global_batch_size
+                num_global_batches = (self.total_samples + self.global_batch_size - 1) // self.global_batch_size
             # return len of dataloader in terms of micro batches to avoid discrepancy between len of dataloader and
             # num of batches fetched (as training step fetches in terms of micro batches)
             return num_global_batches * (self.global_batch_size // self.micro_batch_times_data_parallel_size)
         else:
-            return (num_available_samples - 1) // self.micro_batch_times_data_parallel_size + 1
+            return (self.total_samples - 1) // self.micro_batch_times_data_parallel_size + 1
 
     @abc.abstractmethod
     def __iter__(self): ...

@@ -19,6 +19,7 @@ import pytorch_lightning as pl
 
 import nemo.lightning as nl
 from nemo.collections import llm
+from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.llm.recipes.log.default import tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
@@ -31,6 +32,7 @@ def default_finetune_recipe(
     name: str = "default",
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
+    packed_sequence: bool = False,  # once packing recipe is well tested, change this default to true
 ) -> run.Partial:
     """
     Create a default fine-tuning recipe for any model.
@@ -51,6 +53,16 @@ def default_finetune_recipe(
 
     See usages of this recipe for further details.
     """
+    if packed_sequence:
+        datamodule = run.Config(
+            llm.SquadDataModule,
+            seq_length=2048,
+            global_batch_size=8,
+            micro_batch_size=1,
+            packed_sequence_specs=PackedSequenceSpecs(packed_sequence_size=2048),
+        )
+    else:
+        datamodule = run.Config(llm.SquadDataModule, seq_length=2048, global_batch_size=128, micro_batch_size=1)
     recipe = run.Partial(
         llm.finetune,
         model=model,
@@ -58,7 +70,7 @@ def default_finetune_recipe(
             num_nodes=num_nodes,
             num_gpus_per_node=num_gpus_per_node,
         ),
-        data=run.Config(llm.SquadDataModule, seq_length=2048, global_batch_size=128, micro_batch_size=1),
+        data=datamodule,
         log=llm.default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
         optim=distributed_fused_adam_with_cosine_annealing(max_lr=1e-4, min_lr=0, warmup_steps=50, adam_beta2=0.98),
         resume=nemo_resume(resume_path),
@@ -77,8 +89,8 @@ def default_finetune_trainer(
     num_nodes=1,
     num_gpus_per_node=8,
     max_steps=1000,
-    limit_test_batches=1,
-    limit_val_batches=1,
+    limit_test_batches=None,
+    limit_val_batches=None,
     val_check_interval=30,
 ):
     strategy = run.Config(

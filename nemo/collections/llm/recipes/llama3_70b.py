@@ -245,6 +245,7 @@ def finetune_recipe(
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
     peft_scheme: Optional[str] = 'lora',
+    packed_sequence: bool = False,
 ) -> run.Partial:
     """
     Create a fine-tuning recipe for Llama3 70B model.
@@ -276,7 +277,9 @@ def finetune_recipe(
         This recipe uses the SQuAD dataset for fine-tuning. Be aware that fine-tuning a 70B model
         requires substantial computational resources.
     """
-    recipe = default_finetune_recipe(model(), "meta-llama/Meta-Llama-3-70B", dir, name, num_nodes, num_gpus_per_node)
+    recipe = default_finetune_recipe(
+        model(), "meta-llama/Meta-Llama-3-70B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
+    )
     if peft_scheme is None or peft_scheme.lower() == 'none':
         assert num_nodes >= 4
         recipe.trainer.strategy.tensor_model_parallel_size = 8

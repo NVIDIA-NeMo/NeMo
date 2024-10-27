@@ -296,7 +296,7 @@ def _import_qkv_bias(ctx: io.TransformCTX, q, k, v):
     k = k.view(*new_kv_tensor_shape)
     v = v.view(*new_kv_tensor_shape)
 
-    qkv_bias = torch.empty((0, head_size))
+    qkv_bias = torch.empty((0, head_size)).type_as(q)
     for i in range(num_query_groups):
         qkv_bias = torch.cat((qkv_bias, q[i * heads_per_group : (i + 1) * heads_per_group, :]))
         qkv_bias = torch.cat((qkv_bias, k[i : i + 1, :]))

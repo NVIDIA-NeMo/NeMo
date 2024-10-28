@@ -1,3 +1,17 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 from argparse import ArgumentParser
 
@@ -86,9 +100,9 @@ def convert(args):
             new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_proj.bias'] = hf_model.state_dict()[
                 f'model.layers.{l}.temporal_block.o_proj.bias'
             ]
-            new_state_dict[
-                f'model.decoder.layers.{l}.self_attention.linear_qkv.layer_norm_weight'
-            ] = hf_model.state_dict()[f'model.layers.{l}.temporal_pre_norm.weight']
+            new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_qkv.layer_norm_weight'] = (
+                hf_model.state_dict()[f'model.layers.{l}.temporal_pre_norm.weight']
+            )
             new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_qkv.weight'] = torch.cat(
                 [
                     hf_model.state_dict()[f'model.layers.{l}.temporal_block.q_proj.weight'],
@@ -99,18 +113,18 @@ def convert(args):
             new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_qkv.bias'] = torch.zeros(
                 new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_qkv.weight'].shape[0]
             )
-            new_state_dict[
-                f'model.decoder.layers.{l}.self_attention.linear_proj._extra_state'
-            ] = nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.self_attention.linear_proj._extra_state']
-            new_state_dict[
-                f'model.decoder.layers.{l}.self_attention.linear_qkv._extra_state'
-            ] = nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.self_attention.linear_qkv._extra_state']
+            new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_proj._extra_state'] = (
+                nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.self_attention.linear_proj._extra_state']
+            )
+            new_state_dict[f'model.decoder.layers.{l}.self_attention.linear_qkv._extra_state'] = (
+                nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.self_attention.linear_qkv._extra_state']
+            )
 
         else:
 
-            new_state_dict[
-                f'model.decoder.layers.{l}.recurrent_layer.linear_in.layer_norm_weight'
-            ] = hf_model.state_dict()[f'model.layers.{l}.temporal_pre_norm.weight']
+            new_state_dict[f'model.decoder.layers.{l}.recurrent_layer.linear_in.layer_norm_weight'] = (
+                hf_model.state_dict()[f'model.layers.{l}.temporal_pre_norm.weight']
+            )
             new_state_dict[f'model.decoder.layers.{l}.recurrent_layer.linear_in.weight'] = torch.cat(
                 [
                     hf_model.state_dict()[f'model.layers.{l}.temporal_block.linear_x.weight'],
@@ -154,12 +168,12 @@ def convert(args):
                 f'model.layers.{l}.temporal_block.rg_lru.recurrent_gate_bias'
             ]
 
-            new_state_dict[
-                f'model.decoder.layers.{l}.recurrent_layer.linear_in._extra_state'
-            ] = nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.recurrent_layer.linear_in._extra_state']
-            new_state_dict[
-                f'model.decoder.layers.{l}.recurrent_layer.linear_out._extra_state'
-            ] = nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.recurrent_layer.linear_out._extra_state']
+            new_state_dict[f'model.decoder.layers.{l}.recurrent_layer.linear_in._extra_state'] = (
+                nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.recurrent_layer.linear_in._extra_state']
+            )
+            new_state_dict[f'model.decoder.layers.{l}.recurrent_layer.linear_out._extra_state'] = (
+                nemo_model_from_hf.state_dict()[f'model.decoder.layers.{l}.recurrent_layer.linear_out._extra_state']
+            )
 
     nemo_model_from_hf.load_state_dict(new_state_dict, strict=True)
     dtype = torch_dtype_from_precision(args.precision)

@@ -1,3 +1,17 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Script to query Mixtral-8x7B as a judge via NGC API for evaluation"""
 import argparse
 import json
@@ -61,7 +75,10 @@ def get_eval(content: str, max_tokens: int):
                 'role': 'system',
                 'content': 'You are a helpful and precise assistant for checking the quality of the answer.',
             },
-            {'role': 'user', 'content': content,},
+            {
+                'role': 'user',
+                'content': content,
+            },
         ],
         "temperature": 0.2,
         "top_p": 0.7,

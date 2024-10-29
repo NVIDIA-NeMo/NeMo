@@ -19,6 +19,7 @@ from itertools import chain
 from typing import List, Literal, Optional
 
 import torch
+from pytorch_lightning.overrides.distributed import _IndexBatchSamplerWrapper
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -139,6 +140,7 @@ def add_megatron_sampler(
     dataloader_type: Literal["single", "cyclic", "batch"] = "single",
     drop_last: bool = True,
     pad_samples_to_global_batch_size: bool = False,
+    dataloader_mode: Literal["train", "validation", "test", "predict"] = "train",
     rank: int = 0,
     world_size: int = 1,
     # data_sharding: bool = False
@@ -170,6 +172,7 @@ def add_megatron_sampler(
         pad_samples_to_global_batch_size (bool, optional): Whether to pad the last incomplete
             batch to the `global_batch_size`  (defaults to False, only applies when
             `drop_last` is False).
+        dataloader_mode (Literal["train", "validation", "test", "predict"]): The mode of dataloader.
 
     Returns:
         DataLoader: A new DataLoader instance with the configured Megatron sampler.
@@ -213,6 +216,9 @@ def add_megatron_sampler(
         )
     else:
         raise Exception(f'{dataloader_type} dataloader type is not supported.')
+
+    if dataloader_mode in ["test", "predict"]:
+        batch_sampler = _IndexBatchSamplerWrapper(batch_sampler)  # BatchSampler wrapper to capture its indices
 
     return DataLoader(
         dataloader.dataset,

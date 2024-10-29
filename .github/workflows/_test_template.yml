@@ -79,7 +79,7 @@ jobs:
             
             echo "log=$(tail -c 2000 err.log |  base64 -w 0)" >> "$GITHUB_OUTPUT"
             
-            potential_infra_failure=$(cat err.log | grep -Eqi "gpu|cuda|device" && echo true || echo false)
+            potential_infra_failure=$(cat err.log | grep -Eqiw "device" && echo true || echo false)
             echo "potential_infra_failure=$potential_infra_failure" >> "$GITHUB_OUTPUT"
 
             exit $EXIT_CODE

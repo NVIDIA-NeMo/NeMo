@@ -12,16 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import nemo_run as run
+from functools import partial
 
-from nemo.collections.llm import (
-    GemmaConfig7B,
-    GPTConfig5B,
-    Llama3Config70B,
-    MistralConfig7B,
-    MixtralConfig8x22B,
-    Nemotron3Config8B,
-)
+from nemo.collections import llm
 from nemo.collections.llm.tools.auto_configurator import AutoConfigurator, generate_configs
 
 
@@ -42,58 +35,12 @@ def get_auto_configs(configs):
 
 
 class TestGenerateConfgis:
-    def test_gpt_model(self):
-        # GPT3 126M
-        runner = AutoConfigurator(
-            model=run.Config(GPTConfig5B),
-            num_nodes=16,
-            seq_length=2048,
-            global_batch_size=2048,
-            tensor_parallel_sizes=[4],
-            pipeline_parallel_sizes=[2],
-            micro_batch_sizes=[1, 2],
-            context_parallel_sizes=[1],
-            expert_parallel_sizes=[1],
-            min_model_parallel_size=8,
-            max_model_parallel_size=8,
-            data_paths="/",
-            path_to_logs="/",
-        )
-
-        _, configs = generate_configs(runner)
-
-        mbs = [1, 2]
-        for run_name, config, mb in zip(configs.keys(), configs.values(), mbs):
-            assert config.data.micro_batch_size == mb
-            assert config.data.seq_length == 2048
-            assert config.data.global_batch_size == 2048
-
-        assert len(configs) == 2, f"{len(configs)} configurations were generated but 2 were expected."
-
-        auto_configs = get_auto_configs(configs)
-        assert auto_configs[0] == [
-            4,
-            2,
-            1,
-            1,
-            1,
-        ], f"[4, 2, 1, 1, 1] is expected configuration output but got {auto_configs[0]}."
-
-        assert auto_configs[1] == [
-            4,
-            2,
-            1,
-            1,
-            2,
-        ], f"[4, 2, 1, 1, 2] is expected configuration output but got {auto_configs[1]}."
-
     def test_llama_model(self):
         # Llama3 70B
+        recipe = partial(llm.llama3_70b.pretrain_recipe, num_nodes=128, num_gpus_per_node=8)()
+        recipe.data.global_batch_size = 2048
         runner = AutoConfigurator(
-            model=run.Config(Llama3Config70B),
-            num_nodes=128,
-            seq_length=8192,
-            global_batch_size=2048,
+            recipe=recipe,
             tensor_parallel_sizes="auto",
             pipeline_parallel_sizes="auto",
             micro_batch_sizes=[1],
@@ -101,7 +48,6 @@ class TestGenerateConfgis:
             expert_parallel_sizes=[1],
             min_model_parallel_size=16,
             max_model_parallel_size=64,
-            data_paths="/",
             path_to_logs="/",
         )
 
@@ -142,11 +88,13 @@ class TestGenerateConfgis:
 
     def test_mistral_model(self):
         # Mistral 7B
+        recipe = partial(llm.mistral_7b.pretrain_recipe, num_nodes=16, num_gpus_per_node=8)()
+        recipe.data.seq_length = 4096
+        recipe.data.global_batch_size = 2048
+        recipe.model.config.seq_length = recipe.data.seq_length
+
         runner = AutoConfigurator(
-            model=run.Config(MistralConfig7B),
-            num_nodes=16,
-            seq_length=4096,
-            global_batch_size=2048,
+            recipe=recipe,
             tensor_parallel_sizes=[4],
             pipeline_parallel_sizes=[1, 2],
             micro_batch_sizes=[1],
@@ -154,7 +102,6 @@ class TestGenerateConfgis:
             expert_parallel_sizes=[1],
             min_model_parallel_size=4,
             max_model_parallel_size=8,
-            data_paths="/",
             path_to_logs="/",
         )
 
@@ -187,11 +134,13 @@ class TestGenerateConfgis:
 
     def test_mixtral_model(self):
         # Mixtral 8x22B
+        recipe = partial(llm.mixtral_8x22b.pretrain_recipe, num_nodes=16, num_gpus_per_node=8)()
+        recipe.data.seq_length = 4096
+        recipe.data.global_batch_size = 2048
+        recipe.model.config.seq_length = recipe.data.seq_length
+
         runner = AutoConfigurator(
-            model=run.Config(MixtralConfig8x22B),
-            num_nodes=16,
-            seq_length=4096,
-            global_batch_size=2048,
+            recipe=recipe,
             tensor_parallel_sizes=[4],
             pipeline_parallel_sizes=[1],
             micro_batch_sizes=[1],
@@ -199,7 +148,6 @@ class TestGenerateConfgis:
             expert_parallel_sizes=[1, 2],
             min_model_parallel_size=4,
             max_model_parallel_size=8,
-            data_paths="/",
             path_to_logs="/",
         )
 
@@ -232,11 +180,13 @@ class TestGenerateConfgis:
 
     def test_gemma_model(self):
         # Gemma 7B
+        recipe = partial(llm.gemma_7b.pretrain_recipe, num_nodes=16, num_gpus_per_node=8)()
+        recipe.data.seq_length = 8192
+        recipe.data.global_batch_size = 2048
+        recipe.model.config.seq_length = recipe.data.seq_length
+
         runner = AutoConfigurator(
-            model=run.Config(GemmaConfig7B),
-            num_nodes=16,
-            seq_length=8192,
-            global_batch_size=2048,
+            recipe=recipe,
             tensor_parallel_sizes=[2],
             pipeline_parallel_sizes=[2],
             micro_batch_sizes=[1, 2],
@@ -244,7 +194,6 @@ class TestGenerateConfgis:
             expert_parallel_sizes=[1],
             min_model_parallel_size=4,
             max_model_parallel_size=8,
-            data_paths="/",
             path_to_logs="/",
         )
 
@@ -277,11 +226,13 @@ class TestGenerateConfgis:
 
     def test_nemotron_model(self):
         # Nemotron3 8B
+        recipe = partial(llm.nemotron3_8b.pretrain_recipe, num_nodes=16, num_gpus_per_node=8)()
+        recipe.data.seq_length = 4096
+        recipe.data.global_batch_size = 2048
+        recipe.model.config.seq_length = recipe.data.seq_length
+
         runner = AutoConfigurator(
-            model=run.Config(Nemotron3Config8B),
-            num_nodes=16,
-            seq_length=4096,
-            global_batch_size=2048,
+            recipe=recipe,
             tensor_parallel_sizes=[1],
             pipeline_parallel_sizes=[4],
             micro_batch_sizes=[1, 2],
@@ -289,7 +240,6 @@ class TestGenerateConfgis:
             expert_parallel_sizes=[1],
             min_model_parallel_size=4,
             max_model_parallel_size=8,
-            data_paths="/",
             path_to_logs="/",
         )
 

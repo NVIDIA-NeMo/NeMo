@@ -49,17 +49,22 @@ def generate_grid_search_configs(
 
     model_name = train_cfg.model_type
     model_size_in_b = train_cfg.model_size_in_b
+    path_to_logs = train_cfg.path_to_logs
 
     # 2 * num_layers is needed because of encoder/decoder architecture.
     multiplier = 1 if model_name in GPT_BASED_MODELS else 2
 
-    seq_length = base_cfg.model.seq_length
-    num_layers = base_cfg.model.num_layers if model_name in GPT_BASED_MODELS else base_cfg.model.encoder.num_layers
+    seq_length = base_cfg.model.config.seq_length
+    num_layers = (
+        base_cfg.model.config.num_layers
+        if model_name in GPT_BASED_MODELS
+        else base_cfg.model.config.encoder.num_layers
+    )
 
     if model_name in GPT_BASED_MODELS:
         act_method = None
     else:
-        act_method = base_cfg.model.encoder.activations_checkpoint_method
+        act_method = base_cfg.model.config.encoder.activations_checkpoint_method
 
     params = _calculate_tp_pp_mbs_grid(
         model_size_in_b=model_size_in_b,
@@ -69,7 +74,6 @@ def generate_grid_search_configs(
         train_cfg=train_cfg,
     )
 
-    max_minutes = train_cfg.max_minutes_per_run
     max_steps = train_cfg.max_steps_per_run
     num_nodes = train_cfg.num_nodes
 
@@ -82,11 +86,11 @@ def generate_grid_search_configs(
                         num_gpus = base_cfg.trainer.num_nodes * base_cfg.trainer.devices
                         base_cfg.data.global_batch_size = params.gbs
                         if model_name in GPT_BASED_MODELS:
-                            att_heads = base_cfg.model.num_attention_heads
-                            num_layers = base_cfg.model.num_layers
+                            att_heads = base_cfg.model.config.num_attention_heads
+                            num_layers = base_cfg.model.config.num_layers
                         else:
-                            att_heads = base_cfg.model.encoder.num_attention_heads
-                            num_layers = base_cfg.model.encoder.num_layers
+                            att_heads = base_cfg.model.config.encoder.num_attention_heads
+                            num_layers = base_cfg.model.config.encoder.num_layers
                         model_parallelism = (tp * pp * cp * ep) if (cp and ep) else (tp * pp)
                         mod_gbs = params.gbs % (mbs * num_gpus / model_parallelism)
                         mod_att_heads = att_heads % tp
@@ -134,9 +138,9 @@ def generate_grid_search_configs(
                 "ep": ep,
                 "virtual_pipelines": virtual_pipelines,
                 "mbs": mbs,
-                "max_minutes": max_minutes,
                 "max_steps": max_steps,
                 "num_nodes": num_nodes,
+                "path_to_logs": path_to_logs,
                 "model_name": model_name,
                 "model_size": model_size_in_b,
             }
@@ -151,12 +155,11 @@ def generate_grid_search_configs(
                             kwargs["act_per_pipe"] = act_per_pipe
                             new_cfg = utils.modify_cfg(**kwargs)
                             if new_cfg:  # Save candidate cfg.
-                                configs[new_cfg["run"]["name"]] = new_cfg
+                                configs[new_cfg["name"]] = new_cfg
             else:
                 new_cfg = utils.modify_cfg(**kwargs)
                 if new_cfg:  # Save candidate cfg.
-                    config_name = new_cfg["run"]["name"]
-                    new_cfg.pop("run")
+                    config_name = new_cfg["name"]
                     configs[config_name] = new_cfg
 
     print(f"\nAll candidate configurations created correctly. Total number of configs: {len(configs)}.\n")

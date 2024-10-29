@@ -63,7 +63,7 @@ from nemo.utils.exp_manager import exp_manager
 @hydra_runner(config_path="conf", config_name="dialogue_config")
 def main(cfg: DictConfig) -> None:
     pl.seed_everything(42)
-    logging.warning('This script is no longer supported in NeMo and is scheduled for removal in the 23.11 release.')
+    logging.warning('This script is no longer supported in NeMo and is scheduled for removal in the 24.11 release.')
     logging.info(f'Config: {OmegaConf.to_yaml(cfg)}')
 
     try:

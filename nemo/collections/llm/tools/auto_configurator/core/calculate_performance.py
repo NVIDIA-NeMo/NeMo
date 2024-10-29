@@ -42,11 +42,11 @@ def get_results(
 
     vocab_size = train_config.vocab_size
     num_nodes = train_config.num_nodes
-    gpus_per_node = train_config.gpus_per_node
+    gpus_per_node = train_config.num_gpus
 
-    layers = base_config.model.num_layers
-    hs = base_config.model.hidden_size
-    ffn_hs = base_config.model.ffn_hidden_size
+    layers = base_config.model.config.num_layers
+    hs = base_config.model.config.hidden_size
+    ffn_hs = base_config.model.config.ffn_hidden_size
 
     training_logs = path_to_save
     final_result_logs = path_to_save
@@ -60,9 +60,7 @@ def get_results(
         "CP",
         "EP",
         "MBS",
-        "Act Ckpt Layers",
-        "Act Ckpt Micro Bathes",
-        "Act Ckpt Layers per Pipeline",
+        "VP",
         "Num Layers",
         "Hidden Size",
         "FFN Hidden Size",
@@ -83,9 +81,7 @@ def get_results(
         "CP",
         "EP",
         "MBS",
-        "Act Ckpt Layers",
-        "Act Ckpt Micro Bathes",
-        "Act Ckpt Layers per Pipeline",
+        "VP",
         "Num Layers",
         "Hidden Size",
         "FFN Hidden Size",
@@ -96,105 +92,96 @@ def get_results(
     ]
     result = []
     errors = []
+    training_logs = os.path.abspath(training_logs)
+    error_files = find_tb_logs(training_logs, "nemo_error_log")
+    tb_files = find_tb_logs(training_logs, "events")
     dirs = [f.path for f in os.scandir(training_logs) if f.is_dir()]
 
-    for candidate_dir in dirs:
-        logs_dir = os.path.join(training_logs, candidate_dir, "tb_logs/lightning_logs")
-        logs_folder = [f.path for f in os.scandir(logs_dir) if f.is_dir()][0]
-        tp, pp, cp, ep, mbs, act_ckpt, num_mbs_act, act_per_pipe = get_config(candidate_dir)
+    for error_file, tb_file, candidate_dir in zip(error_files, tb_files, dirs):
+        tp, pp, cp, ep, mbs, vp = get_config(candidate_dir)
+        error = find_error(error_file)
+        if error:
+            errors.append(
+                [
+                    model_name,
+                    model_size,
+                    seq_length,
+                    tp,
+                    pp,
+                    cp,
+                    ep,
+                    mbs,
+                    vp,
+                    layers,
+                    hs,
+                    ffn_hs,
+                    global_batch_size,
+                    num_nodes,
+                    gpus_per_node,
+                    error,
+                ]
+            )
 
-        for f in os.listdir(logs_folder):
-            if f.endswith("0.txt"):
-                error_file = os.path.join(logs_folder, f)
-                error = find_error(error_file)
-                if error:
-                    errors.append(
-                        [
-                            model_name,
-                            model_size,
-                            seq_length,
-                            tp,
-                            pp,
-                            cp,
-                            ep,
-                            mbs,
-                            act_ckpt,
-                            num_mbs_act,
-                            act_per_pipe,
-                            layers,
-                            hs,
-                            ffn_hs,
-                            global_batch_size,
-                            num_nodes,
-                            gpus_per_node,
-                            error,
-                        ]
-                    )
+        ea = event_accumulator.EventAccumulator(tb_file)
+        ea.Reload()
+        try:
+            timing_list = ea.Scalars("train_step_timing in s")
+            if len(timing_list) < 10:
+                continue
+            timing_list = [x.value for x in timing_list[1:]]
+            print(timing_list)
+            avg_global_step_time = round(sum(timing_list) / len(timing_list), 2)
+            samples_per_s = round(global_batch_size / avg_global_step_time, 2)
+            print(samples_per_s)
+            m_tflops, m_tflops_gpu = calculate_tflops(
+                model_name=model_name,
+                gbs=global_batch_size,
+                enc_seq_len=seq_length,
+                dec_seq_len=seq_length,
+                hs=hs,
+                ffn_hs=ffn_hs,
+                layers=layers,
+                vocab=vocab_size,
+                nodes=num_nodes,
+                gpus_per_node=gpus_per_node,
+                time_per_step=avg_global_step_time,
+            )
+            result.append(
+                [
+                    model_name,
+                    model_size,
+                    seq_length,
+                    tp,
+                    pp,
+                    cp,
+                    ep,
+                    mbs,
+                    vp,
+                    layers,
+                    hs,
+                    ffn_hs,
+                    global_batch_size,
+                    num_nodes,
+                    gpus_per_node,
+                    avg_global_step_time,
+                    samples_per_s,
+                    m_tflops_gpu,
+                    m_tflops,
+                ]
+            )
+        finally:
+            continue
 
-        files = os.listdir(logs_folder)
-        for f in files:
-            if f.startswith("events"):
-                event_file = os.path.join(logs_folder, f)
-                ea = event_accumulator.EventAccumulator(event_file)
-                ea.Reload()
-                try:
-                    timing_list = ea.Scalars("train_step_timing in s")
-                    if len(timing_list) <= 6:
-                        continue
-                    timing_list = [x.value for x in timing_list[5:]]
-                    avg_global_step_time = round(sum(timing_list) / len(timing_list), 4)
-                    samples_per_s = round(global_batch_size / avg_global_step_time, 2)
-                    m_tflops, m_tflops_gpu = calculate_tflops(
-                        model_name=model_name,
-                        gbs=global_batch_size,
-                        enc_seq_len=seq_length,
-                        dec_seq_len=seq_length,
-                        hs=hs,
-                        ffn_hs=ffn_hs,
-                        layers=layers,
-                        vocab=vocab_size,
-                        nodes=num_nodes,
-                        gpus_per_node=gpus_per_node,
-                        time_per_step=avg_global_step_time,
-                    )
-                    config_name = f"tp{tp}_pp{pp}_cp{cp}_ep{ep}_mbs{mbs}_act_{act_ckpt}_num_mbs_act_{num_mbs_act}_act_per_pipe_{act_per_pipe}"
-                    result.append(
-                        [
-                            model_name,
-                            model_size,
-                            seq_length,
-                            tp,
-                            pp,
-                            cp,
-                            ep,
-                            mbs,
-                            act_ckpt,
-                            num_mbs_act,
-                            act_per_pipe,
-                            layers,
-                            hs,
-                            ffn_hs,
-                            global_batch_size,
-                            num_nodes,
-                            gpus_per_node,
-                            avg_global_step_time,
-                            samples_per_s,
-                            m_tflops_gpu,
-                            m_tflops,
-                        ]
-                    )
-                finally:
-                    continue
-    result.sort(key=lambda x: x[17])
+    result.sort(key=lambda x: x[15])
     print(f"Top {min(output_top_n, len(result))} configs sorted from fastest to slowest:")
     for i, res in enumerate(result):
-        print(f"Config #{i+1}: {res[-1]} with {res[17]:.4f}s per global step.")
+        print(f"Config #{i+1}: {res[-1]} with {res[15]:.4f}s per global step.")
         if i + 1 == output_top_n:
             break
 
-    top_config = f"{model_name}_{model_size}b_{num_nodes}nodes_tp_{result[0][3]}_pp_{result[0][4]}_cp_{result[0][5]}_ep_{result[0][6]}_mbs_{result[0][7]}_act_ckpt_{result[0][8]}_num_mbs_act_{result[0][9]}_act_per_pipe_{result[0][10]}"
+    top_config = f"{model_name}_{model_size}b_{num_nodes}nodes_tp_{result[0][3]}_pp_{result[0][4]}_cp_{result[0][5]}_ep_{result[0][6]}_mbs_{result[0][7]}_vp_{result[0][8]}"
     print("\n==================================================")
-    print(f"Optimal config: {top_config} with {result[0][17]:.4f}s per global step.")
+    print(f"Optimal config: {top_config} with {result[0][15]:.4f}s per global step.")
     print("==================================================\n")
 
     # Save results as a CSV file.
@@ -310,7 +297,8 @@ def get_config(run_name: str) -> tuple:
     Returns:
         tuple: model parallelism parameters.
     """
-    pattern = r'_(tp|pp|cp|ep|mbs|act_ckpt|num_mbs_act|act_per_pipe)_([^_]+)'
+
+    pattern = r'_(tp|pp|cp|ep|mbs|vp)_([^_]+)'
 
     # Find all matches in the input string
     matches = re.findall(pattern, run_name)
@@ -324,10 +312,30 @@ def get_config(run_name: str) -> tuple:
         params["cp"],
         params["ep"],
         params["mbs"],
-        params["act_ckpt"],
-        params["num_mbs_act"],
-        params["act_per_pipe"],
+        params["vp"],
     )
+
+
+def find_tb_logs(logs_dir: str, tb_prefix: str) -> list:
+    """Function that finds tensorboard logs
+
+    Args:
+        logs_dir (str): results directory.
+
+    Returns:
+        list: list of tensorboard files.
+    """
+
+    tb_files = []
+    # Walk through all directories and subdirectories
+    for root, dirs, files in os.walk(logs_dir):
+        for file in files:
+            # Check if the file starts with the tb prefix
+            if file.startswith(tb_prefix):
+                absolute_path = os.path.abspath(os.path.join(root, file))
+                tb_files.append(absolute_path)
+
+    return tb_files
 
 
 if __name__ == "__main__":

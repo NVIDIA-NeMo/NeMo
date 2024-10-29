@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import copy
+import os
 import re
-
 from typing import List, Optional
 
 from nemo.collections.llm import GPTModel
@@ -33,28 +33,15 @@ SUPPORTED_MODELS = [
     "nemotron",
 ]
 
-SUPPORTED_TOKENIZERS = [
-    "autotokenizer",
-    "sentencepiece",
-    "huggingface",
-]
-
 
 class AutoConfigurator:
     """Auto Configurator runner config class."""
 
     def __init__(
         self,
-        model: Config = None,
-        num_nodes: int = None,
-        data_paths: List = None,
+        recipe: Partial = None,
         path_to_logs: str = None,
-        tokenizer_type: Optional[str] = "autotokenizer",
-        tokenizer_path: Optional[str] = "GPT2BPETokenizer",
-        gpus_per_node: Optional[int] = 8,
         gpu_memory_gb: Optional[int] = 80,
-        seq_length: Optional[int] = 2048,
-        global_batch_size: Optional[int] = "auto",
         tensor_parallel_sizes: Optional[List[int]] = "auto",
         pipeline_parallel_sizes: Optional[List[int]] = "auto",
         micro_batch_sizes: Optional[List[int]] = "auto",
@@ -62,26 +49,18 @@ class AutoConfigurator:
         expert_parallel_sizes: Optional[List[int]] = [1],
         min_model_parallel_size: Optional[int] = "auto",
         max_model_parallel_size: Optional[int] = "auto",
-        num_tokens_in_b: Optional[int] = 300,
+        num_tokens_in_b: Optional[int] = 1400,
         tflops_per_gpu: Optional[int] = 140,
         max_minutes_per_run: Optional[int] = 30,
         max_training_days: Optional[int] = 2,
         max_steps_per_run: Optional[int] = 50,
-        vocab_size: Optional[int] = 51200,
+        vocab_size: Optional[int] = 32000,
     ):
         """
         Args:
-            model_type (Config): model type to be used for training.
-            num_nodes (int): number of nodes to be used for training.
-            data_paths (List): list of datafiles to be used for training.
+            recipe (Partial): recipe to be used for training.
             path_to_logs (str): path to the directory where the logs will be stored.
-            tokenizer_type (Optional[str]): tokenizer type.
-            tokenizer_path (Optional[str]): path to the tokenizer model.
-            model_size (Optional[int]): size of model to be trained.
-            gpus_per_node (Optional[int]): number of GPUs per node to be used.
             gpu_memory_gb (Optional[int]): memory per GPU, in GB. Currently 40GB and 80GB A100s/H100s supported.
-            seq_length (Optional[int]): model sequence length. Available seq_length list for GPT-based models: [2048, 4096, 8192, 16384, 32768].
-            global_batch_size (Optional[int]): model global batch size. Set to "auto" if you want auto configurator to find optimal gbs.
             tensor_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation, or a list, such as [1, 2, 4, 8].
             pipeline_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation, or a list, such as [1, 2, 4, 8].
             micro_batch_sizes (Optional[List[int]]): set to "auto" to use our recommendation, or a list, such as [1, 2, 4, 8].
@@ -104,13 +83,20 @@ class AutoConfigurator:
             setattr(self, key, value)
         logging.info(self._get_message(config))
 
-        model_type = self._get_model_type(model)
+        model_type = self._get_model_type(recipe.model.config)
         assert model_type in SUPPORTED_MODELS, f"model_type must be set to one of {SUPPORTED_MODELS}."
-        assert tokenizer_type in SUPPORTED_TOKENIZERS, f"tokenizer_type must be set to one of {SUPPORTED_TOKENIZERS}."
-        assert num_nodes, "num_nodes value must be specified."
-        assert data_paths, "training data must be specified."
+        assert recipe.data.seq_length in [
+            2048,
+            4096,
+            8192,
+            16384,
+            32768,
+        ], "Available seq_length list for GPT-based models: [2048, 4096, 8192, 16384, 32768]."
         assert path_to_logs, f"path_to_logs parameter must be specified."
-        gpu_count = num_nodes * gpus_per_node
+
+        self.num_gpus = recipe.trainer.devices
+        self.num_nodes = recipe.trainer.num_nodes
+        gpu_count = self.num_nodes * self.num_gpus
         assert gpu_count > 0, "num_nodes * gpus_per_node must be an int larger than zero."
         assert gpu_memory_gb in (
             40,
@@ -119,9 +105,10 @@ class AutoConfigurator:
         assert max_minutes_per_run >= 10, "max_minutes_per_run must be an int and be at least 10 minutes."
 
         self.model_type = model_type
-        self.model_size_in_b = self._get_model_size(model)
+        self.model_size_in_b = self._get_model_size(recipe.model.config)
         self.gpu_count = gpu_count
-        self.num_gpus = gpus_per_node
+        self.seq_length = recipe.data.seq_length
+        self.global_batch_size = recipe.data.global_batch_size
 
     def _get_message(self, config: dict) -> str:
         """
@@ -203,13 +190,10 @@ def generate_configs(runner_config: AutoConfigurator = None) -> dict:
     """
 
     # Generate base config for the given model size
-    base_cfg, train_cfg = generic_base_config(runner_config)
+    base_config, train_config = generic_base_config(runner_config)
 
     # Launch grid search for training constraints
-    base_config, train_configs = generate_grid_search_configs(base_cfg, train_cfg)
-
-    tokenizer = base_config.tokenizer
-    model = Config(GPTModel, config=base_config.model, tokenizer=tokenizer)
+    base_config, train_configs = generate_grid_search_configs(base_config, train_config)
 
     configs = {}
     for name, config in train_configs.items():
@@ -231,11 +215,16 @@ def generate_configs(runner_config: AutoConfigurator = None) -> dict:
         )
         if config.get("tensor_model_parallel_size") > 1:
             trainer.strategy.sequence_parallel = True
+        trainer.max_steps = config.get("max_steps")
+        trainer.log_every_n_steps = 1
+
+        log.log_dir = os.path.join(config.get("path_to_logs"), name)
+        log.ckpt.save_last = False
 
         # Set the directory where to save the logs
         configs[name] = Partial(
             pretrain,
-            model=model,
+            model=base_config.model,
             trainer=trainer,
             data=data,
             optim=base_config.optim,
@@ -243,4 +232,4 @@ def generate_configs(runner_config: AutoConfigurator = None) -> dict:
             resume=None,
         )
 
-    return base_cfg, configs
+    return base_config, configs

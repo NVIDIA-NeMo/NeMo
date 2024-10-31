@@ -25,7 +25,7 @@ def openai_gelu(x):
     return gelu_impl(x)
 
 
-@torch.jit.script
+# @torch.jit.script # remove until we have serialization
 def squared_relu(x):
     """Squared ReLU activation function."""
     return torch.pow(torch.nn.functional.relu(x), 2)

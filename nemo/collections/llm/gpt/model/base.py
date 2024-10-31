@@ -20,6 +20,7 @@ import torch
 import torch.distributed
 from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import GPTInferenceWrapper
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
+from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -44,8 +45,6 @@ except ImportError:
     _grad_accum_fusion_available = False
 
 if TYPE_CHECKING:
-    from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
-
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
@@ -189,7 +188,6 @@ class GPTConfig(TransformerConfig, io.IOMixin):
             ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
 
         from megatron.core import parallel_state
-        from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
 
         transformer_layer_spec = self.transformer_layer_spec
         if not isinstance(transformer_layer_spec, ModuleSpec):

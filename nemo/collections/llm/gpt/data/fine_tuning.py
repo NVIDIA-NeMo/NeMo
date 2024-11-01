@@ -212,7 +212,10 @@ class FineTuningDataModule(pl.LightningDataModule):
             tokenizer_model_name = self.packed_sequence_specs.tokenizer_model_name
         elif isinstance(self.tokenizer, AutoTokenizer):
             name = self.tokenizer.tokenizer.name_or_path
-            if name.endswith("nemo_tokenizer"):
+            if name.endswith("context/nemo_tokenizer"):
+                # NEMO_HOME/hf_org/hf_model/context/nemo_tokenizer => hf_org--hf_model
+                tokenizer_model_name = '--'.join(name.split("/")[-4:-2])
+            elif name.endswith("nemo_tokenizer"):
                 # NEMO_HOME/hf_org/hf_model/nemo_tokenizer => hf_org--hf_model
                 tokenizer_model_name = '--'.join(name.split("/")[-3:-1])
             else:

@@ -18,28 +18,30 @@ import nemo_run as run
 import pytorch_lightning as pl
 import torch
 
-from nemo.collections.llm.api import pretrain
+from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
+from nemo.collections.llm.peft.lora import LoRA
+from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.nemotron import nemotron_model, nemotron_trainer
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.utils.exp_manager import TimingCallback
 
-NAME = "nemotron4_22b"
+NAME = "nemotron3_22b"
 
 
 @run.cli.factory(name=NAME)
 def model() -> run.Config[pl.LightningModule]:
     """
-    Factory function to create a Nemotron4 22b model configuration.
+    Factory function to create a Nemotron3 22B model configuration.
 
     Returns:
-        run.Config[pl.LightningModule]: Configuration for the Nemotron4 22b model.
+        run.Config[pl.LightningModule]: Configuration for the Nemotron3 22b model.
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain model=nemotron4_22b ...
+            $ nemo llm pretrain model=nemotron3_22b ...
 
         Python API usage:
             >>> model_config = model()
@@ -85,7 +87,7 @@ def pretrain_recipe(
     fn=pretrain,
 ) -> run.Partial:
     """
-    Create a pre-training recipe for Nemotron4 22b model.
+    Create a pre-training recipe for Nemotron3 22B model.
 
     This function sets up a complete configuration for pre-training, including
     model, trainer, data, logging, optimization, and resumption settings.
@@ -124,8 +126,8 @@ def pretrain_recipe(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory nemotron4_22b
-            $ nemo llm pretrain --factory "nemotron4_22b(num_nodes=1, name='my_nemotron_pretrain')"
+            $ nemo llm pretrain --factory nemotron3_22b
+            $ nemo llm pretrain --factory "nemotron3_22b(num_nodes=1, name='my_nemotron_pretrain')"
 
         Python API usage:
             >>> recipe = pretrain_recipe(name="nemotron_pretrain", num_nodes=1)
@@ -181,7 +183,7 @@ def pretrain_recipe(
 
 def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
     """
-    Create a performance-optimized pre-training recipe for Nemotron4 22B model.
+    Create a performance-optimized pre-training recipe for Nemotron3 22B model.
 
     This method enables performance optimizations that may not be suitable for all use cases.
     It builds upon the standard pre-training recipe and adds additional performance enhancements.
@@ -213,4 +215,62 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
             align_param_gather=True,
         )
     )
+    return recipe
+
+
+@run.cli.factory(target=finetune, name=NAME)
+def finetune_recipe(
+    dir: Optional[str] = None,
+    name: str = "default",
+    num_nodes: int = 1,
+    num_gpus_per_node: int = 8,
+    peft_scheme: Optional[str] = 'lora',
+    packed_sequence: bool = False,
+) -> run.Partial:
+    """
+    Create a fine-tuning recipe for Nemotron3 22B model.
+
+    This function sets up a complete configuration for fine-tuning, including
+    model, trainer, data, logging, optimization, and resumption settings.
+    The recipe uses LoRA (Low-Rank Adaptation) for efficient fine-tuning, unless peft_scheme is set to None.
+
+    Args:
+        dir (Optional[str]): Directory for saving logs and checkpoints.
+        name (str): Name of the fine-tuning run.
+        num_nodes (int): Number of compute nodes to use.
+        num_gpus_per_node (int): Number of GPUs per node.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
+        packed_sequence (Optional[bool]): Packing multiple training sequences into one long sequence for training efficiency. Default sequence length is 2048.
+
+    Returns:
+        run.Partial: Partial configuration for fine-tuning.
+
+    Examples:
+        CLI usage:
+            $ nemo llm finetune --factory nemotron3_22b
+
+        Python API usage:
+            >>> recipe = finetune_recipe(name="nemotron3_22b_finetune", num_nodes=8)
+            >>> print(recipe)
+
+    Note:
+        This recipe uses the SQuAD dataset for fine-tuning. For more information
+        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
+        `examples/llm/finetune/` directory.
+    """
+
+    recipe = default_finetune_recipe(
+        model(), "thhaus/nemotron3-22b-hf", dir, name, num_nodes, num_gpus_per_node, packed_sequence
+    )
+    if peft_scheme is None or peft_scheme.lower() == 'none':
+        recipe.trainer.strategy.tensor_model_parallel_size = 8
+        recipe.optim.config.lr = 5e-6
+    elif peft_scheme.lower() == 'lora':
+        recipe.peft = run.Config(LoRA)
+        recipe.optim.config.lr = 1e-4
+    else:
+        raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
+
+    # some settings currently do not function correctly with finetuning
+    recipe.model.config.cross_entropy_loss_fusion = False
     return recipe

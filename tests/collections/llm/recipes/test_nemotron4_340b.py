@@ -64,7 +64,7 @@ class TestNemotron4_340B:
         assert recipe.trainer.devices == num_gpus_per_node
 
     def test_finetune_recipe(self, recipe_module):
-        recipe = recipe_module.finetune_recipe()
+        recipe = recipe_module.finetune_recipe(num_nodes=4)
         assert isinstance(recipe, run.Partial)
         assert recipe.__fn_or_cls__ == finetune
         assert isinstance(recipe.model, run.Config)
@@ -73,6 +73,6 @@ class TestNemotron4_340B:
         assert recipe.trainer.__fn_or_cls__ == Trainer
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__ == SquadDataModule
-        assert recipe.data.seq_length == 4096
-        assert recipe.data.global_batch_size == 2304
+        assert recipe.data.seq_length == 2048
+        assert recipe.data.global_batch_size == 128
         assert recipe.data.micro_batch_size == 1

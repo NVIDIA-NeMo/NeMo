@@ -24,8 +24,8 @@ from nemo import lightning as nl
 from nemo.collections.llm.gpt.model.nemotron import (
     Nemotron3Config4B,
     Nemotron3Config8B,
+    Nemotron3Config22B,
     Nemotron4Config15B,
-    Nemotron4Config22B,
     Nemotron4Config340B,
     NemotronModel,
 )
@@ -37,9 +37,9 @@ def nemotron_model(version: str) -> run.Config[pl.LightningModule]:
     A function to create a Nemotron models.
 
     Args:
-        version (str): The version of the Nemotron model to create. one of ["nemotron3_4b", "nemotron3_8b",
+        version (str): The version of the Nemotron model to create. one of ["nemotron3_4b", "nemotron3_8b",\
+            "nemotron3_22b", "nemotron3_22b_16k", "nemotron3_22b_64k",
             "nemotron4_15b", "nemotron4_15b_16k", "nemotron4_15b_64k",
-            "nemotron4_22b", "nemotron4_22b_16k", "nemotron4_22b_64k",
             "nemotron4_340b"].
 
     Returns:
@@ -50,18 +50,18 @@ def nemotron_model(version: str) -> run.Config[pl.LightningModule]:
         config = run.Config(Nemotron3Config4B)
     elif version == "nemotron3_8b":
         config = run.Config(Nemotron3Config8B)
+    elif version == "nemotron3_22b":
+        config = run.Config(Nemotron3Config22B)
+    elif version == "nemotron3_22b_16k":
+        config = run.Config(Nemotron3Config22B, seq_length=16384)
+    elif version == "nemotron3_22b_64k":
+        config = run.Config(Nemotron3Config22B, seq_length=65536)
     elif version == "nemotron4_15b":
         config = run.Config(Nemotron4Config15B)
     elif version == "nemotron4_15b_16k":
         config = run.Config(Nemotron4Config15B, seq_length=16384)
     elif version == "nemotron4_15b_64k":
         config = run.Config(Nemotron4Config15B, seq_length=65536)
-    elif version == "nemotron4_22b":
-        config = run.Config(Nemotron4Config22B)
-    elif version == "nemotron4_22b_16k":
-        config = run.Config(Nemotron4Config22B, seq_length=16384)
-    elif version == "nemotron4_22b_64k":
-        config = run.Config(Nemotron4Config22B, seq_length=65536)
     elif version == "nemotron4_340b":
         config = run.Config(Nemotron4Config340B)
 

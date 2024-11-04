@@ -73,8 +73,8 @@ from nemo.collections.llm.gpt.model.mixtral import (
 from nemo.collections.llm.gpt.model.nemotron import (
     Nemotron3Config4B,
     Nemotron3Config8B,
+    Nemotron3Config22B,
     Nemotron4Config15B,
-    Nemotron4Config22B,
     Nemotron4Config340B,
     NemotronConfig,
     NemotronModel,
@@ -137,7 +137,7 @@ __all__ = [
     "Nemotron3Config4B",
     "Nemotron3Config8B",
     "Nemotron4Config15B",
-    "Nemotron4Config22B",
+    "Nemotron3Config22B",
     "Nemotron4Config340B",
     "NemotronModel",
     "CodeLlamaConfig7B",

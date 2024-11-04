@@ -16,8 +16,8 @@ from nemo.collections.llm.fn.activation import squared_relu
 from nemo.collections.llm.gpt.model.nemotron import (
     Nemotron3Config4B,
     Nemotron3Config8B,
+    Nemotron3Config22B,
     Nemotron4Config15B,
-    Nemotron4Config22B,
     Nemotron4Config340B,
     NemotronConfig,
 )
@@ -72,6 +72,18 @@ def test_nemotron3_config_8b():
     assert config.init_method_std == 0.010
 
 
+def test_nemotron3_config_22b():
+    config = Nemotron3Config22B()
+    assert config.num_layers == 40
+    assert config.seq_length == 4096
+    assert config.hidden_size == 6144
+    assert config.ffn_hidden_size == 24576
+    assert config.num_attention_heads == 48
+    assert config.num_query_groups == 48
+    assert config.kv_channels == 6144 // 48
+    assert config.init_method_std == 0.008
+
+
 def test_nemotron4_config_15b():
     config = Nemotron4Config15B()
     assert config.num_layers == 32
@@ -82,18 +94,6 @@ def test_nemotron4_config_15b():
     assert config.num_query_groups == 8
     assert config.kv_channels == 6144 // 48
     assert config.init_method_std == 0.0134
-
-
-def test_nemotron4_config_22b():
-    config = Nemotron4Config22B()
-    assert config.num_layers == 40
-    assert config.seq_length == 4096
-    assert config.hidden_size == 6144
-    assert config.ffn_hidden_size == 24576
-    assert config.num_attention_heads == 48
-    assert config.num_query_groups == 48
-    assert config.kv_channels == 6144 // 48
-    assert config.init_method_std == 0.008
 
 
 def test_nemotron4_config_340b():

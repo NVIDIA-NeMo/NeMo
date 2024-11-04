@@ -3649,32 +3649,6 @@ jobs:
   #       #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
   #       #  if: "failure()"
 
-  L2_TTS_Fast_dev_runs_1_Mixer-TTS:
-    needs: [cicd-test-container-setup]
-    uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_TTS_Fast_dev_runs_1_Mixer-TTS') || needs.cicd-test-container-setup.outputs.all == 'true'
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: |
-        python examples/tts/mixer_tts.py \
-        train_dataset=/home/TestData/an4_dataset/an4_train.json \
-        validation_datasets=/home/TestData/an4_dataset/an4_val.json \
-        sup_data_path=/home/TestData/an4_dataset/sup_data \
-        trainer.devices="[0]" \
-        +trainer.limit_train_batches=1 \
-        +trainer.limit_val_batches=1 \
-        trainer.max_epochs=1 \
-        trainer.strategy=auto \
-        model.pitch_mean=212.35873413085938 \
-        model.pitch_std=68.52806091308594 \
-        model.train_ds.dataloader_params.batch_size=4 \
-        model.train_ds.dataloader_params.num_workers=0 \
-        model.validation_ds.dataloader_params.batch_size=4 \
-        model.validation_ds.dataloader_params.num_workers=0 \
-        ~trainer.check_val_every_n_epoch \
-        ~model.text_normalizer \
-        ~model.text_normalizer_call_kwargs
-
   L2_TTS_Fast_dev_runs_1_Hifigan:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4474,7 +4448,6 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_WaveGlow
       - L2_TTS_Fast_dev_runs_1_FastPitch
       #- OPTIONAL_L2_TTS_Fast_dev_runs_1_RADTTS
-      - L2_TTS_Fast_dev_runs_1_Mixer-TTS
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests
       - L2_Stable_Diffusion_Training

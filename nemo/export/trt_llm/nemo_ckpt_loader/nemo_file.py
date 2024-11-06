@@ -395,7 +395,7 @@ def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Pat
                         nemo_model_config[k] = v
                     elif k == "activation_func":
                         if isinstance(v, torch.jit.ScriptFunction):
-                            nemo_model_config["activation"] = v.name.replace("_", "-")
+                            nemo_model_config["activation"] = v.name
                         else:
                             nemo_model_config["activation"] = v.__name__
 
@@ -405,7 +405,9 @@ def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Pat
             if nemo_model_config["activation"] == "silu":
                 nemo_model_config["activation"] = "fast-swiglu"
             elif nemo_model_config["activation"] == "openai_gelu":
-                nemo_model_config["activation"] = "geglu"
+                nemo_model_config["activation"] = "openai-gelu"
+            elif nemo_model_config["activation"] == "squared_relu":
+                nemo_model_config["activation"] = "squared-relu"
 
             nemo_model_config["mcore_gpt"] = True
             nemo_model_config["max_position_embeddings"] = nemo_model_config.get("seq_length", 4096)

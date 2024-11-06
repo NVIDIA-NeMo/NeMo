@@ -1,4 +1,4 @@
-name: Isort and Black Formatting
+name: Isort and Black Formatting; PyLint Docs check
 # Incrementally reformat only changed files with black, all files with isort
 #
 # Replaces pre-commit.ci, since it reformats all the files.
@@ -13,9 +13,14 @@ on:
   pull_request_target:
     paths:
       - '**.py'
+    types: [ opened, synchronize, reopened, labeled, unlabeled ]
+
+defaults:
+  run:
+    shell: bash -x -e -u -o pipefail {0}
 
 jobs:
-  reformat_with_isort_and_black:
+  reformat_with_isort_and_black_and_pylint:
     runs-on: ubuntu-latest
     permissions:
       # write permissions required to commit changes
@@ -64,3 +69,15 @@ jobs:
         with:
             message: Apply isort and black reformatting
             commit: --signoff
+
+      - name: pylint
+        if: ${{ !contains( github.event.pull_request.labels.*.name, 'skip-docs') }}
+        run: |
+          pip install pylint
+          
+          CHANGED_FILES=$(git diff --name-only --diff-filter=d --merge-base origin/main nemo/ | grep '\.py$' || true)
+
+          ADDITIONAL_PYLINT_ARGS=()
+          echo ${{ github.event.pull_request.labels.*.name }}
+
+          pylint ${ADDITIONAL_PYLINT_ARGS[@]} $CHANGED_FILES

@@ -9,7 +9,6 @@ on:
         options: 
         - major
         - minor
-        - pre_release
       mcore_version:
         description: 'Version of MCore to use (must be a valid git ref)'
         required: true
@@ -17,14 +16,15 @@ on:
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.1.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.8.0
     with:
-      name_of_library: NeMo-Toolkit
-      type_of_release: ${{ inputs.type_of_release }}
+      library_name: NeMo-Toolkit
       python_package: nemo
+      type_of_release: ${{ inputs.type_of_release }}
     secrets:
       SLACK_RELEASE_ENDPOINT: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
-  
+      SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
+
   freeze-tags:
     runs-on: ubuntu-latest
     needs: [code-freeze]

@@ -46,6 +46,7 @@ from nemo.utils import logging
 
 
 def get_args():
+    """parses cli args"""
     parser = ArgumentParser()
     parser.add_argument(
         "--input_name_or_path",
@@ -63,6 +64,7 @@ def get_args():
 
 
 def restore_model_from_checkpoint(cls, checkpoint, strict, **kwargs):
+    """Loads mcore ckpt"""
     try:
         if 'cfg' in kwargs:
             model = ptl_load_state(cls, checkpoint, strict=strict, **kwargs)
@@ -103,6 +105,7 @@ def restore_model_from_checkpoint(cls, checkpoint, strict, **kwargs):
 
 
 def load_config(mistral_config, tokenizer, config_path):
+    """Create mcor config"""
     nemo_config = OmegaConf.load(
         os.path.join(os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_llama_config.yaml')
     ).model
@@ -130,7 +133,7 @@ def load_config(mistral_config, tokenizer, config_path):
     nemo_config.activation = 'fast-swiglu'
 
     # Tokenizer config
-    if hasattr(tokenizer, 'vocab_file'):
+    if getattr(tokenizer, 'vocab_file', None) is not None:
         nemo_config.tokenizer.model = tokenizer.vocab_file
     elif os.path.exists(os.path.join(config_path, 'tekken.json')):
         # Load tekken.json, extract the 'vocab' field & write it to file.
@@ -177,6 +180,8 @@ def load_config(mistral_config, tokenizer, config_path):
 
 
 class LazyStateDict:
+    """Lazy"""
+
     def __init__(self, ckpt_index, root):
         self.map = ckpt_index
         self.root = root
@@ -192,6 +197,7 @@ class LazyStateDict:
 
 
 def load_mistral_ckpt(in_dir, load_model=True):
+    """loads mistral hf ckpt"""
     params_file = os.path.join(in_dir, 'config.json')
     assert os.path.exists(params_file)
     with open(params_file, 'r') as fp:
@@ -217,6 +223,7 @@ def load_mistral_ckpt(in_dir, load_model=True):
 
 
 def parse_precision(precision):
+    """parses precision string"""
     if precision in ["32", "16"]:
         return int(float(precision))
     elif precision in ["bf16", "bf16-mixed"]:
@@ -230,6 +237,7 @@ def parse_precision(precision):
 
 
 def make_trainer(args, nemo_config):
+    """creates PTL trainer"""
     model_args, ckpt, tokenizer = load_mistral_ckpt(args.input_name_or_path, load_model=False)
     nemo_config = load_config(model_args, tokenizer, args.input_name_or_path)
     precision = parse_precision(args.precision)
@@ -269,6 +277,7 @@ def make_trainer(args, nemo_config):
 
 
 def convert(args):
+    """converts chceckpoint from hf to nemo"""
     logging.info(f"loading checkpoint {args.input_name_or_path}")
 
     model_args, ckpt, tokenizer = load_mistral_ckpt(args.input_name_or_path)
@@ -408,6 +417,7 @@ def convert(args):
 
 
 def merge(a: dict, b: dict, path=[]):
+    """merges two state dicts"""
     is_dict = lambda x: isinstance(x, OrderedDict) or isinstance(x, dict)
     for key in b:
         if key in a:
@@ -421,6 +431,7 @@ def merge(a: dict, b: dict, path=[]):
 
 
 def save_to_nemo(args, checkpoint):
+    """saves checkpoint to nemo format"""
 
     logging.info(f"loading checkpoint {args.input_name_or_path}")
     model_args, ckpt, tokenizer = load_mistral_ckpt(args.input_name_or_path, load_model=False)

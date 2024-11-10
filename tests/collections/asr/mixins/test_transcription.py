@@ -23,7 +23,6 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.data.audio_to_text import _speech_collate_fn
-from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.mixins import TranscribeConfig, TranscriptionMixin
 from nemo.collections.asr.parts.mixins.transcription import GenericTranscriptionType
 from nemo.collections.asr.parts.utils import Hypothesis
@@ -42,6 +41,23 @@ class DummyModel(torch.nn.Module):
         # Input: [1, 1] Output = [1, 1
         out = self.encoder(x)
         return out
+
+
+@pytest.mark.with_downloads()
+@pytest.fixture()
+def audio_files(test_data_dir):
+    """
+    Returns a list of audio files for testing.
+    """
+    import soundfile as sf
+
+    audio_file1 = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
+    audio_file2 = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an104-mrcb-b.wav")
+
+    audio1, _ = sf.read(audio_file1, dtype='float32')
+    audio2, _ = sf.read(audio_file2, dtype='float32')
+
+    return audio1, audio2
 
 
 class TranscribableDummy(DummyModel, TranscriptionMixin):
@@ -297,12 +313,11 @@ class TestTranscriptionMixin:
     pytest.mark.with_downloads()
 
     @pytest.mark.unit
-    def test_transcribe_return_hypothesis(self, test_data_dir):
-        model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")
+    def test_transcribe_return_hypothesis(self, test_data_dir, fast_conformer_ctc_model):
         audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
 
-        # Numpy array test
-        outputs = model.transcribe(audio_file, batch_size=1, return_hypotheses=True)
+        # Audio file test
+        outputs = fast_conformer_ctc_model.transcribe(audio_file, batch_size=1, return_hypotheses=True)
         assert len(outputs) == 1
         assert isinstance(outputs[0], Hypothesis)
 
@@ -313,62 +328,82 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
-    def test_transcribe_tensor(self, test_data_dir):
-        model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")
+    def test_transcribe_tensor(self, audio_files, fast_conformer_ctc_model):
 
-        # Load audio file
-        import soundfile as sf
-
-        audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
-        audio, sr = sf.read(audio_file, dtype='float32')
-
+        audio, _ = audio_files
         # Numpy array test
-        outputs = model.transcribe(audio, batch_size=1)
+        outputs = fast_conformer_ctc_model.transcribe(audio, batch_size=1)
         assert len(outputs) == 1
         assert isinstance(outputs[0], str)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
-    def test_transcribe_multiple_tensor(self, test_data_dir):
-        model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")
+    def test_transcribe_multiple_tensor(self, audio_files, fast_conformer_ctc_model):
 
-        # Load audio file
-        import soundfile as sf
-
-        audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
-        audio, sr = sf.read(audio_file, dtype='float32')
-
-        audio_file_2 = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an104-mrcb-b.wav")
-        audio_2, sr = sf.read(audio_file_2, dtype='float32')
+        audio, audio_2 = audio_files
         # Mix second audio to torch.tensor()
         audio_2 = torch.tensor(audio_2)
 
         # Numpy array test
-        outputs = model.transcribe([audio, audio_2], batch_size=2)
+        outputs = fast_conformer_ctc_model.transcribe([audio, audio_2], batch_size=2)
         assert len(outputs) == 2
         assert isinstance(outputs[0], str)
         assert isinstance(outputs[1], str)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
-    def test_transcribe_dataloader(self, test_data_dir):
-        model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")
+    def test_transcribe_dataloader(self, audio_files, fast_conformer_ctc_model):
 
-        # Load audio file
-        import soundfile as sf
-
-        audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
-        audio, sr = sf.read(audio_file, dtype='float32')
-
-        audio_file2 = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an152-mwhw-b.wav")
-        audio2, sr = sf.read(audio_file2, dtype='float32')
+        audio, audio2 = audio_files
 
         dataset = DummyDataset([audio, audio2])
         collate_fn = lambda x: _speech_collate_fn(x, pad_id=0)
         dataloader = DataLoader(dataset, batch_size=2, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
         # DataLoader test
-        outputs = model.transcribe(dataloader, batch_size=1)
+        outputs = fast_conformer_ctc_model.transcribe(dataloader, batch_size=1)
         assert len(outputs) == 2
         assert isinstance(outputs[0], str)
         assert isinstance(outputs[1], str)
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_timestamps_with_transcribe(self, audio_files, fast_conformer_ctc_model):
+        audio1, audio2 = audio_files
+
+        output = fast_conformer_ctc_model.transcribe([audio1, audio2], timestamps=True)
+
+        # check len of output
+        assert len(output) == 2
+
+        # check hypothesis object
+        assert isinstance(output[0], Hypothesis)
+        # check transcript
+        assert output[0].text == 'stop'
+        assert output[1].text == 'start'
+
+        # check timestamp
+        assert output[0].timestep['segment'][0]['start'] == pytest.approx(0.4)
+        assert output[0].timestep['segment'][0]['end'] == pytest.approx(0.48)
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_timestamps_with_transcribe_hybrid(self, audio_files, fast_conformer_hybrid_model):
+        audio1, audio2 = audio_files
+
+        output = fast_conformer_hybrid_model.transcribe([audio1, audio2], timestamps=True)
+
+        # check len of output
+        assert len(output) == 2
+
+        output = output[1]  # Transducer returns tuple
+
+        # check hypothesis object
+        assert isinstance(output[0], Hypothesis)
+        # check transcript
+        assert output[0].text == 'Stop?'
+        assert output[1].text == 'Start.'
+
+        # check timestamp
+        assert output[0].timestep['segment'][0]['start'] == pytest.approx(0.48)
+        assert output[0].timestep['segment'][0]['end'] == pytest.approx(0.72)

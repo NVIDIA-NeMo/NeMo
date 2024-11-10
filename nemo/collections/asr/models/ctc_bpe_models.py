@@ -209,12 +209,14 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         """
         Changes vocabulary of the tokenizer used during CTC decoding process.
         Use this method when fine-tuning on from pre-trained model.
-        This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, you would
-        use it if you want to use pretrained encoder when fine-tuning on a data in another language, or when you'd need
-        model to learn capitalization, punctuation and/or special characters.
+        This method changes only decoder and leaves encoder and pre-processing modules unchanged.
+        For example, you would use it if you want to use pretrained encoder when fine-tuning on a
+        data in another language, or when you'd need model to learn capitalization, punctuation
+        and/or special characters.
 
         Args:
-            new_tokenizer_dir: Directory path to tokenizer or a config for a new tokenizer (if the tokenizer type is `agg`)
+            new_tokenizer_dir: Directory path to tokenizer or a config for a new tokenizer
+                (if the tokenizer type is `agg`)
             new_tokenizer_type: Either `agg`, `bpe` or `wpe`. `bpe` is used for SentencePiece tokenizers,
                 whereas `wpe` is used for `BertTokenizer`.
             new_tokenizer_cfg: A config for the new tokenizer. if provided, pre-empts the dir and type
@@ -227,7 +229,8 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
                 new_tokenizer_cfg = new_tokenizer_dir
             else:
                 raise ValueError(
-                    f'New tokenizer dir should be a string unless the tokenizer is `agg`, but this tokenizer type is: {new_tokenizer_type}'
+                    f'New tokenizer dir should be a string unless the tokenizer is `agg`, but this tokenizer \
+                        type is: {new_tokenizer_type}'
                 )
         else:
             new_tokenizer_cfg = None
@@ -307,13 +310,14 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
 
         logging.info(f"Changed tokenizer to {self.decoder.vocabulary} vocabulary.")
 
-    def change_decoding_strategy(self, decoding_cfg: DictConfig):
+    def change_decoding_strategy(self, decoding_cfg: DictConfig, verbose: bool = True):
         """
         Changes decoding strategy used during CTC decoding process.
 
         Args:
             decoding_cfg: A config for the decoder, which is optional. If the decoding type
                 needs to be changed (from say Greedy to Beam decoding etc), the config can be passed here.
+            verbose: Whether to print the new config or not.
         """
         if decoding_cfg is None:
             # Assume same decoding config as before
@@ -343,7 +347,8 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         with open_dict(self.cfg.decoding):
             self.cfg.decoding = decoding_cfg
 
-        logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
+        if verbose:
+            logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
@@ -378,7 +383,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
 
         model = PretrainedModelInfo(
             pretrained_model_name="stt_en_citrinet_256_gamma_0_25",
-            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_citrinet_256_gamma_0_25",
+            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:\nemo:stt_en_citrinet_256_gamma_0_25",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_en_citrinet_256_gamma_0_25/versions/1.0.0/files/stt_en_citrinet_256_gamma_0_25.nemo",
         )
         results.append(model)

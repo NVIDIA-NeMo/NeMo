@@ -31,6 +31,7 @@ from nemo.collections.asr.parts.mixins import ASRBPEMixin, InterCTCMixin, Transc
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
+from nemo.collections.asr.parts.utils.transcribe_utils import process_timestamp_outputs
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import AccessMixin
 from nemo.utils import logging, model_utils
@@ -104,6 +105,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
+        timestamps: bool = False,
         override_config: Optional[TranscribeConfig] = None,
     ) -> TranscriptionReturnType:
         """
@@ -120,8 +122,13 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             return_hypotheses: (bool) Either return hypotheses or text
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
             num_workers: (int) number of workers for DataLoader
-            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset of 
+                channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. 
+                Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
+            timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis object 
+                (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class for more details.
+                Default is None and would retain the previous state set by using self.change_decoding_strategy().
             verbose: (bool) whether to display tqdm progress bar
             logprobs: (bool) whether to return ctc logits insted of hypotheses
 
@@ -130,10 +137,29 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             * A list of greedy transcript texts / Hypothesis
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
-        if self.cur_decoder not in ["ctc", "rnnt"]:
-            raise ValueError(
-                f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
-            )
+
+        if timestamps is not None:
+            if self.cur_decoder not in ["ctc", "rnnt"]:
+                raise ValueError(
+                    f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
+                )
+            decoding_cfg = self.cfg.aux_ctc.decoding if self.cur_decoder == "ctc" else self.cfg.decoding
+            if timestamps or (override_config is not None and override_config.timestamps):
+                logging.info(
+                    "Timestamps requested, setting decoding timestamps to True. Capture them in Hypothesis object, \
+                        with output[idx].timestep['word'/'segment'/'char']"
+                )
+                return_hypotheses = True
+                with open_dict(decoding_cfg):
+                    decoding_cfg.compute_timestamps = True
+                    decoding_cfg.preserve_alignments = True
+                self.change_decoding_strategy(decoding_cfg, decoder_type=self.cur_decoder, verbose=False)
+            else:
+                return_hypotheses = False
+                with open_dict(decoding_cfg):
+                    decoding_cfg.compute_timestamps = False
+                    decoding_cfg.preserve_alignments = False
+                self.change_decoding_strategy(decoding_cfg, decoder_type=self.cur_decoder, verbose=False)
 
         return super().transcribe(
             audio=audio,
@@ -144,6 +170,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             channel_selector=channel_selector,
             augmentor=augmentor,
             verbose=verbose,
+            timestamps=timestamps,
             override_config=override_config,
         )
 
@@ -201,6 +228,14 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         #     for logit, elen in zip(logits, encoded_len):
         #         logits_list.append(logit[:elen])
 
+        if trcfg.timestamps:
+            best_hyp = process_timestamp_outputs(
+                best_hyp, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+            )
+            all_hyp = process_timestamp_outputs(
+                all_hyp, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+            )
+
         del logits, encoded_len
 
         hypotheses = []
@@ -221,10 +256,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         ctc_decoding_cfg: Optional[DictConfig] = None,
     ):
         """
-        Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning a pre-trained model.
-        This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, you would
-        use it if you want to use pretrained encoder when fine-tuning on data in another language, or when you'd need
-        model to learn capitalization, punctuation and/or special characters.
+        Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning a 
+        pre-trained model. This method changes only decoder and leaves encoder and pre-processing 
+        modules unchanged. For example, you would use it if you want to use pretrained encoder 
+        when fine-tuning on data in another language, or when you'd need model to learn capitalization,
+        punctuation and/or special characters.
 
         Args:
             new_vocabulary: list with new vocabulary. Must contain at least 2 elements. Typically, \
@@ -295,7 +331,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
 
                 logging.info(f"Changed the tokenizer of the CTC decoder to {self.ctc_decoder.vocabulary} vocabulary.")
 
-    def change_decoding_strategy(self, decoding_cfg: DictConfig = None, decoder_type: str = None):
+    def change_decoding_strategy(
+        self, decoding_cfg: DictConfig = None, decoder_type: str = None, verbose: bool = True
+    ):
         """
         Changes decoding strategy used during RNNT decoding process.
 
@@ -305,10 +343,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             decoder_type: (str) Can be set to 'rnnt' or 'ctc' to switch between appropriate decoder in a
                 model having RNN-T and CTC decoders. Defaults to None, in which case RNN-T decoder is
                 used. If set to 'ctc', it raises error if 'ctc_decoder' is not an attribute of the model.
+            verbose: (bool) whether to display logging information
         """
         if decoder_type is None or decoder_type == 'rnnt':
             self.cur_decoder = "rnnt"
-            return super().change_decoding_strategy(decoding_cfg=decoding_cfg)
+            return super().change_decoding_strategy(decoding_cfg=decoding_cfg, verbose=verbose)
 
         assert decoder_type == 'ctc' and hasattr(self, 'ctc_decoder')
         if decoding_cfg is None:
@@ -337,7 +376,10 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             self.cfg.aux_ctc.decoding = decoding_cfg
 
         self.cur_decoder = "ctc"
-        logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.aux_ctc.decoding)}")
+        if verbose:
+            logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.aux_ctc.decoding)}")
+
+        return None
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):

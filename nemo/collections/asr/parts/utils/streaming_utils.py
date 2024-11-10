@@ -22,7 +22,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextMiniBatch
-from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
+from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
@@ -79,8 +79,8 @@ def longest_common_subsequence_merge(X, Y, filepath=None):
 
     Assumption is that the two chunks are consecutive chunks, and there exists at least small overlap acoustically.
 
-    It is a sub-word token merge algorithm, operating on the abstract notion of integer ids representing the subword ids.
-    It is independent of text or character encoding.
+    It is a sub-word token merge algorithm, operating on the abstract notion of integer ids representing
+    the subword ids. It is independent of text or character encoding.
 
     Since the algorithm is merge based, and depends on consecutive buffers, the very first buffer is processes using
     the "middle tokens" algorithm.
@@ -292,8 +292,8 @@ def lcs_alignment_merge_buffer(buffer, data, delay, model, max_steps_per_timeste
     Merges the new text from the current frame with the previous text contained in the buffer.
 
     The alignment is based on a Longest Common Subsequence algorithm, with some additional heuristics leveraging
-    the notion that the chunk size is >= the context window. In case this assumptio is violated, the results of the merge
-    will be incorrect (or at least obtain worse WER overall).
+    the notion that the chunk size is >= the context window. In case this assumptio is violated, the results of the
+    merge will be incorrect (or at least obtain worse WER overall).
     """
     # If delay timesteps is 0, that means no future context was used. Simply concatenate the buffer with new data.
     if delay < 1:
@@ -327,8 +327,8 @@ def inplace_buffer_merge(buffer, data, timesteps, model):
     Merges the new text from the current frame with the previous text contained in the buffer.
 
     The alignment is based on a Longest Common Subsequence algorithm, with some additional heuristics leveraging
-    the notion that the chunk size is >= the context window. In case this assumptio is violated, the results of the merge
-    will be incorrect (or at least obtain worse WER overall).
+    the notion that the chunk size is >= the context window. In case this assumptio is violated, the results of
+    the merge will be incorrect (or at least obtain worse WER overall).
     """
     # If delay timesteps is 0, that means no future context was used. Simply concatenate the buffer with new data.
     if timesteps < 1:
@@ -391,7 +391,7 @@ class StreamingFeatureBufferer:
         cfg.preprocessor.dither = 0.0
         cfg.preprocessor.pad_to = 0
         cfg.preprocessor.normalize = "None"
-        self.raw_preprocessor = EncDecCTCModelBPE.from_config_dict(cfg.preprocessor)
+        self.raw_preprocessor = ASRModel.from_config_dict(cfg.preprocessor)
         self.raw_preprocessor.to(asr_model.device)
 
     def reset(self):
@@ -756,7 +756,7 @@ class FrameBatchASR:
         cfg.preprocessor.dither = 0.0
         cfg.preprocessor.pad_to = 0
         cfg.preprocessor.normalize = "None"
-        self.raw_preprocessor = EncDecCTCModelBPE.from_config_dict(cfg.preprocessor)
+        self.raw_preprocessor = ASRModel.from_config_dict(cfg.preprocessor)
         self.raw_preprocessor.to(asr_model.device)
         self.preprocessor = self.raw_preprocessor
 
@@ -1091,12 +1091,15 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             -   For all samples, determine if signal has finished.
                 -   If so, skip calculation of mel-specs.
                 -   If not, compute mel spec and length
-            -   Perform Encoder forward over this sub-batch of samples. Maintain the indices of samples that were processed.
-            -   If performing stateful decoding, prior to decoder forward, remove the states of samples that were not processed.
+            -   Perform Encoder forward over this sub-batch of samples. Maintain the indices of samples that
+                were processed.
+            -   If performing stateful decoding, prior to decoder forward, remove the states of samples that
+                were not processed.
             -   Perform Decoder + Joint forward for samples that were processed.
             -   For all output RNNT alignment matrix of the joint do:
                 -   If signal has ended previously (this was last buffer of padding), skip alignment
-                -   Otherwise, recalculate global index of this sample from the sub-batch index, and preserve alignment.
+                -   Otherwise, recalculate global index of this sample from the sub-batch index, and preserve
+                alignment.
             -   Same for preds
             -   Update indices of sub-batch with global index map.
             - Redo steps until all samples were processed (sub-batch size == 0).
@@ -1362,15 +1365,17 @@ class LongestCommonSubsequenceBatchedFrameASRRNNT(BatchedFrameASRRNNT):
 
 class CacheAwareStreamingAudioBuffer:
     """
-    A buffer to be used for cache-aware streaming. It can load a single or multiple audio files/processed signals, split them in chunks and return one on one.
-    It can be used to simulate streaming audio or audios.
+    A buffer to be used for cache-aware streaming. It can load a single or multiple audio
+    files/processed signals, split them in chunks and return one on one. It can be used to
+    simulate streaming audio or audios.
     """
 
     def __init__(self, model, online_normalization=None, pad_and_drop_preencoded=False):
         '''
         Args:
             model: An ASR model.
-            online_normalization (bool): whether to perform online normalization per chunk or normalize the whole audio before chunking
+            online_normalization (bool): whether to perform online normalization per chunk or
+            normalize the whole audio before chunking
             pad_and_drop_preencoded (bool): if true pad first audio chunk and always drop preencoded
         '''
         self.model = model
@@ -1430,7 +1435,8 @@ class CacheAwareStreamingAudioBuffer:
             audio_chunk = self.buffer[:, :, self.buffer_idx : self.buffer_idx + chunk_size]
 
             if self.sampling_frames is not None:
-                # checking to make sure the audio chunk has enough frames to produce at least one output after downsampling
+                # checking to make sure the audio chunk has enough frames to produce at least one output after
+                # downsampling
                 if self.buffer_idx == 0 and isinstance(self.sampling_frames, list):
                     cur_sampling_frames = self.sampling_frames[0]
                 else:

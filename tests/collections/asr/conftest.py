@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 import torch
 
+from nemo.collections.asr.models import ASRModel
+
 
 class RNNTTestHelper:
     @staticmethod
@@ -353,3 +355,18 @@ def rnnt_test_helper() -> Type[RNNTTestHelper]:
 @pytest.fixture(scope="session")
 def rnn_loss_sample_data() -> Type[RnntLossSampleData]:
     return RnntLossSampleData
+
+
+@pytest.fixture(scope='session')
+def fast_conformer_transducer_model():
+    return ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
+
+
+@pytest.fixture(scope='session')
+def fast_conformer_ctc_model():
+    return ASRModel.from_pretrained("stt_en_fastconformer_ctc_large")
+
+
+@pytest.fixture(scope='session')
+def fast_conformer_hybrid_model():
+    return ASRModel.from_pretrained("parakeet-tdt_ctc-110m")

@@ -253,10 +253,11 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         ctc_decoding_cfg: Optional[DictConfig] = None,
     ):
         """
-        Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning on from pre-trained model.
-        This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, you would
-        use it if you want to use pretrained encoder when fine-tuning on data in another language, or when you'd need
-        model to learn capitalization, punctuation and/or special characters.
+        Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning on
+        from pre-trained model. This method changes only decoder and leaves encoder and pre-processing
+        modules unchanged. For example, you would use it if you want to use pretrained encoder when
+        fine-tuning on data in another language, or when you'd need model to learn capitalization,
+        punctuation and/or special characters.
 
         Args:
             new_tokenizer_dir: Directory path to tokenizer or a config for a new tokenizer (if the tokenizer type is `agg`)
@@ -415,7 +416,9 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
 
             logging.info(f"Changed tokenizer of the CTC decoder to {self.ctc_decoder.vocabulary} vocabulary.")
 
-    def change_decoding_strategy(self, decoding_cfg: DictConfig = None, decoder_type: str = None):
+    def change_decoding_strategy(
+        self, decoding_cfg: DictConfig = None, decoder_type: str = None, verbose: bool = True
+    ):
         """
         Changes decoding strategy used during RNNT decoding process.
         Args:
@@ -424,6 +427,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             decoder_type: (str) Can be set to 'rnnt' or 'ctc' to switch between appropriate decoder in a
                 model having both RNN-T and CTC decoders. Defaults to None, in which case RNN-T decoder is
                 used. If set to 'ctc', it raises error if 'ctc_decoder' is not an attribute of the model.
+            verbose: bool whether to display change of decoder config or not.
         """
         if decoder_type is None or decoder_type == 'rnnt':
             if decoding_cfg is None:
@@ -466,7 +470,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 self.cfg.decoding = decoding_cfg
 
             self.cur_decoder = "rnnt"
-            logging.info(f"Changed decoding strategy of the RNNT decoder to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
+            if verbose:
+                logging.info(
+                    f"Changed decoding strategy of the RNNT decoder to \n{OmegaConf.to_yaml(self.cfg.decoding)}"
+                )
 
         elif decoder_type == 'ctc':
             if not hasattr(self, 'ctc_decoding'):
@@ -497,9 +504,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 self.cfg.aux_ctc.decoding = decoding_cfg
 
             self.cur_decoder = "ctc"
-            logging.info(
-                f"Changed decoding strategy of the CTC decoder to \n{OmegaConf.to_yaml(self.cfg.aux_ctc.decoding)}"
-            )
+            if verbose:
+                logging.info(
+                    f"Changed decoding strategy of the CTC decoder to \n{OmegaConf.to_yaml(self.cfg.aux_ctc.decoding)}"
+                )
         else:
             raise ValueError(f"decoder_type={decoder_type} is not supported. Supported values: [ctc,rnnt]")
 

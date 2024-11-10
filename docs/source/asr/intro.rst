@@ -16,10 +16,39 @@ After :ref:`installing NeMo<installation>`, you can transcribe an audio file as 
     asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
     transcript = asr_model.transcribe(["path/to/audio_file.wav"])
 
-Obtain word/segment timestamps
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Obtain timestamps
+^^^^^^^^^^^^^^^^^
 
-You can also obtain timestamps for each word or segment in the transcription as follows:
+Obtaining char(token), word or segment timestamps is also possible with NeMo ASR Models. 
+
+Currently, timestamps are available for Parakeet Models with all types of decoders (CTC/RNNT/TDT). Support for AED models would be added soon.
+
+There are two ways to obtain timestamps:
+1. By using the `timestamps=True` flag in the `transcribe` method.
+2. For more control over the timestamps, you can update the decoding config to mention type of timestamps (char, word, segment) and also specify the segment seperators or word seperator for segment and word level timestamps.
+
+With the `timestamps=True` flag, you can obtain timestamps for each character in the transcription as follows:
+
+.. code-block:: python
+    
+    # import nemo_asr and instantiate asr_model as above
+    import nemo.collections.asr as nemo_asr
+    asr_model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt_ctc-110m")
+
+    # specify flag `timestamps=True`
+    hypotheses = asr_model.transcribe(["path/to/audio_file.wav"], timestamps=True)
+
+    # by default, timestamps are enabled for char, word and segment level
+    word_timestamps = hypotheses[0][0].timestep['word'] # word level timestamps for first sample
+    segment_timestamps = hypotheses[0][0].timestep['segment'] # segment level timestamps
+    char_timestamps = hypotheses[0][0].timestep['char'] # char level timestamps
+
+    for stamp in segment_timestamps:
+        print(f"{stamp['start']}s - {stamp['end']}s : {stamp['segment']}")
+
+    # segment level timestamps (if model supports Punctuation and Capitalization, segment level timestamps are displayed based on punctuation otherwise complete transcription is considered as a single segment)
+    
+For more control over the timestamps, you can update the decoding config to mention type of timestamps (char, word, segment) and also specify the segment seperators or word seperator for segment and word level timestamps as follows:
 
 .. code-block:: python
 

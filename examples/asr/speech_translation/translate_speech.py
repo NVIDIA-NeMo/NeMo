@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 import json
 import os
 from dataclasses import dataclass, is_dataclass
@@ -65,13 +64,19 @@ python translate_speech.py \
 
 @dataclass
 class ModelChangeConfig:
+    """
+    Sub-config for changes specific to the Conformer Encoder
+    """
 
-    # Sub-config for changes specific to the Conformer Encoder
     conformer: ConformerChangeConfig = ConformerChangeConfig()
 
 
 @dataclass
 class TranslationConfig:
+    """
+    Translation Configuration for audio to text translation.
+    """
+
     # Required configs
     model_path: Optional[str] = None  # Path to a .nemo file
     pretrained_name: Optional[str] = None  # Name of a pretrained model
@@ -106,6 +111,9 @@ class TranslationConfig:
 
 @hydra_runner(config_name="TranslationConfig", schema=TranslationConfig)
 def main(cfg: TranslationConfig) -> Union[TranslationConfig, List[str]]:
+    """
+    Main function to translate audio to text using a pretrained/finetuned model.
+    """
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
     for key in cfg:

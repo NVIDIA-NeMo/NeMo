@@ -25,7 +25,14 @@ from rich.console import Console
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
-from nemo.lightning import AutoResume, NeMoLogger, OptimizerModule, Trainer, io
+from nemo.lightning import (
+    AutoResume,
+    NeMoLogger,
+    OptimizerModule,
+    Trainer,
+    configure_no_restart_validation_training_loop,
+    io,
+)
 from nemo.lightning.base import NEMO_MODELS_CACHE
 from nemo.lightning.pytorch.callbacks import PEFT, ModelTransform
 from nemo.utils import logging
@@ -680,6 +687,7 @@ def _setup(
     tokenizer: Optional[TokenizerType],
     model_transform: Optional[Union[PEFT, ModelTransform, Callable]],
 ) -> Any:  # Return type is Any because app_state's type is not specified
+    configure_no_restart_validation_training_loop(trainer)
     _log = log or NeMoLogger()
     if resume and isinstance(model_transform, PEFT) and _log.ckpt:
         logging.info("Disabling try_restore_best_ckpt restoration for adapters")

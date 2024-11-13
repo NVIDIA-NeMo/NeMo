@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from copy import deepcopy
 
 import fiddle as fdl
 import pytorch_lightning as pl
+from pytorch_lightning.loops import _TrainingEpochLoop
+from pytorch_lightning.loops.fetchers import _DataFetcher
 from typing_extensions import Self
 
 from nemo.lightning.fabric.conversion import to_fabric
@@ -23,8 +26,40 @@ from nemo.lightning.fabric.fabric import Fabric
 from nemo.lightning.io.mixin import IOMixin, serialization, track_io
 
 
-class Trainer(pl.Trainer, IOMixin):
+class NoValOnRestartTrainingLoop(_TrainingEpochLoop):
+    """
+    Extend the PTL Epoch loop to skip validation when restarting.
+    This happens when resuming a checkpoint that has already run validation, but loading restores
+    the training state before validation has run.
+    """
 
+    def _should_check_val_fx(self, data_fetcher) -> bool:
+        if self.skip_val_on_restart:
+            return False
+        return super()._should_check_val_fx(data_fetcher)
+
+    def load_state_dict(self, state_dict: dict, prefix: str = "") -> None:
+        super().load_state_dict(state_dict, prefix)
+
+        self.skip_val_on_restart = True
+
+    def advance(self, data_fetcher: _DataFetcher) -> None:
+        super().advance(data_fetcher)
+
+        self.skip_val_on_restart = False
+
+
+def configure_no_restart_validation_training_loop(trainer: pl.Trainer) -> None:
+    if not isinstance(trainer.fit_loop.epoch_loop, _TrainingEpochLoop):
+        warnings.warn("Detected custom epoch loop. Skipping no validation on restart support.", UserWarning)
+        return
+
+    ## Pass trainer object to avoid trainer getting overwritten as None
+    loop = NoValOnRestartTrainingLoop(trainer, trainer.min_steps, trainer.max_steps)
+    trainer.fit_loop.epoch_loop = loop
+
+
+class Trainer(pl.Trainer, IOMixin):
     def add_io(self, obj):
         """Recurse to the leaves of a container and add io functionality to non-serializable leaves"""
         if isinstance(obj, (dict, list)):

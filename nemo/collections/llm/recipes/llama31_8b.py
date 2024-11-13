@@ -25,7 +25,7 @@ from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
-from nemo.collections.llm.gpt.model.llama import Llama31Config405B, LlamaModel
+from nemo.collections.llm.gpt.model.llama import Llama31Config8B, LlamaModel
 from nemo.collections.llm.peft.lora import LoRA
 from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
@@ -38,46 +38,46 @@ from nemo.lightning.pytorch.callbacks import GarbageCollectionCallback
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.utils.exp_manager import TimingCallback
 
-NAME = "llama31_405b"
+NAME = "llama31_8b"
 
 
 @run.cli.factory(name=NAME)
 def model() -> run.Config[pl.LightningModule]:
     """
-    Factory function to create a Llama3.1 405B model configuration.
+    Factory function to create a Llama3.1 8B model configuration.
 
     Returns:
-        run.Config[pl.LightningModule]: Configuration for the Llama3.1 405B model.
+        run.Config[pl.LightningModule]: Configuration for the Llama3.1 8B model.
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain model=llama31_405b ...
+            $ nemo llm pretrain model=llama31_8b ...
 
         Python API usage:
             >>> model_config = model()
             >>> print(model_config)
     """
-    conf = run.Config(Llama31Config405B)
+    conf = run.Config(Llama31Config8B)
     conf.seq_length = 8192
     return run.Config(LlamaModel, config=conf)
 
 
 def trainer(
-    tensor_parallelism: int = 8,
-    pipeline_parallelism: int = 9,
-    pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
-    virtual_pipeline_parallelism: Optional[int] = 2,
-    context_parallelism: int = 4,
-    sequence_parallelism: bool = True,
-    num_nodes: int = 72,
+    tensor_parallelism: int = 1,
+    pipeline_parallelism: int = 1,
+    pipeline_parallelism_type: Optional[torch.dtype] = None,
+    virtual_pipeline_parallelism: Optional[int] = None,
+    context_parallelism: int = 2,
+    sequence_parallelism: bool = False,
+    num_nodes: int = 1,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
     callbacks: Optional[list[run.Config[Callback]]] = None,
 ) -> run.Config[nl.Trainer]:
     """
-    Configure the NeMo Lightning Trainer for Llama3.1 405B model.
+    Configure the NeMo Lightning Trainer for Llama3.1 8B model.
 
-    This function sets up the distributed training strategy optimized for the large 405B model.
+    This function sets up the distributed training strategy optimized for the large 8B model.
 
     Args:
         tensor_parallelism (int): Degree of tensor model parallelism.
@@ -96,10 +96,10 @@ def trainer(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain trainer=llama31_405b ...
+            $ nemo llm pretrain trainer=llama31_8b ...
 
         Python API usage:
-            >>> trainer_config = trainer(num_nodes=4, num_gpus_per_node=8)
+            >>> trainer_config = trainer(num_nodes=2, num_gpus_per_node=8)
             >>> print(trainer_config)
 
     Note:
@@ -156,7 +156,7 @@ def pretrain_recipe(
     fn: Callable = pretrain,
 ) -> run.Partial:
     """
-    Create a pre-training recipe for Llama3.1 405B model.
+    Create a pre-training recipe for Llama3.1 8B model.
 
     This function sets up a complete configuration for pre-training, including
     model, trainer, data, logging, optimization, and resumption settings.
@@ -174,15 +174,15 @@ def pretrain_recipe(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory llama31_405b
-            $ nemo llm pretrain --factory "llama31_405b(num_nodes=4, name='my_405b_pretrain')"
+            $ nemo llm pretrain --factory llama31_8b
+            $ nemo llm pretrain --factory "llama31_8b(num_nodes=4, name='my_8b_pretrain')"
 
         Python API usage:
-            >>> recipe = pretrain_recipe(name="llama31_405b_pretrain", num_nodes=4)
+            >>> recipe = pretrain_recipe(name="llama31_8b_pretrain", num_nodes=4)
             >>> print(recipe)
 
     Note:
-        This recipe is optimized for the large 405B model and requires significant computational resources.
+        This recipe is optimized for the large 8B model and requires significant computational resources.
     """
     recipe = run.Partial(
         fn,
@@ -206,7 +206,7 @@ def pretrain_recipe(
 
 def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
     """
-    Create a performance-optimized pre-training recipe for Llama3.1 405B model.
+    Create a performance-optimized pre-training recipe for Llama3.1 8B model.
 
     This method enables performance optimizations that may not be suitable for all use cases.
     It builds upon the standard pre-training recipe and adds additional performance enhancements.
@@ -247,7 +247,7 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
 def finetune_recipe(
     dir: Optional[str] = None,
     name: str = "default",
-    num_nodes: int = 3,
+    num_nodes: int = 1,
     num_gpus_per_node: int = 8,
     peft_scheme: Optional[str] = 'lora',
     seq_length: Optional[int] = None,
@@ -255,7 +255,7 @@ def finetune_recipe(
     performance_mode: bool = False,
 ) -> run.Partial:
     """
-    Create a fine-tuning recipe for Llama3.1 405B model.
+    Create a fine-tuning recipe for Llama3.1 8B model.
 
     This function sets up a complete configuration for fine-tuning, including
     model, trainer, data, logging, optimization, and resumption settings.
@@ -271,55 +271,48 @@ def finetune_recipe(
         packed_sequence (Optional[bool]): If true, fine-tuning sequences will be packed into batches up to the given
             maximum seq_length for better efficiency. By default, this value equals performance_mode.
         performance_mode (bool): If true, enables optimizations for maximum performance.
+
     Returns:
         run.Partial: Partial configuration for fine-tuning.
 
     Examples:
         CLI usage:
-            $ nemo llm finetune --factory llama31_405b
-            $ nemo llm finetune --factory "llama31_405b(num_nodes=3, name='my_llama31_405b_finetune')"
+            $ nemo llm finetune --factory llama31_8b
 
         Python API usage:
-            >>> recipe = finetune_recipe(name="llama31_405b_finetune", num_nodes=3)
+            >>> recipe = finetune_recipe(name="llama31_8b_finetune", num_nodes=2)
             >>> print(recipe)
 
     Note:
-        This recipe uses the SQuAD dataset for fine-tuning. Be aware that fine-tuning a 405B model
-        requires substantial computational resources.
+        This recipe uses the SQuAD dataset for fine-tuning. For more information
+        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
+        `examples/llm/finetune/` directory.
     """
+    # Default to unpacked data in normal mode and packed data in performance mode
+    # once packing recipe is well tested, change this default to true
     if packed_sequence is None:
         packed_sequence = performance_mode
 
+    # For unpacked sequence, most samples in SQuAD dataset are shorter than 2K
     if seq_length is None:
-        seq_length = 2048
-
-    if num_nodes is None:
-        if peft_scheme is None or peft_scheme.lower() == 'none':
-            num_nodes = 12
-        elif peft_scheme.lower() == 'lora':
-            num_nodes = 3
+        seq_length = 4096 if packed_sequence else 2048
 
     recipe = default_finetune_recipe(
-        model(), "meta-llama/Llama-3.1-405B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
+        model(), "meta-llama/Meta-Llama-3.1-8B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
     )
     if peft_scheme is None or peft_scheme.lower() == 'none':
-        recipe.trainer.strategy.tensor_model_parallel_size = 8
-        recipe.trainer.strategy.pipeline_model_parallel_size = 14
-        recipe.data.global_batch_size = 6
+        recipe.trainer.strategy.tensor_model_parallel_size = 2
         recipe.optim.config.lr = 5e-6
     elif peft_scheme.lower() == 'lora':
         recipe.peft = run.Config(LoRA)
-        recipe.peft.dim = 16
-        recipe.peft.alpha = 32
+        recipe.peft.dim = 8
+        recipe.peft.alpha = 16
         recipe.peft.target_modules = ['linear_qkv']
         recipe.optim.config.use_distributed_optimizer = False
 
         # some settings currently do not function correctly with LoRA
         recipe.model.config.cross_entropy_loss_fusion = False
-        recipe.trainer.strategy.tensor_model_parallel_size = 4
-        recipe.trainer.strategy.pipeline_model_parallel_size = 6
-        recipe.trainer.strategy.virtual_pipeline_model_parallel_size = 7
-        recipe.data.global_batch_size = 6
+
         recipe.optim.config.lr = 1e-4
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
@@ -358,14 +351,12 @@ def finetune_performance_optimizations(
         Use this method with caution and only when you need maximum performance.
         It may not be suitable for all hardware configurations or use cases.
     """
+    recipe.trainer.strategy.tensor_model_parallel_size = 1
 
     if not hasattr(recipe.trainer, "callbacks"):
         recipe.trainer.callbacks = []
 
     if peft_scheme is None or peft_scheme.lower() == 'none':
-        # Note: limited support. This is not necessarily the most optimized setting
-        recipe.trainer.strategy.tensor_model_parallel_size = 8
-        recipe.trainer.strategy.pipeline_model_parallel_size = 14
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
         recipe.trainer.strategy.ddp = run.Config(
             DistributedDataParallelConfig,
@@ -378,17 +369,9 @@ def finetune_performance_optimizations(
         recipe.trainer.callbacks.append(
             run.Config(
                 MegatronCommOverlapCallback,
-                tp_comm_overlap=True,
-                defer_embedding_wgrad_compute=True,
-                wgrad_deferral_limit=22,
+                tp_comm_overlap=False,
             )
         )
-    else:
-        recipe.trainer.strategy.tensor_model_parallel_size = 4
-        recipe.trainer.strategy.pipeline_model_parallel_size = 6
-        recipe.trainer.strategy.virtual_pipeline_model_parallel_size = 7
-
-    recipe.trainer.strategy.sequence_parallel = True
 
     recipe.trainer.callbacks.append(run.Config(TimingCallback))
     recipe.trainer.callbacks.append(

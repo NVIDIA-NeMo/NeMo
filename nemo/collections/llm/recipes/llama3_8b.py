@@ -25,7 +25,6 @@ from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model.llama import Llama3Config8B, LlamaModel
 from nemo.collections.llm.peft.lora import LoRA
 from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
@@ -251,9 +250,10 @@ def finetune_recipe(
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
-        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for finetuning. Allowed values: 'lora'/'none'/None.
         seq_length (int): Maximum number of tokens per microbatch.
-        packed_sequence (Optional[bool]): If true, fine-tuning sequences will be packed into batches up to the given maximum seq_length for better efficiency. By default, this value equals performance_mode.
+        packed_sequence (Optional[bool]): If true, fine-tuning sequences will be packed into batches up to the given
+            maximum seq_length for better efficiency. By default, this value equals performance_mode.
         performance_mode (bool): If true, enables optimizations for maximum performance.
 
     Returns:
@@ -305,7 +305,7 @@ def finetune_recipe(
     recipe.model.config.seq_length = seq_length
     recipe.data.seq_length = seq_length
     if packed_sequence:
-        recipe.data.pad_to_max_length = True
+        recipe.data.dataset_kwargs = {'pad_to_max_length': True}
         recipe.data.packed_sequence_specs = run.Config(PackedSequenceSpecs, packed_sequence_size=seq_length)
 
     if performance_mode:

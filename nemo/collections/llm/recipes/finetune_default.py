@@ -16,6 +16,7 @@ from typing import Optional
 
 import nemo_run as run
 import pytorch_lightning as pl
+import torch
 
 import nemo.lightning as nl
 from nemo.collections import llm
@@ -82,7 +83,7 @@ def default_finetune_recipe(
 def default_finetune_trainer(
     tensor_parallelism=1,
     pipeline_parallelism=1,
-    pipeline_parallelism_type=None,
+    pipeline_parallelism_type=torch.bfloat16,
     virtual_pipeline_parallelism=None,
     context_parallelism=1,
     sequence_parallelism=False,
@@ -93,6 +94,19 @@ def default_finetune_trainer(
     limit_val_batches=None,
     val_check_interval=30,
 ):
+    """
+    Create a default fine-tuning trainer for any model.
+
+    This function sets up a template for strategy and trainer.
+
+    Args:
+        See docstrings of MegatronStrategy and Trainer.
+
+    Returns:
+        run.Config: Config for a finetuning trainer.
+
+    See usages of this in recipes for further details.
+    """
     strategy = run.Config(
         nl.MegatronStrategy,
         tensor_model_parallel_size=tensor_parallelism,
@@ -125,7 +139,8 @@ def default_finetune_trainer(
 
 def nemo_resume(model_id: str) -> run.Config[nl.AutoResume]:
     """
-    Configure automatic resumption from a NeMo checkpoint converted from Huggingface for https://huggingface.co/{model_id}.
+    Configure automatic resumption from a NeMo checkpoint converted from Huggingface for
+    https://huggingface.co/{model_id}.
 
     This NeMo checkpoint should be converted from Huggingface beforehand, using nemo.collections.llm.import_ckpt.
     When converting the checkpoint, the NeMo checkpoint will be saved in NEMO_HOME (set to ~/.cache/nemo by default).

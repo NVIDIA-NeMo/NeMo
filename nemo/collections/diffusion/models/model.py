@@ -14,7 +14,7 @@
 
 import importlib
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
@@ -24,6 +24,7 @@ import wandb
 from einops import rearrange
 from megatron.core import parallel_state
 from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import nn
 from typing_extensions import override
@@ -39,10 +40,12 @@ from .dit.dit_model import DiTCrossAttentionModel
 
 
 def dit_forward_step(model, batch) -> torch.Tensor:
+    """Forward pass of DiT."""
     return model(**batch)
 
 
 def dit_data_step(module, dataloader_iter):
+    """DiT data batch preparation."""
     batch = next(dataloader_iter)[0]
     batch = get_batch_on_this_cp_rank(batch)
     batch = {k: v.to(device='cuda', non_blocking=True) if torch.is_tensor(v) else v for k, v in batch.items()}
@@ -58,12 +61,12 @@ def dit_data_step(module, dataloader_iter):
         'self_attention': PackedSeqParams(
             cu_seqlens_q=cu_seqlens,
             cu_seqlens_kv=cu_seqlens,
-            qkv_format='sbhd',
+            qkv_format=module.qkv_format,
         ),
         'cross_attention': PackedSeqParams(
             cu_seqlens_q=cu_seqlens,
             cu_seqlens_kv=cu_seqlens_kv,
-            qkv_format='sbhd',
+            qkv_format=module.qkv_format,
         ),
     }
 
@@ -77,9 +80,7 @@ def get_batch_on_this_cp_rank(data: Dict):
     cp_size = mpu.get_context_parallel_world_size()
     cp_rank = mpu.get_context_parallel_rank()
 
-    t = 16
     if cp_size > 1:
-        assert t % cp_size == 0, "t must divisibly by cp_size"
         num_valid_tokens_in_ub = None
         if 'loss_mask' in data and data['loss_mask'] is not None:
             num_valid_tokens_in_ub = data['loss_mask'].sum()
@@ -88,9 +89,13 @@ def get_batch_on_this_cp_rank(data: Dict):
             if (value is not None) and (key in ['video', 'video_latent', 'noise_latent', 'pos_ids']):
                 if len(value.shape) > 5:
                     value = value.squeeze(0)
-                B, C, T, H, W = value.shape
+                if len(value.shape) == 5:
+                    B, C, T, H, W = value.shape
+                    data[key] = value.view(B, C, cp_size, T // cp_size, H, W)[:, :, cp_rank, ...].contiguous()
+                else:
+                    B, S, D = value.shape
+                    data[key] = value.view(B, cp_size, S // cp_size, D)[:, cp_rank, ...].contiguous()
                 # TODO: sequence packing
-                data[key] = value.view(B, C, cp_size, T // cp_size, H, W)[:, :, cp_rank, ...].contiguous()
         loss_mask = data["loss_mask"]
         data["loss_mask"] = loss_mask.view(loss_mask.shape[0], cp_size, loss_mask.shape[1] // cp_size)[
             :, cp_rank, ...
@@ -142,8 +147,16 @@ class DiTConfig(TransformerConfig, io.IOMixin):
     data_step_fn = dit_data_step
     forward_step_fn = dit_forward_step
 
+    replicated_t_embedder = True
+
+    seq_length: int = 2048
+
+    qkv_format: str = 'sbhd'
+    attn_mask_type: AttnMaskType = AttnMaskType.no_mask
+
     @override
     def configure_model(self, tokenizer=None) -> DiTCrossAttentionModel:
+        """Configure DiT Model from MCore."""
         vp_size = self.virtual_pipeline_model_parallel_size
         if vp_size:
             p_size = self.pipeline_model_parallel_size
@@ -168,11 +181,14 @@ class DiTConfig(TransformerConfig, io.IOMixin):
         )
 
     def configure_vae(self):
+        """Dynamically import video tokenizer."""
         return dynamic_import(self.vae_module)(self.vae_path)
 
 
 @dataclass
 class DiTBConfig(DiTConfig):
+    """DiT-B"""
+
     num_layers: int = 12
     hidden_size: int = 768
     num_attention_heads: int = 12
@@ -180,6 +196,8 @@ class DiTBConfig(DiTConfig):
 
 @dataclass
 class DiTLConfig(DiTConfig):
+    """DiT-L"""
+
     num_layers: int = 24
     hidden_size: int = 1024
     num_attention_heads: int = 16
@@ -187,6 +205,8 @@ class DiTLConfig(DiTConfig):
 
 @dataclass
 class DiTXLConfig(DiTConfig):
+    """DiT-XL"""
+
     num_layers: int = 28
     hidden_size: int = 1152
     num_attention_heads: int = 16
@@ -194,6 +214,8 @@ class DiTXLConfig(DiTConfig):
 
 @dataclass
 class DiT7BConfig(DiTConfig):
+    """DiT-7B"""
+
     num_layers: int = 32
     hidden_size: int = 3072
     num_attention_heads: int = 24
@@ -201,6 +223,8 @@ class DiT7BConfig(DiTConfig):
 
 @dataclass
 class DiTLlama30BConfig(DiTConfig):
+    """MovieGen 30B"""
+
     num_layers: int = 48
     hidden_size: int = 6144
     ffn_hidden_size: int = 16384
@@ -228,13 +252,42 @@ class DiTLlama30BConfig(DiTConfig):
 
 @dataclass
 class DiTLlama5BConfig(DiTLlama30BConfig):
+    """MovieGen 5B"""
+
     num_layers: int = 32
     hidden_size: int = 3072
     ffn_hidden_size: int = 8192
     num_attention_heads: int = 24
 
 
+@dataclass
+class DiTLlama1BConfig(DiTLlama30BConfig):
+    """MovieGen 1B"""
+
+    num_layers: int = 16
+    hidden_size: int = 2048
+    ffn_hidden_size: int = 8192
+    num_attention_heads: int = 32
+
+
+@dataclass
+class ECDiTLlama1BConfig(DiTLlama1BConfig):
+    "EC-DiT 1B"
+    moe_router_load_balancing_type: str = 'expert_choice'
+    moe_token_dispatcher_type: str = 'alltoall'
+    moe_grouped_gemm: bool = True
+    moe_expert_capacity_factor: float = 8
+    moe_pad_expert_input_to_capacity: bool = True
+    moe_router_topk: int = 1
+    num_moe_experts: int = 64
+    ffn_hidden_size: int = 1024
+
+
 class DiTModel(GPTModel):
+    """
+    Diffusion Transformer Model
+    """
+
     def __init__(
         self,
         config: Optional[DiTConfig] = None,
@@ -255,6 +308,9 @@ class DiTModel(GPTModel):
         self.seed = 42
 
         self.vae = None
+
+    def load_state_dict(self, state_dict, strict=False):
+        self.module.load_state_dict(state_dict, strict=False)
 
     def data_step(self, dataloader_iter) -> Dict[str, Any]:
         return self.config.data_step_fn(dataloader_iter)
@@ -284,10 +340,12 @@ class DiTModel(GPTModel):
         self.vae.to('cuda')
 
     def on_validation_end(self):
+        """Move video tokenizer to CPU after validation."""
         if self.vae is not None:
             self.vae.to('cpu')
 
     def validation_step(self, batch, batch_idx=None) -> torch.Tensor:
+        """Generated validation video sample and logs to wandb."""
         # In mcore the loss-function is part of the forward-pass (when labels are provided)
         state_shape = batch['video'].shape
         sample = self.diffusion_pipeline.generate_samples_from_batch(
@@ -304,7 +362,7 @@ class DiTModel(GPTModel):
         seq_len_q = batch['seq_len_q'][0]
 
         sample = rearrange(
-            sample[:, :seq_len_q],
+            sample[0, None, :seq_len_q],
             'B (T H W) (ph pw pt C) -> B C (T pt) (H ph) (W pw)',
             ph=self.config.patch_spatial,
             pw=self.config.patch_spatial,
@@ -318,13 +376,7 @@ class DiTModel(GPTModel):
 
         video = (video * 255).to(torch.uint8).cpu().numpy().astype(np.uint8)
 
-        T = video.shape[2]
-        if T == 1:
-            image = rearrange(video, 'b c t h w -> (b t h) w c')
-            result = image
-        else:
-            # result = wandb.Video(video, fps=float(batch['fps'])) # (batch, time, channel, height width)
-            result = video
+        result = rearrange(video, 'b c t h w -> (b t) c h w')
 
         # wandb is on the last rank for megatron, first rank for nemo
         wandb_rank = 0
@@ -340,11 +392,12 @@ class DiTModel(GPTModel):
             if gather_list is not None:
                 videos = []
                 for video in gather_list:
-                    if len(video.shape) == 3:
-                        videos.append(wandb.Image(video))
-                    else:
-                        videos.append(wandb.Video(video, fps=30))
-                wandb.log({'prediction': videos}, step=self.global_step)
+                    try:
+                        videos.append(wandb.Video(video, fps=24, format='mp4'))
+                    except Exception as e:
+                        warnings.warn(f'Error saving video as mp4: {e}')
+                        videos.append(wandb.Video(video, fps=24))
+                wandb.log({'prediction': videos})
 
         return None
 
@@ -375,6 +428,10 @@ class DiTModel(GPTModel):
 
 
 class DummyLossReduction(MegatronLossReduction):
+    """
+    Diffusion Loss Reduction
+    """
+
     def __init__(self, validation_step: bool = False, val_drop_last: bool = True) -> None:
         super().__init__()
         self.validation_step = validation_step

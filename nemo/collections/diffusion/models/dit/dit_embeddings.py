@@ -55,6 +55,12 @@ class ParallelTimestepEmbedding(TimestepEmbedding):
                 self.linear_1.reset_parameters()
                 self.linear_2.reset_parameters()
 
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+            setattr(self.linear_1.weight, "pipeline_parallel", True)
+            setattr(self.linear_1.bias, "pipeline_parallel", True)
+            setattr(self.linear_2.weight, "pipeline_parallel", True)
+            setattr(self.linear_2.bias, "pipeline_parallel", True)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Computes the positional embeddings for the input tensor.
@@ -152,10 +158,27 @@ class FactorizedLearnable3DEmbedding(MegatronModule):
         self.emb_h = torch.nn.Embedding(h, config.hidden_size)
         self.emb_w = torch.nn.Embedding(w, config.hidden_size)
 
-        if config.perform_initialization:
-            config.init_method(self.emb_t.weight)
-            config.init_method(self.emb_h.weight)
-            config.init_method(self.emb_w.weight)
+        if 'seed' in kwargs.keys():
+            seed = kwargs['seed']
+            with torch.random.fork_rng():
+                torch.manual_seed(seed)
+                if config.perform_initialization:
+                    self.customize_init_param()
+                else:
+                    self.reset_parameters()
+        else:
+            if config.perform_initialization:
+                self.customize_init_param()
+
+    def customize_init_param(self):
+        self.config.init_method(self.emb_t.weight)
+        self.config.init_method(self.emb_h.weight)
+        self.config.init_method(self.emb_w.weight)
+
+    def reset_parameters(self):
+        self.emb_t.reset_parameters()
+        self.emb_h.reset_parameters()
+        self.emb_w.reset_parameters()
 
     def forward(self, pos_ids: torch.Tensor):
         return self.emb_t(pos_ids[..., 0]) + self.emb_h(pos_ids[..., 1]) + self.emb_w(pos_ids[..., 2])

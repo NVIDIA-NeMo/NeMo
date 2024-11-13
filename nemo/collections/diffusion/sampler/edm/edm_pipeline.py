@@ -427,8 +427,13 @@ class EDMPipeline:
         latent_state = raw_state
 
         # Condition
-        data_batch['crossattn_emb'] = self.random_dropout_input(
+        condition = {}  # Create a new dictionary for condition
+        # Copy all keys from data_batch except 'video'
+        for key, value in data_batch.items():
+            if key not in ['video', 't5_text_embeddings']:
+                condition[key] = value
+        condition['crossattn_emb'] = self.random_dropout_input(
             data_batch['t5_text_embeddings'], dropout_rate=dropout_rate
         )
 
-        return raw_state, latent_state, data_batch
+        return raw_state, latent_state, condition

@@ -733,8 +733,8 @@ def get_stdit_adaln_block_with_transformer_engine_spec() -> ModuleSpec:
     )
 
 
-def get_dit_adaln_block_with_transformer_engine_spec() -> ModuleSpec:
-    params = {"attn_mask_type": AttnMaskType.padding}
+def get_dit_adaln_block_with_transformer_engine_spec(attn_mask_type=AttnMaskType.padding) -> ModuleSpec:
+    params = {"attn_mask_type": attn_mask_type}
     return ModuleSpec(
         module=DiTLayerWithAdaLN,
         submodules=DiTWithAdaLNSubmodules(

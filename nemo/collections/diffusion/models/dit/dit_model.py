@@ -141,7 +141,7 @@ class DiTCrossAttentionModel(VisionModule):
 
         self.config: TransformerConfig = config
 
-        self.transformer_decoder_layer_spec = transformer_decoder_layer_spec()
+        self.transformer_decoder_layer_spec = transformer_decoder_layer_spec(attn_mask_type=config.attn_mask_type)
         self.pre_process = pre_process
         self.post_process = post_process
         self.add_encoder = True
@@ -173,19 +173,33 @@ class DiTCrossAttentionModel(VisionModule):
             dit_embeddings.ParallelTimestepEmbedding(self.config.hidden_size, self.config.hidden_size, seed=1234),
         )
 
+        self.fps_embedder = nn.Sequential(
+            Timesteps(num_channels=256, flip_sin_to_cos=False, downscale_freq_shift=1),
+            ParallelTimestepEmbedding(256, 256, seed=1234),
+        )
+
         if self.pre_process:
             self.x_embedder = torch.nn.Linear(in_channels * patch_spatial**2, self.config.hidden_size)
 
+        if pos_embedder is dit_embeddings.SinCosPosEmb3D:
+            if self.pre_process:
+                self.pos_embedder = pos_embedder(
+                    config,
+                    t=max_frames // patch_temporal,
+                    h=max_img_h // patch_spatial,
+                    w=max_img_w // patch_spatial,
+                )
+        else:
             self.pos_embedder = pos_embedder(
                 config,
                 t=max_frames // patch_temporal,
                 h=max_img_h // patch_spatial,
                 w=max_img_w // patch_spatial,
+                seed=1234,
             )
-            self.fps_embedder = nn.Sequential(
-                Timesteps(num_channels=256, flip_sin_to_cos=False, downscale_freq_shift=1),
-                ParallelTimestepEmbedding(256, 256),
-            )
+            if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+                for p in self.pos_embedder.parameters():
+                    setattr(p, "pipeline_parallel", True)
 
         if self.post_process:
             self.final_layer_linear = torch.nn.Linear(
@@ -194,6 +208,8 @@ class DiTCrossAttentionModel(VisionModule):
             )
 
         self.affline_norm = RMSNorm(self.config.hidden_size)
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+            setattr(self.affline_norm.weight, "pipeline_parallel", True)
 
     def forward(
         self,
@@ -223,6 +239,7 @@ class DiTCrossAttentionModel(VisionModule):
                 ]
                 * B,
                 dtype=torch.bfloat16,
+                device=x.device,
             ),
         ).view(-1)
         if self.pre_process:
@@ -234,10 +251,16 @@ class DiTCrossAttentionModel(VisionModule):
             else:
                 pos_emb = self.pos_embedder(pos_ids)
                 pos_emb = rearrange(pos_emb, "B S D -> S B D")
-            x_S_B_D = rearrange(x_B_S_D, "B S D -> S B D")
+            x_S_B_D = rearrange(x_B_S_D, "B S D -> S B D").contiguous()
         else:
             # intermediate stage of pipeline
             x_S_B_D = None  ### should it take encoder_hidden_states
+            if (not hasattr(self, "pos_embedder")) or isinstance(self.pos_embedder, dit_embeddings.SinCosPosEmb3D):
+                pos_emb = None
+            else:
+                ## if transformer blocks need pos_emb, then pos_embedder should
+                ## be replicated across pp ranks.
+                pos_emb = rearrange(self.pos_embedder(pos_ids), "B S D -> S B D").contiguous()
 
         timesteps_B_D = self.t_embedder(timesteps.flatten()).to(torch.bfloat16)  # (b d_text_embedding)
 
@@ -245,12 +268,17 @@ class DiTCrossAttentionModel(VisionModule):
         fps_B_D = self.fps_embedder(fps)
         fps_B_D = nn.functional.pad(fps_B_D, (0, self.config.hidden_size - fps_B_D.shape[1]))
         affline_emb_B_D += fps_B_D
+        affline_emb_B_D = self.affline_norm(affline_emb_B_D)
 
-        crossattn_emb = rearrange(crossattn_emb, 'B S D -> S B D')
+        crossattn_emb = rearrange(crossattn_emb, 'B S D -> S B D').contiguous()
 
         if self.config.sequence_parallel:
             if self.pre_process:
                 x_S_B_D = tensor_parallel.scatter_to_sequence_parallel_region(x_S_B_D)
+            if hasattr(self, "pos_embedder") and isinstance(
+                self.pos_embedder, dit_embeddings.FactorizedLearnable3DEmbedding
+            ):
+                pos_emb = tensor_parallel.scatter_to_sequence_parallel_region(pos_emb)
             crossattn_emb = tensor_parallel.scatter_to_sequence_parallel_region(crossattn_emb)
             # `scatter_to_sequence_parallel_region` returns a view, which prevents
             # the original tensor from being garbage collected. Clone to facilitate GC.
@@ -309,51 +337,41 @@ class DiTCrossAttentionModel(VisionModule):
         """
         sharded_state_dict = super().sharded_state_dict(prefix, sharded_offsets, metadata)
 
-        for param_name, param in self.t_embedder.named_parameters():
-            weight_key = f'{prefix}t_embedder.{param_name}'
-            self.tie_embeddings_weights_state_dict(param, sharded_state_dict, weight_key, weight_key)
-
-        for param_name, param in self.affline_norm.named_parameters():
-            weight_key = f'{prefix}affline_norm.{param_name}'
-            self.tie_embeddings_weights_state_dict(param, sharded_state_dict, weight_key, weight_key)
-
+        for module in ['t_embedder']:
+            for param_name, param in getattr(self, module).named_parameters():
+                weight_key = f'{prefix}{module}.{param_name}'
+                self._set_embedder_weights_replica_id(param, sharded_state_dict, weight_key)
         return sharded_state_dict
 
-    def tie_embeddings_weights_state_dict(
-        self,
-        tensor,
-        sharded_state_dict: ShardedStateDict,
-        output_layer_weight_key: str,
-        first_stage_word_emb_key: str,
+    def _set_embedder_weights_replica_id(
+        self, tensor: Tensor, sharded_state_dict: ShardedStateDict, embedder_weight_key: str
     ) -> None:
-        """Ties the embedding and output weights in a given sharded state dict.
+        """set replica ids of the weights in t_embedder for sharded state dict.
 
         Args:
             sharded_state_dict (ShardedStateDict): state dict with the weight to tie
-            output_layer_weight_key (str): key of the output layer weight in the state dict.
+            weight_key (str): key of the weight in the state dict.
                 This entry will be replaced with a tied version
-            first_stage_word_emb_key (str): this must be the same as the
-                ShardedTensor.key of the first stage word embeddings.
 
         Returns: None, acts in-place
         """
-        if self.pre_process and parallel_state.get_tensor_model_parallel_rank() == 0:
-            # Output layer is equivalent to the embedding already
-            return
-
-        # Replace the default output layer with a one sharing the weights with the embedding
-        del sharded_state_dict[output_layer_weight_key]
-        last_stage_word_emb_replica_id = (
-            0,  # copy of first stage embedding
-            parallel_state.get_tensor_model_parallel_rank()
-            + parallel_state.get_pipeline_model_parallel_rank()
-            * parallel_state.get_pipeline_model_parallel_world_size(),
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        vpp_rank = parallel_state.get_virtual_pipeline_model_parallel_rank()
+        vpp_rank = vpp_rank if vpp_rank else 0
+        vpp_world = parallel_state.get_virtual_pipeline_model_parallel_world_size()
+        vpp_world = vpp_world if vpp_world else 1
+        pp_rank = parallel_state.get_pipeline_model_parallel_rank()
+        if embedder_weight_key in sharded_state_dict:
+            del sharded_state_dict[embedder_weight_key]
+        replica_id = (
+            tp_rank,
+            (vpp_rank + pp_rank * vpp_world),
             parallel_state.get_data_parallel_rank(with_context_parallel=True),
         )
 
-        sharded_state_dict[output_layer_weight_key] = make_sharded_tensor_for_checkpoint(
+        sharded_state_dict[embedder_weight_key] = make_sharded_tensor_for_checkpoint(
             tensor=tensor,
-            key=first_stage_word_emb_key,
-            replica_id=last_stage_word_emb_replica_id,
+            key=embedder_weight_key,
+            replica_id=replica_id,
             allow_shape_mismatch=False,
         )

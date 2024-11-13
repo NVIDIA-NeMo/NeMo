@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import copy
-from typing import Literal
+from typing import Literal, Optional
 
 from megatron.core.transformer.attention import (
     CrossAttention,
@@ -22,13 +22,18 @@ from megatron.core.transformer.attention import (
     SelfAttentionSubmodules,
 )
 from megatron.core.transformer.custom_layers.transformer_engine import (
+    TEColumnParallelGroupedLinear,
     TEColumnParallelLinear,
     TEDotProductAttention,
+    TENorm,
+    TERowParallelGroupedLinear,
     TERowParallelLinear,
 )
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
+from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
+from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import TransformerConfig
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -78,7 +83,7 @@ class MoviegGenLayer(TransformerLayer):
             layer_number=layer_number,
         )
 
-        self.adaLN = AdaLN(config=self.config, n_adaln_chunks=6)  # , norm=TENorm)
+        self.adaLN = AdaLN(config=self.config, n_adaln_chunks=6, norm=TENorm)
 
     def forward(
         self,
@@ -138,8 +143,57 @@ class MoviegGenLayer(TransformerLayer):
         return output, context
 
 
-def get_dit_llama_spec() -> ModuleSpec:
-    params = {"attn_mask_type": AttnMaskType.padding}
+def _get_mlp_module_spec(
+    use_te: Optional[bool] = True,
+    num_experts: Optional[int] = None,
+    moe_grouped_gemm: Optional[bool] = False,
+    fp8: Optional[str] = None,
+) -> ModuleSpec:
+    """Helper function to get module spec for MLP/MoE"""
+    if num_experts is None:
+        # Dense MLP w/ or w/o TE modules.
+        return ModuleSpec(
+            module=MLP,
+            submodules=MLPSubmodules(
+                linear_fc1=TEColumnParallelLinear,
+                linear_fc2=TERowParallelLinear,
+            ),
+        )
+    else:
+        # Mixture of experts with modules in megatron core.
+        if use_te and moe_grouped_gemm:
+            linear_fc1 = TEColumnParallelGroupedLinear
+            linear_fc2 = TERowParallelGroupedLinear
+        elif use_te and fp8:
+            linear_fc1 = TEColumnParallelLinear
+            linear_fc2 = TERowParallelLinear
+        else:
+            raise ValueError("Invalid combination of use_te and moe_grouped_gemm")
+
+        use_te_grouped_gemm = use_te and TEColumnParallelGroupedLinear is not None
+
+        return ModuleSpec(
+            module=MoELayer,
+            submodules=MoESubmodules(
+                experts=(
+                    MLPSubmodules(linear_fc1=linear_fc1, linear_fc2=linear_fc2)
+                    if not moe_grouped_gemm or use_te_grouped_gemm
+                    else None
+                ),
+                shared_experts=ModuleSpec(
+                    module=SharedExpertMLP,
+                    params={"gate": False},
+                    submodules=MLPSubmodules(
+                        linear_fc1=TEColumnParallelLinear,
+                        linear_fc2=TERowParallelLinear,
+                    ),
+                ),
+            ),
+        )
+
+
+def get_dit_llama_spec(num_experts=None, attn_mask_type=AttnMaskType.padding) -> ModuleSpec:
+    params = {"attn_mask_type": attn_mask_type}
     return ModuleSpec(
         module=MoviegGenLayer,
         submodules=TransformerLayerSubmodules(
@@ -162,12 +216,6 @@ def get_dit_llama_spec() -> ModuleSpec:
                     linear_proj=TERowParallelLinear,
                 ),
             ),
-            mlp=ModuleSpec(
-                module=MLP,
-                submodules=MLPSubmodules(
-                    linear_fc1=TEColumnParallelLinear,
-                    linear_fc2=TERowParallelLinear,
-                ),
-            ),
+            mlp=_get_mlp_module_spec(use_te=True, num_experts=num_experts, moe_grouped_gemm=True, fp8=None),
         ),
     )

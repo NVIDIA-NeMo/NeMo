@@ -25,10 +25,10 @@ import imageio
 import numpy as np
 import soundfile as sf
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate

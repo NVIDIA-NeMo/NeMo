@@ -116,7 +116,7 @@ Below is an example training script for our ``ExampleEncDecModel`` model. We hig
 	:linenos:
 	:emphasize-lines: 10, 11, 12
 
-	import pytorch_lightning as pl
+	import lightning.pytorch as pl
 	from nemo.collections.path_to_model_class import ExampleEncDecModel
 	from nemo.core.config import hydra_runner
 

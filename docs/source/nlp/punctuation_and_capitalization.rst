@@ -240,7 +240,7 @@ An example of a config file is
      - trainer config
      -
      - Parameters of
-       `pytorch_lightning.Trainer <https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api>`_.
+       `lightning.pytorch.Trainer <https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api>`_.
    * - **exp_manager**
      - exp manager config
      -

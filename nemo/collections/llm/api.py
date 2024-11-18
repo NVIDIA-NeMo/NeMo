@@ -24,6 +24,7 @@ from rich.console import Console
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
+from nemo.collections.llm.quantization import ExportConfig, QuantizationConfig
 from nemo.lightning import (
     AutoResume,
     NeMoLogger,
@@ -67,7 +68,8 @@ def train(
         resume (Optional[Union[AutoResume, Resume]]): Resume training from a checkpoint.
         optim (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default optimizer
             from the model will be used.
-        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model' or an instance of TokenizerSpec.
+        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model'
+            or an instance of TokenizerSpec.
         export (Optional[str]): Filename to save the exported checkpoint after training.
         model_transform (Optional[Union[Callable[[nn.Module], nn.Module], PEFT]]): A model transform to be applied.
 
@@ -83,7 +85,7 @@ def train(
         >>> data = llm.SquadDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
         >>> precision = nl.MegatronMixedPrecision(precision="bf16-mixed")
         >>> trainer = nl.Trainer(strategy=nl.MegatronStrategy(tensor_model_parallel_size=2), plugins=precision)
-        >>> train(model, data, trainer, tokenizer="data")
+        >>> llm.train(model, data, trainer, tokenizer="data")
         PosixPath('/path/to/log_dir')
     """
     app_state = _setup(
@@ -185,7 +187,7 @@ def finetune(
         >>> data = llm.SquadDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
         >>> precision = nl.MegatronMixedPrecision(precision="bf16-mixed")
         >>> trainer = nl.Trainer(strategy=nl.MegatronStrategy(tensor_model_parallel_size=2), plugins=precision)
-        >>> finetune(model, data, trainer, peft=llm.peft.LoRA()])
+        >>> llm.finetune(model, data, trainer, peft=llm.peft.LoRA()])
         PosixPath('/path/to/log_dir')
     """
 
@@ -223,7 +225,8 @@ def validate(
         resume (Optional[AutoResume]): Resume from a checkpoint for validation.
         optim (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default optimizer
             from the model will be used.
-        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model' or an instance of TokenizerSpec.
+        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model'
+            or an instance of TokenizerSpec.
         model_transform (Optional[Union[Callable[[nn.Module], nn.Module], PEFT]]): A model transform to be applied.
 
     Returns:
@@ -236,7 +239,7 @@ def validate(
         >>> data = llm.SquadDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
         >>> precision = nl.MegatronMixedPrecision(precision="bf16-mixed")
         >>> trainer = nl.Trainer(strategy=nl.MegatronStrategy(tensor_model_parallel_size=2), plugins=precision)
-        >>> validate(model, data, trainer, tokenizer="data")
+        >>> llm.validate(model, data, trainer, tokenizer="data")
         PosixPath('/path/to/log_dir')
     """
     app_state = _setup(
@@ -253,6 +256,60 @@ def validate(
     trainer.validate(model, data)
 
     return app_state.exp_dir
+
+
+@run.cli.entrypoint(name="ptq", namespace="llm")
+def ptq(
+    nemo_checkpoint: str,
+    calib_tp: int = 1,
+    calib_pp: int = 1,
+    quantization_config: Annotated[Optional[QuantizationConfig], run.Config[QuantizationConfig]] = None,
+    export_config: Optional[Union[ExportConfig, run.Config[ExportConfig]]] = None,
+) -> Path:
+    # TODO: Fix "nemo_run.cli.cli_parser.CLIException: An unexpected error occurred (Argument: , Context: {})"
+    """
+    Applies Post-Training Quantization (PTQ) for a model using the specified quantization and export configs. It runs
+    calibration for a small dataset to collect scaling factors low-precision GEMMs used by desired quantization method.
+    This function produces TensorRT-LLM checkpoint ready for deployment using nemo.export and nemo.deploy modules
+    or direcly using TensorRT-LLM library.
+    The function can be used through the NeMo CLI in the following way:
+    ```bash
+    # Run calibration using tensor parallel set to 8 and export quantized checkpoint with tensor parallel equal 2
+    nemo llm ptq nemo_checkpoint=/models/Llama-3-70B \
+        export_config.path=/models/Llama-3-70B-FP8 \
+        calib_tp=8 \
+        export_config.inference_tensor_parallel=2
+    # Choose different quantization method, for example, INT8 SmoothQuant
+    nemo llm ptq nemo_checkpoint=/models/Llama-3-8B \
+        export_config.path=/models/Llama-3-8B-INT8_SQ \
+        quantization_config.algorithm=int8_sq
+    ```
+    Args:
+        nemo_checkpoint (str): The path to model to be quantized.
+        calib_tp (int): Calibration tensor parallelism.
+        calib_pp (int): Calibration pipeline parallelism.
+        quantization_config (QuantizationConfig): Configuration for quantization algorithm.
+        export_config (ExportConfig): Export configuration for TensorRT-LLM checkpoint.
+    Returns:
+        Path: The path where the quantized checkpoint has been saved after calibration.
+    """
+    if export_config.path is None:
+        raise ValueError("The export_config.path needs to be specified, got None.")
+
+    from nemo.collections.llm import quantization
+
+    quantizer = quantization.Quantizer(quantization_config, export_config)
+
+    model = quantization.load_with_modelopt_layer_spec(nemo_checkpoint, calib_tp, calib_pp)
+
+    model = quantizer.quantize(model)
+
+    quantizer.export(model, nemo_checkpoint)
+
+    console = Console()
+    console.print(f"[green]✓ PTQ succeded, quantized checkpoint exported to {export_config.path}[/green]")
+
+    return export_config.path
 
 
 @run.cli.entrypoint(namespace="llm")

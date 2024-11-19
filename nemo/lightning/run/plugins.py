@@ -260,6 +260,7 @@ class PerfEnvPlugin(run.Plugin):
     enable_layernorm_sm_margin: bool = True
     layernorm_sm_margin: int = 16
     enable_vboost: bool = False
+    nccl_pp_comm_chunksize: int = None
 
     def get_vboost_srun_cmd(self, nodes, job_dir):
         "Create the vboost `sudo nvidia-smi boost-slider --vboost 1` command"
@@ -296,6 +297,13 @@ class PerfEnvPlugin(run.Plugin):
             if self.enable_layernorm_sm_margin:
                 executor.env_vars["NVTE_FWD_LAYERNORM_SM_MARGIN"] = str(self.layernorm_sm_margin)
                 executor.env_vars["NVTE_BWD_LAYERNORM_SM_MARGIN"] = str(self.layernorm_sm_margin)
+
+            # Set the chunk size of P2P communications. Using a large chunk size reduces the
+            # buffering overhead from the communication kernel execution time
+            pp_size = task.trainer.strategy.pipeline_model_parallel_size
+            if pp_size > 1 and self.nccl_pp_comm_chunksize is not None:
+                assert isinstance(self.nccl_pp_comm_chunksize, int) and self.nccl_pp_comm_chunksize > 1
+                executor.env_vars["NCCL_P2P_NET_CHUNKSIZE"] = str(self.nccl_pp_comm_chunksize)
 
         # Improve perf by steering power to tensor cores, may not work on all systems
         if self.enable_vboost and isinstance(executor, run.SlurmExecutor):

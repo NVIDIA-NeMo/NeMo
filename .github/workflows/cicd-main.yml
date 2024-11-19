@@ -38,6 +38,7 @@ jobs:
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
       all: ${{ steps.all.outputs.main }}
+      event_name: ${{ steps.github-event.outputs.main }}
     steps:
       - name: Parse test_to_run
         id: test_to_run
@@ -47,11 +48,16 @@ jobs:
       - name: Parse all
         id: all
         run: |
-          echo "main=${{ contains(fromJSON(steps.test_to_run.outputs.main), 'all') }}" | tee -a "$GITHUB_OUTPUT" 
+          echo "main=${{ contains(fromJSON(steps.test_to_run.outputs.main), 'all') }}" | tee -a "$GITHUB_OUTPUT"
+      - name: Infer github event
+        id: github-event
+        run: |
+          echo "main=${{ github.event_name }}" | tee -a "$GITHUB_OUTPUT"
   
   cicd-test-container-build:
-    if: ${{ github.event.label.name == 'Run CICD' || github.event_name == 'workflow_dispatch' }}
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_container.yml@v0.1.0
+    if: ${{ github.event.label.name == 'Run CICD' || needs.pre-flight.outputs.event_name == 'workflow_dispatch' }}
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_container.yml@v0.14.0
+    needs: pre-flight
     with:
       image-name: nemo_container
       dockerfile: Dockerfile.ci

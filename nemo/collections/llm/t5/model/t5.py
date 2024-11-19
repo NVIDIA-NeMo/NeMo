@@ -21,6 +21,7 @@ import torch
 import torch.distributed
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
 from megatron.core.inference.model_inference_wrappers.t5.t5_inference_wrapper import T5InferenceWrapper
+from megatron.core.models.T5.t5_model import T5Model as MCoreT5Model
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -38,8 +39,6 @@ except (ImportError, ModuleNotFoundError):
     HAVE_TE = False
 
 if TYPE_CHECKING:
-    from megatron.core.models.T5.t5_model import T5Model as MCoreT5Model
-
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
@@ -58,22 +57,32 @@ def t5_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     else:
         _batch = batch
 
-    # if Dataset object is NeMo 1.0's T5SFTDataset (e.g. when finetuning with SQUAD)
-    if 'enc_dec_mask' not in _batch:
-        encoder_attn_mask_3d = build_attention_mask_3d(_batch['enc_mask'], _batch['enc_mask'], AttnMaskType.padding)
-        decoder_attn_mask_3d = build_attention_mask_3d(_batch['dec_mask'], _batch['dec_mask'], AttnMaskType.causal)
-        enc_dec_attn_mask_3d = build_attention_mask_3d(_batch['dec_mask'], _batch['enc_mask'], AttnMaskType.padding)
-        _batch['enc_mask'] = encoder_attn_mask_3d
-        _batch['dec_mask'] = decoder_attn_mask_3d
-        _batch['enc_dec_mask'] = enc_dec_attn_mask_3d
+    # work for both mcore's T5 pre-train dataset object, and NeMo's T5SFTDataset dataset
+    enc_mask = _batch['enc_mask'] < 0.5
+    dec_mask = _batch['dec_mask'] < 0.5
+    # process for Flash/Fused
+    enc_mask = enc_mask.unsqueeze(1).unsqueeze(1)
+    dec_mask = dec_mask.unsqueeze(1).unsqueeze(1)
+    enc_dec_mask = (
+        dec_mask,
+        enc_mask,
+    )
+    # set dec_mask to None because decoder uses AttnMaskType.causal
+    dec_mask = None
+    _batch['enc_mask'] = enc_mask
+    _batch['dec_mask'] = dec_mask
+    _batch['enc_dec_mask'] = enc_dec_mask
 
-    # if Dataset object is Mcore T5 dataset (e.g. pretraining)
-    else:
-        # convert attention mask values from int to True/False
-        _batch['enc_mask'] = _batch['enc_mask'] < 0.5
-        _batch['dec_mask'] = _batch['dec_mask'] < 0.5
-        _batch['enc_dec_mask'] = _batch['enc_dec_mask'] < 0.5
+    # bring to device
+    for key in _batch.keys():
+        if key == "enc_dec_mask":  # because enc_dec_mask is a tuple
+            _batch[key] = (_batch[key][0].cuda(non_blocking=True), _batch[key][1].cuda(non_blocking=True))
+        elif key == "dec_mask":  # because dec_mask is a None since decoder uses AttnMaskType.causal
+            continue
+        else:
+            _batch[key] = _batch[key].cuda(non_blocking=True)
 
+    # set up forward arguments for pipeline parallelism
     required_keys = set()
     required_keys.update(["enc_mask", "dec_mask", "enc_dec_mask"])
     if parallel_state.is_pipeline_first_stage():
@@ -81,7 +90,7 @@ def t5_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     if parallel_state.is_pipeline_last_stage():
         required_keys.update(("labels", "loss_mask"))
 
-    output = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in _batch.items()}
+    output = {key: val if key in required_keys else None for key, val in _batch.items()}
 
     return output
 
@@ -139,6 +148,7 @@ class T5Config(TransformerConfig, io.IOMixin):
     share_embeddings_and_output_weights: bool = True
     make_vocab_size_divisible_by: int = 128
     position_embedding_type: Literal["learned_absolute", "rope"] = "learned_absolute"
+    apply_rope_fusion: bool = True
     max_position_embeddings: int = 512
     rotary_percent: float = 1.0
     seq_len_interpolation_factor: Optional[float] = None
@@ -168,7 +178,6 @@ class T5Config(TransformerConfig, io.IOMixin):
             ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
 
         from megatron.core import parallel_state
-        from megatron.core.models.T5.t5_model import T5Model as MCoreT5Model
 
         encoder_config = copy.deepcopy(self)
         encoder_config.num_layers = self.encoder_num_layers

@@ -103,7 +103,7 @@ if __name__ == '__main__':
         optimizer='adam',
         lr=2.0e-5,
         use_distributed_optimizer=False,
-        bf16=False,
+        bf16=True,
         weight_decay=0.1,
     )
     opt = MegatronOptimizerModule(
@@ -124,7 +124,7 @@ if __name__ == '__main__':
         log_every_n_steps=1,
         limit_val_batches=2,
         val_check_interval=50,
-        plugins=nl.MegatronMixedPrecision(precision="32"),
+        plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
     )
 
     if args.wandb_project is not None:

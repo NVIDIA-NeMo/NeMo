@@ -32,12 +32,10 @@ from nemo.collections.nlp.models.language_modeling.megatron_base_model import Me
 from nemo.collections.nlp.modules.common.megatron.build_model import build_model
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.token_level_encoder_decoder import (
-    AttnMaskType,
     MegatronTokenLevelEncoderDecoderModule,
 )
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
-    build_attention_mask_3d,
     get_params_for_weight_decay_optimization,
 )
 from nemo.collections.nlp.modules.common.text_generation_utils import (
@@ -683,14 +681,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
             if self.mcore_t5:
                 # attn mask logic follows megatron.data.t5_dataset.py in Megatron-LM
-                encoder_attn_mask_3d = build_attention_mask_3d(
-                    encoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
-                )
-                decoder_attn_mask_3d = build_attention_mask_3d(
-                    decoder_attn_mask, decoder_attn_mask, AttnMaskType.causal
-                )
-                enc_dec_attn_mask_3d = build_attention_mask_3d(
-                    decoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
+                encoder_attn_mask = encoder_attn_mask < 0.5
+                decoder_attn_mask = decoder_attn_mask < 0.5
+                encoder_attn_mask_3d = encoder_attn_mask.unsqueeze(1).unsqueeze(1)
+                decoder_attn_mask_3d = decoder_attn_mask.unsqueeze(1).unsqueeze(1)
+                enc_dec_attn_mask_3d = (
+                    decoder_attn_mask_3d,
+                    encoder_attn_mask_3d,
                 )
 
                 output = model(  # model is MCoreT5Model
@@ -816,10 +813,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                         encoder_attn_mask,
                     ) = batch
 
-                    # attn mask logic follows megatron.data.t5_dataset.py in Megatron-LM
-                    encoder_attn_mask_3d = build_attention_mask_3d(
-                        encoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
-                    )
+                    encoder_attn_mask = encoder_attn_mask < 0.5
+                    encoder_attn_mask_3d = encoder_attn_mask.unsqueeze(1).unsqueeze(1)
 
                     output = model(
                         encoder_input_ids=encoder_input_ids,
@@ -841,15 +836,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                         decoder_attn_mask,
                     ) = batch
 
-                    # attn mask logic follows megatron.data.t5_dataset.py in Megatron-LM
-                    encoder_attn_mask_3d = build_attention_mask_3d(
-                        encoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
-                    )
-                    decoder_attn_mask_3d = build_attention_mask_3d(
-                        decoder_attn_mask, decoder_attn_mask, AttnMaskType.causal
-                    )
-                    enc_dec_attn_mask_3d = build_attention_mask_3d(
-                        decoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
+                    encoder_attn_mask = encoder_attn_mask < 0.5
+                    decoder_attn_mask = decoder_attn_mask < 0.5
+                    encoder_attn_mask_3d = encoder_attn_mask.unsqueeze(1).unsqueeze(1)
+                    decoder_attn_mask_3d = decoder_attn_mask.unsqueeze(1).unsqueeze(1)
+                    enc_dec_attn_mask_3d = (
+                        decoder_attn_mask_3d,
+                        encoder_attn_mask_3d,
                     )
 
                     # re-transpose encoder_hidden_states from [batch, seq_len, hidden] to [seq_len, batch, hidden]

@@ -2943,7 +2943,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_t5_pretraining.py \
+        python examples/nlp/language_modeling/megatron_t5_pretraining.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=null \
@@ -2975,7 +2975,7 @@ jobs:
         +model.data.data_impl_kwargs.workers=null \
         +model.data.data_impl_kwargs.sort_dataset_paths=False
 
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_t5_pretraining.py \
+        python examples/nlp/language_modeling/megatron_t5_pretraining.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=null \
@@ -3398,8 +3398,8 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 python examples/nlp/language_modeling/megatron_t5_eval.py \
-            --model_file /home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m.nemo \
+        python examples/nlp/language_modeling/megatron_t5_eval.py \
+            --model_file /home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m_padding_attnmasktype.nemo \
             --prompt "How do I fix my GPU memory issue? I am seeing <mask> out of memory." \
             --tensor_model_parallel_size 1
 
@@ -3410,7 +3410,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/tuning/megatron_t5_finetuning.py \
+        python examples/nlp/language_modeling/tuning/megatron_t5_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=9999 \
@@ -3421,7 +3421,7 @@ jobs:
         exp_manager.exp_dir=/tmp/nlp_mcore_t5_lora_tuning_tp2 \
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
-        model.restore_from_path=/home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m.nemo \
+        model.restore_from_path=/home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m_padding_attnmasktype.nemo \
         model.peft.peft_scheme=lora \
         model.answer_only_loss=True \
         model.micro_batch_size=1 \
@@ -3433,8 +3433,8 @@ jobs:
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]
 
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/tuning/megatron_t5_generate.py \
-        model.restore_from_path=/home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m.nemo \
+        python examples/nlp/language_modeling/tuning/megatron_t5_generate.py \
+        model.restore_from_path=/home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m_padding_attnmasktype.nemo \
         model.peft.restore_from_path=/tmp/nlp_mcore_t5_lora_tuning_tp2/megatron_t5_peft_lora_tuning/checkpoints/megatron_t5_peft_lora_tuning.nemo \
         model.peft.restore_from_ckpt_name=null \
         model.peft.restore_from_hparams_path=null \
@@ -3852,14 +3852,14 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_pretraining.py \
+        python tests/collections/llm/megatron_t5_pretraining.py \
         --devices=2 \
         --max-steps=3 \
         --experiment-dir=tests/collections/llm/t5_pretrain_results/${{ github.run_id }} \
         --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document \
         --index-mapping-dir=tests/collections/llm/t5_index_mappings/${{ github.run_id }}
 
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_pretraining.py \
+        python tests/collections/llm/megatron_t5_pretraining.py \
         --devices=2 \
         --max-steps=6 \
         --experiment-dir=tests/collections/llm/t5_pretrain_results/${{ github.run_id }} \
@@ -3876,11 +3876,11 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_finetuning.py \
+        python tests/collections/llm/megatron_t5_finetuning.py \
         --devices=2 \
         --max-steps=250 \
         --experiment-dir=tests/collections/llm/t5_finetune_results/${{ github.run_id }} \
-        --checkpoint-path=/home/TestData/nlp/megatron_t5/220m/nemo2.0_t5_220m_150steps
+        --checkpoint-path=/home/TestData/nlp/megatron_t5/220m/nemo2.0_t5_220m_padding_attnmasktype_150steps
       AFTER_SCRIPT: |
         rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
 
@@ -3891,12 +3891,12 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_finetuning.py \
+        python tests/collections/llm/megatron_t5_finetuning.py \
         --devices=2 \
         --max-steps=250 \
         --peft=lora \
         --experiment-dir=tests/collections/llm/t5_peft_results/${{ github.run_id }} \
-        --checkpoint-path=/home/TestData/nlp/megatron_t5/220m/nemo2.0_t5_220m_150steps
+        --checkpoint-path=/home/TestData/nlp/megatron_t5/220m/nemo2.0_t5_220m_padding_attnmasktype_150steps
       AFTER_SCRIPT: |
         rm -rf tests/collections/llm/t5_peft_results/${{ github.run_id }}
 

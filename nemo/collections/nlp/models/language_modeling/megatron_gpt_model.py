@@ -803,6 +803,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             tp_size=self.cfg.get('tensor_model_parallel_size'),
             use_fp8=self.cfg.get('fp8'),
             ub_cfgs=ub_cfgs,
+            bootstrap_backend=self.cfg.get('ub_tp_comm_bootstrap_backend', 'nccl'),
         )
         self.initialize_ub = False
 

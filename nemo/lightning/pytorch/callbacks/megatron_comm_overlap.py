@@ -43,6 +43,7 @@ class _CommOverlapConfig:
     # Tensor parallel communication overlap (experimental)
     tp_comm_overlap: bool = None
     tp_comm_overlap_cfg: dict = None
+    tp_comm_bootstrap_backend: str = None
     # Pipeline parallel communication overlap
     overlap_p2p_comm: bool = None
     batch_p2p_comm: bool = None
@@ -88,6 +89,7 @@ class MegatronCommOverlapCallback(Callback):
         self,
         tp_comm_overlap: bool = None,
         tp_comm_overlap_cfg: TransformerLayerTPOverlapCfg = None,
+        tp_comm_bootstrap_backend: str = None,
         overlap_p2p_comm: bool = None,
         batch_p2p_comm: bool = None,
         overlap_grad_reduce: bool = None,
@@ -102,6 +104,7 @@ class MegatronCommOverlapCallback(Callback):
         self.user_comm_overlap_cfg = _CommOverlapConfig(
             tp_comm_overlap=tp_comm_overlap,
             tp_comm_overlap_cfg=tp_comm_overlap_cfg,
+            tp_comm_bootstrap_backend=tp_comm_bootstrap_backend,
             overlap_p2p_comm=overlap_p2p_comm,
             batch_p2p_comm=batch_p2p_comm,
             overlap_grad_reduce=overlap_grad_reduce,
@@ -114,6 +117,7 @@ class MegatronCommOverlapCallback(Callback):
         )
 
         self.tp_comm_overlap_cfg = None
+        self.tp_comm_bootstrap_backend = None
         self.need_tp_overlap_ub_init = False
 
     def _get_model_comm_overlap_cfgs(
@@ -129,6 +133,7 @@ class MegatronCommOverlapCallback(Callback):
         # Optimizations disabled by default, can be overriden by user
         comm_overlap_cfg.tp_comm_overlap = False
         comm_overlap_cfg.tp_comm_overlap_cfg = None
+        comm_overlap_cfg.tp_comm_bootstrap_backend = None
         comm_overlap_cfg.defer_embedding_wgrad_compute = False
         comm_overlap_cfg.wgrad_deferral_limit = -1
 
@@ -216,6 +221,7 @@ class MegatronCommOverlapCallback(Callback):
 
             if trainer.model.config.tp_comm_overlap:
                 self.tp_comm_overlap_cfg = comm_overlap_cfg.tp_comm_overlap_cfg
+                self.tp_comm_bootstrap_backend = comm_overlap_cfg.tp_comm_bootstrap_backend
                 self.need_tp_overlap_ub_init = True
 
         # Data parallel overlap is only available with the Megatron DDP and Distributed optimizer
@@ -258,6 +264,7 @@ class MegatronCommOverlapCallback(Callback):
                 tp_size=parallel_state.get_tensor_model_parallel_world_size(),
                 use_fp8=fp8,
                 ub_cfgs=self.tp_comm_overlap_cfg,
+                bootstrap_backend=self.tp_comm_bootstrap_backend,
             )
         except Exception as error:
             raise Exception(f"Tensor parallel overlap: userbuffer initialization failed with {error}")

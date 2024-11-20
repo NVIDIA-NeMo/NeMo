@@ -89,7 +89,8 @@ def init_parallel_ranks(
         seed=seed,
         pipeline_model_parallel_split_rank=getattr(parallel_config, "pipeline_model_parallel_split_rank", None),
         use_fp8=fp8,
-        init_mpi_proc_group=getattr(parallel_config, "tp_comm_overlap", False),
+        init_mpi_proc_group=getattr(parallel_config, "tp_comm_overlap", False)
+        and getattr(parallel_config, "tp_comm_bootstrap_backend", None) == 'mpi',
         # apex_transformer_log_level=self.cfg.get('apex_transformer_log_level', 30),
     )
 

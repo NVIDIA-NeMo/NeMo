@@ -21,9 +21,11 @@ import torch
 import nemo.lightning as nl
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
+from nemo.collections.llm.peft import DoRA, LoRA
 from nemo.collections.llm.recipes.log.default import tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
+from nemo.lightning.pytorch.callbacks import PEFT
 
 
 def default_finetune_recipe(
@@ -158,3 +160,41 @@ def nemo_resume(model_id: str) -> run.Config[nl.AutoResume]:
         nl.AutoResume,
         restore_config=run.Config(nl.RestoreConfig, path=f"nemo://{model_id}"),
     )
+
+
+@run.cli.factory(name='lora')
+def lora() -> run.Config[PEFT]:
+    """
+    Factory function to create a LoRA configuration.
+
+    Returns:
+        run.Config[PEFT]: Configuration for the LoRA class.
+
+    Examples:
+        CLI usage:
+            $ nemo llm finetune -f llama3_8b peft=lora
+
+        Python API usage:
+            >>> lora_config = lora()
+            >>> print(lora_config)
+    """
+    return run.Config(LoRA)
+
+
+@run.cli.factory(name='dora')
+def dora() -> run.Config[PEFT]:
+    """
+    Factory function to create a DoRA configuration.
+
+    Returns:
+        run.Config[PEFT]: Configuration for the DoRA class.
+
+    Examples:
+        CLI usage:
+            $ nemo llm finetune -f llama3_8b peft=dora
+
+        Python API usage:
+            >>> dora_config = dora()
+            >>> print(dora_config)
+    """
+    return run.Config(DoRA)

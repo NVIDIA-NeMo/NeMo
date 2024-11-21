@@ -24,7 +24,7 @@ from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
-from nemo.collections.llm.peft.lora import LoRA
+from nemo.collections.llm.peft import PEFT_STR2CLS
 from nemo.collections.llm.recipes.finetune_default import default_finetune_trainer, nemo_resume
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
@@ -229,7 +229,8 @@ def finetune_recipe(
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
-        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning.
+            Allowed values: 'lora'/'dora'/'none'/None.
 
     Returns:
         run.Partial: Partial configuration for fine-tuning.
@@ -279,8 +280,8 @@ def finetune_recipe(
     if peft_scheme is None or peft_scheme.lower() == 'none':
         recipe.trainer.strategy.tensor_model_parallel_size = 1
         recipe.optim.config.lr = 5e-6
-    elif peft_scheme.lower() == 'lora':
-        recipe.peft = run.Config(LoRA)
+    elif peft_scheme.lower() in ['lora', 'dora']:
+        recipe.peft = run.Config(PEFT_STR2CLS[peft_scheme.lower()])
         recipe.optim.config.lr = 1e-4
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")

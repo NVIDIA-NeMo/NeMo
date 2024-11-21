@@ -24,9 +24,8 @@ from megatron.core.distributed import DistributedDataParallelConfig
 from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model.mixtral import MixtralConfig8x22B, MixtralModel
-from nemo.collections.llm.peft.lora import LoRA
+from nemo.collections.llm.peft import PEFT_STR2CLS
 from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
@@ -227,7 +226,7 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
             ),
             run.Config(
                 MegatronCommOverlapCallback,
-                overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to an issue with checkpointing
+                overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to issue with checkpointing
                 align_param_gather=True,
             ),
         ]
@@ -259,8 +258,10 @@ def finetune_recipe(
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
-        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
-        packed_sequence (Optional[bool]): If true, fine-tuning sequences will be packed into batches up to the given maximum seq_length for better efficiency.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning.
+            Allowed values: 'lora'/'dora'/'none'/None.
+        packed_sequence (Optional[bool]): If true, fine-tuning sequences will be packed into batches up to the given
+            maximum seq_length for better efficiency.
 
     Returns:
         run.Partial: Partial configuration for fine-tuning.
@@ -286,8 +287,10 @@ def finetune_recipe(
         recipe.trainer.strategy.pipeline_model_parallel_size = 4
         recipe.trainer.strategy.virtual_pipeline_model_parallel_size = 14
         recipe.optim.config.lr = 5e-6
-    elif peft_scheme.lower() == 'lora':
-        recipe.peft = run.Config(LoRA, target_modules=['linear_qkv', 'linear_proj'], dim=32)
+    elif peft_scheme.lower() in ['lora', 'dora']:
+        recipe.peft = run.Config(
+            PEFT_STR2CLS[peft_scheme.lower()], target_modules=['linear_qkv', 'linear_proj'], dim=32
+        )
         recipe.optim.config.lr = 1e-4
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")

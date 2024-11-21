@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional
+from typing import Optional
 
 import lightning.pytorch as pl
 import nemo_run as run
@@ -20,7 +20,7 @@ import torch
 
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
-from nemo.collections.llm.peft.lora import LoRA
+from nemo.collections.llm.peft import PEFT_STR2CLS
 from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.nemotron import nemotron_model, nemotron_trainer
@@ -239,8 +239,10 @@ def finetune_recipe(
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
-        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
-        packed_sequence (Optional[bool]): Packing multiple training sequences into one long sequence for training efficiency. Default sequence length is 2048.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning.
+            Allowed values: 'lora'/'dora'/'none'/None.
+        packed_sequence (Optional[bool]): Packing multiple training sequences into one long sequence for training
+            efficiency. Default sequence length is 2048.
 
     Returns:
         run.Partial: Partial configuration for fine-tuning.
@@ -265,8 +267,8 @@ def finetune_recipe(
     if peft_scheme is None or peft_scheme.lower() == 'none':
         recipe.trainer.strategy.tensor_model_parallel_size = 8
         recipe.optim.config.lr = 5e-6
-    elif peft_scheme.lower() == 'lora':
-        recipe.peft = run.Config(LoRA)
+    elif peft_scheme.lower() in ['lora', 'dora']:
+        recipe.peft = run.Config(PEFT_STR2CLS[peft_scheme.lower()])
         recipe.optim.config.lr = 1e-4
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")

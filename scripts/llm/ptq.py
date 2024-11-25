@@ -17,6 +17,8 @@ from nemo.collections.llm import quantization
 
 
 def get_args():
+    """Parses PTQ arguments"""
+
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="NeMo PTQ argument parser",
@@ -58,6 +60,10 @@ def get_args():
         type=str,
         help='Calibration dataset to be used. Should be \"wikitext\", \"cnn_dailymail\" or path to a local .json file',
     )
+    parser.add_argument(
+        '--generate_sample', help='Generate sample model output after performing PTQ', action='store_true'
+    )
+    parser.set_defaults(generate_sample=False)
 
     args = parser.parse_args()
     if args.output_path is None:
@@ -68,6 +74,8 @@ def get_args():
 
 
 def main():
+    """Example NeMo 2.0 Post Training Quantization workflow"""
+
     args = get_args()
 
     quantization_config = quantization.QuantizationConfig(
@@ -87,6 +95,7 @@ def main():
         inference_tensor_parallel=args.tensor_parallelism_size,
         inference_pipeline_parallel=args.pipeline_parallelism_size,
         dtype=args.dtype,
+        generate_sample=args.generate_sample,
     )
 
     quantizer = quantization.Quantizer(quantization_config, export_config)

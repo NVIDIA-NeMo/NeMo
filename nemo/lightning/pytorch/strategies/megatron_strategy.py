@@ -735,6 +735,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
         checkpoint = self.checkpoint_io.load_checkpoint(checkpoint_path, sharded_state_dict=sharded_state_dict)
 
+        if selective_restore:
+            final_checkpoint = {}
+            for key in sharded_state_dict.keys():
+                final_checkpoint[key] = checkpoint[key]
+
+            return final_checkpoint
+
         return checkpoint
 
     def selective_restore(self) -> None:

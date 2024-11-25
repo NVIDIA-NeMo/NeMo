@@ -18,8 +18,11 @@ import tempfile
 
 import pytest
 import torch
+from lhotse import CutSet, MonoCut
+from lhotse.testing.dummies import DummyManifest
 from omegaconf import DictConfig
 
+from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
@@ -64,12 +67,18 @@ def asr_model(test_data_dir):
 
     decoder = {
         '_target_': 'nemo.collections.asr.modules.RNNTDecoder',
-        'prednet': {'pred_hidden': model_defaults['pred_hidden'], 'pred_rnn_layers': 1,},
+        'prednet': {
+            'pred_hidden': model_defaults['pred_hidden'],
+            'pred_rnn_layers': 1,
+        },
     }
 
     joint = {
         '_target_': 'nemo.collections.asr.modules.RNNTJoint',
-        'jointnet': {'joint_hidden': 32, 'activation': 'relu',},
+        'jointnet': {
+            'joint_hidden': 32,
+            'activation': 'relu',
+        },
     }
 
     decoding = {'strategy': 'greedy_batch', 'greedy': {'max_symbols': 30}}
@@ -123,7 +132,8 @@ class NestedRNNTModel(ASRModel):
 
 class TestEncDecRNNTBPEModel:
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.with_downloads()
     @pytest.mark.unit
@@ -137,7 +147,8 @@ class TestEncDecRNNTBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
     def test_forward(self, asr_model):
@@ -170,9 +181,22 @@ class TestEncDecRNNTBPEModel:
         diff = torch.max(torch.abs(logits_instance - logprobs_batch))
         assert diff <= 1e-6
 
+    @pytest.mark.unit
+    def test_predict_step(self, asr_model):
+        asr_model = asr_model.eval()
+        cuts = DummyManifest(CutSet, begin_id=0, end_id=1, with_data=True)
+        dataset = LhotseSpeechToTextBpeDataset(tokenizer=asr_model.tokenizer, return_cuts=True)
+        batch = dataset[cuts]
+        outputs = asr_model.predict_step(batch, 0)
+        assert len(outputs) == 1
+        assert len(outputs[0]) == 2
+        assert isinstance(outputs[0][0], MonoCut)
+        assert isinstance(outputs[0][1], str)
+
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
     def test_save_restore_artifact(self, asr_model):
@@ -190,7 +214,8 @@ class TestEncDecRNNTBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
     def test_save_restore_artifact_spe(self, asr_model, test_data_dir):
@@ -236,7 +261,8 @@ class TestEncDecRNNTBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
     def test_vocab_change(self, test_data_dir, asr_model):
@@ -266,7 +292,8 @@ class TestEncDecRNNTBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
     def test_decoding_change(self, asr_model):
@@ -309,7 +336,8 @@ class TestEncDecRNNTBPEModel:
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     def test_save_restore_nested_model(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -330,7 +358,7 @@ class TestEncDecRNNTBPEModel:
 
             # Check size of the checkpoint, which contains weights from pretrained model + linear layer
             fp_weights = os.path.join(tmp_dir, 'model_weights.ckpt')
-            assert os.path.getsize(fp_weights) > 50 * (2 ** 20)  # Assert the weights are more than 50 MB
+            assert os.path.getsize(fp_weights) > 50 * (2**20)  # Assert the weights are more than 50 MB
 
             # Check if param after restoration is exact match
             original_state_dict = model.inner_model.state_dict()

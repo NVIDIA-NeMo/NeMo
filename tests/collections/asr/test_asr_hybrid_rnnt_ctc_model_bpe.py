@@ -18,8 +18,11 @@ import tempfile
 
 import pytest
 import torch
+from lhotse import CutSet, MonoCut
+from lhotse.testing.dummies import DummyManifest
 from omegaconf import DictConfig
 
+from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
@@ -165,6 +168,18 @@ class TestEncDecHybridRNNTCTCBPEModel:
         assert diff <= 1e-6
         diff = torch.max(torch.abs(logits_instance - logprobs_batch))
         assert diff <= 1e-6
+
+    @pytest.mark.unit
+    def test_predict_step(self, hybrid_asr_model):
+        hybrid_asr_model = hybrid_asr_model.eval()
+        cuts = DummyManifest(CutSet, begin_id=0, end_id=1, with_data=True)
+        dataset = LhotseSpeechToTextBpeDataset(tokenizer=hybrid_asr_model.tokenizer, return_cuts=True)
+        batch = dataset[cuts]
+        outputs = hybrid_asr_model.predict_step(batch, 0)
+        assert len(outputs) == 1
+        assert len(outputs[0]) == 2
+        assert isinstance(outputs[0][0], MonoCut)
+        assert isinstance(outputs[0][1], str)
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(

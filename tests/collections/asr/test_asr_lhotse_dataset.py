@@ -65,3 +65,35 @@ def test_lhotse_asr_dataset(tokenizer):
     assert tokens[2].tolist() == [1, 7, 10, 19, 20, 21, 1, 20, 6, 4, 16, 15, 5]
 
     assert token_lens.tolist() == [11, 11, 13]
+
+
+def test_lhotse_asr_dataset_metadata(tokenizer):
+
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=2, with_data=True)
+
+    cuts[0].id = "cuts0"
+    cuts[1].id = "cuts1"
+    cuts[0].supervisions = [
+        SupervisionSegment(id="cuts0-sup0", recording_id=cuts[0].recording_id, start=0.2, duration=0.5, text="first"),
+    ]
+    cuts[1].supervisions = [
+        SupervisionSegment(id="cuts1-sup0", recording_id=cuts[1].recording_id, start=0, duration=1, text=""),
+    ]
+
+    datasets_metadata = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer, return_cuts=True)
+    batch = datasets_metadata[cuts]
+    assert isinstance(batch, tuple)
+    assert len(batch) == 5
+
+    _, _, _, _, cuts_metadata = batch
+
+    assert cuts_metadata[0].supervisions[0].text == "first"
+    assert cuts_metadata[1].supervisions[0].text == ""
+    assert cuts_metadata[0].id == "cuts0"
+    assert cuts_metadata[1].id == "cuts1"
+
+    assert cuts_metadata[0].supervisions[0].duration == 0.5
+    assert cuts_metadata[0].supervisions[0].start == 0.2
+
+    assert cuts_metadata[1].supervisions[0].duration == 1
+    assert cuts_metadata[1].supervisions[0].start == 0.0

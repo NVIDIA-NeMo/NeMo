@@ -163,6 +163,14 @@ def main(cfg: ParallelTranscriptionConfig):
     cfg.predict_ds.return_sample_id = True
     cfg.predict_ds = match_train_config(predict_ds=cfg.predict_ds, train_ds=model.cfg.train_ds)
 
+    if cfg.predict_ds.use_lhotse:
+        OmegaConf.set_struct(cfg.predict_ds, False)
+        cfg.trainer.use_distributed_sampler = False
+        cfg.predict_ds.force_finite = True
+        cfg.predict_ds.force_map_dataset = True
+        cfg.predict_ds.do_transcribe = True
+        OmegaConf.set_struct(cfg.predict_ds, True)
+
     if isinstance(model, EncDecMultiTaskModel):
         cfg.trainer.use_distributed_sampler = False
         OmegaConf.set_struct(cfg.predict_ds, False)
@@ -172,7 +180,7 @@ def main(cfg: ParallelTranscriptionConfig):
 
     trainer = ptl.Trainer(**cfg.trainer)
 
-    if isinstance(model, EncDecMultiTaskModel):
+    if cfg.predict_ds.use_lhotse:
         OmegaConf.set_struct(cfg.predict_ds, False)
         cfg.predict_ds.global_rank = trainer.global_rank
         cfg.predict_ds.world_size = trainer.world_size

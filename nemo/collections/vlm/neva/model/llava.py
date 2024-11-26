@@ -102,7 +102,7 @@ class HFLlavaImporter(io.ModelConnector["LlavaForConditionalGeneration", LlavaMo
 
         return output_path
 
-    def convert_state(self, source, target):
+    def convert_state(self, source, target, image_newline=False):
         mapping = {
             "language_model.model.embed_tokens.weight": "language_model.embedding.word_embeddings.weight",
             "language_model.model.layers.*.self_attn.o_proj.weight": "language_model.decoder.layers.*.self_attention.linear_proj.weight",
@@ -132,6 +132,9 @@ class HFLlavaImporter(io.ModelConnector["LlavaForConditionalGeneration", LlavaMo
             )
         else:
             raise KeyError("Unable to map vision projection keys.")
+
+        if image_newline:
+            mapping.update({"image_newline": "image_newline"})
 
         if "vision_model.vision_model.embeddings.class_embedding" in target.module.state_dict().keys():
             mapping.update(

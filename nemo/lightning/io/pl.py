@@ -155,9 +155,6 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
         checkpoint_dir = ckpt_to_weights_subdir(path, is_saving=True)
 
         fs = get_filesystem(checkpoint_dir)
-        if fs.isdir(checkpoint_dir) and dist_checkpointing.check_is_distributed_checkpoint(checkpoint_dir):
-            logging.info(f'Distributed checkpoint at path {checkpoint_dir} already exists, skipping saving')
-            return
         fs.makedirs(checkpoint_dir, exist_ok=True)
 
         validate_sharding_integrity = not (self.validated_consistency and self.assume_constant_structure)

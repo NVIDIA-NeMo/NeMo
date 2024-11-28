@@ -41,6 +41,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         model_transform=None,
         model_accelerator=None,
         trust_remote_code=False,
+        default_dtype=torch.bfloat16,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -53,6 +54,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.model_transform = model_transform
         self.model_accelerator = model_accelerator
         self.trust_remote_code = trust_remote_code
+        self.default_dtype = default_dtype
 
     @property
     def tokenizer(self):
@@ -79,7 +81,10 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             from transformers import AutoConfig
 
             config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
-            self.model = AutoModelForCausalLM.from_config(config, trust_remote_code=self.trust_remote_code)
+            dtype = getattr(config, 'torch_dtype', self.default_dtype)
+            self.model = AutoModelForCausalLM.from_config(
+                config, torch_dtype=dtype, trust_remote_code=self.trust_remote_code
+            )
 
         if self.model_accelerator is not None:
             self.model_accelerator(self.model)

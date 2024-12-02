@@ -176,6 +176,7 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
             raise RuntimeError('Model does not have a sampler')
 
     if cfg.audio_dir is not None:
+        input_dir = cfg.audio_dir
         filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True))
     else:
         # get filenames from manifest
@@ -192,6 +193,15 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
                 if not audio_file.is_file() and not audio_file.is_absolute():
                     audio_file = manifest_dir / audio_file
                 filepaths.append(str(audio_file.absolute()))
+
+        # common path for all files
+        common_path = os.path.commonpath(filepaths)
+        if Path(common_path).is_relative_to(manifest_dir):
+            # if all paths are relative to the manifest, use manifest dir as input dir
+            input_dir = manifest_dir
+        else:
+            # use the parent of the common path as input dir
+            input_dir = Path(common_path).parent
 
     if cfg.max_utts is not None:
         # Limit the number of utterances to process
@@ -238,6 +248,7 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
                 batch_size=cfg.batch_size,
                 num_workers=cfg.num_workers,
                 input_channel_selector=cfg.input_channel_selector,
+                input_dir=input_dir,
             )
 
     logging.info(f"Finished processing {len(filepaths)} files!")

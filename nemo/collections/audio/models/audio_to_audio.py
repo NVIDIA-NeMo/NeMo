@@ -332,6 +332,7 @@ class AudioToAudioModel(ModelPT, ABC):
         batch_size: int = 1,
         num_workers: Optional[int] = None,
         input_channel_selector: Optional[ChannelSelectorType] = None,
+        input_dir: Optional[str] = None,
     ) -> List[str]:
         """
         Takes paths to audio files and returns a list of paths to processed
@@ -344,6 +345,7 @@ class AudioToAudioModel(ModelPT, ABC):
             num_workers: Number of workers for the dataloader
             input_channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio.
                             If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
+            input_dir: Optional, directory that contains the input files. If provided, the output directory will mirror the input directory structure.
 
         Returns:
             Paths to processed audio signals.
@@ -413,9 +415,17 @@ class AudioToAudioModel(ModelPT, ABC):
 
                     for example_idx in range(processed_batch.size(0)):
                         # This assumes the data loader is not shuffling files
-                        file_name = os.path.basename(paths2audio_files[file_idx])
+                        if input_dir is not None:
+                            # Make sure the output has the same directory structure as the input
+                            filepath_relative = os.path.relpath(paths2audio_files[file_idx], start=input_dir)
+                        else:
+                            # Input dir is not provided, save files in the output directory
+                            filepath_relative = os.path.basename(paths2audio_files[file_idx])
                         # Prepare output file
-                        output_file = os.path.join(output_dir, f'processed_{file_name}')
+                        output_file = os.path.join(output_dir, filepath_relative)
+                        # Create output dir if necessary
+                        if not os.path.isdir(os.path.dirname(output_file)):
+                            os.makedirs(os.path.dirname(output_file))
                         # Crop the output signal to the actual length
                         output_signal = processed_batch[example_idx, :, : input_length[example_idx]].cpu().numpy()
                         # Write audio

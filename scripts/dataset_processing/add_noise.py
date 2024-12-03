@@ -131,12 +131,15 @@ def add_noise(infile, snrs, noise_manifest, out_dir, num_workers=1):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input_manifest", type=str, required=True, help="clean test set",
+        "--input_manifest",
+        type=str,
+        required=True,
+        help="clean test set",
     )
     parser.add_argument("--noise_manifest", type=str, required=True, help="path to noise manifest file")
     parser.add_argument("--out_dir", type=str, required=True, help="destination directory for audio and manifests")
     parser.add_argument("--snrs", type=int, nargs="+", default=[0, 10, 20, 30])
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num_workers", default=1, type=int)
     parser.add_argument("--sample_rate", default=16000, type=int)
     parser.add_argument(

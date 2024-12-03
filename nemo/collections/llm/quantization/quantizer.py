@@ -80,11 +80,11 @@ class QuantizationConfig:
 class ExportConfig:
     """Inference configuration for the quantized TensorRT-LLM checkpoint."""
 
-    path: Union[Path, str]
+    path: str  # TODO: In fact `Union[Path, str]` but NeMo-Run CLI fails on type hint: unserializable PosixPath value
     dtype: Union[str, int] = "bf16"
     decoder_type: Optional[str] = None
-    inference_tensor_parallel: int = 1
-    inference_pipeline_parallel: int = 1
+    inference_tp: int = 1
+    inference_pp: int = 1
     generate_sample: bool = False
 
     def __post_init__(self):
@@ -287,8 +287,8 @@ class Quantizer:
     def export(self, model: MegatronParallel, model_dir: str) -> None:
         """Export model to a TensorRT-LLM checkpoint."""
         export_dir = self.export_config.path
-        inference_tp = self.export_config.inference_tensor_parallel
-        inference_pp = self.export_config.inference_pipeline_parallel
+        inference_tp = self.export_config.inference_tp
+        inference_pp = self.export_config.inference_pp
 
         use_nfs_workspace = model.config.pipeline_model_parallel_size > 1
         export_tensorrt_llm_checkpoint(

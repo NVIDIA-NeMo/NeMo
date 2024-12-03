@@ -69,15 +69,18 @@ def quantizable_model_config(model_cfg: llm.GPTConfig) -> llm.GPTConfig:
 
 
 def load_with_modelopt_layer_spec(
-    nemo_checkpoint_path: str, calib_tp: int = 1, calib_pp: int = 1, inference_only: bool = True
+    nemo_checkpoint_path: str,
+    tensor_model_parallel_size: int = 1,
+    pipeline_model_parallel_size: int = 1,
+    inference_only: bool = True,
 ):
     """Loads a model from a NeMo 2.0 checkpoint using modelopt layer spec."""
     # TODO: setting ddp="pytorch" and deleting model.optim is a hackish way to disable DDP initialization.
     # Needs a systematic solution.
     if inference_only:
         strategy = nl.MegatronStrategy(
-            tensor_model_parallel_size=calib_tp,
-            pipeline_model_parallel_size=calib_pp,
+            tensor_model_parallel_size=tensor_model_parallel_size,
+            pipeline_model_parallel_size=pipeline_model_parallel_size,
             pipeline_dtype=torch.bfloat16,
             ckpt_load_optimizer=False,
             ckpt_parallel_save_optim=False,
@@ -87,12 +90,14 @@ def load_with_modelopt_layer_spec(
         )
     else:
         strategy = nl.MegatronStrategy(
-            tensor_model_parallel_size=calib_tp, pipeline_model_parallel_size=calib_pp, pipeline_dtype=torch.bfloat16
+            tensor_model_parallel_size=tensor_model_parallel_size,
+            pipeline_model_parallel_size=pipeline_model_parallel_size,
+            pipeline_dtype=torch.bfloat16,
         )
 
     trainer = nl.Trainer(
-        devices=calib_tp,
-        num_nodes=calib_pp,
+        devices=tensor_model_parallel_size,
+        num_nodes=pipeline_model_parallel_size,
         strategy=strategy,
         plugins=nl.MegatronMixedPrecision(precision='bf16', params_dtype=torch.bfloat16, autocast_enabled=True),
     )

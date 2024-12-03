@@ -17,7 +17,7 @@ from nemo.collections.llm import quantization
 
 
 def get_args():
-    """Parses PTQ arguments"""
+    """Parses PTQ arguments."""
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -25,11 +25,11 @@ def get_args():
     )
     parser.add_argument("-nc", "--nemo_checkpoint", type=str, help="Source NeMo 2.0 checkpoint")
     parser.add_argument("--decoder_type", type=str, help="Decoder type for TensorRT-Model-Optimizer")
-    parser.add_argument("-ctp", "--calib_tp", type=int, default=1)
-    parser.add_argument("-cpp", "--calib_pp", type=int, default=1)
-    parser.add_argument("-tps", "--tensor_parallelism_size", type=int, default=1)
-    parser.add_argument("-pps", "--pipeline_parallelism_size", type=int, default=1)
-    parser.add_argument('-out', '--output_path', type=str, help='Path for the exported engine')
+    parser.add_argument("-ctp", "--calibration_tp", "--calib_tp", type=int, default=1)
+    parser.add_argument("-cpp", "--calibration_pp", "--calib_pp", type=int, default=1)
+    parser.add_argument("-itp", "--inference_tp", "--tensor_parallelism_size", type=int, default=1)
+    parser.add_argument("-ipp", "--inference_pp", "--pipeline_parallelism_size", type=int, default=1)
+    parser.add_argument('-out', '--export_path', '--output_path', type=str, help='Path for the exported engine')
     parser.add_argument(
         '-algo',
         '--algorithm',
@@ -66,10 +66,8 @@ def get_args():
     parser.set_defaults(generate_sample=False)
 
     args = parser.parse_args()
-    if args.output_path is None:
-        args.output_path = (
-            f"./qnemo_{args.algorithm}_tp{args.tensor_parallelism_size}_pp{args.pipeline_parallelism_size}"
-        )
+    if args.export_path is None:
+        args.export_path = f"./qnemo_{args.algorithm}_tp{args.inference_tp}_pp{args.inference_pp}"
     return args
 
 
@@ -90,16 +88,16 @@ def main():
     )
 
     export_config = quantization.ExportConfig(
-        path=args.output_path,
+        path=args.export_path,
         decoder_type=args.decoder_type,
-        inference_tensor_parallel=args.tensor_parallelism_size,
-        inference_pipeline_parallel=args.pipeline_parallelism_size,
+        inference_tp=args.inference_tp,
+        inference_pp=args.inference_pp,
         dtype=args.dtype,
         generate_sample=args.generate_sample,
     )
 
     quantizer = quantization.Quantizer(quantization_config, export_config)
-    model = quantization.load_with_modelopt_layer_spec(args.nemo_checkpoint, args.calib_tp, args.calib_pp)
+    model = quantization.load_with_modelopt_layer_spec(args.nemo_checkpoint, args.calibration_tp, args.calibration_pp)
     model = quantizer.quantize(model)
     quantizer.export(model, args.nemo_checkpoint)
 

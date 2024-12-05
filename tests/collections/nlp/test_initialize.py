@@ -124,7 +124,14 @@ def test_fake_initialize(nodes, num_gpu, tp, pp, cp, ep):
         n_data_parallel_size,
         n_pipeline_model_parallel_split_rank,
         n_virtual_pipeline_model_parallel_rank,
-    ) = fake_initialize_model_parallel(nodes * num_gpu, 0, tp, pp, None, None, ep, cp)
+    ) = fake_initialize_model_parallel(
+        world_size=nodes * num_gpu,
+        rank=0,
+        tensor_model_parallel_size_=tp,
+        pipeline_model_parallel_size_=pp,
+        expert_model_parallel_size_=ep,
+        context_parallel_size_=cp,
+    )
     assert m_tensor_model_parallel_rank == tensor_model_parallel_rank
     assert n_pipeline_model_parallel_rank == pipeline_model_parallel_rank
     assert n_expert_model_parallel_rank == expert_model_parallel_rank

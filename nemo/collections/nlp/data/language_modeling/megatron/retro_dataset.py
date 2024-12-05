@@ -47,7 +47,7 @@ try:
 
     HAVE_TE_AND_MEGATRON_CORE = True
 
-except (ImportError, ModuleNotFoundError):
+except (ImportError, ModuleNotFoundError, Exception):
 
     HAVE_TE_AND_MEGATRON_CORE = False
     from typing import Any

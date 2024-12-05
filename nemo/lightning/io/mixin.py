@@ -62,7 +62,7 @@ def _ordered_arguments_with_default(data: config_lib.Config) -> Dict[Union[int, 
         )
 
     result["_target_"] = (
-        f"{inspect.getmodule(config_lib.get_callable(data)).__name__}.{config_lib.get_callable(data).__qualname__}"  # type: ignore
+        f"{inspect.getmodule(config_lib.get_callable(data)).__name__}" f".{config_lib.get_callable(data).__qualname__}"
     )
     if isinstance(data, partial.Partial):
         result["_partial_"] = True
@@ -85,7 +85,8 @@ def _safe_object_representer(dumper, data):
     Represent a given object as YAML using the specified dumper.
 
     This function is a fallback for objects that don't have specific representers.
-    If the object has __qualname__ attr, the __target__ is set to f"{inspect.getmodule(obj).__name__}.{obj.__qualname__}".
+    If the object has __qualname__ attr,
+    the __target__ is set to f"{inspect.getmodule(obj).__name__}.{obj.__qualname__}".
     If the object does not have a __qualname__ attr, the __target__ is set from its __class__ attr.
     The __call__ key is used to indicate whether the target should be called to create an instance.
 
@@ -208,6 +209,7 @@ class IOMixin:
 
     @classmethod
     def io_artifacts(cls) -> List[Artifact]:
+        """Initialize io artifacts"""
         return []
 
     def io_dump(self, output: Path, yaml_attrs: list[str]):
@@ -444,7 +446,7 @@ class ConnectorMixin:
 
         connector = cls._IMPORTERS.get(str(cls) + ext) if importer else cls._EXPORTERS.get(str(cls) + ext)
         if not connector:
-            raise ValueError(f"No connector found for extension '{ext}'")
+            raise ValueError(f"No connector found for extension '{ext}' for {cls}")
 
         if not _path:
             if not connector.default_path:
@@ -692,7 +694,8 @@ def load(path: Path, output_type: Type[CkptType] = Any, subpath: Optional[str] =
     Args:
         path (Path): The path to the pickle file or directory containing 'io.pkl'.
         output_type (Type[CkptType]): The type of the object to be constructed from the loaded data.
-        subpath (Optional[str]): Subpath to selectively load only specific objects inside the output_type. Defaults to None.
+        subpath (Optional[str]): Subpath to selectively load only specific objects inside the output_type.
+                                 Defaults to None.
 
     Returns
     -------

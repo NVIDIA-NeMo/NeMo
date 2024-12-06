@@ -454,6 +454,10 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
         if self._async_grad_allreduce:
             torch.cuda.synchronize()
 
+        closure = kwargs.pop('closure', None)
+        # Allows applications to specify closure as None without erroring due to duplicate specification
+        assert closure is None, f"closure should be None but was passed {closure}"
+
         # Step the optimizer.
         self.optimizer.step(closure=None, **kwargs)
 

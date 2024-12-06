@@ -15,6 +15,8 @@
 from nemo.collections.audio.models.audio_to_audio import AudioToAudioModel
 from nemo.collections.audio.models.enhancement import (
     EncMaskDecAudioToAudioModel,
+    FlowMatchingAudioToAudioModel,
     PredictiveAudioToAudioModel,
+    SchroedingerBridgeAudioToAudioModel,
     ScoreBasedGenerativeAudioToAudioModel,
 )

@@ -39,6 +39,13 @@ __all__ = ['AudioToAudioModel']
 
 
 class AudioToAudioModel(ModelPT, ABC):
+    """Base class for audio-to-audio models.
+
+    Args:
+        cfg: A DictConfig object with the configuration parameters.
+        trainer: A Trainer object to be used for training.
+    """
+
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -451,6 +458,7 @@ class AudioToAudioModel(ModelPT, ABC):
     def list_available_models(cls) -> 'List[PretrainedModelInfo]':
         """
         This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
+
         Returns:
             List of available pre-trained models.
         """

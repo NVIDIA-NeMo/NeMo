@@ -55,3 +55,11 @@ Documentation for the individual collections
    :titlesonly:
 
    tts/intro
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Speech and Audio Processing
+   :name: Speech and Audio Processing
+   :titlesonly:
+
+   audio/intro

@@ -132,6 +132,7 @@ bibtex_bibfiles = [
     'core/adapters/adapter_bib.bib',
     'multimodal/mm_all.bib',
     'vision/vision_all.bib',
+    'audio/audio_all.bib',
 ]
 
 intersphinx_mapping = {

@@ -5,6 +5,8 @@ The NeMo Audio Collection supports a range of models tailored for audio processi
 * Mask-based speech processing: single-channel masking and guided source separation (GSS)
 * Predictive speech processing: NCSN++
 * Score-based generative models: SGMSE+
+* Schrödinger bridge-based models
+* Flow-matching-based models
 * Multi-channel audio processing: mask-based beamforming (MVDR) and dereverberation (WPE)
 
 More details can be found in [NeMo documentation](https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html).

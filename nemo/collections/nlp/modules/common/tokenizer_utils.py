@@ -113,7 +113,7 @@ def get_tokenizer(
     elif tokenizer_name == 'tiktoken':
         from nemo.collections.common.tokenizers.tiktoken_tokenizer import TiktokenTokenizer
 
-        return TiktokenTokenizer(vocab_file=vocab_file)
+        return TiktokenTokenizer(vocab_file=vocab_file, special_tokens=special_tokens['additional_special_tokens'])
     elif tokenizer_name == 'word':
         from nemo.collections.common.tokenizers.word_tokenizer import WordTokenizer
 

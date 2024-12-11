@@ -21,7 +21,7 @@ on:
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.17.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.17.1
     with:
       library-name: NeMo-Toolkit
       python-package: nemo
@@ -42,7 +42,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ needs.code-freeze.outputs.release-branch }}
-          token: ${{ secrets.PAT }}
 
       - name: Pin branch name in Notebooks
         run: |

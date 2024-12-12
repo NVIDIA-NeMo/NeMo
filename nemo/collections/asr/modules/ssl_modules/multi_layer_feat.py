@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import torch
 import torch.distributed
@@ -82,7 +82,7 @@ class Aggregator(nn.Module):
 
 
 class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable):
-    def __init__(self, encoder, aggregator, layer_idx_list):
+    def __init__(self, encoder, aggregator: Optional[Callable] = None, layer_idx_list: Optional[List[int]] = None):
         """
         Args:
             encoder: ConformerEncoder instance.
@@ -145,7 +145,8 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable):
                 layer_lengths = total_registry[f"interctc/layer_length_{layer_idx}"]
             except KeyError:
                 raise RuntimeError(
-                    f"Intermediate layer {layer_idx} was not captured! Check the layer index and the number of ConformerEncoder layers."
+                    f"Intermediate layer {layer_idx} was not captured! Check the layer index and the number of "
+                    "ConformerEncoder layers."
                 )
             if len(layer_outputs) > 1 or len(layer_lengths) > 1:
                 raise RuntimeError("Make sure encoder.forward is called exactly one time")
@@ -153,7 +154,8 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable):
             encoded_len_list.append(layer_lengths[0])  # [B]
 
         self.encoder.reset_registry()
-
+        if self.aggregator is None:
+            return encoded_list, encoded_len_list
         return self.aggregator(encoded_list, encoded_len_list)
 
 

@@ -135,6 +135,7 @@ class AudioText(_Collection):
         """
 
         output_type = self.OUTPUT_TYPE
+        all_has_duration = True
         data, duration_filtered, num_filtered, total_duration = [], 0.0, 0, 0.0
         if index_by_file_id:
             self.mapping = {}
@@ -142,13 +143,15 @@ class AudioText(_Collection):
         for id_, audio_file, duration, offset, text, speaker, orig_sr, token_labels, lang in zip(
             ids, audio_files, durations, offsets, texts, speakers, orig_sampling_rates, token_labels, langs
         ):
+            if duration is None:
+                all_has_duration = False
             # Duration filters.
-            if min_duration is not None and duration < min_duration:
+            if duration is not None and min_duration is not None and duration < min_duration:
                 duration_filtered += duration
                 num_filtered += 1
                 continue
 
-            if max_duration is not None and duration > max_duration:
+            if duration is not None and max_duration is not None and duration > max_duration:
                 duration_filtered += duration
                 num_filtered += 1
                 continue
@@ -175,7 +178,7 @@ class AudioText(_Collection):
                     num_filtered += 1
                     continue
 
-            total_duration += duration
+            total_duration += duration if duration is not None else 0.0
 
             data.append(output_type(id_, audio_file, duration, text_tokens, offset, text, speaker, orig_sr, lang))
             if index_by_file_id:
@@ -196,7 +199,8 @@ class AudioText(_Collection):
 
         logging.info("Dataset loaded with %d files totalling %.2f hours", len(data), total_duration / 3600)
         logging.info("%d files were filtered totalling %.2f hours", num_filtered, duration_filtered / 3600)
-
+        if not all_has_duration:
+            logging.info(f"Not all audios have duration information, the total number of hours is inaccurate.")
         super().__init__(data)
 
 

@@ -14,11 +14,17 @@
 
 import lightning.pytorch as pl
 import torch
-from datasets import load_dataset
+from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader
 
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 from nemo.utils import logging
+
+
+def clean_split(name):
+    if '[' in name:
+        return name.split('[')[0]
+    return name
 
 
 def make_dataset_splits(dataset, split, split_aliases):
@@ -51,19 +57,18 @@ def make_dataset_splits(dataset, split, split_aliases):
     >    "val": Dataset .. (with 10570 rows),
     > }
     """
-    from datasets import Dataset, DatasetDict
-
-    split_names = ['train', 'test', 'val']
-    dataset_splits = {_split: None for _split in split_names}
+    valid_split_names = ['train', 'test', 'val']
+    dataset_splits = {_split: None for _split in valid_split_names}
 
     alias_to_split = {}
     for split_name, _split_aliases in split_aliases.items():
-        assert split_name in split_names
+        assert split_name in valid_split_names
         for alias in _split_aliases:
             alias_to_split[alias] = split_name
 
     if isinstance(dataset, Dataset):
         assert isinstance(split, str), "Expected split to be a string, but got " + str(type(split))
+        split = clean_split(split)
         dataset_splits[split] = dataset
     elif isinstance(dataset, DatasetDict):
         dataset_split_names = dataset.keys()
@@ -75,7 +80,7 @@ def make_dataset_splits(dataset, split, split_aliases):
     elif isinstance(split, list):
         logging.info(f"Loaded HF dataset will use " + str(split) + " splits.")
         assert isinstance(dataset, list)
-        for i, alias_split_name in enumerate(split):
+        for i, alias_split_name in enumerate(map(clean_split, split)):
             split_name = alias_to_split[alias_split_name]
             assert dataset_splits[split_name] is None
             dataset_splits[split_name] = dataset[i]
@@ -93,6 +98,7 @@ def make_dataset_splits(dataset, split, split_aliases):
     else:
         raise ValueError("Expected split name to be None, str or a list")
 
+    assert set(valid_split_names) == set(dataset_splits.keys()), dataset_splits.keys()
     num_init_splits = sum(map(lambda x: x is not None, dataset_splits.values()))
     assert num_init_splits > 0, f"Expected at least one split to have been initialized {num_init_splits}"
     return dataset_splits
@@ -133,8 +139,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
     ) -> None:
         super().__init__()
         assert pad_token_id is not None
-        from datasets import Dataset, DatasetDict
-
         # A dataset usually will have several splits (e.g. train, val, test, etc).
         # We map synonym names to canonical names (train, test, val).
         # A synonym can be a prefix/suffixed word e.g. train <> training.
@@ -172,8 +176,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
     @staticmethod
     def from_dict(dataset_dict, split, **kwargs):
-        from datasets import Dataset
-
         dataset = Dataset.from_dict(dataset_dict)
         return HFDatasetDataModule(path_or_dataset=dataset, split=split, **kwargs)
 
@@ -191,7 +193,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
             max_len = max(map(len, batch))
             return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
 
-        keys = list(filter(lambda x: x in batch[0], ['tokens', 'labels', 'position_ids', 'loss_mask']))
         return {
             key: batchify(
                 torch.LongTensor(
@@ -201,7 +202,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
                     )
                 )
             )
-            for key in keys
+            for key in batch[0].keys()
         }
 
     def setup(self, stage: str):

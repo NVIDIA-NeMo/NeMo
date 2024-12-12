@@ -14,11 +14,16 @@
 
 import fiddle as fdl
 from lightning.pytorch.loggers import WandbLogger
+
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.lightning.pytorch.accelerate.transformer_engine import is_te_accelerated
 
 
-def make_squad_hf_dataset(tokenizer):
+DATA_PATH = '/home/TestData/lite/hf_cache/squad/'
+
+
+def make_squad_hf_dataset(data_path, tokenizer):
     EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
 
     def formatting_prompts_func(examples):
@@ -43,13 +48,15 @@ def make_squad_hf_dataset(tokenizer):
         return ans
 
     tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
-    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:100]", pad_token_id=tokenizer.eos_token_id)
+    datamodule = llm.HFDatasetDataModule(data_path, split="train[:100]", pad_token_id=tokenizer.eos_token_id)
+
     datamodule.map(
         formatting_prompts_func,
         batched=False,
         batch_size=2,
         remove_columns=["id", "title", "context", "question", 'answers'],
     )
+
     return datamodule
 
 
@@ -61,8 +68,11 @@ if __name__ == '__main__':
     parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp'])
     parser.add_argument('--devices', default=1)
     parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
+    parser.add_argument('--model-accelerator', default=None, choices=['te'])
     parser.add_argument('--max-steps', type=int, default=100)
+    parser.add_argument("--fp8-autocast", default=False, action='store_true')
     parser.add_argument('--wandb-project', type=str, default=None)
+    parser.add_argument('--model-save-path', type=str, default=None)
     args = parser.parse_args()
 
     wandb = None
@@ -77,11 +87,22 @@ if __name__ == '__main__':
         # See: https://github.com/Lightning-AI/pytorch-lightning/blob/8ad3e29816a63d8ce5c00ac104b14729a4176f4f/src/lightning/pytorch/plugins/precision/fsdp.py#L81
         grad_clip = None
     use_dist_samp = False
-    tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)
+
+    model_accelerator = None
+    if args.model_accelerator == "te":
+        from functools import partial
+        from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
+
+        model_accelerator = partial(te_accelerate, fp8_autocast=args.fp8_autocast)
+
+    from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
+
+    model = llm.HFAutoModelForCausalLM(model_name=args.model, model_accelerator=model_accelerator)
+    tokenizer = model.tokenizer
 
     llm.api.finetune(
-        model=llm.HFAutoModelForCausalLM(args.model),
-        data=make_squad_hf_dataset(tokenizer.tokenizer),
+        model=model,
+        data=make_squad_hf_dataset(DATA_PATH, tokenizer),
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,
@@ -93,12 +114,18 @@ if __name__ == '__main__':
             accumulate_grad_batches=10,
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
+            callbacks=[],
             logger=wandb,
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=None,
-        peft=llm.peft.LoRA(
-            target_modules=['*_proj'],
-            dim=32,
-        ),
     )
+
+    if args.model_accelerator:
+        if args.model_accelerator == "te":
+            te_acc = is_te_accelerated(model.model)
+            assert te_acc, "Transformer Engine acceleration was unsuccessful"
+            print("TE Accelerated: ", te_acc)
+
+    if args.model_save_path is not None:
+        model.save_pretrained(args.model_save_path)

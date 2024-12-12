@@ -41,6 +41,30 @@ def test_load_single_split():
     assert ds.test is None
 
 
+def test_load_single_split_with_subset():
+    ds = llm.HFDatasetDataModule(
+        path_or_dataset=DATA_PATH,
+        split='train[:10]',
+        seq_length=512,
+        micro_batch_size=2,
+        global_batch_size=2,
+    )
+    from datasets.arrow_dataset import Dataset
+
+    assert isinstance(ds.dataset_splits, dict)
+    assert len(ds.dataset_splits) == 3
+    assert 'train' in ds.dataset_splits
+    assert ds.dataset_splits['train'] is not None
+    assert ds.train is not None
+    assert isinstance(ds.dataset_splits['train'], Dataset)
+    assert 'val' in ds.dataset_splits
+    assert ds.dataset_splits['val'] is None
+    assert ds.val is None
+    assert 'test' in ds.dataset_splits
+    assert ds.dataset_splits['test'] is None
+    assert ds.test is None
+
+
 def test_load_nonexistent_split():
     exception_msg = ''
     expected_msg = '''Unknown split "this_split_name_should_not_exist". Should be one of ['train', 'validation'].'''
@@ -84,6 +108,33 @@ def test_load_multiple_split():
     assert ds.test is None
 
 
+def test_load_multiple_split_with_subset():
+    ds = llm.HFDatasetDataModule(
+        path_or_dataset=DATA_PATH,
+        split=['train[:100]', 'validation'],
+        seq_length=512,
+        micro_batch_size=2,
+        global_batch_size=2,
+    )
+    from datasets.arrow_dataset import Dataset
+
+    assert isinstance(ds.dataset_splits, dict)
+    assert len(ds.dataset_splits) == 3
+    assert 'train' in ds.dataset_splits
+    assert ds.dataset_splits['train'] is not None
+    assert ds.train is not None
+    assert isinstance(ds.dataset_splits['train'], Dataset)
+    assert isinstance(ds.train, Dataset)
+    assert 'val' in ds.dataset_splits
+    assert ds.dataset_splits['val'] is not None
+    assert ds.val is not None
+    assert isinstance(ds.dataset_splits['val'], Dataset)
+    assert isinstance(ds.val, Dataset)
+    assert 'test' in ds.dataset_splits
+    assert ds.dataset_splits['test'] is None
+    assert ds.test is None
+
+
 def test_validate_dataset_asset_accessibility_file_does_not_exist():
     raised_exception = False
     try:
@@ -99,8 +150,9 @@ def test_validate_dataset_asset_accessibility_file_does_not_exist():
     assert raised_exception == True, "Expected to raise a FileNotFoundError"
 
 
-def test_validate_dataset_asset_accessibility_file_is_none():  # tokenizer, trainer):
-    raised_exception = False
+def test_validate_dataset_asset_accessibility_file_is_none():
+    exception_msg = ''
+    expected_msg = "Expected `path_or_dataset` to be str, Dataset, DatasetDict, but got <class 'NoneType'>"
     try:
         llm.HFDatasetDataModule(
             path_or_dataset=None,
@@ -109,28 +161,6 @@ def test_validate_dataset_asset_accessibility_file_is_none():  # tokenizer, trai
             global_batch_size=2,
         )
     except ValueError as e:
-        raised_exception = (
-            str(e) == "Expected `path_or_dataset` to be str, Dataset, DatasetDict, but got <class 'NoneType'>"
-        )
+        exception_msg = str(e)
 
-    assert raised_exception == True, "Expected to raise a ValueError"
-
-
-def test_load_from_dict():
-    data = {'text': "Below is an instruction that describes a task, paired with an input that "}
-
-    datamodule = llm.HFDatasetDataModule.from_dict(
-        {"text": [data['text'] for _ in range(101)]},
-        split='train',
-        global_batch_size=4,
-        micro_batch_size=1,
-    )
-    assert datamodule is not None
-    assert isinstance(datamodule, llm.HFDatasetDataModule)
-    assert hasattr(datamodule, 'train')
-    assert datamodule.train is not None
-    assert len(datamodule.train) == 101
-    assert hasattr(datamodule, 'val')
-    assert datamodule.val is None
-    assert hasattr(datamodule, 'test')
-    assert datamodule.test is None
+    assert exception_msg == expected_msg, exception_msg

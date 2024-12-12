@@ -31,6 +31,19 @@ def masked_cross_entropy(logits, targets, mask=None):
         return F.cross_entropy(logits, targets)
 
 
+def align_labels(logits, labels):
+    logits = logits.float()
+    n_cls = logits.shape[-1]
+    if logits.shape[-2] == labels.shape[-1]:
+        logits = logits[..., :-1, :].contiguous()
+        labels = labels[..., 1:].contiguous()
+    elif logits.shape[-2] == labels.shape[-1] + 1:
+        logits = logits[..., :-1, :].contiguous()
+    else:
+        raise ValueError("Mismatched labels and logits shapes (" + str(labels.shape) + " " + str(logits.shape))
+    return logits.view(-1, n_cls), labels.view(-1)
+
+
 class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     def __init__(
         self,
@@ -91,41 +104,34 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         self.model.train()
 
-    def forward(self, input_ids, attention_mask=None, labels=None, loss_mask=None):
-        outputs = self.model(
-            input_ids=input_ids.to(self.model.device),
-            attention_mask=attention_mask,
-        )
-        labels = labels.to(self.model.device)
-        if loss_mask is not None:
-            loss_mask = loss_mask.to(self.model.device).view(-1)
-        n_cls = outputs.logits.shape[-1]
-        outputs.loss = self.loss_fn(outputs.logits.view(-1, n_cls), labels.view(-1), loss_mask)
-        return outputs
+    def forward(self, batch):
+        return self.model(**batch)
 
     def training_step(self, batch):
-        tokens = batch['tokens']
-        labels = batch['labels']
-        loss_mask = batch.get('loss_mask', None)
-        output = self.forward(
-            input_ids=tokens,
-            labels=labels,
-            loss_mask=loss_mask,
-        )
+        labels = batch.pop('labels').to(self.model.device)
+        loss_mask = batch.pop('loss_mask', None)
 
-        loss = output.loss
+        outputs = self.forward(batch)
+
+        # Prepare for loss calculation
+        logits, labels = align_labels(outputs.logits.float(), labels)
+        assert logits.shape[-2] == labels.shape[-1]
+
+        loss = self.loss_fn(logits, labels, loss_mask)
         self.log('train_log', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
+    @torch.no_grad
     def validation_step(self, batch, batch_idx):
-        tokens = batch['tokens']
-        labels = batch['labels']
-        output = self.forward(
-            input_ids=tokens,
-            labels=labels,
-        )
+        labels = batch.pop('labels').to(self.model.device)
+        loss_mask = batch.pop('loss_mask', None)
 
-        loss = output.loss
+        outputs = self.forward(**batch)
+
+        logits, labels = align_labels(outputs.logits.float(), labels)
+        assert logits.shape[-2] == labels.shape[-1]
+        loss = self.loss_fn(logits, labels, loss_mask)
+
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
 
     def save_pretrained(self, path):

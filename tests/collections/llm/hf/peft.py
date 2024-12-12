@@ -17,8 +17,10 @@ from lightning.pytorch.loggers import WandbLogger
 from nemo import lightning as nl
 from nemo.collections import llm
 
+DATA_PATH = '/home/TestData/lite/hf_cache/squad/'
 
-def make_squad_hf_dataset(tokenizer):
+
+def make_squad_hf_dataset(data_path, tokenizer):
     EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
 
     def formatting_prompts_func(examples):
@@ -43,13 +45,15 @@ def make_squad_hf_dataset(tokenizer):
         return ans
 
     tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
-    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:100]", pad_token_id=tokenizer.eos_token_id)
+    datamodule = llm.HFDatasetDataModule(data_path, split="train[:100]", pad_token_id=tokenizer.eos_token_id)
+
     datamodule.map(
         formatting_prompts_func,
         batched=False,
         batch_size=2,
         remove_columns=["id", "title", "context", "question", 'answers'],
     )
+
     return datamodule
 
 
@@ -63,6 +67,7 @@ if __name__ == '__main__':
     parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument('--wandb-project', type=str, default=None)
+    parser.add_argument('--disable-ckpt', action='store_false')
     args = parser.parse_args()
 
     wandb = None
@@ -81,7 +86,7 @@ if __name__ == '__main__':
 
     llm.api.finetune(
         model=llm.HFAutoModelForCausalLM(args.model),
-        data=make_squad_hf_dataset(tokenizer.tokenizer),
+        data=make_squad_hf_dataset(DATA_PATH, tokenizer),
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,
@@ -94,6 +99,7 @@ if __name__ == '__main__':
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
             logger=wandb,
+            enable_checkpointing=args.disable_ckpt,
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=None,

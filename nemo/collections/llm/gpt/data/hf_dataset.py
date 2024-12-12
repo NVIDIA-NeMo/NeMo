@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datasets.dataset_dict
 import lightning.pytorch as pl
 import torch
 from datasets import load_dataset
@@ -22,38 +21,40 @@ from nemo.lightning.pytorch.plugins import MegatronDataSampler
 from nemo.utils import logging
 
 
-def make_dataset_splits(path, split, split_aliases, kwargs):
+def make_dataset_splits(dataset, split, split_aliases):
     """
-    Loads a dataset with datasets.load_dataset and
-    returns a dictionary containing all dataset splits.
+    Given a dataset (e.g. from datasets.load_dataset or datasets.Dataset.from_dict) it
+    returns a dictionary containing the corresponding dataset splits.
 
     For example:
 
-    ans = make_dataset_splits("dataset-id")
-        $ ds = load_dataset("dataset-id")
-        $ print(ds)
-        > DatasetDict({
-        >    train: Dataset({
-        >        features: ['id', 'title', 'context', 'question', 'answers'],
-        >        num_rows: 87599
-        >    })
-        >    validation: Dataset({
-        >        features: ['id', 'title', 'context', 'question', 'answers'],
-        >        num_rows: 10570
-        >    })
-        > })
+    $ ds = load_dataset("dataset-id")
+    $ ans = make_dataset_splits(ds)
 
-    In this case the value of `ans` (returned value) will be:
+    # `ds` contains the following
+    $ print(ds)
+    > DatasetDict({
+    >    train: Dataset({
+    >        features: ['id', 'title', 'context', 'question', 'answers'],
+    >        num_rows: 87599
+    >    })
+    >    validation: Dataset({
+    >        features: ['id', 'title', 'context', 'question', 'answers'],
+    >        num_rows: 10570
+    >    })
+    > })
+
+    # In this case the value of `ans` (returned value) will be:
     $ print(ans)
     > {
     >    "train": Dataset .. (with 87599 rows),
     >    "val": Dataset .. (with 10570 rows),
     > }
     """
-    dataset = load_dataset(path, split=split, **kwargs)
+    from datasets import Dataset, DatasetDict
 
     split_names = ['train', 'test', 'val']
-    dataset_splits = {split: None for split in split_names}
+    dataset_splits = {_split: None for _split in split_names}
 
     alias_to_split = {}
     for split_name, _split_aliases in split_aliases.items():
@@ -61,7 +62,10 @@ def make_dataset_splits(path, split, split_aliases, kwargs):
         for alias in _split_aliases:
             alias_to_split[alias] = split_name
 
-    if isinstance(dataset, datasets.dataset_dict.DatasetDict):
+    if isinstance(dataset, Dataset):
+        assert isinstance(split, str), "Expected split to be a string, but got " + str(type(split))
+        dataset_splits[split] = dataset
+    elif isinstance(dataset, DatasetDict):
         dataset_split_names = dataset.keys()
         logging.info(f"HF dataset has the following splits: {dataset_split_names}")
         for alias_split_name, split in dataset.items():
@@ -89,9 +93,8 @@ def make_dataset_splits(path, split, split_aliases, kwargs):
     else:
         raise ValueError("Expected split name to be None, str or a list")
 
-    assert (
-        sum(map(lambda x: x is not None, dataset_splits.values())) > 0
-    ), "Expected at least one dataset to have been initialized"
+    num_init_splits = sum(map(lambda x: x is not None, dataset_splits.values()))
+    assert num_init_splits > 0, f"Expected at least one split to have been initialized {num_init_splits}"
     return dataset_splits
 
 
@@ -111,9 +114,9 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        path,
-        collate_fn=None,
+        path_or_dataset,
         split=None,
+        collate_fn=None,
         num_workers=2,
         pin_memory=True,
         persistent_workers=True,
@@ -130,8 +133,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
     ) -> None:
         super().__init__()
         assert pad_token_id is not None
-
-        logging.info(f"Loading HF dataset from {path}")
+        from datasets import Dataset, DatasetDict
 
         # A dataset usually will have several splits (e.g. train, val, test, etc).
         # We map synonym names to canonical names (train, test, val).
@@ -139,7 +141,18 @@ class HFDatasetDataModule(pl.LightningDataModule):
         split_aliases = {'train': train_aliases, 'test': test_aliases, 'val': val_aliases}
 
         # self.dataset_splits will hold the actual dataset for each split.
-        self.dataset_splits = make_dataset_splits(path, split, split_aliases, kwargs)
+        if isinstance(path_or_dataset, str):
+            logging.info(f"Loading HF dataset from {path_or_dataset}")
+            dataset = load_dataset(path_or_dataset, split=split, **kwargs)
+        elif isinstance(path_or_dataset, Dataset) or isinstance(path_or_dataset, DatasetDict):
+            logging.info(f"Using passed HF dataset {str(path_or_dataset)}")
+            dataset = path_or_dataset
+        else:
+            raise ValueError(
+                "Expected `path_or_dataset` to be str, Dataset, DatasetDict, but got " + str(type(path_or_dataset))
+            )
+
+        self.dataset_splits = make_dataset_splits(dataset, split, split_aliases)
 
         if collate_fn is None:
             self._collate_fn = lambda x: HFDatasetDataModule.collate_fn(x, pad_token_id=self.pad_token_id)
@@ -156,6 +169,13 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
         self.use_mcore_sampler = use_mcore_sampler
         self.mcore_dataloader_type = mcore_dataloader_type
+
+    @staticmethod
+    def from_dict(dataset_dict, split, **kwargs):
+        from datasets import Dataset
+
+        dataset = Dataset.from_dict(dataset_dict)
+        return HFDatasetDataModule(path_or_dataset=dataset, split=split, **kwargs)
 
     @staticmethod
     def collate_fn(batch, pad_token_id=0):

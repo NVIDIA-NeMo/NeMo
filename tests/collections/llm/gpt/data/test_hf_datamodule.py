@@ -19,7 +19,7 @@ DATA_PATH = "/home/TestData/lite/hf_cache/squad/"
 
 def test_load_single_split():
     ds = llm.HFDatasetDataModule(
-        path=DATA_PATH,
+        path_or_dataset=DATA_PATH,
         split='train',
         seq_length=512,
         micro_batch_size=2,
@@ -46,7 +46,7 @@ def test_load_nonexistent_split():
     expected_msg = '''Unknown split "this_split_name_should_not_exist". Should be one of ['train', 'validation'].'''
     try:
         llm.HFDatasetDataModule(
-            path=DATA_PATH,
+            path_or_dataset=DATA_PATH,
             split='this_split_name_should_not_exist',
             seq_length=512,
             micro_batch_size=2,
@@ -59,7 +59,7 @@ def test_load_nonexistent_split():
 
 def test_load_multiple_split():
     ds = llm.HFDatasetDataModule(
-        path=DATA_PATH,
+        path_or_dataset=DATA_PATH,
         split=['train', 'validation'],
         seq_length=512,
         micro_batch_size=2,
@@ -88,7 +88,7 @@ def test_validate_dataset_asset_accessibility_file_does_not_exist():
     raised_exception = False
     try:
         llm.HFDatasetDataModule(
-            path="/this/path/should/not/exist/",
+            path_or_dataset="/this/path/should/not/exist/",
             seq_length=512,
             micro_batch_size=2,
             global_batch_size=2,
@@ -103,12 +103,34 @@ def test_validate_dataset_asset_accessibility_file_is_none():  # tokenizer, trai
     raised_exception = False
     try:
         llm.HFDatasetDataModule(
-            path=None,
+            path_or_dataset=None,
             seq_length=512,
             micro_batch_size=2,
             global_batch_size=2,
         )
-    except TypeError:
-        raised_exception = True
+    except ValueError as e:
+        raised_exception = (
+            str(e) == "Expected `path_or_dataset` to be str, Dataset, DatasetDict, but got <class 'NoneType'>"
+        )
 
     assert raised_exception == True, "Expected to raise a ValueError"
+
+
+def test_load_from_dict():
+    data = {'text': "Below is an instruction that describes a task, paired with an input that "}
+
+    datamodule = llm.HFDatasetDataModule.from_dict(
+        {"text": [data['text'] for _ in range(101)]},
+        split='train',
+        global_batch_size=4,
+        micro_batch_size=1,
+    )
+    assert datamodule is not None
+    assert isinstance(datamodule, llm.HFDatasetDataModule)
+    assert hasattr(datamodule, 'train')
+    assert datamodule.train is not None
+    assert len(datamodule.train) == 101
+    assert hasattr(datamodule, 'val')
+    assert datamodule.val is None
+    assert hasattr(datamodule, 'test')
+    assert datamodule.test is None

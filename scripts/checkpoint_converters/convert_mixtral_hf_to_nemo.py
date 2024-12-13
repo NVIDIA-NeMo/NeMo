@@ -18,6 +18,7 @@ Conversion script to convert Huggingface Mixtral checkpoints into NeMo checkpoin
     python3 convert_mixtral_hf_to_nemo.py \
      --input_name_or_path <path_to_mixtral_checkpoints_folder> \
      --output_path <path_to_output_nemo_file> \
+     --tokenizer_type <tokenizer_type> \
      --precision=bf16
 """
 
@@ -62,6 +63,14 @@ def get_args():
     parser.add_argument(
         "--precision", type=str, default="bf16", choices=valid_precision_values, help="Model precision"
     )
+    parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        default="sentencepiece",
+        choices=["sentencepiece", "huggingface"],
+        help="Tokenizer type",
+    )
+    parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer model")
     parser.add_argument('--low-ram', action='store_true')
     parser.add_argument('--tmp-dir', default='/tmp/mixtral_ckpt_parts/')
     args = parser.parse_args()
@@ -108,7 +117,7 @@ def restore_model_from_checkpoint(cls, checkpoint, strict, **kwargs):
     return model
 
 
-def load_config(mixtral_config, tokenizer_path):
+def load_config(mixtral_config, tokenizer_path, tokenizer_type):
     nemo_config = OmegaConf.load(
         os.path.join(os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_llama_config.yaml')
     ).model
@@ -147,6 +156,11 @@ def load_config(mixtral_config, tokenizer_path):
         base //= 2
     nemo_config.make_vocab_size_divisible_by = base
 
+    if tokenizer_type == "huggingface":
+        nemo_config.tokenizer.library = "huggingface"
+        nemo_config.tokenizer.type = tokenizer_path
+        nemo_config.tokenizer.model = f"{tokenizer_path}/tokenizer.json"
+
     return nemo_config
 
 
@@ -165,7 +179,11 @@ def load_mixtral_ckpt(in_dir, load_model=True):
         model = AutoModelForCausalLM.from_pretrained(in_dir, torch_dtype='auto')
         ckpt = model.state_dict()
 
-    tokenizer = AutoTokenizer.from_pretrained(in_dir)
+    if args.tokenizer_path:
+        tokenizer_path = args.tokenizer_path
+    else:
+        tokenizer_path = in_dir
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     assert tokenizer.vocab_size == model_args['vocab_size']
     return model_args, ckpt, tokenizer
 
@@ -185,7 +203,7 @@ def parse_precision(precision):
 
 def make_trainer(args, nemo_config):
     model_args, ckpt, tokenizer = load_mixtral_ckpt(args.input_name_or_path, load_model=False)
-    nemo_config = load_config(model_args, tokenizer.vocab_file)
+    nemo_config = load_config(model_args, get_tokenizer_path(args, tokenizer), args.tokenizer_type)
 
     precision = parse_precision(args.precision)
     plugins = []
@@ -223,11 +241,26 @@ def make_trainer(args, nemo_config):
     return trainer, dtype
 
 
+def get_tokenizer_path(args, tokenizer, make_spm=True):
+    if args.tokenizer_type == "sentencepiece":
+        if make_spm:
+            tokenizer.vocab_file = make_sentencepiece_tokenizer(tokenizer)
+        tokenizer_path = tokenizer.vocab_file
+    elif args.tokenizer_type == "huggingface":
+        if args.tokenizer_path:
+            tokenizer_path = args.tokenizer_path
+        else:
+            tokenizer_path = args.input_name_or_path
+
+    return tokenizer_path
+
+
 def convert(args):
     logging.info(f"loading checkpoint {args.input_name_or_path}")
 
     model_args, ckpt, tokenizer = load_mixtral_ckpt(args.input_name_or_path)
-    nemo_config = load_config(model_args, tokenizer.vocab_file)
+
+    nemo_config = load_config(model_args, get_tokenizer_path(args, tokenizer), args.tokenizer_type)
 
     hidden_size = nemo_config.hidden_size
     head_num = nemo_config.num_attention_heads
@@ -488,9 +521,9 @@ def save_to_nemo(args, checkpoint):
 
     logging.info(f"loading checkpoint {args.input_name_or_path}")
     model_args, ckpt, tokenizer = load_mixtral_ckpt(args.input_name_or_path, load_model=False)
-    if tokenizer.vocab_file is None:
-        tokenizer.vocab_file = make_sentencepiece_tokenizer(tokenizer)
-    nemo_config = load_config(model_args, tokenizer.vocab_file)
+
+    make_spm = True if args.tokenizer_type == "sentencepiece" else False
+    nemo_config = load_config(model_args, get_tokenizer_path(args, tokenizer, make_spm=make_spm), args.tokenizer_type)
     nemo_config.precision = parse_precision(args.precision)
     nemo_config.megatron_amp_O2 = True
     trainer, dtype = make_trainer(args, nemo_config)

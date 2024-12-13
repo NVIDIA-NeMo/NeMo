@@ -11,18 +11,18 @@ Flash attention is an algorithm designed to improve the efficiency of the attent
 
 Compared to the standard, non-flash algorithm, flash attention applies two techniques to lower the memory requirement and improve compute efficiency.
 
-The tiling technique decomposes the inputs based on the shared memory size and calculates the softmax one tile at a time. Instead of working on the entire query, key, value tensors at once, it makes several passes at these tensors and then combines the results in a subsequent step.
+The tiling technique decomposes the inputs based on the shared memory size and calculates the softmax one tile at a time. Instead of working on the entire query, key, and value tensors at once, it makes several passes at these tensors and then combines the results in a subsequent step.
 
 The recomputation technique stores the softmax normalization factors (linear to sequence length), instead of the softmax results (qudratic to sequence length), and uses these normalization factors to recompute the attention scores. This saves the amount of data to write to global memory and reduces both the memory requirement and I/O traffic between global memory and shared memory.
 
-Flash attention lowers the memory footprint and computational complexity from quadratic to linear, and greatly extending the range of sequence length allowed in large language models.
+Flash attention lowers the memory footprint and computational complexity from quadratic to linear, greatly extending the range of sequence length allowed in large language models.
 
 The flash attention algorithm was first propsed `here <https://arxiv.org/pdf/2205.14135>`_. Two of its implementations are `flash-attention <https://github.com/Dao-AILab/flash-attention>`_ by Tri Dao *et al*, and `fused flash attention <https://docs.nvidia.com/deeplearning/cudnn/archives/cudnn-897/developer-guide/index.html#flash-fused-multi-head-att-fprop>`_ by NVIDIA cuDNN.
 
 Turn Flash Attention On and Off
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the NeMo framework, flash attention is supported through `Transformer Engine <https://github.com/NVIDIA/TransformerEngine/tree/main>`_, including both of the implementations mentioned above. Transformer Engine selects the appropriate implementation based on input information such as sequence length, number of heads and head dimension. When both implementations are applicable, Transformer Engine prefers cuDNN flash attention on Hopper+ architectures and Tri Dao flash attention on Ampere architectures.
+In the NeMo Framework, flash attention is supported through `Transformer Engine <https://github.com/NVIDIA/TransformerEngine/tree/main>`_, including both of the implementations mentioned above. Transformer Engine selects the appropriate implementation based on input information such as sequence length, number of heads and head dimension. When both implementations are applicable, Transformer Engine prefers cuDNN flash attention on Hopper+ architectures and Tri Dao flash attention on Ampere architectures.
 
 To disable Tri Dao flash attention, set the environment variable ``NVTE_FLASH_ATTN=0``. To disable cuDNN flash attention, set ``NVTE_FUSED_ATTN=0``.
 
@@ -54,24 +54,37 @@ Enable MQA and GQA
 To use MQA or GQA in the NeMo Framework, adjust the ``num_query_groups`` parameter in the model configuration:
 
 1. **For Multi-query Attention (MQA)**:
-   - Set ``num_query_groups`` to `1` to treat all attention heads as a single group.
+   Set ``num_query_groups`` to `1` to treat all attention heads as a single group.
 
-   .. code-block:: yaml
+   .. code-block:: python
 
-       num_query_groups: 1  # Enables Multi-query Attention
+       from nemo.collections import llm
+       from functools import partial
+       
+       # Load train recipe
+       recipe = partial(llm.llama3_8b.pretrain_recipe)()
+
+       recipe.model.config.num_query_groups = 1  # Enables Multi-query Attention
 
 2. **For Grouped-query Attention (GQA)**:
+
    - Set ``num_query_groups`` to a number that is a divisor of the total number of attention heads (more than one but less than the total heads).
 
-   .. code-block:: yaml
+   .. code-block:: python
 
-       num_query_groups: <number_of_groups>  # Enables Grouped-query Attention
+       recipe.model.config.num_query_groups = <number_of_groups>  # Enables Grouped-query Attention
 
    - For regular attention, set this parameter to `None` or match it with the number of heads.
 
-   .. code-block:: yaml
+   .. code-block:: python
 
-       num_query_groups: null  # Default setting for regular multihead attention
+       recipe.model.config.num_query_groups = None  # Default setting for regular multihead attention
+
+It's also possible to set ``num_query_groups`` directly from CLI:
+
+   .. code-block:: bash
+      
+      nemo llm pretrain --factory llama3_8b model.config.num_query_groups=8
 
 Adjust the ``num_query_groups`` to explore different attention mechanisms and optimize your model's performance based on specific needs.
 
@@ -80,4 +93,4 @@ Implement MQA or GQA
 
 NeMo's support for GQA and MQA is enabled through the integration of Megatron Core's Attention mechanism. The underlying implementation details can be explored within the Attention class of Megatron Core, which provides the functional backbone for these advanced attention methods. To understand the specific modifications and implementations of MQA and GQA, refer to the source code in the Attention class:
 
-Check implementation details from Attention Class in Megatron Core Repo: https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/attention.py#L49.
+To check implementation details from the Attention Class in Megatron Core Repo, please refer to https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/attention.py#L49.

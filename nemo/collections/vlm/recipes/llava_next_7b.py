@@ -163,7 +163,7 @@ def pretrain_recipe(
     name: str = "default",
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
-    peft_scheme: Optional[str] = 'none',
+    language_model_from_pretrained: Optional[str] = None,
 ) -> run.Partial:
     """
     Create a Pre-training recipe for Llava1.6 7B model.
@@ -223,6 +223,7 @@ def pretrain_recipe(
                 freeze_language_model=True,
                 freeze_vision_model=True,
                 freeze_vision_projection=False,
+                language_model_from_pretrained=language_model_from_pretrained,
             )
         ),
         trainer=trainer,

@@ -4607,6 +4607,21 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf /tmp/nemo2_ckpt
         rm -rf /tmp/nemo2_ptq_engine
+  
+  L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure-gpus-1
+      SCRIPT: |
+        python tests/collections/vlm/test_llava_next_train.py \
+        --devices=1 \
+        --max-steps=5 \
+        --experiment-dir=/tmp/nemo2_llava_next_results/${{ github.run_id }}
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/nemo2_llava_next_results
 
   Nemo_CICD_Test:
     needs:
@@ -4771,6 +4786,7 @@ jobs:
       - L2_Megatron_GPT_Reranker
       - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
       - L2_NeMo_2_PTQ_Llama2_FP8
+      - L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING
     if: always()
     runs-on: ubuntu-latest
     steps:

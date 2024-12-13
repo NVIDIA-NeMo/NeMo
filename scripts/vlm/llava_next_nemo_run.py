@@ -17,7 +17,7 @@ import nemo_run as run
 from nemo.collections import vlm
 
 
-def configure_recipe(nodes: int = 1, gpus_per_node: int = 8, pretrain=False):
+def configure_recipe(nodes: int = 1, gpus_per_node: int = 8, pretrain=False, language_model_from_pretrained=None):
     """Configure the recipe"""
     if pretrain:
         recipe = vlm.llava_next_7b.pretrain_recipe(
@@ -25,6 +25,7 @@ def configure_recipe(nodes: int = 1, gpus_per_node: int = 8, pretrain=False):
             name="llava_pretrain",
             num_nodes=nodes,
             num_gpus_per_node=gpus_per_node,
+            language_model_from_pretrained=language_model_from_pretrained,
         )
     else:
         recipe = vlm.llava_next_7b.finetune_recipe(
@@ -33,8 +34,8 @@ def configure_recipe(nodes: int = 1, gpus_per_node: int = 8, pretrain=False):
             num_nodes=nodes,
             num_gpus_per_node=gpus_per_node,
         )
-    recipe.trainer.max_steps = 100
-    recipe.trainer.val_check_interval = 100
+    recipe.trainer.max_steps = 20
+    recipe.trainer.val_check_interval = 20
     recipe.model.config.freeze_vision_model = True
     return recipe
 
@@ -49,9 +50,9 @@ def local_executor_torchrun(nodes: int = 1, devices: int = 8) -> run.LocalExecut
     return executor
 
 
-def run_pretraining():
+def run_pretraining(language_model_from_pretrained=None):
     # pylint: disable=C0115,C0116
-    recipe = configure_recipe(pretrain=True)
+    recipe = configure_recipe(pretrain=True, language_model_from_pretrained=language_model_from_pretrained)
     executor = local_executor_torchrun(nodes=recipe.trainer.num_nodes, devices=recipe.trainer.devices)
 
     run.run(recipe, executor=executor)
@@ -67,5 +68,5 @@ def run_finetuning():
 
 # This condition is necessary for the script to be compatible with Python's multiprocessing module.
 if __name__ == "__main__":
-    run_pretraining()
+    run_pretraining(language_model_from_pretrained='/root/.cache/nemo/models/lmsys/vicuna-7b-v1.5/')
     # run_finetuning()

@@ -35,7 +35,7 @@ class DeployPyTriton(DeployBase):
         trt_llm_exporter.export(
             nemo_checkpoint_path="/path/for/nemo/checkpoint",
             model_type="llama",
-            n_gpus=1,
+            tensor_parallelism_size=1,
         )
 
         nm = DeployPyTriton(model=trt_llm_exporter, triton_model_name="model_name", port=8000)

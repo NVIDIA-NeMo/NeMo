@@ -807,6 +807,7 @@ def get_args():
             return None
         raise UsageError(f"Invalid boolean value for argument --{name}: '{s}'")
 
+    args.model_type = None if str(args.model_type).lower() == "none" else args.model_type
     args.test_cpp_runtime = str_to_bool("test_cpp_runtime", args.test_cpp_runtime)
     args.test_deployment = str_to_bool("test_deployment", args.test_deployment)
     args.functional_test = str_to_bool("functional_test", args.functional_test)

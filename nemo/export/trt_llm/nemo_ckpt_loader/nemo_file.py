@@ -21,7 +21,7 @@ import re
 import shutil
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import tensorstore  # This is important even though not used. Otherwise zarr raises error.
@@ -356,6 +356,78 @@ def build_tokenizer(tokenizer):
             nemo_tokenizers.TokenizerSpec.batch_decode = batch_decode
 
     return tokenizer
+
+
+def load_nemo_config(nemo_ckpt: Union[str, Path]) -> Dict[Any, Any]:
+    """
+    Load the model configuration from a NeMo checkpoint.
+
+    This function handles both NeMo 1.0 and NeMo 2.0 checkpoint structures.
+    For NeMo 2.0, it reads the configuration from the 'context/model.yaml' file.
+    For NeMo 1.0, it uses the UnpackedNemoCheckpointDir to load the model configuration.
+
+    Args:
+        nemo_ckpt (Union[str, Path]): Path to the NeMo checkpoint file or directory.
+    Returns:
+        Dict[Any, Any]: The configuration dictionary.
+    """
+    if Path(nemo_ckpt).is_dir():
+        nemo_ckpt = Path(nemo_ckpt)
+    else:
+        nemo_ckpt = TarPath(nemo_ckpt)
+
+    if (nemo_ckpt / "weights").exists() and (nemo_ckpt / "context").exists():  # Stucture of NeMo 2.0 checkpoints
+        with (nemo_ckpt / "context" / "model.yaml").open("r") as stream:
+            config = yaml.safe_load(stream)
+    else:  # Assume NeMo 1.0 case
+        unpacked_checkpoint_dir = UnpackedNemoCheckpointDir(nemo_ckpt, load_checkpoints_to_cpu=True)
+        config = unpacked_checkpoint_dir.model_config
+
+    return config
+
+
+def get_model_type(nemo_ckpt: Union[str, Path]) -> Optional[str]:
+    """
+    Determine the model type from a NeMo checkpoint for TensorRT-LLM engine build.
+
+    Args:
+        nemo_ckpt (str): Path to the NeMo checkpoint file.
+    Returns:
+        Optional[str]: The model type if it can be determined, otherwise None.
+    """
+    model_config = load_nemo_config(nemo_ckpt)
+    model_type = None
+
+    if model_class := model_config.get("_target_"):
+        # NeMo 2.0 case
+        NEMO2_TO_MODEL_TYPE = {
+            "nemo.collections.llm.gpt.model.base.GPTModel": "gpt",
+            "nemo.collections.llm.gpt.model.llama.LlamaModel": "llama",
+            "nemo.collections.llm.gpt.model.mistral.MistralModel": "llama",
+            "nemo.collections.llm.gpt.model.mixtral.MixtralModel": "llama",
+            "nemo.collections.llm.gpt.model.starcoder.StarcoderModel": "gpt",
+            "nemo.collections.llm.gpt.model.starcoder2.Starcoder2Model": "gpt",
+            "nemo.collections.llm.gpt.model.nemotron.NemotronModel": "gpt",
+            "nemo.collections.llm.gpt.model.gemma.GemmaModel": "gemma",
+            "nemo.collections.llm.gpt.model.phi3mini.Phi3Model": "phi3",
+            "nemo.collections.llm.gpt.model.baichuan.Baichuan2Model": "baichuan",
+            "nemo.collections.llm.gpt.model.chatglm.ChatGLMModel": "chatglm",
+            "nemo.collections.llm.gpt.model.qwen2.Qwen2Model": "qwen",
+        }
+        try:
+            model_type = NEMO2_TO_MODEL_TYPE[model_class]
+            LOGGER.info(f"Determined model_type='{model_type}' for {nemo_ckpt} checkpoint.")
+
+        except KeyError:
+            LOGGER.error(
+                f"Model {model_class} not found in the NEMO2_TO_MODEL_TYPE mapping, "
+                "try providing the model_type explicitely for exporting:\n"
+                f"{json.dumps(NEMO2_TO_MODEL_TYPE, indent=2)}"
+            )
+            raise
+    else:
+        LOGGER.warning(f"Parameter model_type cannot be determined for {nemo_ckpt} checkpoint.")
+    return model_type
 
 
 def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Path]):

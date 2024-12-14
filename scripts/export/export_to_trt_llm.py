@@ -44,7 +44,6 @@ def get_args(argv):
     parser.add_argument(
         "-mr", "--model_repository", required=True, default=None, type=str, help="Folder for the trt-llm model files"
     )
-    parser.add_argument("-ng", "--num_gpus", default=None, type=int, help="Number of GPUs for the deployment")
     parser.add_argument("-tps", "--tensor_parallelism_size", default=1, type=int, help="Tensor parallelism size")
     parser.add_argument("-pps", "--pipeline_parallelism_size", default=1, type=int, help="Pipeline parallelism size")
     parser.add_argument(
@@ -181,7 +180,6 @@ def nemo_export_trt_llm(argv):
         trt_llm_exporter.export(
             nemo_checkpoint_path=args.nemo_checkpoint,
             model_type=args.model_type,
-            n_gpus=args.num_gpus,
             tensor_parallelism_size=args.tensor_parallelism_size,
             pipeline_parallelism_size=args.pipeline_parallelism_size,
             max_input_len=args.max_input_len,

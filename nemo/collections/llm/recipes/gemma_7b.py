@@ -51,6 +51,8 @@ def model() -> run.Config[pl.LightningModule]:
             >>> model_config = model()
             >>> print(model_config)
     """
+    # Disable cuDNN attention since TE 1.8 does not support head dim > 128
+    os.environ['NVTE_FUSED_ATTN'] = "0"
     return run.Config(GemmaModel, config=run.Config(GemmaConfig7B))
 
 
@@ -277,9 +279,6 @@ def finetune_recipe(
         on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
         `examples/llm/finetune/` directory.
     """
-    # Disable cuDNN attention since TE 1.8 does not support head dim > 128
-    os.environ['NVTE_FUSED_ATTN'] = "0"
-
     recipe = default_finetune_recipe(
         model(), "google/gemma-7b", dir, name, num_nodes, num_gpus_per_node, packed_sequence
     )

@@ -13,12 +13,14 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules.transformer import GreedySequenceGenerator
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core import Typing, typecheck
@@ -27,12 +29,19 @@ from nemo.utils import logging
 
 
 def pack_hypotheses(
-    hypotheses: List[Hypothesis], beam_hypotheses: torch.Tensor, scores: List[Optional[float]]
+    hypotheses: List[Hypothesis],
+    beam_hypotheses: torch.Tensor,
+    scores: List[Optional[float]],
+    step_confidence: Optional[torch.Tensor] = None,
 ) -> List[Hypothesis]:
 
     for idx, hyp in enumerate(hypotheses):  # type: Hypothesis
         if scores[idx] is not None:
             hyp.score = scores[idx]
+
+        if step_confidence is not None:
+            hyp.frame_confidence = step_confidence[idx]
+            hyp.token_confidence = hyp.frame_confidence
 
         hypi = beam_hypotheses[idx]
         if torch.is_tensor(hypi):
@@ -122,6 +131,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
         temperature: float | None = None,
         max_generation_delta: int = 50,
         preserve_alignments: bool = False,
+        preserve_token_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
         n_samples: int = 1,
     ):
         super().__init__(
@@ -146,6 +157,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             max_delta_length=max_generation_delta,
             temperature=self.temperature,
             n_samples=n_samples,
+            preserve_step_confidence=preserve_token_confidence,
+            confidence_method_cfg=confidence_method_cfg,
         )
 
         self.preserve_alignments = preserve_alignments
@@ -176,7 +189,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             packed list containing batch number of sentences (Hypotheses).
         """
         with torch.inference_mode():
-            best_hypo, topk_hypotheses = self.greedy_search(
+            best_hypo, topk_hypotheses, step_confidence = self.greedy_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
@@ -191,7 +204,9 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                     hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(self.n_samples)]
                     self.format_hypotheses(hypotheses, decoder_input_ids)
                     packed_result.append(
-                        NBestHypotheses(pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i]))
+                        NBestHypotheses(
+                            pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i]), step_confidence
+                        )
                     )
             else:
                 beam_scores = [None for _ in range(len(best_hypo))]
@@ -200,7 +215,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                     Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]
                 # Pack results into Hypotheses
-                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores)
+                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores, step_confidence)
                 self.format_hypotheses(packed_result, decoder_input_ids)
 
         return (packed_result,)
@@ -222,6 +237,9 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                     hyp.y_sequence[: prefix.shape[0]] == prefix
                 ).all(), f"The decoder input IDs were not found at the beginning of prediction: {hyp.y_sequence=} {prefix=})"
                 hyp.y_sequence = hyp.y_sequence[prefix.shape[0] :]
+                hyp.token_confidence = (
+                    hyp.token_confidence[prefix.shape[0] :] if hyp.token_confidence is not None else None
+                )
         for hyp in packed_result:
             ids = hyp.y_sequence
             ids_len = ids.shape[0]
@@ -232,6 +250,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                     break  # empty sequence
             if pos < -1:
                 hyp.y_sequence = ids[: pos + 1]
+                hyp.token_confidence = hyp.token_confidence[: pos + 1] if hyp.token_confidence is not None else None
 
 
 @dataclass
@@ -239,4 +258,14 @@ class AEDGreedyInferConfig:
     temperature: float | None = None
     max_generation_delta: int = -1  # -1 means up to the max length of the decoder
     preserve_alignments: bool = False
+    preserve_token_confidence: bool = False
+    confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
     n_samples: int = 1
+
+    def __post_init__(self):
+        # OmegaConf.structured ensures that post_init check is always executed
+        self.confidence_method_cfg = OmegaConf.structured(
+            self.confidence_method_cfg
+            if isinstance(self.confidence_method_cfg, ConfidenceMethodConfig)
+            else ConfidenceMethodConfig(**self.confidence_method_cfg)
+        )

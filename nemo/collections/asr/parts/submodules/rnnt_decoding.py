@@ -681,10 +681,11 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     hyp.token_confidence = hyp.non_blank_frame_confidence
             else:
                 for hyp in hypotheses_list:
+                    timestep = hyp.timestep.tolist() if isinstance(hyp.timestep, torch.Tensor) else hyp.timestep
                     offset = 0
                     token_confidence = []
-                    if len(hyp.timestep) > 0:
-                        for ts, te in zip(hyp.timestep, hyp.timestep[1:] + [len(hyp.frame_confidence)]):
+                    if len(timestep) > 0:
+                        for ts, te in zip(timestep, timestep[1:] + [len(hyp.frame_confidence)]):
                             if ts != te:
                                 # <blank> tokens are considered to belong to the last non-blank token, if any.
                                 token_confidence.append(

@@ -77,12 +77,13 @@ def tokenizer():
     return tok
 
 
-def test_greedy_decoding(inputs, nnet, deterministic_rng):
-    gen = GreedySequenceGenerator(*nnet)
+@pytest.mark.parametrize('with_confidence', [False, True])
+def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence):
+    gen = GreedySequenceGenerator(*nnet, preserve_step_confidence=with_confidence)
     output = gen(*inputs)
 
-    assert len(output) == 2
-    best_path, hypotheses = output
+    assert len(output) == 3
+    best_path, hypotheses, confidence = output
 
     assert best_path is not None
     assert torch.is_tensor(best_path)
@@ -90,13 +91,20 @@ def test_greedy_decoding(inputs, nnet, deterministic_rng):
 
     assert hypotheses is None
 
+    if with_confidence:
+        assert confidence is not None
+        assert torch.is_tensor(confidence)
+        assert confidence.shape == best_path.shape
+    else:
+        assert confidence is None
+
 
 def test_temperature_sampling_decoding(inputs, nnet):
     gen = GreedySequenceGenerator(*nnet, temperature=10.0, n_samples=2)
     output = gen(*inputs)
 
-    assert len(output) == 2
-    best_path, hypotheses = output
+    assert len(output) == 3
+    best_path, hypotheses, _ = output
 
     assert best_path is not None
     assert torch.is_tensor(best_path)
@@ -202,7 +210,7 @@ def test_transformer_aed_greedy_infer_strips_prompt(prompted_inputs, decoder_nm,
     assert torch.is_tensor(best_path)
 
     # Now run the underlying beam search generator that doesn't trim anything.
-    (untrimmed,), _ = gen.greedy_search(*prompted_inputs)
+    (untrimmed,), _, _ = gen.greedy_search(*prompted_inputs)
     assert untrimmed is not None
     assert torch.is_tensor(untrimmed)
 

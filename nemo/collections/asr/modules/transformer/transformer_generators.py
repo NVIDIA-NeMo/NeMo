@@ -13,11 +13,14 @@
 # limitations under the License.
 
 from contextlib import contextmanager
+from typing import Optional
 
 import torch
+from omegaconf import DictConfig
 from torch.distributions import Categorical
 
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.common.parts import NEG_INF, mask_padded_tokens
 
 __all__ = [
@@ -29,7 +32,7 @@ __all__ = [
 ]
 
 
-class GreedySequenceGenerator:
+class GreedySequenceGenerator(ConfidenceMethodMixin):
     """
     Greedy sequence generator based on the decoder followed by log_softmax.
     Optionally supports temperature sampling with ``n_samples`` and ``temperature`` options.
@@ -51,6 +54,37 @@ class GreedySequenceGenerator:
         n_samples: number of sequences to generate (requires ``temperature`` to be set)
         temperature: temperature for temperature sampling. Even with ``n_samples`` set to 1,
             enabling temperature will sample hypotheses instead of returning the best ones.
+
+        preserve_step_confidence: Bool flag which preserves the history of per-step confidence scores generated
+            during greedy decoding. When set to true, the results will contain additional List of tensor floats.
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-step
+            confidence scores.
+            name: The method name (str).
+                Supported values:
+                    - 'max_prob' for using the maximum token probability as a confidence.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                Supported values:
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
+                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
+                    - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                        Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                    - 'renyi' for the Rényi entropy.
+                        Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
+                and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+            entropy_norm: A mapping of the entropy value to the interval [0,1].
+                Supported values:
+                    - 'lin' for using the linear mapping.
+                    - 'exp' for using exponential mapping with linear shift.
     """
 
     def __init__(
@@ -66,6 +100,8 @@ class GreedySequenceGenerator:
         batch_size=1,
         n_samples=1,
         temperature=None,
+        preserve_step_confidence=False,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
         self.embedding = embedding
@@ -77,6 +113,11 @@ class GreedySequenceGenerator:
         self.batch_size = batch_size
         self.n_samples = n_samples
         self.temperature = temperature
+        self.preserve_step_confidence = preserve_step_confidence
+
+        # set confidence calculation method
+        self.num_tokens = getattr(self.classifier.mlp, f'layer{self.classifier.mlp.layers - 1}').out_features
+        self._init_confidence_method(confidence_method_cfg)
 
     def _one_step_forward(
         self,
@@ -172,6 +213,14 @@ class GreedySequenceGenerator:
         decoder_parameter = next(self.decoder.parameters())
         pad_profile = torch.zeros(batch_size).long().to(decoder_parameter.device)
 
+        if self.preserve_step_confidence:
+            if encoder_hidden_states is None:
+                raise RuntimeError("`encoder_hidden_states` must be provided to compute confidence scores.")
+            # start with prompt confidence which is always 1
+            step_confidence = [torch.full_like(tgt, 1, dtype=encoder_hidden_states.dtype)]
+        else:
+            step_confidence = None
+
         decoder_mems_list = None
         for i in range(max_generation_length):
 
@@ -198,16 +247,27 @@ class GreedySequenceGenerator:
             pad_profile = torch.max(pad_profile, (next_tokens == self.eos).long())
             tgt = torch.cat((tgt, next_tokens.unsqueeze(1)), dim=-1)
 
+            if self.preserve_step_confidence:
+                step_confidence.append(
+                    self._get_confidence_tensor(
+                        torch.nn.functional.log_softmax(logits, dim=-1) if not return_beam_scores else logits
+                    )
+                )
+
             # abort generation if all sequences end with <eos>
             if pad_profile.sum() == batch_size:
                 break
+
+        step_confidence_tensor = (
+            torch.cat(step_confidence, dim=1) if self.preserve_step_confidence and len(step_confidence) > 0 else None
+        )
 
         samples = None
         if is_sampling:
             samples = list(tgt.view(orig_batch_size, self.n_samples, -1))
             tgt = tgt[:: self.n_samples]
 
-        return tgt, samples
+        return tgt, samples, step_confidence_tensor
 
     def __call__(
         self, decoder_input_ids=None, encoder_hidden_states=None, encoder_input_mask=None, return_beam_scores=False

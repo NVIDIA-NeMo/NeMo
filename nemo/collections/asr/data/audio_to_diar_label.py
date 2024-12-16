@@ -1065,6 +1065,7 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         round_digits: int = 2,
         soft_targets: bool = False,
         subsampling_factor: int = 8,
+        device: str = 'cpu',
     ):
         super().__init__()
         self.collection = EndtoEndDiarizationSpeechLabel(
@@ -1084,6 +1085,7 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         self.soft_targets = soft_targets
         self.round_digits = 2
         self.floor_decimal = 10**self.round_digits
+        self.device = device
 
     def __len__(self):
         return len(self.collection)
@@ -1232,11 +1234,13 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         audio_signal = audio_signal[: round(self.featurizer.sample_rate * session_len_sec)]
 
         audio_signal_length = torch.tensor(audio_signal.shape[0]).long()
-        audio_signal, audio_signal_length = audio_signal.to('cpu'), audio_signal_length.to('cpu')
-        target_len = self.get_segment_timestamps(duration=session_len_sec, sample_rate=self.featurizer.sample_rate)
+        audio_signal, audio_signal_length = audio_signal.to(self.device), audio_signal_length.to(self.device)
+        target_len = self.get_segment_timestamps(duration=session_len_sec, sample_rate=self.featurizer.sample_rate).to(
+            self.device
+        )
         targets = self.parse_rttm_for_targets_and_lens(
             rttm_file=sample.rttm_file, offset=offset, duration=session_len_sec, target_len=target_len
-        )
+        ).to(self.device)
         return audio_signal, audio_signal_length, targets, target_len
 
 
@@ -1355,6 +1359,7 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
         window_stride,
         global_rank: int,
         soft_targets: bool,
+        device: str,
     ):
         super().__init__(
             manifest_filepath=manifest_filepath,
@@ -1365,6 +1370,7 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
             window_stride=window_stride,
             global_rank=global_rank,
             soft_targets=soft_targets,
+            device=device,
         )
 
     def eesd_train_collate_fn(self, batch):

@@ -16,6 +16,7 @@ import pytest
 import torch
 from omegaconf import DictConfig
 
+from nemo.collections.asr.losses import BCELoss
 from nemo.collections.asr.models import EncDecDiarLabelModel
 
 
@@ -24,7 +25,12 @@ def msdd_model():
 
     preprocessor = {
         'cls': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
-        'params': {"features": 80, "window_size": 0.025, "window_stride": 0.01, "sample_rate": 16000,},
+        'params': {
+            "features": 80,
+            "window_size": 0.025,
+            "window_stride": 0.01,
+            "sample_rate": 16000,
+        },
     }
 
     speaker_model_encoder = {
@@ -165,3 +171,37 @@ class TestEncDecDiarLabelModel:
         assert diff <= 1e-6
         diff = torch.max(torch.abs(scale_weights_instance - scale_weights_batch))
         assert diff <= 1e-6
+
+
+class TestBCELoss:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "probs, labels, target_lens, reduction, expected_output",
+        [
+            (
+                torch.tensor([[[0.5, 0.5], [0.5, 0.5]]], dtype=torch.float32),
+                torch.tensor([[[1, 0], [0, 1]]], dtype=torch.float32),
+                torch.tensor([2]),
+                "mean",
+                torch.tensor(0.693147, dtype=torch.float32),
+            ),
+            (
+                torch.tensor([[[0.5, 0.5], [0.0, 1.0]]], dtype=torch.float32),
+                torch.tensor([[[1, 0], [0, 1]]], dtype=torch.float32),
+                torch.tensor([1]),
+                "mean",
+                torch.tensor(0.693147, dtype=torch.float32),
+            ),
+            (
+                torch.tensor([[[0, 1], [1, 0]]], dtype=torch.float32),
+                torch.tensor([[[1, 0], [0, 1]]], dtype=torch.float32),
+                torch.tensor([2]),
+                "mean",
+                torch.tensor(100, dtype=torch.float32),
+            ),
+        ],
+    )
+    def test_loss(self, probs, labels, target_lens, reduction, expected_output):
+        loss = BCELoss(reduction=reduction)
+        result = loss(probs=probs, labels=labels, target_lens=target_lens)
+        assert torch.allclose(result, expected_output), f"Expected {expected_output}, but got {result}"

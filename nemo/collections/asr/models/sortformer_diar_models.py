@@ -175,6 +175,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
             window_stride=self._cfg.preprocessor.window_stride,
             global_rank=global_rank,
             soft_targets=config.soft_targets if 'soft_targets' in config else False,
+            device=self.device,
         )
 
         self.data_collection = dataset.collection
@@ -557,13 +558,13 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
                     audio_signal=audio_signal,
                     audio_signal_length=audio_signal_length,
                 )
+                self._get_aux_test_batch_evaluations(batch_idx, preds, targets, target_lens)
                 preds = preds.detach().to('cpu')
                 if preds.shape[0] == 1:  # batch size = 1
                     self.preds_total_list.append(preds)
                 else:
                     self.preds_total_list.extend(torch.split(preds, [1] * preds.shape[0]))
                 torch.cuda.empty_cache()
-                self._get_aux_test_batch_evaluations(batch_idx, preds, targets, target_lens)
 
         logging.info(f"Batch F1Acc. MEAN: {torch.mean(torch.tensor(self.batch_f1_accs_list))}")
         logging.info(f"Batch Precision MEAN: {torch.mean(torch.tensor(self.batch_precision_list))}")

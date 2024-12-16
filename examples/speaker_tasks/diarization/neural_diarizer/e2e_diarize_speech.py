@@ -386,6 +386,7 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
     diar_model._cfg.test_ds.manifest_filepath = cfg.dataset_manifest
     infer_audio_rttm_dict = audio_rttm_map(cfg.dataset_manifest)
     diar_model._cfg.test_ds.batch_size = cfg.batch_size
+    diar_model._cfg.test_ds.pin_memory = False
 
     # Model setup for inference
     diar_model._cfg.test_ds.num_workers = cfg.num_workers

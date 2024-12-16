@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-
 import numpy as np
 import pytest
 import torch
@@ -48,6 +47,7 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     get_online_subsegments_from_buffer,
     get_speech_labels_for_update,
     get_sub_range_list,
+    get_subsegments,
     get_subsegments_scriptable,
     get_target_sig,
     int2fl,
@@ -115,6 +115,10 @@ def generate_toy_data(
             emb = emb_cent.tile((len(segments), 1)) + 0.1 * torch.rand(len(segments), emb_dim)
             seg_list.extend(segments)
             emb_list.append(emb)
+            if emb.shape[0] == 0:
+                import ipdb
+
+                ipdb.set_trace()
             multiscale_segment_counts[scale_idx] += emb.shape[0]
 
             if scale_idx == len(multiscale_segment_counts) - 1:
@@ -375,6 +379,109 @@ class TestClassExport:
         offline_speaker_clustering = SpeakerClustering(maj_vote_spk_count=False, min_samples_for_nmesc=0, cuda=True)
         offline_speaker_clustering = torch.jit.script(offline_speaker_clustering)
         isinstance(offline_speaker_clustering, torch.jit._script.RecursiveScriptClass)
+
+
+class TestGetSubsegments:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "offset, window, shift, duration, min_subsegment_duration, decimals, use_asr_style_frame_count, sample_rate, feat_per_sec, expected",
+        [
+            (12.05, 1.5, 0.75, 2.4, 0.01, 2, False, 16000, 100, [[12.05, 1.5], [12.8, 1.5], [13.55, 0.9]]),
+            (0, 1.0, 0.5, 0.4, 0.01, 2, False, 16000, 100, [[0, 0.4]]),
+            (0, 2.0, 1.0, 1.5, 0.5, 2, False, 16000, 100, [[0, 1.5]]),
+            (
+                10,
+                1.5,
+                0.75,
+                4.5,
+                0.5,
+                2,
+                False,
+                16000,
+                100,
+                [[10, 1.5], [10.75, 1.5], [11.5, 1.5], [12.25, 1.5], [13.0, 1.5]],
+            ),
+            (0, 1.5, 0.5, 0.3, 0.01, 2, True, 16000, 100, [[0, 0.3]]),
+        ],
+    )
+    def test_get_subsegments(
+        self,
+        offset,
+        window,
+        shift,
+        duration,
+        min_subsegment_duration,
+        decimals,
+        use_asr_style_frame_count,
+        sample_rate,
+        feat_per_sec,
+        expected,
+    ):
+
+        for is_scriptable in [True, False]:
+            if is_scriptable:
+                result = get_subsegments_scriptable(
+                    offset=offset,
+                    window=window,
+                    shift=shift,
+                    duration=duration,
+                )
+            else:
+                result = get_subsegments(
+                    offset=offset,
+                    window=window,
+                    shift=shift,
+                    duration=duration,
+                    min_subsegment_duration=min_subsegment_duration,
+                    decimals=decimals,
+                    use_asr_style_frame_count=use_asr_style_frame_count,
+                    sample_rate=sample_rate,
+                    feat_per_sec=feat_per_sec,
+                )
+            result_round = []
+            for subsegment in result:
+                result_round.append([round(x, decimals) for x in subsegment])
+            assert result_round == expected
+
+    @pytest.mark.unit
+    def test_min_subsegment_duration_filtering(self):
+        result = get_subsegments(
+            offset=0,
+            window=1.5,
+            shift=0.5,
+            duration=3,
+            min_subsegment_duration=2.0,
+            decimals=2,
+            use_asr_style_frame_count=False,
+        )
+        expected = []  # Only subsegments meeting the duration filter should remain
+        assert result == expected
+
+    @pytest.mark.unit
+    def test_zero_duration(self):
+        result = get_subsegments(
+            offset=0,
+            window=1.0,
+            shift=0.5,
+            duration=0,
+            min_subsegment_duration=0.01,
+            decimals=2,
+            use_asr_style_frame_count=False,
+        )
+        assert result == []
+
+    @pytest.mark.unit
+    def test_edge_case_short_slice(self):
+        result = get_subsegments(
+            offset=0,
+            window=0.5,
+            shift=0.25,  # Shift larger than duration
+            duration=0.25,
+            min_subsegment_duration=0.01,
+            decimals=2,
+            use_asr_style_frame_count=False,
+        )
+        assert result == [[0.0, 0.25]]
 
 
 class TestDiarizationSegmentationUtils:

@@ -15,11 +15,14 @@
 """Utility functions for the inference libraries."""
 
 import os
+import re
 from glob import glob
 
 import mediapy as media
 import numpy as np
 import torch
+
+from nemo.collections.common.video_tokenizers.networks import TokenizerConfigs, TokenizerModels
 
 _DTYPE, _DEVICE = torch.bfloat16, "cuda"
 _UINT8_MAX_F = float(torch.iinfo(torch.uint8).max)
@@ -317,3 +320,33 @@ def unpad_image_batch(batch: np.ndarray, crop_region: list[int]) -> np.ndarray:
     assert len(crop_region) == 4, "crop_region should be len of 4."
     y1, x1, y2, x2 = crop_region
     return batch[..., y1:y2, x1:x2, :]
+
+
+def get_pytorch_model(jit_filepath: str = None, tokenizer_config: str = None):
+    tokenizer_name = tokenizer_config["name"]
+    model = TokenizerModels[tokenizer_name].value(**tokenizer_config)
+    ckpts = torch.jit.load(jit_filepath)
+    return model, ckpts
+
+
+def load_pytorch_model(jit_filepath: str, tokenizer_config: dict, model_type: str, device):
+    """Loads a torch.nn.Module from a filepath."""
+    model, ckpts = get_pytorch_model(jit_filepath, tokenizer_config)
+    if model_type == "enc":
+        model = model.encoder_jit()
+    elif model_type == "dec":
+        model = model.decoder_jit()
+    model.load_state_dict(ckpts.state_dict(), strict=False)
+    return model.eval().to(tokenizer_config["dtype"]).to(device)
+
+
+def get_tokenizer_config(tokenizer_type) -> TokenizerConfigs:
+    """return tokeinzer config from tokenizer name"""
+    match = re.match("Cosmos-Tokenizer-(\D+)(\d+)x(\d+).*", tokenizer_type)
+    if match:
+        name, temporal, spatial = match.groups()
+        tokenizer_config = TokenizerConfigs[name].value
+        tokenizer_config.update(dict(spatial_compression=int(spatial)))
+        tokenizer_config.update(dict(temporal_compression=int(temporal)))
+        return tokenizer_config
+    return None

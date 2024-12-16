@@ -20,7 +20,9 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from nemo.collections.common.video_tokenizers.utils import (
+    get_tokenizer_config,
     load_jit_model,
+    load_pytorch_model,
     numpy2tensor,
     pad_video_batch,
     tensor2numpy,
@@ -44,9 +46,28 @@ class CausalVideoTokenizer(ModelPT):
 
         self._device = "cuda"
 
-        self._full_model = load_jit_model(self._full_model_path, self._device) if cfg.load_full_model else None
-        self._enc_model = load_jit_model(self._enc_model_path, self._device) if cfg.load_enc_model else None
-        self._dec_model = load_jit_model(self._dec_model_path, self._device) if cfg.load_dec_model else None
+        if cfg.use_pytorch:
+            tokenizer_config = get_tokenizer_config(cfg.tokenizer_type)
+            tokenizer_config["dtype"] = self._dtype
+            self._full_model = (
+                load_pytorch_model(self._full_model_path, tokenizer_config, "full", self._device)
+                if cfg.load_full_model
+                else None
+            )
+            self._enc_model = (
+                load_pytorch_model(self._enc_model_path, tokenizer_config, "enc", self._device)
+                if cfg.load_enc_model
+                else None
+            )
+            self._dec_model = (
+                load_pytorch_model(self._dec_model_path, tokenizer_config, "dec", self._device)
+                if cfg.load_dec_model
+                else None
+            )
+        else:
+            self._full_model = load_jit_model(self._full_model_path, self._device) if cfg.load_full_model else None
+            self._enc_model = load_jit_model(self._enc_model_path, self._device) if cfg.load_enc_model else None
+            self._dec_model = load_jit_model(self._dec_model_path, self._device) if cfg.load_dec_model else None
 
     @classmethod
     def from_pretrained(
@@ -55,6 +76,8 @@ class CausalVideoTokenizer(ModelPT):
         load_encoder=True,
         load_decoder=True,
         load_full_model=False,
+        use_pytorch=False,
+        dtype="bfloat16",
     ):
         cls._hf_model_name = f"nvidia/{tokenizer_type}"
 
@@ -89,10 +112,12 @@ class CausalVideoTokenizer(ModelPT):
         cfg = DictConfig(
             {
                 'checkpoint_dir': ckpt_dir,
-                'dtype': 'bfloat16',
+                'dtype': dtype,
                 'load_enc_model': load_encoder,
                 'load_dec_model': load_decoder,
                 'load_full_model': load_full_model,
+                'tokenizer_type': tokenizer_type,
+                'use_pytorch': use_pytorch,
             }
         )
 

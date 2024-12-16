@@ -1,4 +1,5 @@
-Model,Model Base Class,Model Card
-stt_hr_conformer_ctc_large,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_hr_conformer_ctc_large"
-stt_hr_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_hr_conformer_transducer_large"
-stt_hr_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_hr_fastconformer_hybrid_large_pc"
+Model,Model Base Class
+`stt_hr_conformer_transducer_large <https://huggingface.co/nvidia/stt_hr_conformer_transducer_large>`_,EncDecRNNTBPEModel
+`stt_hr_conformer_ctc_large <https://huggingface.co/nvidia/stt_hr_conformer_ctc_large>`_,EncDecCTCModelBPE
+`stt_hr_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hr_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel

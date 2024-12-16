@@ -1,0 +1,3 @@
+Model,Model Base Class
+`stt_ka_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ka_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc <https://huggingface.co/nvidia/stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc>`_,EncDecHybridRNNTCTCBPEModel

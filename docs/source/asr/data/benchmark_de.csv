@@ -1,7 +1,9 @@
-Model,Model Base Class,Model Card
-stt_de_quartznet15x5,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_quartznet15x5"
-stt_de_citrinet_1024,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_citrinet_1024"
-stt_de_contextnet_1024,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_contextnet_1024"
-stt_de_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_conformer_ctc_large"
-stt_de_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_conformer_transducer_large"
-stt_de_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_fastconformer_hybrid_large_pc"
+Model,Model Base Class
+`canary-1b <https://huggingface.co/nvidia/canary-1b>`_,EncDecMultiTaskModel
+`stt_de_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_de_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_de_conformer_ctc_large <https://huggingface.co/nvidia/stt_de_conformer_ctc_large>`_,EncDecCTCModelBPE
+`stt_de_conformer_transducer_large <https://huggingface.co/nvidia/stt_de_conformer_transducer_large>`_,EncDecRNNTBPEModel
+`stt_de_quartznet15x5 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_quartznet15x5>`_,EncDecCTCModel
+`stt_de_contextnet_1024 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_contextnet_1024>`_,EncDecRNNTBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`_,EncDecHybridRNNTCTCBPEModel

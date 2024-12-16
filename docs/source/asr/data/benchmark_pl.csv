@@ -1,3 +1,4 @@
-Model,Model Base Class,Model Card
-stt_pl_quartznet15x5,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_pl_quartznet15x5"
-stt_pl_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_pl_fastconformer_hybrid_large_pc"
+Model,Model Base Class
+`stt_pl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pl_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_pl_quartznet15x5 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_pl_quartznet15x5>`_,EncDecCTCModel
+`stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel

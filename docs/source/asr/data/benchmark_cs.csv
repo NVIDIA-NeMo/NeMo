@@ -1,0 +1,4 @@
+Model,Model Base Class
+`stt_ca_conformer_ctc_large <https://huggingface.co/nvidia/stt_ca_conformer_ctc_large>`_,EncDecCTCModelBPE
+`stt_ca_conformer_transducer_large <https://huggingface.co/nvidia/stt_ca_conformer_transducer_large>`_,EncDecRNNTBPEModel
+`stt_ca_quartznet15x5 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_ca_quartznet15x5>`_,EncDecCTCModel

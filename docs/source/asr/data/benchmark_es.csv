@@ -1,8 +1,11 @@
-Model,Model Base Class,Model Card
-stt_es_quartznet15x5,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_quartznet15x5"
-stt_es_citrinet_512,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_citrinet_512"
-stt_es_citrinet_1024_gamma_0_25,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_citrinet_1024_gamma_0_25"
-stt_es_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_conformer_ctc_large"
-stt_es_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_conformer_transducer_large"
-stt_es_contextnet_1024,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_contextnet_1024"
-stt_es_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_fastconformer_hybrid_large_pc"
+Model,Model Base Class
+`canary-1b <https://huggingface.co/nvidia/canary-1b>`_,EncDecMultiTaskModel
+`stt_es_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_es_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_es_conformer_transducer_large <https://huggingface.co/nvidia/stt_es_conformer_transducer_large>`_,EncDecRNNTBPEModel
+`stt_es_conformer_ctc_large <https://huggingface.co/nvidia/stt_es_conformer_ctc_large>`_,EncDecCTCModelBPE
+`stt_es_quartznet15x5 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_quartznet15x5>`_,EncDecCTCModel
+`stt_es_contextnet_1024 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_contextnet_1024>`_,EncDecRNNTBPEModel
+`stt_enes_conformer_ctc_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_ctc_large>`_,EncDecCTCModelBPE
+`stt_enes_conformer_transducer_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_transducer_large>`_,EncDecRNNTBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`_,EncDecHybridRNNTCTCBPEModel

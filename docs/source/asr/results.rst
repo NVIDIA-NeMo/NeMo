@@ -37,14 +37,14 @@ Due to transparency, the ASR model can be extracted after training/finetuning se
 made for convenience purpose :code:`hybrid_model.save_asr_model_to(<asr_checkpoint_path>.nemo)`
 
 
-NGC Pretrained Checkpoints
+Pretrained Checkpoints
 --------------------------
 
 The ASR collection has checkpoints of several models trained on various datasets for a variety of tasks. These checkpoints are
-obtainable via NGC `NeMo Automatic Speech Recognition collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_asr>`_.
-The model cards on NGC contain more information about each of the checkpoints available.
+obtainable via NGC `NeMo Automatic Speech Recognition collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_asr>`_ or `Huggingface <https://huggingface.co/models?pipeline_tag=automatic-speech-recognition&sort=trending&author=nvidia>`_.
+The model cards on these websites contain more information about each of the checkpoints available.
 
-The tables below list the ASR models available from NGC. The models can be accessed via the :code:`from_pretrained()` method inside
+The tables below list the Top ASR models available from the datasources above. The models can be accessed via the :code:`from_pretrained()` method inside
 the ASR Model class. In general, you can load any of these models with code in the following format:
 
 .. code-block:: python
@@ -137,6 +137,56 @@ For more information, see `nemo.collections.asr.modules <./api.html#modules>`__.
 
 -----
 
+
+Inference on long audio
+^^^^^^^^^^^^^^^^^^^^^^^
+
+In some cases the audio is too long for standard inference, especially if you're using a model such as Conformer, where the time and memory costs of the attention layers scale quadratically with the duration.
+
+There are two main ways of performing inference on long audio files in NeMo:
+
+The first way is to use buffered inference, where the audio is divided into chunks to run on, and the output is merged afterwards.
+The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_chunked_inference>`_.
+
+The second way, specifically for models with the Conformer/Fast Conformer encoder, is to use local attention, which changes the costs to be linear.
+You can train Fast Conformer models with Longformer-style (https://arxiv.org/abs/2004.05150) local+global attention using one of the following configs: CTC config at
+``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_ctc_bpe.yaml`` and transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_transducer_bpe.yaml``.
+You can also convert any model trained with full context attention to local, though this may result in lower WER in some cases. You can switch to local attention when running the
+`transcribe <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_ or `evaluation <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_
+scripts in the following way:
+
+.. code-block:: python
+
+    python speech_to_text_eval.py \
+        (...other parameters...)  \
+        ++model_change.conformer.self_attention_model="rel_pos_local_attn" \
+        ++model_change.conformer.att_context_size=[128, 128]
+
+Alternatively, you can change the attention model after loading a checkpoint:
+
+.. code-block:: python
+
+    asr_model = ASRModel.from_pretrained('stt_en_conformer_ctc_large')
+    asr_model.change_attention_model(
+        self_attention_model="rel_pos_local_attn",
+        att_context_size=[128, 128]
+    )
+
+Sometimes, the downsampling module at the earliest stage of the model can take more memory than the actual forward pass since it directly operates on the audio sequence which may not be able to fit in memory for very long audio files. In order to reduce the memory consumption of the subsampling module, you can ask the model to perform auto-chunking of the input sequence and process it piece by piece, taking more time but avoiding an OutOfMemoryError.
+
+.. code-block:: python
+
+    asr_model = ASRModel.from_pretrained('stt_en_fastconformer_ctc_large')
+    # Speedup conv subsampling factor to speed up the subsampling module.
+    asr_model.change_subsampling_conv_chunking_factor(1)  # 1 = auto select
+
+
+.. note::
+
+    Only certain models which use depthwise separable convolutions in the downsampling layer support this operation. Please try it out on your model and see if it is supported.
+
+
+
 Inference with Multi-task Models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -187,54 +237,6 @@ Note that using manifest allows to specify the task configuration for each audio
             pnc=True,  # whether to have PnC output, choices=[True, False]
     )
 
-Inference on long audio
-^^^^^^^^^^^^^^^^^^^^^^^
-
-In some cases the audio is too long for standard inference, especially if you're using a model such as Conformer, where the time and memory costs of the attention layers scale quadratically with the duration.
-
-There are two main ways of performing inference on long audio files in NeMo:
-
-The first way is to use buffered inference, where the audio is divided into chunks to run on, and the output is merged afterwards.
-The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_chunked_inference>`_.
-
-The second way, specifically for models with the Conformer/Fast Conformer encoder, is to use local attention, which changes the costs to be linear.
-You can train Fast Conformer models with Longformer-style (https://arxiv.org/abs/2004.05150) local+global attention using one of the following configs: CTC config at
-``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_ctc_bpe.yaml`` and transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_transducer_bpe.yaml``.
-You can also convert any model trained with full context attention to local, though this may result in lower WER in some cases. You can switch to local attention when running the
-`transcribe <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_ or `evaluation <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_
-scripts in the following way:
-
-.. code-block:: python
-
-    python speech_to_text_eval.py \
-        (...other parameters...)  \
-        ++model_change.conformer.self_attention_model="rel_pos_local_attn" \
-        ++model_change.conformer.att_context_size=[128, 128]
-
-Alternatively, you can change the attention model after loading a checkpoint:
-
-.. code-block:: python
-
-    asr_model = ASRModel.from_pretrained('stt_en_conformer_ctc_large')
-    asr_model.change_attention_model(
-        self_attention_model="rel_pos_local_attn",
-        att_context_size=[128, 128]
-    )
-
-Sometimes, the downsampling module at the earliest stage of the model can take more memory than the actual forward pass since it directly operates on the audio sequence which may not be able to fit in memory for very long audio files. In order to reduce the memory consumption of the subsampling module, you can ask the model to perform auto-chunking of the input sequence and process it piece by piece, taking more time but avoiding an OutOfMemoryError.
-
-.. code-block:: python
-
-    asr_model = ASRModel.from_pretrained('stt_en_fastconformer_ctc_large')
-    # Speedup conv subsampling factor to speed up the subsampling module.
-    asr_model.change_subsampling_conv_chunking_factor(1)  # 1 = auto select
-
-
-.. note::
-
-    Only certain models which use depthwise separable convolutions in the downsampling layer support this operation. Please try it out on your model and see if it is supported.
-
-
 Inference on Apple M-Series GPU
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -259,183 +261,47 @@ Inference Execution Flow Diagram
 
 When preparing your own inference scripts, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/README.md>`_.
 
+
 Automatic Speech Recognition Models
 -----------------------------------
 
-Below is a list of all the ASR models that are available in NeMo for specific languages, as well as auxiliary language models for certain languages.
+Speech Recognition
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Below is a list of the high quality ASR models available in NeMo for specific languages, all ASR models can be found in :doc:`All checkpoints <./all_chkpt>`. 
 
-Language Models for ASR
-^^^^^^^^^^^^^^^^^^^^^^^
+Multilingual Multitask
+^^^^^^^^^^^^^^^^^^^^^^
 
 .. csv-table::
-   :file: data/asrlm_results.csv
+   :file: data/benchmark_canary.csv
    :align: left
-   :widths: 30, 30, 40
+   :widths: 50,50  
    :header-rows: 1
 
-|
-
-
-.. _asr-checkpoint-list-by-language:
-
-Speech Recognition (Languages)
-------------------------------
-
-English
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_en.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Mandarin
+Parakeet
 ^^^^^^^^
+
 .. csv-table::
-   :file: data/benchmark_zh.csv
+   :file: data/benchmark_parakeet.csv
    :align: left
-   :widths: 40, 10, 50
+   :widths: 50,50
    :header-rows: 1
 
------------------------------
-
-German
-^^^^^^
+Fast Conformer Hybrid
+^^^^^^^^^^^^^^^^^^^^^
 .. csv-table::
-   :file: data/benchmark_de.csv
+   :file: data/benchmark_fastconformer_hybrid.csv
    :align: left
-   :widths: 40, 10, 50
+   :widths: 50,50
    :header-rows: 1
-
------------------------------
-
-French
-^^^^^^
-.. csv-table::
-   :file: data/benchmark_fr.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Polish
-^^^^^^
-.. csv-table::
-   :file: data/benchmark_pl.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Italian
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_it.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Russian
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_ru.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Spanish
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_es.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
-
------------------------------
-
-Catalan
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_ca.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Hindi
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_hi.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Marathi
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_mr.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Kinyarwanda
-^^^^^^^^^^^
-.. csv-table::
-   :file: data/benchmark_rw.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Belarusian
-^^^^^^^^^^
-.. csv-table::
-   :file: data/benchmark_by.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Ukrainian
-^^^^^^^^^
-.. csv-table::
-   :file: data/benchmark_ua.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
-
-Multilingual
-^^^^^^^^^^^^
-.. csv-table::
-   :file: data/benchmark_multilingual.csv
-   :align: left
-   :widths: 40, 10, 50
-   :header-rows: 1
-
------------------------------
 
 Code-Switching
 ^^^^^^^^^^^^^^
+
 .. csv-table::
    :file: data/benchmark_code_switching.csv
    :align: left
-   :widths: 40, 10, 50
+   :widths: 50,50
    :header-rows: 1
+
+

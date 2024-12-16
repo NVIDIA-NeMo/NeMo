@@ -47,9 +47,17 @@ def create_sft_dataset(
     memmap_workers: int = 2,
     hf_dataset: bool = False,
     global_sample_mapping: bool = False,
+    chat: bool = False,
     **kwargs,
 ) -> "GPTSFTDataset":
-    if path.suffix == '.npy':
+    """
+    Create the dataset class (GPTSFTDataset, GPTSFTChatDataset or GPTSFTPackedDataset)
+    """
+    if chat:
+        from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_chat_dataset import GPTSFTChatDataset
+
+        dataset_cls = GPTSFTChatDataset
+    elif path.suffix == '.npy':
         from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset import GPTSFTPackedDataset
 
         dataset_cls = GPTSFTPackedDataset

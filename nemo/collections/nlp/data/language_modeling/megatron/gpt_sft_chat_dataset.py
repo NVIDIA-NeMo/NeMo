@@ -310,7 +310,6 @@ class GPTSFTChatDataset(GPTSFTDataset):
 
     def _build_samples_mapping(self):
         super()._build_samples_mapping()
-        assert hasattr(self.tokenizer, "vocab"), "tokenizer should have vocab property, not supported"
         LABEL_START = self.special_tokens['label_start']
         END_NAME_SIGNAL = self.special_tokens['end_of_name']
 

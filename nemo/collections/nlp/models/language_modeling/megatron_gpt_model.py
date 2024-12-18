@@ -1660,6 +1660,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 "mmap_bin_files": self.cfg.data.get("mmap_bin_files", True),
                 "drop_last_partial_validation_sequence": self.cfg.data.get("validation_drop_last", True),
                 "num_dataset_builder_threads": self.cfg.data.get("num_dataset_builder_threads", 1),
+                "renormalize_blend_weights": self.cfg.data.get("renormalize_blend_weights", False),
                 "add_extra_token_to_sequence": add_extra_token,
             }
 

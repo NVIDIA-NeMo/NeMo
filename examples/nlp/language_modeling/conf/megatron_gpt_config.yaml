@@ -293,6 +293,7 @@ model:
     shuffle_documents: True # Set to False to disable documents shuffling. Sample index will still be shuffled
     exchange_indices_distributed: False # Set to True to exchange indices via torch.distributed instead of filesystem
     data_cache_generation_only: False # Set to True to generate only the data cache and stop the training script
+    renormalize_blend_weights: False # Renormalize the blend weights to account for mid-level dataset oversampling done to ensure fulfillmenet of the of the requested number of samples.
 
   # Nsys profiling options
   nsys_profile:

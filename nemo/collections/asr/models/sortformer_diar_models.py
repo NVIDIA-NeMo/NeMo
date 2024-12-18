@@ -13,23 +13,29 @@
 # limitations under the License.
 
 import itertools
+import os
 import random
 from collections import OrderedDict
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechE2ESpkDiarDataset
 from nemo.collections.asr.data.audio_to_diar_label_lhotse import LhotseAudioToSpeechE2ESpkDiarDataset
 from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
+from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig, SpkDiarizationMixin
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_ats_targets, get_pil_targets
+from nemo.collections.asr.parts.utils.speaker_utils import generate_diarization_output_lines
+from nemo.collections.asr.parts.utils.vad_utils import ts_vad_post_processing
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
@@ -40,7 +46,7 @@ from nemo.utils import logging
 __all__ = ['SortformerEncLabelModel']
 
 
-class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
+class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixin):
     """
     Encoder class for Sortformer diarization model.
     Model class creates training, validation methods for setting up data performing model forward pass.
@@ -108,7 +114,6 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
         self.streaming_mode = self._cfg.get("streaming_mode", False)
         self.save_hyperparameters("cfg")
         self._init_eval_metrics()
-
         speaker_inds = list(range(self._cfg.max_num_of_spks))
         self.speaker_permutations = torch.tensor(list(itertools.permutations(speaker_inds)))  # Get all permutations
 
@@ -119,7 +124,6 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
             raise ValueError(f"weights for PIL {pil_weight} and ATS {ats_weight} cannot sum to 0")
         self.pil_weight = pil_weight / (pil_weight + ats_weight)
         self.ats_weight = ats_weight / (pil_weight + ats_weight)
-        logging.info(f"Normalized weights for PIL {self.pil_weight} and ATS {self.ats_weight}")
 
     def _init_eval_metrics(self):
         """
@@ -269,6 +273,113 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
         preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
         return preds
 
+    def _diarize_forward(self, batch: Any):
+        """
+        A counterpart of `_transcribe_forward` function in ASR.
+        This function is a wrapper for forward pass functions for compataibility
+        with the existing classes.
+
+        Args:
+            batch (Any): The input batch containing audio signal and audio signal length.
+
+        Returns:
+            preds (torch.Tensor): Sorted tensor containing Sigmoid values for predicted speaker labels.
+                Shape: (batch_size, diar_frame_count, num_speakers)
+        """
+        with torch.no_grad():
+            preds = self.forward(audio_signal=batch[0], audio_signal_length=batch[1])
+            preds = preds.to('cpu')
+            torch.cuda.empty_cache()
+        return preds
+
+    def _diarize_output_processing(
+        self, outputs, uniq_ids, diarcfg: DiarizeConfig
+    ) -> Union[List[List[str]], Tuple[List[List[str]], List[torch.Tensor]]]:
+        """
+        Processes the diarization outputs and generates RTTM (Real-time Text Markup) files.
+        TODO: Currently, this function is not included in mixin test because of
+              `ts_vad_post_processing` function.
+              (1) Implement a test-compatible function
+              (2) `vad_utils.py` has `predlist_to_timestamps` function that is close to this function.
+                  Needs to consolute differences and implement the test-compatible function.
+
+        Args:
+            outputs (torch.Tensor): Sorted tensor containing Sigmoid values for predicted speaker labels.
+                Shape: (batch_size, diar_frame_count, num_speakers)
+            uniq_ids (List[str]): List of unique identifiers for each audio file.
+            diarcfg (DiarizeConfig): Configuration object for diarization.
+
+        Returns:
+            diar_output_lines_list (List[List[str]]): A list of lists, where each inner list contains
+                                                      the RTTM lines for a single audio file.
+            preds_list (List[torch.Tensor]): A list of tensors containing the diarization outputs
+                                             for each audio file.
+
+        """
+        preds_list, diar_output_lines_list = [], []
+        if outputs.shape[0] == 1:  # batch size = 1
+            preds_list.append(outputs)
+        else:
+            preds_list.extend(torch.split(outputs, [1] * outputs.shape[0]))
+
+        for sample_idx, uniq_id in enumerate(uniq_ids):
+            offset = self._diarize_audio_rttm_map[uniq_id]['offset']
+            speaker_assign_mat = preds_list[sample_idx].squeeze(dim=0)
+            speaker_timestamps = [[] for _ in range(speaker_assign_mat.shape[-1])]
+            for spk_id in range(speaker_assign_mat.shape[-1]):
+                ts_mat = ts_vad_post_processing(
+                    speaker_assign_mat[:, spk_id],
+                    cfg_vad_params=diarcfg.postprocessing_params,
+                    unit_10ms_frame_count=int(self._cfg.encoder.subsampling_factor),
+                    bypass_postprocessing=False,
+                )
+                ts_mat = ts_mat + offset
+                ts_seg_raw_list = ts_mat.tolist()
+                ts_seg_list = [[round(stt, 2), round(end, 2)] for (stt, end) in ts_seg_raw_list]
+                speaker_timestamps[spk_id].extend(ts_seg_list)
+
+            diar_output_lines = generate_diarization_output_lines(
+                speaker_timestamps=speaker_timestamps, model_spk_num=len(speaker_timestamps)
+            )
+            diar_output_lines_list.append(diar_output_lines)
+        if diarcfg.include_tensor_outputs:
+            return (diar_output_lines_list, preds_list)
+        else:
+            return diar_output_lines_list
+
+    def _setup_diarize_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
+        """
+        Setup function for a temporary data loader which wraps the provided audio file.
+
+        Args:
+            config: A python dictionary which contains the following keys:
+            - manifest_filepath: Path to the manifest file containing audio file paths
+              and corresponding speaker labels.
+
+        Returns:
+            A pytorch DataLoader for the given audio file(s).
+        """
+        if 'manifest_filepath' in config:
+            manifest_filepath = config['manifest_filepath']
+            batch_size = config['batch_size']
+        else:
+            manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
+            batch_size = min(config['batch_size'], len(config['paths2audio_files']))
+
+        dl_config = {
+            'manifest_filepath': manifest_filepath,
+            'sample_rate': self.preprocessor._sample_rate,
+            'num_spks': config.get('num_spks', self._cfg.max_num_of_spks),
+            'batch_size': batch_size,
+            'shuffle': False,
+            'soft_label_thres': 0.5,
+            'session_len_sec': config['session_len_sec'],
+            'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
+            'pin_memory': True,
+        }
+        temporary_datalayer = self.__setup_dataloader_from_config(config=DictConfig(dl_config))
+        return temporary_datalayer
+
     def process_signal(self, audio_signal, audio_signal_length):
         """
         Extract audio features from time-series signal for further processing in the model.
@@ -291,7 +402,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
                 - processed_signal_length (torch.Tensor): The length of each processed signal.
                     Shape: (batch_size,)
         """
-        audio_signal = audio_signal.to(self.device)
+        audio_signal, audio_signal_length = audio_signal.to(self.device), audio_signal_length.to(self.device)
         audio_signal = (1 / (audio_signal.max() + self.eps)) * audio_signal
         processed_signal, processed_signal_length = self.preprocessor(
             input_signal=audio_signal, length=audio_signal_length
@@ -372,7 +483,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
         }
         return train_metrics
 
-    def training_step(self, batch: list) -> dict:
+    def training_step(self, batch: list, batch_idx: int) -> dict:
         """
         Performs a single training step.
 
@@ -382,6 +493,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
                 - audio_signal_length (torch.Tensor): The length of each audio signal in the batch.
                 - targets (torch.Tensor): The target labels for the batch.
                 - target_lens (torch.Tensor): The length of each target sequence in the batch.
+            batch_idx (int): The index of the current batch.
 
         Returns:
             (dict): A dictionary containing the 'loss' key with the calculated loss value.
@@ -439,7 +551,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
         }
         return val_metrics
 
-    def validation_step(self, batch: list, dataloader_idx: int = 0):
+    def validation_step(self, batch: list, batch_idx: int, dataloader_idx: int = 0):
         """
         Performs a single validation step.
 
@@ -571,10 +683,46 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel):
         logging.info(f"Batch Recall MEAN: {torch.mean(torch.tensor(self.batch_recall_list))}")
         logging.info(f"Batch ATS F1Acc. MEAN: {torch.mean(torch.tensor(self.batch_f1_accs_ats_list))}")
 
+    def on_validation_epoch_end(self) -> Optional[dict[str, dict[str, torch.Tensor]]]:
+        """Run validation with sync_dist=True."""
+        return super().on_validation_epoch_end(sync_metrics=True)
+
+    @torch.no_grad()
     def diarize(
         self,
-    ):
-        """One-clieck runner function for diarization."""
-        # TODO: A direct one-click runner function that generates
-        # speaker labels from audio file path lists.
-        raise NotImplementedError
+        audio: Union[str, List[str], np.ndarray, DataLoader],
+        batch_size: int = 1,
+        include_tensor_outputs: bool = False,
+        postprocessing_yaml: Optional[str] = None,
+        num_workers: int = 0,
+        verbose: bool = True,
+        override_config: Optional[DiarizeConfig] = None,
+    ) -> Union[List[List[str]], Tuple[List[List[str]], List[torch.Tensor]]]:
+        """One-click runner function for diarization.
+
+        Args:
+            audio: (a single or list) of paths to audio files or path to a manifest file.
+            batch_size: (int) Batch size to use during inference.
+                Bigger will result in better throughput performance but would use more memory.
+            include_tensor_outputs: (bool) Include raw speaker activity probabilities to the output.
+                See Returns: for more details.
+            postprocessing_yaml: Optional(str) Path to .yaml file with postprocessing parameters.
+            num_workers: (int) Number of workers for DataLoader.
+            verbose: (bool) Whether to display tqdm progress bar.
+            override_config: (Optional[DiarizeConfig]) A config to override the default config.
+
+        Returns:
+            *if include_tensor_outputs is False: A list of lists of speech segments with a corresponding speaker index,
+                in format "[begin_seconds, end_seconds, speaker_index]".
+            *if include_tensor_outputs is True: A tuple of the above list
+                and list of tensors of raw speaker activity probabilities.
+        """
+        return super().diarize(
+            audio=audio,
+            batch_size=batch_size,
+            include_tensor_outputs=include_tensor_outputs,
+            postprocessing_yaml=postprocessing_yaml,
+            num_workers=num_workers,
+            verbose=verbose,
+            override_config=override_config,
+        )

@@ -1120,6 +1120,11 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         Example of seg_target:
             [[0., 1.], [0., 1.], [1., 1.], [1., 0.], [1., 0.], ..., [0., 1.]]
         """
+        if rttm_file in [None, '']:
+            num_seg = torch.max(target_len)
+            targets = torch.zeros(num_seg, self.max_spks)
+            return targets
+
         with open(rttm_file, 'r') as f:
             rttm_lines = f.readlines()
 

@@ -346,7 +346,7 @@ class CrossAttentionTransformerBlock(TransformerBlock):
                                 full_text_row_masked_out_mask=full_text_row_masked_out_mask,
                                 rotary_pos_emb=rotary_pos_emb,
                                 cross_attention_bias=cross_attention_bias,
-                                inference_params=inference_params,
+                                inference_params=None,  # Skip inference_params for xattn
                                 packed_seq_params=packed_seq_params,
                             )
                             hidden_states, context = layer(

@@ -21,12 +21,14 @@ import argparse
 
 import requests
 import torch
+from megatron.core.inference.common_inference_params import CommonInferenceParams
 from PIL import Image
 from transformers import AutoProcessor
 
 from nemo import lightning as nl
 from nemo.collections import vlm
-from nemo.collections.vlm.mllama.model.utils import create_vision_mask_tensor
+from nemo.collections.vlm.inference import generate as vlm_generate
+from nemo.collections.vlm.inference import setup_inference_wrapper
 
 model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
 
@@ -54,44 +56,22 @@ def generate(model, processor, image, text):
         }
     ]
     input_text = processor.apply_chat_template(messages, add_generation_prompt=True)
-    batch = processor(image, input_text, add_special_tokens=False, return_tensors="pt")
 
-    input_ids = batch["input_ids"].cuda(non_blocking=True)
-    position_ids = (
-        torch.arange(input_ids.size(1), dtype=torch.long, device=input_ids.device).unsqueeze(0).expand_as(input_ids)
+    model = setup_inference_wrapper(model, processor.tokenizer)
+
+    prompts = [input_text]
+    images = [image]
+    params = CommonInferenceParams(top_k=1, top_p=0, num_tokens_to_generate=100)
+    result = vlm_generate(
+        model,
+        processor.tokenizer,
+        processor.image_processor,
+        prompts,
+        images,
+        inference_params=params,
     )
-    num_tiles = processor.image_processor.preprocess(image, return_tensors='pt')["num_tiles"]
 
-    min_prompt_len = position_ids.shape[-1]
-
-    input_ids = input_ids[:, :min_prompt_len]
-    generated_ids = input_ids.clone()
-
-    from tqdm import tqdm
-
-    for cur_pos in tqdm(range(min_prompt_len, min_prompt_len + 100)):
-        with torch.no_grad():
-            position_ids = torch.arange(0, cur_pos, dtype=torch.long, device="cuda").reshape(1, -1)
-            batch_masks = create_vision_mask_tensor(generated_ids[0])
-
-            output = model(
-                batch_images=batch["pixel_values"].cuda(non_blocking=True),
-                batch_masks=[batch_masks],
-                num_chunks=torch.tensor(num_tiles),
-                aspect_ratio_ids=batch["aspect_ratio_ids"].cuda(non_blocking=True),
-                tokens=generated_ids,
-                position_ids=position_ids,
-            )
-
-            next_token_ids = torch.argmax(output[:, -1], dim=-1, keepdim=True)
-            # Broadcast the tensor from rank 0 to all other ranks
-            torch.distributed.broadcast(next_token_ids, src=0)
-            generated_ids = torch.cat([generated_ids, next_token_ids], dim=-1)
-            if (next_token_ids == tokenizer.eos_token_id).all():
-                break
-
-    generated_ids = generated_ids.tolist()
-    generated_texts = tokenizer.decode(generated_ids[0][min_prompt_len:])
+    generated_texts = list(result)[0].generated_text
 
     if torch.distributed.get_rank() == 0:
         print("======== GENERATED TEXT OUTPUT ========")

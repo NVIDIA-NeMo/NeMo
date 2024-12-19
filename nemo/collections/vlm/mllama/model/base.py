@@ -22,6 +22,7 @@ import torch
 import torch.distributed
 from einops import rearrange
 from megatron.core.enums import ModelType
+from megatron.core.inference_params import InferenceParams
 from megatron.core.models.vision.multimodal_projector import MultimodalProjector
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear
@@ -425,6 +426,7 @@ class MLlamaBaseModel(MegatronModule):
         cross_attention_masks: Optional[torch.Tensor] = None,
         full_text_row_masked_out_mask: Optional[torch.Tensor] = None,
         xattn_caches: Optional[List] = None,
+        inference_params: InferenceParams = None,
     ) -> torch.Tensor:
         """Forward."""
         if xattn_caches is None:
@@ -467,6 +469,15 @@ class MLlamaBaseModel(MegatronModule):
                 total_len=position_ids.shape[1],
             )
 
+            xattn_mask_index = position_ids[0]
+
+            if inference_params is not None:
+                inference_params.xattn_caches = xattn_caches
+                inference_params.cross_attention_masks = cross_attention_masks
+                inference_params.full_text_row_masked_out_mask = full_text_row_masked_out_mask
+        else:
+            xattn_mask_index = [cross_attention_masks.shape[2] - 1]
+
         assert self.add_decoder, "Language model required for forward pass."
         language_embeddings = None
         if self.pre_process:
@@ -474,7 +485,7 @@ class MLlamaBaseModel(MegatronModule):
             language_embeddings = language_embeddings.transpose(1, 0).contiguous()  # [text_seq_len, b, h_language]
 
         full_text_row_masked_out_mask = (
-            full_text_row_masked_out_mask[:, :, position_ids[0]].permute(2, 0, 1, 3).squeeze(2)
+            full_text_row_masked_out_mask[:, :, xattn_mask_index].permute(2, 0, 1, 3).squeeze(2)
             if cross_attention_masks is not None
             else None
         )
@@ -485,10 +496,11 @@ class MLlamaBaseModel(MegatronModule):
             decoder_input=language_embeddings,
             attention_mask=None,
             cross_attention_masks=(
-                cross_attention_masks[:, :, position_ids[0]] if cross_attention_masks is not None else None
+                cross_attention_masks[:, :, xattn_mask_index] if cross_attention_masks is not None else None
             ),
             full_text_row_masked_out_mask=full_text_row_masked_out_mask,
             xattn_caches=xattn_caches,
+            inference_params=inference_params,
         )
         return output
 

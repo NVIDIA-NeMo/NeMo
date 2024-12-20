@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
+from typing import List, Union
 
 import torch
 from megatron.core.inference.common_inference_params import CommonInferenceParams
@@ -26,7 +26,7 @@ class VLMEngine(MCoreEngine):
     def generate(
         self,
         prompts: List[str],
-        images: List[Image] = None,
+        images: List[Union[Image, List[Image]]] = None,
         common_inference_params: CommonInferenceParams = None,
     ) -> dict:
         # pylint: disable=C0115,C0116

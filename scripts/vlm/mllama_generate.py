@@ -45,10 +45,8 @@ def load_image(image_url: str) -> Image.Image:
         return None
 
 
-def generate(model, processor, image, text):
+def generate(model, processor, images, text):
     # pylint: disable=C0115,C0116
-    tokenizer = processor.tokenizer
-
     messages = [
         {
             "role": "user",
@@ -60,8 +58,8 @@ def generate(model, processor, image, text):
     model = setup_inference_wrapper(model, processor.tokenizer)
 
     prompts = [input_text]
-    images = [image]
-    params = CommonInferenceParams(top_k=1, top_p=0, num_tokens_to_generate=100)
+    images = [images]
+    params = CommonInferenceParams(top_k=1, top_p=0, num_tokens_to_generate=50)
     result = vlm_generate(
         model,
         processor.tokenizer,
@@ -113,11 +111,11 @@ def main(args) -> None:
     model = model.to(torch.bfloat16)
 
     # Load the image
-    raw_image = load_image(args.image_url)
-    if raw_image is None:
+    raw_images = [load_image(url) for url in args.image_url]
+    if not raw_images:
         return  # Exit if the image can't be loaded
 
-    generate(model, processor, image=raw_image, text="<|image|>\nDescribe the image.")
+    generate(model, processor, images=raw_images, text=args.prompt)
 
 
 if __name__ == "__main__":
@@ -134,11 +132,20 @@ if __name__ == "__main__":
         help="Local path to the model if not loading from Hugging Face.",
     )
     parser.add_argument(
+        "--prompt",
+        type=str,
+        default="<|image|>\nDescribe the image.",
+        help="Input prompt",
+    )
+    parser.add_argument(
         "--image_url",
+        nargs='+',
         type=str,
         # pylint: disable=line-too-long
-        default="https://huggingface.co/datasets/huggingface/documentation-images/resolve/0052a70beed5bf71b92610a43a52df6d286cd5f3/diffusers/rabbit.jpg",
-        help="URL of the image to use for inference.",
+        default=[
+            "https://huggingface.co/datasets/huggingface/documentation-images/resolve/0052a70beed5bf71b92610a43a52df6d286cd5f3/diffusers/rabbit.jpg"
+        ],
+        help="List of the image urls to use for inference.",
     )
     parser.add_argument("--devices", type=int, required=False, default=1)
     parser.add_argument("--tp_size", type=int, required=False, default=1)

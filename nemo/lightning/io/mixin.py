@@ -687,6 +687,45 @@ def _artifact_transform_load(cfg: fdl.Config, path: Path):
             pass
 
 
+def drop_unexpected_params(config: fdl.Config) -> bool:
+    """
+    Analyzes config to detect unexpected keyword arguments -- for example, deprecated parameters -- and
+    updates the config by dropping them. Returns True if the config gets updated and False otherwise.
+
+    Args:
+        config (fdl.Config): The configuration object to analyze.
+    """
+
+    updated = False
+
+    def analyze(config: fdl.Config, prefix: str):
+
+        if isinstance(config, fdl.Config):
+            signature = inspect.signature(config.__fn_or_cls__)
+
+            accept_kwargs = any(param.kind is inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+
+            if not accept_kwargs:
+                to_drop = [param for param in config.__arguments__ if param not in signature.parameters]
+
+                if to_drop:
+                    nonlocal updated
+                    updated = True
+                    logging.warning(f"Deprecated parameters to drop from {prefix}: {to_drop}")
+                    for param in to_drop:
+                        del config.__arguments__[param]
+            else:
+                logging.info(f"Skip analyzing {prefix} as it accepts arbitrary keyword arguments.")
+
+            # Proceed recursively for all arguments
+            for key, value in config.__arguments__.items():
+                analyze(value, prefix + "." + key)
+
+    analyze(config, "<root>")
+
+    return updated
+
+
 def load(path: Path, output_type: Type[CkptType] = Any, subpath: Optional[str] = None, build: bool = True) -> CkptType:
     """
     Loads a configuration from a pickle file and constructs an object of the specified type.

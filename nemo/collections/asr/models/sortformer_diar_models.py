@@ -666,6 +666,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 audio_signal, audio_signal_length, targets, target_lens = batch
                 audio_signal = audio_signal.to(self.device)
                 audio_signal_length = audio_signal_length.to(self.device)
+                targets = targets.to(self.device)
                 preds = self.forward(
                     audio_signal=audio_signal,
                     audio_signal_length=audio_signal_length,

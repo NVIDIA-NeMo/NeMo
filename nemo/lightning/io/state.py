@@ -459,3 +459,72 @@ def state_transform(
         return wrapper
 
     return wrapper(fn)
+
+
+class TransformFns:
+    """
+    A collection of common functions used in state dict transformation.
+    """
+
+    @staticmethod
+    def split_qkv(ctx: TransformCTX, linear_qkv):
+        """
+        Split interleave-concatenated qkv to q, k, v
+
+        Example: export layer linear_qkv to HF {q|k|v}_proj
+        """
+        megatron_config = ctx.source.config
+
+        head_num = megatron_config.num_attention_heads
+        num_query_groups = megatron_config.num_query_groups
+        heads_per_group = head_num // num_query_groups
+        # hidden_size = megatron_config.hidden_size
+        head_size = megatron_config.kv_channels
+        qkv_total_dim = head_num + 2 * num_query_groups
+
+        linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, -1])
+        # when converting base model (linear_qkv), hidden size = megatron_config.hidden_size
+        # when converting lora (linear_qkv.adapter.linear_out), hidden size = lora_r
+        hidden_size = linear_qkv.size(-1)
+        q_slice = torch.cat(
+            [
+                torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+                for i in range(num_query_groups)
+            ]
+        )
+        k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+        v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+        q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
+        k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
+        v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
+
+        return q_proj, k_proj, v_proj
+
+    @staticmethod
+    def split_fc1(linear_fc1):
+        """
+        Split concatenated fc1 to gate and up proj
+
+        Example: export layer linear_fc1 to HF {gate|up}_proj
+        """
+        gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
+        return gate_proj, up_proj
+
+    @staticmethod
+    def duplicate2(param):
+        """
+        Duplicate the source parameter to two target parameters
+
+        Example: export Performant LoRA linear_fc1.adapter.linear_in to HF {gate|up}_proj.lora_A
+        """
+        return param, param
+
+    @staticmethod
+    def duplicate3(param):
+        """
+        Duplicate the source parameter to three target parameters
+
+        Example: export Performant LoRA linear_qkv.adapter.linear_in to HF {q|k|v}_proj.lora_A
+        """
+        return param, param, param

@@ -227,10 +227,16 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         from nemo.lightning.io.api import load_context
 
         model = load_context(path, subpath="model")
+        is_peft_ckpt = model.model_transform is not None
+        callbacks = []
+        if is_peft_ckpt:
+            callbacks.append(model.model_transform)
+
         _trainer = trainer or Trainer(
             devices=1,
             accelerator="cpu" if cpu else "gpu",
             strategy=MegatronStrategy(ddp="pytorch", setup_optimizers=False),
+            callbacks=callbacks,
         )
 
         _trainer.strategy.connect(model)
@@ -245,7 +251,20 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
                 model.configure_model()
 
         _trainer.strategy.setup(_trainer)
-        _trainer.strategy.load_checkpoint(path)
+        if is_peft_ckpt:
+            from nemo.lightning.io.pl import ckpt_to_weights_subdir
+
+            model.trainer = _trainer
+            model = model.model_transform(model)
+            adapter_sharded_state_dict = {
+                k: v for k, v in _trainer.strategy.megatron_parallel.sharded_state_dict().items() if ".adapter." in k
+            }
+            adapter_state = _trainer.strategy.checkpoint_io.load_checkpoint(
+                ckpt_to_weights_subdir(path, is_saving=False), sharded_state_dict=adapter_sharded_state_dict
+            )
+            _trainer.strategy.load_model_state_dict(adapter_state, strict=False)
+        else:
+            _trainer.strategy.load_checkpoint(path)
 
         return model, _trainer
 

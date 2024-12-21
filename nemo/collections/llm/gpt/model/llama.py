@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import json
 import math
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, Optional
+from typing import TYPE_CHECKING, Annotated, Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -25,11 +25,15 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
+from nemo.lightning.io.pl import ckpt_to_weights_subdir
+from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
 
 if TYPE_CHECKING:
     from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
+    from peft import PeftConfig
     from transformers import LlamaConfig as HFLlamaConfig
     from transformers import LlamaForCausalLM
 
@@ -345,7 +349,7 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         target = target.cpu()
         target.save_pretrained(output_path)
         try:
-            self.tokenizer.save_pretrained(output_path)
+            self.tokenizer.tokenizer.save_pretrained(output_path)
         except Exception:
             logging.warning("Failed to save tokenizer")
 
@@ -359,17 +363,20 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.layers.*.post_attention_layernorm.weight",
             "decoder.final_layernorm.weight": "model.norm.weight",
         }
+        transforms = [_export_qkv, _export_linear_fc1, _export_embedding]
+        if not self.config.tie_word_embeddings:
+            transforms.append(_export_head)
 
         return io.apply_transforms(
             source,
             target,
             mapping=mapping,
-            transforms=[_export_qkv, _export_linear_fc1, _export_embedding, _export_head],
+            transforms=transforms,
         )
 
     @property
-    def tokenizer(self):
-        return io.load_context(str(self), subpath="model").tokenizer.tokenizer
+    def tokenizer(self) -> "TokenizerSpec":
+        return io.load_context(str(self), subpath="model").tokenizer
 
     @property
     def config(self) -> "HFLlamaConfig":
@@ -389,6 +396,154 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
             rope_theta=source.rotary_base,
             vocab_size=self.tokenizer.vocab_size,
             tie_word_embeddings=source.share_embeddings_and_output_weights,
+        )
+
+
+@io.model_exporter(LlamaModel, "hf-peft")
+class HFLlamaPEFTExporter(HFLlamaExporter):
+    def init(self, dtype=torch.bfloat16) -> "AutoPeftModelForCausalLM":
+        from peft import get_peft_model
+
+        model = super().init(dtype=dtype)
+
+        # Infer base model checkpoint from checkpoint metadata file
+        adapter_meta_path = ckpt_to_weights_subdir(str(self), is_saving=False) / ADAPTER_META_FILENAME
+        with open(adapter_meta_path, "r") as f:
+            model_ckpt_path = json.load(f)['model_ckpt_path']
+        model.name_or_path = '/'.join(model_ckpt_path.split("/")[-2:])
+
+        return get_peft_model(model, self.peft_config, autocast_adapter_dtype=False)
+
+    def apply(self, output_path: Path) -> Path:
+        from nemo.collections.llm.peft import CanonicalLoRA, DoRA, LoRA
+
+        self.peft_obj: Union[LoRA, DoRA, CanonicalLoRA] = io.load_context(str(self)).model.model_transform
+
+        source, _ = self.nemo_load(str(self))
+        target = self.init(torch_dtype_from_mcore_config(source.config))
+        target = self.convert_state(source, target)
+        target = target.cpu()
+        target.save_pretrained(output_path, save_embedding_layers=False)
+
+        return output_path
+
+    def convert_state(self, source, target):
+        from nemo.collections.llm.peft import CanonicalLoRA
+
+        # nemo and HF prefixes
+        pn = "decoder.layers."
+        ph = "base_model.model.model.layers."
+
+        mapping = {
+            # linear_proj for both canonical and performant lora
+            f"{pn}*.self_attention.linear_proj.adapter.linear_in.weight": f"{ph}*.self_attn.o_proj.lora_A.default.weight",
+            f"{pn}*.self_attention.linear_proj.adapter.linear_out.weight": f"{ph}*.self_attn.o_proj.lora_B.default.weight",
+            # linear_fc2 for both canonical and performant lora
+            f"{pn}*.mlp.linear_fc2.adapter.linear_in.weight": f"{ph}*.mlp.down_proj.lora_A.default.weight",
+            f"{pn}*.mlp.linear_fc2.adapter.linear_out.weight": f"{ph}*.mlp.down_proj.lora_B.default.weight",
+        }
+        transforms = []
+
+        if isinstance(self.peft_obj, CanonicalLoRA):
+            mapping.update(
+                {
+                    # linear_qkv for canonical lora
+                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_q.linear_in.weight": f"{ph}*.self_attn.q_proj.lora_A.default.weight",
+                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_q.linear_out.weight": f"{ph}*.self_attn.q_proj.lora_B.default.weight",
+                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_k.linear_in.weight": f"{ph}*.self_attn.k_proj.lora_A.default.weight",
+                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_k.linear_out.weight": f"{ph}*.self_attn.k_proj.lora_B.default.weight",
+                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_v.linear_in.weight": f"{ph}*.self_attn.v_proj.lora_A.default.weight",
+                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_v.linear_out.weight": f"{ph}*.self_attn.v_proj.lora_B.default.weight",
+                    # linear_fc1 for canonical lora
+                    f"{pn}*.mlp.linear_fc1.adapter.adapter_up.linear_in.weight": f"{ph}*.mlp.up_proj.lora_A.default.weight",
+                    f"{pn}*.mlp.linear_fc1.adapter.adapter_up.linear_out.weight": f"{ph}*.mlp.up_proj.lora_B.default.weight",
+                    f"{pn}*.mlp.linear_fc1.adapter.adapter_gate.linear_in.weight": f"{ph}*.mlp.gate_proj.lora_A.default.weight",
+                    f"{pn}*.mlp.linear_fc1.adapter.adapter_gate.linear_out.weight": f"{ph}*.mlp.gate_proj.lora_B.default.weight",
+                }
+            )
+        else:
+            transforms.extend(
+                [
+                    # linear_qkv for performant lora
+                    io.state_transform(
+                        source_key=f"{pn}*.self_attention.linear_qkv.adapter.linear_in.weight",
+                        target_key=(
+                            f"{ph}*.self_attn.q_proj.lora_A.default.weight",
+                            f"{ph}*.self_attn.k_proj.lora_A.default.weight",
+                            f"{ph}*.self_attn.v_proj.lora_A.default.weight",
+                        ),
+                        fn=TransformFns.duplicate3,
+                    ),
+                    io.state_transform(
+                        source_key=f"{pn}*.self_attention.linear_qkv.adapter.linear_out.weight",
+                        target_key=(
+                            f"{ph}*.self_attn.q_proj.lora_B.default.weight",
+                            f"{ph}*.self_attn.k_proj.lora_B.default.weight",
+                            f"{ph}*.self_attn.v_proj.lora_B.default.weight",
+                        ),
+                        fn=TransformFns.split_qkv,
+                    ),
+                    # linear_fc1 for performant lora
+                    io.state_transform(
+                        source_key=f"{pn}*.mlp.linear_fc1.adapter.linear_in.weight",
+                        target_key=(
+                            f"{ph}*.mlp.gate_proj.lora_A.default.weight",
+                            f"{ph}*.mlp.up_proj.lora_A.default.weight",
+                        ),
+                        fn=TransformFns.duplicate2,
+                    ),
+                    io.state_transform(
+                        source_key=f"{pn}*.mlp.linear_fc1.adapter.linear_out.weight",
+                        target_key=(
+                            f"{ph}*.mlp.gate_proj.lora_B.default.weight",
+                            f"{ph}*.mlp.up_proj.lora_B.default.weight",
+                        ),
+                        fn=TransformFns.split_fc1,
+                    ),
+                ]
+            )
+
+        return io.apply_transforms(
+            source,
+            target,
+            mapping=mapping,
+            transforms=transforms,
+        )
+
+    @property
+    def peft_config(self) -> "PeftConfig":
+        from peft import LoraConfig
+
+        from nemo.collections.llm.peft import DoRA
+
+        assert (
+            not self.peft_obj.dropout
+            or self.peft_obj.dropout_position == 'pre' "LoRA dropout_position must be 'pre' to convert to HF."
+        )
+
+        NEMO2HF = {
+            'linear_q': ['q_proj'],
+            'linear_k': ['k_proj'],
+            'linear_v': ['v_proj'],
+            'linear_qkv': ['q_proj', 'k_proj', 'v_proj'],
+            'linear_proj': ['o_proj'],
+            'linear_fc1_up': ['up_proj'],
+            'linear_fc1_gate': ['gate_proj'],
+            'linear_fc1': ['up_proj', 'gate_proj'],
+            'linear_fc2': ['down_proj'],
+        }
+
+        # Infer HF target modules from NeMo target modules
+        hf_target_modules = []
+        for tm in self.peft_obj.target_modules:
+            hf_target_modules.extend(NEMO2HF[tm])
+
+        return LoraConfig(
+            r=self.peft_obj.dim,
+            target_modules=hf_target_modules,
+            lora_alpha=self.peft_obj.alpha,
+            lora_dropout=self.peft_obj.dropout,
+            use_dora=isinstance(self.peft_obj, DoRA),
         )
 
 

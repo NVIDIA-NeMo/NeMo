@@ -11,19 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import argparse
+from nemo.collections import llm
 
-from nemo.collections.llm.peft.api import export_lora, gpt_lora, merge_lora
-from nemo.collections.llm.peft.canonical_lora import CanonicalLoRA
-from nemo.collections.llm.peft.dora import DoRA
-from nemo.collections.llm.peft.lora import LoRA
 
-PEFT_STR2CLS = {
-    "LoRA": LoRA,
-    "lora": LoRA,
-    "DoRA": DoRA,
-    "dora": DoRA,
-    "CanonicalLoRA": CanonicalLoRA,
-    "canonical_lora": CanonicalLoRA,
-}
+def get_args():
+    parser = argparse.ArgumentParser(description='Merge LoRA weights with base LLM')
+    parser.add_argument('--lora_checkpoint_path', type=str, required=True, help="Path to finetuned LORA checkpoint")
+    parser.add_argument('--output_path', type=str, required=True, help="Path to save merged checkpoint")
+    return parser.parse_args()
 
-__all__ = ["LoRA", "DoRA", "CanonicalLoRA", "gpt_lora", "PEFT_STR2CLS", "merge_lora", "export_lora"]
+
+if __name__ == '__main__':
+    args = get_args()
+
+    llm.peft.export_lora(
+        lora_checkpoint_path=args.lora_checkpoint_path,
+        output_path=args.output_path,
+    )

@@ -247,7 +247,6 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             if not os.path.isdir(new_tokenizer_dir):
                 raise NotADirectoryError(
                     f'New tokenizer dir must be non-empty path to a directory. But I got: {new_tokenizer_dir}'
-                    f"New tokenizer dir must be non-empty path to a directory. But I got: {new_tokenizer_dir}"
                 )
 
             if new_tokenizer_type.lower() not in ('bpe', 'wpe'):

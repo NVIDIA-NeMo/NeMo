@@ -361,7 +361,7 @@ class PerfEnvPlugin(run.Plugin):
 
         # Improve perf by steering power to tensor cores, may not work on all systems
         if self.enable_vboost and isinstance(executor, run.SlurmExecutor):
-            vboost_cmd = self.get_vboost_srun_cmd(executor.nodes, executor.job_dir)
+            vboost_cmd = self.get_vboost_srun_cmd(executor.nodes, executor.tunnel.job_dir)
             executor.setup_lines = (
                 executor.setup_lines + vboost_cmd
                 if (executor.setup_lines and len(executor.setup_lines) > 0)

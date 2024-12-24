@@ -93,6 +93,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         self.packed_sequence_size = -1 if not packed_sequence_specs else packed_sequence_specs.packed_sequence_size
         self.validate_batch_size_for_packed_sequence()
         self.dataset_kwargs = dataset_kwargs or {}
+        self._pad_cu_seqlens = False if not packed_sequence_specs else packed_sequence_specs.pad_cu_seqlens
         self.init_global_step = 0
 
     def validate_batch_size_for_packed_sequence(self):
@@ -128,6 +129,7 @@ class FineTuningDataModule(pl.LightningDataModule):
                     tokenizer=self.tokenizer,
                     max_seq_length=self.seq_length,
                     seed=self.seed,
+                    output_metadata_path=self.train_pack_metadata,
                 )
 
             if not self.validation_path_packed.is_file():
@@ -138,6 +140,7 @@ class FineTuningDataModule(pl.LightningDataModule):
                     tokenizer=self.tokenizer,
                     max_seq_length=self.seq_length,
                     seed=self.seed,
+                    output_metadata_path=self.val_pack_metadata,
                 )
 
     def setup(self, stage: str):
@@ -194,6 +197,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         return self._create_dataloader(
             self._create_dataset(
                 self.train_path if self.packed_sequence_size <= 0 else self.train_path_packed,
+                pack_metadata_path=None if self.packed_sequence_size <= 0 else self.train_pack_metadata,
                 max_num_samples=self.max_train_samples,
                 **self.dataset_kwargs,
             ),
@@ -205,6 +209,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         return self._create_dataloader(
             self._create_dataset(
                 self.validation_path if self.packed_sequence_size <= 0 else self.validation_path_packed,
+                pack_metadata_path=None if self.packed_sequence_size <= 0 else self.val_pack_metadata,
                 is_test=True,
                 **self.dataset_kwargs,
             ),
@@ -224,15 +229,18 @@ class FineTuningDataModule(pl.LightningDataModule):
         )
 
     @lru_cache
-    def _create_dataset(self, path, is_test=False, **kwargs):
+    def _create_dataset(self, path, pack_metadata_path=None, is_test=False, **kwargs):
         # pylint: disable=C0115,C0116
+        is_not_packing = is_test or self.packed_sequence_size <= 0
         return create_sft_dataset(
             path,
             tokenizer=self.tokenizer,
-            seq_length=(self.seq_length if is_test or self.packed_sequence_size <= 0 else self.packed_sequence_size),
+            seq_length=(self.seq_length if is_not_packing else self.packed_sequence_size),
             memmap_workers=self.memmap_workers,
             seed=self.seed,
             is_test=is_test,
+            pack_metadata_file_path=None if is_not_packing else pack_metadata_path,
+            pad_cu_seqlens=False if is_not_packing else self.pad_cu_seqlens,
             **kwargs,
         )
 
@@ -254,6 +262,32 @@ class FineTuningDataModule(pl.LightningDataModule):
     def train_path(self) -> Path:
         """Path to training dataset file"""
         return self.dataset_root / "training.jsonl"
+
+    @property
+    def train_pack_metadata(self) -> Path:
+        """Path to metadata dataset file for packed sequence."""
+        if self.packed_sequence_size > 0:
+            if self.packed_sequence_specs.packed_train_metadata_path is not None:
+                return self.packed_sequence_specs.packed_train_metadata_path
+            tokenizer_model_name = self._extract_tokenizer_model_name()
+            folder_name = self.dataset_root / "packed" / tokenizer_model_name
+            folder_name.mkdir(parents=True, exist_ok=True)
+            return folder_name / f"train_{self.packed_sequence_size}_metadata.jsonl"
+        else:
+            raise ValueError("`train_pack_metadata invalid since packed sequence size is not specified.")
+
+    @property
+    def val_pack_metadata(self) -> Path:
+        """Path to metadata dataset file for packed sequence."""
+        if self.packed_sequence_size > 0:
+            if self.packed_sequence_specs.packed_val_metadata_path is not None:
+                return self.packed_sequence_specs.packed_val_metadata_path
+            tokenizer_model_name = self._extract_tokenizer_model_name()
+            folder_name = self.dataset_root / "packed" / tokenizer_model_name
+            folder_name.mkdir(parents=True, exist_ok=True)
+            return folder_name / f"val_{self.packed_sequence_size}_metadata.jsonl"
+        else:
+            raise ValueError("val_pack_metadata invalid since packed sequence size is not specified.")
 
     @property
     def train_path_packed(self) -> Path:
@@ -292,6 +326,16 @@ class FineTuningDataModule(pl.LightningDataModule):
     def test_path(self) -> Path:
         """Path to test dataset file"""
         return self.dataset_root / "test.jsonl"
+
+    @property
+    def pad_cu_seqlens(self) -> bool:
+        """Whether to pad cu_seqlens to a constant shape"""
+        if self.packed_sequence_size > 0:
+            if self.packed_sequence_specs.pad_cu_seqlens is not None:
+                return self.packed_sequence_specs.pad_cu_seqlens
+            else:
+                return self._pad_cu_seqlens
+        return False
 
     def _extract_tokenizer_model_name(self) -> str:
         """Automatically get the model name from model path."""

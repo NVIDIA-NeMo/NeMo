@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import math
 import re
 from typing import List, Mapping, Optional
@@ -524,7 +525,15 @@ class GPTSFTDataset(Dataset):
 
 
 class GPTSFTPackedDataset(GPTSFTDataset):
-    def __init__(self, file_path: str, tokenizer: TokenizerSpec, return_cu_seqlen: bool = True, **kwargs):
+    def __init__(
+        self,
+        file_path: str,
+        tokenizer: TokenizerSpec,
+        return_cu_seqlen: bool = True,
+        pad_cu_seqlens: bool = False,
+        pack_metadata_file_path: Optional[str] = None,
+        **kwargs,
+    ):
         """
         file_path: See `file_path` in the parent class.
         tokenizer: See `tokenizer` in the parent class.
@@ -536,6 +545,20 @@ class GPTSFTPackedDataset(GPTSFTDataset):
         super().__init__(file_path, tokenizer, **kwargs)
         assert self.virtual_tokens == 0, "P-Tuning with packed sequence is not supported."
         self.return_cu_seqlen = return_cu_seqlen
+
+        self.pad_cu_seqlens = pad_cu_seqlens
+        if self.pad_cu_seqlens:
+            assert (
+                pack_metadata_file_path is not None
+            ), "a metadata json file is required when pad_cu_seqlens is enabled"
+            assert (
+                self.pad_to_max_length is True
+            ), "'pad_to_max_length=True' is required when pad_cu_seqlens is enabled"
+
+        self.pack_metadata = None
+        if pack_metadata_file_path is not None:
+            with open(pack_metadata_file_path) as f:
+                self.pack_metadata = json.load(f)
 
     def __getitem__(self, idx):
         if self.samples_mapping is not None:
@@ -665,6 +688,11 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             if len(cu_seqlens[-1]) > len(cu_seqlens_unpadded[-1]):
                 cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1])
 
+            if self.pad_cu_seqlens:
+                # pad cu_seqlens with zero length sequences
+                pad_num = self.pack_metadata['max_samples_per_bin'] - len(cu_seqlens[-1])
+                cu_seqlens[-1].extend([max_length] * pad_num)
+
         assert len(input_ids[0]) == len(
             position_ids[0]
         ), "Dataset problem: input_ids and position_ids lengths don't match"
@@ -694,6 +722,15 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
             cu_seqlens_unpadded = torch.IntTensor(cu_seqlens_unpadded)
             cu_seqlens_unpadded_argmin = torch.argmin(cu_seqlens_unpadded, dim=1, keepdim=True)
+
+            if self.pad_cu_seqlens:
+                # Use the global max seqlen, as 'pad_cu_seqlens' is used mainly
+                # to support cudagraphs, and 'max_seqlen' is a cpu tensor, which means should
+                # be the same across all batches.
+                max_seqlen = torch.IntTensor([self.pack_metadata['dataset_max_seqlen']] * len(cu_seqlens))
+            else:
+                seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
+                max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
 
             processed_batch.update(
                 {

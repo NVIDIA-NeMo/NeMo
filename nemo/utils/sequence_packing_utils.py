@@ -153,6 +153,7 @@ def create_packing_strategy(
     Returns:
           assignments: A list of lists, where each inner list represents a bin and contains the indices of the
                         sequence lengths assigned to that bin.
+          pack_metadata: A dict that records packing metadata, for instance the max number of samples per bin.
     """
 
     logging.info(f"Packing sequences to length {pack_size}...")
@@ -166,13 +167,17 @@ def create_packing_strategy(
     packed_seq_lens = [sum(x) for x in assignments]
     packing_factor = len(all_seq_lens) / len(packed_seq_lens)
 
+    max_seqlen = max(all_seq_lens)
+    max_samples_per_bin = max([len(b) for b in assignments])
+    packing_metadata = {'dataset_max_seqlen': max_seqlen, 'max_samples_per_bin': max_samples_per_bin}
+
     logging.debug("Packed sequence lengths:")
     logging.debug(packed_seq_lens)
     logging.info(f"Packing is {sum(packed_seq_lens)/len(packed_seq_lens)/pack_size*100:.2f}% efficient")
     logging.info(
         f">>>>> For pack size {pack_size}, average number of sequences per pack is n = {packing_factor:.3f} <<<<<"
     )
-    return assignments
+    return assignments, packing_metadata
 
 
 def fill_packing_strategy(

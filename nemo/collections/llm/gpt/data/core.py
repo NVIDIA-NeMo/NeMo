@@ -47,42 +47,55 @@ def create_sft_dataset(
     memmap_workers: int = 2,
     hf_dataset: bool = False,
     global_sample_mapping: bool = False,
+    pack_metadata_file_path: Path = None,
+    pad_cu_seqlens: bool = False,
     chat: bool = False,
     **kwargs,
 ) -> "GPTSFTDataset":
     """
     Create the dataset class (GPTSFTDataset, GPTSFTChatDataset or GPTSFTPackedDataset)
     """
+
+    gpt_sft_dataset_kwargs = {
+        'file_path': str(path),
+        'tokenizer': tokenizer,
+        'max_seq_length': seq_length,
+        'memmap_workers': memmap_workers,
+        'hf_dataset': hf_dataset,
+        'global_sample_mapping': global_sample_mapping,
+        'add_bos': add_bos,
+        'add_eos': add_eos,
+        'add_sep': add_sep,
+        'seed': seed,
+        'label_key': label_key,
+        'answer_only_loss': answer_only_loss,
+        'truncation_field': truncation_field,
+        'pad_to_max_length': pad_to_max_length,
+        'index_mapping_dir': index_mapping_dir,
+        'prompt_template': prompt_template,
+        'truncation_method': truncation_method,
+    }
+
     if chat:
         from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_chat_dataset import GPTSFTChatDataset
 
-        dataset_cls = GPTSFTChatDataset
+        return GPTSFTChatDataset(
+            **gpt_sft_dataset_kwargs,
+            **kwargs,
+        )
     elif path.suffix == '.npy':
         from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset import GPTSFTPackedDataset
 
-        dataset_cls = GPTSFTPackedDataset
+        return GPTSFTPackedDataset(
+            pack_metadata_file_path=pack_metadata_file_path,
+            pad_cu_seqlens=pad_cu_seqlens,
+            **gpt_sft_dataset_kwargs,
+            **kwargs,
+        )
     else:
         from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset import GPTSFTDataset
 
-        dataset_cls = GPTSFTDataset
-
-    return dataset_cls(
-        file_path=str(path),
-        tokenizer=tokenizer,
-        max_seq_length=seq_length,
-        memmap_workers=memmap_workers,
-        hf_dataset=hf_dataset,
-        global_sample_mapping=global_sample_mapping,
-        add_bos=add_bos,
-        add_eos=add_eos,
-        add_sep=add_sep,
-        seed=seed,
-        label_key=label_key,
-        answer_only_loss=answer_only_loss,
-        truncation_field=truncation_field,
-        pad_to_max_length=pad_to_max_length,
-        index_mapping_dir=index_mapping_dir,
-        prompt_template=prompt_template,
-        truncation_method=truncation_method,
-        **kwargs,
-    )
+        return GPTSFTDataset(
+            **gpt_sft_dataset_kwargs,
+            **kwargs,
+        )

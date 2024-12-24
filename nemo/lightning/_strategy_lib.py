@@ -91,6 +91,7 @@ def init_parallel_ranks(
         use_fp8=fp8,
         init_mpi_proc_group=getattr(parallel_config, "tp_comm_overlap", False)
         and getattr(parallel_config, "tp_comm_bootstrap_backend", None) == 'mpi',
+        use_te_rng_tracker=getattr(parallel_config, "use_te_rng_tracker", False),
         # apex_transformer_log_level=self.cfg.get('apex_transformer_log_level', 30),
     )
 

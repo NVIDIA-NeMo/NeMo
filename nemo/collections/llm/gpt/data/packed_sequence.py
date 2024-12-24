@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -50,6 +51,7 @@ def tokenize_dataset(path: Path, tokenizer: TokenizerSpec, max_seq_length: int, 
 def prepare_packed_sequence_data(
     input_path: Path,
     output_path: Path,
+    output_metadata_path: Path,
     packed_sequence_size: int,
     tokenizer: TokenizerSpec,
     max_seq_length: int,
@@ -77,11 +79,15 @@ def prepare_packed_sequence_data(
     dataset = tokenize_dataset(input_path, tokenizer, max_seq_length, seed)
     sequences, histogram = create_hist(dataset, max_seq_length)
 
-    assignments = create_packing_strategy(histogram, packed_sequence_size, packing_algorithm)
+    assignments, packing_metadata = create_packing_strategy(histogram, packed_sequence_size, packing_algorithm)
     output_data = fill_packing_strategy(assignments, sequences, packed_sequence_size, tokenizer.eos_id)
 
     # save output data
     np.save(output_path, output_data)
+    # save packing metadata
+    if output_metadata_path is not None:
+        with open(output_metadata_path, "w") as f:
+            json.dump(packing_metadata, f)
     logging.info(f"Packed sequence is prepared and saved to {output_path}")
 
 
@@ -109,6 +115,21 @@ class PackedSequenceSpecs:
     packed_val_data_path: str = None
     """
     If specified, use this file for the packed validation dataset instead of the default path.
+    """
+
+    packed_train_metadata_path: str = None
+    """
+    If specified, use this file for the train packing metadata instead of the default path.
+    """
+
+    packed_val_metadata_path: str = None
+    """
+    If specified, use this file for the val packing metadata instead of the default path.
+    """
+
+    pad_cu_seqlens: bool = False
+    """
+    If True, pad cu_seqlens to a constant size, which is required for use with cudagraphs.
     """
 
     def __post_init__(self):

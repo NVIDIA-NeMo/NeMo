@@ -27,7 +27,7 @@ class ChatDataModule(FineTuningDataModule):
     """
 
     @lru_cache
-    def _create_dataset(self, path, is_test=False, **kwargs):
+    def _create_dataset(self, path, pack_metadata_path=None, is_test=False, **kwargs):
         # pylint: disable=C0115,C0116
         return create_sft_dataset(
             path,
@@ -37,5 +37,7 @@ class ChatDataModule(FineTuningDataModule):
             seed=self.seed,
             chat=True,
             is_test=is_test,
+            pack_metadata_file_path=None,  # packing is not supported
+            pad_cu_seqlens=False,
             **kwargs,
         )

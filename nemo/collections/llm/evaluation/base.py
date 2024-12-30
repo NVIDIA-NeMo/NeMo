@@ -12,18 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time
-
-import requests
 import torch
 import torch.nn.functional as F
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from requests.exceptions import RequestException
+from tqdm import tqdm
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
-from nemo.utils import logging
+from nemo.deploy.nlp import NemoQueryLLM
 
 
 class NeMoFWLMEval(LM):
@@ -49,21 +46,22 @@ class NeMoFWLMEval(LM):
         A private method that sends post request to the model on PyTriton server and returns either generated text or
         logits.
         """
-        # send a post request to /v1/completions/ endpoint with the payload
-        response = requests.post(f"{self.api_url}/v1/completions/", json=payload)
-        response_data = response.json()
+        nq = NemoQueryLLM(url=self.api_url, model_name=payload['model'])
 
-        if 'error' in response_data:
-            raise Exception(f"API Error: {response_data['error']}")
+        response = nq.query_llm(
+            prompts=payload['prompt'] if isinstance(payload['prompt'], list) else [payload['prompt']],
+            max_output_len=payload['max_tokens'],
+            top_k=payload['top_k'],
+            top_p=payload['top_p'],
+            temperature=payload['temperature'],
+            output_generation_logits=True,
+            openai_format_response=True,
+        )
 
-        # Assuming the response is in OpenAI format
         if return_text:
-            # in case of generate_until tasks return just the text
-            return response_data['choices'][0]['text']
-
+            return response["choices"][0]["text"]  # shape[batch_size, 1]
         if return_logits:
-            # in case of loglikelihood tasks return the logits
-            return response_data['choices'][0]['generation_logits']
+            return response["choices"][0]["generation_logits"]  # shape[batch_size, 1, num_tokens, vocab_size]
 
     def tokenizer_type(self, tokenizer):
         """
@@ -93,7 +91,7 @@ class NeMoFWLMEval(LM):
             special_tokens_kwargs['add_special_tokens'] = self.add_bos
 
         results = []
-        for request in requests:
+        for request in tqdm(requests):
             # get the input prompt from the request
             context = request.arguments[0]
             # get the output prompt from the request
@@ -165,46 +163,3 @@ class NeMoFWLMEval(LM):
             results.append(generated_text)
 
         return results
-
-
-def wait_for_rest_service(rest_url, max_retries=600, retry_interval=2):
-    """
-    Wait for REST service to be ready.
-
-    Args:
-    rest_url (str): URL of the REST service's health endpoint
-    max_retries (int): Maximum number of retry attempts. Defaul: 60.
-    retry_interval (int): Time to wait between retries in seconds. Default: 2.
-
-    Returns:
-    bool: True if rest service is ready, False otherwise
-    """
-
-    def check_service(url):
-        """
-        Check if the service is ready by making a GET request to its health endpoint.
-
-        Args:
-        url (str): URL of the service's health endpoint
-
-        Returns:
-        bool: True if the service is ready, False otherwise
-        """
-        try:
-            response = requests.get(url, timeout=5)
-            return response.status_code == 200
-        except RequestException:
-            return False
-
-    for _ in range(max_retries):
-        rest_ready = check_service(rest_url)
-
-        if rest_ready:
-            logging.info("REST service is ready.")
-            return True
-
-        logging.info(f"REST Service not ready yet. Retrying in {retry_interval} seconds...")
-        time.sleep(retry_interval)
-
-    logging.info("Timeout: REST service did not become ready.")
-    return False

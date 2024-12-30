@@ -102,7 +102,6 @@ def get_trtllm_deployable(
             trt_llm_exporter.export(
                 nemo_checkpoint_path=nemo_checkpoint,
                 model_type=model_type,
-                n_gpus=num_gpus,
                 tensor_parallelism_size=tensor_parallelism_size,
                 pipeline_parallelism_size=pipeline_parallelism_size,
                 max_input_len=max_input_len,

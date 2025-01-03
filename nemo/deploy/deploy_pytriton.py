@@ -38,7 +38,7 @@ class DeployPyTriton(DeployBase):
             tensor_parallelism_size=1,
         )
 
-        nm = DeployPyTriton(model=trt_llm_exporter, triton_model_name="model_name", port=8000)
+        nm = DeployPyTriton(model=trt_llm_exporter, triton_model_name="model_name", http_port=8000)
         nm.deploy()
         nm.run()
         nq = NemoQueryLLM(url="localhost", model_name="model_name")

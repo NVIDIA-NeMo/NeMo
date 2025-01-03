@@ -42,7 +42,7 @@ if __name__ == '__main__':
         triton_model_name=args.triton_model_name,
         triton_model_version=1,
         max_batch_size=64,
-        port=8000,
+        http_port=8000,
         address="0.0.0.0",
     )
 

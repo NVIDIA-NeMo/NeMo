@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import tarfile
 from contextlib import nullcontext
 from typing import Callable, Optional
@@ -250,5 +251,6 @@ class Quantizer:
             if dist.get_rank() == 0:
                 save_artifacts(model, export_dir)
                 if compress:
-                    with tarfile.open(self.export_config.save_path, "w:gz") as tar:
+                    os.makedirs(os.path.dirname(self.export_config.save_path), exist_ok=True)
+                    with tarfile.open(self.export_config.save_path, "w") as tar:
                         tar.add(export_dir, arcname="./")

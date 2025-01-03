@@ -398,7 +398,7 @@ def run_inference(
             nm = DeployPyTriton(
                 model=exporter,
                 triton_model_name=model_name,
-                port=8000,
+                http_port=8000,
             )
             nm.deploy()
             nm.run()
@@ -579,7 +579,7 @@ def run_in_framework_inference(
         nm = DeployPyTriton(
             model=deployed_model,
             triton_model_name=model_name,
-            port=8000,
+            http_port=8000,
         )
         nm.deploy()
         nm.run()

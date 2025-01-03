@@ -136,7 +136,7 @@ def run_in_framework_inference(
     nm = DeployPyTriton(
         model=model,
         triton_model_name=model_name,
-        port=8000,
+        http_port=8000,
     )
     nm.deploy()
     nm.run()
@@ -286,7 +286,7 @@ def run_trt_llm_inference(
             nm = DeployPyTriton(
                 model=trt_llm_exporter,
                 triton_model_name=model_name,
-                port=8000,
+                http_port=8000,
             )
             nm.deploy()
             nm.run()

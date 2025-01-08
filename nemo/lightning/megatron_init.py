@@ -181,6 +181,7 @@ def initialize_model_parallel_for_nemo(
                     micro_batch_size=micro_batch_size,
                     data_parallel_size=app_state.data_parallel_size,
                     rampup_batch_size=rampup_batch_size,
+                    decrease_batch_size_if_needed=False,
                 )
             else:
                 if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):
@@ -201,6 +202,7 @@ def initialize_model_parallel_for_nemo(
                     micro_batch_size=micro_batch_size,
                     data_parallel_size=app_state.data_parallel_size,
                     rampup_batch_size=rampup_batch_size,
+                    decrease_batch_size_if_needed=False,
                 )
             else:
                 if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):

@@ -20,6 +20,7 @@ from transformers import AutoModelForCausalLM
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
+from nemo.lightning.pytorch.strategies.utils import fsdp2_strategy_parallelize
 from nemo.utils import logging
 
 
@@ -91,6 +92,10 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 config, torch_dtype=dtype, trust_remote_code=self.trust_remote_code
             )
 
+        # Apply FSDP2 and TP to the model
+        if self.device_mesh is not None:
+            fsdp2_strategy_parallelize(self.model, device_mesh=self.device_mesh)
+
         if self.model_accelerator is not None:
             self.model_accelerator(self.model)
 
@@ -99,7 +104,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     def forward(self, batch):
         return self.model(**batch)
 
-    def training_step(self, batch):
+    def training_step(self, batch, batch_idx=None):
         labels = batch.pop('labels').to(self.model.device)
         loss_mask = batch.pop('loss_mask', None)
 

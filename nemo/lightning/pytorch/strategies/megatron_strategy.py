@@ -116,7 +116,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             across GPU ranks. Defaults to 1.
         virtual_pipeline_model_parallel_size (Optional[int]): Interleaved pipeline parallelism used to
             improve performance by reducing the pipeline bubble. Defaults to None.
-        microbatch_group_size_per_vp_stage（Optional[int]）: the number of micro-batches that are executed
+        microbatch_group_size_per_vp_stage (Optional[int]): the number of micro-batches that are executed
             at a time for a given virtual stage (both forward and backward). Defaults to None and convert
             to pipeline_parallel_size. which specifies a depth-first schedule.
         context_parallel_size (int): Splits network input along sequence dimension across GPU ranks.

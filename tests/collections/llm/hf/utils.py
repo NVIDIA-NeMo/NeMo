@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.lightning.pytorch.strategies.fsdp2_strategy import FSDP2Strategy
-from nemo.lightning.pytorch.strategies.fsdp_strategy import FSDPStrategy
-from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
+from importlib.metadata import version
+from packaging.version import Version as PkgVersion
 
-__all__ = [
-    "FSDPStrategy",
-    "FSDP2Strategy",
-    "MegatronStrategy",
-]
+
+def get_torch_version_str():
+    import torch
+
+    if hasattr(torch, '__version__'):
+        return str(torch.__version__)
+    else:
+        return version("torch")

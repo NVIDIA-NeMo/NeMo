@@ -111,7 +111,7 @@ class ProgressPrinter(ProgressBar):
         self._validation_description = "Validation"
 
     @override
-    def on_train_epoch_start(self, trainer, *_):
+    def on_train_start(self, trainer, *_):
         if trainer.max_steps > 0:
             # while resuming from a ckpt use trainer.max_steps as the total for progress bar as trainer.num_training_batches
             # is truncated to max_steps - step being resumed at

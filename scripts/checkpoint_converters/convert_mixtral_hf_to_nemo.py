@@ -545,6 +545,8 @@ def save_to_nemo(args, checkpoint):
     model.cfg.use_cpu_initialization = False
     model.cfg.perform_initialization = True
 
+    torch.distributed.init_process_group()
+    parallel_state.initialize_model_parallel()
     model.save_to(args.output_path)
     logging.info(f'NeMo model saved to: {args.output_path}')
 

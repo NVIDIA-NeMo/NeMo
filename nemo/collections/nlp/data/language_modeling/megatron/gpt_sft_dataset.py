@@ -689,8 +689,10 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1])
 
             if self.pad_cu_seqlens:
-                # pad cu_seqlens with zero length sequences
-                pad_num = self.pack_metadata['max_samples_per_bin'] - len(cu_seqlens[-1])
+                # pad cu_seqlens to a constant shape with zero length sequences
+                max_samples_per_bin = max(p['max_samples_per_bin'] for p in self.pack_metadata)
+                # plus 2 since cu_seqlens additionally contains 0 and may append max_length
+                pad_num = max_samples_per_bin - len(cu_seqlens[-1]) + 2
                 cu_seqlens[-1].extend([max_length] * pad_num)
 
         assert len(input_ids[0]) == len(
@@ -724,14 +726,14 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             cu_seqlens_unpadded_argmin = torch.argmin(cu_seqlens_unpadded, dim=1, keepdim=True)
 
             if self.pad_cu_seqlens:
-                # Use the global max seqlen, as 'pad_cu_seqlens' is used mainly
-                # to support cudagraphs, and 'max_seqlen' is a cpu tensor, which means should
-                # be the same across all batches.
-                max_seqlen = torch.IntTensor([self.pack_metadata['dataset_max_seqlen']] * len(cu_seqlens))
+                # If padding, use the global max seqlen, so that 'pad_cu_seqlens' is the same
+                # across all batches. This is maintly used compatiblity with megatron's implementation
+                # of cudagraphs, which uses the same cudagraphs over all batches.
+                max_seqlen = [max(p['dataset_max_seqlen'] for p in self.pack_metadata)]
+                max_seqlen = torch.IntTensor(max_seqlen * len(cu_seqlens))
             else:
                 seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
                 max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
-
             processed_batch.update(
                 {
                     'attention_mask': torch.LongTensor(

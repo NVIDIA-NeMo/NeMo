@@ -142,20 +142,27 @@ class PEFT(IOMixin, ABC, ModelTransform):
         trainer.strategy.trainer = trainer
         wrapped_io = partial(WrappedAdapterIO, peft=self)
 
-        ckpt_io_kwarg_names = [
-            "save_ckpt_format",
-            "async_save",
-            "torch_dist_multiproc",
-            "assume_constant_structure",
-            "parallel_save",
-            "parallel_save_within_dp",
-            "parallel_load",
-            "load_directly_on_device",
-        ]
-        ckpt_io_kwargs = {
-            arg: getattr(trainer.strategy, arg)
-            for arg in filter(lambda x: hasattr(trainer.strategy, x), ckpt_io_kwarg_names)
-        }
+        is_hf_model = getattr(trainer.model, "is_hf_model", False)
+        if not type(is_hf_model) == type(True):
+            is_hf_model = False
+
+        if is_hf_model:
+            ckpt_io_kwargs = {"model_library": "huggingface", "lora": True}
+        else:
+            ckpt_io_kwarg_names = [
+                "save_ckpt_format",
+                "async_save",
+                "torch_dist_multiproc",
+                "assume_constant_structure",
+                "parallel_save",
+                "parallel_save_within_dp",
+                "parallel_load",
+                "load_directly_on_device",
+            ]
+            ckpt_io_kwargs = {
+                arg: getattr(trainer.strategy, arg)
+                for arg in filter(lambda x: hasattr(trainer.strategy, x), ckpt_io_kwarg_names)
+            }
         trainer.strategy._checkpoint_io = create_checkpoint_io(wrapping_ckpt_io=wrapped_io, **ckpt_io_kwargs)
         self.wrapped_io = (
             trainer.strategy._checkpoint_io._checkpoint_io
@@ -401,13 +408,38 @@ class WrappedAdapterIO(_WrappingCheckpointIO, AsyncCompatibleCheckpointIO):
         from nemo.utils.get_rank import is_global_rank_zero
 
         if is_global_rank_zero():
-            metadata = {"model_ckpt_path": str(self.model_ckpt_path)}
             base_dir = ckpt_to_weights_subdir(path, is_saving=True)
             base_dir.mkdir(parents=True, exist_ok=True)
-            adapter_meta_path = base_dir / ADAPTER_META_FILENAME
+
+            from nemo.lightning.io.pl import HuggingFaceCheckpointIO
+
+            if isinstance(self.checkpoint_io, HuggingFaceCheckpointIO):
+                metadata = self._create_lora_hf_config()
+                adapter_meta_path = base_dir / "adapter_config.json"
+            else:
+                metadata = {"model_ckpt_path": str(self.model_ckpt_path)}
+                adapter_meta_path = base_dir / ADAPTER_META_FILENAME
+
             with open(adapter_meta_path, "w") as f:
                 json.dump(metadata, f)
         return request
+
+    def _create_lora_hf_config(self):
+        from peft import LoraConfig
+        from nemo.collections.llm.peft import DoRA
+
+        lora_config = LoraConfig(
+            r=self.peft.dim,
+            target_modules=self.peft.target_modules,
+            lora_alpha=self.peft.alpha,
+            lora_dropout=self.peft.dropout,
+            use_dora=isinstance(self.peft, DoRA),
+        )
+        lora_config = lora_config.to_dict()
+        lora_config["peft_type"] = "LORA"
+        lora_config["megatron_core"] = None
+        lora_config["target_modules"] = self.peft.target_modules
+        return lora_config
 
     @override
     def load_checkpoint(

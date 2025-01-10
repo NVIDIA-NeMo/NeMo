@@ -46,7 +46,6 @@ def make_squad_hf_dataset(data_path, tokenizer):
 
     tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
     datamodule = llm.HFDatasetDataModule(data_path, split="train[:100]", pad_token_id=tokenizer.eos_token_id)
-
     datamodule.map(
         formatting_prompts_func,
         batched=False,

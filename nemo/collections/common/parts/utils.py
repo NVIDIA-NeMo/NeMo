@@ -112,14 +112,9 @@ def extend_instance(obj, mixin):
     )  # mixin needs to go first for our forward() logic to work
 
 
-def apply_rope_scaling(freqs):
+def apply_rope_scaling(freqs, scale_factor=8, low_freq_factor=1, high_freq_factor=4, old_context_len=8192):
     # Apply scaling for RoPE frequencies
     logger.info("apply rope scaling ...")
-    # Values obtained from grid search
-    scale_factor = 8
-    low_freq_factor = 1
-    high_freq_factor = 4
-    old_context_len = 8192  # original llama3 length
 
     low_freq_wavelen = old_context_len / low_freq_factor
     high_freq_wavelen = old_context_len / high_freq_factor

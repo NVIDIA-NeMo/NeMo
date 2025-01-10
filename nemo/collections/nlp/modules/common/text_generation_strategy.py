@@ -76,7 +76,7 @@ class TextGenerationStrategy:
                     batch,
                 ]
             ),
-            model=[self.forward_model],
+            model=[self.forward_model] if not isinstance(self.forward_model, list) else self.forward_model,
             num_microbatches=get_num_microbatches(),
             forward_only=True,
             seq_length=tensor_shape[0],

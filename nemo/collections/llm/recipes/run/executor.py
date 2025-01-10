@@ -11,15 +11,34 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Optional
+
 import nemo_run as run
+import torch
 
 
 @run.cli.factory
-def torchrun(devices: int = 8) -> run.Config[run.LocalExecutor]:
-    """Local executor using torchrun."""
+def torchrun(devices: Optional[int] = None) -> run.Config[run.LocalExecutor]:
+    """
+    Local executor using torchrun.
+
+    Args:
+        devices (Optional[int]): Number of devices to use. If None, it will use all available CUDA devices.
+
+    Returns:
+        run.Config[run.LocalExecutor]: Configuration for the local executor using torchrun.
+    """
     env_vars = {
         "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
     }
+
+    if devices is None:
+        if torch.cuda.is_available():
+            devices = torch.cuda.device_count()
+        else:
+            raise RuntimeError(
+                "Cannot infer the 'ntasks_per_node' parameter as CUDA is not available: please specify explicitely."
+            )
 
     executor = run.Config(
         run.LocalExecutor,

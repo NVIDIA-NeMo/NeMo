@@ -1177,7 +1177,7 @@ class TensorRTLLM(ITritonDeployable):
                 lora_uids = np.char.decode(inputs.pop("lora_uids").astype("bytes"), encoding="utf-8")
                 infer_input["lora_uids"] = lora_uids[0].tolist()
             if "output_generation_logits" in inputs:
-                generation_logits_available = inputs["output_generation_logits"]
+                generation_logits_available = inputs["output_generation_logits"][0][0]
                 infer_input["output_generation_logits"] = inputs.pop("output_generation_logits")[0][0]
 
             if generation_logits_available:

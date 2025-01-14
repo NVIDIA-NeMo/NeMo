@@ -14,7 +14,7 @@
 import inspect
 import json
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import lightning.pytorch as pl
 import torch
@@ -161,7 +161,7 @@ def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.
     trainer.strategy.trainer = trainer
     trainer.strategy.selective_restore()
 
-    peft: Union[io.TrainerContext, PEFT] = io.load_context(ckpt_to_context_subdir(path), "model.model_transform")
+    peft: Optional[PEFT] = model.model_transform
     if isinstance(peft, PEFT):
         model = peft(model)
         adapter_sharded_state_dict = {k: v for k, v in model.sharded_state_dict().items() if ".adapter." in k}

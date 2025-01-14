@@ -553,6 +553,9 @@ def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Pat
             elif nemo_model_config["activation"] == "squared_relu":
                 nemo_model_config["activation"] = "squared-relu"
 
+            if nemo_model_config.get("add_bias_linear"):
+                nemo_model_config["bias"] = True
+
             nemo_model_config["mcore_gpt"] = True
             nemo_model_config["max_position_embeddings"] = nemo_model_config.get("seq_length", 4096)
             nemo_model_config["rotary_percentage"] = nemo_model_config.get("rotary_percent", 1.0)

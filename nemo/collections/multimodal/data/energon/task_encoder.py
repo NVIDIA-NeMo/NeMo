@@ -25,14 +25,21 @@ from megatron.energon import (
     batch_list,
     batch_pad_stack,
 )
+from megatron.energon.task_encoder.base import stateless
 
-from nemo.collections.multimodal.data.energon.config import ImageTextRawBatch, ImageTextSample
+from nemo.collections.multimodal.data.energon.config import (
+    ImageTextRawBatch,
+    ImageTextSample,
+    PackedImageTextRawBatch,
+    PackedImageTextSample,
+)
 from nemo.collections.multimodal.data.energon.sample_encoder import (
     InterleavedSampleEncoder,
     SampleEncoder,
     SimilarityInterleavedEncoder,
     VQASampleEncoder,
 )
+from nemo.utils import logging
 
 
 class MultiModalTaskEncoder(
@@ -54,16 +61,34 @@ class MultiModalTaskEncoder(
     for model input.
     """
 
-    def __init__(self, tokenizer, image_processor, multimodal_sample_config):
+    def __init__(
+        self,
+        tokenizer,
+        image_processor,
+        multimodal_sample_config,
+        packed_sequence=False,
+        packed_sequence_size=-1,
+        num_image_embeddings_per_tile=576,
+    ):
         """
         Initialize the MultiModalTaskEncoder with specific encoders for different sample types.
 
         Parameters:
-        tokenizer (Tokenizer): The tokenizer used for processing text across different sample types.
-        image_processor (ImageProcessor): The image processor used for preprocessing images.
-        multimodal_sample_config (MultiModalSampleConfig): MultiModalSampleConfig object.
+        tokenizer (Tokenizer): The tokenizer used for processing textual components across sample types.
+        image_processor (ImageProcessor): The image processor responsible for preprocessing image data.
+        multimodal_sample_config (MultiModalSampleConfig): Configuration object defining properties and
+            requirements for multimodal samples.
+        packed_sequence (bool, optional): Flag indicating whether packed sequences are used. Default is False.
+        packed_sequence_size (int, optional): The size of packed sequences, used when `packed_sequence` is True.
+            Default is -1.
+        num_image_embeddings_per_tile (int, optional): Number of image embeddings per image tile. Determines
+            the granularity of image features. Default is 576.
         """
         self.tokenizer = tokenizer
+        self.sample_config = multimodal_sample_config
+        self.packed_sequence = packed_sequence
+        self.num_image_embeddings_per_tile = num_image_embeddings_per_tile  # only used with seq packing
+        self.packed_sequence_size = packed_sequence_size
         self.encoders: Dict[str, SampleEncoder] = {
             VQASample.__name__: VQASampleEncoder(
                 tokenizer=tokenizer,
@@ -92,6 +117,7 @@ class MultiModalTaskEncoder(
         """
         self.encoders[sample_type] = encoder
 
+    @stateless
     def encode_sample(
         self, sample: Union[VQASample, InterleavedSample, SimilarityInterleavedSample, CaptioningSample]
     ) -> ImageTextSample:
@@ -118,7 +144,9 @@ class MultiModalTaskEncoder(
         encoded_sample = encoder.encode(input_sample=sample, output_sample=ImageTextSample())
         return encoded_sample
 
-    def batch(self, samples: List[ImageTextSample]) -> ImageTextRawBatch:
+    def batch(
+        self, samples: List[Union[ImageTextSample, PackedImageTextSample]]
+    ) -> Union[ImageTextRawBatch, PackedImageTextRawBatch]:
         """
         Batch a list of encoded samples into a single raw batch.
 
@@ -131,26 +159,51 @@ class MultiModalTaskEncoder(
         ImageTextRawBatch: The batched data, including images, tokens, labels, and loss masks.
         """
 
-        keys, images, tokens, labels, loss_mask = [], [], [], [], []
-        for sample in samples:
-            keys.append(sample.__key__)
-            images.append(sample.images)
-            tokens.append(sample.tokens)
-            labels.append(sample.labels)
-            loss_mask.append(sample.loss_mask)
+        if self.packed_sequence:
+            if len(samples) > 1:
+                raise ValueError(
+                    "Micro batch size should be 1 when training with packed sequence, but your micro batch size "
+                    f"is {len(samples)}. \nThe following config is equivalent to your current setting for "
+                    f"a packed dataset. Please update your config to the following: \n"
+                    f"Set micro batch size to 1 (currently {len(samples)})\n"
+                    f"Set global batch size to `global_batch_size // {len(samples)}` "
+                    f"Set packed sequence length to `original_sample_seq_len * {len(samples)}` "
+                    f"(currently {self.packed_sequence_size}) \n"
+                    f"For details please visit "
+                    f"https://docs.nvidia.com/nemo-framework/user-guide/latest/sft_peft/packed_sequence.html"
+                )
+            # The batching are taken care by packing.
+            sample = samples[0]
+            return PackedImageTextRawBatch(
+                __keys__=sample.__key__,
+                images=sample.images,
+                tokens=sample.tokens,
+                labels=sample.labels,
+                loss_mask=sample.loss_mask,
+                position_ids=sample.position_ids,
+                packed_seq_params=sample.packed_seq_params,
+            )
+        else:
+            keys, images, tokens, labels, loss_mask = [], [], [], [], []
+            for sample in samples:
+                keys.append(sample.__key__)
+                images.append(sample.images)
+                tokens.append(sample.tokens)
+                labels.append(sample.labels)
+                loss_mask.append(sample.loss_mask)
 
-        batch_keys = batch_list(keys)
-        batch_images = batch_pad_stack(images)
-        batch_prompt_tokens = batch_pad_stack(tokens)
-        batch_labels = batch_pad_stack(labels)
-        batch_loss_mask = batch_pad_stack(loss_mask)
-        return ImageTextRawBatch(
-            __keys__=batch_keys,
-            images=batch_images,
-            tokens=batch_prompt_tokens,
-            labels=batch_labels,
-            loss_mask=batch_loss_mask,
-        )
+            batch_keys = batch_list(keys)
+            batch_images = batch_pad_stack(images)
+            batch_prompt_tokens = batch_pad_stack(tokens)
+            batch_labels = batch_pad_stack(labels)
+            batch_loss_mask = batch_pad_stack(loss_mask)
+            return ImageTextRawBatch(
+                __keys__=batch_keys,
+                images=batch_images,
+                tokens=batch_prompt_tokens,
+                labels=batch_labels,
+                loss_mask=batch_loss_mask,
+            )
 
     def encode_batch(self, batch_data: ImageTextRawBatch) -> dict:
         """
@@ -165,7 +218,7 @@ class MultiModalTaskEncoder(
         Returns:
         dict: A dictionary containing the encoded batch data, ready for model input.
         """
-        batch_dict = dataclasses.asdict(batch_data)
+        batch_dict = batch_data.__dict__
         if 'images' in batch_dict:
             batch_dict['media'] = batch_dict['images']
             del batch_dict['images']
@@ -177,3 +230,66 @@ class MultiModalTaskEncoder(
         if 'attention_mask' not in batch_dict:
             batch_dict['attention_mask'] = None
         return batch_dict
+
+    def select_samples_to_pack(self, samples):
+        """Selects which samples will be packed together.
+
+        NOTE: Energon dataloader calls this method internally if packing is used.
+        Please see https://nvidia.github.io/Megatron-Energon/packing.html
+        """
+        from nemo.collections.vlm.neva.data.sequence_packing import greedy_knapsack, predict_seq_len
+
+        media_token_id = self.sample_config.image_token.token_id
+        lengths = [
+            predict_seq_len(
+                sample.tokens,
+                media_token_index=media_token_id,
+                num_image_embeddings_per_tile=self.num_image_embeddings_per_tile,
+            )
+            for sample in samples
+        ]
+        packed_samples = greedy_knapsack(lengths, samples, self.packed_sequence_size)
+        avg_samples_per_bin = round(len(lengths) / len(packed_samples))
+        logging.info(
+            f"[Seq Packing Info] - Packing seq len: {self.packed_sequence_size}, "
+            f"Buffered samples: {len(lengths)}, Total number of bins: {len(packed_samples)}, "
+            f"Average samples per bin: {avg_samples_per_bin}"
+        )
+        return packed_samples
+
+    @stateless
+    def pack_selected_samples(self, samples):
+        """
+        Function to pack a list of ImageTaskSample into a single ImageTaskSamplePacked.
+
+        NOTE: Energon dataloader calls this method internally if packing is used.
+        Please see https://nvidia.github.io/Megatron-Energon/packing.html
+
+        Args:
+            samples: List of ImageTaskSample instances to pack into one sample.
+
+        Returns:
+            ImageTaskSamplePacked instance.
+        """
+        from nemo.collections.vlm.neva.data.sequence_packing import convert_to_packed
+
+        packed_images = torch.stack([sample.images for sample in samples])
+        media_token_id = self.sample_config.image_token.token_id
+        packed_tokens, packed_labels, packed_position_ids, packed_loss_mask, packed_seq_params = convert_to_packed(
+            tokens=[sample.tokens for sample in samples],
+            labels=[sample.labels for sample in samples],
+            num_image_embeddings_per_tile=self.num_image_embeddings_per_tile,
+            media_token_index=media_token_id,
+            ignore_index=self.sample_config.ignore_place_holder,
+        )
+
+        return PackedImageTextSample(
+            __key__=",".join([s.__key__ for s in samples]),
+            __restore_key__=(),  # Will be set by energon based on `samples`
+            tokens=packed_tokens,
+            labels=packed_labels,
+            images=packed_images,
+            position_ids=packed_position_ids,
+            loss_mask=packed_loss_mask,
+            packed_seq_params=packed_seq_params,
+        )

@@ -251,7 +251,6 @@ class LazySupervisedDataset(Dataset):
         data_config,
         tokenizer,
         image_processor,
-        sequence_length=None,
     ):
         super().__init__()
         if data_path is not None:
@@ -269,8 +268,6 @@ class LazySupervisedDataset(Dataset):
             self.tokenizer = self.tokenizer.tokenizer
 
         self.image_processor = image_processor
-        self.sequence_length = sequence_length
-
         self.conv_template = data_config.conv_template
         self.conv = supported_conv_templates[self.conv_template]
         self.image_process_mode = data_config.image_process_mode
@@ -381,6 +378,8 @@ class NevaDataset(LazySupervisedDataset):
         data_config,
         tokenizer,
         image_processor,
+        packed_sequence=False,
+        num_image_embeddings_per_tile=576,
     ):
 
         if data_path.endswith(".json"):
@@ -414,29 +413,12 @@ class NevaDataset(LazySupervisedDataset):
 
         else:
             raise ValueError(f"Formatting of {data_path} is not supported in Neva.")
+        self.packed_sequence = packed_sequence
+        self.num_image_embeddings_per_tile = num_image_embeddings_per_tile
 
     def collate_fn(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         data_config = self.data_config
-        packed_sequence = "cu_seqlens" in instances[0]
-        max_len = max(instance['tokens'].shape[0] for instance in instances)
-        for instance in instances:
-            pad_len = max_len - instance['tokens'].shape[0]
-            instance['tokens'] = F.pad(instance['tokens'], (0, pad_len), 'constant', 0)
-            instance['labels'] = F.pad(instance['labels'], (0, pad_len), 'constant', IGNORE_INDEX)
-            if packed_sequence and instance["cu_seqlens"][-1] != max_len:
-                instance["cu_seqlens"] = torch.cat((instance["cu_seqlens"], torch.IntTensor([max_len])), 0)
-
-        if packed_sequence:
-            max_len_cu = max(instance['cu_seqlens'].shape[0] for instance in instances)
-            max_len_image = max(instance['image'].shape[0] for instance in instances)
-            for instance in instances:
-                pad_len_cu = max_len_cu - instance['cu_seqlens'].shape[0]
-                instance['cu_seqlens'] = F.pad(instance['cu_seqlens'], (0, pad_len_cu), 'constant', max_len)
-
-                x = instance['image']
-                num_pad = max_len_image - x.shape[0]
-                pad_tensor = torch.zeros(num_pad, *x.shape[1:], dtype=x.dtype, device=x.device)
-                instance['image'] = torch.cat((x, pad_tensor), dim=0)
+        packed_sequence = self.packed_sequence
 
         media_type = data_config.media_type
         if media_type == 'image':
@@ -447,24 +429,30 @@ class NevaDataset(LazySupervisedDataset):
         else:
             raise ValueError(f"Unsupported media type {media_type}")
 
-        batch = default_collate(instances)
-        tokenizer = self.tokenizer
-
-        tokens = batch['tokens']
-        labels = batch['labels']
-
         if packed_sequence:
-            cu_seqlens = batch["cu_seqlens"]
-            position_ids = []
-            for cu_seqlen in cu_seqlens:
-                position_ids.append([])
-                for ind in range(0, len(cu_seqlen) - 1):
-                    seqlen = cu_seqlen[ind + 1] - cu_seqlen[ind]
-                    position_ids[-1].extend(list(range(seqlen)))
-            position_ids = torch.LongTensor(position_ids)
-            loss_mask = torch.ones(tokens.size(), dtype=torch.float, device=tokens.device)
-            attention_mask = torch.ones(tokens.size(), dtype=torch.long, device=tokens.device)
-        else:
+            from nemo.collections.vlm.neva.data.sequence_packing import convert_to_packed
+
+            media_token_id = self.data_config.media_token.token_index
+            tokens, labels, position_ids, loss_mask, packed_seq_params = convert_to_packed(
+                tokens=[instance['tokens'] for instance in instances],
+                labels=[instance['labels'] for instance in instances],
+                num_image_embeddings_per_tile=self.num_image_embeddings_per_tile,
+                media_token_index=media_token_id,
+                ignore_index=IGNORE_INDEX,
+            )
+            attention_mask = None
+        else:  # regular dataset
+            max_len = max(instance['tokens'].shape[0] for instance in instances)
+            for instance in instances:
+                pad_len = max_len - instance['tokens'].shape[0]
+                instance['tokens'] = F.pad(instance['tokens'], (0, pad_len), 'constant', 0)
+                instance['labels'] = F.pad(instance['labels'], (0, pad_len), 'constant', IGNORE_INDEX)
+
+            batch = default_collate(instances)
+            tokenizer = self.tokenizer
+
+            tokens = batch['tokens']
+            labels = batch['labels']
             attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
                 data=tokens,
                 eod_token=tokenizer.eos_token_id,
@@ -472,8 +460,7 @@ class NevaDataset(LazySupervisedDataset):
                 reset_attention_mask=data_config.reset_attention_mask,
                 reset_position_ids=data_config.reset_position_ids,
             )
-
-        loss_mask[labels < 0] = 0.0
+            loss_mask[labels < 0] = 0.0
 
         batch = {
             'tokens': tokens,
@@ -484,7 +471,7 @@ class NevaDataset(LazySupervisedDataset):
             'media': media,
         }
         if packed_sequence:
-            batch["cu_seqlens"] = cu_seqlens
+            batch["packed_seq_params"] = packed_seq_params
         return batch
 
 
@@ -506,7 +493,8 @@ class NevaLazyDataModule(pl.LightningDataModule):
         num_workers: int = 8,
         pin_memory: bool = True,
         persistent_workers: bool = False,
-        use_packed_sequence: bool = False,
+        packed_sequence: bool = False,
+        num_image_embeddings_per_tile: int = 576,
         seed: int = 1234,
     ) -> None:
         super().__init__()
@@ -534,7 +522,8 @@ class NevaLazyDataModule(pl.LightningDataModule):
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
         self.seed = seed
-        self.use_packed_sequence = use_packed_sequence
+        self.packed_sequence = packed_sequence
+        self.num_image_embeddings_per_tile = num_image_embeddings_per_tile
         self.init_global_step = 0
 
         if tokenizer is None or image_processor is None:
@@ -546,6 +535,20 @@ class NevaLazyDataModule(pl.LightningDataModule):
             self.tokenizer = tokenizer or AutoTokenizer("llava-hf/llava-1.5-7b-hf")
             self.image_processor = image_processor or processor.image_processor
 
+        if self.packed_sequence:
+            import dataclasses
+
+            def custom_on_megatron_step_start(self, step):
+                return dataclasses.replace(
+                    step,
+                    seq_length=self.seq_len,
+                    micro_batch_size=1,  # Override the micro_batch_size to 1 (used in PP)
+                    num_microbatches=self.num_microbatches,
+                    decoder_seq_length=self.decoder_seq_len,
+                )
+
+            MegatronDataSampler.on_megatron_step_start = custom_on_megatron_step_start
+
         self.data_sampler = MegatronDataSampler(
             seq_len=self.seq_length,
             decoder_seq_len=self.decoder_seq_length,
@@ -556,14 +559,22 @@ class NevaLazyDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str = "") -> None:
         assert len(self.paths) == 1, "not yet support blend dataset in Neva 2.0!"
-        if self.use_packed_sequence:
-            pass  # TODO
-        else:
-            # TODO:
-            # rng = torch.Generator().manual_seed(self.seed)
-            # train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size], generator=rng)
-            self._train_ds = NevaDataset(self.paths[0], self.data_config, self.tokenizer, self.image_processor)
-            self._validation_ds = NevaDataset(self.paths[0], self.data_config, self.tokenizer, self.image_processor)
+        self._train_ds = NevaDataset(
+            self.paths[0],
+            self.data_config,
+            self.tokenizer,
+            self.image_processor,
+            packed_sequence=self.packed_sequence,
+            num_image_embeddings_per_tile=self.num_image_embeddings_per_tile,
+        )
+        self._validation_ds = NevaDataset(
+            self.paths[0],
+            self.data_config,
+            self.tokenizer,
+            self.image_processor,
+            packed_sequence=self.packed_sequence,
+            num_image_embeddings_per_tile=self.num_image_embeddings_per_tile,
+        )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return self._create_dataloader(self._train_ds)

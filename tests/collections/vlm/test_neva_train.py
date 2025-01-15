@@ -37,6 +37,10 @@ def get_args():
     parser.add_argument(
         '--experiment-dir', type=str, default=None, help="directory to write results and checkpoints to"
     )
+    parser.add_argument(
+        "--use_packed_sequence",
+        action="store_true",
+    )
 
     return parser.parse_args()
 
@@ -49,6 +53,8 @@ if __name__ == '__main__':
     mbs = 2
     seq_length = 576
     decoder_seq_length = 1024
+    if args.use_packed_sequence:
+        decoder_seq_length = 2048
 
     data = vlm.NevaMockDataModule(
         seq_length=decoder_seq_length,
@@ -57,6 +63,7 @@ if __name__ == '__main__':
         tokenizer=None,
         image_processor=None,
         num_workers=2,
+        packed_sequence=args.use_packed_sequence,
     )
 
     # Transformer configurations

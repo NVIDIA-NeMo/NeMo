@@ -13,8 +13,11 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple, Union
+
 import torch
+from megatron.core.packed_seq_params import PackedSeqParams
+
 from nemo.collections.multimodal.data.energon.conversation import LLaVATemplateConfig
 
 
@@ -34,13 +37,22 @@ class ImageToken(MultiModalToken):
 
 @dataclass
 class ImageTextSample:
-    '''Sample type for template formatted raw image text sample'''
+    """Sample type for template formatted raw image text sample"""
 
     __key__: str = ''
     images: torch.Tensor = field(default_factory=lambda: torch.empty(0))
     tokens: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     labels: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     loss_mask: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
+
+
+@dataclass
+class PackedImageTextSample(ImageTextSample):
+    """Sample type for packed image text sample"""
+
+    __restore_key__: Tuple[Union[str, int, tuple], ...] = ()
+    position_ids: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
+    packed_seq_params: PackedSeqParams = field(default_factory=lambda: PackedSeqParams())
 
 
 @dataclass
@@ -54,6 +66,14 @@ class ImageTextRawBatch:
     tokens: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     labels: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     loss_mask: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
+
+
+@dataclass
+class PackedImageTextRawBatch(ImageTextRawBatch):
+    """Sample type for image text raw batch"""
+
+    position_ids: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
+    packed_seq_params: PackedSeqParams = field(default_factory=lambda: PackedSeqParams())
 
 
 @dataclass

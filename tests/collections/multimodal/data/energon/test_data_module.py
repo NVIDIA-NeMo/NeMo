@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import webdataset as wds
-from megatron.energon.flavors import BaseWebdataset
+from megatron.energon.flavors import BaseWebdatasetFactory
 from PIL import Image
 from transformers import AutoProcessor
 
@@ -159,7 +159,7 @@ class TestEnergonMultiModalDataModuleWithDummyData(unittest.TestCase):
                 )
 
             total_shards = shard_writer.shard
-        BaseWebdataset.prepare_dataset(
+        BaseWebdatasetFactory.prepare_dataset(
             path,
             [f"data-{{0..{total_shards-1}}}.tar"],
             split_parts_ratio=[("train", 1.0), ("val", 1.0)],

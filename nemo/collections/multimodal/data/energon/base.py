@@ -68,6 +68,7 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
         multimodal_sample_config: Optional[MultiModalSampleConfig] = MultiModalSampleConfig(),
         task_encoder: Optional[MultiModalTaskEncoder] = None,
         decoder_seq_length: Optional[int] = None,
+        packing_buffer_size: Optional[int] = None,
     ) -> None:
         """
         Initialize the EnergonMultiModalDataModule.
@@ -84,6 +85,8 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
         Defaults to MultiModalSampleConfig().
         task_encoder (MultiModalTaskEncoder, optional): Encoder responsible for encoding and batching samples.
         If not provided, a default (MultimodalTaskEncoder) encoder will be created. Defaults to None.
+        decoder_seq_length (int, optional): The maximum sequence length for the decoder. Used in encoder-decoder models.
+        packing_buffer_size (int, optional): Size of the packing buffer for batched samples. Defaults to None.
         """
 
         super().__init__()
@@ -113,6 +116,7 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
         )
         self.train_dataloader_object = None
         self.val_dataloader_object = None
+        self.packing_buffer_size = packing_buffer_size
 
     def io_init(self, **kwargs) -> fdl.Config[Self]:
 
@@ -146,6 +150,7 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
             task_encoder=self.task_encoder,
             worker_config=worker_config,
             max_samples_per_sequence=None,
+            packing_buffer_size=self.packing_buffer_size,
             shuffle_buffer_size=100,
             split_part=split,
         )

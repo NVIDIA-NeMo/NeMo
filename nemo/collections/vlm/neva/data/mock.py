@@ -42,6 +42,7 @@ class MockDataModule(pl.LightningDataModule):
         num_workers: int = 8,
         pin_memory: bool = True,
         persistent_workers: bool = False,
+        packed_sequence: bool = False,
     ):
         super().__init__()
         self.seq_length = seq_length
@@ -54,6 +55,7 @@ class MockDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
+        self.packed_sequence = packed_sequence
 
         if tokenizer is None or image_processor is None:
             logging.warning(f"Processor or tokenizer are not provided! Fall back to `llava-hf/llava-1.5-7b-hf`.")
@@ -72,14 +74,36 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage: str = "") -> None:
+        seq_length = self.seq_length
+        if self.packed_sequence and self.micro_batch_size > 1:
+            seq_length = seq_length // self.micro_batch_size
+            logging.warning(
+                f"Packed sequence is used with mock dataset. Sequence length for each "
+                f"sample is update to `seq_length // self.micro_batch_size = {seq_length}`!"
+            )
         self._train_ds = _MockNevaDataset(
-            self.tokenizer, self.image_processor, "train", self.num_train_samples, self.seq_length
+            self.tokenizer,
+            self.image_processor,
+            "train",
+            self.num_train_samples,
+            seq_length,
+            packed_sequence=self.packed_sequence,
         )
         self._validation_ds = _MockNevaDataset(
-            self.tokenizer, self.image_processor, "valid", self.num_val_samples, self.seq_length
+            self.tokenizer,
+            self.image_processor,
+            "valid",
+            self.num_val_samples,
+            seq_length,
+            packed_sequence=self.packed_sequence,
         )
         self._test_ds = _MockNevaDataset(
-            self.tokenizer, self.image_processor, "test", self.num_test_samples, self.seq_length
+            self.tokenizer,
+            self.image_processor,
+            "test",
+            self.num_test_samples,
+            seq_length,
+            packed_sequence=self.packed_sequence,
         )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
@@ -117,6 +141,8 @@ class _MockNevaDataset(Dataset):
         num_samples: int,
         seq_length: int,
         seed: int = 42,
+        packed_sequence: bool = False,
+        num_image_embeddings_per_tile=576,
     ) -> None:
         super().__init__()
         self.name = name
@@ -129,8 +155,10 @@ class _MockNevaDataset(Dataset):
 
         self.length = num_samples
         self.seed = seed
+        self.packed_sequence = packed_sequence
+        self.num_image_embeddings_per_tile = num_image_embeddings_per_tile
 
-        self.loss_mask = torch.ones(self.seq_length, dtype=torch.float)
+        self.loss_mask = torch.ones(self.seq_length + 1 - num_image_embeddings_per_tile, dtype=torch.float)
         self.position_ids = torch.arange(self.seq_length, dtype=torch.int64)
 
     def __len__(self) -> int:
@@ -143,7 +171,11 @@ class _MockNevaDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         # Generate data of the expected size and datatype (based on GPTDataset).
         np_gen = np.random.default_rng(seed=(self.seed + idx))
-        tokens = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length + 1], dtype=np.int64))
+        tokens = torch.from_numpy(
+            np_gen.integers(
+                self.vocab_size, size=[self.seq_length + 2 - self.num_image_embeddings_per_tile], dtype=np.int64
+            )
+        )
         tokens[2] = IMAGE_TOKEN_INDEX  # ImageToken token index
         labels = tokens.clone()
         images = torch.from_numpy(np_gen.random(size=[3, self.image_height, self.image_width], dtype=np.float32))
@@ -164,6 +196,33 @@ class _MockNevaDataset(Dataset):
         """
         collated_batch = data.dataloader.default_collate(batch)
         collated_batch["attention_mask"] = None
+        if self.packed_sequence:
+            from megatron.core.packed_seq_params import PackedSeqParams
+
+            tokens = collated_batch["tokens"]
+            batch_size = tokens.shape[0]
+            valid_seqlen = self.seq_length
+            cu_seqlens = torch.arange(
+                0, (batch_size + 1) * (valid_seqlen), step=(valid_seqlen), dtype=torch.int32, device=tokens.device
+            )
+            cu_seqlens_padded = torch.arange(
+                0, (batch_size + 1) * (valid_seqlen), step=(valid_seqlen), dtype=torch.int32, device=tokens.device
+            )
+            qkv_format = 'thd'
+            packed_seq_params = PackedSeqParams(
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_kv=cu_seqlens,
+                cu_seqlens_q_padded=cu_seqlens_padded,
+                cu_seqlens_kv_padded=cu_seqlens_padded,
+                max_seqlen_q=valid_seqlen,
+                max_seqlen_kv=valid_seqlen,
+                qkv_format=qkv_format,
+            )
+            collated_batch["packed_seq_params"] = packed_seq_params
+
+            for key in ["tokens", "labels", "loss_mask", "position_ids"]:
+                collated_batch[key] = collated_batch[key].reshape(1, -1)
+
         return collated_batch
 
     def collate_fn(self, batch):

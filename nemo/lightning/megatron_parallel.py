@@ -1711,7 +1711,10 @@ def masked_token_loss(tensor: Tensor, mask: Tensor):
     """
     losses = tensor.float()
     loss_mask = mask.view(-1).float()
-    loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()  # sequence level nll
+    num_valid_tokens = loss_mask.sum()
+    if num_valid_tokens < 0.5:  # no valid tokens
+        num_valid_tokens += 1.0
+    loss = torch.sum(losses.view(-1) * loss_mask) / num_valid_tokens  # sequence level nll
 
     return loss
 

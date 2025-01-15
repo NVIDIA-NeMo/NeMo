@@ -121,14 +121,19 @@ def neva_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
             )
         )
 
+    packed_seq_params = _batch.get("packed_seq_params", None)
     _batch = {
         key: val.cuda(non_blocking=True) if key in required_keys and val is not None else None
         for key, val in _batch.items()
     }
-    # slice batch along sequence dimension for context parallelism
-    output = get_batch_on_this_context_parallel_rank(_batch)
+    if packed_seq_params is not None:
+        for attr in ["cu_seqlens_q", "cu_seqlens_kv", "cu_seqlens_q_padded", "cu_seqlens_kv_padded"]:
+            value = getattr(packed_seq_params, attr, None)
+            if value is not None:
+                setattr(packed_seq_params, attr, value.cuda(non_blocking=True))
+    _batch["packed_seq_params"] = packed_seq_params
 
-    return output
+    return _batch
 
 
 def neva_forward_step(model, batch) -> torch.Tensor:
@@ -596,6 +601,7 @@ class MCoreNevaModel(MCoreLLaVAModel):
             image_token_index,
             num_image_tiles,
             attention_mask,
+            packed_seq_params,
         )  # [combined_seq_len, b, h_language], [b, combined_seq_len], [b, combined_seq_len]
 
         output = self.language_model(
@@ -642,6 +648,7 @@ class MCoreNevaModel(MCoreLLaVAModel):
         image_token_index,
         num_image_tiles,
         attention_mask,
+        packed_seq_params,
     ):
         """Preprocess input data before input to language model.
 
@@ -698,6 +705,8 @@ class MCoreNevaModel(MCoreLLaVAModel):
                 labels.shape == loss_mask.shape
             ), f"mismatching labels shape {labels.shape} and loss mask shape {loss_mask.shape}"
 
+        packed_sequence = packed_seq_params is not None and packed_seq_params.qkv_format == "thd"
+
         # Create indices for new text and label positions.
         with torch.no_grad():
             image_token_mask = input_ids == image_token_index
@@ -715,6 +724,16 @@ class MCoreNevaModel(MCoreLLaVAModel):
             # Pipeline parallel expects fixed input size. Check if we need to pad.
             if self._language_is_pipeline_parallel and max_seq_len < self._language_max_sequence_length:
                 max_seq_len = self._language_max_sequence_length
+                if packed_sequence:
+                    last_seqlen = packed_seq_params.cu_seqlens_q[-1] - packed_seq_params.cu_seqlens_q[-2]
+                    last_seqlen_padded = max_seq_len - packed_seq_params.cu_seqlens_q_padded[-2]
+                    assert (
+                        last_seqlen_padded >= last_seqlen
+                    ), "`language_max_sequence_length` needs to increase for sequence packing to work properly."
+                    packed_seq_params.cu_seqlens_q_padded[-1] = max_seq_len
+                    packed_seq_params.cu_seqlens_kv_padded[-1] = max_seq_len
+                    packed_seq_params.max_seqlen_q = max(last_seqlen_padded, packed_seq_params.max_seqlen_q)
+                    packed_seq_params.max_seqlen_kv = max(last_seqlen_padded, packed_seq_params.max_seqlen_kv)
 
             if self.sequence_parallel_lm:
                 if self.tp_comm_overlap_lm:
@@ -835,7 +854,17 @@ class MCoreNevaModel(MCoreLLaVAModel):
             # Truncate if exceeding the language model's max sequence length.
             if final_embedding.shape[0] > self._language_max_sequence_length:
                 final_embedding = final_embedding[: self._language_max_sequence_length]
-            if self.sequence_parallel_lm:
+                if packed_sequence:
+                    truncate_len = packed_seq_params.cu_seqlens_q_padded[-1] - self._language_max_sequence_length
+                    packed_seq_params.cu_seqlens_q_padded[-1] = self._language_max_sequence_length
+                    packed_seq_params.cu_seqlens_kv_padded[-1] = self._language_max_sequence_length
+                    packed_seq_params.cu_seqlens_q[-1] -= truncate_len
+                    packed_seq_params.cu_seqlens_kv[-1] -= truncate_len
+                    assert (
+                        packed_seq_params.cu_seqlens_q[-1] >= packed_seq_params.cu_seqlens_q[-2]
+                    ), "with packed sequence, the truncation can only truncate on the last sequence."
+
+            if self.sequence_parallel_lm and not packed_sequence:
                 # Create an attention mask. This ensures correct computation.
                 # This is done even when no padding was done as we set mask_type to
                 # 'padding' or 'padding_causal' when using SP.
@@ -858,6 +887,7 @@ class MCoreNevaModel(MCoreLLaVAModel):
 
                 # Attention mask True/False meaning flipped in 1.7.0
                 attention_mask = attention_mask < 0.5
+            if self.sequence_parallel_lm:
                 final_embedding = tensor_parallel.scatter_to_sequence_parallel_region(final_embedding)
 
         return final_embedding, final_labels, final_loss_mask, attention_mask

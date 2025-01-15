@@ -14,7 +14,7 @@
 
 from typing import List, Optional, Union
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import torch.distributed
 from megatron.core.inference.common_inference_params import CommonInferenceParams

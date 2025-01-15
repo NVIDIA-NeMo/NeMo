@@ -15,8 +15,8 @@
 import argparse
 
 import torch
+from lightning.pytorch.loggers import WandbLogger
 from megatron.core.optimizer import OptimizerConfig
-from pytorch_lightning.loggers import WandbLogger
 from transformers import AutoProcessor
 
 from nemo import lightning as nl

@@ -88,7 +88,7 @@ class VQModel(pl.LightningModule):
                     print(f"{context}: Restored training weights")
 
     def init_from_ckpt(self, path, ignore_keys=list()):
-        sd = torch.load(path, map_location="cpu")["state_dict"]
+        sd = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:
@@ -345,7 +345,7 @@ class AutoencoderKL(pl.LightningModule):
 
                 state_dict = load_safetensors(from_pretrained)
             else:
-                state_dict = torch.load(from_pretrained)
+                state_dict = torch.load(from_pretrained, weights_only=False)
             if 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']
             missing_key, unexpected_key, _, _ = self._load_pretrained_model(state_dict, from_NeMo=from_NeMo)
@@ -476,7 +476,7 @@ class AutoencoderKL(pl.LightningModule):
         return error_msgs
 
     def init_from_ckpt(self, path, ignore_keys=list()):
-        sd = torch.load(path, map_location="cpu")["state_dict"]
+        sd = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:

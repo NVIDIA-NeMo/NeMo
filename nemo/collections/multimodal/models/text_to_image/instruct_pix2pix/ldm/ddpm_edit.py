@@ -41,9 +41,15 @@ except (ImportError, ModuleNotFoundError):
 
 class LatentDiffusionEdit(LatentDiffusion):
     def init_from_ckpt(
-        self, path, ignore_keys=list(), only_model=False, load_vae=True, load_unet=True, load_encoder=True,
+        self,
+        path,
+        ignore_keys=list(),
+        only_model=False,
+        load_vae=True,
+        load_unet=True,
+        load_encoder=True,
     ):
-        pl_sd = torch.load(path, map_location="cpu")
+        pl_sd = torch.load(path, map_location="cpu", weights_only=False)
         if "state_dict" in list(pl_sd.keys()):
             pl_sd = pl_sd["state_dict"]
         sd = {}
@@ -144,7 +150,7 @@ class MegatronLatentDiffusionEdit(MegatronLatentDiffusion):
         return model
 
     def setup(self, stage=None):
-        """ PTL hook that is executed after DDP spawns.
+        """PTL hook that is executed after DDP spawns.
             We setup datasets here as megatron datasets require DDP to instantiate.
             See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
         Args:
@@ -260,5 +266,8 @@ class MegatronLatentDiffusionEdit(MegatronLatentDiffusion):
 
         # Torch dataloader.
         return torch.utils.data.DataLoader(
-            dataset, batch_sampler=batch_sampler, num_workers=self._cfg.data.num_workers, pin_memory=True,
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=self._cfg.data.num_workers,
+            pin_memory=True,
         )

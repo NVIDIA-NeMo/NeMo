@@ -83,7 +83,7 @@ class ImagenPipeline(Callable):
             model_cfg.model.micro_batch_size = 1
             model_cfg.model.global_batch_size = 1
             model = MegatronImagen(cfg=model_cfg.model, trainer=trainer)
-            checkpoint = torch.load(model_ckpt, map_location=lambda storage, loc: storage)
+            checkpoint = torch.load(model_ckpt, map_location=lambda storage, loc: storage, weights_only=False)
 
             # Change weight keys if training using TorchInductor
             state_dict = checkpoint['state_dict']

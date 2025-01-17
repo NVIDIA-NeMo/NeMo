@@ -246,7 +246,7 @@ class DDPM(torch.nn.Module):
         load_unet=True,
         load_encoder=True,
     ):
-        pl_sd = torch.load(path, map_location="cpu")
+        pl_sd = torch.load(path, map_location="cpu", weights_only=False)
         if "state_dict" in list(pl_sd.keys()):
             pl_sd = pl_sd["state_dict"]
 
@@ -2340,7 +2340,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         if filepath.endswith('.nemo'):
             conf, state_dict = self._get_config_and_state_dict_from_nemo(filepath, map_location)
         elif filepath.endswith('.ckpt'):
-            state_dict = torch.load(filepath, map_location)['state_dict']
+            state_dict = torch.load(filepath, map_location, weights_only=False)['state_dict']
         else:
             raise RuntimeError(f"{filepath} is not nemo file or ckpt file")
         if not peft_cfgs:

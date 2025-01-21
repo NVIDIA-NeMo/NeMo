@@ -130,6 +130,7 @@ def initialize_model_parallel_for_nemo(
         app_state.tensor_model_parallel_rank,
         app_state.pipeline_model_parallel_rank,
         app_state.expert_model_parallel_rank,
+        app_state.expert_tensor_parallel_rank,
         app_state.model_parallel_size,
         app_state.data_parallel_size,
         app_state.pipeline_model_parallel_split_rank,
@@ -482,6 +483,13 @@ def fake_initialize_model_parallel(
             if rank in ranks:
                 expert_model_parallel_rank = list(ranks).index(rank)
 
+    # ETP
+    expert_tensor_parallel_rank = 0
+    if expert_tensor_parallel_size_ is not None and expert_tensor_parallel_size_ > 1:
+        for ranks in generator_wrapper('tp-ep', is_expert=True):
+            if rank in ranks:
+                expert_tensor_parallel_rank = list(ranks).index(rank)
+
     # Build the pipeline model-parallel groups and embedding groups
     # (first and last rank in each pipeline model-parallel group).
     all_pipeline_model_parallel_group_ranks = []
@@ -520,6 +528,7 @@ def fake_initialize_model_parallel(
         tensor_model_parallel_rank,
         pipeline_model_parallel_rank,
         expert_model_parallel_rank,
+        expert_tensor_parallel_rank,
         model_parallel_size,
         data_parallel_size,
         pipeline_model_parallel_split_rank_,

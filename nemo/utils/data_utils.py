@@ -18,7 +18,10 @@ import shutil
 import subprocess
 from typing import Tuple
 
-from nemo import __version__ as NEMO_VERSION
+try:
+    from nemo import __version__ as NEMO_VERSION
+except ImportError:
+    NEMO_VERSION = 'git'
 from nemo import constants
 from nemo.utils import logging
 
@@ -50,14 +53,12 @@ def is_datastore_path(path) -> bool:
 
 
 def is_tarred_path(path) -> bool:
-    """Check if a path is for a tarred file.
-    """
+    """Check if a path is for a tarred file."""
     return path.endswith('.tar')
 
 
 def is_datastore_cache_shared() -> bool:
-    """Check if store cache is shared.
-    """
+    """Check if store cache is shared."""
     # Assume cache is shared by default, e.g., as in resolve_cache_dir (~/.cache)
     cache_shared = int(os.environ.get(constants.NEMO_ENV_DATA_STORE_CACHE_SHARED, 1))
 
@@ -70,8 +71,7 @@ def is_datastore_cache_shared() -> bool:
 
 
 def ais_cache_base() -> str:
-    """Return path to local cache for AIS.
-    """
+    """Return path to local cache for AIS."""
     override_dir = os.environ.get(constants.NEMO_ENV_DATA_STORE_CACHE_DIR, "")
     if override_dir == "":
         cache_dir = resolve_cache_dir().as_posix()
@@ -85,8 +85,7 @@ def ais_cache_base() -> str:
 
 
 def ais_endpoint() -> str:
-    """Get configured AIS endpoint.
-    """
+    """Get configured AIS endpoint."""
     return os.getenv('AIS_ENDPOINT')
 
 
@@ -114,7 +113,7 @@ def ais_endpoint_to_dir(endpoint: str) -> str:
 
     Args:
         endpoint: AIStore endpoint in format https://host:port
-    
+
     Returns:
         Directory formed as `host/port`.
     """
@@ -127,8 +126,7 @@ def ais_endpoint_to_dir(endpoint: str) -> str:
 
 
 def ais_binary() -> str:
-    """Return location of `ais` binary.
-    """
+    """Return location of `ais` binary."""
     path = shutil.which('ais')
 
     if path is not None:
@@ -178,7 +176,7 @@ def get_datastore_object(path: str, force: bool = False, num_retries: int = 5) -
         path: path to an object
         force: force download, even if a local file exists
         num_retries: number of retries if the get command fails
-    
+
     Returns:
         Local path of the object.
     """
@@ -247,14 +245,12 @@ class DataStoreObject:
 
     @property
     def store_path(self) -> str:
-        """Return store path of the object.
-        """
+        """Return store path of the object."""
         return self._store_path
 
     @property
     def local_path(self) -> str:
-        """Return local path of the object.
-        """
+        """Return local path of the object."""
         return self._local_path
 
     def get(self, force: bool = False) -> str:
@@ -283,8 +279,7 @@ class DataStoreObject:
         raise NotImplementedError()
 
     def __str__(self):
-        """Return a human-readable description of the object.
-        """
+        """Return a human-readable description of the object."""
         description = f'{type(self)}: store_path={self.store_path}, local_path={self.local_path}'
         return description
 

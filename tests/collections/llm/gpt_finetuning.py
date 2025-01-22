@@ -137,3 +137,7 @@ if __name__ == '__main__':
         optim=adam,
         resume=resume,
     )
+
+    if args.max_steps == 6:
+        # assert a resume has happened for CI tests
+        assert 'reduced_train_loss=' in str(trainer.ckpt_path), "Resume did not happen in this resume test."

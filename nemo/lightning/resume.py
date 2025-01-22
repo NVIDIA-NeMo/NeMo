@@ -103,7 +103,23 @@ class AutoResume:
         if isinstance(trainer, fl.Fabric):
             raise NotImplementedError("Fabric is not supported yet.")
 
-        if self.restore_config:
+        trainer_ckpt_path = self.get_trainer_ckpt_path(model)
+        if trainer_ckpt_path:
+            trainer.ckpt_path = trainer_ckpt_path
+            trainer.checkpoint_callback.last_model_path = trainer_ckpt_path
+            # Load artifacts
+            if getattr(self.restore_config, 'load_artifacts', False):
+                if isinstance(trainer_ckpt_path, AdapterPath):
+                    # load tokenizer from the base model during peft resume, in case the first peft checkpoint
+                    # is deleted before the current peft checkpoint is saved
+                    context_path = trainer_ckpt_path.base_model_path / "context"
+                    if not context_path.exists():
+                        context_path = trainer_ckpt_path.base_model_path
+                else:
+                    context_path = self.get_context_path(model)
+                model = _try_restore_tokenizer(model, context_path)
+
+        elif self.restore_config:
             new_path = self._extract_path(
                 model=model,
                 path=self.restore_config.path,
@@ -122,21 +138,6 @@ class AutoResume:
                     context_path = new_path
 
                 _try_restore_tokenizer(model, context_path)
-
-        elif (trainer_ckpt_path := self.get_trainer_ckpt_path(model)) is not None:
-            trainer.ckpt_path = trainer_ckpt_path
-            trainer.checkpoint_callback.last_model_path = trainer_ckpt_path
-            # Load artifacts
-            if getattr(self.restore_config, 'load_artifacts', False):
-                if isinstance(trainer_ckpt_path, AdapterPath):
-                    # load tokenizer from the base model during peft resume, in case the first peft checkpoint
-                    # is deleted before the current peft checkpoint is saved
-                    context_path = trainer_ckpt_path.base_model_path / "context"
-                    if not context_path.exists():
-                        context_path = trainer_ckpt_path.base_model_path
-                else:
-                    context_path = self.get_context_path(model)
-                model = _try_restore_tokenizer(model, context_path)
 
     def _extract_path(
         self, model: Optional[io.ConnectorMixin], path: str, adapter_path: Optional[str] = None
@@ -185,9 +186,12 @@ class AutoResume:
         checkpoint = None
 
         # Use <log_dir>/checkpoints/ unless `dirpath` is set
-        checkpoint_dir = (
-            Path(self.resume_from_directory) if self.resume_from_directory else Path(Path(log_dir) / "checkpoints")
-        )
+        if self.resume_from_directory:
+            checkpoint_dir = Path(self.resume_from_directory)
+        elif log_dir is not None:
+            checkpoint_dir = Path(Path(log_dir) / "checkpoints")
+        else:  # ie. if log_dir is None
+            return None
 
         # when using distributed checkpointing, checkpoint_dir is a directory of directories
         # we check for this here

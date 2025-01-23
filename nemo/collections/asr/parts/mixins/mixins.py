@@ -110,8 +110,12 @@ class ASRBPEMixin(ABC):
                 if special_tokens is not None:
                     raise ValueError("`special_tokens` are no longer supported for SentencePiece based tokenizers.")
 
-            # Update special tokens
-            self.tokenizer = tokenizers.SentencePieceTokenizer(model_path=model_path)
+            if "custom_tokenizer" in self.tokenizer_cfg:
+                self.tokenizer = self.from_config_dict(
+                    {"_target_": tokenizer_cfg["custom_tokenizer"]["_target_"], "model_path": model_path}
+                )
+            else:
+                self.tokenizer = tokenizers.SentencePieceTokenizer(model_path=model_path)
 
             if 'vocab_path' in self.tokenizer_cfg:
                 vocab_path = self.tokenizer_cfg.get('vocab_path')

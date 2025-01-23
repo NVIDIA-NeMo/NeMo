@@ -1079,23 +1079,22 @@ To run 2D bucketing with 30 buckets sub-divided into 5 sub-buckets each (150 buc
 
     # The script's output:
     Use the following options in your config:
+            use_bucketing=1
             num_buckets=30
             bucket_duration_bins=[[1.91,10],[1.91,17],[1.91,25],...
-            max_duration=...
-            max_tps=...
-    <other diagnostic information about the dataset>
+    The max_tps setting below is optional, use it if your data has low quality long transcript outliers:
+            max_tps=[13.2,13.2,11.8,11.8,...]
 
 Note that the output in ``bucket_duration_bins`` is a nested list, where every bin specifies
 the maximum duration and the maximum number of tokens that go into the bucket.
 Passing this option to Lhotse dataloader will automatically enable 2D bucketing.
-Note the presence of ``max_duration`` and ``max_tps`` (token-per-second) options:
-these need to be included in dataloader's configuration to ensure we can use the buckets correctly at runtime
-in case of outliers.
-In general, if you change your data in training, it is highly advisable to re-estimate the duration bins.
 
-Note that reasonable values for tokens-per-second rarely exceed 12tps with reasonably good tokenizers.
-If you find your dataset's TPS is much higher than that, you may have some bad data outliers.
-In that case you may specify ``--max_tps`` option to discard those both in bin estimation and dataloading.
+Note the presence of ``max_tps`` (token-per-second) option.
+It is optional to include it in the dataloader configuration: if you do, we will apply an extra filter
+that discards examples which have more tokens per second than the threshold value.
+The threshold is determined for each bucket separately based on data distribution, and can be controlled
+with the option ``--token_outlier_threshold``.
+This filtering is useful primarily for noisy datasets to discard low quality examples / outliers.
 
 We also support aggregate tokenizers for 2D bucketing estimation:
 

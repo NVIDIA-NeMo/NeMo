@@ -26,6 +26,7 @@ from nemo.collections.common.tokenizers.canary_tokenizer import (
     CANARY_BOS,
     CANARY_EOS,
     CANARY_SPECIAL_TOKENIZER,
+    CanaryTokenizer,
 )
 
 
@@ -196,8 +197,13 @@ def canary2(cut: Cut, prompt: Canary2PromptFormatter) -> dict[str, torch.Tensor]
         ),
     )
     ans = prompt.encode_dialog(turns)
+    if isinstance(prompt.tokenizer, CanaryTokenizer):
+        eos = prompt.tokenizer.eos
+    else:  # SPE
+        eos = prompt.tokenizer.token_to_id(CANARY_EOS)
+    assert eos > -1, "Invalid tokenizer: tokenizer.token_to_id('{CANARY_EOS}') returned {eos}"
     assert (
-        ans["answer_ids"][-1].item() == prompt.tokenizer.eos
+        ans["answer_ids"][-1].item() == eos
     ), f"Expected the last token in answer_ids to be EOS, but we got {ans['answer_ids']}"
     ans["answer_ids"] = ans["answer_ids"][:-1]  # Strip Canary's EOS
     return ans

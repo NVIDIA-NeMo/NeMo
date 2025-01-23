@@ -33,7 +33,7 @@ from lhotse.dataset import (
     make_worker_init_fn,
 )
 from lhotse.dataset.dataloading import resolve_seed
-from lhotse.dataset.sampling.base import CutSampler, TimeConstraint
+from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
 from lhotse.lazy import LazyFlattener
 from lhotse.utils import fastcopy, fix_random_seed
 from omegaconf import DictConfig, OmegaConf
@@ -44,6 +44,7 @@ from nemo.collections.common.data.lhotse.cutset import (
     read_cutset_from_config,
 )
 from nemo.collections.common.data.lhotse.sampling import (
+    BucketingFilter,
     DurationFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -76,7 +77,8 @@ class LhotseDataLoadingConfig:
     cuts_path: str | None = None
     shar_path: Any = None  # str | list[str | tuple[str, float | int]] | None = None
     #  Enable this to support dataloading from JSON manifests that reference subsets of audio tar files.
-    tarred_random_access: bool = False
+    skip_missing_manifest_entries: bool = False
+    tarred_random_access: bool = False  # deprecated, replaced by: skip_missing_manifest_entries
     # 2. Batch size.
     #   a. Existing NeMo options.
     batch_size: int | None = None
@@ -91,6 +93,7 @@ class LhotseDataLoadingConfig:
     bucket_duration_bins: Any = None  # list[float] | list[list[float]] | None = None
     bucket_buffer_size: int = 10000
     concurrent_bucketing: bool = True  # fetches data in a background thread
+    bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
     #   d. Other Lhotse sampling options.
     shuffle_buffer_size: int | None = 10000
     drop_last: bool = False
@@ -117,7 +120,7 @@ class LhotseDataLoadingConfig:
     min_duration: float | None = -1
     max_duration: float | None = float("inf")
     min_tps: int = -1  # allowed tokens per second (audio-only)
-    max_tps: float = float("inf")
+    max_tps: Any = float("inf")  # float | list[float]
     #   * Text input
     min_tokens: int | None = None
     max_tokens: int | None = None
@@ -125,7 +128,7 @@ class LhotseDataLoadingConfig:
     # For 2D bucketing it's always false, as we report a tuple of (context_len, answer_len).
     measure_total_length: bool = True
     min_tpt: int = -1  # allowed tokens per token (text-only)
-    max_tpt: float = float("inf")
+    max_tpt: Any = float("inf")  # float | list[float]
 
     # 3. Supported existing NeMo options.
     shuffle: bool = False
@@ -530,7 +533,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # Select the strategy customizing Lhotse sampler behaviour.
     # Provides support for dynamic batch sizes, multimodal dataloading, 2D bucketing, etc.
     bucket_duration_bins = determine_bucket_duration_bins(config)
-    constraint = determine_sampling_constraint(bucket_duration_bins, config)
+    cuts, constraint = determine_sampling_constraint(cuts, bucket_duration_bins, config)
 
     # 3. The sampler.
     if config.use_bucketing:
@@ -608,12 +611,14 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     return sampler, use_iterable_dataset
 
 
-def determine_sampling_constraint(bucket_duration_bins, config):
+def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) -> tuple[CutSet, SamplingConstraint]:
     """
     Select an appropriate sampling strategy (constraint) for Lhotse samplers based on the configuration.
     Sampling constraint affects the batch size (static/dynamic) and bucketing behaviour (1D/2D).
     It is the appropriate customization point to introduce support of other modalities,
     as it defines a method for example sequence length measurement (audio duration, text tokens, etc.).
+
+    Some constraints apply extra filter on ``cuts`` which is why we accept and return the ``CutSet``.
 
     Lhotse's default is :class:`TimeConstraint` for regular audio data, other available options are
     multimodal constraints (joint text + audio) and their 2D bucketing extensions.
@@ -627,7 +632,10 @@ def determine_sampling_constraint(bucket_duration_bins, config):
                 max_seq_len_buckets=bucket_duration_bins,
                 batch_sizes=config.bucket_batch_size,
                 token_equivalent_duration=config.token_equivalent_duration,
+                strict_2d=config.bucketing_2d_strict_mode,
+                max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
             )
+            cuts = cuts.filter(BucketingFilter(constraint))
         else:
             constraint = MultimodalSamplingConstraint(
                 token_equivalent_duration=config.token_equivalent_duration,
@@ -643,14 +651,17 @@ def determine_sampling_constraint(bucket_duration_bins, config):
             constraint = FixedBucketBatchSizeConstraint2D(
                 max_seq_len_buckets=bucket_duration_bins,
                 batch_sizes=config.bucket_batch_size,
+                strict_2d=config.bucketing_2d_strict_mode,
+                max_ratio=config.max_tps if isinstance(config.max_tps, Sequence) else None,
             )
+            cuts = cuts.filter(BucketingFilter(constraint))
         else:
             constraint = TimeConstraint(
                 max_cuts=config.batch_size,
                 max_duration=config.batch_duration,
                 quadratic_duration=config.quadratic_duration,
             )
-    return constraint
+    return cuts, constraint
 
 
 def determine_bucket_duration_bins(config):
@@ -702,22 +713,28 @@ def make_structured_with_schema_warnings(config: DictConfig | dict) -> DictConfi
     supported_keys = set(OmegaConf.to_container(default).keys())
     received_keys = set(OmegaConf.to_container(config).keys())
     unsupported_keys = received_keys - supported_keys
+    unsupported_keys.discard("use_lhotse")
     if unsupported_keys:
-        warnings.warn(
-            f"The following configuration keys are no longer supported " f"and ignored: {','.join(unsupported_keys)}",
-            category=DeprecationWarning,
+        logging.warning(
+            f"The following configuration keys are ignored by Lhotse dataloader: {','.join(unsupported_keys)}",
         )
     config = OmegaConf.masked_copy(config, list(supported_keys))
 
-    return OmegaConf.merge(default, config)
+    config = OmegaConf.merge(default, config)
 
+    if config.get("tarred_random_access", False):
+        logging.warning(
+            "Option 'tarred_random_access' is deprecated and replaced with 'skip_missing_manifest_entries'.",
+        )
+        config.skip_missing_manifest_entries = True
+    if config.skip_missing_manifest_entries:
+        logging.warning(
+            "Note: skip_missing_manifest_entries is set to True. "
+            "If any of your manifests and tar files are mismatched, the entire tar file will be skipped without warning. "
+            "It's your responsibility to ensure data integrity with this setting."
+        )
 
-def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
-    assert not (
-        config.force_map_dataset and config.force_iterable_dataset
-    ), "Conflicting options: force_map_dataset=True and force_iterable_dataset=True"
-    use_iterable_dataset = (use_iterable_dataset or config.force_iterable_dataset) and not config.force_map_dataset
-    return use_iterable_dataset
+    return config
 
 
 def tokenize(example, tokenizer):

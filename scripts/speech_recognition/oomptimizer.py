@@ -408,7 +408,9 @@ def oomptimizer(
         (
             "text"
             if any(
-                isinstance(item["type"].elements_type, LabelsType) and item["seq_length"] == direction
+                isinstance(item["type"], NeuralType)
+                and isinstance(item["type"].elements_type, LabelsType)
+                and item["seq_length"] == direction
                 for item in schema["inputs"]
                 if item["type"] != "dummy"
             )
@@ -518,8 +520,6 @@ def oomptimizer(
     if is_2d_bucketing:
         # 2D bucketing doesn't support bucket merging.
         final_profile = [["[" + ",".join(map(str, b)) + "]", bs] for (b, _, __), bs in profile.items()]
-        max_input_len, max_output_len = buckets[-1]
-        ratio = max_output_len / max_input_len
     else:
         click.echo("Bucket merging stage...")
         final_profile = []
@@ -532,7 +532,6 @@ def oomptimizer(
                 final_profile[-1][0] = bucket
                 continue
             final_profile.append([bucket, bs])
-        max_input_len = final_profile[-1][0]
 
     click.secho(f"The profile was created with the following settings:")
     click.secho(f"* using {memory_fraction:.1%} of available GPU RAM.")
@@ -541,9 +540,6 @@ def oomptimizer(
     click.secho("The final profile is:", bold=True)
     click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
-    click.secho("\t(The following flags are suitable for ASR/speech-to-text models):")
-    click.secho(f"\tmax_tps={ratio}", bold=True)
-    click.secho(f"\tmax_duration={max_input_len}", bold=True)
 
 
 if __name__ == "__main__":

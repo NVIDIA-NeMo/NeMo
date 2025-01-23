@@ -190,7 +190,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "force_finite": config.get("force_finite", False),
         "max_open_streams": config.get("max_open_streams", None),
         "token_equivalent_duration": config.get("token_equivalent_duration", None),
-        "tarred_random_access": config.get("tarred_random_access", False),
+        "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
     }
     input_cfg = config.input_cfg
     if isinstance(input_cfg, (str, Path)):
@@ -510,11 +510,11 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 LazyNeMoTarredIterator(
                     config.manifest_filepath,
                     tar_paths=config.tarred_audio_filepaths,
-                    tarred_random_access=config.tarred_random_access,
+                    skip_missing_manifest_entries=config.skip_missing_manifest_entries,
                     **common_kwargs,
                 )
             )
-            if not config.tarred_random_access and not force_finite:
+            if not force_finite:
                 cuts = cuts.repeat()
         else:
             cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **common_kwargs))
@@ -552,7 +552,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 nemo_iter = LazyNeMoTarredIterator(
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
-                    tarred_random_access=config.tarred_random_access,
+                    skip_missing_manifest_entries=config.skip_missing_manifest_entries,
                     **common_kwargs,
                 )
             else:

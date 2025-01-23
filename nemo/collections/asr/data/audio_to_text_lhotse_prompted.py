@@ -71,7 +71,7 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.load_audio = AudioSamples(fault_tolerant=True)
-        self.padding_value = self.tokenizer.pad
+        self.padding_value = self.tokenizer.pad_id
         self.prompt = prompt
 
     def __getitem__(self, cuts: CutSet) -> PromptedAudioToTextMiniBatch:

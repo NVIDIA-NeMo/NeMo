@@ -345,7 +345,7 @@ def pyt_to_mcore_state_dict(
 
 # Taken and modified from torchtitan
 # https://github.com/pytorch/torchtitan/blob/main/torchtitan/parallelisms/parallelize_llama.py
-def fsdp2_strategy_parallelize(model, device_mesh: DeviceMesh = None):
+def fsdp2_strategy_parallelize(model, device_mesh: DeviceMesh = None, model_type: str = None):
     """Apply parallelisms and activation checkpointing to the model.
     NOTE: The passed-in model preferably should be on meta device. Otherwise,
     the model must fit on GPU or CPU memory.
@@ -364,18 +364,43 @@ def fsdp2_strategy_parallelize(model, device_mesh: DeviceMesh = None):
         mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
         fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
-        for layer_id, transformer_block in enumerate(model.model.layers):
-            # Apply activation checkpointing
-            # transformer_block = checkpoint_wrapper(transformer_block)
-            # As an optimization, do not reshard after forward for the last
-            # transformer block since FSDP would prefetch it immediately
-            reshard_after_forward = int(layer_id) < len(model.model.layers) - 1
-            fully_shard(
-                transformer_block,
-                **fsdp_config,
-                reshard_after_forward=reshard_after_forward,
-            )
-            model.model.layers[layer_id] = transformer_block
+        if model_type == "speech_seq2seq":
+            for layer_id, transformer_block in enumerate(model.model.encoder.layers):
+                # Apply activation checkpointing
+                # transformer_block = checkpoint_wrapper(transformer_block)
+                # As an optimization, do not reshard after forward for the last
+                # transformer block since FSDP would prefetch it immediately
+                reshard_after_forward = int(layer_id) < len(model.model.encoder.layers) - 1
+                fully_shard(
+                    transformer_block,
+                    **fsdp_config,
+                    reshard_after_forward=reshard_after_forward,
+                )
+                model.model.encoder.layers[layer_id] = transformer_block
+
+            for layer_id, transformer_block in enumerate(model.model.decoder.layers):
+                # transformer_block = checkpoint_wrapper(transformer_block)
+                reshard_after_forward = int(layer_id) < len(model.model.decoder.layers) - 1
+                fully_shard(
+                    transformer_block,
+                    **fsdp_config,
+                    reshard_after_forward=reshard_after_forward,
+                )
+                model.model.decoder.layers[layer_id] = transformer_block
+        else:
+            for layer_id, transformer_block in enumerate(model.model.layers):
+                # Apply activation checkpointing
+                # transformer_block = checkpoint_wrapper(transformer_block)
+                # As an optimization, do not reshard after forward for the last
+                # transformer block since FSDP would prefetch it immediately
+                reshard_after_forward = int(layer_id) < len(model.model.layers) - 1
+                fully_shard(
+                    transformer_block,
+                    **fsdp_config,
+                    reshard_after_forward=reshard_after_forward,
+                )
+                model.model.layers[layer_id] = transformer_block
+
         model = fully_shard(model, **fsdp_config)
 
     return model

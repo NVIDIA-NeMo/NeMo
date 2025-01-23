@@ -20,6 +20,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
+from nemo.lightning.pytorch.strategies.utils import fsdp2_strategy_parallelize
 from nemo.utils import logging
 
 
@@ -94,6 +95,10 @@ class HFAutoModelForSpeechSeq2Seq(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
                 self.model = AutoModelForSpeechSeq2Seq.from_config(config, trust_remote_code=self.trust_remote_code)
 
+        # Apply FSDP2 and TP to the model
+        if self.device_mesh is not None:
+            fsdp2_strategy_parallelize(self.model, device_mesh=self.device_mesh, model_type="speech_seq2seq")
+
         if train:
             self.model.train()
 
@@ -104,7 +109,7 @@ class HFAutoModelForSpeechSeq2Seq(pl.LightningModule, io.IOMixin, fn.FNMixin):
             decoder_input_ids=decoder_input_ids,
         )
 
-    def training_step(self, batch):
+    def training_step(self, batch, batch_idx=None):
         outputs = self.forward(input_features=batch["input_features"], decoder_input_ids=batch["decoder_input_ids"])
         loss_mask = batch.get('loss_mask', None)
         if loss_mask is not None:

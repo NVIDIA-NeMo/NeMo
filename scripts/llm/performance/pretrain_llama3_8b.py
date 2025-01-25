@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,30 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from os.path import basename
 from typing import Optional
 
 import nemo_run as run
-from nemo_run.config import NEMORUN_HOME
 from utils import get_comm_overlap_callback_idx, hf_tokenizer, parse_cli_args, slurm_executor
 
-from nemo.collections.llm.recipes.llama31_405b import pretrain_recipe
+from nemo.collections.llm.recipes.llama3_8b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
-from nemo.utils import logging
 
-NUM_NODES = 72
+NUM_NODES = 1
 NUM_GPUS_PER_NODE = 8
 MICRO_BATCH_SIZE = 1
-GLOBAL_BATCH_SIZE = 252
-TP_SIZE = 8
-PP_SIZE = 9
+GLOBAL_BATCH_SIZE = 128
+TP_SIZE = 1
+PP_SIZE = 1
 CP_SIZE = 2
-VP_SIZE = 7
+VP_SIZE = None
 MAX_STEPS = 100
 
 
-def llama3_405b_performance_recipe(
+def llama3_8b_performance_recipe(
     compute_dtype: str,
     num_nodes: int,
     num_gpus_per_node: int,
@@ -48,7 +47,7 @@ def llama3_405b_performance_recipe(
     max_steps: int,
 ):
     """
-    llama3 405b pre-train recipe aimed at achieving best possible performance.
+    llama3 8b pre-train recipe aimed at achieving best possible performance.
 
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
@@ -58,7 +57,7 @@ def llama3_405b_performance_recipe(
     recipe.data.micro_batch_size = mbs
     recipe.data.global_batch_size = gbs
     recipe.data.num_train_samples = max_steps * gbs * mbs  # ensure only 1 epoch for whole run
-    recipe.data.tokenizer = hf_tokenizer("meta-llama/Llama-3.1-405B")
+    recipe.data.tokenizer = hf_tokenizer("meta-llama/Meta-Llama-3-8B")
 
     recipe.trainer.max_steps = max_steps
     recipe.trainer.num_nodes = num_nodes
@@ -69,26 +68,20 @@ def llama3_405b_performance_recipe(
     recipe.trainer.strategy.pipeline_model_parallel_size = pp_size
     recipe.trainer.strategy.context_parallel_size = cp_size
     recipe.trainer.strategy.virtual_pipeline_model_parallel_size = vp_size
-    if tp_size > 1:
-        recipe.trainer.strategy.sequence_parallel = True
-    else:
-        recipe.trainer.strategy.sequence_parallel = False
+    recipe.trainer.strategy.sequence_parallel = bool(tp_size > 1)
 
     comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
 
     # compute dtype configs
     if compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg.proj_fprop.fp8_buf = True
-        recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg.fc2_fprop.fp8_buf = True
-
     recipe.trainer.plugins.grad_reduce_in_fp32 = False  # bf16 grad dtype
 
     # callback configs
     garbage_collection_callback = run.Config(
         GarbageCollectionCallback,
         gc_interval_train=100,
-        gc_interval_val=500,
+        gc_interval_val=100,
     )
     recipe.trainer.callbacks.extend(
         [
@@ -96,9 +89,10 @@ def llama3_405b_performance_recipe(
         ]
     )
     dp_size = (num_nodes * num_gpus_per_node) / (tp_size * pp_size * cp_size)
-    if dp_size > 1 and pp_size > 1 and vp_size and vp_size > 1:
-        if comm_overlap_callback_idx >= 0:
-            recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather_with_optimizer_step = True
+    if comm_overlap_callback_idx is not None:
+        recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather_with_optimizer_step = bool(
+            dp_size > 1 and pp_size > 1 and vp_size and vp_size > 1
+        )
 
     # Misc. for overall faster experiment runtime
     recipe.log.ckpt = None
@@ -111,15 +105,10 @@ def llama3_405b_performance_recipe(
 
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
-    if args.log_dir != NEMORUN_HOME:
-        import sys
-
-        logging.error(f"Run `export NEMORUN_HOME={args.log_dir}` in your shell environment and rerun this script.")
-        sys.exit(1)
 
     exp_name = "_".join(
         [
-            f"llama3_405b",
+            basename(__file__),
             args.compute_dtype,
             f"{NUM_NODES}nodes",
             f"tp{TP_SIZE}_pp{PP_SIZE}_cp{CP_SIZE}_vp{VP_SIZE}",
@@ -137,10 +126,11 @@ if __name__ == "__main__":
         args.container_image,
         custom_mounts=[],
         custom_env_vars={},
-        retries=0,
+        hf_token=args.hf_token,
+        nemo_home=args.nemo_home,
     )
 
-    recipe = llama3_405b_performance_recipe(
+    recipe = llama3_8b_performance_recipe(
         args.compute_dtype,
         NUM_NODES,
         NUM_GPUS_PER_NODE,
@@ -161,7 +151,7 @@ if __name__ == "__main__":
         # following line ensures file is at- `<log_dir>/lightning_logs/tb_logs/default/<tfevents_file>`
         recipe.log.log_dir = "/nemo_run/lightning_logs"
 
-    plugins = [PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152)]
+    plugins = [PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152 if PP_SIZE > 1 else None)]
     if args.enable_profiling:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
 

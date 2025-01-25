@@ -84,6 +84,7 @@
   ```sh
   tp_comm_overlap: bool = None # Enable tensor parallel overlap
   tp_comm_overlap_cfg: TransformerLayerTPOverlapCfg = None # Tensor parallel overlap config
+  tp_comm_bootstrap_backend: str = None # 'nccl' or 'mpi' for tp communication
   overlap_p2p_comm: bool = None # Enable pipeline parallel communication overlap
   batch_p2p_comm: bool = None # Batch pipeline parallel send and recv into a single op
   overlap_grad_reduce: bool = None # Overlap data parallel gradient reduction with compute

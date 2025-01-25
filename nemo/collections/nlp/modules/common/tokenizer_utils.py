@@ -254,6 +254,6 @@ def get_nmt_tokenizer(
         return NullTokenizer(vocab_size)
     else:
         raise NotImplementedError(
-            'Currently we only support "huggingface", "sentencepiece", "megatron", and "byte-level" tokenizer'
-            'libraries.'
+            'Currently we only support "huggingface", "sentencepiece", "megatron", "byte-level", "regex", "tabular",'
+            '"tiktoken", and "null" tokenizer libraries.'
         )

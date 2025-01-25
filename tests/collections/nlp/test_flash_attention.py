@@ -48,8 +48,12 @@ except (ImportError, ModuleNotFoundError):
 try:
     import pynvml
 
+    pynvml.nvmlInit()
+    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+    device_arch = pynvml.nvmlDeviceGetArchitecture(handle)
+    pynvml.nvmlShutdown()
     HAVE_PYNVML = True
-except (ImportError, ModuleNotFoundError):
+except (ImportError, ModuleNotFoundError, pynvml.nvml.NVMLError_LibraryNotFound):
     HAVE_PYNVML = False
 
 

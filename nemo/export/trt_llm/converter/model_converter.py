@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import csv
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 

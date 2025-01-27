@@ -527,12 +527,12 @@ def extract_lora_ckpt(
     elif os.path.exists(os.path.join(lora_ckpt, "mp_rank_00", "model_weights.ckpt")):
         model_weight = torch.load(os.path.join(lora_ckpt, "mp_rank_00", "model_weights.ckpt"))
     else:
-        raise RuntimeError(f"Imcompatible lora checkpoint format")
+        raise RuntimeError("Imcompatible lora checkpoint format")
 
     model_config = os.path.join(lora_ckpt, "model_config.yaml")
 
     if not os.path.exists(model_config):
-        raise RuntimeError(f"Imcompatible lora checkpoint format")
+        raise RuntimeError("Imcompatible lora checkpoint format")
 
     llm_lora_weight = {}
 

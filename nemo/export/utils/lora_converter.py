@@ -177,14 +177,14 @@ def convert_lora_nemo_to_canonical(lora_nemo, save_path, hf_format=False, donor_
                     ckpt_file = archive / f"tp_rank_{tp:02d}_pp_rank_{pp:03d}/model_weights.ckpt"
 
                 with ckpt_file.open("rb") as f:
-                    l = torch.load(f, map_location=torch.device('cpu'))
+                    weights = torch.load(f, map_location=torch.device('cpu'))
 
                 if pp == 0:
-                    lora_state_dict[tp] = l
+                    lora_state_dict[tp] = weights
                 else:
                     # calculate layer offset
                     layer_offset = lora_config['num_layers'] // pp_size * pp
-                    for key, value in l.items():
+                    for key, value in weights.items():
                         new_key = replace_number_add_offset(key, layer_offset)
                         lora_state_dict[tp][new_key] = value
 

@@ -136,9 +136,6 @@ def convert_model_to_trt_llm_ckpt(
 
     has_position_embedding = get_layer_name("position_embedding", prefix) in model_state_dict
     has_lm_head = get_layer_name("output_layer", prefix) in model_state_dict
-    share_embeddings_and_output = nemo_model_config.get("share_embeddings_and_output_weights", False)
-    embedding_scaling = nemo_model_config.get("apply_embedding_scaling", False)
-    hidden_size = nemo_model_config["hidden_size"]
 
     num_layers = nemo_model_config["num_layers"]
     training_tp_size = 1

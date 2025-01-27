@@ -61,7 +61,7 @@ from nemo.export.utils import torch_dtype_from_precision
 use_deploy = True
 try:
     from nemo.deploy.utils import cast_output, str_ndarray2list
-except Exception as e:
+except Exception:
     use_deploy = False
 
 LOGGER = logging.getLogger("NeMo")
@@ -674,7 +674,7 @@ class TensorRTLLM(ITritonDeployable):
                 reshard_model = True
             else:
                 raise NotImplementedError(
-                    f"NeMo currently only supports PP>1 -> PP=1 resharding, other types of resharding will come in future releases."
+                    "NeMo currently only supports PP>1 -> PP=1 resharding, other types of resharding will come in future releases."
                 )
 
         num_layers = model_config["num_layers"]

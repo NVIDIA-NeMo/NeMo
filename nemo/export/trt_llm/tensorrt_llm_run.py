@@ -27,10 +27,8 @@ import tensorrt as trt
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from tensorrt_llm._utils import mpi_comm
 from tensorrt_llm.builder import Engine
 from tensorrt_llm.lora_manager import LoraManager
-from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.quantization import QuantMode
 from tensorrt_llm.runtime import ModelConfig, ModelRunner, ModelRunnerCpp, SamplingConfig
 from transformers import PreTrainedTokenizer
@@ -40,7 +38,7 @@ LOGGER = logging.getLogger("NeMo")
 use_trtllm_bindings = True
 try:
     from tensorrt_llm.bindings import GptJsonConfig
-except Exception as e:
+except Exception:
     use_trtllm_bindings = False
 
 TRTLLM_SUPPORTS_DEVICE_DISABLE = True
@@ -465,13 +463,10 @@ def load_distributed(engine_dir, model_parallel_rank, gpus_per_node):
     json_config = GptJsonConfig.parse_file(config_path)
     model_config = json_config.model_config
 
-    max_beam_width = model_config.max_beam_width
     max_batch_size = model_config.max_batch_size
     max_input_len = model_config.max_input_len
-    max_seq_len = model_config.max_seq_len
 
     tp_size = json_config.tensor_parallelism
-    pp_size = json_config.pipeline_parallelism
     assert tp_size <= gpus_per_node, "Multinode TP is not unsupported"
 
     # TRTLLM asserts that rank equals the device num however this
@@ -483,9 +478,9 @@ def load_distributed(engine_dir, model_parallel_rank, gpus_per_node):
     for _ in range(offset):
         device_ids.append(device_ids.pop(0))
     engine_index = model_parallel_rank
-    mpi_rank = mpi_comm().Get_rank()
+    # mpi_rank = mpi_comm().Get_rank()
     # Copied from worldConfig.h (getDevice())
-    mpi_device = mpi_rank % gpus_per_node
+    # mpi_device = mpi_rank % gpus_per_node
     # TODO: Consider re-enabling
     # assert torch.cuda.current_device() == mpi_device
 
@@ -503,11 +498,11 @@ def load_distributed(engine_dir, model_parallel_rank, gpus_per_node):
 
     if not TRTLLM_SUPPORTS_DEVICE_DISABLE:
         raise RuntimeError(
-            f"TensorRT-LLM does not support torch device disabling. Please upgrade TensorRT-LLM to make use of this feature."
+            "TensorRT-LLM does not support torch device disabling. Please upgrade TensorRT-LLM to make use of this feature."
         )
     elif not DISABLE_TORCH_DEVICE_SET:
         raise RuntimeError(
-            f"To use TensorRT-LLM's python ModelRunner API in load_distributed(...) you must set the env var DISABLE_TORCH_DEVICE_SET=1"
+            "To use TensorRT-LLM's python ModelRunner API in load_distributed(...) you must set the env var DISABLE_TORCH_DEVICE_SET=1"
         )
     decoder = ModelRunner.from_engine(
         engine=engine,
@@ -568,7 +563,7 @@ def refit(weights_dict: dict):
         logging.warning(f"Weights dict did not contain weights for these named TRT weights: {remaining_refit_weights}")
 
     if not refitter.refit_cuda_engine():
-        raise ValueError(f"Refit failed!")
+        raise ValueError("Refit failed!")
 
 
 def unload_engine():

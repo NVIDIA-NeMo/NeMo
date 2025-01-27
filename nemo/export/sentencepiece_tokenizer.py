@@ -261,7 +261,7 @@ class SentencePieceTokenizer:
         ]
         return main_vocab + special_tokens
 
-    ### Below are a few methods that mimic transformers.PreTrainedTokenizer for vLLM
+    # Below are a few methods that mimic transformers.PreTrainedTokenizer for vLLM
 
     def convert_ids_to_tokens(self, ids, skip_special_tokens: bool = False):
         return self.ids_to_tokens(ids)  # TODO: support skip_special_tokens

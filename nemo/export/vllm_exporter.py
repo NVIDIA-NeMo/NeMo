@@ -168,7 +168,7 @@ class vLLMExporter(ITritonDeployable):
 
         # Dynamic online FP8 quantization currently does not support in-memory conversion [TODO]
         if quantization is not None and weight_storage in {'auto', 'memory'}:
-            LOGGER.warning(f'Setting weight_storage = "file" for FP8 quantization')
+            LOGGER.warning('Setting weight_storage = "file" for FP8 quantization')
             weight_storage = 'file'
 
         # See if we have an up-to-date safetensors file

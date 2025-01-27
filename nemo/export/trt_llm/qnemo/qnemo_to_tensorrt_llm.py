@@ -95,7 +95,7 @@ def qnemo_to_tensorrt_llm(
     build_cmd += f"--use_fused_mlp {'enable' if use_fused_mlp else 'disable'} "
 
     if not use_qdq:
-        build_cmd += f"--gemm_plugin auto "
+        build_cmd += "--gemm_plugin auto "
 
     if max_seq_len is not None:
         build_cmd += f"--max_seq_len {max_seq_len} "

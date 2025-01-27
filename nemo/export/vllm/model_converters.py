@@ -340,7 +340,7 @@ class Starcoder2Converter(ModelConverter):
             # Attention dense
             yield (
                 f'model.layers.{layer}.self_attn.o_proj.weight',
-                state_dict[f'model.decoder.layers.self_attention.linear_proj.weight'][layer],
+                state_dict['model.decoder.layers.self_attention.linear_proj.weight'][layer],
             )
             if has_bias:
                 yield (

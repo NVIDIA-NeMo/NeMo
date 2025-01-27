@@ -25,6 +25,7 @@ from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.mapping import ShardedBase, ShardedObject, ShardedTensor
 from megatron.core.dist_checkpointing.strategies.torch import sharded_tensor_to_torch_sharded_tensor
 from megatron.core.transformer.utils import _get_extra_state_offsets
+from torch import nn
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from torch.distributed._composable.fsdp.fully_shard import fully_shard
 from torch.distributed._sharded_tensor import ShardedTensor as TorchShardedTensor
@@ -345,62 +346,48 @@ def pyt_to_mcore_state_dict(
 
 # Taken and modified from torchtitan
 # https://github.com/pytorch/torchtitan/blob/main/torchtitan/parallelisms/parallelize_llama.py
-def fsdp2_strategy_parallelize(model, device_mesh: DeviceMesh = None, model_type: str = None):
+def fsdp2_strategy_parallelize(
+    model,
+    device_mesh: DeviceMesh = None,
+    mp_policy: MixedPrecisionPolicy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32),
+):
     """Apply parallelisms and activation checkpointing to the model.
     NOTE: The passed-in model preferably should be on meta device. Otherwise,
     the model must fit on GPU or CPU memory.
+    NOTE: Currently, the user is required to manually handle precision settings such as the `mp_policy` here
+    because the model parallel strategy does not respect all settings of `Fabric(precision=...)` at the moment.
     """
 
     dp_mesh = device_mesh["data_parallel"]
     tp_mesh = device_mesh["tensor_parallel"]
+
+    def parallelize_helper(module, mesh, mp_policy):
+        if isinstance(module, nn.ModuleList):
+            for layer_id, transformer_block in enumerate(module):
+                # Apply activation checkpointing
+                # transformer_block = checkpoint_wrapper(transformer_block)
+                # As an optimization, do not reshard after forward for the last
+                # transformer block since FSDP would prefetch it immediately
+                reshard_after_forward = int(layer_id) < len(module) - 1
+                fully_shard(
+                    transformer_block,
+                    mesh=mesh,
+                    mp_policy=mp_policy,
+                    reshard_after_forward=reshard_after_forward,
+                )
+                module[layer_id] = transformer_block
+        else:
+            for name, sub_module in module.named_children():
+                parallelize_helper(sub_module, mesh, mp_policy)
 
     assert tp_mesh.size() == 1, "Tensor parallelism is not supported yet in this model."
 
     if dp_mesh.size() > 1:
         assert dp_mesh.ndim == 1  # Hybrid-sharding not supported
 
-        # NOTE: Currently, the user is required to manually handle precision settings such as the `mp_policy` here
-        # because the model parallel strategy does not respect all settings of `Fabric(precision=...)` at the moment.
-        mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+        # Find transformer layers and apply parallelisms
+        parallelize_helper(model, dp_mesh, mp_policy)
 
-        fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
-        if model_type == "speech_seq2seq":
-            for layer_id, transformer_block in enumerate(model.model.encoder.layers):
-                # Apply activation checkpointing
-                # transformer_block = checkpoint_wrapper(transformer_block)
-                # As an optimization, do not reshard after forward for the last
-                # transformer block since FSDP would prefetch it immediately
-                reshard_after_forward = int(layer_id) < len(model.model.encoder.layers) - 1
-                fully_shard(
-                    transformer_block,
-                    **fsdp_config,
-                    reshard_after_forward=reshard_after_forward,
-                )
-                model.model.encoder.layers[layer_id] = transformer_block
-
-            for layer_id, transformer_block in enumerate(model.model.decoder.layers):
-                # transformer_block = checkpoint_wrapper(transformer_block)
-                reshard_after_forward = int(layer_id) < len(model.model.decoder.layers) - 1
-                fully_shard(
-                    transformer_block,
-                    **fsdp_config,
-                    reshard_after_forward=reshard_after_forward,
-                )
-                model.model.decoder.layers[layer_id] = transformer_block
-        else:
-            for layer_id, transformer_block in enumerate(model.model.layers):
-                # Apply activation checkpointing
-                # transformer_block = checkpoint_wrapper(transformer_block)
-                # As an optimization, do not reshard after forward for the last
-                # transformer block since FSDP would prefetch it immediately
-                reshard_after_forward = int(layer_id) < len(model.model.layers) - 1
-                fully_shard(
-                    transformer_block,
-                    **fsdp_config,
-                    reshard_after_forward=reshard_after_forward,
-                )
-                model.model.layers[layer_id] = transformer_block
-
-        model = fully_shard(model, **fsdp_config)
+        model = fully_shard(model, mesh=dp_mesh, mp_policy=mp_policy)
 
     return model

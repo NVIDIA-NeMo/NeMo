@@ -15,6 +15,7 @@
 import lightning.pytorch as pl
 import torch
 import torch.nn.functional as F
+from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
 from nemo.collections.llm import fn
@@ -46,6 +47,11 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
         trust_remote_code=False,
         default_dtype=torch.bfloat16,
         load_in_4bit=False,
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.float32,
+        output_dtype=None,
+        cast_forward_inputs=True,
+        parallelize_fn=None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -59,6 +65,13 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.model_transform = model_transform
         self.trust_remote_code = trust_remote_code
         self.load_in_4bit = load_in_4bit
+        self.mp_policy = MixedPrecisionPolicy(
+            param_dtype=param_dtype,
+            reduce_dtype=reduce_dtype,
+            output_dtype=output_dtype,
+            cast_forward_inputs=cast_forward_inputs,
+        )
+        self.parallelize_fn = parallelize_fn
 
     @property
     def processor(self):
@@ -99,7 +112,10 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         # Apply FSDP2 and TP to the model
         if self.device_mesh is not None:
-            fsdp2_strategy_parallelize(self.model, device_mesh=self.device_mesh)
+            if self.parallelize_fn is not None:
+                self.parallelize_fn(self.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
+            else:
+                fsdp2_strategy_parallelize(self.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
 
         self.model.train()
 

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tempfile
+
 import fiddle as fdl
 from lightning.pytorch.loggers import WandbLogger
 
@@ -22,35 +24,24 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 
 
 def make_squad_hf_dataset(tokenizer):
-    EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
+    def formatting_prompts_func(example):
+        formatted_text = [
+            f"Context: {example['context']} Question: {example['question']} Answer:",
+            f" {example['answers']['text'][0].strip()}",
+        ]
+        context_ids, answer_ids = list(map(tokenizer.text_to_ids, formatted_text))
+        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id:
+            context_ids.insert(0, tokenizer.bos_id)
+        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id:
+            answer_ids.append(tokenizer.eos_id)
 
-    def formatting_prompts_func(examples):
-        alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+        return dict(
+            labels=(context_ids + answer_ids)[1:],
+            input_ids=(context_ids + answer_ids)[:-1],
+            loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
+        )
 
-    ### Instruction:
-    {}
-
-    ### Input:
-    {}
-
-    ### Response:
-    {}"""
-        instruction = examples["context"]
-        input = examples["question"]
-        output = examples["answers"]['text']
-        if isinstance(output, list):
-            output = output[0]
-        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
-        ans = tokenizer(text)
-        # 'input_ids' is a list, we want to remove EOS_TOKEN from input_ids and the first token from
-        # labels to align the two:
-        ans['labels'] = list(ans['input_ids'][1:])
-        ans['input_ids'] = ans['input_ids'][:-1]
-        ans['attention_mask'] = ans['attention_mask'][:-1]
-        return ans
-
-    tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
-    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:100]", pad_token_id=tokenizer.eos_token_id)
+    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:100]", pad_token_id=tokenizer.eos_id)
     datamodule.map(
         formatting_prompts_func,
         batched=False,
@@ -61,17 +52,19 @@ def make_squad_hf_dataset(tokenizer):
 
 
 def main():
+    """Example script to run PEFT with a HF transformers-instantiated model on squad."""
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='meta-llama/Llama-3.2-1B')
-    parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp'])
-    parser.add_argument('--devices', default=1)
-    parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
+    parser.add_argument('--model', type=str, default='meta-llama/Llama-3.2-1B')
+    parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp2'])
+    parser.add_argument('--devices', type=int, default=1)
+    parser.add_argument('--accelerator', type=str, default='gpu', choices=['gpu'])
+    parser.add_argument('--grad-clip', type=float, default=1.0)
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument('--wandb-project', type=str, default=None)
     parser.add_argument('--use-torch-jit', action='store_true')
-    parser.add_argument('--ckpt-folder', type=str, default=None)
+    parser.add_argument('--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name)
     args = parser.parse_args()
 
     wandb = None
@@ -81,29 +74,18 @@ def main():
             project=args.wandb_project,
             name=f'{model}_dev{args.devices}_strat_{args.strategy}',
         )
-    grad_clip = 0.5
-    if args.strategy == 'fsdp':
-        # See:
-        # https://github.com/Lightning-AI/pytorch-lightning/blob/8ad3e29816a63d8ce5c00ac104b14729a4176f4f/src/lightning/pytorch/plugins/precision/fsdp.py#L81
-        grad_clip = None
-    use_dist_samp = False
-
-    import tempfile
-
-    if args.ckpt_folder is None:
-        args.ckpt_folder = tempfile.TemporaryDirectory().name
-        print("Temp directory created for base model: ", args.ckpt_folder)
-
-    tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)
 
     callbacks = []
     if args.use_torch_jit:
         jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': True}, use_thunder=False)
         callbacks = [JitTransform(jit_config)]
 
+    if args.strategy == 'fsdp2':
+        args.strategy = nl.FSDP2Strategy(data_parallel_size=args.devices, tensor_parallel_size=1)
+
     llm.api.finetune(
-        model=llm.HFAutoModelForCausalLM(args.model),
-        data=make_squad_hf_dataset(tokenizer.tokenizer),
+        model=llm.HFAutoModelForCausalLM(model_name=args.model),
+        data=make_squad_hf_dataset(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)),
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,
@@ -113,8 +95,8 @@ def main():
             limit_val_batches=0.0,
             num_sanity_val_steps=0,
             accumulate_grad_batches=10,
-            gradient_clip_val=grad_clip,
-            use_distributed_sampler=use_dist_samp,
+            gradient_clip_val=args.grad_clip,
+            use_distributed_sampler=False,
             logger=wandb,
             callbacks=callbacks,
             precision="bf16",

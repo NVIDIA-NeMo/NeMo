@@ -22,7 +22,6 @@ from pathlib import Path
 import torch
 
 from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployable
-from tests.infer_data_path import get_infer_test_data
 
 run_export_tests = True
 try:
@@ -353,88 +352,6 @@ def test_cpp_runtime(
         print("")
 
 
-def run_existing_checkpoints(
-    model_name,
-    n_gpus,
-    tp_size=None,
-    pp_size=None,
-    ptuning=False,
-    lora=False,
-    streaming=False,
-    run_accuracy=False,
-    test_deployment=False,
-    stop_words_list=None,
-    test_data_path=None,
-    backend="tensorrt-llm",
-    save_engine=False,
-):
-    if n_gpus > torch.cuda.device_count():
-        print("Skipping the test due to not enough number of GPUs")
-        return None, None, None, None, None
-
-    test_data = get_infer_test_data()
-    if not (model_name in test_data.keys()):
-        raise Exception("Model {0} is not supported.".format(model_name))
-
-    model_info = test_data[model_name]
-
-    if n_gpus < model_info.min_gpus:
-        print("Min n_gpus for this model is {0}".format(n_gpus))
-        return None, None, None, None, None
-
-    if ptuning and model_info.p_tuning_checkpoint is None:
-        raise Exception("There is not ptuning checkpoint path defined.")
-
-    if lora and model_info.lora_checkpoint is None:
-        raise Exception("There is not lora checkpoint path defined.")
-
-    if model_info.model_type == "gemma":
-        print("*********************")
-        use_embedding_sharing = True
-    else:
-        use_embedding_sharing = False
-
-    if backend == "in-framework":
-        return run_in_framework_inference(
-            model_name=model_name,
-            prompt=model_info.prompt_template,
-            checkpoint_path=model_info.checkpoint,
-            max_batch_size=model_info.max_batch_size,
-            max_input_len=None,
-            max_output_len=model_info.max_output_len,
-        )
-    else:
-        return run_trt_llm_inference(
-            model_name=model_name,
-            model_type=model_info.model_type,
-            prompt=model_info.prompt_template,
-            checkpoint_path=model_info.checkpoint,
-            trt_llm_model_dir=model_info.trt_llm_model_dir,
-            n_gpu=n_gpus,
-            max_batch_size=model_info.max_batch_size,
-            use_embedding_sharing=use_embedding_sharing,
-            max_input_len=512,
-            max_output_len=model_info.max_output_len,
-            max_num_tokens=None,
-            ptuning=ptuning,
-            p_tuning_checkpoint=model_info.p_tuning_checkpoint,
-            lora=lora,
-            lora_checkpoint=model_info.lora_checkpoint,
-            tp_size=tp_size,
-            pp_size=pp_size,
-            top_k=1,
-            top_p=0.0,
-            temperature=1.0,
-            run_accuracy=run_accuracy,
-            debug=True,
-            streaming=streaming,
-            stop_words_list=stop_words_list,
-            test_deployment=test_deployment,
-            test_data_path=test_data_path,
-            save_engine=save_engine,
-        )
-
-
 def get_args():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -444,11 +361,6 @@ def get_args():
         "--model_name",
         type=str,
         required=True,
-    )
-    parser.add_argument(
-        "--existing_test_models",
-        default=False,
-        action='store_true',
     )
     parser.add_argument(
         "--model_type",
@@ -602,75 +514,52 @@ def run_inference_tests(args):
 
     result_dic = {}
 
-    if args.existing_test_models:
-        n_gpus = args.min_gpus
-        if args.max_gpus is None:
-            args.max_gpus = args.min_gpus
+    prompt_template = ["The capital of France is", "Largest animal in the sea is"]
+    n_gpus = args.min_gpus
+    if args.max_gpus is None:
+        args.max_gpus = args.min_gpus
 
-        while n_gpus <= args.max_gpus:
-            result_dic[n_gpus] = run_existing_checkpoints(
+    while n_gpus <= args.max_gpus:
+        if args.backend.lower() == "tensorrt-llm":
+            result_dic[n_gpus] = run_trt_llm_inference(
                 model_name=args.model_name,
-                n_gpus=n_gpus,
+                model_type=args.model_type,
+                prompt=prompt_template,
+                checkpoint_path=args.checkpoint_dir,
+                trt_llm_model_dir=args.trt_llm_model_dir,
+                n_gpu=n_gpus,
+                max_batch_size=args.max_batch_size,
+                max_input_len=args.max_input_len,
+                max_output_len=args.max_output_len,
+                max_num_tokens=args.max_num_tokens,
                 ptuning=args.ptuning,
+                p_tuning_checkpoint=args.p_tuning_checkpoint,
                 lora=args.lora,
+                lora_checkpoint=args.lora_checkpoint,
                 tp_size=args.tp_size,
                 pp_size=args.pp_size,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                temperature=args.temperature,
+                run_accuracy=args.run_accuracy,
+                debug=args.debug,
                 streaming=args.streaming,
                 test_deployment=args.test_deployment,
-                run_accuracy=args.run_accuracy,
                 test_data_path=args.test_data_path,
-                backend=args.backend.lower(),
                 save_engine=args.save_engine,
             )
+        else:
+            result_dic[n_gpus] = run_in_framework_inference(
+                model_name=args.model_name,
+                prompt=prompt_template,
+                checkpoint_path=args.checkpoint_dir,
+                n_gpu=n_gpus,
+                max_batch_size=args.max_batch_size,
+                max_input_len=args.max_input_len,
+                max_output_len=args.max_output_len,
+            )
 
-            n_gpus = n_gpus * 2
-    else:
-        prompt_template = ["The capital of France is", "Largest animal in the sea is"]
-        n_gpus = args.min_gpus
-        if args.max_gpus is None:
-            args.max_gpus = args.min_gpus
-
-        while n_gpus <= args.max_gpus:
-            if args.backend.lower() == "tensorrt-llm":
-                result_dic[n_gpus] = run_trt_llm_inference(
-                    model_name=args.model_name,
-                    model_type=args.model_type,
-                    prompt=prompt_template,
-                    checkpoint_path=args.checkpoint_dir,
-                    trt_llm_model_dir=args.trt_llm_model_dir,
-                    n_gpu=n_gpus,
-                    max_batch_size=args.max_batch_size,
-                    max_input_len=args.max_input_len,
-                    max_output_len=args.max_output_len,
-                    max_num_tokens=args.max_num_tokens,
-                    ptuning=args.ptuning,
-                    p_tuning_checkpoint=args.p_tuning_checkpoint,
-                    lora=args.lora,
-                    lora_checkpoint=args.lora_checkpoint,
-                    tp_size=args.tp_size,
-                    pp_size=args.pp_size,
-                    top_k=args.top_k,
-                    top_p=args.top_p,
-                    temperature=args.temperature,
-                    run_accuracy=args.run_accuracy,
-                    debug=args.debug,
-                    streaming=args.streaming,
-                    test_deployment=args.test_deployment,
-                    test_data_path=args.test_data_path,
-                    save_engine=args.save_engine,
-                )
-            else:
-                result_dic[n_gpus] = run_in_framework_inference(
-                    model_name=args.model_name,
-                    prompt=prompt_template,
-                    checkpoint_path=args.checkpoint_dir,
-                    n_gpu=n_gpus,
-                    max_batch_size=args.max_batch_size,
-                    max_input_len=args.max_input_len,
-                    max_output_len=args.max_output_len,
-                )
-
-            n_gpus = n_gpus * 2
+        n_gpus = n_gpus * 2
 
     test_result = "PASS"
     print_separator = False

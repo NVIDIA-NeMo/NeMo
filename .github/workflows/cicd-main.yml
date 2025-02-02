@@ -3888,6 +3888,18 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf nemo_experiments
 
+  # L2: SpeechLM tests
+  L2_HF_Transformer_SpeechLM_SFT_2gpu:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_HF_Transformer_SpeechLM_SFT_2gpu') || needs.pre-flight.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        TRANSFORMERS_OFFLINE=1 python tests/collections/speechlm/hf/sft.py --model /home/TestData/speechlm/whisper-small/ --max-steps 10 --devices 2 --strategy ddp
+      AFTER_SCRIPT: |
+        rm -rf nemo_experiments
+
   # L2: Megatron Mock Data Generation
   L2_Megatron_Mock_Data_Generation_MockGPTDataset:
     needs: [pre-flight, cicd-test-container-build]
@@ -5164,6 +5176,7 @@ jobs:
       - L2_HF_Transformer_PT_2gpu
       - L2_HF_Transformer_PT_2gpu_nemorun
       - L2_HF_Transformer_PT_TE_Acceleration
+      - L2_HF_Transformer_SpeechLM_SFT_2gpu
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining

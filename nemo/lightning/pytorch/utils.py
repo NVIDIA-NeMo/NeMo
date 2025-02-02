@@ -38,7 +38,7 @@ def dtype_from_str(dtype):
     assert isinstance(dtype, str)
     if dtype in ["float16", "fp16", "16", "16-mixed"]:
         return torch.float16
-    elif dtype == ["bfloat16", "bf16-mixed"]:
+    elif dtype in ["bfloat16", "bf16-mixed"]:
         return torch.bfloat16
     else:
         return torch.float32
@@ -62,11 +62,7 @@ def is_trainer_attached(model: pl.LightningModule):
     """
     Returns true if trainer is attached to a model
     """
-    try:
-        trainer = model.trainer
-        return True
-    except (AttributeError, RuntimeError):
-        return False
+    return hasattr(model, 'trainer')
 
 
 def get_huggingface_model_from_trainer(trainer: 'lightning.pytorch.Trainer') -> 'nn.Module':

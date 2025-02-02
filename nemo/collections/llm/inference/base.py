@@ -149,6 +149,7 @@ def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.
     trainer.strategy._setup_optimizers = False
     trainer.ckpt_path = None
     trainer.strategy.connect(model)
+    model.trainer = trainer
     if trainer.strategy.launcher is not None:
         trainer.strategy.launcher.launch(lambda: None, trainer=trainer)
     trainer.strategy.setup_environment()

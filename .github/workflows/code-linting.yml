@@ -2,8 +2,6 @@ name: PyLint and flake8 linting
 
 on:
   pull_request:
-    paths:
-      - '**.py'
     types: [ opened, synchronize, reopened, labeled, unlabeled ]
   
 jobs:
@@ -25,21 +23,21 @@ jobs:
         run: |
           if [[ "$DOMAIN" == "speech" ]]; then
             FILTER=$(jq -crn '[
-              "nemo/collections/asr/**",
-              "nemo/collections/tts/**",
-              "nemo/collections/audio/**",
-              "nemo/collections/multimodal/speech_llm/**",
-              "nemo/collections/speechlm/**"
+              "nemo/collections/asr/**/*.py",
+              "nemo/collections/tts/**/*.py",
+              "nemo/collections/audio/**/*.py",
+              "nemo/collections/multimodal/speech_llm/**/*.py",
+              "nemo/collections/speechlm/**/*.py"
             ] | join(",")')
 
           else
             FILTER=$(jq -crn '[
               "nemo/**",
-              "!nemo/collections/asr/**",
-              "!nemo/collections/tts/**",
-              "!nemo/collections/audio/**",
-              "!nemo/collections/multimodal/speech_llm/**",
-              "!nemo/collections/speechlm/**"
+              "!nemo/collections/asr/**/*.py",
+              "!nemo/collections/tts/**/*.py",
+              "!nemo/collections/audio/**/*.py",
+              "!nemo/collections/multimodal/speech_llm/**/*.py",
+              "!nemo/collections/speechlm/**/*.py"
             ] | join(",")')
           fi
           

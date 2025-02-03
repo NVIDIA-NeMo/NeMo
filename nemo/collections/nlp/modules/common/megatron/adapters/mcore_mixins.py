@@ -85,6 +85,7 @@ class MCoreTransformerBlockMixin(TransformerBlock, MCoreAdapterModuleMixin):
         attention_bias: Tensor = None,
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
+        sequence_len_offset=None,
     ):
         hidden_states = super().forward(
             hidden_states=hidden_states,
@@ -234,6 +235,7 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         rotary_pos_cos=None,
         rotary_pos_sin=None,
         attention_bias=None,
+        sequence_len_offset=None,
     ):
         # hidden_states: [sq, b, h]
 

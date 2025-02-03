@@ -17,6 +17,7 @@ on:
     branches:
       - 'main'
       - 'r**'
+      - 'weekly-bump'
     types: [ labeled ]
   push:
     branches:

@@ -23,7 +23,6 @@ import torch
 import torch.nn.functional as F
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -494,6 +493,7 @@ class ImageTransformerLayer(TransformerLayer):
         attention_bias=None,
         inference_params=None,
         packed_seq_params=None,
+        sequence_len_offset=None,
     ):
         """Forward."""
         # hidden_states: [s, b, h]

@@ -234,7 +234,7 @@ class ConditionalFlowMatchingEulerSampler(ConditionalFlowMatchingSampler):
         if state_length is not None:
             state = mask_sequence_tensor(state, state_length)
 
-        for t in time_steps:
+        for t in time_steps[:-1]:
             time = t * torch.ones(state.shape[0], device=state.device)
 
             if estimator_condition is None:

@@ -1,0 +1,8 @@
+[flake8]
+select = 
+    F541, # f-string without any placeholders
+    F841, # local variable 'x' is assigned to but never used
+    F401, # 'x' imported but unused
+    E741, # ambiguous variable name 'l'
+    F821, # undefined name 'x'
+    E266, # too many leading '#' for block comment

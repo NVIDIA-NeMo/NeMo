@@ -1,0 +1,9 @@
+[MAIN]
+ignore-paths=tests
+max-line-length=119
+
+[MESSAGES CONTROL]
+disable=all
+
+enable=W0611
+# W0611: unused-import

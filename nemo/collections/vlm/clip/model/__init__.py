@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-from nemo.collections.vlm.recipes import clip_b32, llava15_7b, llava15_13b, llava_next_7b, mllama_11b, mllama_90b
+from nemo.collections.vlm.clip.model.base import ClipConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
+from nemo.collections.vlm.clip.model.clip import (
+    ClipConfigB32,
+    ClipConfigL14,
+    CLIPTextModelL_14_224_Config,
+    CLIPViTL_14_224_Config,
+)
 
 __all__ = [
-    "llava15_7b",
-    "llava15_13b",
-    "mllama_11b",
-    "mllama_90b",
-    "llava_next_7b",
-    "clip_b32",
+    "CLIPViTConfig",
+    "CLIPTextModelConfig",
+    "ClipConfig",
+    "CLIPViTL_14_224_Config",
+    "CLIPTextModelL_14_224_Config",
+    "ClipConfigL14",
+    "ClipConfigB32",
+    "CLIPModel",
 ]

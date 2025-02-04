@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,22 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Dict, Tuple
+
 import torch
 import torch.distributed.nn
-import torch.nn as nn
+from megatron.core import parallel_state
 from torch import distributed as dist
 from torch.nn import functional as F
 
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
-
-try:
-    from megatron.core import parallel_state
-
-    HAVE_MEGATRON_CORE = True
-
-except (ImportError, ModuleNotFoundError):
-
-    HAVE_MEGATRON_CORE = False
+from nemo.lightning.megatron_parallel import MegatronLossReduction
 
 
 def gather_features(
@@ -62,7 +56,6 @@ def gather_features(
     data_parallel_group = parallel_state.get_data_parallel_group()
 
     if gather_with_grad:
-        # TODO (yuya): this is not working in current version of pytorch
         # https://github.com/mlfoundations/open_clip/blob/main/src/open_clip/loss.py#L48
         all_image_features = torch.cat(torch.distributed.nn.all_gather(image_features), dim=0)
         all_text_features = torch.cat(torch.distributed.nn.all_gather(text_features), dim=0)
@@ -72,7 +65,6 @@ def gather_features(
         gathered_text_features = [torch.zeros_like(text_features) for _ in range(data_parallel_world_size)]
         dist.all_gather(gathered_image_features, image_features, group=data_parallel_group)
         dist.all_gather(gathered_text_features, text_features, group=data_parallel_group)
-        # TODO (yuya): check what's this
         if not local_loss:
             # ensure grads for local rank when all_* features don't have a gradient
             # https://amsword.medium.com/gradient-backpropagation-with-torch-distributed-all-gather-9f3941a381f8
@@ -84,7 +76,7 @@ def gather_features(
     return all_image_features, all_text_features
 
 
-class ClipLoss(nn.Module):
+class ClipMegatronLoss(MegatronLossReduction):
     """
     A custom loss module for CLIP (Contrastive Language–Image Pretraining) training.
 
@@ -114,10 +106,9 @@ class ClipLoss(nn.Module):
     def __init__(
         self,
         local_loss=False,
-        gather_with_grad=False,
+        gather_with_grad=True,
         cache_labels=False,
     ):
-        """Init"""
         super().__init__()
         self.local_loss = local_loss
         self.gather_with_grad = gather_with_grad
@@ -130,9 +121,10 @@ class ClipLoss(nn.Module):
         self.world_size = parallel_state.get_data_parallel_world_size()
         self.rank = parallel_state.get_data_parallel_rank()
 
-    def forward(self, output_tensor):
-        """Forward for loss"""
-        image_features, text_features, logit_scale = output_tensor
+    def forward(
+        self, batch: Dict[str, torch.Tensor], forward_out: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        image_features, text_features, logit_scale = forward_out
         device = image_features.device
         if self.world_size > 1:
             all_image_features, all_text_features = gather_features(
@@ -163,6 +155,14 @@ class ClipLoss(nn.Module):
 
         total_loss = (F.cross_entropy(logits_per_image, labels) + F.cross_entropy(logits_per_text, labels)) / 2
 
-        # TODO (yuya): this is not necessary; not necessary if global!
         reduced_loss = average_losses_across_data_parallel_group([total_loss])
-        return total_loss, {"loss": reduced_loss}
+
+        return total_loss, {"avg": reduced_loss}
+
+    def reduce(self, losses_reduced_per_micro_batch) -> torch.Tensor:
+        if losses_reduced_per_micro_batch:
+            if "avg" in losses_reduced_per_micro_batch[0]:
+                loss_tensors_list = [loss_reduced["avg"] for loss_reduced in losses_reduced_per_micro_batch]
+                loss_tensor = torch.concat(loss_tensors_list)
+                return loss_tensor.mean()
+        return torch.tensor(0.0, device=torch.cuda.current_device())

@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,15 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from nemo.collections.vlm.clip.data.mock import MockDataModule as ClipMockDataModule
 
-
-from nemo.collections.vlm.recipes import clip_b32, llava15_7b, llava15_13b, llava_next_7b, mllama_11b, mllama_90b
-
-__all__ = [
-    "llava15_7b",
-    "llava15_13b",
-    "mllama_11b",
-    "mllama_90b",
-    "llava_next_7b",
-    "clip_b32",
-]
+__all__ = ['ClipMockDataModule']

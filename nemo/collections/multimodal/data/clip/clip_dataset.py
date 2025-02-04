@@ -72,6 +72,31 @@ def tokenize(texts: Union[str, List[str]], tokenizer: Any, context_length: int =
     return result
 
 
+# pylint: disable=C0116
+def get_preprocess_fns_params(
+    img_h, img_w, img_mean=None, img_std=None, is_train=True, max_position_embedding=None, tokenizer=None
+):
+
+    # This is equivalent to `get_preprocess_fns` but does not need the whole config to get the functions. This is
+    # Particularly used in Nemo2
+    # Define transforms
+    img_size = (img_h, img_w)
+    img_transform = image_transform(
+        img_size,
+        is_train=is_train,
+        mean=img_mean,
+        std=img_std,
+    )
+    text_transform = lambda x: x
+    if tokenizer is not None:
+        text_transform = partial(
+            tokenize,
+            tokenizer=tokenizer,
+            context_length=max_position_embedding,
+        )
+    return img_transform, text_transform
+
+
 def get_preprocess_fns(model_cfg, tokenizer=None, is_train=True):
     # Define transforms
     img_size = (model_cfg.vision.get("img_h"), model_cfg.vision.get("img_w"))
@@ -104,7 +129,8 @@ def tuple_to_dict(inp):
 
 def transform_fn(sample, img_transform, text_transform):
     image, text = sample["jpg"], sample["txt"]
-    return img_transform(image), text_transform(text)
+    img_transformed, text_transformed = img_transform(image), text_transform(text)
+    return img_transformed, text_transformed
 
 
 def build_train_valid_datasets(
@@ -144,8 +170,79 @@ def custom_collate(batch):
         return default_collate(batch)
 
 
+def build_imagenet_validation_dataloader_params(
+    imagenet_val,
+    img_h,
+    img_w,
+    mbs,
+    gbs,
+    num_workers=0,
+    pin_memory=True,
+    img_mean=None,
+    img_std=None,
+    is_train=False,
+    max_position_embedding=None,
+    tokenizer=None,
+):
+    # This is equivalent to `build_imagenet_validation_dataloader` but does not need the whole config.
+    # Particularly used in Nemo2
+    val_image_transform, text_transform = get_preprocess_fns_params(
+        img_h,
+        img_w,
+        img_mean,
+        img_std,
+        is_train=is_train,
+        max_position_embedding=max_position_embedding,
+        tokenizer=tokenizer,
+    )
+
+    imagenet_val_data = {}
+
+    imagenet_path = imagenet_val
+    if imagenet_path is None:
+        return None
+
+    image_dataset = ImageFolder(
+        root=imagenet_path,
+        transform=val_image_transform,
+    )
+
+    image_batch_sampler = MegatronPretrainingSampler(
+        total_samples=len(image_dataset),
+        consumed_samples=0,
+        micro_batch_size=mbs,
+        global_batch_size=gbs,
+        data_parallel_rank=parallel_state.get_data_parallel_rank(),
+        data_parallel_size=parallel_state.get_data_parallel_world_size(),
+        drop_last=False,
+    )
+
+    imagenet_val_data["images"] = torch.utils.data.DataLoader(
+        image_dataset,
+        batch_sampler=image_batch_sampler,
+        num_workers=num_workers,
+        collate_fn=custom_collate,
+        pin_memory=pin_memory,
+        persistent_workers=True,
+    )
+    text_dataset = ImagenetClassnameDataset(imagenet_classnames, openai_imagenet_template, text_transform)
+
+    imagenet_val_data["texts"] = torch.utils.data.DataLoader(
+        text_dataset,
+        batch_size=text_dataset.num_templates,
+        num_workers=0,
+        pin_memory=True,
+        persistent_workers=False,
+        drop_last=False,
+    )
+
+    return imagenet_val_data
+
+
+# pylint: enable=C0116
 # For zero-shot imagenet validation
 def build_imagenet_validation_dataloader(model_cfg, tokenizer=None):
+    """Build dataloaders"""
     val_image_transform, text_transform = get_preprocess_fns(model_cfg, tokenizer, is_train=False)
     data_cfg = model_cfg.data
 
@@ -192,7 +289,10 @@ def build_imagenet_validation_dataloader(model_cfg, tokenizer=None):
 
 
 class ImagenetClassnameDataset(Dataset):
+    """Imagenet class dataset"""
+
     def __init__(self, classnames, templates, text_transform):
+        # pylint: disable=C0116
         self.num_templates = len(templates)
         self.samples = []
         for classname in classnames:
@@ -200,7 +300,9 @@ class ImagenetClassnameDataset(Dataset):
             self.samples.extend(text_transform(texts))
 
     def __getitem__(self, index):
+        # pylint: disable=C0116
         return self.samples[index]
 
     def __len__(self):
+        # pylint: disable=C0116
         return len(self.samples)

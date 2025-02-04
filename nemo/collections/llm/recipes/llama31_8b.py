@@ -299,7 +299,7 @@ def finetune_recipe(
         seq_length = 4096 if packed_sequence else 2048
 
     recipe = default_finetune_recipe(
-        model(), "meta-llama/Meta-Llama-3.1-8B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
+        model(), "meta-llama/Llama-3.1-8B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
     )
     if peft_scheme is None or peft_scheme.lower() == 'none':
         recipe.trainer.strategy.tensor_model_parallel_size = 2

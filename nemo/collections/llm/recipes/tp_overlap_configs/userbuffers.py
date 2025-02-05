@@ -17,11 +17,15 @@ from dataclasses import dataclass
 
 @dataclass
 class TPOverlapCfg:
+    """Dataclass for linear layer TP overlap config."""
+
     pass
 
 
 @dataclass
 class PipelineOverlapCfg(TPOverlapCfg):
+    """Dataclass for pipeline TP overlap config."""
+
     num_sm: int
     cga_size: int
     num_splits: int
@@ -32,6 +36,8 @@ class PipelineOverlapCfg(TPOverlapCfg):
 
 @dataclass
 class RingExchangeOverlapCfg(TPOverlapCfg):
+    """Dataclass for ring exchange TP overlap config."""
+
     aggregate: bool = False
     method: str = 'ring_exchange'
     num_sm: int = 1
@@ -40,6 +46,8 @@ class RingExchangeOverlapCfg(TPOverlapCfg):
 
 @dataclass
 class BulkOverlapCfg(TPOverlapCfg):
+    """Dataclass for bulk TP overlap config."""
+
     num_sm: int
     cga_size: int
     set_sm_margin: bool
@@ -48,6 +56,8 @@ class BulkOverlapCfg(TPOverlapCfg):
 
 @dataclass
 class TransformerLayerTPOverlapCfg:
+    """Dataclass for transformer layer TP overlap config."""
+
     qkv_dgrad: TPOverlapCfg
     qkv_wgrad: TPOverlapCfg
     fc1_dgrad: TPOverlapCfg
@@ -88,6 +98,32 @@ userbuffers_fp8_h100_h8192_tp4_mbs1_seqlen8192 = TransformerLayerTPOverlapCfg(
     fc2_fprop=PipelineOverlapCfg(num_sm=16, cga_size=2, num_splits=4, set_sm_margin=True, fp8_buf=True),
 )
 
+userbuffers_bf16_b200_h8192_tp4_mbs1_seqlen8192 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=16, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=24, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=4, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=False),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=False),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    proj_fprop=PipelineOverlapCfg(num_sm=32, cga_size=2, num_splits=4, set_sm_margin=True),
+    fc2_fprop=PipelineOverlapCfg(num_sm=16, cga_size=2, num_splits=4, set_sm_margin=True),
+)
+
+userbuffers_fp8_b200_h8192_tp4_mbs1_seqlen8192 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=4, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=24, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=4, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=False),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=False),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    proj_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+    fc2_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+)
+
 # llama3.1 405b
 userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192 = TransformerLayerTPOverlapCfg(
     qkv_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
@@ -113,6 +149,32 @@ userbuffers_fp8_h100_h16384_tp8_cp2_mbs1_seqlen8192 = TransformerLayerTPOverlapC
     fc2_dgrad=RingExchangeOverlapCfg(aggregate=True),
     proj_fprop=PipelineOverlapCfg(num_sm=24, cga_size=2, num_splits=4, set_sm_margin=True, fp8_buf=True),
     fc2_fprop=PipelineOverlapCfg(num_sm=8, cga_size=2, num_splits=4, set_sm_margin=True, fp8_buf=True),
+)
+
+userbuffers_bf16_b200_h16384_tp4_cp2_mbs1_seqlen8192 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=24, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=True),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=True),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=True),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=True),
+    proj_fprop=PipelineOverlapCfg(num_sm=32, cga_size=2, num_splits=4, set_sm_margin=True),
+    fc2_fprop=PipelineOverlapCfg(num_sm=8, cga_size=2, num_splits=4, set_sm_margin=True),
+)
+
+userbuffers_fp8_b200_h16384_tp4_cp2_mbs1_seqlen8192 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=32, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=True),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=True),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=True),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=True),
+    proj_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+    fc2_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
 )
 
 # GPT3 20b
@@ -167,4 +229,58 @@ userbuffers_fp8_h100_h12288_tp4_mbs1_seqlen2048 = TransformerLayerTPOverlapCfg(
     fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
     proj_fprop=PipelineOverlapCfg(num_sm=24, cga_size=2, num_splits=4, set_sm_margin=True, fp8_buf=True),
     fc2_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+)
+
+userbuffers_bf16_b200_h12288_tp4_mbs1_seqlen2048 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=4, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=16, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=False),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=False),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    proj_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+    fc2_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+)
+
+userbuffers_fp8_b200_h12288_tp4_mbs1_seqlen2048 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=4, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=16, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=False),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=False),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    proj_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+    fc2_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+)
+
+# Nemotron 15B
+userbuffers_bf16_b200_h6144_tp2_mbs1_seqlen4096 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=32, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=False),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=False),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    proj_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+    fc2_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+)
+
+# Nemotron 340B
+userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096 = TransformerLayerTPOverlapCfg(
+    qkv_dgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_wgrad=BulkOverlapCfg(num_sm=32, cga_size=2, set_sm_margin=False),
+    fc1_dgrad=BulkOverlapCfg(num_sm=2, cga_size=2, set_sm_margin=False),
+    fc1_wgrad=BulkOverlapCfg(num_sm=8, cga_size=2, set_sm_margin=False),
+    qkv_fprop=RingExchangeOverlapCfg(aggregate=False),
+    proj_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    fc1_fprop=RingExchangeOverlapCfg(aggregate=False),
+    fc2_dgrad=RingExchangeOverlapCfg(aggregate=False),
+    proj_fprop=RingExchangeOverlapCfg(num_sm=1, set_sm_margin=True),
+    fc2_fprop=PipelineOverlapCfg(num_sm=24, cga_size=2, num_splits=4, set_sm_margin=True),
 )

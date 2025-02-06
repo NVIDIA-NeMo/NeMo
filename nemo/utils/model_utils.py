@@ -24,13 +24,15 @@ from dataclasses import dataclass, is_dataclass
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Tuple, Type, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Type, Union
 
 import wrapt
 
 from nemo.utils import AppState, logging
-from nemo.utils.data_utils import resolve_cache_dir  # imported for compatibility: model_utils.resolve_cache_dir()
-from nemo.utils.data_utils import is_datastore_path
+from nemo.utils.data_utils import (  # imported for compatibility: model_utils.resolve_cache_dir()  # noqa: F401  # pylint: disable=unused-import,line-too-long
+    is_datastore_path,
+    resolve_cache_dir,
+)
 
 # TODO @blisc: Perhaps refactor instead of import guarding
 
@@ -42,6 +44,12 @@ try:
     from packaging import version
 except ModuleNotFoundError:
     _HAS_HYDRA = False
+
+if TYPE_CHECKING:
+    import lightning.pytorch as pl
+
+    from nemo.core.classes import ModelPT, PretrainedModelInfo
+    from nemo.core.config.modelPT import NemoConfig
 
 
 MODEL_CONFIG = "model_config.yaml"
@@ -92,7 +100,7 @@ def load_config(model_file: str) -> DictConfig:
     return model_config
 
 
-def unwrap_model(model, module_instances: Union[Type, Tuple[Type]]):
+def unwrap_model(model, module_instances: Optional[Union[Type, Tuple[Type]]] = None):
     """Unwrap model from wrapper classes like Float16Module, for example."""
 
     # TODO: Import this from megatron.core once moved there from megatron.training.
@@ -102,8 +110,12 @@ def unwrap_model(model, module_instances: Union[Type, Tuple[Type]]):
         return_list = False
     unwrapped_model = []
     for model_module in model:
-        while isinstance(model_module, module_instances):
-            model_module = model_module.module
+        if module_instances:
+            while isinstance(model_module, module_instances):
+                model_module = model_module.module
+        else:  # remove any wrappers that have a '.module' attribute
+            while hasattr(model_module, "module"):
+                model_module = model_module.module
         unwrapped_model.append(model_module)
     if not return_list:
         return unwrapped_model[0]
@@ -342,7 +354,8 @@ def resolve_validation_dataloaders(model: 'ModelPT'):
             if len(ds_names) > 0:
                 if len(ds_names) != len(ds_values):
                     raise ValueError(
-                        f"Number of names ({len(ds_names)}) does not match number of datasets ({len(ds_values)}). Got {ds_names} and {ds_values}"
+                        f"Number of names ({len(ds_names)}) does not match number of "
+                        f"datasets ({len(ds_values)}). Got {ds_names} and {ds_values}"
                     )
                 model._validation_names = [parse_dataset_as_name(n) for n in ds_names]
             else:
@@ -436,7 +449,8 @@ def resolve_test_dataloaders(model: 'ModelPT'):
             if len(ds_names) > 0:
                 if len(ds_names) != len(ds_values):
                     raise ValueError(
-                        f"Number of names ({len(ds_names)}) does not match number of datasets ({len(ds_values)}). Got {ds_names} and {ds_values}"
+                        f"Number of names ({len(ds_names)}) does not match number of "
+                        f"datasets ({len(ds_values)}). Got {ds_names} and {ds_values}"
                     )
                 model._test_names = [parse_dataset_as_name(n) for n in ds_names]
             else:
@@ -648,7 +662,8 @@ def check_lib_version(lib_name: str, checked_version: str, operator) -> Tuple[Op
                 return True, msg
             else:
                 msg = (
-                    f"Lib {lib_name} version ({lib_ver}) is not {operator.__name__} than required version {checked_version}.\n"
+                    f"Lib {lib_name} version ({lib_ver}) is not {operator.__name__} "
+                    f"than required version {checked_version}.\n"
                     f"Please upgrade the lib using either pip or conda to the latest version."
                 )
                 return False, msg
@@ -692,7 +707,7 @@ def inject_model_parallel_rank(filepath, fsdp_sharded_ckpt=False):
         if app_state.pipeline_model_parallel_size is None or app_state.pipeline_model_parallel_size == 1:
             filepath = f'{dirname}/mp_rank_{app_state.tensor_model_parallel_rank:02d}{fsdp_shard}/{basename}'
         else:
-            filepath = f'{dirname}/tp_rank_{app_state.tensor_model_parallel_rank:02d}_pp_rank_{app_state.pipeline_model_parallel_rank:03d}/{basename}'
+            filepath = f'{dirname}/tp_rank_{app_state.tensor_model_parallel_rank:02d}_pp_rank_{app_state.pipeline_model_parallel_rank:03d}/{basename}'  # pylint: disable=line-too-long
         return filepath
     else:
         fsdp_shard = f'/fsdp_shard_{app_state.data_parallel_rank:05d}' if fsdp_sharded_ckpt else ''

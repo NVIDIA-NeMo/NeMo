@@ -187,7 +187,8 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         convert_module_fn: Optional[Callable[[ModelT], nn.Module]] = None,
     ) -> None:
         from megatron.core import parallel_state
-        from megatron.core.tensor_parallel import set_defaults_if_not_set_tensor_model_parallel_attributes
+
+        from nemo.utils.model_utils import unwrap_model
 
         _pipeline: List[nn.Module]
         if isinstance(pipeline, nn.ModuleList):
@@ -219,6 +220,20 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         self.ddp_config = ddp_config
         self.convert_module_fn = convert_module_fn
 
+        # [ModelOpt]: Detect Pipeline-parallel Distillation mode.
+        self._unwrapped_model = [unwrap_model(self)]
+        # Avoid re-registering module which breaks the inherited `ModuleList` somehow.
+        if (
+            hasattr(self.unwrapped_model, "teacher_model")
+            and parallel_state.get_pipeline_model_parallel_world_size() > 1
+        ):
+            self._kd_teacher_in_pp = True
+            assert (
+                not self.ddp_config.overlap_grad_reduce
+            ), "Pipeline-parallel Distillation currently incomatible with `overlap_grad_reduce` DDP option."
+        else:
+            self._kd_teacher_in_pp = False
+
     def forward(
         self,
         data: Union[DataT, Iterator[DataT], List[Iterator[DataT]]],
@@ -242,9 +257,12 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         Args:
             data (Union[DataT, Iterator[DataT], List[Iterator[DataT]]]): The input data for the model.
             forward_only (bool, optional): If True, only perform the forward pass. Defaults to True.
-            data_step (Optional[Callable[[Iterator[DataT]], DataT]], optional): Function to process the data. Defaults to None.
-            forward_step (Optional[Callable[[nn.Module, DataT], Tensor]], optional): Function to perform the forward pass. Defaults to None.
-            loss_reduction (Optional[MegatronLossReduction[DataT, Any]], optional): Function to reduce the loss. Defaults to None.
+            data_step (Optional[Callable[[Iterator[DataT]], DataT]], optional): Function to process the data.
+                Defaults to None.
+            forward_step (Optional[Callable[[nn.Module, DataT], Tensor]], optional): Function to perform the
+                forward pass. Defaults to None.
+            loss_reduction (Optional[MegatronLossReduction[DataT, Any]], optional): Function to reduce the
+                loss. Defaults to None.
             seq_length (Optional[int], optional): Sequence length for the model. Defaults to None.
             micro_batch_size (Optional[int], optional): Size of the micro batch. Defaults to None.
             num_microbatches (Optional[int], optional): Number of microbatches. Defaults to None.
@@ -269,6 +287,37 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         else:
             forward_step_func = _forward_step
 
+        if self._kd_teacher_in_pp:
+            assert wrap_forward_step
+            _teacher_forward_context = {}
+            if isinstance(_data_step, _ModuleStepFunction):
+                _data_step = _data_step(self.module)
+
+            def _dummy_reduction(output_tensor, *args, **kwargs):
+                return output_tensor.new_tensor(-1), {}
+
+            teacher_forward_step_func = self.wrapped_forward_step(
+                forward_step=_forward_step,
+                data_step=_data_step,
+                loss_reduction=_dummy_reduction,
+                context=_teacher_forward_context,
+            )
+            teacher_step = MegatronStep.infer(
+                self,
+                None,  # updated later below once we actually know `num_microbatches`
+                teacher_forward_step_func,
+                forward_only=True,
+                micro_batch_size=micro_batch_size,
+                num_microbatches=num_microbatches,
+                seq_length=seq_length,
+                step_i=step_i,
+            )
+            _teacher_forward_context["step"] = teacher_step
+            teacher_step = self.callbacks.transform_event("on_megatron_step_start", teacher_step)
+
+            data = _data_step(data, cache_num_batches=teacher_step.num_microbatches)
+            teacher_step.data = data
+
         step = MegatronStep.infer(
             self,
             data,
@@ -283,7 +332,14 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         step = self.callbacks.transform_event("on_megatron_step_start", step)
 
         self.callbacks.event("on_megatron_microbatches_start", step=step)
-        microbatch_outputs = step()
+        if self._kd_teacher_in_pp:
+            with self.unwrapped_model.only_teacher_forward():
+                with self.unwrapped_model.swap_teacher_config(self.module):
+                    teacher_step()
+            with self.unwrapped_model.only_student_forward():
+                microbatch_outputs = step()
+        else:
+            microbatch_outputs = step()
         self.callbacks.event("on_megatron_microbatches_end", step=step, microbatch_outputs=microbatch_outputs)
 
         if microbatch_outputs:
@@ -292,7 +348,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             )
 
             if isinstance(_loss_reduction, _ModuleStepFunction):
-                _loss_reduction = _loss_reduction(self[0])
+                _loss_reduction = _loss_reduction(self.module)
 
             reduced = _loss_reduction.reduce(microbatch_outputs)
             self.callbacks.event(
@@ -551,14 +607,15 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
                 msg = (
                     f" > number of parameters on (tensor, pipeline) model parallel rank "
-                    f"({parallel_state.get_tensor_model_parallel_rank()}, {parallel_state.get_pipeline_model_parallel_rank()}): "
+                    f"({parallel_state.get_tensor_model_parallel_rank()}, {parallel_state.get_pipeline_model_parallel_rank()}): "  # pylint: disable=line-too-long
                     f"{num_params}"
                 )
                 logging.info(msg)
 
                 if num_params != num_trainable_params:
                     logging.info(
-                        f" > number of trainable parameters: {num_trainable_params} ({num_trainable_params / num_params:.2%} of total)"
+                        " > number of trainable parameters: "
+                        f"{num_trainable_params} ({num_trainable_params / num_params:.2%} of total)"
                     )
 
         if self.convert_module_fn:
@@ -699,6 +756,10 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
     @property
     def module(self) -> ModelT:
         return self[0]
+
+    @property
+    def unwrapped_model(self):
+        return self._unwrapped_model[0]
 
     @override
     def __getattr__(self, item: Any) -> Any:
@@ -846,8 +907,8 @@ class CallbackConnector:
 
     Each of these methods corresponds to a specific stage in the model's operation.
     You can define these methods in your callback functions to perform specific actions at these stages.
-    There is no need for the class to be a subclass of a specific parent class. As long as the class contains the methods outlined above,
-    it can be used as a callback.
+    There is no need for the class to be a subclass of a specific parent class.
+    As long as the class contains the methods outlined above, it can be used as a callback.
     """
 
     def __init__(self, callbacks=None) -> None:
@@ -1076,7 +1137,8 @@ class MegatronStep(Generic[ModelT, DataT]):
         micro_batch_size (Optional[int]): Size of each micro-batch.
         seq_length (Optional[int]): Sequence length for the current step.
         num_microbatches (Optional[int]): Number of micro-batches in this step.
-        decoder_seq_length (Optional[int]): Sequence length of decoder (used only in encoder-decoder style models) for the current step.
+        decoder_seq_length (Optional[int]): Sequence length of decoder (used only in
+            encoder-decoder style models) for the current step.
 
     Type Parameters:
         ModelT: The type of the model being used.
@@ -1648,9 +1710,7 @@ class MaskedTokenLossReduction(MegatronLossReduction):
     def forward(
         self, batch: Dict[str, torch.Tensor], forward_out: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """Taken from:
-        https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L951-L976 .
-        """
+        """Taken from: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L951-L976 ."""  # pylint: disable=line-too-long
         from megatron.core import parallel_state
 
         from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
@@ -1688,7 +1748,7 @@ class MaskedTokenLossReduction(MegatronLossReduction):
         return loss_for_ub * cp_size, {"avg": reduced_loss}
 
     def reduce(self, losses_reduced_per_micro_batch) -> torch.Tensor:
-        """Taken from: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""
+        """Taken from: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""  # pylint: disable=line-too-long
         if losses_reduced_per_micro_batch:
             if "avg" in losses_reduced_per_micro_batch[0]:
                 loss_tensors_list = [loss_reduced["avg"] for loss_reduced in losses_reduced_per_micro_batch]

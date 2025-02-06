@@ -10,14 +10,31 @@ The DP communication is chunked by the granularity of a Transformer layer and ov
 This overlap method exposes only one DP communication chunk ensuring efficient large-scale LLM training.
 When training with pipeline-parallelism, the granularity of DP communication becomes the Transformer layers per virtual pipeline stage.
 
-DP gradient reduce-scatter and parameter all-gather overlaps are enabled when setting ``overlap_grad_sync=true`` and ``overlap_param_sync=true``, respectively.
-The precision of the gradient reduce-scatter is set by ``grad_sync_dtype`` and reduction in bf16 ensures improved performance at large scale training compared to the default precision of fp32.
-When training in fp8 computing precision (with ``fp8=true``), setting ``fp8_params=true`` conducts the parameter all-gather in fp8, reducing the all-gather overhead by half.
+DP communication overlap settings can be inspected in Megatron Core via the `DistributedDataParallelConfig` class:
+`DistributedDataParallelConfig <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/distributed/distributed_data_parallel_config.py>`_.
+DP gradient reduce-scatter and parameter all-gather overlaps are enabled when setting ``overlap_grad_sync=True`` and ``overlap_param_gather=True``, respectively.
+The precision of gradient reduce-scatter is controlled by ``grad_reduce_in_fp32``. When ``grad_reduce_in_fp32=False``, gradients are reduced in `bf16`, leading to improved performance in large-scale training compared to the default `fp32` precision.
+When training in fp8 computing precision, setting ``fp8_param_gather=True`` conducts the parameter all-gather in fp8, reducing the all-gather overhead by half.
+
+To modify these configurations, manually update the training recipe as follows:
+
+.. code-block:: python
+
+    from nemo.collections import llm
+    from functools import partial
+
+    # Load training recipe
+    recipe = partial(llm.llama3_8b.pretrain_recipe)()
+
+    recipe.strategy.ddp_config.overlap_grad_sync = False  # Default is True
+    recipe.strategy.ddp_config.overlap_param_gather = False  # Default is True
+    # Similar changes can be made for other DDP configurations.
+
 
 Tensor-parallel Communication Overlap
 -------------------------------------
 
-Tensor parallelism, used with the sequence-parallel activation sharding (``sequence_parallel=true``), introduces activation (gradient) all-gather and reduce-scatter as shown in the below figure.
+Tensor parallelism, used with the sequence-parallel activation sharding (``sequence_parallel=True``), introduces activation (gradient) all-gather and reduce-scatter as shown in the below figure.
 NeMo provides various options to overlap the tensor-parallel (TP) communications with computation.
 The TP communication without direct computation dependency are overlapped with the computation in bulk (the linear layer and TP communication pairs in the yellow boxes).
 The bulk TP communication is enabled by default.
@@ -32,9 +49,32 @@ In case of the reduce-scatter overlap, NeMo also provides the option to pipeline
     :width: 600px
     :alt: Tensor-parallel communication overlap
 
-The pipelined TP communication overlap is implemented in Transformer Engine and is enabled by setting ``ub_tp_comm_overlap=true``.
-The specific overlap methods can be set by a config dictionary, which set and is passed as a yaml file.
-The individual bulk, pipelined all-gather, and reduce-scatter can be en- and disabled by ``tp_comm_bulk_wgrad``, ``tp_comm_bulk_dgrad``, ``tp_comm_overlap_ag``, and ``tp_comm_overlap_rs``, respectively.
+TP communication overlap configurations are added via the callback `MegatronCommOverlapCallback <https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/callbacks/megatron_comm_overlap.py#L61>`_.
+Pipelined TP communication overlap is implemented in Transformer Engine and can be enabled by setting ``tp_comm_overlap=True``.
+The individual bulk, pipelined all-gather, and reduce-scatter operations can be enabled or disabled using ``tp_comm_overlap_cfg``.
+For detailed configuration, refer to `TransformerLayerTPOverlapCfg <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/tp_overlap_configs/userbuffers.py#L50>`_.
+
+To modify these configurations, manually update the training recipe as follows:
+
+.. code-block:: python
+
+    from nemo.collections import llm
+    from functools import partial
+    from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
+
+    # Load training recipe
+    recipe = partial(llm.llama3_8b.pretrain_recipe)()
+
+    # Remove existing MegatronCommOverlapCallback
+    recipe.trainer.callbacks = [
+        callback for callback in recipe.trainer.callbacks
+        if not isinstance(callback, MegatronCommOverlapCallback)
+    ]
+
+    # Append new callback with updated configuration
+    recipe.trainer.callbacks.append(
+        MegatronCommOverlapCallback(tp_comm_overlap=False)
+    )
 
 Pipeline-parallel Communication Overlap
 ---------------------------------------
@@ -50,9 +90,36 @@ The PP communications in pipeline fill and flush are still exposed.
     :width: 600px
     :alt: Pipeline-parallel communication overlap in 1F1B pipelining phase
 
-The PP communication overlap is enabled when setting ``overlap_p2p_comm=true``. Also, setting ``batch_p2p_comm=false`` uses separate kernels for the send and the receive, which further improves the communication efficiency and GPU resource utilization.
+The PP communication overlap is enabled when setting ``overlap_p2p_comm=True``. Also, setting ``batch_p2p_comm=False`` uses separate kernels for the send and the receive, which further improves the communication efficiency and GPU resource utilization.
 NeMo supports PP communication overlap only with virtual pipelining, where PP communication becomes the performance bottleneck.
 Please refer `GPT3 training config file <https://github.com/NVIDIA/NeMo-Framework-Launcher/blob/main/launcher_scripts/conf/training/gpt3/175b.yaml>`_ that uses the PP communication overlap.
+
+Similar to TP communication overlap, PP communication overlap configurations are added via the callback `MegatronCommOverlapCallback <https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/callbacks/megatron_comm_overlap.py#L61>`_.
+The PP communication overlap is enabled when setting ``overlap_p2p_comm=True``. Also, setting ``batch_p2p_comm=False`` uses separate kernels for the send and the receive, which further improves the communication efficiency and GPU resource utilization.
+NeMo supports PP communication overlap only with virtual pipelining, where PP communication becomes the performance bottleneck.
+
+To modify these configurations, manually update the training recipe as follows:
+
+.. code-block:: python
+
+    from nemo.collections import llm
+    from functools import partial
+    from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
+
+    # Load training recipe
+    recipe = partial(llm.llama3_8b.pretrain_recipe)()
+
+    # Remove existing MegatronCommOverlapCallback
+    recipe.trainer.callbacks = [
+        callback for callback in recipe.trainer.callbacks
+        if not isinstance(callback, MegatronCommOverlapCallback)
+    ]
+
+    # Append new callback with updated configuration
+    recipe.trainer.callbacks.append(
+        MegatronCommOverlapCallback(overlap_p2p_comm=True, batch_p2p_comm=False)
+    )
+
 
 Context-parallel Communication Overlap
 --------------------------------------

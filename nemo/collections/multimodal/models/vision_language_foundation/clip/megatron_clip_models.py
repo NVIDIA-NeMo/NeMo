@@ -52,6 +52,7 @@ from nemo.collections.vision.modules.vit.vit_backbone import VitBackbone
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import, safe_import_from
+from nemo.utils.te_utils import te_version
 
 try:
     from apex.transformer.enums import AttnMaskType
@@ -704,7 +705,14 @@ class MegatronCLIPModel(MegatronBaseModel):
         else:
             build_model_context = nullcontext
             if HAVE_TE and self.cfg.get('fp8', False) and self.cfg.get('fp8_params', False):
-                build_model_context = transformer_engine.pytorch.fp8_model_init
+                if te_version() >= (2, 0):
+                    recipe = transformer_engine.common.recipe.DelayedScaling()
+                    build_model_context = partial(
+                        transformer_engine.pytorch.fp8_model_init,
+                        recipe=recipe,
+                    )
+                else:
+                    build_model_context = transformer_engine.pytorch.fp8_model_init
             with build_model_context():
                 self.model = build_model(
                     model_provider_func=self.model_provider_func,

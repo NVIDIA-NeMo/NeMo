@@ -15,7 +15,7 @@
 import collections
 import contextlib
 import itertools
-from typing import Callable, Dict, Iterable, Optional, Union
+from typing import Callable, Dict, Iterable, Optional, Tuple, Union
 
 import torch
 from apex.contrib.optimizers.distributed_fused_adam import (
@@ -35,10 +35,96 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.optimizer import get_param_id_to_sharded_param_map, optim_state_to_sharding_state
 
 from nemo.utils import logging, str_to_dtype
-from nemo.utils.import_utils import safe_import_from
-from nemo.utils.te_utils import is_float8tensor
+from nemo.utils.te_utils import is_float8tensor, is_mxfp8tensor, te_version
 
-cast_to_fp8, _ = safe_import_from("transformer_engine.pytorch.cpp_extensions", "cast_to_fp8")
+if te_version() >= (2, 0):
+
+    # TE quantization logic using quantizer API
+    # Supported TE versions: 2.0+
+
+    from transformer_engine.pytorch.tensor.float8_tensor import Float8Tensor
+
+    def _quantize_param_fragment_impl(
+        input_: torch.Tensor,
+        *,
+        out: torch.Tensor,
+        param: torch.nn.Parameter,
+    ) -> None:
+        quantizer = param._quantizer
+        out = Float8Tensor(
+            shape=input_.size(),
+            dtype=param.dtype,
+            requires_grad=False,
+            data=out,
+            fp8_scale_inv=param._scale_inv,
+            fp8_dtype=param._fp8_dtype,
+            quantizer=quantizer,
+        )
+        quantizer.update_quantized(input_, out)
+
+    def _get_fp8_scale_and_amax_impl(tensor: Float8Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        quantizer = tensor._quantizer
+        return quantizer.scale, quantizer.amax
+
+elif te_version() >= (1, 0):
+
+    # TE quantization logic with fp8_meta dicts
+    # Supported TE versions: 1.0 - 1.14
+
+    from transformer_engine.pytorch.cpp_extensions import cast_to_fp8
+
+    def _quantize_param_fragment_impl(
+        input_: torch.Tensor,
+        *,
+        out: torch.Tensor,
+        param: torch.nn.Parameter,
+    ) -> None:
+        cast_to_fp8(
+            src.view(1, -1),
+            param._fp8_meta["scaling_fwd"],
+            param._fp8_meta_index,
+            param._fp8_dtype,
+            out=dst.view(1, -1),
+        )
+
+    def _get_fp8_scale_and_amax_impl(tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        fp8_meta = tensor._fp8_meta["scaling_fwd"]
+        fp8_meta_index = tensor._fp8_meta_index
+        return fp8_meta.scale[fp8_meta_index], fp8_meta.amax_history[0][fp8_meta_index]
+
+else:
+
+    # Fallback impl if TE version is invalid
+    def _quantize_param_fragment_impl(*args, **kwargs) -> None:
+        raise RuntimeError("Invalid Transformer Engine version for FP8 distributed optimizer")
+
+    def _get_fp8_scale_and_amax_impl(*args, **kwargs):
+        raise RuntimeError("Invalid Transformer Engine version for FP8 distributed optimizer")
+
+
+def quantize_param_fragment(
+    input_: torch.Tensor,
+    *,
+    out: torch.Tensor,
+    param: torch.nn.Parameter,
+) -> None:
+    """Cast values in parameter fragment to FP8
+
+    Arguments:
+      input_ (torch.Tensor): Values to quantize.
+      out (torch.Tensor): Raw UINT8 buffer to fill with FP8 values.
+          Dimensions should match input_.
+      param (torch.nn.Parameter): Parameter containing this parameter
+          fragment. Must be a Float8Tensor.
+
+    """
+    _quantize_param_fragment_impl(input_, out=out, param=param)
+
+
+def get_fp8_scale_and_amax(tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Get FP8 scale and amax from Float8Tensor"""
+    return _get_fp8_scale_and_amax_impl(tensor)
+
 
 _distribute_within_nodes_pgs = {}
 
@@ -176,6 +262,10 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                         print(f'MegatronDistributedFusedAdam: Failed to acquire lock within {lock_timeout} seconds.')
 
             self._lock_with_timeout = lock_with_timeout
+
+        # Check for MXFP8 parameters
+        if any(is_mxfp8tensor(param) for param in self.parameters()):
+            raise ValueError("Distributed optimizer currently does not support MXFP8 parameters")
 
     def _broadcast_params(self) -> None:
         # Assume params have already been synchronized
@@ -487,6 +577,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         self._try_start_bucket_grad_sync(params=params)
 
     def zero_grad(self, *args, **kwargs) -> None:
+        """Clear parameter gradients"""
         super().zero_grad(*args, **kwargs)
 
         # Reset main grads
@@ -501,6 +592,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         norm_type: float = 2.0,
         force: bool = False,
     ) -> torch.Tensor:
+        """L2 norm of parameter gradients"""
         assert norm_type == 2
 
         if parameters is not None:
@@ -643,12 +735,10 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 if shard_end <= shard_start:
                     continue
                 shard_range = slice(shard_start, shard_end)
-                cast_to_fp8(
-                    params_shard[shard_range].view(1, -1),
-                    param._fp8_meta["scaling_fwd"],
-                    param._fp8_meta_index,
-                    param._fp8_dtype,
-                    out=fp8_params_shard[shard_range].view(1, -1),
+                quantize_param_fragment(
+                    params_shard[shard_range],
+                    out=fp8_params_shard[shard_range],
+                    param=param,
                 )
 
         # Update FP8 scaling factors when all buckets have processed
@@ -667,10 +757,9 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 if not is_float8tensor(param):
                     continue
                 i += 1
-                fp8_meta = param._fp8_meta["scaling_fwd"]
-                fp8_meta_index = param._fp8_meta_index
-                amaxes.append(fp8_meta.amax_history[0][fp8_meta_index].view(1))
-                scales.append(fp8_meta.scale[fp8_meta_index].view(1))
+                scale, amax = get_fp8_scale_and_amax(param)
+                amaxes.append(amax.view(1))
+                scales.append(scale.view(1))
                 scale_invs.append(param._scale_inv.view(1))
 
             # Update cached scale-inverses
@@ -715,6 +804,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         super()._check_params_shard_dtypes(params_buckets)
 
     def sharded_state_dict(self, model_sharded_state_dict, optimizer_state_dict=None):
+        """Create sharded state dict"""
         if optimizer_state_dict is None:
             optimizer_state_dict = self.state_dict()
 

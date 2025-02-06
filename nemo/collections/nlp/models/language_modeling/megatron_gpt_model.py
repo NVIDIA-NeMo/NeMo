@@ -75,7 +75,7 @@ from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import ChannelType, NeuralType
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import, safe_import_from
-from nemo.utils.te_utils import is_float8tensor
+from nemo.utils.te_utils import is_float8tensor, te_version
 
 try:
     import megatron.core as core
@@ -401,7 +401,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         else:
             build_model_context = nullcontext
             if HAVE_TE and self.cfg.get('fp8', False) and self.cfg.get('fp8_params', False):
-                build_model_context = transformer_engine.pytorch.fp8_model_init
+                if te_version() >= (2, 0):
+                    recipe = transformer_engine.common.recipe.DelayedScaling()
+                    build_model_context = partial(
+                        transformer_engine.pytorch.fp8_model_init,
+                        recipe=recipe,
+                    )
+                else:
+                    build_model_context = transformer_engine.pytorch.fp8_model_init
             with build_model_context():
                 self.model = build_model(
                     model_provider_func=self.model_provider_func,

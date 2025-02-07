@@ -30,12 +30,16 @@ NEMO_DATASETS_CACHE = Path(os.getenv("NEMO_DATASETS_CACHE", DEFAULT_NEMO_DATASET
 DEFAULT_NEMO_MODELS_CACHE = NEMO_CACHE_HOME / "models"
 NEMO_MODELS_CACHE = Path(os.getenv("NEMO_MODELS_CACHE", DEFAULT_NEMO_MODELS_CACHE))
 
+if os.getenv('TOKENIZERS_PARALLELISM') is None:
+    os.putenv('TOKENIZERS_PARALLELISM', 'True')
+
 
 def get_vocab_size(
     config,
     vocab_size: int,
     make_vocab_size_divisible_by: int = 128,
 ) -> int:
+    """returns `vocab size + padding` to make sure sum is dividable by `make_vocab_size_divisible_by`"""
     from nemo.utils import logging
 
     after = vocab_size
@@ -49,6 +53,7 @@ def get_vocab_size(
 
 
 def teardown(trainer: Trainer, model: Optional[nn.Module] = None) -> None:
+    """Destroys distributed environment and cleans up cache / collects garbage"""
     # Destroy torch distributed
     if torch.distributed.is_initialized():
         from megatron.core import parallel_state

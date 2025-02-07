@@ -100,6 +100,7 @@ __all__ = [
     "llama31_405b",
     "llama32_1b",
     "llama32_3b",
+    "llama_embedding_1b",
     "mamba2_130m",
     "mamba2_370m",
     "mamba2_780m",

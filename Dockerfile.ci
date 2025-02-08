@@ -15,7 +15,30 @@
 # limitations under the License.
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
+ARG NEMO_REPO
+ARG NEMO_TAG
+ARG MLM_REPO
+ARG MLM_TAG
+ARG TE_REPO
+ARG TE_TAG
+ARG APEX_REPO
+ARG APEX_TAG
 ARG IMAGE_LABEL
+
+FROM ${BASE_IMAGE} as nemo-bump
+ARG NEMO_TAG
+WORKDIR /opt
+# NeMo
+RUN <<"EOF" bash -exu
+if [[ ! -d NeMo ]]; then
+    git clone https://github.com/NVIDIA/NeMo.git
+fi
+cd NeMo/
+git fetch origin '+refs/pull/*/merge:refs/remotes/pull/*/merge'
+git fetch origin $NEMO_TAG
+git checkout -f $NEMO_TAG
+EOF
+
 FROM ${BASE_IMAGE}
 ARG IMAGE_LABEL
 LABEL "nemo.library"=${IMAGE_LABEL}
@@ -31,8 +54,26 @@ apt-get install -y bc libsox-fmt-all -y
 apt-get clean
 EOF
 
-WORKDIR /workspace
+ARG MAX_JOBS
+ARG TE_TAG
+ARG TE_REPO
+RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+  bash /opt/NeMo/reinstall.sh --library te --mode build && \
+  ls -al /opt/TransformerEngine || true
 
+ARG APEX_REPO
+ARG APEX_TAG
+RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+  bash /opt/NeMo/reinstall.sh --library apex --mode build && \
+  ls -al /opt/Apex || true
+
+ARG MLM_REPO
+ARG MLM_TAG
+RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+  bash /opt/NeMo/reinstall.sh --library mcore --mode build && \
+  ls -al /opt/Megatron-LM || true
+
+WORKDIR /workspace
 RUN \
   --mount=type=bind,source=requirements,target=requirements \
   --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=tools/ctc_segmentation/requirements.txt \
@@ -40,17 +81,23 @@ RUN \
   --mount=type=bind,source=setup.py,target=setup.py \
   --mount=type=bind,source=nemo/package_info.py,target=nemo/package_info.py \
   --mount=type=bind,source=nemo/__init__.py,target=nemo/__init__.py <<"EOF" bash -ex
-
-  HEAVY_DEPS=TRUE bash reinstall.sh "dev"
-
-  # Megatron Core installation
-  cp -r /opt/Megatron-LM /workspace
+    ls -al /tmp/wheels
+    ls -al /tmp/wheels/apex
+    bash reinstall.sh --library apex --mode install
+    bash reinstall.sh --library te --mode install
+    bash reinstall.sh --library mcore --mode install
 EOF
 
 # Copy over NeMo code
-COPY ./ ./
-RUN <<"EOF" bash -ex
-pip install --no-cache-dir --no-build-isolation ".[all]"
+COPY --from=nemo-bump /opt/NeMo /opt/NeMo/
+RUN <<"EOF" 
+bash -ex
+bash /opt/NeMo/reinstall.sh --library nemo --mode install
+
+cp -a /opt/NeMo/. /workspace/
+# Megatron Core installation
+
+cp -r /opt/Megatron-LM/ /workspace/
 
 # set permission
 chmod 777 -R /workspace

@@ -20,7 +20,7 @@ on:
         type: string
         description: Script to run after main test
         required: false
-        default: ':'
+        default: ":"
       IS_OPTIONAL:
         type: boolean
         description: Failure will cancel all other tests if set to true
@@ -41,9 +41,6 @@ on:
       potential_infra_failure:
         description: Boolean flag when infra-related keyword spotted in logs.
         value: ${{ jobs.main.outputs.potential_infra_failure }}
-      coverage_report:
-        description: Key of coverage_report artifact
-        value: ${{ jobs.main.outputs.coverage_report }}
 jobs:
   main:
     runs-on: ${{ inputs.RUNNER }}
@@ -51,7 +48,6 @@ jobs:
       conclusion: ${{ steps.check.conclusion }}
       log: ${{ steps.check.outputs.log }}
       potential_infra_failure: ${{ steps.check.outputs.potential_infra_failure }}
-      coverage_report: ${{ steps.check.outputs.coverage_report }}
     env:
       DIR: ${{ github.run_id }}
     steps:
@@ -178,7 +174,7 @@ jobs:
             ${{ github.run_id }}/.coverage
           include-hidden-files: true
 
-      - uses: 'NVIDIA/NeMo/.github/actions/cancel-workflow@main'
+      - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
         if: failure() && inputs.IS_OPTIONAL == false && !contains(github.event.pull_request.labels.*.name, 'no-fail-fast')
       - name: after_script
         if: always() && inputs.AFTER_SCRIPT != ':'

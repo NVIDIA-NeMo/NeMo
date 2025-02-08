@@ -1,37 +1,143 @@
 #!/usr/bin/env bash
 set -ex
 
-INSTALL_OPTION=${1:-"dev"}
+# List of all supported libraries (update this list when adding new libraries)
+# This also defines the order in which they will be installed by --libraries "all"
+ALL_LIBRARIES=(
+  "te"
+  "apex"
+  "mcore"
+  "nemo"
+)
+
+INSTALL_OPTION=${1:-dev}
 HEAVY_DEPS=${HEAVY_DEPS:-false}
+CURR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+WHEELS_DIR=${WHEELS_DIR:-'/tmp/wheels'}
 
 PIP=pip
-
 ${PIP} install -U ${PIP}
 
+mcore() {
+  local mode="$1"
+  export MAMBA_FORCE_BUILD=TRUE
+  export MAMBA_TAG=v2.2.0
+  export CAUSAL_CONV1D_FORCE_BUILD=TRUE
+  export CAUSAL_CONV_TAG=v1.2.2.post1
+
+  CAUSAL_CONV1D_DIR="/opt/causal-conv1d" &&
+    if [ ! -d "$CAUSAL_CONV1D_DIR/.git" ]; then
+      rm -rf "$CAUSAL_CONV1D_DIR" &&
+        cd $(dirname "$CAUSAL_CONV1D_DIR") &&
+        git clone https://github.com/Dao-AILab/$(basename $CAUSAL_CONV1D_DIR).git
+    fi &&
+    pushd $CAUSAL_CONV1D_DIR &&
+    git checkout -f $CAUSAL_CONV_TAG &&
+    popd
+
+  MAMBA_DIR="/opt/mamba" &&
+    if [ ! -d "$MAMBA_DIR/.git" ]; then
+      rm -rf "$MAMBA_DIR" &&
+        cd $(dirname "$MAMBA_DIR") &&
+        git clone https://github.com/state-spaces/$(basename $MAMBA_DIR).git
+    fi &&
+    pushd $MAMBA_DIR &&
+    git checkout -f $MAMBA_TAG &&
+    popd
+
+  MLM_DIR="/opt/Megatron-LM" &&
+    if [ ! -d "$MLM_DIR/.git" ]; then
+      rm -rf "$MLM_DIR" &&
+        cd $(dirname "$MLM_DIR") &&
+        git clone ${MLM_REPO}
+    fi &&
+    pushd $MLM_DIR &&
+    git checkout -f $MLM_TAG &&
+    popd
+
+  if [[ "$mode" == "build" ]]; then
+    pip wheel --no-deps --wheel-dir $WHEELS_DIR/mcore/ $MAMBA_DIR
+    pip wheel --no-deps --wheel-dir $WHEELS_DIR/mcore/ $CAUSAL_CONV1D_DIR
+    pip wheel --no-deps --wheel-dir $WHEELS_DIR/mcore/ $MLM_DIR
+  else
+    pip install --no-cache-dir $WHEELS_DIR/mcore/*.whl
+    pip install --no-cache-dir -e $MLM_DIR
+  fi
+}
+
+te() {
+  local mode="$1"
+  TE_DIR="/opt/TransformerEngine"
+
+  if [ ! -d "$TE_DIR/.git" ]; then
+    rm -rf "$TE_DIR" &&
+      cd $(dirname "$TE_DIR") &&
+      git clone ${TE_REPO}
+  fi &&
+    pushd $TE_DIR &&
+    git checkout -f $TE_TAG &&
+    popd
+
+  if [[ "$mode" == "build" ]]; then
+    cd $TE_DIR && git submodule init && git submodule update &&
+      pip wheel --wheel-dir $WHEELS_DIR/te/ $TE_DIR
+  else
+    pip install --no-cache-dir $WHEELS_DIR/te/*.whl
+  fi
+}
+
+apex() {
+  local mode="$1"
+  APEX_DIR="/opt/Apex"
+
+  if [ ! -d "$APEX_DIR/.git" ]; then
+    rm -rf "$APEX_DIR" &&
+      cd $(dirname "$APEX_DIR") &&
+      git clone ${APEX_REPO}
+  fi &&
+    pushd $APEX_DIR &&
+    git checkout -f $APEX_TAG &&
+    popd
+
+  if [[ "$mode" == "build" ]]; then
+    cd $APEX_DIR && pip wheel --no-deps --no-build-isolation --wheel-dir $WHEELS_DIR/apex/ $APEX_DIR
+  else
+    pip install --no-cache-dir --no-build-isolation $WHEELS_DIR/apex/*.whl
+  fi
+
+}
+
+nemo() {
+  local mode="$1"
+  NEMO_DIR="/opt/NeMo"
+
+  if [ ! -d "$NEMO_DIR/.git" ]; then
+    rm -rf "$NEMO_DIR" &&
+      cd $(dirname "$NEMO_DIR") &&
+      git clone ${NEMO_REPO}
+  fi &&
+    pushd $NEMO_DIR &&
+    git fetch origin '+refs/pull/*/merge:refs/remotes/pull/*/merge' &&
+    git fetch origin $NEMO_TAG &&
+    git checkout -f $NEMO_TAG
+
+  ${PIP} install --no-cache-dir virtualenv &&
+    virtualenv /opt/venv &&
+    /opt/venv/bin/pip install --no-cache-dir --no-build-isolation \
+      -r requirements/requirements_vllm.txt \
+      -r requirements/requirements_deploy.txt
+
+  pip install --no-cache-dir --no-build-isolation .[all] "llama-index==0.10.43" "unstructured==0.14.9" "triton==3.1.0"
+}
+
 echo 'Uninstalling stuff'
-${PIP} uninstall -y nemo_toolkit
-${PIP} uninstall -y sacrebleu
-
-# Kept for legacy purposes
-${PIP} uninstall -y nemo_asr
-${PIP} uninstall -y nemo_nlp
-${PIP} uninstall -y nemo_tts
-
-export MAMBA_FORCE_BUILD=TRUE
-export CAUSAL_CONV1D_FORCE_BUILD=TRUE
-export TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
-export NEMO_RUN_TAG=34259bd3e752fef94045a9a019e4aaf62bd11ce2
-export APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
-export CAUSAL_CONV_TAG=v1.2.2.post1
-export MAMBA_TAG=v2.2.0
-export MCORE_TAG=0e85db539cf16816ffced6e7dac644d91ffadc04
-export NV_RESILIENCY_EXT_TAG=97aad77609d2e25ed38ac5c99f0c13f93c48464e
+# Some of these packages are uninstalled for legacy purposes
+${PIP} uninstall -y nemo_toolkit sacrebleu nemo_asr nemo_nlp nemo_tts
 
 if [ -n "${NVIDIA_PYTORCH_VERSION}" ]; then
   echo "Installing NeMo in NVIDIA PyTorch container: ${NVIDIA_PYTORCH_VERSION}"
 
   echo "Will not install numba"
-  ${PIP} install --no-build-isolation "apex @ git+https://github.com/NVIDIA/apex.git@${APEX_TAG}"
 
 else
   if [ -n "${CONDA_PREFIX}" ]; then
@@ -39,69 +145,111 @@ else
     echo 'Installing numba=='${NUMBA_VERSION}
     conda install -y -c conda-forge numba==${NUMBA_VERSION}
   fi
-
-  ${PIP} install torch
-  ${PIP} install "apex @ git+https://github.com/NVIDIA/apex.git@${APEX_TAG}"
-
 fi
 
 DEPS=(
   "nvidia-modelopt[torch]~=0.21.0; sys_platform == 'linux'"
-  "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@${NEMO_RUN_TAG}"
-  "git+https://github.com/NVIDIA/Megatron-LM.git@${MCORE_TAG}"
-  "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@${NV_RESILIENCY_EXT_TAG}"
+  "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@34259bd3e752fef94045a9a019e4aaf62bd11ce2"
+  "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e"
   "onnxscript @ git+https://github.com/microsoft/onnxscript"
 )
-
-if [[ "$HEAVY_DEPS" == "TRUE" ]]; then
-  ${PIP} install --no-cache-dir virtualenv &&
-    virtualenv /opt/venv &&
-    /opt/venv/bin/pip install --no-cache-dir --no-build-isolation \
-      -r /workspace/requirements/requirements_vllm.txt \
-      -r /workspace/requirements/requirements_deploy.txt
-
-  DEPS+=(
-    "llama-index==0.10.43"
-    "unstructured==0.14.9"
-    "git+https://github.com/Dao-AILab/causal-conv1d.git@${CAUSAL_CONV_TAG}"
-    "git+https://github.com/state-spaces/mamba.git@${MAMBA_TAG}"
-    "triton==3.1.0"
-  )
-
-  pip install --no-cache-dir -r tools/ctc_segmentation/requirements.txt
-
-  CURR=$(pwd)
-  cd /opt
-  git clone https://github.com/NVIDIA/Megatron-LM.git &&
-    pushd Megatron-LM &&
-    git checkout ${MCORE_TAG} &&
-    pip install -e . &&
-    popd
-
-  git clone https://github.com/NVIDIA/TransformerEngine.git &&
-    pushd TransformerEngine &&
-    git checkout ${TE_TAG} &&
-    git submodule update --init --recursive -q &&
-    pip install -e . &&
-    popd
-
-  cd "$CURR"
-
-fi
 
 echo 'Installing dependencies of nemo'
 ${PIP} install --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
 
 echo 'Installing nemo'
+cd $CURR
+
 if [[ "$INSTALL_OPTION" == "dev" ]]; then
+  echo "Running in dev mode"
   ${PIP} install --editable ".[all]"
 
 else
-  rm -rf dist/ &&
-    ${PIP} install build pytest-runner &&
-    python -m build --no-isolation --wheel &&
-    DIST_FILE=$(find ./dist -name "*.whl" | head -n 1) &&
-    ${PIP} install "${DIST_FILE}[all]"
+  # --------------------------
+  # Argument Parsing & Validation
+  # --------------------------
+
+  # Parse command-line arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --library)
+      LIBRARY_ARG="$2"
+      shift 2
+      ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+    esac
+  done
+
+  # Validate required arguments
+  if [[ -z "$LIBRARY_ARG" ]]; then
+    echo "Error: --library argument is required"
+    exit 1
+  fi
+
+  if [[ -z "$MODE" ]]; then
+    echo "Error: --mode argument is required"
+    exit 1
+  fi
+
+  # Validate mode
+  if [[ "$MODE" != "build" && "$MODE" != "install" ]]; then
+    echo "Error: Invalid mode. Must be 'build' or 'install'"
+    exit 1
+  fi
+
+  # Process library argument
+  declare -a LIBRARIES
+  if [[ "$LIBRARY_ARG" == "all" ]]; then
+    LIBRARIES=("${ALL_LIBRARIES[@]}")
+  else
+    IFS=',' read -ra TEMP_ARRAY <<<"$LIBRARY_ARG"
+    for lib in "${TEMP_ARRAY[@]}"; do
+      trimmed_lib=$(echo "$lib" | xargs)
+      if [[ -n "$trimmed_lib" ]]; then
+        LIBRARIES+=("$trimmed_lib")
+      fi
+    done
+  fi
+
+  # Validate libraries array
+  if [[ ${#LIBRARIES[@]} -eq 0 ]]; then
+    echo "Error: No valid libraries specified"
+    exit 1
+  fi
+
+  # Validate each library is supported
+  for lib in "${LIBRARIES[@]}"; do
+    if [[ ! " ${ALL_LIBRARIES[@]} " =~ " ${lib} " ]]; then
+      echo "Error: Unsupported library '$lib'"
+      exit 1
+    fi
+  done
+
+  # --------------------------
+  # Execution Logic
+  # --------------------------
+
+  # Run operations for each library
+  for library in "${LIBRARIES[@]}"; do
+    echo "Processing $library ($MODE)..."
+    "$library" "$MODE"
+
+    # Check if function succeeded
+    if [[ $? -ne 0 ]]; then
+      echo "Error: Operation failed for $library"
+      exit 1
+    fi
+  done
+
+  echo "All operations completed successfully"
+  exit 0
 
 fi
 

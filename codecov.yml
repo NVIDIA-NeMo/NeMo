@@ -5,60 +5,42 @@ coverage:
     project:
       default: false
       asr:
+        threshold: 1%
         paths:
-          - tests/collections/asr
-          - nemo
+          - nemo/collections/asr
       audio:
+        threshold: 1%
         paths:
-          - tests/collections/audio
-          - nemo
+          - nemo/collections/audio
       common:
+        threshold: 1%
         paths:
-          - tests/collections/common
-          - nemo
+          - nemo/collections/common
       llm:
+        threshold: 1%
         paths:
-          - tests/collections/llm
-          - nemo
+          - nemo/collections/llm
       multimodal:
+        threshold: 1%
         paths:
-          - tests/collections/multimodal
-          - nemo
+          - nemo/collections/multimodal
       nlp:
+        threshold: 1%
         paths:
-          - tests/collections/nlp
-          - nemo
+          - nemo/collections/nlp
       tts:
+        threshold: 1%
         paths:
-          - tests/collections/tts
-          - nemo
+          - nemo/collections/tts
       core:
+        threshold: 1%
         paths:
-          - tests/core
-          - nemo
-      hydra:
-        paths:
-          - tests/hydra
-          - nemo
-      lightning:
-        paths:
-          - tests/lightning
-          - nemo
+          - nemo/core
       others:
+        threshold: 1%
         paths:
-          - tests
           - nemo
-          - "!tests/collections/asr"
-          - "!tests/collections/audio"
-          - "!tests/collections/common"
-          - "!tests/collections/llm"
-          - "!tests/collections/multimodal"
-          - "!tests/collections/nlp"
-          - "!tests/collections/tts"
-          - "!tests/core"
-          - "!tests/core_ptl"
-          - "!tests/hydra"
-          - "!tests/lightning"
-          - "!tests/utils"
+          - "!nemo/collections"
+          - "!nemo/core"
 fixes:
   - "/workspace/::"

@@ -19,7 +19,6 @@ from typing import Any, Callable, Optional, Union
 
 import lightning.pytorch as pl
 import nemo_run as run
-
 from typing_extensions import Annotated
 
 import nemo.lightning as nl

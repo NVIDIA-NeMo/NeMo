@@ -160,7 +160,11 @@ class ProgressPrinter(ProgressBar):
     ) -> None:
         if not self.has_dataloader_changed(dataloader_idx):
             return
-        self.total_validation_steps = int(self.total_val_batches_current_dataloader / get_num_microbatches())
+
+        if float(self.total_val_batches_current_dataloader) == float('inf'):
+            self.total_validation_steps = float('inf')
+        else:
+            self.total_validation_steps = int(self.total_val_batches_current_dataloader / get_num_microbatches())
 
     @override
     def on_validation_batch_end(

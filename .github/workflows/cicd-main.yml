@@ -5148,6 +5148,40 @@ jobs:
         rm -rf /tmp/nemo2_ckpt
         rm -rf /tmp/vllm_from_nemo2
 
+  L2_SpeechLM_LoRA_TP1PP1_MBS2:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_SpeechLM_LoRA_TP1PP1_MBS2') || needs.pre-flight.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python tests/collections/speechlm/speech_to_text_llm_train.py \
+          --train_manifest /home/TestData/speechlm/speechlm_data/speech_to_text_debug2/debug_2.json \
+          --val_manifest /home/TestData/speechlm/speechlm_data/speech_to_text_debug2/debug_2.json \
+          --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+          --devices 2 \
+          --max_steps 500 \
+          --experiment_dir /tmp/nemo2_speechlm_lora/${{ github.run_id }} \
+          --peft lora \
+          --tp_size 1 \
+          --pp_size 1 \
+          --mbs 2
+        
+        python tests/collections/speechlm/speech_to_text_llm_train.py \
+          --train_manifest /home/TestData/speechlm/speechlm_data/speech_to_text_debug2/debug_2.json \
+          --val_manifest /home/TestData/speechlm/speechlm_data/speech_to_text_debug2/debug_2.json \
+          --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+          --devices 2 \
+          --max_steps 600 \
+          --experiment_dir /tmp/nemo2_speechlm_lora/${{ github.run_id }} \
+          --peft lora \
+          --tp_size 1 \
+          --pp_size 1 \
+          --mbs 2
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/nemo2_speechlm_lora/${{ github.run_id }}
+
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -5342,6 +5376,8 @@ jobs:
       - L2_HF_Transformer_SFT_FSDP2_2gpu
       - L2_HF_Transformer_SFT_2gpu_nemorun_fsdp2
       - L2_NeMo_2_VLLM_EXPORT
+      - L2_SpeechLM_LoRA_TP1PP1_MBS2
+
     if: always() && github.event != 'push'
     runs-on: ubuntu-latest
     steps:

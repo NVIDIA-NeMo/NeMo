@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import logging
+
 import random
 import re
 import tarfile
@@ -20,7 +20,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Generator, Iterable, List, Literal
 
-import lhotse.serialization
 import soundfile
 from cytoolz import groupby
 from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment
@@ -32,6 +31,7 @@ from lhotse.serialization import open_best
 from lhotse.utils import compute_num_samples, ifnone
 
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+from nemo.utils import logging
 
 
 class LazyNeMoIterator:
@@ -429,7 +429,9 @@ class LazyNeMoTarredIterator:
                     del raw_audio
                     yield from cuts_for_recording
             except tarfile.ReadError:
-                logging.warning(f"Skipping tar file due to read errors (unstable storage or bad file?): {tar_path=}")
+                logging.warning(
+                    f"Skipping tar file due to read errors (unstable storage or bad file?): {tar_path=}",
+                )
 
     def __len__(self) -> int:
         return len(self.source)
@@ -457,7 +459,13 @@ def make_cut_with_subset_inmemory_recording(
         return cut
 
     # Otherwise, apply the memory optimization.
-    cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+    try:
+        cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+    except Exception as e:
+        raise RuntimeError(
+            f"Lhotse cut.truncate failed with offset={offset}, duration={duration}, recording={recording}: {e}"
+        ) from e
+
     audiobytes = BytesIO()
     LibsndfileBackend().save_audio(audiobytes, cut.load_audio(), sampling_rate=cut.sampling_rate, format="wav")
     audiobytes.seek(0)

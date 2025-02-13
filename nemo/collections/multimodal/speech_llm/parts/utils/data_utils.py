@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
@@ -23,7 +23,11 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.utils import logging, logging_mode
 
 
-def maybe_cast_to_list(x):
+def maybe_cast_to_list(x: Union[torch.Tensor, np.ndarray, List]):
+    if isinstance(x, list):
+        return [maybe_cast_to_list(item) for item in x]
+    if isinstance(x, torch.Tensor):
+        x = x.cpu().numpy()
     if isinstance(x, np.ndarray):
         return [item.tolist() for item in x]
     return x
@@ -200,8 +204,9 @@ class TextProcessing:
         context_key (str): Key to use for the context in your JSONL file
         answer_key (str): Key to use for the label in your JSONL file
         end_string (Optional[str]): If not None, add this string to the end of the answer.
-        sample_alpha (Optional[float]): For SPE subword sampling
-        input_text_mask_ratio (Optional[float]): If not None, will mask the input text at this ratio.
+        add_boa_eos (Optional[bool]): If true, add special strings before and after audio
+        boa_string (Optional[str]): The string to add before audio
+        eoa_string (Optional[str]): The string to add after audio
     """
 
     def __init__(
@@ -217,15 +222,17 @@ class TextProcessing:
         separate_prompt_and_response_with_newline: bool = False,
         answer_only_loss: bool = True,
         truncation_field: str = "answer",
-        pad_to_max_length: bool = False,  # (@adithyare) allows for much faster training especially in PEFT settings.
+        pad_to_max_length: bool = False,
         prompt_template: str = None,
         virtual_tokens: int = 0,
         tokens_to_generate: int = 0,
         context_key: str = 'context',
         answer_key: str = 'answer',
         end_string: Optional[str] = None,
-        sample_alpha: Optional[float] = None,
         audio_locator: Optional[str] = None,
+        add_boa_eoa: Optional[bool] = False,
+        boa_string: Optional[str] = "<BOA>",
+        eoa_string: Optional[str] = "<EOA>",
     ):
         self.context_key = context_key
         self.answer_key = answer_key
@@ -244,8 +251,10 @@ class TextProcessing:
         self.add_eos = add_eos
         self.add_sep = add_sep
         self.end_string = end_string
-        self.sample_alpha = sample_alpha
         self.audio_locator = audio_locator
+        self.add_boa_eoa = add_boa_eoa
+        self.boa_string = boa_string
+        self.eoa_string = eoa_string
 
         if add_bos and hasattr(tokenizer, "bos_id") and tokenizer.bos_id > 0:
             self.bos_id = tokenizer.bos_id
@@ -268,6 +277,9 @@ class TextProcessing:
             # When providing things like newlines in the prompt template via the CLI, they are escaped. This line unescapes them.
             self.prompt_template = self.prompt_template.encode('utf-8').decode('unicode_escape')
         assert self.truncation_field in ["answer", "context"]
+
+    def __call__(self, *args, **kwds):
+        return self._process_example(*args, **kwds)
 
     def _process_example(self, context: str, output: str):
         """
@@ -328,8 +340,16 @@ class TextProcessing:
             # multiple audio case
             context_ids = []
             context_start_idx = []
-            for context_seg in context.split(self.audio_locator):
+            segments = context.split(self.audio_locator)
+            for i, context_seg in enumerate(segments):
                 context_start_idx.append(len(context_ids))
+                if self.add_boa_eoa:
+                    if i == 0:
+                        context_seg = context_seg + ' ' + self.boa_string
+                    elif i == len(segments) - 1:
+                        context_seg = self.eoa_string + ' ' + context_seg
+                    else:
+                        context_seg = self.eoa_string + ' ' + context_seg + ' ' + self.boa_string
                 context_ids.extend(self.tokenizer.text_to_ids(context_seg))
         context_ids = pre_pad + context_ids
         context_start_idx = [x + len(pre_pad) for x in context_start_idx]

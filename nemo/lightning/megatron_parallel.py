@@ -16,6 +16,7 @@ import abc
 import collections.abc
 import functools
 import inspect
+import itertools
 import queue
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext
@@ -617,7 +618,6 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                         " > number of trainable parameters: "
                         f"{num_trainable_params} ({num_trainable_params / num_params:.2%} of total)"
                     )
-
         if self.convert_module_fn:
             self.apply_convert_module_fn()
 
@@ -1388,20 +1388,32 @@ class MegatronStep(Generic[ModelT, DataT]):
         Returns:
             List[Iterator[DataT]]: A list of iterators created from the input data.
         """
+        has_dataloader_idx = False
         if self.has_global_batch_sampler:
-            batch = next(self.data)
-            if isinstance(batch, tuple) and len(batch) == 3:
-                batch = batch[0]
+            batch_data = next(self.data)
+            if isinstance(batch_data, tuple) and len(batch_data) == 3:
+                batch, batch_idx, dataloader_idx = batch_data
+                has_dataloader_idx = True
+            else:
+                batch, batch_idx, dataloader_idx = batch_data[0], None, None
+
             # finetuning can have dynamic sequence lengths
             seq_length = batch['tokens'].size(1) if 'tokens' in batch else None
             from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
 
             data = get_iterator_k_split(batch, self.num_microbatches, True)
+
+            if has_dataloader_idx:
+                packed_data = [(d, batch_idx, dataloader_idx) for d in data]
+                data = [itertools.chain(packed_data)]
         else:
             data = self.data
             # for pretraining (fixed sequence length), we use seq_length inferred from the data sampler.
             seq_length = None
-        return self.to_data_iterator_list(data), seq_length
+
+        if not has_dataloader_idx:
+            data = self.to_data_iterator_list(data)
+        return data, seq_length
 
     @functools.cached_property
     def has_global_batch_sampler(self) -> bool:

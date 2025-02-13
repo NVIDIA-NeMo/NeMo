@@ -12,5 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.speechlm.models.hf_auto_model_for_speech_seq2seq import HFAutoModelForSpeechSeq2Seq
-from nemo.collections.speechlm.models.speech_to_text_llm_model import SpeechToTextLLM
+from nemo.collections.speechlm.utils.text_generation.audio_text_generation_strategy import (
+    SpeechToTextGenerationStrategy,
+)
+from nemo.collections.speechlm.utils.text_generation.audio_text_generation_utils import (
+    default_inference_config,
+    generate,
+    get_computeprob_response,
+)

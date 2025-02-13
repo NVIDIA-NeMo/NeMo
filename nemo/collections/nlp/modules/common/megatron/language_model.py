@@ -13,7 +13,6 @@
 # limitations under the License.
 
 """Transformer based language model."""
-from ast import Mod
 
 import torch
 
@@ -36,7 +35,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     init_method_normal,
     scaled_init_method_normal,
 )
-from nemo.collections.nlp.parts import utils_funcs
 from nemo.core import adapter_mixins
 
 try:
@@ -278,7 +276,10 @@ class Embedding(MegatronModule):
         self.transpose_batch_sequence = transpose_batch_sequence
         # Word embeddings (parallel).
         self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
-            vocab_size, self.hidden_size, init_method=self.init_method, config=config,
+            vocab_size,
+            self.hidden_size,
+            init_method=self.init_method,
+            config=config,
         )
         self._word_embeddings_key = 'word_embeddings'
 
@@ -715,7 +716,7 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
         self.set_accepted_adapter_types([PromptEncoderAdapterConfig._target_])
 
     def set_input_tensor(self, input_tensor):
-        """ See megatron.model.transformer.set_input_tensor()"""
+        """See megatron.model.transformer.set_input_tensor()"""
         # This is usually handled in schedules.py but some inference code still
         # gives us non-lists or None
         if not isinstance(input_tensor, list):
@@ -809,14 +810,17 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
             or self.position_embedding_type == 'kerple'
         ):
             encoder_self_attention_relative_position_bias = self.encoder_relative_position_embedding(
-                query_seq_length=enc_seq_length, key_seq_length=enc_seq_length,
+                query_seq_length=enc_seq_length,
+                key_seq_length=enc_seq_length,
             )
             # causal attention bias: [1, head, 1, k]
             # non-causal attention bias: [1, head, q, k]
 
             if self.context_parallel and encoder_self_attention_relative_position_bias.shape[-2] > 1:
-                encoder_self_attention_relative_position_bias = self.get_position_embedding_on_this_context_parallel_rank(
-                    encoder_self_attention_relative_position_bias, 2
+                encoder_self_attention_relative_position_bias = (
+                    self.get_position_embedding_on_this_context_parallel_rank(
+                        encoder_self_attention_relative_position_bias, 2
+                    )
                 )
 
         # encoder.
@@ -829,9 +833,9 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
                 set_inference_key_value_memory=set_inference_key_value_memory,
                 inference_max_sequence_len=inference_max_sequence_len,
                 checkpoint_activations_all_layers=checkpoint_activations_all_layers,
-                rotary_pos_emb=(rotary_pos_emb, None, None)
-                if rotary_pos_emb is not None
-                else None,  # This assumes that this being used as a GPT/BERT model only (no cross-attention)
+                rotary_pos_emb=(
+                    (rotary_pos_emb, None, None) if rotary_pos_emb is not None else None
+                ),  # This assumes that this being used as a GPT/BERT model only (no cross-attention)
                 self_attention_relative_position_bias=encoder_self_attention_relative_position_bias,
             )
         else:
@@ -940,7 +944,6 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
                 assert 'pooler' in state_dict, 'could not find data for pooler in the checkpoint'
                 self.pooler.load_state_dict(state_dict[self._pooler_key], strict=strict)
             if not self.share_embeddings_and_output_weights:
-                # import pdb; pdb.set_trace()
                 assert (
                     self._output_layer_key in state_dict
                 ), 'could not find data for output embedding layer in the checkpoint'

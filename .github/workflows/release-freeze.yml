@@ -18,15 +18,21 @@ on:
         description: "Version of MCore to use (must be a valid git ref)"
         required: true
         type: string
+      dry-run:
+        type: boolean
+        description: Dry-run of code-freeze
+        required: false
+        default: true
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.21.6
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.22.0
     with:
       library-name: NeMo-Toolkit
       python-package: nemo
       release-type: ${{ inputs.type_of_release }}
       freeze-commit: ${{ inputs.freeze-commit }}
+      dry-run: ${{ inputs.dry-run }}
     secrets:
       SLACK_RELEASE_ENDPOINT: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
@@ -41,7 +47,7 @@ jobs:
           path: ${{ github.run_id }}
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ needs.code-freeze.outputs.release-branch }}
+          ref: ${{ inputs.dry-run == true && inputs.freeze-commit || needs.code-freeze.outputs.release-branch }}
 
       - name: Pin branch name in Notebooks
         run: |
@@ -53,9 +59,15 @@ jobs:
           cd ${{ github.run_id }}
           sed -i 's/^ARG MCORE_TAG=.*$/ARG MCORE_TAG=${{ inputs.mcore_version }}/' Dockerfile.ci
 
+      - name: Show status
+        run: |
+          cd ${{ github.run_id }}
+          git status
+
       - name: Create PR
         uses: peter-evans/create-pull-request@v6
         id: create-pull-request
+        if: ${{ inputs.dry-run != true }}
         with:
           path: ${{ github.run_id }}
           base: ${{ needs.code-freeze.outputs.release-branch }}

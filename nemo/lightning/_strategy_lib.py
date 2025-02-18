@@ -676,6 +676,32 @@ def setup_megatron_optimizer(
         scale_lr_cond=scale_lr_cond,
         lr_mult=lr_mult,
     )
+    # Pytorch does not have the concept of an `lr_mult` or a `wd_mult` but these are added to param
+    # groups in megatron to control which sub-modules have different learning rates or weight
+    # decays. Apply the multipliers here to each param_group's lr and wd, and to reduce confusion
+    # change the name of these variables. We need this because nemo does not use the custom
+    # megatron scheduler, and the megatron scheduler is what makes use of these mult parameters:
+    # https://github.com/NVIDIA/Megatron-LM/blob/044e2ad5/megatron/core/optimizer_param_scheduler.py#L192-L193
+    for pg in mcore_opt.param_groups:
+        if 'pre_lr_mult' in pg or 'pre_mult_wd' in pg:
+            # User has already applied custom lr and wd multipliers, don't apply `lr_mult` and
+            # `wd_mult` again. This case may be encountered when resuming training.
+            continue
+        pg['pre_mult_lr'] = pg["lr"]
+        pg['pre_mult_wd'] = pg['weight_decay']
+        new_lr = pg["lr"] * pg.get('lr_mult', 1.0)
+        new_wd = pg["weight_decay"] * pg.get("wd_mult", 1.0)
+        pg['lr'] = new_lr
+        pg['weight_decay'] = new_wd
+        # In case a future implementation makes use of `lr_mult` and `wd_mult` directly in the
+        #  scheduler, but accidentally also uses this function, remove `lr_mult` and `wd_mult` from
+        #  the param groups so that the default value of 1.0 gets applied.
+        if 'lr_mult' in pg:
+            pg['pre_lr_mult'] = pg['lr_mult']
+            del pg['lr_mult']  # remove so downstream methods do not apply again.
+        if 'wd_mult' in pg:
+            pg['pre_wd_mult'] = pg['wd_mult']
+            del pg['wd_mult']  # remove so downstream methods do not apply again
 
     if getattr(model.ddp_config, "overlap_param_gather", False) and getattr(
         model.ddp_config, "align_param_gather", False

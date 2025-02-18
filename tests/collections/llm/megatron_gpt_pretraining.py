@@ -29,6 +29,7 @@ from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenize
 from nemo.lightning import AutoResume, NeMoLogger
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ParameterDebugger
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
+from tests.collections.llm.common import AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays
 
 
 def get_args():
@@ -100,7 +101,11 @@ if __name__ == '__main__':
         grad_fn=create_verify_precision(torch.float32),
         log_on_hooks=["on_train_start", "on_train_end"],
     )
-    callbacks = [checkpoint_callback, debugger]
+    callbacks = [
+        checkpoint_callback,
+        debugger,
+        AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays(),
+    ]
 
     loggers = []
     tensorboard_logger = TensorBoardLogger(

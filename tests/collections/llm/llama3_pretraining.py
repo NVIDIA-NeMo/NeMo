@@ -25,6 +25,7 @@ import torch
 from nemo.collections import llm
 from nemo.lightning.pytorch.callbacks.debugging import ParameterDebugger
 from tests.collections.llm.common import (
+    AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays,
     MCoreModelAttributeValidator,
     MiscAttributeValidator,
     StopBeforeEnd,
@@ -100,6 +101,7 @@ def main():
 
     if args.early_stop:
         pretrain_recipe.trainer.callbacks.append(StopBeforeEnd(stop_on_step=args.early_stop))
+    pretrain_recipe.trainer.callbacks.append(AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays())
 
     if not args.precision == 'bf16' or args.fp8:  # default case is bf16 without fp8
         import llm.recipes.precision.mixed_precision as mp_recipes

@@ -79,6 +79,28 @@ class StopBeforeEnd(pl.Callback):
                 trainer.limit_val_batches = 0
 
 
+class AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays(pl.Callback):
+    """Sanity test weight decay settings in optimizer param groups.
+
+    Background:
+        The Megatron/NeMo optimizer splits parameters into groups by whether or not the parameter
+        should have weight decay applied. A typlical rule is that `bias` terms and `layer_norm`
+        terms for example should not have weight decay applied. This callback checks for the
+        existance of two distinct weight decay settings across optimizers and param groups related
+        to a bug adddressed in https://github.com/NVIDIA/NeMo/pull/12123.
+    """
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        weight_decays = {}
+        for oi, optim in enumerate(trainer.optimizers):
+            for pi, param_group in enumerate(optim.param_groups):
+                key = f"opt{oi};pg{pi}"
+                weight_decays[key] = param_group['weight_decay']
+        assert (
+            len(set(weight_decays.values())) > 1
+        ), f"All weight decays in optimizer param groups should not be equal. Got: {weight_decays}"
+
+
 class MCoreModelAttributeValidator(pl.Callback):
     """Walk through submodules and verify user-specified attributes like parallelisms."""
 

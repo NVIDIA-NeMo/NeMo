@@ -30,6 +30,7 @@ from nemo.lightning import NeMoLogger
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.optim.lr_scheduler import WarmupAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
+from tests.collections.llm.common import AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays
 
 
 def get_args():
@@ -96,7 +97,7 @@ if __name__ == '__main__':
         every_n_train_steps=5000,
         save_optim_on_train_end=True,
     )
-    callbacks = [checkpoint_callback]
+    callbacks = [checkpoint_callback, AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays()]
 
     resume = nl.AutoResume(
         resume_if_exists=True,

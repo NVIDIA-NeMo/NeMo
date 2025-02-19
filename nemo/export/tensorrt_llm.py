@@ -687,7 +687,8 @@ class TensorRTLLM(ITritonDeployable):
         if vp_size > 1:  # consolidate params across model chunks
             for idx, model_chunk in enumerate(model):
                 for key, val in model_chunk.state_dict().items():
-                    if torch.is_tensor(val):
+                    # TODO: currently fp8 is not supported
+                    if torch.is_tensor(val) and '_extra_state' not in key:
                         if 'layers' in key:
                             key2 = rename_layer_num(key, get_layer_num(key) + idx * pp_size * layers_per_chunk)
                             tl_params[key2] = val
@@ -695,7 +696,8 @@ class TensorRTLLM(ITritonDeployable):
                             model_level_params[key] = val
         else:
             for key, val in model.state_dict().items():
-                if torch.is_tensor(val):
+                # TODO: currently fp8 is not supported
+                if torch.is_tensor(val) and '_extra_state' not in key:
                     if 'decoder.layers' in key:
                         tl_params[key] = val
                     else:

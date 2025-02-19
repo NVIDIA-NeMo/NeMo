@@ -153,22 +153,22 @@ class FineTuningDataModule(pl.LightningDataModule):
         # pylint: disable=C0115,C0116
         return self._create_dataloader(
             self._create_dataset(
-                self.train_path,
+                self.validation_path,
                 max_num_samples=self.max_train_samples,
                 **self.dataset_kwargs,
             ),
-            mode="train",
+            mode="validation",
         )
 
     def test_dataloader(self) -> DataLoader:
         # pylint: disable=C0115,C0116
         return self._create_dataloader(
             self._create_dataset(
-                self.train_path,
+                self.test_path,
                 max_num_samples=self.max_train_samples,
                 **self.dataset_kwargs,
             ),
-            mode="train",
+            mode="test",
         )
 
     @lru_cache

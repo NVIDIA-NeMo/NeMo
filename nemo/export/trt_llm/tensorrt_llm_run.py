@@ -249,6 +249,10 @@ def _forward(
         end_id = sampling_config.end_id
         num_beams = sampling_config.num_beams
 
+        for k in sampling_kwargs.keys():
+            if not hasattr(sampling_config, k):
+                raise TypeError(f"Unknown sampling args '{k}'")
+
         with torch.no_grad():
             prompt_tasks = None if task_ids is None else ",".join(str(task) for task in task_ids)
 
@@ -277,6 +281,7 @@ def _forward(
                 streaming=streaming,
                 output_sequence_lengths=True,
                 return_dict=True,
+                **sampling_kwargs,
             )
 
             torch.cuda.synchronize()

@@ -55,6 +55,7 @@ from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.collections.speechlm.models.base import SpeechLanguageModel
 from nemo.collections.speechlm.modules.asr_module import ASRModuleConfig
 from nemo.collections.speechlm.modules.modality_adapter import ModalityAdapterConfig
+from nemo.collections.speechlm.utils.io import import_ckpt
 from nemo.collections.speechlm.utils.text_generation.audio_text_generation_strategy import (
     SpeechToTextGenerationStrategy,
 )
@@ -206,7 +207,9 @@ class SpeechToTextLLMConfig(TransformerConfig, io.IOMixin):
         time.sleep(rank / 2)
 
         llm_model_cls = model_utils.import_class_by_path(self.language_model_class)  # type: GPTModel
-        ckpt_path = io.import_ckpt(llm_model_cls(self.language_model_config), f"{self.language_model_hub}{ckpt_path}")
+        ckpt_path = import_ckpt(
+            llm_model_cls(self.language_model_config), f"{self.language_model_hub}{ckpt_path}", on_import_ckpt=False
+        )
 
         sharded_state_dict = dict(state_dict=model.sharded_state_dict(prefix="module."))
 
@@ -220,9 +223,26 @@ class SpeechToTextLLMConfig(TransformerConfig, io.IOMixin):
         logging.info(f"Restored language model weights from {self.language_model_from_pretrained}")
         return model
 
+    def _propagate_model_configs(self) -> TransformerConfig:
+        """
+        propagate key attributes to the language/speech model config
+        """
+        # LLM
+        self.language_model_config.tensor_model_parallel_size = self.tensor_model_parallel_size
+        self.language_model_config.sequence_parallel = self.sequence_parallel
+        self.language_model_config.pipeline_model_parallel_size = self.pipeline_model_parallel_size
+        self.language_model_config.context_parallel_size = self.context_parallel_size
+
+        # ASR
+        self.speech_model_config.tensor_model_parallel_size = self.tensor_model_parallel_size
+        self.speech_model_config.sequence_parallel = self.sequence_parallel
+        self.speech_model_config.pipeline_model_parallel_size = self.pipeline_model_parallel_size
+        self.speech_model_config.context_parallel_size = self.context_parallel_size
+
     def configure_model(
         self, tokenizer: TokenizerSpec, speech_model: Optional[ASRModel] = None
     ) -> "MCoreSpeechToTextLLM":
+        self._propagate_model_configs()
         language_model = self.language_model_config.configure_model(tokenizer=tokenizer)  # type: "MCoreGPTModel"
         language_model = self._maybe_load_pretrained_llm(language_model)
 

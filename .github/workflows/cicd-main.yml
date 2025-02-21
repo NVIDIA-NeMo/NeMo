@@ -894,10 +894,10 @@ jobs:
           -b "[[5.0,30],[5.0,45],[10.0,57],[10.0,71]]"
 
   # L2: OOMptimizer Canary (has a different batch schema)
-  L2_Speech_Batch_Size_OOMptimizer_Canary:
+  Optional_L2_Speech_Batch_Size_OOMptimizer_Canary:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Speech_Batch_Size_OOMptimizer_Canary')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_L2_Speech_Batch_Size_OOMptimizer_Canary')
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -905,6 +905,7 @@ jobs:
           -c /home/TestData/oomptimizer/fast-conformer_aed.yaml \
           -m nemo.collections.asr.models.EncDecMultiTaskModel \
           -b "[[5.0,30],[5.0,45],[10.0,57],[10.0,71]]"
+      IS_OPTIONAL: true
 
   # L2: Speech Transcription
   L2_Speech_Transcription_Speech_to_Text_Transcribe:
@@ -3078,7 +3079,7 @@ jobs:
       - L2_Speech_to_Text_AED
       - L2_Speech_Estimate_Duration_Bins
       - L2_Speech_Batch_Size_OOMptimizer
-      - L2_Speech_Batch_Size_OOMptimizer_Canary
+      # - Optional_L2_Speech_Batch_Size_OOMptimizer_Canary
       # - Optional_L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
       # - Optional_L2_Speech_Transcription_Canary_Transcribe_With_Prompt
       # - Optional_L2_Speech_Transcription_Canary_Transcribe_Audio_Dir

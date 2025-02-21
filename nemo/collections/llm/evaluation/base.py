@@ -234,7 +234,13 @@ class NeMoFWLMEval(LM):
         return results
 
 
-def wait_for_server_ready(url, triton_http_port, model_name, max_retries=600, retry_interval=2):
+def wait_for_server_ready(
+    url: str = 'http://0.0.0.0:8000',
+    triton_http_port: int = 8000,
+    model_name: str = 'triton_model',
+    max_retries: int = 600,
+    retry_interval: int = 2,
+):
     """
     Wait for PyTriton server and model to be ready.
 
@@ -278,7 +284,7 @@ def wait_for_server_ready(url, triton_http_port, model_name, max_retries=600, re
             logging.info("Server is ready.")
 
             # Check model readiness using ModelClient
-            with ModelClient(url, model_name=model_name, init_timeout_s=retry_interval) as client:
+            with ModelClient(url, model_name=model_name, init_timeout_s=retry_interval):
                 logging.info(f"Model '{model_name}' is ready.")
                 return True
 

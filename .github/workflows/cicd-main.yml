@@ -1476,6 +1476,8 @@ jobs:
         jupyter nbconvert --to script tutorials/llm/hf/peft.ipynb --output _peft
         sed -i "s#meta-llama/Llama-3.2-1B#/home/TestData/akoumparouli/hf_mixtral_2l/#g" tutorials/llm/hf/_peft.py
         sed -i "s/max_steps = 100/max_steps = 10/g" tutorials/llm/hf/_peft.py
+        cp tutorials/llm/hf/_peft.py /tmp/_peft.py
+        grep -iv push_to_hub /tmp/_peft.py > tutorials/llm/hf/_peft.py
         TRANSFORMERS_OFFLINE=1 python3 tutorials/llm/hf/_peft.py
       AFTER_SCRIPT: |
         rm -rf nemo_experiments
@@ -1666,6 +1668,8 @@ jobs:
         jupyter nbconvert --to script tutorials/llm/hf/sft.ipynb --output _sft
         sed -i "s#meta-llama/Llama-3.2-1B#/home/TestData/akoumparouli/hf_mixtral_2l/#g" tutorials/llm/hf/_sft.py
         sed -i "s/max_steps = 100/max_steps = 10/g" tutorials/llm/hf/_sft.py
+        cp tutorials/llm/hf/_sft.py /tmp/_sft.py
+        grep -iv push_to_hub /tmp/_sft.py > tutorials/llm/hf/_sft.py
         TRANSFORMERS_OFFLINE=1 python3 tutorials/llm/hf/_sft.py
       AFTER_SCRIPT: |
         rm -rf nemo_experiments

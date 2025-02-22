@@ -194,7 +194,7 @@ class LazyNeMoIterator:
 
 
 class LazyNeMoTarredIterator:
-    """
+    r"""
     ``LazyNeMoTarredIterator`` reads a NeMo tarred JSON manifest and converts it on the fly to an ``Iterable[Cut]``.
     It's used to create a ``lhotse.CutSet``.
 

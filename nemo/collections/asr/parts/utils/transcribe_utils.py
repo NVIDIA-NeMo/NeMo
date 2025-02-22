@@ -659,7 +659,7 @@ class PunctuationCapitalization:
         """
         if punctuation_marks:
             self.regex_punctuation = re.compile(fr"([{''.join(punctuation_marks)}])")
-            self.regex_extra_space = re.compile('\s{2,}')
+            self.regex_extra_space = re.compile(r'\s{2,}')
         else:
             self.regex_punctuation = None
 

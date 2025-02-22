@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from lightning.pytorch import Trainer
@@ -59,9 +59,11 @@ class MTFineTuneConfig(NemoConfig):
     model_path: str = MISSING
     do_training: bool = True
     do_testing: bool = False
-    model: MTEncDecModelConfig = MTEncDecModelConfig()
-    trainer: Optional[TrainerConfig] = TrainerConfig()
-    exp_manager: Optional[ExpManagerConfig] = ExpManagerConfig(name='MTEncDec', files_to_copy=[])
+    model: MTEncDecModelConfig = field(default_factory=lambda: MTEncDecModelConfig())
+    trainer: Optional[TrainerConfig] = field(default_factory=lambda: TrainerConfig())
+    exp_manager: Optional[ExpManagerConfig] = field(
+        default_factory=lambda: ExpManagerConfig(name='MTEncDec', files_to_copy=[])
+    )
 
 
 @hydra_runner(config_path="conf", config_name="aayn_finetune")

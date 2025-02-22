@@ -986,7 +986,7 @@ class WPEFilter(NeuralModule):
         return Q, R
 
     def estimate_filter(self, Q: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
-        """Estimate the MIMO prediction filter as
+        r"""Estimate the MIMO prediction filter as
             G(b,f) = Q(b,f) \ R(b,f)
         for each subband in each example in the batch (b, f).
 

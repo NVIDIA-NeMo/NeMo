@@ -396,7 +396,7 @@ class MegatronBaseModel(NLPModel):
         nvidia_torch_version = os.getenv('NVIDIA_PYTORCH_VERSION', None)
 
         def is_official_release_version(nvidia_torch_version):
-            return re.fullmatch("[0-9][0-9]\.[0-9][0-9].*", nvidia_torch_version)  # "YY.MM.*"
+            return re.fullmatch(r"[0-9][0-9]\.[0-9][0-9].*", nvidia_torch_version)  # "YY.MM.*"
 
         # Support DLFW dev container
         if not is_official_release_version(nvidia_torch_version):

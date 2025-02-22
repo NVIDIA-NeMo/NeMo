@@ -45,19 +45,6 @@ apt-get install -y bc libsox-fmt-all -y
 apt-get clean
 EOF
 
-ARG MAX_JOBS
-ARG TE_TAG
-ARG TE_REPO
-RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/opt/NeMo/reinstall.sh \
-  bash /opt/NeMo/reinstall.sh --library te --mode build && \
-  ls -al /opt/TransformerEngine || true
-
-ARG APEX_REPO
-ARG APEX_TAG
-RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/opt/NeMo/reinstall.sh \
-  bash /opt/NeMo/reinstall.sh --library apex --mode build && \
-  ls -al /opt/Apex || true
-
 ARG MLM_REPO
 ARG MLM_TAG
 RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/opt/NeMo/reinstall.sh \
@@ -74,7 +61,8 @@ RUN \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
     export NEMO_DIR=/tmp/NeMo 
-    bash /tmp/NeMo/reinstall.sh --library all --mode install
+    bash /tmp/NeMo/reinstall.sh --library mcore --mode install
+    bash /tmp/NeMo/reinstall.sh --library nemo --mode install
     rm -rf $NEMO_DIR || true
 EOF
 
@@ -83,7 +71,8 @@ ARG NEMO_REPO
 ARG NEMO_TAG
 RUN \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/reinstall.sh <<"EOF" bash -ex
-    bash /tmp/reinstall.sh --library all --mode install
+  bash /tmp/reinstall.sh --library mcore --mode install
+  bash /tmp/reinstall.sh --library nemo --mode install
 
     # Copy into workspace
     cp -a /opt/NeMo/. /workspace/

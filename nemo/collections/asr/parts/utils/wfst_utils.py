@@ -1325,7 +1325,7 @@ def _svg_srcdoc_resize(filename: Union[Path, str], zoom: float) -> Tuple[str, Tu
         line = f.readline()
         while not line.startswith("<svg"):
             line = f.readline()
-        width, height = re.findall('\d+', line)
+        width, height = re.findall(r'\d+', line)
         width, height = int(width), int(height)
         return f'<svg width="{round(width * zoom)}pt" height="{round(height * zoom)}pt"\n' + f.read(), (width, height)
 
@@ -1360,7 +1360,7 @@ def levenshtein_graph_kaldi(
         lfst = fst.copy(safe=True)
     elif isinstance(fst, kaldifst.Lattice):
         # dropping lattice weights
-        lfst = kaldifst.compile(re.sub("[-\d.]+,[-\d.]+", "0", fst.to_str(show_weight_one=True)))
+        lfst = kaldifst.compile(re.sub(r"[-\d.]+,[-\d.]+", "0", fst.to_str(show_weight_one=True)))
     else:
         raise ValueError(f"Levenshtein graph building is not supported for the type `{type(fst)}`.")
     sub_score = 0.5

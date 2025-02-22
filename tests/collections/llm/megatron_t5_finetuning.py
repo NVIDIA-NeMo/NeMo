@@ -87,6 +87,7 @@ if __name__ == '__main__':
         pipeline_model_parallel_size=1,
         pipeline_dtype=torch.float32,
         ckpt_load_optimizer=False,
+        ckpt_load_strictness="log_all",  # Only for CI tests to use older versions of checkpoint
     )
     checkpoint_callback = ModelCheckpoint(
         every_n_train_steps=5000,

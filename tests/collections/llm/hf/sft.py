@@ -31,40 +31,31 @@ from nemo.lightning.pytorch.strategies.utils import to_cpu
 DATA_PATH = '/home/TestData/lite/hf_cache/squad/'
 
 
-def make_squad_hf_dataset(data_path, tokenizer):
-    EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
+def make_squad_hf_dataset(tokenizer, data_path=DATA_PATH):
+    def formatting_prompts_func(example):
+        formatted_text = [
+            f"Context: {example['context']} Question: {example['question']} Answer:",
+            f" {example['answers']['text'][0].strip()}",
+        ]
+        context_ids, answer_ids = list(map(tokenizer.text_to_ids, formatted_text))
+        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id:
+            context_ids.insert(0, tokenizer.bos_id)
+        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id:
+            answer_ids.append(tokenizer.eos_id)
 
-    def formatting_prompts_func(examples):
-        alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+        return dict(
+            labels=(context_ids + answer_ids)[1:],
+            input_ids=(context_ids + answer_ids)[:-1],
+            loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
+        )
 
-    ### Instruction:
-    {}
-
-    ### Input:
-    {}
-
-    ### Response:
-    {}"""
-        instruction = examples["context"]
-        input = examples["question"]
-        output = examples["answers"]['text']
-        if isinstance(output, list):
-            output = output[0]
-        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
-        ans = tokenizer(text)
-        ans['labels'] = ans['input_ids']
-        return ans
-
-    tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
-    datamodule = llm.HFDatasetDataModule(data_path, split="train[:100]", pad_token_id=tokenizer.eos_token_id)
-
+    datamodule = llm.HFDatasetDataModule(data_path, split="train[:10]", pad_token_id=tokenizer.eos_id)
     datamodule.map(
         formatting_prompts_func,
         batched=False,
         batch_size=2,
         remove_columns=["id", "title", "context", "question", 'answers'],
     )
-
     return datamodule
 
 
@@ -132,32 +123,66 @@ def get_latest_checkpoint(base_dir):
 
 
 def verify_sft_checkpoint_structure(path, has_io_bytes=False):
-    expected_files = set(
-        [
-            'config.json',
-            'generation_config.json',
-            'model.safetensors',
-            'special_tokens_map.json',
-            'tokenizer.model',
-            'tokenizer_config.json',
-        ]
-    )
-    if has_io_bytes:
-        expected_files.add('io_bytes.pt')
+    expected_files = {
+        'config.json',
+        'generation_config.json',
+        'special_tokens_map.json',
+        'tokenizer.model',
+        'tokenizer_config.json',
+    }
+
+    model_file = "model.safetensors"
+    model_shard_prefix = "model-"
+    index_file = "model.safetensors.index.json"
+
+    # TODO(@akoumparouli): test cases where there are keys with io bytes
+    # if has_io_bytes:
+    #     expected_files.add('io_bytes.pt')
 
     ckpt_dir = Path(path)
     hf_weights = ckpt_dir / "hf_weights"
-    assert hf_weights.exists(), str(hf_weights)
+    assert hf_weights.exists(), f"Missing hf_weights directory: {hf_weights}"
+
+    found_files = set()
+    found_shards = []
+
     for file in hf_weights.glob('*'):
-        assert file.name in expected_files, file
-        expected_files.remove(file.name)
-    assert len(expected_files) == 0
+        if file.name.startswith(model_shard_prefix) and file.name.endswith(".safetensors"):
+            found_shards.append(file.name)
+        else:
+            found_files.add(file.name)
 
-    assert (ckpt_dir / 'trainer.pt').exists()
+    # Ensure mutual exclusivity of model.safetensors and sharded model files
+    has_model_file = model_file in found_files
+    has_sharded_files = len(found_shards) > 0
 
+    assert not (
+        has_model_file and has_sharded_files
+    ), "Both model.safetensors and sharded model files exist, which is invalid."
+
+    if has_sharded_files:
+        assert index_file in found_files, f"Missing index file: {index_file}"
+        shard_numbers = sorted([int(f.split('-')[1]) for f in found_shards])
+        expected_shards = [
+            f"model-{i:05d}-of-{shard_numbers[-1]:05d}.safetensors" for i in range(1, shard_numbers[-1] + 1)
+        ]
+        assert set(found_shards) == set(
+            expected_shards
+        ), f"Missing or extra shard files. Expected: {expected_shards}, Found: {found_shards}"
+    else:
+        assert has_model_file, "Missing model file(s)"
+
+    assert expected_files.issubset(found_files), f"Missing files: {expected_files - found_files}"
+
+    # Ensure trainer.pt exists
+    assert (ckpt_dir / 'trainer.pt').exists(), "Missing trainer.pt file"
+
+    # Validate context files
     context_files = ['model.yaml', 'io.json']
     for file in context_files:
-        assert (ckpt_dir / 'context' / file).exists()
+        assert (ckpt_dir / 'context' / file).exists(), f"Missing context file: {file}"
+
+    print("Checkpoint structure verification passed.")
 
 
 class ValidateCheckpointRestoreCallback(pl.Callback):
@@ -337,7 +362,7 @@ def main():
 
     llm.api.finetune(
         model=model,
-        data=make_squad_hf_dataset(DATA_PATH, llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)),
+        data=make_squad_hf_dataset(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)),
         trainer=trainer,
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=logger(args.ckpt_folder),

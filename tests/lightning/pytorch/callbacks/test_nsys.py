@@ -36,6 +36,10 @@ class TestNsysCallback:
         torch.cuda.is_available = MagicMock(return_value=True)
         torch.cuda.current_device = MagicMock(return_value=0)
 
+        # Set up fixed cudart mock for all tests
+        self.fixed_cudart = MagicMock()
+        torch.cuda.cudart = MagicMock(return_value=self.fixed_cudart)
+
         yield
 
         self.cuda_mock.stop()
@@ -73,40 +77,31 @@ class TestNsysCallback:
             NsysCallback(start_step=20, end_step=10)
 
     @patch('nemo.lightning.pytorch.callbacks.nsys.get_rank')
-    @patch('torch.cuda.cudart')
     @patch('torch.autograd.profiler.emit_nvtx')
-    def test_on_train_batch_start_profiling(
-        self, mock_emit_nvtx, mock_cudart, mock_get_rank, mock_trainer, mock_pl_module
-    ):
-        """Test on_train_batch_start when profiling should start."""
+    def test_on_train_batch_start_profiling(self, mock_emit_nvtx, mock_get_rank, mock_trainer, mock_pl_module):
+        # Set mocked cudart via the fixture patch
         mock_get_rank.return_value = 0
         callback = NsysCallback(start_step=10, end_step=20, ranks=[0], gen_shape=True)
 
         mock_trainer.strategy.current_epoch_step = 10
         callback.on_train_batch_start(mock_trainer, mock_pl_module, None, 10)
 
-        mock_cudart().cudaProfilerStart.assert_called_once()
+        self.fixed_cudart.cudaProfilerStart.assert_called_once()
         mock_emit_nvtx.assert_called_once_with(record_shapes=True)
 
     @patch('nemo.lightning.pytorch.callbacks.nsys.get_rank')
-    @patch('torch.cuda.cudart')
-    def test_on_train_batch_start_no_profiling(self, mock_cudart, mock_get_rank, mock_trainer, mock_pl_module):
-        """Test on_train_batch_start when profiling should not start."""
+    def test_on_train_batch_start_no_profiling(self, mock_get_rank, mock_trainer, mock_pl_module):
         mock_get_rank.return_value = 0
         callback = NsysCallback(start_step=10, end_step=20, ranks=[0])
 
         mock_trainer.strategy.current_epoch_step = 9
         callback.on_train_batch_start(mock_trainer, mock_pl_module, None, 9)
 
-        mock_cudart().cudaProfilerStart.assert_not_called()
+        self.fixed_cudart.cudaProfilerStart.assert_not_called()
 
     @patch('nemo.lightning.pytorch.callbacks.nsys.get_rank')
-    @patch('torch.cuda.cudart')
     @patch('torch.autograd.profiler.emit_nvtx')
-    def test_on_train_batch_end_profiling(
-        self, mock_emit_nvtx, mock_cudart, mock_get_rank, mock_trainer, mock_pl_module
-    ):
-        """Test on_train_batch_end when profiling should end."""
+    def test_on_train_batch_end_profiling(self, mock_emit_nvtx, mock_get_rank, mock_trainer, mock_pl_module):
         mock_get_rank.return_value = 0
         callback = NsysCallback(start_step=10, end_step=20, ranks=[0])
 
@@ -115,21 +110,17 @@ class TestNsysCallback:
         callback._has_nsys_enabled = True
         callback.on_train_batch_end(mock_trainer, mock_pl_module, None, None, 20)
 
-        mock_cudart().cudaProfilerStop.assert_called_once()
+        self.fixed_cudart.cudaProfilerStop.assert_called_once()
 
     @patch('nemo.lightning.pytorch.callbacks.nsys.get_rank')
-    @patch('torch.cuda.cudart')
     @patch('torch.autograd.profiler.emit_nvtx')
-    def test_on_train_batch_end_no_profiling(
-        self, mock_emit_nvtx, mock_cudart, mock_get_rank, mock_trainer, mock_pl_module
-    ):
-        """Test on_train_batch_end when profiling should not end."""
+    def test_on_train_batch_end_no_profiling(self, mock_emit_nvtx, mock_get_rank, mock_trainer, mock_pl_module):
         mock_get_rank.return_value = 0
         callback = NsysCallback(start_step=10, end_step=20, ranks=[0])
 
         callback.on_train_batch_end(mock_trainer, mock_pl_module, None, None, 19)
 
-        mock_cudart().cudaProfilerStop.assert_not_called()
+        self.fixed_cudart.cudaProfilerStop.assert_not_called()
 
     def test_non_cuda_device(self, mock_trainer, mock_pl_module):
         """Test behavior when the device is not CUDA."""
@@ -145,7 +136,6 @@ class TestNsysCallback:
     def test_rank_not_in_profile_ranks(self, mock_get_rank, mock_trainer, mock_pl_module):
         """Test behavior when the current rank is not in the profile ranks."""
         mock_get_rank.return_value = 1
-        callback = NsysCallback(start_step=10, end_step=20, ranks=[0])
         callback = NsysCallback(start_step=10, end_step=20, ranks=[0])
 
         callback.on_train_batch_start(mock_trainer, mock_pl_module, None, 10)
@@ -164,12 +154,10 @@ class TestNsysCallback:
         ],
     )
     @patch('nemo.lightning.pytorch.callbacks.nsys.get_rank')
-    @patch('torch.cuda.cudart')
     @patch('torch.autograd.profiler.emit_nvtx')
     def test_profiling_range(
         self,
         mock_emit_nvtx,
-        mock_cudart,
         mock_get_rank,
         start_step,
         end_step,
@@ -178,7 +166,6 @@ class TestNsysCallback:
         mock_trainer,
         mock_pl_module,
     ):
-        """Test profiling behavior across different batch indices."""
         mock_get_rank.return_value = 0
         callback = NsysCallback(start_step=start_step, end_step=end_step, ranks=[0])
 
@@ -186,16 +173,14 @@ class TestNsysCallback:
         callback.on_train_batch_start(mock_trainer, mock_pl_module, None, batch_idx)
 
         if expected_call:
-            mock_cudart().cudaProfilerStart.assert_called_once()
+            self.fixed_cudart.cudaProfilerStart.assert_called_once()
             mock_emit_nvtx.assert_called_once()
         else:
-            mock_cudart().cudaProfilerStart.assert_not_called()
+            self.fixed_cudart.cudaProfilerStart.assert_not_called()
             mock_emit_nvtx.assert_not_called()
 
     @patch('nemo.lightning.pytorch.callbacks.nsys.get_rank')
-    @patch('torch.cuda.cudart')
-    def test_single_profile_range(self, mock_cudart, mock_get_rank, mock_trainer, mock_pl_module):
-        """Test behavior with a single profile range."""
+    def test_single_profile_range(self, mock_get_rank, mock_trainer, mock_pl_module):
         mock_get_rank.return_value = 0
         callback = NsysCallback(start_step=10, end_step=40, ranks=[0])
 
@@ -205,14 +190,14 @@ class TestNsysCallback:
         # Start of range
         mock_trainer.strategy.current_epoch_step = 10
         callback.on_train_batch_start(mock_trainer, mock_pl_module, None, 10)
-        assert mock_cudart().cudaProfilerStart.call_count == 1, "cudaProfilerStart was not called"
+        assert self.fixed_cudart.cudaProfilerStart.call_count == 1, "cudaProfilerStart was not called"
 
         # Middle of range
         mock_trainer.strategy.current_epoch_step = 25
         callback.on_train_batch_start(mock_trainer, mock_pl_module, None, 25)
-        assert mock_cudart().cudaProfilerStart.call_count == 1, "cudaProfilerStart was called again"
+        assert self.fixed_cudart.cudaProfilerStart.call_count == 1, "cudaProfilerStart was called again"
 
         # End of range
         mock_trainer.strategy.current_epoch_step = 40
         callback.on_train_batch_end(mock_trainer, mock_pl_module, None, None, 40)
-        assert mock_cudart().cudaProfilerStop.call_count == 1, "cudaProfilerStop was not called"
+        assert self.fixed_cudart.cudaProfilerStop.call_count == 1, "cudaProfilerStop was not called"

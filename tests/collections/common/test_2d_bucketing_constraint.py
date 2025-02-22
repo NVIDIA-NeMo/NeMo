@@ -49,6 +49,7 @@ def cuts():
 
 
 def test_2d_bucketing_expected_bucket_allocation(cuts):
+
     duration_bins = [
         (5.0, 5),
         (5.0, 11),
@@ -96,20 +97,18 @@ def test_2d_bucketing_expected_bucket_allocation(cuts):
             # with a given max_duration, it has the smallest max_num_tokens, leaving previous candidates list
             # for max_num_tokens empty.
             if bin_index > 0:
-                try:
-                    prev_max_duration = max(dur for dur, tok in duration_bins[:bin_index] if dur < max_duration)
+                # Check for smaller duration buckets (1st dim)
+                candidates = [dur for dur, tok in duration_bins[:bin_index] if dur < max_duration]
+                if candidates:  # Otherwise, it's already using the smallest bucket.
+                    prev_max_duration = max(candidates)
                     assert cut.duration > prev_max_duration
-                except ValueError as e:
-                    if "max() arg is an empty sequence" not in str(e):
-                        raise
-                try:
-                    prev_max_num_tokens = max(
-                        tok for dur, tok in duration_bins[:bin_index] if dur == max_duration and tok < max_num_tokens
-                    )
+                # Check for smaller token buckets (2nd dim)
+                candidates = [
+                    tok for dur, tok in duration_bins[:bin_index] if dur == max_duration and tok < max_num_tokens
+                ]
+                if candidates:  # Otherwise, it's already using the smallest bucket
+                    prev_max_num_tokens = max(candidates)
                     assert len(cut.supervisions[0].tokens) > prev_max_num_tokens
-                except ValueError as e:
-                    if "max() arg is an empty sequence" not in str(e):
-                        raise
 
 
 @pytest.mark.parametrize(

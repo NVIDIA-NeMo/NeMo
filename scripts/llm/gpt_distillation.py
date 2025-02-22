@@ -58,6 +58,7 @@ def get_args():
     parser.add_argument("--val_check_interval", type=int, default=100, help="""Validate + checkpoint every _ steps""")
     parser.add_argument("--limit_val_batches", type=int, default=32, help="""Number of batches per validation stage""")
     parser.add_argument("--log_interval", type=int, default=10, help="""Write to log every _ steps""")
+    parser.add_argument("--legacy_ckpt", action="store_true", help="""Load ckpt saved with TE < 1.14""")
 
     return parser.parse_args()
 
@@ -149,6 +150,10 @@ if __name__ == "__main__":
         resume_ignore_no_checkpoint=True,
         restore_config=nl.RestoreConfig(path=args.student_path),
     )
+
+    # Load ckpt saved with TE < 1.14
+    if args.legacy_ckpt:
+        trainer.strategy.ckpt_load_strictness = False
 
     # Run
     llm.train(

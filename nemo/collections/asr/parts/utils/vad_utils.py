@@ -1146,7 +1146,7 @@ def extract_labels(path2ground_truth_label: str, time: list) -> list:
     time (list) : a list of array representing time period.
     """
 
-    data = pd.read_csv(path2ground_truth_label, sep="\s+", delimiter=None, header=None)
+    data = pd.read_csv(path2ground_truth_label, sep=r"\s+", delimiter=None, header=None)
     data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
     labels = []
     for pos in time:
@@ -1369,7 +1369,7 @@ def load_rttm_file(filepath: str) -> pd.DataFrame:
     """
     if not Path(filepath).exists():
         raise ValueError(f"File not found: {filepath}")
-    data = pd.read_csv(filepath, sep="\s+", delimiter=None, header=None)
+    data = pd.read_csv(filepath, sep=r"\s+", delimiter=None, header=None)
     data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
 
     data['start'] = data['start'].astype(float)
@@ -1610,7 +1610,7 @@ def read_rttm_as_pyannote_object(rttm_file: str, speaker_override: Optional[str]
         annotation(pyannote.Annotation): annotation object
     """
     annotation = Annotation()
-    data = pd.read_csv(rttm_file, sep="\s+", delimiter=None, header=None)
+    data = pd.read_csv(rttm_file, sep=r"\s+", delimiter=None, header=None)
     data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
     for index, row in data.iterrows():
         if speaker_override is not None:

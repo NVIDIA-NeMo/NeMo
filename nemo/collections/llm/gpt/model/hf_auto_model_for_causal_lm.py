@@ -223,6 +223,10 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         Returns:
             torch.Tensor: The computed loss for the batch.
         """
+        if isinstance(self.trainer.strategy.checkpoint_io, io.pl.MegatronCheckpointIO):
+            logging.warning("Switching CheckpointIO from MegatronCheckpointIO to HFCheckpointIO.")
+            self.trainer.strategy.checkpoint_io = self.make_checkpoint_io(self._has_lora_adapter)
+
         labels = batch.pop('labels').to(self.model.device)
         loss_mask = batch.pop('loss_mask', None)
 
@@ -387,3 +391,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         fwd_signature = inspect.signature(self.model.forward)
         allowed_keys = list(fwd_signature.parameters.keys()) + reserved_keys
         return {k: batch[k] for k in allowed_keys if k in batch}
+
+    @property
+    def _has_lora_adapter(self):
+        return any(map(lambda x: 'lora' in x[0].lower(), self.named_modules()))

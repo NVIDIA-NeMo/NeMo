@@ -36,7 +36,7 @@ class SemiSortBatchSampler(DistributedSampler):
         randomization_factor: Optional[float] = None,
         seed: int = 42,
     ) -> None:
-        """
+        r"""
         Semi Sorted Batching, as proposed in _SSB ("Speed up training with variable
         length inputs by efficient batching strategies.", Zhenhao Ge et al. (2021).).
 

@@ -86,7 +86,7 @@ def is_expert_linear(fqn):
     Return whether the current base module is an expert linear module.
     See ParallelLinearAdapter.is_expert for usage details.
     """
-    return re.match('.*mlp\.experts\.local_experts.[0-9]+\.linear_fc[1-2]$', fqn) is not None
+    return re.match(r'.*mlp\.experts\.local_experts.[0-9]+\.linear_fc[1-2]$', fqn) is not None
 
 
 def wildcard_match(pattern, key):

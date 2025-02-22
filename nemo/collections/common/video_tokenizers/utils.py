@@ -342,7 +342,7 @@ def load_pytorch_model(jit_filepath: str, tokenizer_config: dict, model_type: st
 
 def get_tokenizer_config(tokenizer_type) -> TokenizerConfigs:
     """return tokeinzer config from tokenizer name"""
-    match = re.match("Cosmos-Tokenizer-(\D+)(\d+)x(\d+).*", tokenizer_type)
+    match = re.match(r"Cosmos-Tokenizer-(\D+)(\d+)x(\d+).*", tokenizer_type)
     if match:
         name, temporal, spatial = match.groups()
         tokenizer_config = TokenizerConfigs[name].value

@@ -39,6 +39,9 @@ def get_args():
     parser.add_argument(
         '--tokenizer-model-path', type=str, default=None, help="Path to tokenizer model, defaults to None"
     )
+    parser.add_argument(
+        '--ckpt_load_strictness', type=str, default=None, help='Defines handling of checkpoint load mismatch'
+    )
     return parser.parse_args()
 
 
@@ -60,6 +63,7 @@ if __name__ == "__main__":
             ckpt_load_optimizer=False,
             ckpt_save_optimizer=False,
             tensor_model_parallel_size=1,
+            ckpt_load_strictness=args.ckpt_load_strictness,
         ),
         plugins=nl.MegatronMixedPrecision(
             precision="bf16-mixed",

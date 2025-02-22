@@ -161,7 +161,7 @@ class MegatronBaseSpeechLM(MegatronBaseModel, TextGeneration):
         for task in task_templates:
             self.task_templates[task.taskname] = {
                 "prompt_template": task.prompt_template,
-                "prompt_template_fields": re.findall("\{(.*?)\}", task.prompt_template),
+                "prompt_template_fields": re.findall(r"\{(.*?)\}", task.prompt_template),
                 "answer_only_loss": task.get("answer_only_loss", False),
                 "answer_field": task.get("answer_field", None),
                 "truncate_field": task.truncate_field,

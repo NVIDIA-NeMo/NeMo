@@ -84,7 +84,11 @@ def get_args():
         default=4,
         help="""Number of tokens to generate per prompt""",
     )
-
+    parser.add_argument(
+        "--legacy_ckpt",
+        action="store_true",
+        help="""Load ckpt saved with TE < 1.14""",
+    )
     args = parser.parse_args()
     return args
 
@@ -114,6 +118,11 @@ if __name__ == "__main__":
             grad_reduce_in_fp32=False,
         ),
     )
+
+    # Load ckpt saved with TE < 1.14
+    if args.legacy_ckpt:
+        trainer.strategy.ckpt_load_strictness = False
+
     prompts = [
         "Hello, how are you?",
         "How many r's are in the word 'strawberry'?",

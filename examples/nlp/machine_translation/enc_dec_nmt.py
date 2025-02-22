@@ -94,8 +94,8 @@ class MTEncDecConfig(NemoConfig):
     name: Optional[str] = 'MTEncDec'
     do_training: bool = True
     do_testing: bool = False
-    model: MTEncDecModelConfig = field(default_factory=lambda: MTEncDecModelConfig())
-    trainer: Optional[TrainerConfig] = field(default_factory=lambda: TrainerConfig())
+    model: MTEncDecModelConfig = field(default_factory=MTEncDecModelConfig)
+    trainer: Optional[TrainerConfig] = field(default_factory=TrainerConfig)
     exp_manager: Optional[ExpManagerConfig] = field(
         default_factory=lambda: ExpManagerConfig(name='MTEncDec', files_to_copy=[])
     )

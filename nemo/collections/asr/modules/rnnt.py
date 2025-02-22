@@ -1521,7 +1521,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         return self.pred(prednet_output)
 
     def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
-        """
+        r"""
         Compute the joint step of the network after projection.
 
         Here,
@@ -2034,7 +2034,7 @@ class SampledRNNTJoint(RNNTJoint):
         transcript: torch.Tensor,
         transcript_lengths: torch.Tensor,
     ) -> torch.Tensor:
-        """
+        r"""
         Compute the sampled joint step of the network.
 
         Reference: `Memory-Efficient Training of RNN-Transducer with Sampled Softmax <https://arxiv.org/abs/2203.16868>`__.

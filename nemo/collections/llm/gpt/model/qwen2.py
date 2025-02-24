@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class Qwen2Config(GPTConfig):
+    """
+    Base config for Qwen 2 Models
+    """
+
     normalization: str = "RMSNorm"
     activation_func: Callable = F.silu
     gated_linear_unit: bool = True
@@ -54,6 +58,10 @@ class Qwen2Config(GPTConfig):
 
 @dataclass
 class Qwen2Config500M(Qwen2Config):
+    """
+    Config for Qwen 2 0.5B: https://huggingface.co/Qwen/Qwen2-0.5B
+    """
+
     num_layers: int = 24
     hidden_size: int = 896
     num_attention_heads: int = 14
@@ -63,6 +71,10 @@ class Qwen2Config500M(Qwen2Config):
 
 @dataclass
 class Qwen2Config1P5B(Qwen2Config):
+    """
+    Config for Qwen 2 1.5B: https://huggingface.co/Qwen/Qwen2-1.5B
+    """
+
     num_layers: int = 28
     hidden_size: int = 1536
     num_attention_heads: int = 12
@@ -72,6 +84,10 @@ class Qwen2Config1P5B(Qwen2Config):
 
 @dataclass
 class Qwen2Config7B(Qwen2Config):
+    """
+    Config for Qwen 2 7B: https://huggingface.co/Qwen/Qwen2-7B
+    """
+
     num_layers: int = 28
     hidden_size: int = 3584
     num_attention_heads: int = 28
@@ -82,6 +98,10 @@ class Qwen2Config7B(Qwen2Config):
 
 @dataclass
 class Qwen2Config72B(Qwen2Config):
+    """
+    Config for Qwen 2 72B: https://huggingface.co/Qwen/Qwen2-72B
+    """
+
     num_layers: int = 80
     hidden_size: int = 8192
     num_attention_heads: int = 64
@@ -89,10 +109,13 @@ class Qwen2Config72B(Qwen2Config):
     ffn_hidden_size: int = 29568
     vocab_size: int = 152064
     layernorm_epsilon: float = 1e-5
-    vocab_size: int = 152064
 
 
 class Qwen2Model(GPTModel):
+    """
+    Base model for Qwen 2
+    """
+
     def __init__(
         self,
         config: Annotated[Optional[Qwen2Config], Config[Qwen2Config]] = None,
@@ -105,6 +128,7 @@ class Qwen2Model(GPTModel):
 
 @io.model_importer(Qwen2Model, "hf")
 class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
+    # pylint: disable=C0115,C0116
     def init(self) -> Qwen2Model:
         return Qwen2Model(self.config, tokenizer=self.tokenizer)
 
@@ -163,6 +187,8 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
             make_vocab_size_divisible_by=128,
             rotary_base=source.rope_theta,
             share_embeddings_and_output_weights=False,
+            vocab_size=source.vocab_size,
+            seq_length=source.max_position_embeddings,
             fp16=(dtype_from_hf(source) == torch.float16),
             bf16=(dtype_from_hf(source) == torch.bfloat16),
             params_dtype=dtype_from_hf(source),
@@ -173,6 +199,7 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
 
 @io.model_exporter(Qwen2Model, "hf")
 class HFQwen2Exporter(io.ModelConnector[Qwen2Model, "AutoModelForCausalLM"]):
+    # pylint: disable=C0115,C0116
     def init(self, dtype=torch.bfloat16) -> "AutoModelForCausalLM":
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
@@ -288,7 +315,6 @@ def _import_qkv_bias(ctx: io.TransformCTX, q, k, v):
     head_num = megatron_config.num_attention_heads
     num_query_groups = megatron_config.num_query_groups
     heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
     head_size = megatron_config.kv_channels
 
     new_q_tensor_shape = (head_num, head_size)
@@ -360,7 +386,6 @@ def _export_qkv_bias(ctx: io.TransformCTX, qkv_bias):
     head_num = megatron_config.num_attention_heads
     num_query_groups = megatron_config.num_query_groups
     heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
     head_size = megatron_config.kv_channels
     qkv_total_dim = head_num + 2 * num_query_groups
 

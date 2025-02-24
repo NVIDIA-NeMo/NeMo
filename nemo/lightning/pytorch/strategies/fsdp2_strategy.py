@@ -32,7 +32,6 @@ from nemo.lightning import io
 from nemo.lightning.pytorch.strategies.utils import (
     ckpt_to_dir,
     create_checkpoint_io,
-    fix_progress_bar,
     fsdp2_strategy_parallelize,
     setup_data_sampler,
 )
@@ -169,7 +168,6 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         """
         self.trainer = trainer
         setup_data_sampler(self.trainer)
-        fix_progress_bar(trainer)
         # connect trainer to accelerator.
         self.accelerator.setup(trainer)
         # Parallelize model

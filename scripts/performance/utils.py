@@ -59,14 +59,12 @@ def slurm_executor(
         sys.exit(1)
 
     env_vars = {
-        "TRANSFORMERS_OFFLINE": "1",
-        "TOKENIZERS_PARALLELISM": "False",
-        "NCCL_NVLS_ENABLE": "0",
-        "NVTE_DP_AMAX_REDUCE_INTERVAL": "0",
-        "NVTE_ASYNC_AMAX_REDUCTION": "1",
-        "NVTE_FUSED_ATTN": "1",
-        "NVTE_FLASH_ATTN": "1",
-        "NEMO_LOG_MEMORY_USAGE": "1",
+        "TRANSFORMERS_OFFLINE": "1",  # Enable online downloads from HuggingFace
+        "TOKENIZERS_PARALLELISM": "False",  # Restrict warning message prints
+        "NCCL_NVLS_ENABLE": "0",  # Disable NVLink SHARP to save memory
+        "NVTE_FLASH_ATTN": "1",  # Enable Flash Attention, which is needed to enable cuDNN fused attention
+        "NVTE_FUSED_ATTN": "1",  # Enable cuDNN fused attention
+        "NEMO_LOG_MEMORY_USAGE": "1",  # Print memory allocation
         "NEMORUN_HOME": log_dir,
     }
     mounts = []

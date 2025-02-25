@@ -27,11 +27,9 @@ DATA_PATH = '/lustre/fsw/coreai_dlalgo_llm/boxiangw/squad'
 def local_executor_torchrun(nodes: int = 1, devices: int = 2) -> run.LocalExecutor:
     # Env vars for jobs are configured here
     env_vars = {
-        "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
-        "NCCL_NVLS_ENABLE": "0",
-        "NVTE_DP_AMAX_REDUCE_INTERVAL": "0",
-        "NVTE_ASYNC_AMAX_REDUCTION": "1",
-        "NVTE_FUSED_ATTN": "0",
+        "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",  # Disable caching NCCL communication buffer memory
+        "NCCL_NVLS_ENABLE": "0",  # Disable NVLink SHARP to save memory
+        "NVTE_FUSED_ATTN": "0",  # Disable cuDNN attention
     }
 
     executor = run.LocalExecutor(ntasks_per_node=devices, launcher="torchrun", env_vars=env_vars)

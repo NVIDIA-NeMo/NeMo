@@ -205,6 +205,13 @@ class MM_FLOPsMeasurementCallback(FLOPsMeasurementCallback):
                 kwargs["inp_s"] = model_cfg.input_size
                 # TODO: Add img_seq_len directly to MultimodalProjectorConfig
                 kwargs["img_seq_len"] = model_name_config_dict["hf_clip_vit_l"].num_image_embeddings_per_tile
+            elif model_name in ["flux"]:
+                kwargs["layers"] = [model_cfg.num_joint_layers, model_cfg.num_single_layers]
+                kwargs["hs"] = model_cfg.hidden_size
+                kwargs["model_channels"] = model_cfg.model_channels
+                kwargs["inp_s"] = model_cfg.context_dim
+                kwargs["in_channels"] = model_cfg.in_channels
+                kwargs["vec_in_dim"] = model_cfg.vec_in_dim
             else:
                 kwargs["enc_seq_len"] = model_cfg.seq_length
                 kwargs["layers"] = model_cfg.num_layers
@@ -235,6 +242,7 @@ class MM_FLOPsMeasurementCallback(FLOPsMeasurementCallback):
             **_model_flops_map,
             "hf_clip_vit_l": flops_formulas.clip_vit_l,
             "neva_projection": flops_formulas.neva_projection,
+            "flux": flops_formulas.flux,
         }
 
         total_flops = flops_per_gpu = 0

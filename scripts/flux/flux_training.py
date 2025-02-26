@@ -92,6 +92,7 @@ def flux_training() -> run.Partial:
                 context_parallel_size=1,
                 sequence_parallel=False,
                 pipeline_dtype=torch.bfloat16,
+                gradient_accumulation_fusion=True,
                 ddp=run.Config(
                     DistributedDataParallelConfig,
                     use_custom_fsdp=True,

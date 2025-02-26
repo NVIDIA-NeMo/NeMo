@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -42,7 +44,11 @@ from nemo.collections.diffusion.models.dit.dit_layer_spec import (
 )
 from nemo.collections.diffusion.models.flux.layers import EmbedND, MLPEmbedder, TimeStepEmbedder
 from nemo.collections.diffusion.sampler.flow_matching.flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from nemo.collections.diffusion.utils.flux_ckpt_converter import _import_qkv, _import_qkv_bias
+from nemo.collections.diffusion.utils.flux_ckpt_converter import (
+    _import_qkv,
+    _import_qkv_bias,
+    flux_transformer_converter,
+)
 from nemo.collections.diffusion.vae.autoencoder import AutoEncoder, AutoEncoderConfig
 from nemo.collections.llm import fn
 from nemo.lightning import io, teardown
@@ -65,7 +71,10 @@ def flux_data_step(dataloader_iter):
 
 @dataclass
 class FluxConfig(TransformerConfig, io.IOMixin):
-    ## transformer related
+    """
+    transformer related Flux Config
+    """
+
     num_layers: int = 1  # dummy setting
     num_joint_layers: int = 19
     num_single_layers: int = 38
@@ -84,6 +93,7 @@ class FluxConfig(TransformerConfig, io.IOMixin):
     hidden_dropout: float = 0
     attention_dropout: float = 0
     use_cpu_initialization: bool = True
+    gradient_accumulation_fusion: bool = True
 
     guidance_scale: float = 3.5
     data_step_fn: Callable = flux_data_step
@@ -99,12 +109,20 @@ class FluxConfig(TransformerConfig, io.IOMixin):
 
 @dataclass
 class T5Config:
+    """
+    T5 Config
+    """
+
     version: Optional[str] = "google/t5-v1_1-xxl"
     max_length: Optional[int] = 512
 
 
 @dataclass
 class ClipConfig:
+    """
+    Clip Config
+    """
+
     version: Optional[str] = "openai/clip-vit-large-patch14"
     max_length: Optional[int] = 77
     always_return_pooled: Optional[bool] = True
@@ -112,6 +130,10 @@ class ClipConfig:
 
 @dataclass
 class FluxModelParams:
+    """
+    Flux Model Params
+    """
+
     flux_config: FluxConfig = FluxConfig()
     vae_config: AutoEncoderConfig = AutoEncoderConfig(ch_mult=[1, 2, 4, 4], attn_resolutions=[])
     clip_params: ClipConfig = ClipConfig()
@@ -593,7 +615,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         timesteps = timesteps.to(dtype=latents.dtype)
         sigma = sigmas[step_indices].flatten()
 
-        if len(sigma.shape) < latents.ndim:
+        while len(sigma.shape) < latents.ndim:
             sigma = sigma.unsqueeze(-1)
 
         noisy_model_input = (1.0 - sigma) * latents + sigma * noise
@@ -747,6 +769,7 @@ class HFFluxImporter(io.ModelConnector["black-forest-labs/FLUX.1-dev", MegatronF
         return output
 
     def convert_state(self, source, target):
+        # pylint: disable=C0301
         mapping = {
             'transformer_blocks.*.norm1.linear.weight': 'double_blocks.*.adaln.adaLN_modulation.1.weight',
             'transformer_blocks.*.norm1.linear.bias': 'double_blocks.*.adaln.adaLN_modulation.1.bias',

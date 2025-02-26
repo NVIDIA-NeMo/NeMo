@@ -70,6 +70,7 @@ class MockDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
         self.image_precached = image_precached
         self.text_precached = text_precached
+        self.global_batch_size = global_batch_size
 
         self.data_sampler = MegatronDataSampler(
             seq_len=10,

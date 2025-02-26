@@ -73,6 +73,8 @@ def load_with_modelopt_layer_spec(
     nemo_checkpoint_path: str,
     tensor_model_parallel_size: int = 1,
     pipeline_model_parallel_size: int = 1,
+    devices: int = 1,
+    num_nodes: int = 1,
     inference_only: bool = True,
     ckpt_load_strictness: Optional[str] = None,
 ) -> llm.GPTModel:
@@ -83,6 +85,8 @@ def load_with_modelopt_layer_spec(
         nemo_checkpoint_path (str): Path to the NeMo checkpoint.
         tensor_model_parallel_size (int): Size of the tensor model parallelism.
         pipeline_model_parallel_size (int): Size of the pipeline model parallelism.
+        devices (int): Number of devices on each node.
+        num_nodes (int): Number of nodes being used.
         inference_only (bool): If True, loads the model for inference only w/o initializing the optimizer.
         ckpt_load_strictness (Optional[str]): Handling of checkpoint loading mismatch for tensor keys.
 
@@ -112,8 +116,8 @@ def load_with_modelopt_layer_spec(
         )
 
     trainer = nl.Trainer(
-        devices=tensor_model_parallel_size,
-        num_nodes=pipeline_model_parallel_size,
+        devices=devices,
+        num_nodes=num_nodes,
         strategy=strategy,
         plugins=nl.MegatronMixedPrecision(precision='bf16', params_dtype=torch.bfloat16, autocast_enabled=True),
     )
@@ -125,15 +129,4 @@ def load_with_modelopt_layer_spec(
         del model.optim
 
     _setup_trainer_and_restore_model(nemo_checkpoint_path, trainer, model)
-    return model
-
-
-def get_unwrapped_mcore_model(model):
-    """Unwraps NeMo 2.0 to base MCore model."""
-    from megatron.core.models.gpt import GPTModel as MCoreGPTModel
-
-    unwrapped_model = model
-    while not isinstance(unwrapped_model, MCoreGPTModel):
-        unwrapped_model = unwrapped_model.module
-
-    return unwrapped_model
+    return model, trainer

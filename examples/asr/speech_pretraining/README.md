@@ -15,3 +15,7 @@ For their corresponding usage, please refer to the example yaml config:
 - NEST: `examples/asr/conf/ssl/nest/nest_fast-conformer.yaml`
 
 
+For most efficient data loading, please refer to 
+- [lhotse dataloading](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#lhotse-dataloading) 
+- [pre-compute bucket durations](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#pre-computing-bucket-duration-bins)
+- [optimizing GPU memory usage](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#pushing-gpu-utilization-to-the-limits-with-bucketing-and-oomptimizer)

@@ -633,6 +633,7 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg, trainer)
+        del self.decoder_ssl  # delete unused decoder from parent class
 
         if self.cfg.get("mask_position", "pre_conv") == "post_conv":
             # adjust config for post-convolution masking
@@ -654,6 +655,20 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
             self.encoder.pre_encode = self.pre_encoder
 
     @property
+    def oomptimizer_schema(self) -> dict:
+        """
+        Return a typing schema for optimal batch size calibration for various
+        sequence lengths using OOMptimizer.
+        """
+        return {
+            "cls": tuple,
+            "inputs": [
+                {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
+                {"type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
+            ],
+        }
+
+    @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
         if hasattr(self.preprocessor, '_sample_rate'):
             input_signal_eltype = AudioSignal(freq=self.preprocessor._sample_rate)
@@ -664,8 +679,6 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "targets": NeuralType(('B', 'T'), LabelsType(), optional=True),
-            "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
             "apply_mask": NeuralType(optional=True),
         }
 
@@ -729,8 +742,8 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
 
         return log_probs, encoded_len, masks, tokens
 
-    def training_step(self, batch, batch_idx):
-        input_signal, input_signal_length, _, _ = batch
+    def training_step(self, batch, batch_idx=0):
+        input_signal, input_signal_length = batch[0], batch[1]
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, masks, tokens = self.forward(
                 processed_signal=input_signal, processed_signal_length=input_signal_length, apply_mask=True
@@ -750,8 +763,8 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
 
         return {'loss': loss_value, 'log': tensorboard_logs}
 
-    def inference_pass(self, batch, batch_idx, dataloader_idx=0, mode='val', apply_mask=False):
-        input_signal, input_signal_length, _, _ = batch
+    def inference_pass(self, batch, batch_idx=0, dataloader_idx=0, mode='val', apply_mask=False):
+        input_signal, input_signal_length = batch[0], batch[1]
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, masks, tokens = self.forward(
                 processed_signal=input_signal, processed_signal_length=input_signal_length, apply_mask=apply_mask
@@ -765,7 +778,7 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
 
         return {f'{mode}_loss': loss_value}
 
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+    def validation_step(self, batch, batch_idx=0, dataloader_idx=0):
         metrics = self.inference_pass(batch, batch_idx, dataloader_idx, apply_mask=True)
         if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
             self.validation_step_outputs[dataloader_idx].append(metrics)
@@ -773,7 +786,7 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
             self.validation_step_outputs.append(metrics)
         return metrics
 
-    def test_step(self, batch, batch_idx, dataloader_idx=0):
+    def test_step(self, batch, batch_idx=0, dataloader_idx=0):
         metrics = self.inference_pass(batch, batch_idx, dataloader_idx, mode="test", apply_mask=True)
         if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
             self.validation_step_outputs[dataloader_idx].append(metrics)
@@ -814,6 +827,24 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
     Model class that performs denoising and masked token prediction for speech self-supervised learning.
     Please refer to the NEST paper for more details: https://arxiv.org/abs/2408.13106
     """
+
+    @property
+    def oomptimizer_schema(self) -> dict:
+        """
+        Return a typing schema for optimal batch size calibration for various
+        sequence lengths using OOMptimizer.
+        """
+        return {
+            "cls": ssl_dataset.AudioNoiseBatch,
+            "inputs": [
+                {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input", "name": "audio"},
+                {"type": NeuralType(("B",), LengthsType()), "seq_length": "input", "name": "audio_len"},
+                {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input", "name": "noise"},
+                {"type": NeuralType(("B",), LengthsType()), "seq_length": "input", "name": "noise_len"},
+                {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input", "name": "noisy_audio"},
+                {"type": NeuralType(("B",), LengthsType()), "seq_length": "input", "name": "noisy_audio_len"},
+            ],
+        }
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg, trainer)

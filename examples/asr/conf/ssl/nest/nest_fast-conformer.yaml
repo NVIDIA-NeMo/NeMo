@@ -29,7 +29,7 @@ model:
   
   train_ds:
     manifest_filepath: ??? # path to training manifest, can be a string or list of strings
-    noise_manifest: ???  # the manifest for noise data, can be a string or list of strings
+    noise_manifest: null  # the manifest for noise data, can be a string or list of strings
     sample_rate: ${model.sample_rate}
     batch_size: 8 # you may increase batch_size if your memory allows
     shuffle: true
@@ -214,11 +214,11 @@ model:
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
-  max_epochs: 1000
-  max_steps: -1 # computed at runtime if not set
-  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  max_epochs: -1
+  max_steps: 500000 # computed at runtime if not set
+  val_check_interval: 2500 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   accelerator: auto
-  strategy: ddp_find_unused_parameters_true
+  strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
   precision: 32 # 16, 32, or bf16
@@ -234,7 +234,6 @@ trainer:
 exp_manager:
   exp_dir: null
   name: ${name}
-  # filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{epoch}'
   create_tensorboard_logger: true
   create_checkpoint_callback: true
   checkpoint_callback_params:
@@ -243,6 +242,8 @@ exp_manager:
     mode: "min"
     save_top_k: 1
     always_save_nemo: True # saves the checkpoints as nemo files instead of PTL checkpoints
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}'
+
 
   # you need to set these two to True to continue the training
   resume_if_exists: true

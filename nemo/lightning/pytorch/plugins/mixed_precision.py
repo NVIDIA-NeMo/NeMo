@@ -155,8 +155,9 @@ class MegatronMixedPrecision(Precision):
             config.fp16 = self.dtype_config.fp16
             config.bf16 = self.dtype_config.bf16
             # Avoid rewrapping the module if it's already of type Float16Module
-            if hasattr(module, 'module') and not isinstance(module.module, Float16Module):
-                module.module = Float16Module(config, module.module)
+            if hasattr(module, "module"):
+                if not isinstance(module.module, Float16Module):
+                    module.module = Float16Module(config, module.module)
             elif not isinstance(module, Float16Module):
                 module = Float16Module(config, module)
 

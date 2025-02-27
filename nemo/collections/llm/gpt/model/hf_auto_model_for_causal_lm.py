@@ -17,6 +17,7 @@ import time
 import _io
 import lightning.pytorch as pl
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM
 
@@ -276,9 +277,31 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         mean_loss = sum(self.loss_buffer) / len(self.loss_buffer)
         self.loss_buffer = []
-        self.log('reduced_train_loss', mean_loss, prog_bar=True, rank_zero_only=True, batch_size=1, sync_dist=False)
-        self.log('tps', self.n_tok / time_delta, prog_bar=True, rank_zero_only=True, batch_size=1, sync_dist=False)
+        tps = self.n_tok / time_delta
         self.n_tok = 0
+
+        # reduce across ranks
+        is_ddp = isinstance(self.trainer.strategy, pl.strategies.DDPStrategy)
+        device_mesh = getattr(self, '_device_mesh', None)
+        if device_mesh is not None or is_ddp:
+            if is_ddp:
+                group = dist.group.WORLD  # Default DDP process group
+            else:
+                group = device_mesh.get_group()
+
+            def reduce_item(val, op, device, group, dtype):
+                """util function"""
+                val = torch.tensor([val], device=device, dtype=dtype).detach()
+                dist.all_reduce(val, group=group, op=op)
+                return val.item()
+
+            mean_loss = reduce_item(
+                mean_loss, op=dist.ReduceOp.AVG, device=self.device, group=group, dtype=torch.float32
+            )
+            tps = reduce_item(tps, op=dist.ReduceOp.SUM, device=self.device, group=group, dtype=torch.int64)
+
+        self.log('reduced_train_loss', mean_loss, prog_bar=True, rank_zero_only=True, batch_size=1, sync_dist=False)
+        self.log('tps', tps, prog_bar=True, rank_zero_only=True, batch_size=1, sync_dist=False)
 
         # log LR
         # TODO(akoumparouli): move this elsewhere.

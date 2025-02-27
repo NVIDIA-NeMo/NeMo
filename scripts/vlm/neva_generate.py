@@ -81,8 +81,8 @@ def main(args) -> None:
     inputs = processor(prompt, raw_image, return_tensors='pt').to(0, torch.float16)
     input_ids = hf_tokenizer(prompt, return_tensors='pt')['input_ids'].cuda()
     input_ids[input_ids == 32000] = -200
-    media = inputs['pixel_values'].cuda()
-    media = media.reshape(media.size(0), 3, 336, 336)
+    images = inputs['pixel_values'].cuda()
+    images = images.reshape(images.size(0), 3, 336, 336)
 
     position_ids = (
         torch.arange(input_ids.size(1), dtype=torch.long, device=input_ids.device).unsqueeze(0).expand_as(input_ids)
@@ -105,7 +105,7 @@ def main(args) -> None:
     for _ in range(20):
         with torch.no_grad():
             output = model(
-                media=media,
+                images=images,
                 input_ids=input_ids,
                 position_ids=position_ids,
                 attention_mask=None,

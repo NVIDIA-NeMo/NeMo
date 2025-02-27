@@ -143,7 +143,9 @@ def main(args):
                 image_processor=image_processor,
                 multimodal_sample_config=config,
                 packed_sequence=args.use_packed_sequence,
-                packed_sequence_size=decoder_seq_length,
+                # leave some space for perf padding, otherwise after packing and padding,
+                # it will go beyond max seq len, then it will need a truncation.
+                packed_sequence_size=int(decoder_seq_length * 0.9),
                 num_image_embeddings_per_tile=num_image_embeddings_per_tile,
             ),
             packing_buffer_size=200 if args.use_packed_sequence else None,
@@ -174,8 +176,8 @@ def main(args):
         ddp=DistributedDataParallelConfig(
             check_for_nan_in_grad=True,
             grad_reduce_in_fp32=True,
-            overlap_grad_reduce=True,
-            overlap_param_gather=True,
+            overlap_grad_reduce=False,
+            overlap_param_gather=False,
             average_in_collective=True,
         ),
         ckpt_load_strictness="log_all",

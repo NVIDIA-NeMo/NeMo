@@ -5,14 +5,25 @@ from typing import Union
 import torch
 from megatron.core.models.common.embeddings.rotary_pos_embedding import apply_rotary_pos_emb
 from megatron.core.transformer.attention import Attention, SelfAttention, SelfAttentionSubmodules
-from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
+except ImportError:
+    from nemo.utils import logging
+
+    logging.warning(
+        "Failed to import Transformer Engine dependencies. "
+        "`from megatron.core.transformer.custom_layers.transformer_engine import *`"
+        "If using NeMo Run, this is expected. Otherwise, please verify the Transformer Engine installation."
+    )
+
 
 @dataclass
 class JointSelfAttentionSubmodules:
+    # pylint: disable=C0115
     linear_qkv: Union[ModuleSpec, type] = None
     added_linear_qkv: Union[ModuleSpec, type] = None
     core_attention: Union[ModuleSpec, type] = None
@@ -377,9 +388,6 @@ class FluxSingleAttention(SelfAttention):
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
-        # print(f'megatron q before ln: {query.transpose(0, 1).contiguous()}, {query.transpose(0, 1).contiguous().shape}')
-        # print(f'megatron k before ln: {key.transpose(0, 1).contiguous()}, {key.transpose(0, 1).contiguous().shape}')
-        # print(f'megatron v before ln: {value.transpose(0, 1).contiguous()}, {value.transpose(0, 1).contiguous().shape}')
 
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference

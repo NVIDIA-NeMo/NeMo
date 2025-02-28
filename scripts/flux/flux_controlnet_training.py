@@ -92,12 +92,8 @@ def flux_controlnet_training() -> run.Partial:
                 pipeline_dtype=torch.bfloat16,
                 ddp=run.Config(
                     DistributedDataParallelConfig,
-                    use_custom_fsdp=True,
-                    data_parallel_sharding_strategy='MODEL_AND_OPTIMIZER_STATES',
                     check_for_nan_in_grad=True,
                     grad_reduce_in_fp32=True,
-                    overlap_grad_reduce=True,
-                    overlap_param_gather=True,
                 ),
             ),
             plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
@@ -112,6 +108,7 @@ def flux_controlnet_training() -> run.Partial:
                     monitor='global_step',
                     filename='{global_step}',
                     every_n_train_steps=1000,
+                    save_last=False,
                     save_top_k=3,
                     mode='max',
                 ),
@@ -164,6 +161,15 @@ def convergence_test() -> run.Partial:
     recipe.data = flux_datamodule('/dataset/fill50k/fill50k_tarfiles/')
     recipe.model.flux_controlnet_config.num_single_layers = 10
     recipe.model.flux_controlnet_config.num_joint_layers = 4
+    recipe.trainer.strategy.ddp = run.Config(
+        DistributedDataParallelConfig,
+        use_custom_fsdp=True,
+        data_parallel_sharding_strategy='MODEL_AND_OPTIMIZER_STATES',
+        check_for_nan_in_grad=True,
+        grad_reduce_in_fp32=True,
+        overlap_grad_reduce=True,
+        overlap_param_gather=True,
+    )
     return recipe
 
 

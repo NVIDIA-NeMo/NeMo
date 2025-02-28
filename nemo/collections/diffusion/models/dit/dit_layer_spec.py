@@ -18,26 +18,18 @@ from typing import Literal, Union
 
 import torch
 import torch.nn as nn
-from einops import rearrange
-from megatron.core.jit import jit_fuser
 from megatron.core.transformer.attention import (
     CrossAttention,
     CrossAttentionSubmodules,
     SelfAttention,
     SelfAttentionSubmodules,
 )
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    TEColumnParallelLinear,
-    TEDotProductAttention,
-    TENorm,
-    TERowParallelLinear,
-)
+
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
-from megatron.core.transformer.transformer_block import TransformerConfig
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 from megatron.core.utils import make_viewless_tensor
@@ -48,22 +40,41 @@ from nemo.collections.diffusion.models.dit.dit_attention import (
     JointSelfAttentionSubmodules,
 )
 
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import (
+        TEColumnParallelLinear,
+        TEDotProductAttention,
+        TENorm,
+        TERowParallelLinear,
+    )
+except ImportError:
+    from nemo.utils import logging
+
+    logging.warning(
+        "Failed to import Transformer Engine dependencies. "
+        "`from megatron.core.transformer.custom_layers.transformer_engine import *`"
+        "If using NeMo Run, this is expected. Otherwise, please verify the Transformer Engine installation."
+    )
+
 
 # pylint: disable=C0116
 @dataclass
 class DiTWithAdaLNSubmodules(TransformerLayerSubmodules):
+    # pylint: disable=C0115
     temporal_self_attention: Union[ModuleSpec, type] = IdentityOp
     full_self_attention: Union[ModuleSpec, type] = IdentityOp
 
 
 @dataclass
 class STDiTWithAdaLNSubmodules(TransformerLayerSubmodules):
+    # pylint: disable=C0115
     spatial_self_attention: Union[ModuleSpec, type] = IdentityOp
     temporal_self_attention: Union[ModuleSpec, type] = IdentityOp
     full_self_attention: Union[ModuleSpec, type] = IdentityOp
 
 
 class RMSNorm(nn.Module):
+    # pylint: disable=C0115
     def __init__(self, hidden_size: int, config, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
@@ -523,7 +534,7 @@ class DiTLayer(TransformerLayer):
 
 
 class MMDiTLayer(TransformerLayer):
-    """A single transformer layer.
+    """A multi-modal transformer layer.
 
     Transformer layer takes input with size [s, b, h] and returns an
     output of the same size.
@@ -630,6 +641,12 @@ class MMDiTLayer(TransformerLayer):
 
 
 class FluxSingleTransformerBlock(TransformerLayer):
+    """
+    Single transformer layer mathematically equivalent to original Flux single transformer.
+
+    This layer is re-implemented with megatron-core and also altered in structure for better performance.
+    """
+
     def __init__(
         self,
         config: TransformerConfig,

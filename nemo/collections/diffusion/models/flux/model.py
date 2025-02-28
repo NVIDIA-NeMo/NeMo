@@ -14,14 +14,13 @@
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
 import lightning.pytorch as L
 import numpy as np
 import torch
-from diffusers import FluxTransformer2DModel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
 from megatron.core.models.common.vision_module.vision_module import VisionModule
@@ -134,17 +133,17 @@ class FluxModelParams:
     Flux Model Params
     """
 
-    flux_config: FluxConfig = FluxConfig()
-    vae_config: AutoEncoderConfig = AutoEncoderConfig(ch_mult=[1, 2, 4, 4], attn_resolutions=[])
-    clip_params: ClipConfig = ClipConfig()
-    t5_params: T5Config = T5Config()
+    flux_config: FluxConfig = field(default_factory=lambda: FluxConfig())
+    vae_config: Optional[AutoEncoderConfig] = field(
+        default_factory=lambda: AutoEncoderConfig(ch_mult=[1, 2, 4, 4], attn_resolutions=[])
+    )
+    clip_params: Optional[ClipConfig] = field(default_factory=lambda: ClipConfig())
+    t5_params: Optional[T5Config] = field(default_factory=lambda: T5Config())
     scheduler_steps: int = 1000
     device: str = 'cuda'
 
 
 # pylint: disable=C0116
-
-
 class Flux(VisionModule):
     """
     NeMo implementation of Flux model, with flux transformer and single flux transformer blocks implemented with
@@ -708,7 +707,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
 
 
 @io.model_importer(MegatronFluxModel, "hf")
-class HFFluxImporter(io.ModelConnector["black-forest-labs/FLUX.1-dev", MegatronFluxModel]):
+class HFFluxImporter(io.ModelConnector["FluxTransformer2DModel", MegatronFluxModel]):
     '''
     Convert a HF ckpt into NeMo dist-ckpt compatible format.
     '''
@@ -718,6 +717,7 @@ class HFFluxImporter(io.ModelConnector["black-forest-labs/FLUX.1-dev", MegatronF
         return MegatronFluxModel(self.config)
 
     def apply(self, output_path: Path) -> Path:
+        from diffusers import FluxTransformer2DModel
 
         source = FluxTransformer2DModel.from_pretrained(str(self), subfolder="transformer")
         target = self.init()
@@ -735,6 +735,8 @@ class HFFluxImporter(io.ModelConnector["black-forest-labs/FLUX.1-dev", MegatronF
 
     @property
     def config(self) -> FluxConfig:
+        from diffusers import FluxTransformer2DModel
+
         source = FluxTransformer2DModel.from_pretrained(str(self), subfolder="transformer")
         source_config = source.config
         flux_config = FluxConfig(

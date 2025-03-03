@@ -22,6 +22,8 @@ from lightning.pytorch.callbacks import Callback
 from nemo.collections.llm.gpt.model.base import GPTConfig
 from nemo.lightning.pytorch.callbacks import PEFT
 from nemo.utils import flops_formulas, logging
+from nemo.utils.hyena_flops_formulas import hyena
+
 
 __all__ = ["FLOPsMeasurementCallback", "MM_FLOPsMeasurementCallback"]
 
@@ -32,6 +34,7 @@ _model_flops_map = {
     "nemotron": flops_formulas.nemotron,
     "mixtral": flops_formulas.mixtral,
     "bert": flops_formulas.bert,
+    "hyena": hyena,
 }
 
 
@@ -43,7 +46,7 @@ class FLOPsMeasurementCallback(Callback):
         model_config (GPTConfig): Model parameters.
         data_config (pl.LightningDataModule): Data module being used in the experiment.
         model_name (str): Name of the model being run. The following models are supported:
-            gpt3, llama2, llama3, nemotron, mixtral, bert.
+            gpt3, llama2, llama3, nemotron, mixtral, bert, hyena.
 
 
     """
@@ -69,6 +72,8 @@ class FLOPsMeasurementCallback(Callback):
         ffn_hs = self.model_cfg.ffn_hidden_size
         attention_heads = self.model_cfg.num_attention_heads
         moe_router_topk = self.model_cfg.moe_router_topk
+        model_pattern = getattr(self.model_cfg, "hybrid_override_pattern", None)
+        vocab_size = self.data_cfg.tokenizer.vocab_size if hasattr(self.data_cfg, "tokenizer") else None
 
         # this handles both- 1. key is present, value is None; 2. key is absent
         query_groups = self.model_cfg.num_query_groups
@@ -84,6 +89,8 @@ class FLOPsMeasurementCallback(Callback):
             attention_heads=attention_heads,
             moe_router_topk=moe_router_topk,
             query_groups=query_groups,
+            vocab_size=vocab_size,
+            model_pattern=model_pattern,
         )
 
         self.model = self.model.lower() if self.model is not None else self.model
@@ -169,7 +176,7 @@ class MM_FLOPsMeasurementCallback(FLOPsMeasurementCallback):
     """
     Calculate and log FLOPs per second after every ``trainer.log_every_n_steps`` steps for multi-modal models.
     The following models are supported:
-            hf_clip_vit_l, neva_projection, gpt3, llama2, llama3, nemotron, mixtral, bert.
+            hf_clip_vit_l, neva_projection, gpt3, llama2, llama3, nemotron, mixtral, bert, hyena
 
     Args:
         model_name_config_dict (dict):

@@ -38,6 +38,8 @@ class FLOPSConfig:
     class_token_len: Optional[int] = None
     projector_type: Optional[str] = None
     inp_s: Optional[int] = None
+    model_pattern: Optional[str] = None
+    vocab_size: Optional[int] = None
     model_channels: Optional[int] = None
     vec_in_dim: Optional[int] = None
 

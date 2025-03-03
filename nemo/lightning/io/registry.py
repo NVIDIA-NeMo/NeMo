@@ -48,11 +48,12 @@ except ImportError:
 
 
 try:
-    from nemo.collections.common.tokenizers import SentencePieceTokenizer
+    from nemo.collections.common.tokenizers import ByteLevelTokenizer, SentencePieceTokenizer
     from nemo.collections.common.tokenizers.tiktoken_tokenizer import TiktokenTokenizer
 
     track_io(SentencePieceTokenizer, artifacts=[FileArtifact("model_path")])
     track_io(TiktokenTokenizer, artifacts=[FileArtifact("vocab_file")])
+    track_io(ByteLevelTokenizer)
 except ImportError:
-    # SentencePieceTokenizer is not available, no need to track it
+    # Tokenizers are not available, no need to track it.
     pass

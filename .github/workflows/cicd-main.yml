@@ -2103,6 +2103,35 @@ jobs:
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
 
+  L2_NeMo_2_Hyena_DDP_Pretraining_Test:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Hyena_DDP_Pretraining_Test')
+    with:
+      RUNNER: self-hosted-azure  # Assume runner has 2 GPUs
+      SCRIPT: |
+        python tests/collections/llm/gpt/model/test_hyena.py \
+        --mock-data \
+        --experiment-dir=tests/collections/llm/hyena_pretrain_results/${{ github.run_id }} \
+        --model-size=7b_nv \
+        --num-layers=4 \
+        --hybrid-override-pattern=SDH* \
+        --no-activation-checkpointing \
+        --add-bias-output \
+        --max-steps=5 \
+        --warmup-steps=1 \
+        --micro-batch-size=2 \
+        --global-batch-size=4 \
+        --no-wandb \
+        --seq-length=128 \
+        --hidden-dropout=0.01 \
+        --attention-dropout=0.01 \
+        --devices=2 \
+        --debug-ddp-parity-freq=1
+        
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/hyena_pretrain_results/${{ github.run_id }}
+
   L2_NeMo_2_SSM_Pretraining:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -3102,6 +3131,7 @@ jobs:
       - L2_HF_Transformer_SpeechLM_SFT_2gpu
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning
+      - L2_NeMo_2_Hyena_DDP_Pretraining_Test
       - L2_NeMo_2_T5_Pretraining
       - L2_NeMo_2_T5_Finetuning
       - L2_NeMo_2_T5_LoRA

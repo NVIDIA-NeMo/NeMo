@@ -46,8 +46,8 @@ def get_args():
         default=1,
         help="TRT-LLM engine PP size. (Only used when `--export_format` is 'trtllm')",
     )
-    parser.add_argument("--devices", type=int, default=None, help="Number of GPUs to use per node")
-    parser.add_argument("-nodes", "--num_nodes", type=int, default=1)
+    parser.add_argument("--devices", type=int, help="Number of GPUs to use per node")
+    parser.add_argument("-nodes", "--num_nodes", type=int, help="Number of nodes used")
     parser.add_argument('-out', '--export_path', '--output_path', type=str, help='Path for the exported engine')
     parser.add_argument(
         "--export_format", default="trtllm", choices=["trtllm", "nemo"], help="Model format to export as"
@@ -102,7 +102,9 @@ def get_args():
             args.export_path = f"./nemo_{args.algorithm}"
 
     if args.devices is None:
-        args.devices = "auto"  # Trainer can auto-detect number of devices
+        args.devices = args.calibration_tp
+    if args.num_nodes is None:
+        args.num_nodes = args.calibration_pp
 
     return args
 

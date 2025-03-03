@@ -30,6 +30,7 @@ from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
+from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
 from .utils import get_modelopt_decoder_type
@@ -38,7 +39,8 @@ if TYPE_CHECKING:
     from nemo.lightning import Trainer
     from nemo.lightning.megatron_parallel import MegatronParallel
 
-try:
+_, HAVE_MODELOPT = safe_import("modelopt")
+if HAVE_MODELOPT:
     import modelopt.torch.quantization as mtq
     from modelopt.torch.export import export_tensorrt_llm_checkpoint
 
@@ -50,13 +52,6 @@ try:
         "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
         "int4": mtq.INT4_BLOCKWISE_WEIGHT_ONLY_CFG,
     }
-
-    HAVE_MODELOPT = True
-
-except (ImportError, ModuleNotFoundError) as e:
-    HAVE_MODELOPT = False
-    HAVE_MODELOPT_ERROR = e
-
 
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
 SUPPORTED_EXPORT_FMT = ["trtllm", "nemo"]
@@ -122,7 +117,7 @@ class Quantizer:
         """Initialize Quantizer with quantization and export configurations."""
 
         if not HAVE_MODELOPT:
-            raise RuntimeError("nvidia-modelopt is needed to use Quantizer") from HAVE_MODELOPT_ERROR
+            raise RuntimeError("nvidia-modelopt is needed to use Quantizer")
         if not torch.cuda.is_available():
             raise EnvironmentError("GPU is required for the quantization.")
 

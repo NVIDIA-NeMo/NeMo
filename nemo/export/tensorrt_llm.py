@@ -179,7 +179,7 @@ class TensorRTLLM(ITritonDeployable):
         multiple_profiles: bool = False,
         gpt_attention_plugin: str = "auto",
         gemm_plugin: str = "auto",
-        use_mcore_path: bool = False,
+        use_mcore_path: bool = True,
         reduce_fusion: bool = True,
         fp8_quantized: Optional[bool] = None,
         fp8_kvcache: Optional[bool] = None,
@@ -226,6 +226,13 @@ class TensorRTLLM(ITritonDeployable):
             gather_generation_logits (Optional[bool]): if True, enables gather_generation_logits while building trtllm engine. Default: False
             build_rank (Optional[int]): rank to export the model on. If None, builds on all ranks.
         """
+
+        if not use_mcore_path:
+            warnings.warn(
+                "Exporting models using the local codebase with use_mcore_path=False is deprecated."
+                " Please install megatron-core and set use_mcore_path to True.",
+                stacklevel=2,
+            )
 
         gpus_per_node = tensor_parallelism_size if gpus_per_node is None else gpus_per_node
         prepare_directory_for_export(self.model_dir, delete_existing_files=delete_existing_files)

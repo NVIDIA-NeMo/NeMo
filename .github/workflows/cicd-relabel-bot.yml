@@ -5,7 +5,6 @@
 name: CICD Relabel bot
 
 on:
-  pull_request: # So that this mechanism works on forks, we must remove this trigger later
   pull_request_target:
 
 jobs:

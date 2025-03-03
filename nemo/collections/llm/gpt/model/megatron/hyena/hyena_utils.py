@@ -95,7 +95,11 @@ except ImportError:
 try:
     from causal_conv1d import causal_conv1d_fn
 except ImportError:
-    raise ImportError("causal_conv1d is required by the Hyena model but cannot be imported")
+
+    def causal_conv1d_fn(*args, **kwargs):
+        """Not imported: causal_conv1d_fn. An error will be raised if this is called."""
+        raise ImportError("causal_conv1d is required by the Hyena model but cannot be imported")
+
 
 from typing import Literal
 

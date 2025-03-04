@@ -43,8 +43,26 @@ from nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils import (
 logger = logging.getLogger(__name__)
 
 try:
+    import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
 except ImportError:
+
+    def DelayedScaling(*args, **kwargs):
+        """Not imported: DelayedScaling. An error will be raised if this is called."""
+        raise ImportError("transformer_engine not installed. Using default recipe.")
+
+    def Format(*args, **kwargs):
+        """Not imported: Format. An error will be raised if this is called."""
+        raise ImportError("transformer_engine not installed. Using default recipe.")
+
+    class _te:
+        """If this dummy module is accessed, a not imported error will be raised."""
+
+        def __getattribute__(self, name: str) -> None:
+            """Not imported: te. An error will be raised if this is called like a module."""
+            raise ImportError("transformer_engine not installed. Using default recipe.")
+
+    te = _te()  # if a user accesses anything in this module, an error will be raised
     logger.warning("WARNING: transformer_engine not installed. Using default recipe.")
 
 
@@ -241,8 +259,11 @@ class HyenaMixer(MegatronModule):
             _proj_use_cp = True
         else:
             _proj_use_cp = False
-
-        features, _ = self.dense_projection(x)
+        if self.transformer_config.vortex_style_fp8:
+            with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
+                features, _ = self.dense_projection(x)
+        else:
+            features, _ = self.dense_projection(x)
         features = rearrange(features, "l b d -> b l d").contiguous()
         features_L_last = features.permute(0, 2, 1)
         features_D_last = self.hyena_proj_conv(features_L_last, _use_cp=_proj_use_cp).permute(0, 2, 1)

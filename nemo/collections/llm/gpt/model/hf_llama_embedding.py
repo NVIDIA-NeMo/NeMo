@@ -83,7 +83,6 @@ class LlamaBidirectionalModel(LlamaModel):
         super().__init__(config)
         for layer in self.layers:
             layer.self_attn.is_causal = False
-        self.config._attn_implementation = "eager"
 
     def _update_causal_mask(
         self,

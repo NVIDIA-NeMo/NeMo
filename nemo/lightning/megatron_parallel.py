@@ -626,8 +626,13 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             self.apply_convert_module_fn()
 
         # Skip init_ddp for inference i.e testing as it can lead to OOM.
-        if not self.trainer.state.fn == TrainerFn.TESTING:
-            self.init_ddp()
+        try:
+            if not self.trainer.state.fn == TrainerFn.TESTING:
+                self.init_ddp()
+        except RuntimeError as e:
+            # Don't fail if trainer is not attached, re-raise any other RuntimeError
+            if not "is not attached to a `Trainer`" in str(e):
+                raise e
 
     def apply_convert_module_fn(self):
         for i in range(len(self)):

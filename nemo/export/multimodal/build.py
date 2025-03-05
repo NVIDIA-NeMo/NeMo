@@ -69,6 +69,7 @@ def build_trtllm_engine(
         tensor_parallelism_size=tensor_parallelism_size,
         max_input_len=max_input_len,
         max_output_len=max_output_len,
+        max_seq_len=max_input_len + max_output_len,
         max_batch_size=max_batch_size,
         max_prompt_embedding_table_size=max_multimodal_len,
         dtype=dtype,

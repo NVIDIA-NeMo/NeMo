@@ -1408,7 +1408,8 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                 checkpoint['state_dict'] = sharded_state_dict
                 if replace_sharded_tensor_key:
                     for v in checkpoint["state_dict"].values():
-                        v.key = v.key.replace("model", replace_sharded_tensor_key)
+                        if hasattr(v, "key"):
+                            v.key = v.key.replace("model", replace_sharded_tensor_key)
 
                 checkpoint_io = DistributedCheckpointIO.from_config(conf)
                 checkpoint = checkpoint_io.load_checkpoint(

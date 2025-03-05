@@ -88,6 +88,7 @@ try:
     # from megatron.core.inference.gpt.model_specs import get_gpt_layer_ammo_spec
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
     from megatron.core.models.gpt.gpt_layer_specs import (
+        get_gpt_decoder_block_spec,
         get_gpt_layer_local_spec,
         get_gpt_layer_with_transformer_engine_spec,
     )
@@ -161,6 +162,7 @@ def get_specs(spec_name, transformer_config=None, use_te=True, hyena_cfg: Dict =
         "megatron_gpt_full_te_layer_autocast": get_gpt_full_te_layer_autocast_spec(transformer_config),
         "modelopt": get_gpt_layer_modelopt_spec(num_experts),
         "te_gpt_hyena": get_gpt_layer_with_te_and_hyena_spec(hyena_cfg),
+        "decoder_block_gpt": get_gpt_decoder_block_spec(transformer_config, use_te),
     }
     if spec_name not in name_spec_dict:
         raise ValueError(f"Spec name '{spec_name}' is not recognized.")
@@ -2209,10 +2211,24 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.cfg.get('account_for_embedding_in_pipeline_split', False)
             and self.cfg.get('account_for_loss_in_pipeline_split', False)
         ):
-            if self.cfg.num_layers % self.cfg.get('pipeline_model_parallel_size', 1) != 0:
+            # Check that number of layers is compatible with pipeline parallelism
+            num_layers_first = self.cfg.get('num_layers_in_first_pipeline_stage')
+            num_layers_last = self.cfg.get('num_layers_in_last_pipeline_stage')
+            remaining_layers = self.cfg.num_layers
+            pipeline_size = self.cfg.get('pipeline_model_parallel_size', 1)
+            if num_layers_first is not None:
+                remaining_layers -= num_layers_first
+                pipeline_size -= 1
+            if num_layers_last is not None:
+                remaining_layers -= num_layers_last
+                pipeline_size -= 1
+
+            if remaining_layers % pipeline_size != 0:
                 raise ValueError(
-                    f"num_layers ({self.cfg.num_layers}) should be divisible by "
-                    f"pipeline_model_parallel_size ({self.cfg.get('pipeline_model_parallel_size', 1)})"
+                    f"num_layers ({self.cfg.num_layers}) minus "
+                    f"num_layers_in_first_pipeline_stage ({num_layers_first}) "
+                    f"and num_layers_in_last_pipeline_stage ({num_layers_last}) should be divisible by "
+                    f"remaining pipeline stages ({pipeline_size})."
                 )
 
         normalization = self.cfg.get('normalization', 'layernorm').lower()

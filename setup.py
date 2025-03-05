@@ -72,6 +72,7 @@ extras_require = {
     'common': req_file('requirements_common.txt'),
     # domain packages
     'asr': req_file("requirements_asr.txt"),
+    'ctc_segmentation': req_file("requirements.txt", folder="tools/ctc_segmentation"),
     'nlp': req_file("requirements_nlp.txt"),
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
@@ -93,7 +94,9 @@ extras_require['test'] = list(
         extras_require['common'],
     )
 )
-extras_require['asr'] = list(chain(extras_require['asr'], extras_require['core'], extras_require['common']))
+extras_require['asr'] = list(
+    chain(extras_require['asr'], extras_require['core'], extras_require['common'], extras_require['ctc_segmentation'])
+)
 extras_require['nlp'] = list(
     chain(
         extras_require['nlp'],

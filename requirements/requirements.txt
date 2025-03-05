@@ -1,6 +1,6 @@
 huggingface_hub>=0.24
 numba==0.61.0
-numpy>=1.22
+numpy>=1.22,<2.0.0
 onnx>=1.7.0
 protobuf==3.20.3
 python-dateutil

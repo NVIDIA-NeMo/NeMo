@@ -4,6 +4,7 @@ set -ex
 # List of all supported libraries (update this list when adding new libraries)
 # This also defines the order in which they will be installed by --libraries "all"
 ALL_LIBRARIES=(
+  # "te"
   "mcore"
   "nemo"
   "vllm"
@@ -17,6 +18,35 @@ export WHEELS_DIR=${WHEELS_DIR:-"$INSTALL_DIR/wheels"}
 
 PIP=pip
 ${PIP} install -U ${PIP} setuptools
+
+te() {
+  local mode="$1"
+
+  TE_REPO=${TE_REPO:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."transformer_engine".repo')}
+  TE_TAG=${TE_TAG:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."transformer_engine".ref')}
+  TE_DIR="$INSTALL_DIR/TransformerEngine"
+  if [ ! -d "$TE_DIR/.git" ]; then
+    rm -rf "$TE_DIR" &&
+      cd $(dirname "$TE_DIR") &&
+      git clone ${TE_REPO}
+  fi &&
+    pushd $TE_DIR &&
+    git checkout -f $TE_TAG &&
+    popd
+
+  if [[ "$mode" == "build" ]]; then
+    if [[ -n "${NVIDIA_PYTORCH_VERSION}" ]]; then
+      cd $TE_DIR && git submodule init && git submodule update &&
+        pip wheel --wheel-dir $WHEELS_DIR/te/ $TE_DIR
+    fi
+  else
+    if [ -d "$WHEELS_DIR" ] && [ -z "$(ls -A "$WHEELS_DIR")" ]; then
+      build
+    fi
+
+    pip install --no-cache-dir $WHEELS_DIR/te/*.whl || true
+  fi
+}
 
 mcore() {
   local mode="$1"
@@ -146,16 +176,15 @@ nemo() {
   fi
 
   DEPS=(
-    "llama-index==0.10.43"
-    "unstructured==0.14.9"
-    "-r"
-    "$NEMO_DIR/tools/ctc_segmentation/requirements.txt"
+    "sox"                                                    # requires numpy to be there @URL: https://github.com/marl/pysox/issues/167
+    "ctc_segmentation==1.7.1 ; platform_machine == 'x86_64'" # requires numpy<2.0.0 to be installed before
     "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@f07f44688e42e5500bf28ff83dd3e0f4bead0c8d"
-    "onnxscript@git+https://github.com/microsoft/onnxscript"
   )
 
   if [[ -n "${NVIDIA_PYTORCH_VERSION}" ]]; then
-    DEPS+=("git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@b6eb61dbf9fe272b1a943b1b0d9efdde99df0737 ; platform_machine == 'x86_64'")
+    DEPS+=(
+      "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@b6eb61dbf9fe272b1a943b1b0d9efdde99df0737 ; platform_machine == 'x86_64'" # Compiling NvRX requires CUDA
+    )
   fi
 
   echo 'Installing dependencies of nemo'

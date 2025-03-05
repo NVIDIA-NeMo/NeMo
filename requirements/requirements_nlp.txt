@@ -8,12 +8,14 @@ gdown
 h5py
 ijson
 jieba
+llama-index==0.10.43
 markdown2
 matplotlib>=3.3.2
-#megatron_core>0.6.0 # add back once mcore on pypi is compatible again
+megatron_core
 nltk>=3.6.5
 numpy<2  # tensorstore has an implicit compiled dependency on numpy<2
 nvidia-modelopt[torch]==0.23.2 ; platform_system != 'Darwin'
+nvidia-resiliency-ext; sys_platform != "darwin"
 opencc
 pangu
 prettytable
@@ -23,4 +25,5 @@ sacrebleu  # manually install sacrebleu[ja] for Japanese support; MeCab is unsup
 sentence_transformers
 tensorstore<0.1.72
 tiktoken==0.7.0
+unstructured==0.14.9
 zarr>=2.18.2,<3.0.0

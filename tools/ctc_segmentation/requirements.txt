@@ -1,2 +1,2 @@
-ctc_segmentation==1.7.1 ; platform_machine == 'x86_64'
 num2words
+numpy<2.0.0

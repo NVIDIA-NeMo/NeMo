@@ -31,7 +31,7 @@ class TokenizerWrapper:
 
     def detokenize(self, tokens):
         # pylint: disable=C0115,C0116
-        return self._tokenizer.decode(tokens, skip_special_tokens=True)
+        return self._tokenizer.decode(tokens, skip_special_tokens=False)
 
     def tokenize(self, prompt):
         # pylint: disable=C0115,C0116
@@ -62,10 +62,8 @@ class VLMTextGenerationController(SimpleTextGenerationController):
             }
         return tokens, image_dict
 
-    def prep_model_for_inference(
-        self, prompts_tokens: torch.Tensor, active_requests: OrderedDict[int, InferenceRequest]
-    ):
-        """Preparing batch for inference, using respective wrapper's prep_model_for_inference method
+    def prep_inference_input(self, prompts_tokens: torch.Tensor, active_requests: OrderedDict[str, InferenceRequest]):
+        """Preparing input data for inference, using respective wrapper's prep_inference_input method
 
         Args:
             prompts_tokens (torch.Tensor): A tensor of shape [batch_size, max_sequence_length]
@@ -73,7 +71,7 @@ class VLMTextGenerationController(SimpleTextGenerationController):
         """
         images = list(map(lambda request: request.encoder_prompt, active_requests.values()))
 
-        self.inference_wrapped_model.prep_model_for_inference(
+        return self.inference_wrapped_model.prep_inference_input(
             prompts_tokens=prompts_tokens,
             image_dict=images,
         )

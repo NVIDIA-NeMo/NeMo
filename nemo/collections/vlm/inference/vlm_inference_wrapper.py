@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from argparse import Namespace
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import torch
 import torch.nn.functional as F
@@ -21,6 +20,7 @@ from megatron.core import tensor_parallel
 from megatron.core.inference.model_inference_wrappers.abstract_model_inference_wrapper import (
     AbstractModelInferenceWrapper,
 )
+from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
 from megatron.core.inference_params import InferenceParams
 from torch.utils.data import default_collate
 
@@ -38,16 +38,15 @@ class VLMInferenceWrapper(AbstractModelInferenceWrapper):
         args (Namespace): The command line arguments that were passed
     """
 
-    def __init__(self, model, args: Namespace):
-        super().__init__(model, args)
+    def __init__(self, model, inference_wrapper_config: InferenceWrapperConfig):
+        super().__init__(model, inference_wrapper_config)
 
-    def prep_model_for_inference(
+    def prep_inference_input(
         self,
         prompts_tokens: torch.Tensor,
         image_dict: List[Dict] = None,
     ):
         # pylint: disable=C0115,C0116
-        super().prep_model_for_inference(prompts_tokens=prompts_tokens)
         max_num_concurrent_media = max(instance['pixel_values'].shape[0] for instance in image_dict)
         for instance in image_dict:
             pad_num_images = max_num_concurrent_media - instance['pixel_values'].shape[0]
@@ -64,29 +63,45 @@ class VLMInferenceWrapper(AbstractModelInferenceWrapper):
 
         batch_size = prompts_tokens.size(0)
         seq_length = prompts_tokens.size(1)
-        self.position_ids = (
+        position_ids = (
             torch.arange(seq_length, dtype=torch.long, device=prompts_tokens.device)
             .unsqueeze(0)
             .expand_as(prompts_tokens)
         )
-        self.pixel_values = batch['pixel_values'].cuda(non_blocking=True)
-        self.num_tiles = batch['num_tiles']
-        self.aspect_ratio_ids = batch['aspect_ratio_ids'].cuda(non_blocking=True)
 
+        # Clear xattn caches
         self.inference_params = InferenceParams(batch_size, seq_length)
         self.inference_params.xattn_caches = None
         self.inference_params.cross_attention_masks = None
         self.inference_params.full_text_row_masked_out_mask = None
 
-    def get_batch_for_context_window(self, context_start_position: int, context_end_position: int) -> List:
+        return {
+            "prompts_tokens": prompts_tokens,
+            "position_ids": position_ids,
+            "pixel_values": batch['pixel_values'].cuda(non_blocking=True),
+            "num_tiles": batch['num_tiles'],
+            "aspect_ratio_ids": batch['aspect_ratio_ids'].cuda(non_blocking=True),
+        }
+
+    def get_batch_for_context_window(
+        self,
+        inference_input: Dict[str, Any],
+        context_start_position: int,
+        context_end_position: int,
+    ) -> Dict[str, Any]:
         # pylint: disable=C0115,C0116
-        tokens2use = self.prompts_tokens[:, context_start_position:context_end_position]
-        positions2use = self.position_ids[:, context_start_position:context_end_position]
-        data_at_step_idx = [tokens2use, positions2use]
+        tokens2use = inference_input["prompts_tokens"][:, context_start_position:context_end_position]
+        positions2use = inference_input["position_ids"][:, context_start_position:context_end_position]
 
-        return data_at_step_idx
+        return {
+            "prompts_tokens": tokens2use,
+            "position_ids": positions2use,
+            "pixel_values": inference_input['pixel_values'],
+            "num_tiles": inference_input['num_tiles'],
+            "aspect_ratio_ids": inference_input['aspect_ratio_ids'],
+        }
 
-    def forward_pass_without_pipeline_parallel(self, inference_input: List) -> torch.Tensor:
+    def forward_pass_without_pipeline_parallel(self, inference_input: Dict[str, Any]) -> torch.Tensor:
         """Utility to carry out simple forward pass for TP or no model parallel models
 
         Runs a very simple forward pass for model. Used  in the case of models without
@@ -99,15 +114,15 @@ class VLMInferenceWrapper(AbstractModelInferenceWrapper):
         Returns:
             torch.Tensor: The output logits of shape [batch_size, seq_len, padded_vocab_size]
         """
-        tokens2use, positions2use = inference_input
+        tokens2use = inference_input["prompts_tokens"]
         batch_masks = [create_vision_mask_tensor(tokens2use[0], 128256)] * tokens2use.size(0)
         logits = self.model(
-            batch_images=self.pixel_values,
+            batch_images=inference_input["pixel_values"],
             batch_masks=batch_masks,
-            num_chunks=self.num_tiles,
-            aspect_ratio_ids=self.aspect_ratio_ids,
+            num_chunks=inference_input["num_tiles"],
+            aspect_ratio_ids=inference_input["aspect_ratio_ids"],
             tokens=tokens2use,
-            position_ids=positions2use,
+            position_ids=inference_input["position_ids"],
             xattn_caches=self.inference_params.xattn_caches,
             cross_attention_masks=self.inference_params.cross_attention_masks,
             full_text_row_masked_out_mask=self.inference_params.full_text_row_masked_out_mask,

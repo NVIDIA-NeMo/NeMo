@@ -30,6 +30,8 @@ class VLMEngine(MCoreEngine):
         common_inference_params: CommonInferenceParams = None,
     ) -> dict:
         # pylint: disable=C0115,C0116
+        request_ids: List[str] = []
+
         if self.random_seed:
             torch.random.manual_seed(self.random_seed)
 
@@ -39,14 +41,17 @@ class VLMEngine(MCoreEngine):
             prompt_tokens, image_dict = self.text_generation_controller.tokenize_prompt(prompt, image)
 
             # Reuse encoder_prompt from scheduler to pass image
-            self.scheduler.add_request(
+            request_id = self.scheduler.add_request(
                 prompt=prompt,
                 prompt_tokens=prompt_tokens,
                 encoder_prompt=image_dict,
                 inference_parameters=common_inference_params,
             )
+            request_ids.append(request_id)
 
         self.run_engine()
 
-        result: List[InferenceRequest] = self.scheduler.completed_request_pool.values()
+        result: List[InferenceRequest] = [
+            self.scheduler.completed_request_pool[request_id] for request_id in request_ids
+        ]
         return result

@@ -26,6 +26,7 @@ from megatron.core.tensor_parallel.mappings import (
     gather_from_sequence_parallel_region,
     scatter_to_sequence_parallel_region,
 )
+from megatron.core.transformer.mlp import apply_swiglu_sharded_factory
 from torch import nn
 
 from nemo.collections.common.parts.adapter_modules import AdapterModuleUtil
@@ -224,6 +225,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         in_features: int,
         out_features: int,
         dim: int,
+        base_linear_name: str,
         activation: str = 'swish',
         norm_position: Optional[str] = 'post',
         norm_type: Optional[str] = 'mixedfusedlayernorm',
@@ -245,7 +247,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         **kwargs,
     ):
         super().__init__()
-
+        self.base_linear_name = base_linear_name
         self.activation = activation_registry[activation]()
         self.norm_position = norm_position
         self.dim = dim
@@ -421,11 +423,19 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[dict] = None
     ) -> ShardedStateDict:
-        """ """
-
+        """
+        Sharded state dict for LoRA adapter. Special treatment is given to the linear_fc1 adapter
+        since TP is sharded separately for the two logical matrices (gate and up)
+        """
         sharded_state_dict = {}
-        sharded_state_dict.update(self.linear_in.sharded_state_dict(f"{prefix}linear_in.", sharded_offsets, metadata))
-        sharded_state_dict.update(
-            self.linear_out.sharded_state_dict(f"{prefix}linear_out.", sharded_offsets, metadata)
-        )
+        linear_in_sd = self.linear_in.sharded_state_dict(f"{prefix}linear_in.", sharded_offsets, metadata)
+        linear_out_sd = self.linear_out.sharded_state_dict(f"{prefix}linear_out.", sharded_offsets, metadata)
+
+        if 'linear_fc1' in self.base_linear_name:
+            for k, v in linear_out_sd.items():
+                if k in (f'{prefix}linear_out.weight', f'{prefix}linear_out.bias'):
+                    linear_out_sd[k] = apply_swiglu_sharded_factory(v, sharded_offsets)
+
+        sharded_state_dict.update(linear_in_sd)
+        sharded_state_dict.update(linear_out_sd)
         return sharded_state_dict

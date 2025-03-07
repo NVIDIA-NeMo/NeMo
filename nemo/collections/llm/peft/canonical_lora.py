@@ -234,6 +234,7 @@ class CanonicalLoRA(PEFT, ModuleMatcher):
 
             adapter_kwargs = dict(
                 dim=self.dim,
+                base_linear_name=full_name,
                 activation='identity',
                 norm_position=None,
                 norm_type=None,

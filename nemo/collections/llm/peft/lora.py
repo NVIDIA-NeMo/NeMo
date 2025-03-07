@@ -308,6 +308,7 @@ class LoRA(PEFT, ModuleMatcher):
                 in_features,
                 out_features,
                 self.dim,
+                base_linear_name=full_name,
                 activation='identity',
                 norm_position=None,
                 norm_type=None,

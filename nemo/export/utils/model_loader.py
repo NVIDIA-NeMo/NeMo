@@ -28,6 +28,7 @@ from torch.distributed.checkpoint import FileSystemReader, load
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, TensorStorageMetadata
 
 from nemo.export.tarutils import TarPath, ZarrPathStore
+from nemo.export.utils._mock_import import _mock_import
 
 LOGGER = logging.getLogger("NeMo")
 
@@ -201,6 +202,8 @@ def load_model_weights(checkpoint_path: Union[str, Path], load_extra_states: boo
     if config_dict['sharded_backend'] == 'zarr':
         return load_sharded_metadata_zarr(nemo_weights, load_extra_states=load_extra_states)
     elif config_dict['sharded_backend'] == 'torch_dist':
-        return load_sharded_metadata_torch_dist(nemo_weights, load_extra_states=load_extra_states)
+        # TODO: Remove mocking imports once MCore is available in NIM containers
+        with _mock_import("megatron.core.dist_checkpointing.strategies.torch"):
+            return load_sharded_metadata_torch_dist(nemo_weights, load_extra_states=load_extra_states)
 
     raise NotImplementedError(f'Distributed checkpoint backend {config_dict["sharded_backend"]} not supported')

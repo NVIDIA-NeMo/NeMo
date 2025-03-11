@@ -27,8 +27,6 @@ from megatron.core.dist_checkpointing.mapping import ShardedBase, ShardedObject,
 from megatron.core.dist_checkpointing.strategies.torch import sharded_tensor_to_torch_sharded_tensor
 from megatron.core.transformer.utils import _get_extra_state_offsets
 from torch import Tensor, nn
-from torch.distributed._composable.fsdp import MixedPrecisionPolicy
-from torch.distributed._composable.fsdp.fully_shard import fully_shard
 from torch.distributed._sharded_tensor import ShardedTensor as TorchShardedTensor
 from torch.distributed._tensor import DTensor, Replicate, Shard
 from torch.distributed.device_mesh import DeviceMesh
@@ -36,6 +34,11 @@ from torch.distributed.device_mesh import DeviceMesh
 from nemo.lightning import _strategy_lib
 from nemo.lightning.pytorch.callbacks import MegatronProgressBar, ProgressPrinter
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
+from nemo.utils.import_utils import safe_import_from
+
+
+MixedPrecisionPolicy = safe_import_from("torch.distributed._composable.fsdp", "MixedPrecisionPolicy")
+fully_shard = safe_import_from("torch.distributed._composable.fsdp.fully_shard", "fully_shard")
 
 
 @dataclass(kw_only=True)
@@ -441,7 +444,7 @@ def pyt_to_mcore_state_dict(
 def fsdp2_strategy_parallelize(
     model,
     device_mesh: DeviceMesh = None,
-    mp_policy: MixedPrecisionPolicy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32),
+    mp_policy: MixedPrecisionPolicy = None,
 ):
     """Apply parallelisms and activation checkpointing to the model.
     NOTE: The passed-in model preferably should be on meta device. Otherwise,
@@ -449,6 +452,9 @@ def fsdp2_strategy_parallelize(
     NOTE: Currently, the user is required to manually handle precision settings such as the `mp_policy` here
     because the model parallel strategy does not respect all settings of `Fabric(precision=...)` at the moment.
     """
+
+    if not mp_policy:
+        mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
     def parallelize_helper(module, mesh, mp_policy):
         if isinstance(module, nn.ModuleList):

@@ -34,7 +34,8 @@ jobs:
           NEMO_REPO: ${{ github.server_url }}/${{ github.repository }}
         run: |
           if [[ "$INSTALLER" == "pip-install" ]]; then
-            pip install ".[all]"
+            pip install --no-cache-dir -U pip
+            pip install --no-cache-dir ".[all]"
           else
             export NEMO_TAG
             export NEMO_REPO
@@ -44,7 +45,7 @@ jobs:
           fi
 
       - name: Run LLM example
-        if: ${{ matrix.installer == 'nemo-install' && matrix.os != 'macos-13' }}
+        if: ${{ matrix.installer == 'nemo-install' && matrix.python != '3.12' }}
         run: |
           # This is guarded since it requires nemo-run. We expect Nemo-run to be
           # available on PyPi with 25.04.

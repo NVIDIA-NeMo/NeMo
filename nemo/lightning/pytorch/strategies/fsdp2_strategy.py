@@ -28,7 +28,6 @@ from lightning.fabric.utilities.seed import reset_seed
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as PLModelParallelStrategy
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from torch.utils.data import DataLoader
 from typing_extensions import override
 
@@ -41,6 +40,7 @@ from nemo.lightning.pytorch.strategies.utils import (
     setup_data_sampler,
 )
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import_from
 
 try:
     from torch.distributed.tensor._api import distribute_tensor
@@ -48,6 +48,8 @@ try:
 except ImportError:
     from torch.distributed._tensor.api import distribute_tensor
     from torch.distributed._tensor.placement_types import Shard
+
+MixedPrecisionPolicy = safe_import_from("torch.distributed._composable.fsdp", "MixedPrecisionPolicy")
 
 
 _logger = _logging.getLogger(__name__)

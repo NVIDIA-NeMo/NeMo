@@ -46,7 +46,7 @@ python speech_to_text_aed_chunked_infer.py \
 import copy
 import glob
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import lightning.pytorch as pl
@@ -98,7 +98,7 @@ class TranscriptionConfig:
     )
 
     # Decoding strategy for MultitaskAED models
-    decoding: MultiTaskDecodingConfig = MultiTaskDecodingConfig()
+    decoding: MultiTaskDecodingConfig = field(default_factory=MultiTaskDecodingConfig)
 
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.

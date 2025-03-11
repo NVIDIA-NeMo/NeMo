@@ -47,7 +47,7 @@ from nemo.collections.asr.parts.preprocessing.perturb import process_augmentatio
 from nemo.collections.common.metrics import TopKClassificationAccuracy
 from nemo.collections.common.parts.preprocessing.collections import ASRSpeechLabel
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import *
 from nemo.utils import logging
 
@@ -356,8 +356,8 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
 
     def forward_for_export(self, audio_signal, length):
         encoded, length = self.encoder(audio_signal=audio_signal, length=length)
-        logits, embs = self.decoder(encoder_output=encoded, length=length)
-        return logits, embs
+        output = self.decoder(encoder_output=encoded, length=length)
+        return output
 
     def forward(self, input_signal, input_signal_length):
         processed_signal, processed_signal_len = self.preprocessor(
@@ -394,7 +394,11 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
             loss = torch.nn.functional.mse_loss(cosine_sim, loss_labels)
         else:
             audio_signal, audio_signal_len, labels, _ = batch
-            logits, _ = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+            output = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+            if isinstance(output, tuple):
+                logits, _ = output
+            else:
+                logits = output
             loss = self.loss(logits=logits, labels=labels)
 
         self.log('loss', loss)
@@ -414,7 +418,11 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
             return self.pair_evaluation_step(batch, batch_idx, dataloader_idx, tag)
 
         audio_signal, audio_signal_len, labels, _ = batch
-        logits, _ = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+        output = self.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
+        if isinstance(output, tuple):
+            logits, _ = output
+        else:
+            logits = output
         loss_value = self.eval_loss(logits=logits, labels=labels)
 
         acc_top_k = self._accuracy(logits=logits, labels=labels)

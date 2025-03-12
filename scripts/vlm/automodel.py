@@ -54,8 +54,8 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', default='vlm_automodel')
-    parser.add_argument('--model', required=True)
+    parser.add_argument('--name', default='gemma3_automodel')
+    parser.add_argument('--model', type=str, default="google/gemma-3-4b-it")
     parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp2'])
     parser.add_argument('--devices', default=1, type=int)
     parser.add_argument('--num-nodes', default=1, type=int)
@@ -89,7 +89,9 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     processor = vlm.HFAutoModelForImageTextToText.configure_processor(args.model)
+
     model = vlm.HFAutoModelForImageTextToText(args.model, load_in_4bit=args.use_4bit, processor=processor)
+
     peft = None
     if args.peft == 'lora':
         peft = llm.peft.LoRA(

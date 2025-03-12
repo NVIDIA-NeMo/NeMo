@@ -118,9 +118,13 @@ model:
       _target_: nemo.collections.llm.Llama32Config1B
     
   speech_encoder:
-    pretrained_model: "stt_en_fastconformer_transducer_large"
-    target_module: "encoder"
+    # _target_: nemo.collections.speechlm.modules.asr_module.ASRModuleConfig
+    use_hf_auto_model: true
+    hf_trust_remote_code: false
+    hf_load_pretrained_weights: true
     sample_rate: ${data.common.sample_rate}
+    pretrained_model: "openai/whisper-large-v3"
+    target_module: "model.encoder"
     spec_augment_config:
       _target_: nemo.collections.asr.modules.SpectrogramAugmentation
       freq_masks: 0 # set to zero to disable it
@@ -129,7 +133,7 @@ model:
       time_width: 0.05
 
   modality_adapter:
-    input_key_from: "d_model"  # attribute of model dim in the speech model
+    input_key_from: "config.d_model"  # attribute of model dim in the speech model
     input_key_to: "feat_in"  # attribute of input dim in the modality adapter
     output_key: "num_classes"  # attrubuite of output dim in the modality adapter
     config:

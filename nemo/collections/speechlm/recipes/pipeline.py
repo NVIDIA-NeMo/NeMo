@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from omegaconf import DictConfig, OmegaConf
@@ -25,6 +26,7 @@ from nemo.collections.speechlm.models.speech_to_text_llm_model import SpeechToTe
 from nemo.collections.speechlm.modules.asr_module import ASRModuleConfig
 from nemo.collections.speechlm.modules.modality_adapter import ModalityAdapterConfig
 from nemo.collections.speechlm.utils import SpeechToTextLLMPEFT, get_object_list_from_config
+from nemo.collections.speechlm.utils.io import prepare_pretrained_llm_dist_ckpt
 from nemo.core.classes.common import Serialization, typecheck
 from nemo.lightning import AutoResume
 from nemo.lightning.pytorch.callbacks import PreemptionCallback
@@ -41,6 +43,19 @@ class PipelineComponents:
     peft: Optional[SpeechToTextLLMPEFT] = None
     resume: Optional[AutoResume] = None
     logger: Optional[nl.NeMoLogger] = None
+    cfg: Optional[dict] = None
+
+
+def dump_config(cfg: dict, logger: nl.NeMoLogger):
+    log_dir = logger.explicit_log_dir if logger.explicit_log_dir else logger.log_dir
+    if log_dir is None:
+        log_dir = str(Path.cwd() / "nemo_experiments")
+
+    name = logger.name if logger.name else "default"
+    output_dir = Path(log_dir) / name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_dir / "config.yaml", "w") as f:
+        f.write(OmegaConf.to_yaml(cfg))
 
 
 def build_components(cfg: DictConfig, tokenizer: Optional[AutoTokenizer] = None) -> PipelineComponents:
@@ -71,7 +86,12 @@ def build_components(cfg: DictConfig, tokenizer: Optional[AutoTokenizer] = None)
         freeze_speech_model=cfg['model']['freeze_speech_model'],
         freeze_modality_adapter=cfg['model']['freeze_modality_adapter'],
         data_config=cfg['data']['common'],
+        resume_speech_model_from_path=cfg['model'].get('resume_speech_model_from_path', None),
+        resume_modality_adapter_from_path=cfg['model'].get('resume_modality_adapter_from_path', None),
     )
+
+    if model_config.language_model_from_pretrained:
+        prepare_pretrained_llm_dist_ckpt(model_config)
 
     model = SpeechToTextLLM(config=model_config, tokenizer=tokenizer)
 
@@ -121,6 +141,7 @@ def build_components(cfg: DictConfig, tokenizer: Optional[AutoTokenizer] = None)
         peft=peft,
         resume=resume,
         logger=logger,
+        cfg=cfg,
     )
 
 
@@ -128,6 +149,9 @@ def speech_to_text_llm_train(cfg: DictConfig, tokenizer: Optional[AutoTokenizer]
     """Train the model using provided config."""
 
     components = build_components(cfg, tokenizer)
+
+    # save config to log_dir
+    dump_config(components.cfg, components.logger)
 
     finetune(
         model=components.model,
@@ -138,6 +162,7 @@ def speech_to_text_llm_train(cfg: DictConfig, tokenizer: Optional[AutoTokenizer]
         peft=components.peft,
         resume=components.resume,
     )
+
     return components.logger.log_dir
 
 

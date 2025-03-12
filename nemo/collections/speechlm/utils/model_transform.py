@@ -38,51 +38,19 @@ class SpeechToTextLLMPEFT(PEFT):
         super().__init__()
         self.peft = peft
 
-    @override
-    def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
-        """PTL callback setup function."""
-        from nemo.lightning.pytorch.strategies.utils import create_checkpoint_io
-        from nemo.lightning.pytorch.utils import get_automodel_from_trainer
-
-        super(PEFT, self).setup(trainer, pl_module, stage=stage)
-
-        self._is_fsdp_v1 = type(trainer.strategy).__name__ == 'FSDPStrategy'
-        trainer.strategy.trainer = trainer
-        wrapped_io = partial(SpeechLMWrappedAdapterIO, peft=self)
-
-        if get_automodel_from_trainer(trainer) is not None:
-            ckpt_io_kwargs = {"model_library": "huggingface", "lora": True}
-        else:
-            ckpt_io_kwarg_names = [
-                "save_ckpt_format",
-                "async_save",
-                "torch_dist_multiproc",
-                "assume_constant_structure",
-                "parallel_save",
-                "parallel_save_within_dp",
-                "parallel_load",
-                "load_directly_on_device",
-            ]
-            ckpt_io_kwargs = {
-                arg: getattr(trainer.strategy, arg)
-                for arg in filter(lambda x: hasattr(trainer.strategy, x), ckpt_io_kwarg_names)
-            }
-        trainer.strategy._checkpoint_io = create_checkpoint_io(wrapping_ckpt_io=wrapped_io, **ckpt_io_kwargs)
-        self.wrapped_io = (
-            trainer.strategy._checkpoint_io._checkpoint_io
-            if getattr(trainer.strategy, 'async_save', False)
-            else trainer.strategy._checkpoint_io
-        )
-        trainer.strategy._init_model_parallel = False
-        trainer.strategy._setup_optimizers = False
+    def get_wrappped_io(self):
+        """
+        This is a helper function to return a partial function that wraps the checkpoint I/O with the PEFT adapter.
+        """
+        return partial(SpeechLMWrappedAdapterIO, peft=self)
 
     def __call__(
-        self, model: "nemo.collections.slm.model.SpeechToTextLLM"
-    ) -> "nemo.collections.slm.model.SpeechToTextLLM":
+        self, model: "nemo.collections.speechlm.model.SpeechToTextLLM"  # noqa: F821
+    ) -> "nemo.collections.speechlm.model.SpeechToTextLLM":  # noqa: F821
         """Apply the PEFT method to the LLM.
 
         This method freezes the LLM parameters and walks through the model
-        structure, applying the transform method to each module.
+        structure, applying the transform method to LLM module.
 
         Args:
             model (nn.Module): The model to be fine-tuned.
@@ -116,6 +84,16 @@ class SpeechToTextLLMPEFT(PEFT):
 
     def transform(self, module, name=None, prefix=None):
         return self.peft.transform(module, name=name, prefix=prefix)
+
+    def set_trainable_params(self, trainer: pl.Trainer):
+        """
+        Set params that should be saved for PEFT, including some params that don't require gradients,
+        such as the running mean and var of batchnorm.
+        """
+        model = trainer.lightning_module  # type: nemo.collections.speechlm.model.SpeechToTextLLM # noqa: F821
+        self.trainable_params = set([name for name, _ in model.trainable_parameters()])
+        if len(self.trainable_params) == 0:
+            raise RuntimeError("No trainable parameters found for PEFT!")
 
 
 class SpeechLMWrappedAdapterIO(WrappedAdapterIO):

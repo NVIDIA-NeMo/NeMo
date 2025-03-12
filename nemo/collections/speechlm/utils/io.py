@@ -16,8 +16,14 @@ from pathlib import Path
 from typing import Optional
 
 import lightning.pytorch as pl
+import torch
+import torch.distributed.checkpoint as dcp
+from megatron.core import dist_checkpointing as mcore_dcp
+from torch.distributed.checkpoint import FileSystemReader
 
 from nemo.lightning.io.mixin import ConnectorMixin, ModelConnector
+from nemo.lightning.io.pl import ckpt_to_weights_subdir
+from nemo.utils import logging, model_utils
 
 
 def import_ckpt(
@@ -87,4 +93,60 @@ def import_ckpt(
     ckpt_path = importer(overwrite=overwrite, output_path=output_path)
     if on_import_ckpt:
         importer.on_import_ckpt(model)
+    return ckpt_path
+
+
+def load_distributed_ckpt(ckpt_dir: Path) -> tuple[dict[str, torch.Tensor], dict]:
+    """
+    Load a distributed checkpoint from a directory, return as pytorch state dict.
+    """
+    if not isinstance(ckpt_dir, Path):
+        ckpt_dir = Path(ckpt_dir)
+
+    ckpt_dir = ckpt_to_weights_subdir(ckpt_dir, is_saving=False)
+    fs_reader = FileSystemReader(ckpt_dir)
+    metadata = fs_reader.read_metadata()
+
+    state_dict = {
+        k: torch.empty(tp.size, dtype=tp.properties.dtype)
+        for k, tp in metadata.state_dict_metadata.items()
+        if type(tp).__name__ == 'TensorStorageMetadata'
+    }
+
+    dcp.load(
+        state_dict,
+        storage_reader=fs_reader,
+    )
+    return state_dict, metadata
+
+
+def get_nested_attr(obj, attr):
+    """
+    Get nested attribute of an object.
+    """
+    original_obj = obj
+    for key in attr.split('.'):
+        if not hasattr(obj, key):
+            raise AttributeError(f"Object {original_obj.__class__} does not have attribute {attr}, failed at {key}")
+        obj = getattr(obj, key)
+    return obj
+
+
+def prepare_pretrained_llm_dist_ckpt(
+    model_config: "nemo.collections.speechlm.models.speech_to_text_llm_model.SpeechToTextLLMConfig",
+):
+    """
+    Prepare distribute checkpoint for base LLM.
+    """
+    checkpoint_path = model_config.language_model_from_pretrained
+    if mcore_dcp.check_is_distributed_checkpoint(checkpoint_path):
+        return checkpoint_path
+
+    logging.info(f"Preparing distributed checkpoint for {model_config.language_model_class} from {checkpoint_path}")
+    llm_model_cls = model_utils.import_class_by_path(model_config.language_model_class)  # type: GPTModel
+    ckpt_path = import_ckpt(
+        llm_model_cls(model_config.language_model_config),
+        f"{model_config.language_model_hub}{checkpoint_path}",
+        on_import_ckpt=False,
+    )
     return ckpt_path

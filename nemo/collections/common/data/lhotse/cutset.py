@@ -198,6 +198,8 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "max_open_streams": config.get("max_open_streams", None),
         "token_equivalent_duration": config.get("token_equivalent_duration", None),
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
+        "force_map_dataset": config.get("force_map_dataset", False),
+        "force_iterable_dataset": config.get("force_iterable_dataset", False),
     }
     input_cfg = config.input_cfg
     if isinstance(input_cfg, (str, Path)):
@@ -335,7 +337,17 @@ def parse_and_combine_datasets(
         if (w := item.get("weight")) is not None:
             weights.append(w)
 
-    assert all(t == tarred_status[0] for t in tarred_status), "Mixing tarred and non-tarred datasets is not supported."
+    all_same_tarred_status = all(t == tarred_status[0] for t in tarred_status)
+    if not all_same_tarred_status:
+        if propagate_attrs["force_map_dataset"] or propagate_attrs["force_iterable_dataset"]:
+            logging.warning(
+                f"Not all datasets in the group have the same tarred status, using provided force_map_dataset ({propagate_attrs['force_map_dataset']}) and force_iterable_dataset ({propagate_attrs['force_iterable_dataset']}) to determine the final tarred status."
+            )
+        else:
+            raise ValueError(
+                "Mixing tarred and non-tarred datasets is not supported when neither force_map_dataset nor force_iterable_dataset is True."
+            )
+
     assert len(weights) == 0 or len(cuts) == len(
         weights
     ), "Missing dataset weight. When weighting datasets, every dataset must have a specified weight."

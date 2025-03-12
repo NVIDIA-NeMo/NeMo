@@ -25,8 +25,8 @@ __all__ = [
 try:
     import nemo_run as run
 
-    from nemo.collections.llm.recipes import adam
     from nemo.collections.speechlm.api import finetune, generate, pretrain, train, validate
+    from nemo.collections.speechlm.recipes.optim import adam
 
     __all__.extend(
         [

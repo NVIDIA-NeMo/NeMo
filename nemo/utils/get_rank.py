@@ -51,3 +51,10 @@ def get_rank():
         return 0
     else:
         return torch.distributed.get_rank()
+
+
+def get_last_rank() -> int:
+    """Get the last rank in the distributed group"""
+    if not torch.distributed.is_initialized():
+        return 0
+    return torch.distributed.get_world_size() - 1

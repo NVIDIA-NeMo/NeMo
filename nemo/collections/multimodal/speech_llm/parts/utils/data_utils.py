@@ -406,6 +406,33 @@ class TextProcessing:
         return processed_example
 
 
+def get_text_processor_from_cfg(cfg, tokenizer):
+    return TextProcessing(
+        tokenizer=tokenizer,
+        max_seq_length=cfg["max_seq_length"],
+        min_seq_length=cfg["min_seq_length"],
+        add_bos=cfg.get("add_bos", False),
+        add_eos=cfg.get("add_eos", True),
+        add_sep=cfg.get("add_sep", False),
+        sep_id=cfg.get("sep_id", None),
+        seed=cfg.get("seed", 1234),
+        separate_prompt_and_response_with_newline=cfg.get("separate_prompt_and_response_with_newline", False),
+        answer_only_loss=cfg.get("answer_only_loss", True),
+        truncation_field=cfg.get("truncation_field", "answer"),
+        pad_to_max_length=cfg.get("pad_to_max_length", False),
+        prompt_template=cfg.get("prompt_template", None),
+        virtual_tokens=cfg.get("virtual_tokens", 0),
+        tokens_to_generate=cfg.get("tokens_to_generate", 0),
+        context_key=cfg.get("context_key", "context"),
+        answer_key=cfg.get("answer_key", "answer"),
+        end_string=cfg.get("end_string", None),
+        audio_locator=cfg.get("audio_locator", None),
+        add_boa_eoa=cfg.get("add_boa_eoa", False),
+        boa_string=cfg.get("boa_string", "<BOA>"),
+        eoa_string=cfg.get("eoa_string", "<EOA>"),
+    )
+
+
 class PromptFormatterTextProcessing:
     """
     Text processing pipeline for speech_llm data loader.

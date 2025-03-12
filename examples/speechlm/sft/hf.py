@@ -95,7 +95,7 @@ if __name__ == '__main__':
 
     config = OmegaConf.create(
         {
-            "cuts_path": args.data_path,
+            "manifest_filepath": args.data_path,
             "sample_rate": 16000,
             "shuffle": True,
             "num_workers": 2,

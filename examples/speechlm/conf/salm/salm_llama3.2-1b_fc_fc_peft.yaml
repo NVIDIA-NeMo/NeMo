@@ -6,22 +6,24 @@ data:
   common:
     global_batch_size: 2
     micro_batch_size: 2
-    max_seq_length: 2048
+    max_seq_length: 4096
     min_seq_length: 1
     sample_rate: 16000
-    end_string: null
-    context_key: 'context'
-    answer_key: 'answer'
-    prompt_format: null
-    prompt_template: "Q: {context}\nA: {answer}" # fstring to use for assistant prompt.
-    separate_prompt_and_response_with_newline: False
-    truncation_field: 'context'
-    add_eos: true
-    add_sep: false
-    add_bos: false
+    end_string: null  # additional end string other than <EOS>
+    context_key: 'context'  # what key in manifest to load for context
+    answer_key: 'answer'  # what key in manifest to load for answer
+    prompt_format: 'llama3'  # prompt formatter to use, set according to the chosen LLM and check for support in nemo/collections/common/prompts
     tokens_to_generate: 128
-    audio_locator: null
-    add_boa_eoa: false
+    add_boa_eoa: false  # whether to add <boa> and <eoa> strings before and after audio features
+
+    # below params are only used for non-lhotse dataloader, which are now DEPRECATED
+    audio_locator: null  # audio locator string in the context text for locating audios 
+    prompt_template: "Q: {context}\nA: {answer}" # fstring to use for assistant prompt.
+    separate_prompt_and_response_with_newline: False 
+    truncation_field: 'context' 
+    add_eos: true 
+    add_sep: false 
+    add_bos: false
 
   train_ds:
     # Example of how to specify paths to multiple datasets
@@ -120,10 +122,11 @@ model:
     _target_: nemo.collections.asr.models.EncDecMultiTaskModel
     pretrained_model: "nvidia/canary-1b"
     target_module: "encoder"
+    sample_rate: ${data.common.sample_rate}
     spec_augment_config:
       _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-      freq_masks: 2 # set to zero to disable it
-      time_masks: 10 # set to zero to disable it
+      freq_masks: 0 # set to zero to disable it
+      time_masks: 0 # set to zero to disable it
       freq_width: 27
       time_width: 0.05
 
@@ -214,10 +217,11 @@ trainer:
   devices: -1
   accelerator: gpu
   num_nodes: 1
-  max_epochs: 1000  # used to keep epoch logging correctly, but training will stop based on max_steps
+  max_epochs: -1 
   max_steps: 1000000 # 1M steps
-  log_every_n_steps: 2 # frequency with which training steps are logged 
-  val_check_interval: 1.0 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
+  accumulate_grad_batches: 1
+  log_every_n_steps: 10 # frequency with which training steps are logged 
+  val_check_interval: 2000 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
   num_sanity_val_steps: 0
   sync_batchnorm: true # used for convolution modules like FC
 
@@ -225,12 +229,13 @@ strategy:
   _target_: nemo.collections.speechlm.strategies.SpeechLMMegatronStrategy
   tensor_model_parallel_size: 1
   pipeline_model_parallel_size: 1
+  context_parallel_size: 1
   ckpt_async_save: true
 
 callbacks:
   checkpoint:
     _target_: nemo.lightning.pytorch.callbacks.ModelCheckpoint
-    filename: '${name}--{${callbacks.checkpoint.monitor}:.3f}-{step}-{epoch}'
+    filename: '${name}--{${callbacks.checkpoint.monitor}:.5f}-{step}'
     monitor: "val_loss"
     mode: "min"
     save_last: true

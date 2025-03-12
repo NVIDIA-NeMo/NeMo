@@ -21,9 +21,10 @@ from megatron.core.model_parallel_config import ModelParallelConfig
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from omegaconf import OmegaConf
+from transformers import AutoConfig, AutoFeatureExtractor, AutoModelForSpeechSeq2Seq
 
 import nemo.collections.asr as nemo_asr
-from nemo.collections.speechlm.utils import to_dict_config
+from nemo.collections.speechlm.utils import get_nested_attr, to_dict_config
 from nemo.core.classes.common import Serialization
 from nemo.core.classes.module import NeuralModule
 from nemo.lightning import io
@@ -91,10 +92,50 @@ class MCoreASRModule(MegatronModule):
         return encoded, encoded_len
 
 
+class HFWrappedPreprocessor(nn.Module):
+    def __init__(self, preprocessor: AutoFeatureExtractor, sample_rate: int):
+        super().__init__()
+        self.preprocessor = preprocessor
+        self.sample_rate = sample_rate
+
+    def forward(self, input_signal: torch.Tensor, length: torch.Tensor):
+        processed = self.preprocessor(
+            input_signal.cpu().numpy(), sampling_rate=self.sample_rate, return_tensors="pt"
+        )  # type: transformers.feature_extraction_utils.BatchFeature
+        processed_signal = processed["input_features"]  # type: torch.Tensor # [batch, hidden, time]
+        processed_signal = processed_signal.to(input_signal.device).type_as(input_signal)
+        processed_signal_len = torch.tensor(
+            [processed_signal.shape[2]] * processed_signal.shape[0], device=length.device, dtype=length.dtype
+        )  # [batch]
+        return processed_signal, processed_signal_len
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+
+class HFWrappedEncoder(nn.Module):
+    def __init__(self, encoder: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+
+    def forward(self, audio_signal: torch.Tensor, length: torch.Tensor):
+        # no input length required for models like Whisper
+        output = self.encoder(
+            audio_signal.type(self.encoder.dtype)
+        )  # type: transformers.modeling_outputs.BaseModelOutput
+        encoded = output["last_hidden_state"]  # [batch, time, hidden]
+        encoded = encoded.transpose(1, 2)  # [batch, hidden, time]
+        encoded_len = torch.tensor([encoded.shape[2]] * encoded.shape[0], device=encoded.device).long()  # [batch]
+        return encoded, encoded_len
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+
 @dataclass
 class ASRModuleConfig(ModelParallelConfig, io.IOMixin):
     _target_: Optional[str] = None
-    pretrained_model: Optional[str] = "stt_en_fastconformer_transducer_large"
+    pretrained_model: Optional[str] = "nvidia/canary-1b"
     config: Optional[dict] = None
     preprocessor_config: Optional[dict] = None
     spec_augment_config: Optional[dict] = None
@@ -102,8 +143,12 @@ class ASRModuleConfig(ModelParallelConfig, io.IOMixin):
     init_from_nemo_model: Optional[str] = None
     init_from_ptl_ckpt: Optional[str] = None
     target_module: Optional[str] = "encoder"
+    sample_rate: Optional[int] = 16000
+    use_hf_auto_model: Optional[bool] = False
+    hf_trust_remote_code: Optional[bool] = False
+    hf_load_pretrained_weights: Optional[bool] = True
 
-    def configure_model(self):
+    def configure_nemo_asr_model(self):
         if self._target_ is not None:
             imported_cls = model_utils.import_class_by_path(self._target_)
         else:
@@ -119,21 +164,66 @@ class ASRModuleConfig(ModelParallelConfig, io.IOMixin):
         else:
             cfg = OmegaConf.create(self.config)
             asr_model = imported_cls(cfg=cfg)  # type: nemo_asr.models.ASRModel
-            asr_model.maybe_init_from_pretrained_checkpoint(self)
+            init_cfg = OmegaConf.create(
+                {
+                    "init_from_pretrained_model": self.init_from_pretrained_model,
+                    "init_from_nemo_model": self.init_from_nemo_model,
+                    "init_from_ptl_ckpt": self.init_from_ptl_ckpt,
+                }
+            )
+            asr_model.maybe_init_from_pretrained_checkpoint(init_cfg)
 
         model = asr_model
         if self.target_module is not None:
-            model = getattr(asr_model, self.target_module, None)  # type: NeuralModule
+            model = get_nested_attr(asr_model, self.target_module)
+
         if model is None:
             raise ValueError(f"Model {self._target_} does not have attribute {self.target_module}")
 
         if self.preprocessor_config is not None:
             preprocessor = Serialization.from_config_dict(to_dict_config(self.preprocessor_config))
         elif hasattr(asr_model, "preprocessor"):
-            preprocessor = asr_model.preprocessor
+            preprocessor = asr_model.preprocessor  # type: nemo_asr.modules.AudioToMelSpectrogramPreprocessor
         else:
             preprocessor = None
             logging.warning(f"Model {self._target_} does not have a preprocessor, use with caution.")
+
+        if self.sample_rate != preprocessor._sample_rate:
+            raise ValueError(
+                f"Sample rate mismatch: ASRModuleConfig ({self.sample_rate}) != preprocessor ({preprocessor._sample_rate}). "
+                "Please provide a preprocessor config with the correct sample rate."
+            )
+        return model, preprocessor
+
+    def configure_hf_auto_model(self):
+        hf_preprocessor = AutoFeatureExtractor.from_pretrained(
+            self.pretrained_model, trust_remote_code=self.hf_trust_remote_code
+        )
+        preprocessor = HFWrappedPreprocessor(hf_preprocessor, self.sample_rate)
+
+        if self.hf_load_pretrained_weights:
+            asr_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                self.pretrained_model,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=self.hf_trust_remote_code,
+                use_safetensors=True,
+            )
+        else:
+            config = AutoConfig.from_pretrained(self.pretrained_model, trust_remote_code=self.hf_trust_remote_code)
+            asr_model = AutoModelForSpeechSeq2Seq.from_config(config, trust_remote_code=self.hf_trust_remote_code)
+
+        model = asr_model
+        if self.target_module is not None:
+            model = get_nested_attr(asr_model, self.target_module)
+
+        model = HFWrappedEncoder(model)
+        return model, preprocessor
+
+    def configure_model(self):
+        if self.use_hf_auto_model:
+            model, preprocessor = self.configure_hf_auto_model()
+        else:
+            model, preprocessor = self.configure_nemo_asr_model()
 
         if self.spec_augment_config is not None:
             spec_augment = Serialization.from_config_dict(to_dict_config(self.spec_augment_config))

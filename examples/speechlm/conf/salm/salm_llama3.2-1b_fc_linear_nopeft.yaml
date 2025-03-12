@@ -138,10 +138,6 @@ model:
       num_classes: -1  # auto-set
       add_blank: false  # don't add blank class
 
-  peft:
-    _target_: nemo.collections.llm.peft.LoRA
-    dim: 32
-
 
 ############ Optimizer ############
 optim:

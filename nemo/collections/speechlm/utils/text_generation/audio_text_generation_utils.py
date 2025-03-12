@@ -327,7 +327,6 @@ def generate(
     tokens_to_generate=0,
     all_probs=False,
     temperature=1.0,
-    add_BOS=False,
     top_k=0,
     top_p=0.0,
     greedy=False,
@@ -345,7 +344,6 @@ def generate(
         tokens_to_generate (int): The maximum length of the tokens to be generated.
         all_probs (bool): Return the log prob for all the tokens
         temperature (float): sampling temperature
-        add_BOS (bool): add the bos token at the begining of the prompt
         top_k (int): The number of highest probability vocabulary tokens to keep for top-k-filtering.
         top_p (float): If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
         greedy (bool):  Whether or not to use sampling ; use greedy decoding otherwise
@@ -367,67 +365,88 @@ def generate(
     else:
         inference_strategy = model_inference_strategy_dispatcher(model)
     tokenizer = model.tokenizer
-    has_multi_audios = False
+    # has_multi_audios = False  # commented out to make sure inference using TP > 1 works with lhotse dataloader
     num_audios = None
     context_start_idx = None
     audio_signal, audio_signal_length = None, None
-    if torch.distributed.get_rank() == text_generation_utils.get_model_parallel_src_rank():
-        if isinstance(inputs, tuple) and len(inputs) == 2:
-            context_tokens_tensor, context_length_tensor = inputs
-        elif isinstance(inputs, tuple) and len(inputs) == 4:
-            context_tokens_tensor, context_length_tensor, audio_signal, audio_signal_length = inputs
-        elif isinstance(inputs, tuple) and len(inputs) == 6:  # multi-audio
-            has_multi_audios = True
-            (
-                context_tokens_tensor,
-                context_length_tensor,
-                audio_signal,
-                audio_signal_length,
-                num_audios,
-                context_start_idx,
-            ) = inputs
-        else:
-            context_tokens_tensor, context_length_tensor = inference_strategy.tokenize_batch(
-                inputs, tokens_to_generate, add_BOS
-            )
 
-        send_generate_info(
-            context_tokens_tensor,
-            context_length_tensor,
-            audio_signal,
-            audio_signal_length,
-            tokens_to_generate,
-            all_probs,
-            compute_logprob,
-            temperature,
-            top_k,
-            top_p,
-            greedy,
-            repetition_penalty,
-            min_tokens_to_generate,
-            end_strings,
-            num_audios,
-            context_start_idx,
-        )
-    else:
+    if isinstance(inputs, tuple) and len(inputs) == 2:  # only LLM
+        context_tokens_tensor, context_length_tensor = inputs
+    elif isinstance(inputs, tuple) and len(inputs) == 4:  # single audio in each sample
+        context_tokens_tensor, context_length_tensor, audio_signal, audio_signal_length = inputs
+    elif isinstance(inputs, tuple) and len(inputs) == 6:  # possible multi-audio in each sample
+        # has_multi_audios = True # commented out to make sure inference using TP > 1 works with lhotse dataloader
         (
-            context_length_tensor,
             context_tokens_tensor,
+            context_length_tensor,
             audio_signal,
             audio_signal_length,
-            tokens_to_generate,
-            all_probs,
-            compute_logprob,
-            temperature,
-            top_k,
-            top_p,
-            greedy,
-            repetition_penalty,
-            min_tokens_to_generate,
-            end_strings,
             num_audios,
             context_start_idx,
-        ) = receive_generate_info(has_multi_audios)
+        ) = inputs
+    else:
+        raise ValueError(f"unknown input format {inputs}")
+
+    """
+    Follow code is commented out to make sure inference using TP > 1 works with lhotse dataloader
+    """
+    # if torch.distributed.get_rank() == text_generation_utils.get_model_parallel_src_rank():
+    #     if isinstance(inputs, tuple) and len(inputs) == 2:
+    #         context_tokens_tensor, context_length_tensor = inputs
+    #     elif isinstance(inputs, tuple) and len(inputs) == 4:
+    #         context_tokens_tensor, context_length_tensor, audio_signal, audio_signal_length = inputs
+    #     elif isinstance(inputs, tuple) and len(inputs) == 6:  # multi-audio
+    #         has_multi_audios = True
+    #         (
+    #             context_tokens_tensor,
+    #             context_length_tensor,
+    #             audio_signal,
+    #             audio_signal_length,
+    #             num_audios,
+    #             context_start_idx,
+    #         ) = inputs
+    #     else:
+    #         context_tokens_tensor, context_length_tensor = inference_strategy.tokenize_batch(
+    #             inputs, tokens_to_generate, False
+    #         )
+
+    #     send_generate_info(
+    #         context_tokens_tensor,
+    #         context_length_tensor,
+    #         audio_signal,
+    #         audio_signal_length,
+    #         tokens_to_generate,
+    #         all_probs,
+    #         compute_logprob,
+    #         temperature,
+    #         top_k,
+    #         top_p,
+    #         greedy,
+    #         repetition_penalty,
+    #         min_tokens_to_generate,
+    #         end_strings,
+    #         num_audios,
+    #         context_start_idx,
+    #     )
+    # else:
+    #     (
+    #         context_length_tensor,
+    #         context_tokens_tensor,
+    #         audio_signal,
+    #         audio_signal_length,
+    #         tokens_to_generate,
+    #         all_probs,
+    #         compute_logprob,
+    #         temperature,
+    #         top_k,
+    #         top_p,
+    #         greedy,
+    #         repetition_penalty,
+    #         min_tokens_to_generate,
+    #         end_strings,
+    #         num_audios,
+    #         context_start_idx,
+    #     ) = receive_generate_info(has_multi_audios)
 
     output = synced_generate(
         model,

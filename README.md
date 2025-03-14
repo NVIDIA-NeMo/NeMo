@@ -310,23 +310,37 @@ The NeMo Framework can be installed in a variety of ways, depending on
 your needs. Depending on the domain, you may find one of the following
 installation methods more suitable.
 
-- Conda / Pip - Refer to [Conda](#conda) and [Pip](#pip) for
-  installation instructions.
+- [Conda / Pip](#conda--pip): Install NeMo-Framework with native Pip into a virtual environment.
+  - Used to explore NeMo on any supported platform.
   - This is the recommended method for ASR and TTS domains.
-  - When using a Nvidia PyTorch container as the base, this is the
-      recommended method for all domains.
-- Docker Containers - Refer to [Docker containers](#docker-containers)
-  for installation instructions.
-  - NeMo Framework container -
-      [nvcr.io/nvidia/nemo:24.05]{.title-ref}
-- LLMs and MMs Dependencies - Refer to [LLMs and MMs
-    Dependencies](#install-llms-and-mms-dependencies) for installation
-    instructions.
+  - Limited feature-completeness for other domains.
+- [NGC PyTorch container](#ngc-pytorch-container): Install NeMo-Framework from source with feature-completeness into a highly optimized container.
+  - For users that want to install from source in a highly optimized container.
+- [NGC NeMo container](#ngc-nemo-container): Ready-to-go solution of NeMo-Framework
+  - For users that seek highest performance.
+  - Contains all dependencies installed and tested for performance and convergence.
 
-**Important: We strongly recommended that you start with a base NVIDIA
-PyTorch container: nvcr.io/nvidia/pytorch:24.02-py3.**
+### Support matrix
 
-### Conda
+NeMo-Framework provides tiers of support based on OS / Platform and mode of installation. Please refer the following overview of support levels:
+
+- Fully supported: Max performance and feature-completeness.
+- Limited supported: Used to explore NeMo.
+- No support yet: In development.
+- Deprecated: Support has reached end of life.
+
+Please refer to the following table for current support levels:
+
+| OS / Platform              | Install from PyPi | Source into NGC container |
+|----------------------------|-------------------|---------------------------|
+| `linux` - `amd64/x84_64`   | Limited support   | Full support              |
+| `linux` - `arm64`          | Limited support   | Limited support           |
+| `darwin` - `amd64/x64_64`  | Deprecated        | Deprecated                |
+| `darwin` - `arm64`         | Limited support   | Limited support           |
+| `windows` - `amd64/x64_64` | No support yet    | No support yet            |
+| `windows` - `arm64`        | No support yet    | No support yet            |
+
+### Conda / Pip
 
 Install NeMo in a fresh Conda environment:
 
@@ -335,175 +349,46 @@ conda create --name nemo python==3.10.12
 conda activate nemo
 ```
 
-Install PyTorch using their
-[configurator](https://pytorch.org/get-started/locally/):
+#### Pick the right version
+
+NeMo-Framework publishes pre-built wheels with each release.
+To install nemo_toolkit from such a wheel, use the following installation method:
 
 ```bash
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+pip install "nemo_toolkit[all]"
 ```
 
-The command to install PyTorch may depend on your system. Use the
-configurator linked above to find the right command for your system.
-
-Then, install NeMo via Pip or from Source. We do not provide NeMo on the
-conda-forge or any other Conda channel.
-
-### Pip
-
-To install the nemo_toolkit, use the following installation method:
+If a more specific version is desired, we recommend a Pip-VCS install. From [NVIDIA/NeMo](github.com/NVIDIA/NeMo), fetch the commit, branch, or tag that you would like to install.  
+To install nemo_toolkit from this Git reference `$REF`, use the following installation method:
 
 ```bash
-apt-get update && apt-get install -y libsndfile1 ffmpeg
-pip install Cython packaging
-pip install nemo_toolkit['all']
+git clone https://github.com/NVIDIA/NeMo
+cd NeMo
+git checkout @${REF:-'main'}
+pip install '.[all]'
 ```
 
-Depending on the shell used, you may need to use the
-`"nemo_toolkit[all]"` specifier instead in the above command.
-
-### Pip from a Specific Domain
+#### Install a specific Domain
 
 To install a specific domain of NeMo, you must first install the
 nemo_toolkit using the instructions listed above. Then, you run the
 following domain-specific commands:
 
 ```bash
-pip install nemo_toolkit['asr']
-pip install nemo_toolkit['nlp']
-pip install nemo_toolkit['llm']
-pip install nemo_toolkit['tts']
-pip install nemo_toolkit['vision']
-pip install nemo_toolkit['multimodal']
+pip install nemo_toolkit['all'] # or pip install "git+https://github.com/NVIDIA/NeMo@${REF:-'main'}#egg=nemo_toolkit[all]"
+pip install nemo_toolkit['asr'] # or pip install "git+https://github.com/NVIDIA/NeMo@$REF#egg=nemo_toolkit[asr]"
+pip install nemo_toolkit['nlp'] # or pip install "git+https://github.com/NVIDIA/NeMo@${REF:-'main'}#egg=nemo_toolkit[nlp]"
+pip install nemo_toolkit['tts'] # or pip install "git+https://github.com/NVIDIA/NeMo@${REF:-'main'}#egg=nemo_toolkit[tts]"
+pip install nemo_toolkit['vision'] # or pip install "git+https://github.com/NVIDIA/NeMo@${REF:-'main'}#egg=nemo_toolkit[vision]"
+pip install nemo_toolkit['multimodal'] # or pip install "git+https://github.com/NVIDIA/NeMo@${REF:-'main'}#egg=nemo_toolkit[multimodal]"
 ```
 
-### Pip from a Source Branch
+### NGC PyTorch container
 
-If you want to work with a specific version of NeMo from a particular
-GitHub branch (e.g main), use the following installation method:
-
-```bash
-apt-get update && apt-get install -y libsndfile1 ffmpeg
-pip install Cython packaging
-python -m pip install git+https://github.com/NVIDIA/NeMo.git@{BRANCH}#egg=nemo_toolkit[all]
-```
-
-### Build from Source
-
-If you want to clone the NeMo GitHub repository and contribute to NeMo
-open-source development work, use the following installation method:
-
-```bash
-apt-get update && apt-get install -y libsndfile1 ffmpeg
-git clone https://github.com/NVIDIA/NeMo
-cd NeMo
-./reinstall.sh
-```
-
-If you only want the toolkit without the additional Conda-based
-dependencies, you can replace `reinstall.sh` with `pip install -e .`
-when your PWD is the root of the NeMo repository.
-
-### Mac Computers with Apple Silicon
-
-To install NeMo on Mac computers with the Apple M-Series GPU, you need
-to create a new Conda environment, install PyTorch 2.0 or higher, and
-then install the nemo_toolkit.
-
-**Important: This method is only applicable to the ASR domain.**
-
-Run the following code:
-
-```shell
-# [optional] install mecab using Homebrew, to use sacrebleu for NLP collection
-# you can install Homebrew here: https://brew.sh
-brew install mecab
-
-# [optional] install pynini using Conda, to use text normalization
-conda install -c conda-forge pynini
-
-# install Cython manually
-pip install cython packaging
-
-# clone the repo and install in development mode
-git clone https://github.com/NVIDIA/NeMo
-cd NeMo
-pip install 'nemo_toolkit[all]'
-
-# Note that only the ASR toolkit is guaranteed to work on MacBook - so for MacBook use pip install 'nemo_toolkit[asr]'
-```
-
-### Windows Computers
-
-To install the Windows Subsystem for Linux (WSL), run the following code
-in PowerShell:
-
-```shell
-wsl --install
-# [note] If you run wsl --install and see the WSL help text, it means WSL is already installed.
-```
-
-To learn more about installing WSL, refer to [Microsoft\'s official
-documentation](https://learn.microsoft.com/en-us/windows/wsl/install).
-
-After installing your Linux distribution with WSL, two options are
-available:
-
-**Option 1:** Open the distribution (Ubuntu by default) from the Start
-menu and follow the instructions.
-
-**Option 2:** Launch the Terminal application. Download it from
-[Microsoft\'s Windows Terminal
-page](https://learn.microsoft.com/en-us/windows/terminal) if not
-installed.
-
-Next, follow the instructions for Linux systems, as provided above. For
-example:
-
-```bash
-apt-get update && apt-get install -y libsndfile1 ffmpeg
-git clone https://github.com/NVIDIA/NeMo
-cd NeMo
-./reinstall.sh
-```
-
-### RNNT
-
-For optimal performance of a Recurrent Neural Network Transducer (RNNT),
-install the Numba package from Conda.
-
-Run the following code:
-
-```bash
-conda remove numba
-pip uninstall numba
-conda install -c conda-forge numba
-```
-
-## Install LLMs and MMs Dependencies
-
-If you work with the LLM and MM domains, three additional dependencies
-are required: NVIDIA Apex, NVIDIA Transformer Engine, and NVIDIA
-Megatron Core. When working with the [main]{.title-ref} branch, these
-dependencies may require a recent commit.
-
-The most recent working versions of these dependencies are here:
-
-```bash
-export apex_commit=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
-export te_commit=bfe21c3d68b0a9951e5716fb520045db53419c5e
-export mcore_commit=02871b4df8c69fac687ab6676c4246e936ce92d0
-export nv_pytorch_tag=24.02-py3
-```
-
-When using a released version of NeMo, please refer to the [Software
-Component
-Versions](https://docs.nvidia.com/nemo-framework/user-guide/latest/softwarecomponentversions.html)
-for the correct versions.
-
-### PyTorch Container
+**NOTE: The following steps are supported beginning with 24.04 (NeMo-Toolkit 2.3.0)**
 
 We recommended that you start with a base NVIDIA PyTorch container:
-nvcr.io/nvidia/pytorch:24.02-py3.
+nvcr.io/nvidia/pytorch:25.01-py3.
 
 If starting with a base NVIDIA PyTorch container, you must first launch
 the container:
@@ -516,100 +401,21 @@ docker run \
   --shm-size=16g \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
-  nvcr.io/nvidia/pytorch:$nv_pytorch_tag
+  nvcr.io/nvidia/pytorch:${NV_PYTORCH_TAG:-'nvcr.io/nvidia/pytorch:25.01-py3'}
 ```
 
-Next, you need to install the dependencies.
-
-### Apex
-
-NVIDIA Apex is required for LLM and MM domains. Although Apex is
-pre-installed in the NVIDIA PyTorch container, you may need to update it
-to a newer version.
-
-To install Apex, run the following code:
+From [NVIDIA/NeMo](github.com/NVIDIA/NeMo), fetch the commit/branch/tag that you want to install.  
+To install nemo_toolkit including all of its dependencies from this Git reference `$REF`, use the following installation method:
 
 ```bash
-git clone https://github.com/NVIDIA/apex.git
-cd apex
-git checkout $apex_commit
-pip install . -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam --group_norm"
+cd /opt
+git clone https://github.com/NVIDIA/NeMo
+cd NeMo
+git checkout ${REF:-'main'}
+bash reinstall.sh --library all
 ```
 
-When attempting to install Apex separately from the NVIDIA PyTorch
-container, you might encounter an error if the CUDA version on your
-system is different from the one used to compile PyTorch. To bypass this
-error, you can comment out the relevant line in the setup file located
-in the Apex repository on GitHub here:
-<https://github.com/NVIDIA/apex/blob/master/setup.py#L32>.
-
-cuda-nvprof is needed to install Apex. The version should match the CUDA
-version that you are using.
-
-To install cuda-nvprof, run the following code:
-
-```bash
-conda install -c nvidia cuda-nvprof=11.8
-```
-
-Finally, install the packaging:
-
-```bash
-pip install packaging
-```
-
-To install the most recent versions of Apex locally, it might be
-necessary to remove the [pyproject.toml]{.title-ref} file from the Apex
-directory.
-
-### Transformer Engine
-
-NVIDIA Transformer Engine is required for LLM and MM domains. Although
-the Transformer Engine is pre-installed in the NVIDIA PyTorch container,
-you may need to update it to a newer version.
-
-The Transformer Engine facilitates training with FP8 precision on NVIDIA
-Hopper GPUs and introduces many enhancements for the training of
-Transformer-based models. Refer to [Transformer Engine](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html)
-for information.
-
-To install Transformer Engine, run the following code:
-
-```bash
-git clone https://github.com/NVIDIA/TransformerEngine.git && \
-cd TransformerEngine && \
-git checkout $te_commit && \
-git submodule init && git submodule update && \
-NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
-```
-
-Transformer Engine requires PyTorch to be built with at least CUDA 11.8.
-
-### Megatron Core
-
-Megatron Core is required for LLM and MM domains. Megatron Core is a
-library for scaling large Transformer-based models. NeMo LLMs and MMs
-leverage Megatron Core for model parallelism, transformer architectures,
-and optimized PyTorch datasets.
-
-To install Megatron Core, run the following code:
-
-```bash
-git clone https://github.com/NVIDIA/Megatron-LM.git && \
-cd Megatron-LM && \
-git checkout $mcore_commit && \
-pip install . && \
-cd megatron/core/datasets && \
-make
-```
-
-## NeMo Text Processing
-
-NeMo Text Processing, specifically Inverse Text Normalization, is now a
-separate repository. It is located here:
-<https://github.com/NVIDIA/NeMo-text-processing>.
-
-## Docker Containers
+## NGC NeMo container
 
 NeMo containers are launched concurrently with NeMo version updates.
 NeMo Framework now supports LLMs, MMs, ASR, and TTS in a single
@@ -620,23 +426,14 @@ page](https://github.com/NVIDIA/NeMo/releases).
 To use a pre-built container, run the following code:
 
 ```bash
-docker pull nvcr.io/nvidia/nemo:24.05
-```
-
-To build a nemo container with Dockerfile from a branch, run the
-following code:
-
-```bash
-DOCKER_BUILDKIT=1 docker build -f Dockerfile -t nemo:latest
-```
-
-If you choose to work with the main branch, we recommend using NVIDIA\'s
-PyTorch container version 23.10-py3 and then installing from GitHub.
-
-```bash
-docker run --gpus all -it --rm -v <nemo_github_folder>:/NeMo --shm-size=8g \
--p 8888:8888 -p 6006:6006 --ulimit memlock=-1 --ulimit \
-stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:23.10-py3
+docker run \
+  --gpus all \
+  -it \
+  --rm \
+  --shm-size=16g \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  nvcr.io/nvidia/pytorch:${NV_PYTORCH_TAG:-'nvcr.io/nvidia/nemo:25.02'}
 ```
 
 ## Future Work

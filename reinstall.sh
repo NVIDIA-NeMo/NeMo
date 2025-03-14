@@ -208,9 +208,8 @@ if [ -n "${NVIDIA_PYTORCH_VERSION}" ]; then
 
 else
   if [ -n "${CONDA_PREFIX}" ]; then
-    NUMBA_VERSION=0.57.1
-    echo 'Installing numba=='${NUMBA_VERSION}
-    conda install -y -c conda-forge numba==${NUMBA_VERSION}
+    echo 'Installing numba'
+    conda install -y -c conda-forge numba
   else
     pip install --no-cache-dir --no-deps torch
   fi

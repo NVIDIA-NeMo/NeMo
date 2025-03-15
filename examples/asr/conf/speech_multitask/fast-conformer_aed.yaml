@@ -7,6 +7,17 @@
 # One extra (linear projection) layer is added between FastConformer encoder and Transformer decoder if they have different hidden sizes
 # It is recommended to initialize FastConformer with ASR/SSL pre-trained encoder for better accuracy and faster convergence
 
+# Canary model family
+
+# |         Model        | Num Params |  encoder.n_layers | transf_decoder.config_dict.num_layers | transf_decoder.config_dict.max_sequence_length | model_defaults.asr_enc_hidden | model_defaults.lm_dec_hidden |
+# |:--------------------:|:----------:|:-----------------:|:-------------------------------------:|:----------------------------------------------:|:-----------------------------:|:----------------------------:|
+# |      canary-1b       |     1B     |        24         |                     24                |                        512                     |              1024             |             1024             |
+# |   canary-1b-flash    |    883M    |        32         |                     4                 |                       1024                     |              1024             |             1024             |
+# |  canary-180m-flash   |    182M    |        17         |                     4                 |                       1024                     |               512             |             1024             |
+#
+# a typical training manifest entry looks like this - 
+# {"audio_filepath": "/path/to/audio/file.wav", "duration": 16.192, "text": "Text spoken in the audio.", "source_lang": "en", "target_lang": "en", "taskname": "asr", "pnc": "yes"}
+
 name: "FastConformer-Transformer-MultiTask"
 
 # Note: for larger models (1B+ params) initializing from a pretrained encoder
@@ -54,6 +65,9 @@ model:
     num_buckets: 20
     bucket_buffer_size: 20000
     shuffle_buffer_size: 10000
+    text_field: "text"
+    lang_field: "target_lang"
+
 
   validation_ds:
     use_lhotse: true
@@ -65,6 +79,8 @@ model:
     pin_memory: true
     use_start_end_token: true
     use_bucketing: false
+    text_field: "text"
+    lang_field: "target_lang"
 
   test_ds:
     use_lhotse: true
@@ -102,7 +118,7 @@ model:
     window_size: 0.025
     window_stride: 0.01
     window: "hann"
-    features: 80
+    features: 128
     n_fft: 512
     log: true
     frame_splicing: 1
@@ -271,8 +287,8 @@ exp_manager:
   create_checkpoint_callback: true
   checkpoint_callback_params:
     # in case of multiple validation sets, first one is used
-    monitor: "val_sacreBLEU"
-    mode: "max"
+    monitor: "val_loss"
+    mode: "min"
     save_top_k: 3
     always_save_nemo: True # saves the checkpoints as nemo files instead of PTL checkpoints
 

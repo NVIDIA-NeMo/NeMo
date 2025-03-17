@@ -25,6 +25,7 @@ from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTo
 from nemo.collections.llm import fn
 from nemo.lightning import io
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import
 
 
 def masked_cross_entropy(logits, targets, mask=None):
@@ -71,6 +72,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         default_dtype=torch.bfloat16,
         load_in_4bit=False,
         attn_implementation="sdpa",
+        use_liger_kernel=False,
     ):
         """
         Initialize the HFAutoModelForCausalLM.
@@ -87,7 +89,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             default_dtype (torch.dtype, optional): Default data type for the model. Defaults to torch.bfloat16.
             load_in_4bit (bool, optional): Whether to load the model in 4-bit precision. Defaults to False.
             attn_implementation (str, optional): Attention implementation to use. Defaults to "sdpa".
-
+            use_liger_kernel (bool, optional): Enables custom kernels from the Liger-Kernel Library. Defaults to False.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -103,6 +105,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.default_dtype = default_dtype
         self.load_in_4bit = load_in_4bit
         self.attn_implementation = attn_implementation
+        self.use_liger_kernel = use_liger_kernel
         # holds loss values until optim step.
         self.loss_buffer = []
         self.n_tok = 0
@@ -158,8 +161,16 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     def _configure_model(self, attn_implementation):
         """helper method; see also configure_model."""
         # create all your layers here
+        auto_cls = AutoModelForCausalLM
+        if self.use_liger_kernel:
+            liger_kernel_trf, HAS_LIGER_KERNEL = safe_import('liger_kernel.transformers')
+            if not HAS_LIGER_KERNEL:
+                logging.warning("Asked to use Liger Kernel, but could not import")
+            else:
+                auto_cls = liger_kernel_trf.AutoLigerKernelForCausalLM
+
         if self.load_pretrained_weights:
-            return AutoModelForCausalLM.from_pretrained(
+            return auto_cls.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
                 device_map="cpu",
@@ -172,7 +183,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
             config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
             dtype = getattr(config, 'torch_dtype', self.default_dtype)
-            return AutoModelForCausalLM.from_config(
+            return auto_cls.from_config(
                 config,
                 torch_dtype=dtype,
                 trust_remote_code=self.trust_remote_code,

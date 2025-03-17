@@ -189,6 +189,8 @@ nemo() {
   echo 'Installing dependencies of nemo'
   pip install --force-reinstall --no-deps --no-cache-dir "${DEPS[@]}"
   pip install --no-cache-dir "${DEPS[@]}"
+  # needs no-deps to avoid installing triton on top of pytorch-triton.
+  pip install --no-deps --no-cache-dir "liger-kernel==0.5.4; (platform_machine == 'x86_64' and platform_system != 'Darwin')"
 
   echo 'Installing nemo itself'
   pip install --no-cache-dir -e $NEMO_DIR/.[all]

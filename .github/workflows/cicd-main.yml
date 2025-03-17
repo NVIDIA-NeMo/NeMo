@@ -884,6 +884,20 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf nemo_experiments
 
+  L2_HF_Transformer_PEFT_2gpu_FSDP2_liger:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_HF_Transformer_PEFT_2gpu_FSDP2_liger') || needs.pre-flight.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/automodel/hf_home python examples/llm/peft/automodel.py \
+          --model /home/TestData/akoumparouli/hf_mixtral_2l/ \
+          --max-steps 3 \
+          --devices 2 \
+          --strategy fsdp2 --liger
+
+
   L2_HF_Transformer_PEFT_2gpu_FSDP2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1860,6 +1874,7 @@ jobs:
       - L2_HF_Transformer_PEFT_nemorun
       - L2_HF_Transformer_PEFT_2gpu
       - L2_HF_Transformer_PEFT_2gpu_FSDP2
+      - L2_HF_Transformer_PEFT_2gpu_FSDP2_liger
       - L2_HF_Transformer_PEFT_2gpu_nemorun
       - L2_HF_Transformer_SFT_notebook
       - L2_HF_Transformer_SFT

@@ -55,11 +55,12 @@ with open("README.md", "r", encoding='utf-8') as fh:
 
 
 def req_file(filename, folder="requirements"):
-    with open(os.path.join(folder, filename), encoding='utf-8') as f:
-        content = f.readlines()
-    # you may also want to remove whitespace characters
-    # Example: `\n` at the end of each line
-    return [x.strip() for x in content]
+    files = [filename] if not isinstance(filename, list) else filename
+    ans = []
+    for file in files:
+        with open(os.path.join(folder, file), encoding='utf-8') as f:
+            ans.extend(list(map(str.strip, f.readlines())))
+    return ans
 
 
 install_requires = req_file("requirements.txt")
@@ -68,7 +69,7 @@ extras_require = {
     # User packages
     'test': req_file("requirements_test.txt"),
     # Lightning Collections Packages
-    'core': req_file("requirements_lightning.txt"),
+    'core': req_file(["requirements_lightning.txt", "requirements_automodel.txt"]),
     'common': req_file('requirements_common.txt'),
     # domain packages
     'asr': req_file("requirements_asr.txt"),

@@ -626,7 +626,6 @@ class FluxInferencePipeline(nn.Module):
                 return latents.transpose(0, 1)
             elif output_type == "pil":
                 latents = self._unpack_latents(latents.transpose(0, 1), height, width, self.vae_scale_factor)
-                latents = (latents / self.vae.params.scale_factor) + self.vae.params.shift_factor
                 if device == 'cuda' and device != self.device:
                     self.vae.to(device)
                 with torch.autocast(device_type='cuda', dtype=latents.dtype):
@@ -987,7 +986,6 @@ class FluxControlNetInferencePipeline(FluxInferencePipeline):
                 return latents.transpose(0, 1)
             elif output_type == "pil":
                 latents = self._unpack_latents(latents.transpose(0, 1), height, width, self.vae_scale_factor)
-                latents = (latents / self.vae.params.scale_factor) + self.vae.params.shift_factor
                 if device == 'cuda' and device != self.device:
                     self.vae.to(device)
                 with torch.autocast(device_type='cuda', dtype=latents.dtype):

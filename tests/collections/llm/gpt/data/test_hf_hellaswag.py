@@ -13,11 +13,12 @@
 # limitations under the License.
 
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from nemo.collections.llm.gpt.data.hf_dataset import (
-    HellaSwagHFDataModule
-)
+
+from nemo.collections.llm.gpt.data.hf_dataset import HellaSwagHFDataModule
+
 
 @pytest.fixture
 def mock_tokenizer():
@@ -40,6 +41,7 @@ def mock_tokenizer():
 
     return tokenizer
 
+
 @pytest.fixture
 def sample_doc():
     """
@@ -50,8 +52,9 @@ def sample_doc():
         "ctx_b": "continuation of the context.",
         "endings": ["Option 1 ending.", "Option 2 ending."],
         "label": 1,
-        "activity_label": "SampleActivity"
+        "activity_label": "SampleActivity",
     }
+
 
 @pytest.mark.parametrize(
     "input_text, expected",
@@ -59,7 +62,7 @@ def sample_doc():
         (" [title]  Something [extra] text ", " Something text"),
         ("Some text [title] [more]", "Some text. "),
         ("   [Foo]    [title]", "  . "),
-    ]
+    ],
 )
 def test_preprocess(input_text, expected):
     """
@@ -67,6 +70,7 @@ def test_preprocess(input_text, expected):
     """
     out = HellaSwagHFDataModule.preprocess(input_text)
     assert out == expected
+
 
 def test_process_doc(sample_doc):
     """
@@ -82,6 +86,7 @@ def test_process_doc(sample_doc):
     assert out_doc["gold"] == sample_doc["label"]
     assert len(out_doc["choices"]) == len(sample_doc["endings"])
     assert out_doc["query"].startswith("SampleActivity: ")
+
 
 @patch("nemo.collections.llm.gpt.data.hf_dataset.load_dataset")
 def test_preprocess_dataset(mock_load_dataset, mock_tokenizer):

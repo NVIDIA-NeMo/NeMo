@@ -13,12 +13,12 @@
 # limitations under the License.
 
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 import torch
-from nemo.collections.llm.gpt.data.hf_dataset import (
-    HFMockDataModule, _MockGPTDataset
-)
+
+from nemo.collections.llm.gpt.data.hf_dataset import HFMockDataModule, _MockGPTDataset
 
 
 @pytest.fixture
@@ -41,6 +41,7 @@ def mock_tokenizer():
     tokenizer.__call__ = MagicMock(side_effect=tokenizer_call)
     tokenizer.vocab_size = 1024
     return tokenizer
+
 
 @pytest.fixture
 def mock_data_module():

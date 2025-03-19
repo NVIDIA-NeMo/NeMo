@@ -39,6 +39,7 @@ def process_aed_timestamp_outputs(outputs, subsampling_factor: int = 1, window_s
         raise ValueError(f"Expected Hypothesis object, got {type(outputs[0])}")
 
     def extract_words_with_timestamps(text, subsampling_factor: int = 1, window_stride: float = 0.01):
+        text = text.strip()  # remove leading and trailing whitespaces - training data artifact
 
         if not re.search(r'<\|\d+\|>.*?<\|\d+\|>', text):
             return None, text
@@ -88,6 +89,7 @@ def process_aed_timestamp_outputs(outputs, subsampling_factor: int = 1, window_s
             segments = segments_offset_to_time(segments, window_stride, subsampling_factor)
             outputs[idx].timestamp['segment'] = segments
         else:
+            outputs[idx].text = text
             outputs[idx].timestamp = {}
             outputs[idx].timestamp['word'] = []
             outputs[idx].timestamp['segment'] = []

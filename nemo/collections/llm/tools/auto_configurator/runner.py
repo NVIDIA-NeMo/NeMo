@@ -15,13 +15,14 @@
 import copy
 import os
 import re
-import numpy as np
 from collections import OrderedDict
 from typing import List, Optional
 
+import numpy as np
+
 from nemo.collections.llm.api import pretrain
 from nemo.collections.llm.tools.auto_configurator.core.training_config import generate_grid_search_configs
-from nemo.collections.llm.tools.auto_configurator.core.utils import generic_base_config, _calculate_model_size
+from nemo.collections.llm.tools.auto_configurator.core.utils import _calculate_model_size, generic_base_config
 from nemo.collections.llm.utils import Config, Partial
 from nemo.utils import logging
 
@@ -203,17 +204,17 @@ class AutoConfigurator:
                     return size / 1000  # Convert millions to billions
         elif model_type == "bert":
             return np.round(
-                    _calculate_model_size(
-                        vocab_size=vocab_size,
-                        seq_length=model.seq_length,
-                        hidden_size=model.hidden_size,
-                        num_layers=model.num_layers,
-                        ffn_size=model.ffn_hidden_size,
-                        att_heads=model.num_attention_heads,
-                        model_name=model_type,
-                    ),
-                    3,
-                )
+                _calculate_model_size(
+                    vocab_size=vocab_size,
+                    seq_length=model.seq_length,
+                    hidden_size=model.hidden_size,
+                    num_layers=model.num_layers,
+                    ffn_size=model.ffn_hidden_size,
+                    att_heads=model.num_attention_heads,
+                    model_name=model_type,
+                ),
+                3,
+            )
         return None
 
 

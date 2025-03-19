@@ -546,7 +546,43 @@ class TestEncDecMultiTaskModel:
         }
         model.read_audio_file(audio_file, delay=0.0, model_stride_in_secs=40.0, meta_data=meta)
         outputs = model.transcribe()
-        assert isinstance(outputs, str)
+        assert isinstance(outputs, Hypothesis)
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_FrameBatchMultiTaskAED_with_timestamps(self, canary_1b_flash):
+        canary_1b_flash.eval()
+        model = FrameBatchMultiTaskAED(
+            canary_1b_flash,
+            frame_len=10.0,
+            total_buffer=10.0,
+            batch_size=8,
+        )
+
+        audio_file = "/home/TestData/asr/longform/earnings22/sample_4469669.wav"
+        meta = {
+            'audio_filepath': audio_file,
+            'duration': 100000,
+            'source_lang': 'en',
+            'taskname': 'asr',
+            'target_lang': 'en',
+            'pnc': 'yes',
+            'answer': 'nothing',
+            'timestamp': 'yes',
+        }
+        model_stride_in_secs = 0.01 * 8  # feature_stride in sec * model_stride
+        model.read_audio_file(audio_file, delay=0.0, model_stride_in_secs=model_stride_in_secs, meta_data=meta)
+        outputs = model.transcribe()
+
+        # check hypothesis object
+        assert isinstance(outputs, Hypothesis)
+
+        # check part of transcript
+        assert outputs.text[:13] == "Now it's time", f"{outputs}"
+
+        # check timestamps
+        assert outputs.timestamp['segment'][0]['start'] == pytest.approx(5.68)
+        assert outputs.timestamp['segment'][0]['end'] == pytest.approx(9.68)
 
 
 @pytest.mark.unit

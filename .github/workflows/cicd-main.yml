@@ -649,6 +649,52 @@ jobs:
         rm -rf preds.json
       IS_OPTIONAL: true
 
+  # L2: Longform without TimeStamps from Audio Dir
+  L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
+        model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
+        audio_dir=/home/TestData/asr/longform/earnings22 \
+        output_filename=preds.json
+      AFTER_SCRIPT: |
+        rm -rf preds.json
+
+  # L2: Longform with TimeStamps from Audio Dir
+  L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
+        model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
+        audio_dir=/home/TestData/asr/longform/earnings22 \
+        output_filename=preds.json \
+        timestamps=True
+      AFTER_SCRIPT: |
+        rm -rf preds.json
+
+  # L2: Longform with TimeStamps from manifest
+  L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
+        model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
+        dataset_manifest=/home/TestData/asr/longform/earnings22_manifest_1sample.json \
+        output_filename=preds.json
+      AFTER_SCRIPT: |
+        rm -rf preds.json
+
   # L2: Segmentation Tool
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav:
     needs: [pre-flight, cicd-test-container-build]
@@ -2172,6 +2218,9 @@ jobs:
       - L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
       - L2_Speech_Transcription_Canary_Transcribe_With_Prompt
       - L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
+      - L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir
+      - L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir
+      - L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest
       - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
       - L2_NeMo_2_PTQ_Llama2_FP8_trtllm
       - L2_NeMo_2_PTQ_Llama2_FP8_nemo

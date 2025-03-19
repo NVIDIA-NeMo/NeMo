@@ -26,6 +26,7 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
+from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.core.classes import IterableDataset
 from nemo.core.neural_types import LengthsType, MelSpectrogramType, NeuralType
 
@@ -1608,28 +1609,57 @@ class CacheAwareStreamingAudioBuffer:
 class FrameBatchMultiTaskAED(FrameBatchASR):
     def __init__(self, asr_model, frame_len=4, total_buffer=4, batch_size=4):
         super().__init__(asr_model, frame_len, total_buffer, batch_size, pad_to_buffer_len=False)
+        self.window_stride = asr_model._cfg.preprocessor.window_stride
+        self.subsampling_factor = asr_model._cfg.encoder.subsampling_factor
+        self.chunk_offsets = [
+            0,
+        ]  # chunk offsets in terms of num frames before subsampling
+
+    def reset(self):
+        super().reset()
+        self.chunk_offsets = [
+            0,
+        ]
 
     def get_input_tokens(self, sample: dict):
         if self.asr_model.prompt_format == "canary":
-            missing_keys = [k for k in ("source_lang", "target_lang", "taskname", "pnc") if k not in sample]
-            if missing_keys:
-                raise RuntimeError(
-                    f"We found sample that is missing the following keys: {missing_keys}"
-                    f"Please ensure that every utterance in the input manifests contains these keys. Sample: {sample}"
-                )
-            tokens = self.asr_model.prompt.encode_dialog(
-                turns=[
-                    {
-                        "role": "user",
-                        "slots": {
-                            **sample,
-                            self.asr_model.prompt.PROMPT_LANGUAGE_SLOT: "spl_tokens",
-                        },
-                    }
-                ]
-            )["context_ids"]
+            expected_slots = {"source_lang", "target_lang", "taskname", "pnc"}
+            default_slot_values = {}
+        elif self.asr_model.prompt_format == "canary2":
+            expected_slots = {"source_lang", "target_lang"}
+            default_slot_values = {
+                "decodercontext": "",
+                "emotion": "<|emo:undefined|>",
+                "itn": "<|noitn|>",
+                "timestamp": "<|notimestamp|>",
+                "diarize": "<|nodiarize|>",
+                "pnc": "<|pnc|>",  # consistent with canary1
+            }
         else:
             raise ValueError(f"Unknown prompt format: {self.asr_model.prompt_format}")
+
+        missing_keys = [k for k in expected_slots if k not in sample]
+        if missing_keys:
+            raise RuntimeError(
+                f"We found sample that is missing the following keys: {missing_keys}"
+                f"Please ensure that every utterance in the input manifests contains these keys. Sample: {sample}"
+            )
+
+        # fill optional slots
+        for k, v in default_slot_values.items():
+            sample[k] = sample.get(k, v)
+        tokens = self.asr_model.prompt.encode_dialog(
+            turns=[
+                {
+                    "role": "user",
+                    "slots": {
+                        **sample,
+                        self.asr_model.prompt.PROMPT_LANGUAGE_SLOT: "spl_tokens",
+                    },
+                }
+            ]
+        )["context_ids"]
+
         return torch.tensor(tokens, dtype=torch.long, device=self.asr_model.device).unsqueeze(0)  # [1, T]
 
     def read_audio_file(self, audio_filepath: str, delay, model_stride_in_secs, meta_data):
@@ -1646,6 +1676,8 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         device = self.asr_model.device
         for batch in iter(self.data_loader):
             feat_signal, feat_signal_len = batch
+            # keep track of chunk offsets
+            self.chunk_offsets.extend(feat_signal_len.tolist())
             feat_signal, feat_signal_len = feat_signal.to(device), feat_signal_len.to(device)
             tokens = self.input_tokens.to(device).repeat(feat_signal.size(0), 1)
             tokens_len = torch.tensor([tokens.size(1)] * tokens.size(0), device=device).long()
@@ -1672,12 +1704,103 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         """
         self.infer_logits(keep_logits)
 
-        hypothesis = " ".join([h.text for h in self.all_preds])
+        # join hypotheses
+        hypothesis = self._join_hypotheses(self.all_preds)
+
         if not keep_logits:
             return hypothesis
 
         print("keep_logits=True is not supported for MultiTaskAEDFrameBatchInfer. Returning empty logits.")
         return hypothesis, []
+
+    def _join_hypotheses(self, hypotheses):
+        if len(hypotheses) == 1:
+            return hypotheses[0]
+
+        # initialize a new hypothesis
+        merged_hypthesis = rnnt_utils.Hypothesis(
+            score=0.0,
+            y_sequence=torch.tensor([]),
+            timestamp={
+                'char': [],
+                'word': [],
+                'segment': [],
+            },
+        )
+
+        # join
+        merged_hypthesis = self._join_text(merged_hypthesis, hypotheses)
+        merged_hypthesis = self._join_y_sequence(merged_hypthesis, hypotheses)
+        merged_hypthesis = self._join_timestamp(merged_hypthesis, hypotheses)
+
+        return merged_hypthesis
+
+    def _join_text(self, merged_hypothesis, hypotheses):
+        merged_hypothesis.text = " ".join([h.text for h in hypotheses])
+        return merged_hypothesis
+
+    def _join_y_sequence(self, merged_hypothesis, hypotheses):
+        merged_hypothesis.y_sequence = torch.cat([h.y_sequence for h in hypotheses])
+        return merged_hypothesis
+
+    def _join_timestamp(self, merged_hypothesis, hypotheses):
+        # word level
+        cumulative_offset = 0
+        for i, h in enumerate(hypotheses):
+            cumulative_offset += self.chunk_offsets[i]  # self.chunk_offsets starts with 0,
+
+            # update frame numbers
+            updated_timestamps = [
+                {
+                    **word,
+                    'start_offset': word['start_offset']
+                    + cumulative_offset
+                    // self.subsampling_factor,  # dividing here to avoid error accumulation over long audios
+                    'end_offset': word['end_offset'] + cumulative_offset // self.subsampling_factor,
+                }
+                for word in h.timestamp['word']
+            ]
+
+            # update times
+            updated_timestamps = [
+                {
+                    **word,
+                    'start': word['start_offset'] * self.window_stride * self.subsampling_factor,
+                    'end': word['end_offset'] * self.window_stride * self.subsampling_factor,
+                }
+                for word in updated_timestamps
+            ]
+
+            merged_hypothesis.timestamp['word'].extend(updated_timestamps)
+
+        # segment level
+        cumulative_offset = 0
+        for i, h in enumerate(hypotheses):
+            cumulative_offset += self.chunk_offsets[i]
+
+            # update frame numbers
+            updated_timestamps = [
+                {
+                    **segment,
+                    'start_offset': segment['start_offset'] + cumulative_offset // self.subsampling_factor,
+                    'end_offset': segment['end_offset'] + cumulative_offset // self.subsampling_factor,
+                }
+                for segment in h.timestamp['segment']
+            ]
+
+            # update times
+            updated_timestamps = [
+                {
+                    **segment,
+                    'start': segment['start_offset'] * self.window_stride * self.subsampling_factor,
+                    'end': segment['end_offset'] * self.window_stride * self.subsampling_factor,
+                }
+                for segment in updated_timestamps
+            ]
+
+            merged_hypothesis.timestamp['segment'].extend(updated_timestamps)
+
+        return merged_hypothesis
 
 
 class FrameBatchChunkedRNNT(FrameBatchASR):

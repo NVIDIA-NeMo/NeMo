@@ -180,6 +180,16 @@ jobs:
       IS_UNIT_TEST: true
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L0_Unit_Tests_GPU_LLM.sh
+  
+  L0_Unit_Tests_GPU_VLM:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_VLM')
+    with:
+      RUNNER: self-hosted-azure-gpus-1
+      IS_UNIT_TEST: true
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L0_Unit_Tests_GPU_VLM.sh
 
   L0_Unit_Tests_GPU_Multimodal:
     needs: [pre-flight, cicd-test-container-build]
@@ -284,6 +294,16 @@ jobs:
       IS_UNIT_TEST: true
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L0_Unit_Tests_CPU_LLM.sh
+
+  L0_Unit_Tests_CPU_VLM:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_VLM')
+    with:
+      RUNNER: self-hosted-azure-cpu
+      IS_UNIT_TEST: true
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L0_Unit_Tests_CPU_VLM.sh
 
   L0_Unit_Tests_CPU_Multimodal:
     needs: [pre-flight, cicd-test-container-build]
@@ -1782,6 +1802,30 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf /tmp/nemo2_llava_next_results
 
+  L2_NeMo_2_CLIP_PRETRAIN:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_CLIP_PRETRAIN')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_CLIP_PRETRAIN.sh
+
+      AFTER_SCRIPT: |
+        rm -rf /results/clip_pretrain
+
+  L2_NeMo_2_CLIP_INFER:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_CLIP_INFER')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_CLIP_INFER.sh
+
+      AFTER_SCRIPT: |
+        rm -rf /root/.cache/nemo/
+
   L2_NeMo_2_VLLM_EXPORT:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2068,6 +2112,7 @@ jobs:
       - L0_Unit_Tests_GPU_Audio
       - L0_Unit_Tests_GPU_Common
       - L0_Unit_Tests_GPU_LLM
+      - L0_Unit_Tests_GPU_VLM
       - L0_Unit_Tests_GPU_Multimodal
       - L0_Unit_Tests_GPU_TTS
       - L0_Unit_Tests_GPU_Core
@@ -2079,6 +2124,7 @@ jobs:
       - L0_Unit_Tests_CPU_Audio
       - L0_Unit_Tests_CPU_Common
       - L0_Unit_Tests_CPU_LLM
+      - L0_Unit_Tests_CPU_VLM
       - L0_Unit_Tests_CPU_Multimodal
       - L0_Unit_Tests_CPU_TTS
       - L0_Unit_Tests_CPU_Core
@@ -2229,6 +2275,8 @@ jobs:
       - L2_NeMo_2_Export_In_Framework
       - L2_NeMo_2_jit_callback
       - L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING
+      - L2_NeMo_2_CLIP_PRETRAIN
+      - L2_NeMo_2_CLIP_INFER
       - L2_HF_Transformer_SFT_FSDP2_2gpu
       - L2_HF_Transformer_SFT_2gpu_nemorun_fsdp2
       - L2_NeMo_2_VLLM_EXPORT

@@ -93,8 +93,8 @@ def main(args) -> None:
     model = model.module.cuda()
 
     # Freeze the models, We have a few nesting in the model
-    vision_model = model.module.module.module.vision_model.eval()
-    text_model = model.module.module.module.text_model.eval()
+    vision_model = model.module.module.vision_model.eval()
+    text_model = model.module.module.text_model.eval()
 
     with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
         # %% Zero-shot classification

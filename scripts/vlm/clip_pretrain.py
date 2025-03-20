@@ -105,7 +105,7 @@ def main(args):
         strategy=strategy,
         plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
         callbacks=[checkpoint_callback, TimingCallback()],
-        val_check_interval=2000,
+        val_check_interval=args.val_check_interval,
         check_val_every_n_epoch=None,
         limit_val_batches=1,  # We limit validation batches as we are using imagenet validation set
         log_every_n_steps=10,
@@ -186,6 +186,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, required=False, default=8)
 
     parser.add_argument("--max_steps", type=int, required=False, default=375000)
+    parser.add_argument("--val_check_interval", type=int, required=False, default=2000)
     parser.add_argument("--tp_size", type=int, required=False, default=1)
     parser.add_argument("--pp_size", type=int, required=False, default=1)
     parser.add_argument("--encoder_pp_size", type=int, required=False, default=0)

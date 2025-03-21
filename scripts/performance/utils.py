@@ -24,10 +24,12 @@ from nemo_run.config import get_nemorun_home
 from numpy import nan
 
 from nemo.collections.common.tokenizers.huggingface import AutoTokenizer
+from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model import GPTModel
 from nemo.collections.llm.recipes.llama3_8b import MegatronCommOverlapCallback
 from nemo.lightning.base import DEFAULT_NEMO_CACHE_HOME
+from nemo.lightning.pytorch.callbacks.flops_callback import FLOPsMeasurementCallback
 from nemo.utils import logging
 
 DEFAULT_NEMO_HOME = os.getenv('NEMO_HOME', DEFAULT_NEMO_CACHE_HOME)
@@ -187,10 +189,7 @@ def get_user_configs(gpu: str, task: str, model_name: str, model_size: str, args
 
 def set_primary_perf_configs(
     recipe,
-    enable_tb: bool,
-    enable_wd: bool,
-    wandb_prj_name: str,
-    wandb_job_name: str,
+    task: str,
     num_nodes: int,
     num_gpus_per_node: int,
     mbs: int,
@@ -202,6 +201,7 @@ def set_primary_perf_configs(
     vp_size: int,
     ep_size: int,
     etp_size: Optional[int] = None,
+    enable_cuda_graphs: bool = False,
 ):
     """Set experiment configs we usually tune for performance of all models."""
     # nemo.lightning.Trainer configs
@@ -209,9 +209,14 @@ def set_primary_perf_configs(
     recipe.trainer.devices = num_gpus_per_node
     recipe.trainer.max_steps = max_steps
 
+    recipe.trainer.val_check_interval = max_steps
+    recipe.trainer.limit_val_batches = 0
+
     # lightning.pytorch.LightningDataModule configs
     recipe.data.micro_batch_size = mbs
     recipe.data.global_batch_size = gbs
+    if recipe.data.__fn_or_cls__ == MockDataModule:
+        recipe.data.num_train_samples = max_steps * gbs  # ensure only 1 epoch for whole run
 
     # parallelism configs
     recipe.trainer.strategy.tensor_model_parallel_size = tp_size
@@ -232,6 +237,34 @@ def set_primary_perf_configs(
             dp_size > 1 and pp_size > 1 and vp_size and vp_size > 1
         )
 
+    recipe.model.config.enable_cuda_graph = enable_cuda_graphs
+    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
+    if task == "none" or task == "lora" and hasattr(recipe.data, "packed_sequence_specs"):
+        recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graphs
+
+    return recipe
+
+
+def set_exp_logging_configs(
+    recipe,
+    task: str,
+    domain: str,
+    model_name: str,
+    enable_tb: bool,
+    enable_wd: bool,
+    wandb_prj_name: str,
+    wandb_job_name: str,
+):
+    if task == "pre_train" and domain == "llm":
+        recipe.trainer.callbacks.append(
+            run.Config(
+                FLOPsMeasurementCallback,
+                model_config=recipe.model.config,
+                data_config=recipe.data,
+                model_name=model_name,
+            )
+        )
+
     if not enable_tb:  # tensorboard adds performance overhead.
         recipe.log.tensorboard = None
         recipe.trainer.logger = False
@@ -246,7 +279,6 @@ def set_primary_perf_configs(
     # Misc. for overall faster experiment runtime
     recipe.log.ckpt = None
     recipe.trainer.enable_checkpointing = False
-    recipe.trainer.val_check_interval = max_steps
     recipe.trainer.log_every_n_steps = 1
 
     return recipe

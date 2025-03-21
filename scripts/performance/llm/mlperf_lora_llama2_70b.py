@@ -347,6 +347,7 @@ if __name__ == "__main__":
 
     with run.Experiment(exp_name) as exp:
         if not SKIP_IMPORT:
+            assert args.hf_token is not None, "HF token is required for importing checkpoint from HuggingFace"
             exp.add(
                 *import_ckpt_experiment(
                     executor, run.Config(LlamaModel, config=run.Config(Llama2Config70B)), source=f"hf://{HF_MODEL_URI}"

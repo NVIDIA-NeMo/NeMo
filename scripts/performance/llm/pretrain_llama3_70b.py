@@ -34,6 +34,7 @@ from ..utils import (
     get_comm_overlap_callback_idx,
     get_user_configs,
     hf_tokenizer,
+    set_exp_logging_configs,
     set_primary_perf_configs,
     slurm_executor,
 )
@@ -59,10 +60,7 @@ def override_recipe_configs(
     recipe = pretrain_recipe(performance_mode=True)
     recipe = set_primary_perf_configs(
         recipe,
-        args.tensorboard,
-        args.wandb,
-        args.wandb_prj_name,
-        args.wandb_job_name,
+        "pre_train",
         num_nodes,
         args.gpus_per_node,
         mbs,
@@ -73,11 +71,15 @@ def override_recipe_configs(
         cp_size,
         vp_size,
         ep_size,
+        enable_cuda_graphs=enable_cuda_graphs,
     )
+    recipe = set_exp_logging_configs(
+        recipe, "pre_train", "llm", "llama3", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
+    )
+
     gpu_type = args.gpu.lower()
 
     # data module configs
-    recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
     recipe.data.tokenizer = hf_tokenizer("meta-llama/Meta-Llama-3-70B")
 
     # compute dtype configs
@@ -103,9 +105,6 @@ def override_recipe_configs(
     # needed as tp_overlap_configs.userbuffers are dataclass objects which are unserializable
     tp_comm_overlap_cfg = fdl.cast(run.Config, fdl_dc.convert_dataclasses_to_configs(tp_comm_overlap_cfg))
     recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg = tp_comm_overlap_cfg
-
-    recipe.model.config.enable_cuda_graph = enable_cuda_graphs
-    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
 
     return recipe
 

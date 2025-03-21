@@ -22,7 +22,13 @@ from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenize
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
-from ..utils import args_sanity_check, get_user_configs, set_primary_perf_configs, slurm_executor
+from ..utils import (
+    args_sanity_check,
+    get_user_configs,
+    set_exp_logging_configs,
+    set_primary_perf_configs,
+    slurm_executor,
+)
 
 
 def override_recipe_configs(
@@ -45,10 +51,7 @@ def override_recipe_configs(
     recipe = pretrain_recipe(performance_mode=True)
     recipe = set_primary_perf_configs(
         recipe,
-        args.tensorboard,
-        args.wandb,
-        args.wandb_prj_name,
-        args.wandb_job_name,
+        "pre_train",
         num_nodes,
         args.gpus_per_node,
         mbs,
@@ -59,11 +62,13 @@ def override_recipe_configs(
         cp_size,
         vp_size,
         ep_size,
+        enable_cuda_graphs=enable_cuda_graphs,
+    )
+    recipe = set_exp_logging_configs(
+        recipe, "pre_train", "llm", "nemotron", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
     )
 
     # data module configs
-    recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
-
     recipe.data.tokenizer = run.Config(
         get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
     )
@@ -73,9 +78,6 @@ def override_recipe_configs(
     if args.compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
-
-    recipe.model.config.enable_cuda_graph = enable_cuda_graphs
-    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
 
     return recipe
 

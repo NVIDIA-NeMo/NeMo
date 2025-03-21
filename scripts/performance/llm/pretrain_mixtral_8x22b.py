@@ -17,12 +17,19 @@ from typing import Optional
 
 import nemo_run as run
 
-from nemo.collections.llm.recipes.mixtral_8x22b import pretrain_recipe
+from nemo.collections.llm.recipes.mixtral_8x22b_64k import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
-from ..utils import args_sanity_check, get_user_configs, hf_tokenizer, set_primary_perf_configs, slurm_executor
+from ..utils import (
+    args_sanity_check,
+    get_user_configs,
+    hf_tokenizer,
+    set_exp_logging_configs,
+    set_primary_perf_configs,
+    slurm_executor,
+)
 
 
 def override_recipe_configs(
@@ -46,10 +53,7 @@ def override_recipe_configs(
     recipe = pretrain_recipe(performance_mode=True)
     recipe = set_primary_perf_configs(
         recipe,
-        args.tensorboard,
-        args.wandb,
-        args.wandb_prj_name,
-        args.wandb_job_name,
+        "pre_train",
         num_nodes,
         args.gpus_per_node,
         mbs,
@@ -61,10 +65,13 @@ def override_recipe_configs(
         vp_size,
         ep_size,
         etp_size,
+        enable_cuda_graphs,
+    )
+    recipe = set_exp_logging_configs(
+        recipe, "pre_train", "llm", "mixtral", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
     )
 
     # data module configs
-    recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
     recipe.data.tokenizer = hf_tokenizer("mistralai/Mixtral-8x22B-v0.1")
 
     # compute dtype configs
@@ -77,9 +84,6 @@ def override_recipe_configs(
     if etp_size is not None and etp_size != tp_size:
         recipe.trainer.strategy.ddp.average_in_collective = False
 
-    recipe.model.config.enable_cuda_graph = enable_cuda_graphs
-    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
-
     return recipe
 
 
@@ -88,7 +92,7 @@ if __name__ == "__main__":
     args_sanity_check(args)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "mixtral", "8x22b", args)
-    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size, _, enable_cuda_graphs = kwargs
+    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size, enable_cuda_graphs = kwargs
 
     recipe = override_recipe_configs(
         args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size, enable_cuda_graphs

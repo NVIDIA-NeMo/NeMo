@@ -230,7 +230,7 @@ def finetune_recipe(
 
 def finetune_performance_optimizations(
     recipe: run.Partial,
-    peft_scheme: str,
+    peft_scheme: Optional[str],
 ) -> run.Partial:
     """
     Modify the given recipe to optimize settings for performance.

@@ -26,6 +26,12 @@ from nemo.collections.llm.gpt.model.qwen2 import (
     Qwen2Config72B,
     Qwen2Config500M,
     Qwen2Model,
+    Qwen25Config1P5B,
+    Qwen25Config7B,
+    Qwen25Config14B,
+    Qwen25Config32B,
+    Qwen25Config72B,
+    Qwen25Config500M,
 )
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed, fp16_mixed
 
@@ -44,12 +50,24 @@ def qwen2_model(version: str) -> run.Config[pl.LightningModule]:
     config = None
     if version == "qwen2_500m":
         config = run.Config(Qwen2Config500M)
+    elif version == "qwen25_500m":
+        config = run.Config(Qwen25Config500M)
     elif version == "qwen2_1p5b":
         config = run.Config(Qwen2Config1P5B)
+    elif version == "qwen25_1p5b":
+        config = run.Config(Qwen25Config1P5B)
     elif version == "qwen2_7b":
         config = run.Config(Qwen2Config7B)
+    elif version == "qwen25_7b":
+        config = run.Config(Qwen25Config7B)
+    elif version == "qwen25_14b":
+        config = run.Config(Qwen25Config14B)
+    elif version == "qwen25_32b":
+        config = run.Config(Qwen25Config32B)
     elif version == "qwen2_72b":
         config = run.Config(Qwen2Config72B)
+    elif version == "qwen25_72b":
+        config = run.Config(Qwen25Config72B)
 
     assert config is not None, f"Invalid version: {version}"
     return run.Config(Qwen2Model, config=config)

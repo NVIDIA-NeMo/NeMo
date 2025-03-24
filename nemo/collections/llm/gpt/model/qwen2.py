@@ -70,6 +70,15 @@ class Qwen2Config500M(Qwen2Config):
 
 
 @dataclass
+class Qwen25Config500M(Qwen2Config500M):
+    """
+    Config for Qwen 2.5 0.5B: https://huggingface.co/Qwen/Qwen2.5-0.5B
+    """
+
+    seq_length: int = 32768
+
+
+@dataclass
 class Qwen2Config1P5B(Qwen2Config):
     """
     Config for Qwen 2 1.5B: https://huggingface.co/Qwen/Qwen2-1.5B
@@ -80,6 +89,15 @@ class Qwen2Config1P5B(Qwen2Config):
     num_attention_heads: int = 12
     num_query_groups: int = 2
     ffn_hidden_size: int = 8960
+
+
+@dataclass
+class Qwen25Config1P5B(Qwen2Config):
+    """
+    Config for Qwen 2.5 1.5B: https://huggingface.co/Qwen/Qwen2.5-1.5B
+    """
+
+    seq_length: int = 131072
 
 
 @dataclass
@@ -97,6 +115,47 @@ class Qwen2Config7B(Qwen2Config):
 
 
 @dataclass
+class Qwen25Config7B(Qwen2Config7B):
+    """
+    Config for Qwen 2.5 7B: https://huggingface.co/Qwen/Qwen2.5-7B
+    """
+
+    seq_length: int = 131072
+
+
+@dataclass
+class Qwen25Config14B(Qwen2Config):
+    """
+    Config for Qwen 2.5 14B: https://huggingface.co/Qwen/Qwen2.5-14B
+    """
+
+    num_layers: int = 48
+    hidden_size: int = 5120
+    num_attention_heads: int = 40
+    num_query_groups: int = 8
+    ffn_hidden_size: int = 13824
+    vocab_size: int = 152064
+    layernorm_epsilon: float = 1e-5
+    seq_length: int = 131072
+
+
+@dataclass
+class Qwen25Config32B(Qwen2Config):
+    """
+    Config for Qwen 2.5 32B: https://huggingface.co/Qwen/Qwen2.5-32B
+    """
+
+    num_layers: int = 64
+    hidden_size: int = 5120
+    num_attention_heads: int = 40
+    num_query_groups: int = 8
+    ffn_hidden_size: int = 27648
+    vocab_size: int = 152064
+    layernorm_epsilon: float = 1e-5
+    seq_length: int = 131072
+
+
+@dataclass
 class Qwen2Config72B(Qwen2Config):
     """
     Config for Qwen 2 72B: https://huggingface.co/Qwen/Qwen2-72B
@@ -109,6 +168,15 @@ class Qwen2Config72B(Qwen2Config):
     ffn_hidden_size: int = 29568
     vocab_size: int = 152064
     layernorm_epsilon: float = 1e-5
+
+
+@dataclass
+class Qwen25Config72B(Qwen2Config72B):
+    """
+    Config for Qwen 2.5 72B: https://huggingface.co/Qwen/Qwen2.5-72B
+    """
+
+    seq_length: int = 131072
 
 
 class Qwen2Model(GPTModel):
@@ -327,5 +395,11 @@ __all__ = [
     "Qwen2Config1P5B",
     "Qwen2Config7B",
     "Qwen2Config72B",
+    "Qwen25Config500M",
+    "Qwen25Config1P5B",
+    "Qwen25Config7B",
+    "Qwen25Config14B",
+    "Qwen25Config32B",
+    "Qwen25Config72B",
     "Qwen2Model",
 ]

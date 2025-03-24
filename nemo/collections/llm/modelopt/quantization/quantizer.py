@@ -21,10 +21,12 @@ from typing import TYPE_CHECKING, Optional, Union
 import torch
 from accelerate.hooks import remove_hook_from_module
 from datasets import load_dataset
+from megatron.core.inference.common_inference_params import CommonInferenceParams
 from tqdm import tqdm
 
 from nemo.collections import llm
 from nemo.collections.llm.inference import MCoreTokenizerWrappper, generate
+from nemo.collections.llm.modelopt.quantization.quant_cfg_choices import get_quant_cfg_choices
 from nemo.collections.llm.utils import barrier, torch_dtype_from_precision
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
@@ -37,21 +39,11 @@ if TYPE_CHECKING:
     from nemo.lightning import Trainer
     from nemo.lightning.megatron_parallel import MegatronParallel
 
-_, HAVE_MODELOPT = safe_import("modelopt")
-if HAVE_MODELOPT:
-    import modelopt.torch.quantization as mtq
-    from modelopt.torch.export import export_hf_checkpoint, export_tensorrt_llm_checkpoint
+mtq, HAVE_MODELOPT_MTQ = safe_import("modelopt.torch.quantization")
+mte, HAVE_MODELOPT_MTE = safe_import("modelopt.torch.export")
+HAVE_MODELOPT = HAVE_MODELOPT_MTQ and HAVE_MODELOPT_MTE
 
-    QUANT_CFG_CHOICES = {
-        "int8": mtq.INT8_DEFAULT_CFG,
-        "int8_sq": mtq.INT8_SMOOTHQUANT_CFG,
-        "fp8": mtq.FP8_DEFAULT_CFG,
-        "int4_awq": mtq.INT4_AWQ_CFG,
-        "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
-        "int4": mtq.INT4_BLOCKWISE_WEIGHT_ONLY_CFG,
-        "nvfp4": mtq.NVFP4_DEFAULT_CFG,
-    }
-
+QUANT_CFG_CHOICES = get_quant_cfg_choices()
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
 SUPPORTED_EXPORT_FMT = ["trtllm", "nemo", "hf"]
 
@@ -171,8 +163,15 @@ class Quantizer:
             mcore_inference = model.get_inference_wrapper(
                 params_dtype=torch.bfloat16, inference_batch_times_seqlen_threshold=30
             )
-
-            generated = [r.generated_text for r in generate(mcore_inference, mcore_tokenizer, prompts)]
+            generated = [
+                r.generated_text
+                for r in generate(
+                    mcore_inference,
+                    mcore_tokenizer,
+                    prompts,
+                    inference_params=CommonInferenceParams(top_k=1, num_tokens_to_generate=30),
+                )
+            ]
             outputs = [prompt + generation for prompt, generation in zip(prompts, generated)]
 
         logging.info(f"Sample generation after PTQ (with prompts): {outputs}")
@@ -358,7 +357,7 @@ class Quantizer:
             assert is_automodel, "HF export is only supported for AutoModelForCausalLM"
             unwrapped_model = unwrap_for_modelopt_operations(model)
             with torch.inference_mode():
-                export_hf_checkpoint(
+                mte.export_hf_checkpoint(
                     unwrapped_model,
                     export_dir=export_dir,
                 )
@@ -370,7 +369,7 @@ class Quantizer:
 
             with torch.inference_mode():
                 remove_hook_from_module(model, recurse=True)
-                export_tensorrt_llm_checkpoint(
+                mte.export_tensorrt_llm_checkpoint(
                     model=unwrap_for_modelopt_operations(model),
                     decoder_type=self._get_decoder_type(model),
                     dtype=self.torch_dtype,

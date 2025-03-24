@@ -16,10 +16,12 @@ import argparse
 
 from nemo.collections import llm
 from nemo.collections.llm.modelopt import ExportConfig, QuantizationConfig
+from nemo.collections.llm.modelopt.quantization.quant_cfg_choices import get_quant_cfg_choices
 
 
 def get_args():
     """Parses PTQ arguments."""
+    QUANT_CFG_CHOICES_LIST = ["no_quant", *get_quant_cfg_choices()]
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="NeMo PTQ argument parser"
     )
@@ -69,7 +71,7 @@ def get_args():
         "--algorithm",
         type=str,
         default="fp8",
-        choices=["no_quant", "int8", "int8_sq", "fp8", "int4_awq", "w4a8_awq", "int4", "nvfp4"],
+        choices=QUANT_CFG_CHOICES_LIST,
         help="TensorRT-Model-Optimizer quantization algorithm",
     )
     parser.add_argument(

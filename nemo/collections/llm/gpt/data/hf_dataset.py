@@ -24,8 +24,6 @@ import torch.distributed as dist
 from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from nemo.collections.common.tokenizers import TokenizerSpec
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.utils import logging
 
 
@@ -540,7 +538,7 @@ class HFMockDataModule(pl.LightningDataModule):
     def __init__(
         self,
         seq_length: int = 2048,
-        tokenizer=None,
+        vocab_size: int = 1024,
         micro_batch_size: int = 4,
         global_batch_size: int = 8,
         rampup_batch_size=None,
@@ -566,35 +564,26 @@ class HFMockDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
         self.create_attention_mask = create_attention_mask
         self.collate_fn = lambda x: HFDatasetDataModule.collate_fn(x, pad_token_id=0)
-
-        if tokenizer is None:
-            self.tokenizer = get_nmt_tokenizer(
-                "megatron",
-                "GPT2BPETokenizer",
-                vocab_file=vocab_file,
-                merges_file=merges_file,
-            )
-        else:
-            self.tokenizer = tokenizer
+        self.vocab_size = vocab_size
 
     def setup(self, stage: str = None) -> None:
         """setup"""
         self._train_ds = _MockGPTDataset(
-            self.tokenizer,
+            self.vocab_size,
             "train",
             self.num_train_samples,
             self.seq_length,
             self.create_attention_mask,
         )
         self._val_ds = _MockGPTDataset(
-            self.tokenizer,
+            self.vocab_size,
             "valid",
             self.num_val_samples,
             self.seq_length,
             self.create_attention_mask,
         )
         self._test_ds = _MockGPTDataset(
-            self.tokenizer,
+            self.vocab_size,
             "test",
             self.num_test_samples,
             self.seq_length,
@@ -630,7 +619,7 @@ class _MockGPTDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        tokenizer: "TokenizerSpec",
+        vocab_size: int,
         name: str,
         num_samples: int,
         seq_length: int,
@@ -640,8 +629,7 @@ class _MockGPTDataset(torch.utils.data.Dataset):
         super().__init__()
         self.name = name
         self.seq_length = seq_length
-        self.tokenizer = tokenizer
-        self.vocab_size = self.tokenizer.vocab_size
+        self.vocab_size = vocab_size
         self.length = num_samples
         self.seed = seed
         self.create_attention_mask = create_attention_mask

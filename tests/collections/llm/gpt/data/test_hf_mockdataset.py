@@ -52,6 +52,7 @@ def mock_data_module():
         num_train_samples=20,
         num_val_samples=5,
         num_test_samples=5,
+        vocab_size=1024,
         create_attention_mask=True,
     )
     dm.setup()
@@ -61,7 +62,7 @@ def mock_data_module():
 def test_mock_gpt_dataset_length(mock_tokenizer):
     """Ensure the dataset's length matches the configured number of samples."""
     ds = _MockGPTDataset(
-        tokenizer=mock_tokenizer,
+        vocab_size=1024,
         name="train",
         num_samples=100,
         seq_length=16,
@@ -74,7 +75,7 @@ def test_mock_gpt_dataset_item_shapes(mock_tokenizer):
     """Check that a sample has the expected keys and shapes."""
     seq_length = 16
     ds = _MockGPTDataset(
-        tokenizer=mock_tokenizer,
+        vocab_size=1024,
         name="train",
         num_samples=1,
         seq_length=seq_length,

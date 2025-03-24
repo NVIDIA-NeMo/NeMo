@@ -40,6 +40,7 @@ from nemo.collections.llm.gpt.data import (  # noqa: F401
     DollyDataModule,
     FineTuningDataModule,
     HFDatasetDataModule,
+    HFMockDataModule,
     MockDataModule,
     PreTrainingDataModule,
     SquadDataModule,
@@ -317,6 +318,7 @@ __all__ = [
     "peft",
     "hf_dataset",
     "HFAutoModelForCausalLM",
+    "HFMockDataModule",
 ]
 
 

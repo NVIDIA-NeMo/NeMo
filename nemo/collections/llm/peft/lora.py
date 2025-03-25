@@ -20,6 +20,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nemo.utils.import_utils import safe_import_from
+
+te, HAVE_TE = safe_import_from("transformer_engine", "pytorch")
+
 from nemo.collections.llm.peft.module_matcher import ModuleMatcher
 from nemo.collections.llm.peft.utils import get_adapter_attributes_from_linear, is_expert_linear
 from nemo.lightning.pytorch.callbacks.peft import PEFT, AdapterWrapper
@@ -39,6 +43,123 @@ class LoRALinear(AdapterWrapper):
         linear_output, bias, layernorm_output = self.base_linear_forward(x)
         adapter_output = self.adapter(layernorm_output.contiguous())
         return linear_output + adapter_output, bias
+
+
+if HAVE_TE:
+
+    class TELinearAdapter(te.Linear):
+        """
+        TELinear + LoRA, maintains ckpts structrue (i.e. Linear's weight/bias remain at the same FQN)
+
+        The _init_wrapper and _forward methods provide the LoRA functionality. We want to be able to
+        use those inside LinearAdapter but also for monkey-patching modules, without repeating the
+        same code -> therefore those are decorated with @staticmethod.
+
+        Args:
+            orig_linear (nn.Module): the linear module to augment.
+            dim (int): lora's dim in_features -> dim -> out_features.
+            alpha (int): lora's scaling alpha.
+            dropout (float): dropout prob (default: 0.0).
+            dropout_position (str): where to apply dropout rel. to lora (choices= ['pre', 'post'], default=post)
+            lora_A_init_method (str): init method for lora_A (choices= ['xavier', 'uniform'])
+            lora_dtype (torch.dtype): weight's dtype, by default will use orig_linear's but if they
+            are quantized weights (e.g. 4bit) needs to be specified explicitly.
+        """
+
+        def __init__(
+            self,
+            orig_linear,
+            dim=8,
+            alpha=32,
+            dropout=0.0,
+            dropout_position='post',
+            lora_A_init_method='xavier',
+            lora_dtype=None,
+        ):
+            assert orig_linear.__class__ == te.Linear
+            # TELinear has bias set to empty tensor
+            has_bias = orig_linear.bias is not None and orig_linear.bias.shape[0] != 0
+            super(TELinearAdapter, self).__init__(
+                in_features=orig_linear.in_features,
+                out_features=orig_linear.out_features,
+                bias=has_bias,
+                device=orig_linear.weight.device,
+                params_dtype=orig_linear.weight.dtype,
+            )
+            # copy weights
+            self.weight.data.copy_(orig_linear.weight.data)
+            if has_bias:
+                self.bias.data.copy_(orig_linear.bias.data)
+            # initialize the adapter
+            TELinearAdapter._init_adapter(
+                self,
+                dim=dim,
+                alpha=alpha,
+                dropout=dropout,
+                dropout_position=dropout_position,
+                lora_A_init_method=lora_A_init_method,
+                lora_dtype=lora_dtype,
+            )
+
+        @torch.no_grad
+        @staticmethod
+        def _init_adapter(
+            obj,
+            dim=8,
+            alpha=32,
+            dropout=0.0,
+            dropout_position='post',
+            lora_A_init_method='xavier',
+            lora_dtype=None,
+        ):
+            """Adds LoRA weights to obj. The obj is either a LinearAdapter or an nn.Module (when
+            monkey-patching).
+
+            Args:
+                obj (LinearAdapter | nn.Module): input module to adapt.
+                dim (int): lora's dim in_features -> dim -> out_features.
+                alpha (int): lora's scaling alpha.
+                dropout (float): dropout prob (default: 0.0).
+                dropout_position (str): where to apply dropout rel. to lora (choices= ['pre', 'post'], default=post)
+                lora_A_init_method (str): init method for lora_A (choices= ['xavier', 'uniform'])
+                lora_dtype (torch.dtype): weight's dtype, by default will use orig_linear's but if they
+                are quantized weights (e.g. 4bit) needs to be specified explicitly.
+            """
+            obj.dim = dim
+            obj.scale = alpha / dim
+
+            # Freezer
+            device = obj.weight.device
+            obj.weight.requires_grad = False
+            if obj.bias is not None:
+                obj.bias.requires_grad = False
+
+            in_features = obj.in_features
+            out_features = obj.out_features
+            dtype = lora_dtype or obj.weight.dtype
+
+            obj.lora_a = nn.Linear(in_features, dim, bias=False, dtype=dtype, device=device)
+            obj.lora_b = nn.Linear(dim, out_features, bias=False, dtype=dtype, device=device)
+            if lora_A_init_method == 'xavier':
+                torch.nn.init.uniform_(obj.lora_a.weight.data)
+            else:
+                nn.init.kaiming_uniform_(obj.lora_a.weight.data, a=math.sqrt(5))
+            obj.lora_b.weight.data.fill_(0)
+            obj.dropout = nn.Dropout(p=dropout)
+            assert dropout_position in ['pre', 'post'], dropout_position
+            obj.dropout_position = dropout_position
+
+        def forward(self, x):
+            # pylint: disable=C0115,C0116
+            res = super(TELinearAdapter, self).forward(x)
+            if self.dropout_position == 'pre':
+                x = self.dropout(x)
+            # LoRA fwd is performed in original precision regardless of FP8 enabled
+            lora_res = self.lora_b(self.lora_a(x))
+            lora_res = lora_res * self.scale
+            if self.dropout_position == 'post':
+                lora_res = self.dropout(lora_res)
+            return res + lora_res
 
 
 class LinearAdapter(nn.Linear):
@@ -195,15 +316,22 @@ def patch_linear_module(
         (nn.Module): the monkey-patched (nn.Linear + LoRA) nn.Module
     """
 
-    assert isinstance(orig_linear, nn.Linear)
+    assert isinstance(orig_linear, nn.Linear) or orig_linear.__class__ == te.Linear
 
-    LinearAdapter._init_adapter(orig_linear, dim, alpha, dropout, dropout_position, lora_A_init_method, lora_dtype)
+    if isinstance(orig_linear, nn.Linear):
+        LinearAdapter._init_adapter(orig_linear, dim, alpha, dropout, dropout_position, lora_A_init_method, lora_dtype)
+        cls = orig_linear.__class__
+        new_cls = type('PatchedLinearAdapter', (LinearAdapter, cls), {})
+    else:
+        TELinearAdapter._init_adapter(
+            orig_linear, dim, alpha, dropout, dropout_position, lora_A_init_method, lora_dtype
+        )
+        cls = orig_linear.__class__
+        new_cls = type('PatchedTELinearAdapter', (TELinearAdapter, cls), {})
     # If the model uses quantized weights, we want to use orig_linear's forward
     if orig_linear.weight.dtype == torch.uint8:
         orig_linear.super_fwd = orig_linear.forward
 
-    cls = orig_linear.__class__
-    new_cls = type('PatchedLinearAdapter', (LinearAdapter, cls), {})
     orig_linear.__class__ = new_cls
     return orig_linear
 
@@ -283,13 +411,15 @@ class LoRA(PEFT, ModuleMatcher):
 
         if (ans := self.match(m, name, prefix)) is not None:
             (match, full_name) = ans
-            if isinstance(m, nn.Linear):
+            if isinstance(m, nn.Linear) or m.__class__ == te.Linear:
                 # Will use the `patch_linear_module` function if:
                 # - is FSDP v1
                 # - is DTensor (has _local_tensor attribute)
                 # - is quantized weights.
                 if self._is_fsdp_v1 or hasattr(m.weight.data, '_local_tensor') or m.weight.data.dtype == torch.uint8:
                     lora_cls = patch_linear_module
+                elif HAVE_TE and m.__class__ == te.Linear:
+                    lora_cls = TELinearAdapter
                 else:
                     lora_cls = LinearAdapter
 

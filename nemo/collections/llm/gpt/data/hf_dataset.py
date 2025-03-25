@@ -166,7 +166,7 @@ def extract_key_from_dicts(batch, key):
     return list(map(lambda x: x[key], batch))
 
 
-def pad_within_micro(batch, pad_token_id):
+def pad_within_micro(batch, pad_token_id, pad_seq_len_divisible=None):
     """Pads each list in a batch of lists to the same length with a specified token.
 
     Parameters
@@ -175,7 +175,8 @@ def pad_within_micro(batch, pad_token_id):
         A batch of sequences (e.g., token IDs), where each sequence is a list of integers.
     pad_token_id : int
         The token ID to use for padding shorter sequences.
-
+    pad_seq_len_divisible : int
+        The value to use for padding sequence length so that it is divisible by pad_seq_len_divisible.
     Returns
     -------
     List[List[int]]
@@ -183,6 +184,8 @@ def pad_within_micro(batch, pad_token_id):
         to match the length of the longest sequence in the batch.
     """
     max_len = max(map(len, batch))
+    if pad_seq_len_divisible:
+        max_len = (pad_seq_len_divisible - max_len % pad_seq_len_divisible) + max_len
     return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
 
 
@@ -252,6 +255,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         train_aliases=["train", "training"],
         test_aliases=["test", "testing"],
         val_aliases=["val", "validation", "valid", "eval"],
+        pad_seq_len_divisible=None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -280,7 +284,9 @@ class HFDatasetDataModule(pl.LightningDataModule):
         self.dataset_splits = make_dataset_splits(dataset, split, split_aliases)
 
         if collate_fn is None:
-            self._collate_fn = lambda x: HFDatasetDataModule.collate_fn(x, pad_token_id=self.pad_token_id)
+            self._collate_fn = lambda x: HFDatasetDataModule.collate_fn(
+                x, pad_token_id=self.pad_token_id, pad_seq_len_divisible=pad_seq_len_divisible
+            )
         else:
             self._collate_fn = collate_fn
 
@@ -293,6 +299,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         self.pad_token_id = pad_token_id
 
         self.use_dist_sampler = use_dist_sampler
+        self.pad_seq_len_divisible = pad_seq_len_divisible
 
     @staticmethod
     def from_dict(dataset_dict, split, **kwargs):
@@ -301,14 +308,15 @@ class HFDatasetDataModule(pl.LightningDataModule):
         return HFDatasetDataModule(path_or_dataset=dataset, split=split, **kwargs)
 
     @staticmethod
-    def collate_fn(batch, pad_token_id=0):
+    def collate_fn(batch, pad_token_id=0, pad_seq_len_divisible=None):
         """Default batch collator"""
         return {
             key: batchify(
                 torch.LongTensor(
                     pad_within_micro(
                         extract_key_from_dicts(batch, key),
-                        pad_token_id if key != "loss_mask" else 0,
+                        pad_token_id if key != 'loss_mask' else 0,
+                        pad_seq_len_divisible,
                     )
                 )
             )
@@ -334,7 +342,9 @@ class HFDatasetDataModule(pl.LightningDataModule):
         assert dataset is not None
 
         if collate_fn is None:
-            collate_fn = lambda x: HFDatasetDataModule.collate_fn(x, pad_token_id=self.pad_token_id)
+            collate_fn = lambda x: HFDatasetDataModule.collate_fn(
+                x, pad_token_id=self.pad_token_id, pad_seq_len_divisible=self.pad_seq_len_divisible
+            )
 
         return DataLoader(
             dataset,

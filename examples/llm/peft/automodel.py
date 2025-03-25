@@ -21,7 +21,6 @@ from lightning.pytorch.loggers import WandbLogger
 from nemo import lightning as nl
 from nemo.collections import llm
 from nemo.collections.llm.recipes.optim.adam import pytorch_adam_with_cosine_annealing
-from nemo.lightning import NeMoLogger
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 
 
@@ -36,7 +35,7 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 # Note: ensure that the --nproc-per-node and --devices values match.
 
 
-def make_squad_hf_dataset(tokenizer, batch_size):
+def make_squad_hf_dataset(tokenizer, batch_size, fp8=False):
     def formatting_prompts_func(example):
         formatted_text = [
             f"Context: {example['context']} Question: {example['question']} Answer:",
@@ -55,7 +54,12 @@ def make_squad_hf_dataset(tokenizer, batch_size):
         )
 
     datamodule = llm.HFDatasetDataModule(
-        "rajpurkar/squad", split="train", micro_batch_size=batch_size, pad_token_id=tokenizer.eos_id or 0
+        "rajpurkar/squad",
+        split="train",
+        micro_batch_size=batch_size,
+        pad_token_id=tokenizer.eos_id or 0,
+        global_batch_size=batch_size,
+        pad_seq_len_divisible=16 if fp8 else None,  # FP8 training requires seq length to be divisible by 16.
     )
     datamodule.map(
         formatting_prompts_func,
@@ -139,6 +143,8 @@ def main():
         action='store_true',
         help='Enables trust_remote_code to load HF models with unverified sources',
     )
+    parser.add_argument('--fp8', action='store_true', help='Enables fp8 training')
+    parser.add_argument('--lr', type=float, default=5e-5, help='Learning rate')
     args = parser.parse_args()
 
     wandb = None
@@ -157,12 +163,21 @@ def main():
     if args.use_te_optimizer:
         # Use TE optimizer
         # Faster convergence but may lead to memory issues
-        optimizer = fdl.build(llm.adam.te_adam_with_flat_lr(lr=1e-5))
+        optimizer = fdl.build(llm.adam.te_adam_with_flat_lr(lr=args.lr))
     else:
-        optimizer = fdl.build(pytorch_adam_with_cosine_annealing(max_lr=3e-4))
+        optimizer = fdl.build(pytorch_adam_with_cosine_annealing(max_lr=args.lr, warmup_steps=50))
 
+    if args.fp8:
+        from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig
+
+        model_accelerator = TEConfig(fp8_autocast=True)
+    else:
+        model_accelerator = None
     model = llm.HFAutoModelForCausalLM(
-        model_name=args.model, trust_remote_code=args.trust_remote_code, use_liger_kernel=args.liger
+        model_name=args.model,
+        model_accelerator=model_accelerator,
+        trust_remote_code=args.trust_remote_code,
+        use_liger_kernel=args.liger,
     )
     strategy = make_strategy(args.strategy, model, args.devices, args.num_nodes, True)
 
@@ -177,7 +192,7 @@ def main():
 
     llm.api.finetune(
         model=model,
-        data=make_squad_hf_dataset(model.tokenizer, args.batch_size),
+        data=make_squad_hf_dataset(model.tokenizer, args.batch_size, args.fp8),
         trainer=nl.Trainer(
             devices=args.devices,
             num_nodes=args.num_nodes,

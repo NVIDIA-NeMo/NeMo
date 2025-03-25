@@ -29,6 +29,9 @@ for i in "$@"; do
     HF_OUTPUT_PATH=*)
       HF_OUTPUT_PATH="${i#*=}"
       ;;
+    HF_TARGET_CLASS=*)
+      HF_TARGET_CLASS="${i#*=}"
+      ;;
     add-model-name)
       ADD_MODEL_NAME="--add-model-name"
       ;;
@@ -40,5 +43,7 @@ for i in "$@"; do
   esac
 done
 
+# Set default value for HF_TARGET_CLASS if not provided
+: ${HF_TARGET_CLASS:="AutoModelForCausalLM"}
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH} $ADD_MODEL_NAME
+coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH} $ADD_MODEL_NAME --hf-target-class=${HF_TARGET_CLASS}

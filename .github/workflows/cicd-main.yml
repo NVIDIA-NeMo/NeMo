@@ -1977,6 +1977,20 @@ jobs:
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
 
+  L2_NeMo_2_Conversion_Test_Llama_Embedding:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Conversion_Test.sh \
+          HF_ORI_PATH=/home/TestData/llm/models/llama_31_toy \
+          NEMO_MODEL_TYPE=LlamaEmbeddingModel \
+          NEMO_MODEL_CONFIG=Llama32EmbeddingConfig1B \
+          NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
+          HF_OUTPUT_PATH=/tmp/output_hf_ckpt \
+          HF_TARGET_CLASS=AutoModel
+
   L2_NeMo_2_Conversion_Test_Nemotron:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2083,6 +2097,7 @@ jobs:
       - L2_NeMo_2_Conversion_Test_Gemma
       - L2_NeMo_2_Conversion_Test_Gemma2
       - L2_NeMo_2_Conversion_Test_Llama
+      - L2_NeMo_2_Conversion_Test_Llama_Embedding
       - L2_NeMo_2_Conversion_Test_Mistral
       - L2_NeMo_2_Conversion_Test_Nemotron
       - L2_NeMo_2_Conversion_Test_Phi3Mini

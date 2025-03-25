@@ -339,20 +339,20 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
             io.state_transform(
                 source_key="decoder.layers.*.self_attention.linear_qkv.weight",
                 target_key=(
-                    "model.layers.*.self_attn.q_proj.weight",
-                    "model.layers.*.self_attn.k_proj.weight",
-                    "model.layers.*.self_attn.v_proj.weight",
+                    "layers.*.self_attn.q_proj.weight",
+                    "layers.*.self_attn.k_proj.weight",
+                    "layers.*.self_attn.v_proj.weight",
                 ),
                 fn=TransformFns.split_qkv,
             ),
             io.state_transform(
                 source_key="decoder.layers.*.mlp.linear_fc1.weight",
-                target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                target_key=("layers.*.mlp.gate_proj.weight", "layers.*.mlp.up_proj.weight"),
                 fn=TransformFns.split_fc1,
             ),
             io.state_transform(
                 source_key="embedding.word_embeddings.weight",
-                target_key="model.embed_tokens.weight",
+                target_key="embed_tokens.weight",
                 fn=TransformFns.prune_padding,
             ),
         ]

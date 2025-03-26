@@ -45,6 +45,15 @@ apt-get install -y bc libsox-fmt-all -y
 apt-get clean
 EOF
 
+ARG TRTLLM_REPO
+ARG TRTLLM_TAG
+RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
+  
+  bash /tmp/NeMo/reinstall.sh --library trtllm --mode build
+  ls -al /tmp/Megatron-LM || true
+EOF
+
+
 ARG MLM_REPO
 ARG MLM_TAG
 RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex

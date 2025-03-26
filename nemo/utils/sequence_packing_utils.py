@@ -50,7 +50,8 @@ def first_fit(seqlens: List[int], pack_size: int) -> List[List[int]]:
       pack_size: The maximum capacity of each bin.
 
     Returns:
-      A list of lists, where each inner list represents a bin and contains the indices of the sequences assigned to that bin.
+      A list of lists, where each inner list represents a bin and contains the indices
+        of the sequences assigned to that bin.
     """
     res = []
     for s in seqlens:
@@ -109,7 +110,8 @@ def create_hist(dataset: np.array, truncate_seq_len: int):
       truncate_seq_len: The maximum sequence length to consider in the histogram.
 
     Returns:
-      sequences: A dictionary where keys are sequence lengths and values are lists of corresponding sequences from the dataset.
+      sequences: A dictionary where keys are sequence lengths and values are lists
+                 of corresponding sequences from the dataset.
       histogram: A list representing the histogram data (number of sequences for each length).
     """
     logging.info("Creating histogram from tokenized dataset...")
@@ -118,8 +120,10 @@ def create_hist(dataset: np.array, truncate_seq_len: int):
     counts = [0] * (truncate_seq_len + 1)
 
     for item_dict in dataset:
-        # Minus 1 here to account for the fact that transformer input and label have one less token than the full sequence
-        # Input is missing the last token and label is missing the first token (this way the tokens are aligned for next token prediction).
+        # Minus 1 here to account for the fact that transformer input and label
+        # have one less token than the full sequence.
+        # Input is missing the last token and label is missing the first token
+        # (this way the tokens are aligned for next token prediction).
         # We want pack size to be the length of the actual input and label, hence minus 1.
         seq_len = len(item_dict['input_ids']) - 1
         sequences[seq_len].append(item_dict)
@@ -213,7 +217,9 @@ def fill_packing_strategy(
                 loss_mask = np.array(
                     [
                         [
-                            idx >= x['answer_start_idx'] and x['input_ids'][idx] != pad_id
+                            # (x['answer_start_idx'] - 1) because we want to train on the output
+                            # after the last context token
+                            idx >= (x['answer_start_idx'] - 1) and x['input_ids'][idx] != pad_id
                             for idx in range(len(x['input_ids']))
                         ]
                         for x in per_seq_data

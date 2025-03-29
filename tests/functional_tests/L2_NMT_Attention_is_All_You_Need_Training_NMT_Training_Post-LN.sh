@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/nlp/machine_translation/enc_dec_nmt.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/nlp/machine_translation/enc_dec_nmt.py \
   --config-path=conf \
   --config-name=aayn_base \
   do_testing=false \
@@ -39,7 +39,7 @@ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/ne
   +exp_manager.explicit_log_dir=examples/nlp/machine_translation/nmt_results \
   +exp_manager.create_checkpoint_callback=true
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/nlp/machine_translation/enc_dec_nmt.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/nlp/machine_translation/enc_dec_nmt.py \
   --config-path=conf \
   --config-name=aayn_base \
   do_testing=true \

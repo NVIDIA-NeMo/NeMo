@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt/model/test_hyena.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt/model/test_hyena.py \
     --mock-data \
     --experiment-dir=tests/collections/llm/hyena_pretrain_results/$RUN_ID \
     --model-size=7b_nv \

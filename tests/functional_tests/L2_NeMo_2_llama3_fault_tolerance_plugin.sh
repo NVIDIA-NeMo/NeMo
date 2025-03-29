@@ -14,7 +14,7 @@
 mkdir -p /tmp/llm_tests/llama_pretrain_results \
     export FAULT_TOL_CFG_PATH="/tmp/llm_tests/llama_pretrain_results/sample_job_ft_cfg.yml"
 export FAULT_TOL_FINISHED_FLAG_FILE="/tmp/llm_tests/llama_pretrain_results/sample_job_finished_flag"
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/test_fault_nvrx.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/test_fault_nvrx.py \
     --devices=2 \
     --crash-step=16 \
     --experiment-dir=/tmp/llm_tests/llama_pretrain_results \

@@ -13,7 +13,7 @@
 # limitations under the License.
 rm -rf examples/multimodal/text_to_image/sd_train_results
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/multimodal/text_to_image/stable_diffusion/sd_train.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/multimodal/text_to_image/stable_diffusion/sd_train.py \
     trainer.devices=1 \
     trainer.max_steps=3 \
     +trainer.val_check_interval=10 \

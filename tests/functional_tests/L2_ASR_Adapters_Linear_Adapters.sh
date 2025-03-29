@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_adapters/train_asr_adapter.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_adapters/train_asr_adapter.py \
     model.pretrained_model="stt_en_conformer_ctc_small" \
     model.adapter.adapter_name="an4" \
     model.adapter.linear.in_features=176 \

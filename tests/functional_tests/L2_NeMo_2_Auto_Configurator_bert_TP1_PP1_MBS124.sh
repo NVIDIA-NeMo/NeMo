@@ -13,22 +13,22 @@
 # limitations under the License.
 mkdir examples/llm/auto_configurator/auto_conf_logs_bert
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
     --model_type=bert \
     --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_bert \
     --run_number=1
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
     --model_type=bert \
     --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_bert \
     --run_number=2
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
     --model_type=bert \
     --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_bert \
     --run_number=3
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
     --model_type=bert \
     --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_bert \
     --get_results

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
     pretrained_name="QuartzNet15x5Base-En" \
     audio_dir="/home/TestData/an4_transcribe/test_subset/" \
     output_filename="/tmp/stt_test_res.json" \

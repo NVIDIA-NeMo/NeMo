@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/speech_pretraining/speech_pre_training.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/speech_pretraining/speech_pre_training.py \
     --config-path="../conf/ssl/citrinet/" --config-name="citrinet_ssl_ci" \
     model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
     model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \

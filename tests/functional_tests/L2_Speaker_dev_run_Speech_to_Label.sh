@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/speech_classification/speech_to_label.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/speech_classification/speech_to_label.py \
     model.train_ds.manifest_filepath=/home/TestData/speech_commands/train_manifest.json \
     model.validation_ds.manifest_filepath=/home/TestData/speech_commands/test_manifest.json \
     model.test_ds.manifest_filepath=/home/TestData/speech_commands/test_manifest.json \

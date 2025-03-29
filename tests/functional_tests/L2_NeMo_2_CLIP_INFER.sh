@@ -12,8 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/vlm/clip_ci/hf/ coverage run --branch -a\
- --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/clip_infer.py\
-  --image_url /home/TestData/vlm/clip_ci/1665_Girl_with_a_Pearl_Earring.jpg
-
-
+TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/vlm/clip_ci/hf/ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/clip_infer.py --image_url /home/TestData/vlm/clip_ci/1665_Girl_with_a_Pearl_Earring.jpg

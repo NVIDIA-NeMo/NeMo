@@ -14,11 +14,11 @@
 
 # Ensure output directory exists
 mkdir -p /tmp/nemo2_llava_next_energon_packed_results/$RUN_ID
-# removed -     
+# removed -
 # --use-packed-sequence \
 # --context-parallel-size=2 \
 # Download necessary models - needs to be offline
-TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/ykarnati/hf_data coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/ykarnati/hf_data coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     tests/collections/vlm/llava_next/test_llava_next_train.py \
     --devices=2 \
     --max-steps=5 \

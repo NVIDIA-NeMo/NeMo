@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/speech_multitask/speech_to_text_aed.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/speech_multitask/speech_to_text_aed.py \
     model.prompt_format=canary \
     model.model_defaults.asr_enc_hidden=256 \
     model.model_defaults.lm_dec_hidden=256 \

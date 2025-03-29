@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/speaker_tasks/diarization/neural_diarizer/multiscale_diar_decoder.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/speaker_tasks/diarization/neural_diarizer/multiscale_diar_decoder.py \
     model.diarizer.speaker_embeddings.model_path=titanet_large \
     model.train_ds.batch_size=5 \
     model.validation_ds.batch_size=5 \

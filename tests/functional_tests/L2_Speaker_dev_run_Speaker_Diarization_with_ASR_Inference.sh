@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/speaker_tasks/diarization/clustering_diarizer/offline_diar_with_asr_infer.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/speaker_tasks/diarization/clustering_diarizer/offline_diar_with_asr_infer.py \
     diarizer.manifest_filepath=/home/TestData/an4_diarizer/an4_manifest.json \
     diarizer.speaker_embeddings.model_path=/home/TestData/an4_diarizer/spkr.nemo \
     diarizer.speaker_embeddings.parameters.save_embeddings=True \

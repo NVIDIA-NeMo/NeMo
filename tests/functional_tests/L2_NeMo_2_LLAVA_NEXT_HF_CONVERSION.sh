@@ -16,7 +16,7 @@
 mkdir -p /tmp/nemo2_llava_next_hf_conversion_results/$RUN_ID
 
 # Run the HF conversion test with a smaller test model to save time
-HF_HOME=/home/TestData/ykarnati/hf_data/ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+HF_HOME=/home/TestData/ykarnati/hf_data/ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     tests/collections/vlm/llava_next/test_hf_conversion.py \
     --hf-path="llava-hf/llava-v1.6-vicuna-7b-hf" \
-    --output-dir="/tmp/nemo2_llava_next_hf_conversion_results/$RUN_ID" 
+    --output-dir="/tmp/nemo2_llava_next_hf_conversion_results/$RUN_ID"

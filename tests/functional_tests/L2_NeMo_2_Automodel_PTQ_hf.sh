@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/llm/ptq.py -nc /home/TestData/nlp/megatron_llama/llama-ci-hf -algo fp8 -out /tmp/hf_quantized --export_format hf
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/llm/ptq.py -nc /home/TestData/nlp/megatron_llama/llama-ci-hf -algo fp8 -out /tmp/hf_quantized --export_format hf

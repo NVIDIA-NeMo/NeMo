@@ -679,10 +679,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        python examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
-        model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
-        audio_dir=/home/TestData/asr/longform/earnings22 \
-        output_filename=preds.json
+        bash tests/functional_tests/L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir.sh
       AFTER_SCRIPT: |
         rm -rf preds.json
 
@@ -694,11 +691,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        python examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
-        model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
-        audio_dir=/home/TestData/asr/longform/earnings22 \
-        output_filename=preds.json \
-        timestamps=True
+        bash tests/functional_tests/L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir.sh
       AFTER_SCRIPT: |
         rm -rf preds.json
 
@@ -710,10 +703,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        python examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
-        model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
-        dataset_manifest=/home/TestData/asr/longform/earnings22_manifest_1sample.json \
-        output_filename=preds.json
+        bash tests/functional_tests/L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest.sh
       AFTER_SCRIPT: |
         rm -rf preds.json
 
@@ -959,11 +949,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/automodel/hf_home python examples/llm/peft/automodel.py \
-          --model /home/TestData/akoumparouli/hf_mixtral_2l/ \
-          --max-steps 3 \
-          --devices 2 \
-          --strategy fsdp2 --liger
+        bash tests/functional_tests/L2_HF_Transformer_PEFT_2gpu_FSDP2_liger.sh
 
   L2_HF_Transformer_PEFT_2gpu_FSDP2_fp8:
     needs: [pre-flight, cicd-test-container-build]
@@ -972,11 +958,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/automodel/hf_home python examples/llm/peft/automodel.py \
-          --model /home/TestData/akoumparouli/hf_mixtral_2l/ \
-          --max-steps 3 \
-          --devices 2 \
-          --strategy fsdp2 --fp8
+        bash tests/functional_tests/L2_HF_Transformer_PEFT_2gpu_FSDP2_fp8.sh
 
   L2_HF_Transformer_PEFT_2gpu_FSDP2:
     needs: [pre-flight, cicd-test-container-build]
@@ -1030,11 +1012,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/automodel/hf_home python examples/llm/sft/automodel.py \
-          --model /home/TestData/akoumparouli/hf_mixtral_2l/ \
-          --max-steps 3 \
-          --devices 2 \
-          --strategy fsdp2 --fp8
+        tests/functional_tests/L2_HF_Transformer_SFT_2gpu_FSDP2_fp8.sh
 
   L2_HF_Transformer_SFT_2gpu_nemorun:
     needs: [pre-flight, cicd-test-container-build]
@@ -2493,7 +2471,7 @@ jobs:
           ls -al .
           ls -al coverage-*/
           coverage combine --keep $(ls coverage-*/.coverage)
-          coverage report
+          coverage report -i
           rm -rf coverage-*
           ls -al
 

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
     dataset_manifest=/home/TestData/asr/canary/dev-other-wav-10-canary-fields.json \
     output_filename=/tmp/preds.json \
     batch_size=10 \

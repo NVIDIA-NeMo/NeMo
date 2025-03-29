@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/speaker_tasks/recognition/speaker_reco.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/speaker_tasks/recognition/speaker_reco.py \
     model.train_ds.batch_size=10 \
     model.validation_ds.batch_size=2 \
     model.train_ds.manifest_filepath=/home/TestData/an4_speaker/train.json \

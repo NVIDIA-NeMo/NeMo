@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt_finetuning.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt_finetuning.py \
     --restore_path /home/TestData/nemo2_ckpt/llama_68M_v3 \
     --devices 2 \
     --max_steps 3 \
@@ -21,7 +21,7 @@ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/ne
     --pp_size 1 \
     --mbs 1
 
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt_finetuning.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt_finetuning.py \
     --restore_path /home/TestData/nemo2_ckpt/llama_68M_v3 \
     --devices 2 \
     --max_steps 6 \

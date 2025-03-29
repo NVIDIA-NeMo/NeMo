@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/fastpitch.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/fastpitch.py \
     --config-name fastpitch_align_v1.05 \
     train_dataset=/home/TestData/an4_dataset/an4_train.json \
     validation_datasets=/home/TestData/an4_dataset/an4_val.json \

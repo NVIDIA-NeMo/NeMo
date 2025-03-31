@@ -339,7 +339,7 @@ class Hyena1bConfig(HyenaConfig):
     layernorm_epsilon: float = 1e-6
     recompute_granularity: str = 'full'
     recompute_method: str = 'uniform'
-    recompute_num_layers: int = 4
+    recompute_num_layers: int = 5
     hyena_init_method: str = 'small_init'
     hyena_output_layer_init_method: str = 'wang_init'
     hyena_filter_no_wd: bool = True

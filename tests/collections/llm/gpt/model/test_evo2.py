@@ -158,8 +158,8 @@ def test_hyena_nv_test_config():
 def test_convert_hyena():
 
     evo2_config = llm.Hyena1bConfig()
-    model_ckpt = "dummy/model"
+    model_ckpt = "dummy_model_deosnt_exist"
     exporter = HuggingFaceSavannaHyenaImporter(model_ckpt, model_config=evo2_config)
 
-    with pytest.raises(Exception):
-        exporter.apply("dummy_output")
+    with pytest.raises(RepositoryNotFoundError):
+        exporter.apply("dummy_output_deosnt_exist")

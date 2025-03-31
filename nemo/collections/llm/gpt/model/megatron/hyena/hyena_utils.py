@@ -16,7 +16,6 @@
 # limitations under the License.
 
 import math
-import os
 from functools import partial
 
 import torch
@@ -42,49 +41,6 @@ except ImportError:
     def FlashFFTConv(*args, **kwargs):
         """Not imported: FlashFFTConv. An error will be raised if this is called."""
         raise Exception("Not imported: FlashFFTConv")
-
-
-try:
-    # Default implementation does not make use of these features but they are included for completeness and
-    #  for future testing. See the savanna repository at https://github.com/Zymrael/savanna/. These functions
-    #  are not currently used in nemo or bionemo tutorials.
-    from savanna.kernels.triton_src.cgcg.interface import two_pass_chunked_gate_conv_gate
-    from savanna.kernels.triton_src.cgcg.src.kernel_utils import BwdKernelConfigRefactor, FwdKernelConfigRefactor
-    from savanna.kernels.triton_src.short_hyena.interface import run_short_hyena
-    from savanna.kernels.triton_src.short_hyena.src.kernel_utils import (
-        PostConvKernelConfig,
-        PreConvKernelConfig,
-        ShortHyenaOperatorKernelConfig,
-    )
-except ImportError:
-
-    def two_pass_chunked_gate_conv_gate(*args, **kwargs):
-        """Not imported: two_pass_chunked_gate_conv_gate. An error will be raised if this is called."""
-        raise Exception("Not imported: two_pass_chunked_gate_conv_gate")
-
-    def run_short_hyena(*args, **kwargs):
-        """Not imported: run_short_hyena. An error will be raised if this is called."""
-        raise Exception("Not imported: run_short_hyena")
-
-    def PreConvKernelConfig(*args, **kwargs):
-        """Not imported: PreConvKernelConfig. An error will be raised if this is called."""
-        raise Exception("Not imported: PreConvKernelConfig")
-
-    def PostConvKernelConfig(*args, **kwargs):
-        """Not imported: PostConvKernelConfig. An error will be raised if this is called."""
-        raise Exception("Not imported: PostConvKernelConfig")
-
-    def ShortHyenaOperatorKernelConfig(*args, **kwargs):
-        """Not imported: ShortHyenaOperatorKernelConfig. An error will be raised if this is called."""
-        raise Exception("Not imported: ShortHyenaOperatorKernelConfig")
-
-    def BwdKernelConfigRefactor(*args, **kwargs):
-        """Not imported: BwdKernelConfigRefactor. An error will be raised if this is called."""
-        raise Exception("Not imported: BwdKernelConfigRefactor")
-
-    def FwdKernelConfigRefactor(*args, **kwargs):
-        """Not imported: FwdKernelConfigRefactor. An error will be raised if this is called."""
-        raise Exception("Not imported: FwdKernelConfigRefactor")
 
 
 try:
@@ -822,7 +778,6 @@ class ParallelHyenaOperator(nn.Module):
         self.downsample_factor = downsample_factor
         self.bidirectional = hyena_config.bidirectional
         self.use_hyena_filter = hyena_config.use_hyena_filter
-        self.use_fast_heads = hyena_config.use_fast_heads
         self.use_slow_heads = hyena_config.use_slow_heads
 
         self.zigzag = zigzag
@@ -870,31 +825,6 @@ class ParallelHyenaOperator(nn.Module):
         if self.use_flashfft:
             self.fftconv_fn = FlashFFTConv(self.L, dtype=torch.float16 if self.fp16 else torch.bfloat16)
 
-        if self.use_medium_hyena and self.use_cgcg:
-            if os.environ.get("SAVANNA_DEBUG", "0") == "1":
-                import pdb
-
-                pdb.set_trace()
-            self.cgcg_fn = two_pass_chunked_gate_conv_gate
-
-            self.cgcg_fwd_config = FwdKernelConfigRefactor(
-                CHUNK_SIZE=self.hyena_config.cgcg_medium_fwd_kernel_config_chunk_size,
-                BLOCK_D=min(self.group_dim, self.hyena_config.cgcg_medium_fwd_kernel_config_block_d),
-                CHUNK_TILES_PER_PROGRAM=self.hyena_config.cgcg_medium_fwd_kernel_config_chunk_tiles_per_program,
-                THREADBLOCK_SWIZZLE=self.hyena_config.cgcg_medium_fwd_kernel_config_threadblock_swizzle,
-                num_warps=self.hyena_config.cgcg_medium_fwd_kernel_config_num_warps,
-                num_stages=self.hyena_config.cgcg_medium_fwd_kernel_config_num_stages,
-            )
-
-            self.cgcg_bwd_config = BwdKernelConfigRefactor(
-                pre_conv_BLOCK_X=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_block_x,
-                pre_conv_BLOCK_Y=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_block_y,
-                pre_conv_num_warps=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_num_warps,
-                post_conv_BLOCK_X=self.hyena_config.cgcg_bwd_kernel_config_post_conv_block_x,
-                post_conv_BLOCK_Y=self.hyena_config.cgcg_bwd_kernel_config_post_conv_block_y,
-                post_conv_num_warps=self.hyena_config.cgcg_bwd_kernel_config_post_conv_num_warps,
-            )
-
         # TODO: Check which of these filters can be removed
         #       At the moment only "explicit_single_decay" and "implicit_modal" are used
         if self.hyena_filter_cls == "explicit_single_decay":
@@ -917,23 +847,14 @@ class ParallelHyenaOperator(nn.Module):
             raise ValueError(f"Unknown hyena filter class: {self.hyena_filter_cls}")
 
         with get_cuda_rng_tracker().fork():
-            if self.use_slow_heads:
-                self.conv_bias = nn.Parameter(
-                    torch.empty(
-                        self.num_groups,
-                        device=torch.cuda.current_device(),
-                        dtype=torch.float32,
-                    )
+            self.conv_bias = nn.Parameter(
+                torch.empty(
+                    self.width_per_tp_group,
+                    device=torch.cuda.current_device(),
+                    dtype=torch.float32,
                 )
-            else:
-                self.conv_bias = nn.Parameter(
-                    torch.empty(
-                        self.width_per_tp_group,
-                        device=torch.cuda.current_device(),
-                        dtype=torch.float32,
-                    )
-                )
-                # Add attribute to prevent automatic casting during model conversion
+            )
+            # Add attribute to prevent automatic casting during model conversion
             setattr(self.conv_bias, 'tensor_model_parallel', True)
             bounds = math.sqrt(1 / self.kernel_size)
             conv_init_method = partial(torch.nn.init.uniform_, a=-bounds, b=bounds)
@@ -941,39 +862,6 @@ class ParallelHyenaOperator(nn.Module):
             self.conv_bias.model_parallel = True
             self.conv_bias.partition_dim = 0
             self.conv_bias.stride = 1
-
-    def multihead_forward(self, q, k, v, h):
-        """
-        Multihead forward pass for the ParallelHyenaOperator.
-        """
-        batch_size = q.shape[0]
-        group_dim = self.group_dim
-        num_groups = self.num_groups
-
-        L = v.shape[-1]
-        fft_size = 2 * L
-        kv = rearrange(k, "b (h d1) l -> b d1 1 h l", d1=group_dim) * rearrange(
-            v, "b (h d2) l -> b 1 d2 h l", d2=group_dim
-        )
-        if self.use_flashfft:
-            # treat mhfftconv as a large batched fftconv
-            kv_reshape = kv.reshape(-1, num_groups, L)
-            y = self.fftconv_fn(kv_reshape, h[0])
-            y = y.view(batch_size, group_dim, group_dim, num_groups, L)
-        else:
-            kv_f = torch.fft.rfft(kv.to(torch.float32), n=fft_size) / fft_size
-            h_f = torch.fft.rfft(h.to(torch.float32), n=fft_size)  # h L+1
-
-            y = torch.fft.irfft(kv_f * h_f, n=fft_size, norm="forward")[..., :L]
-        y = y.to(dtype=q.dtype)
-
-        out = y + kv * self.conv_bias.unsqueeze(-1)
-        q = rearrange(q, "b (h d1) l -> b d1 1 h l", d1=group_dim)
-        z = _mul_sum(out, q)
-        z = rearrange(z, "b d2 h l -> b (h d2) l")
-
-        z = z.to(v.dtype)
-        return z
 
     def forward(self, x1, x2, v, _hyena_use_cp=True):
         """
@@ -1041,10 +929,7 @@ class ParallelHyenaOperator(nn.Module):
             local_bias_size = self.width_per_tp_group // get_context_parallel_world_size()
             conv_bias = self.conv_bias[rank * local_bias_size : (rank + 1) * local_bias_size]
 
-        if self.use_slow_heads:
-            return self.multihead_forward(x1, x2, v, h)
-
-        elif self.use_long_conv1d:
+        if self.use_long_conv1d:
             h = h.repeat_interleave(self.group_dim, dim=-2)
             z = x2 * v
 
@@ -1055,59 +940,6 @@ class ParallelHyenaOperator(nn.Module):
             z = z.to(v.dtype)
             z = x1 * z
 
-        elif self.is_medium_cgcg:
-            # TODO: if the conditions are met, we should not rearrange to l last in the first place
-            # @jeromeku, done as of 2024-09-28 refactor (see above)
-            # x1 = rearrange(x1, "b (d g) l -> b l g d", g=self.num_groups)
-            # x2 = rearrange(x2, "b (d g) l -> b l g d", g=self.num_groups)
-            # v = rearrange(v, "b (d g) l -> b l g d", g=self.num_groups)
-            dtype = x1.dtype
-            if os.environ.get("SAVANNA_DEBUG", "0") == "1":
-                import pdb
-
-                pdb.set_trace()
-            # Mapping from x1, x2, and v -> kernel args
-            # x1 is post-gate (C)
-            # x2 is pre-gate (B)
-            # v is x
-
-            if self.cgcg_dtype != dtype:
-                x = v.to(self.cgcg_dtype)
-                B = x2.to(self.cgcg_dtype)
-                C = x1.to(self.cgcg_dtype)
-                h = h[:, None].to(self.cgcg_dtype)
-            else:
-                x = v
-                B = x2
-                C = x1
-                h = h[:, None]
-
-            bs, seqlen, g, dg = x.shape
-
-            # @jeromeku: Refactor as of 2024-09-28
-            # No more backward kernel config
-            # default schedule is "default" as other schedules are not supported
-            # fwd_kernel config is of class FwdKernelConfigRefactor
-            # Explicitly pass in shape for internal checking
-            z = self.cgcg_fn(
-                x=x,  # x1.to(self.cgcg_dtype),
-                B=B,  # x2.to(self.cgcg_dtype),
-                C=C,  # v.to(self.cgcg_dtype),
-                h=h,  # h[:, None].to(self.cgcg_dtype),  # g, 1, filter_l
-                bs=bs,
-                seqlen=seqlen,
-                g=g,
-                dg=dg,
-                fwd_autotune=False,  # @jeromeku explicitly set to False for now
-                bwd_autotune=self.hyena_config.cgcg_bwd_autotune,
-                fused_bwd=self.hyena_config.cgcg_fused_bwd,
-                fwd_kernel_cfg=self.cgcg_fwd_config,
-                bwd_kernel_cfg=None if self.hyena_config.cgcg_bwd_autotune else self.cgcg_bwd_config,
-            )
-            z = z.reshape(bs, seqlen, g * dg)
-            if self.cgcg_dtype != dtype:
-                z = z.to(dtype)
-            return z
         else:
             h = h.repeat_interleave(self.group_dim, dim=-2)
 
@@ -1260,7 +1092,7 @@ class ParallelShortHyenaOperator(nn.Module):
             repeat_h_dg=False,
             local_init=local_init,
         )
-        self.kernel_fn, self.fwd_kernel_cfg, self.bwd_kernel_cfg = self.prepare_kernel_configs()
+
         self.use_conv_bias = use_conv_bias
         if self.use_conv_bias:
             with get_cuda_rng_tracker().fork():
@@ -1279,125 +1111,6 @@ class ParallelShortHyenaOperator(nn.Module):
                 self.conv_bias.partition_dim = 0
                 self.conv_bias.stride = 1
 
-    def prepare_kernel_configs(self):
-        """
-        Prepare the kernel configurations for the ParallelShortHyenaOperator.
-        """
-        if self.is_mlp and self.use_cgcg_mlp:
-
-            kernel_fn = two_pass_chunked_gate_conv_gate
-            fwd_kernel_cfg = FwdKernelConfigRefactor(
-                CHUNK_SIZE=self.hyena_config.cgcg_short_fwd_kernel_config_chunk_size,
-                BLOCK_D=min(self.group_dim, self.hyena_config.cgcg_short_fwd_kernel_config_block_d),
-                CHUNK_TILES_PER_PROGRAM=self.hyena_config.cgcg_short_fwd_kernel_config_chunk_tiles_per_program,
-                THREADBLOCK_SWIZZLE=self.hyena_config.cgcg_short_fwd_kernel_config_threadblock_swizzle,
-                num_warps=self.hyena_config.cgcg_short_fwd_kernel_config_num_warps,
-                num_stages=self.hyena_config.cgcg_short_fwd_kernel_config_num_stages,
-            )
-            bwd_kernel_cfg = BwdKernelConfigRefactor(
-                pre_conv_BLOCK_X=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_block_x,
-                pre_conv_BLOCK_Y=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_block_y,
-                pre_conv_num_warps=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_num_warps,
-                post_conv_BLOCK_X=self.hyena_config.cgcg_bwd_kernel_config_post_conv_block_x,
-                post_conv_BLOCK_Y=self.hyena_config.cgcg_bwd_kernel_config_post_conv_block_y,
-                post_conv_num_warps=self.hyena_config.cgcg_bwd_kernel_config_post_conv_num_warps,
-            )
-            return kernel_fn, fwd_kernel_cfg, bwd_kernel_cfg
-        elif not self.is_mlp and self.use_cgcg_short:
-
-            kernel_fn = two_pass_chunked_gate_conv_gate
-            fwd_kernel_cfg = FwdKernelConfigRefactor(
-                CHUNK_SIZE=self.hyena_config.cgcg_short_fwd_kernel_config_chunk_size,
-                BLOCK_D=min(self.group_dim, self.hyena_config.cgcg_short_fwd_kernel_config_block_d),
-                CHUNK_TILES_PER_PROGRAM=self.hyena_config.cgcg_short_fwd_kernel_config_chunk_tiles_per_program,
-                THREADBLOCK_SWIZZLE=self.hyena_config.cgcg_short_fwd_kernel_config_threadblock_swizzle,
-                num_warps=self.hyena_config.cgcg_short_fwd_kernel_config_num_warps,
-                num_stages=self.hyena_config.cgcg_short_fwd_kernel_config_num_stages,
-            )
-            bwd_kernel_cfg = BwdKernelConfigRefactor(
-                pre_conv_BLOCK_X=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_block_x,
-                pre_conv_BLOCK_Y=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_block_y,
-                pre_conv_num_warps=self.hyena_config.cgcg_bwd_kernel_config_pre_conv_num_warps,
-                post_conv_BLOCK_X=self.hyena_config.cgcg_bwd_kernel_config_post_conv_block_x,
-                post_conv_BLOCK_Y=self.hyena_config.cgcg_bwd_kernel_config_post_conv_block_y,
-                post_conv_num_warps=self.hyena_config.cgcg_bwd_kernel_config_post_conv_num_warps,
-            )
-            return kernel_fn, fwd_kernel_cfg, bwd_kernel_cfg
-
-        elif self.is_mlp and self.use_custom_hyena_mlp_kernel:
-            fn = run_short_hyena
-            fwd_kernel_cfg = ShortHyenaOperatorKernelConfig(
-                PreConvKernelConfig(
-                    BLOCK_M=256,
-                    BLOCK_N=256,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-                PostConvKernelConfig(
-                    BLOCK_M=128,
-                    BLOCK_N=128,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-            )
-            bwd_kernel_cfg = ShortHyenaOperatorKernelConfig(
-                PreConvKernelConfig(
-                    BLOCK_M=256,
-                    BLOCK_N=256,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-                PostConvKernelConfig(
-                    BLOCK_M=128,
-                    BLOCK_N=128,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-            )
-            return fn, fwd_kernel_cfg, bwd_kernel_cfg
-
-        elif not self.is_mlp and self.use_custom_hyena_short_kernel:
-            fn = run_short_hyena
-            fwd_kernel_cfg = ShortHyenaOperatorKernelConfig(
-                PreConvKernelConfig(
-                    BLOCK_M=256,
-                    BLOCK_N=256,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-                PostConvKernelConfig(
-                    BLOCK_M=128,
-                    BLOCK_N=128,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-            )
-            bwd_kernel_cfg = ShortHyenaOperatorKernelConfig(
-                PreConvKernelConfig(
-                    BLOCK_M=256,
-                    BLOCK_N=256,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-                PostConvKernelConfig(
-                    BLOCK_M=128,
-                    BLOCK_N=128,
-                    NUM_PIPELINE_STAGES=1,
-                    num_warps=4,
-                    num_ctas=1,
-                ),
-            )
-            return fn, fwd_kernel_cfg, bwd_kernel_cfg
-        else:
-            return None, None, None
-
     def forward(self, x1, x2, v, _hyena_use_cp=True):
         """
         Note:
@@ -1406,89 +1119,23 @@ class ParallelShortHyenaOperator(nn.Module):
         """
         B, L, G, DG = x1.shape
 
-        if self.use_custom_hyena_mlp_kernel or self.use_custom_hyena_short_kernel:
-            z = self.kernel_fn(
-                x1,
-                x2,
-                v,
-                self.short_conv.short_conv_weight,
-                repeat_interleave=True,
-                use_causal_conv=self.use_fast_causal_conv,
-                autotune=False,
-                fwd_kernel_cfg=self.fwd_kernel_cfg,
-                bwd_kernel_cfg=self.bwd_kernel_cfg,
-            )
-            return rearrange(z, "b l g dg -> b l (g dg)", g=G)
+        x1 = rearrange(x1, "b l g dg -> b (g dg) l")
+        x2 = rearrange(x2, "b l g dg -> b (g dg) l")
+        v = rearrange(v, "b l g dg -> b (g dg) l")
 
-        elif self.use_cgcg_mlp or self.use_cgcg_short:
-            dtype = x1.dtype
-            if os.environ.get("SAVANNA_DEBUG", "0") == "1":
-                import pdb
+        x1, x2, v = x1[..., :L], x2[..., :L], v[..., :L]
 
-                pdb.set_trace()
-            # @jeromeku: Refactor as of 2024-09-28
-            # No more backward kernel config
-            # default schedule is "default" as other schedules are not supported
-            # fwd_kernel config is of class FwdKernelConfigRefactor
-            # Explicitly pass in shape for internal checking
-
-            # Mapping from x1, x2, and v -> kernel args
-            # x1 is post-gate (C)
-            # x2 is pre-gate (B)
-            # v is x
-
-            if self.cgcg_dtype != dtype:
-                x = v.to(self.cgcg_dtype)
-                B = x2.to(self.cgcg_dtype)
-                C = x1.to(self.cgcg_dtype)
-                h = self.short_conv.short_conv_weight.to(self.cgcg_dtype)  # g, 1, filter_l
-            else:
-                x = v
-                B = x2
-                C = x1
-                h = self.short_conv.short_conv_weight  # g, 1, filter_l
-
-            bs, seqlen, g, dg = x.shape
-
-            z = self.kernel_fn(
-                x,  # x1.to(self.cgcg_dtype),
-                B,  # x2.to(self.cgcg_dtype),
-                C,  # v.to(self.cgcg_dtype),
-                h,  # g, 1, filter_l
-                bs=bs,
-                seqlen=seqlen,
-                g=g,
-                dg=dg,
-                # Explicitly set fwd autotune to False for now
-                fwd_autotune=False,
-                bwd_autotune=self.hyena_config.cgcg_bwd_autotune,
-                fused_bwd=self.hyena_config.cgcg_fused_bwd,
-                fwd_kernel_cfg=self.fwd_kernel_cfg,
-                bwd_kernel_cfg=None if self.hyena_config.cgcg_bwd_autotune else self.bwd_kernel_cfg,
-            )
-            out = rearrange(z, "b l g d -> b l (g d)")
-            if self.cgcg_dtype != dtype:
-                out = out.to(dtype)
-            return out
-
+        z = x2 * v if self.pregate else v
+        if not self.use_conv_bias:
+            z = self.short_conv(z, _use_cp=_hyena_use_cp)
         else:
-            x1 = rearrange(x1, "b l g dg -> b (g dg) l")
-            x2 = rearrange(x2, "b l g dg -> b (g dg) l")
-            v = rearrange(v, "b l g dg -> b (g dg) l")
+            # maybe handle num_groups
+            bias = self.conv_bias.repeat_interleave(self.group_dim, dim=0)
+            z = self.short_conv(z, _use_cp=_hyena_use_cp) + rearrange(bias, "h -> 1 h 1") * z  # conv(z) + bias * z
 
-            x1, x2, v = x1[..., :L], x2[..., :L], v[..., :L]
+        z = x1 * z if self.postgate else z
 
-            z = x2 * v if self.pregate else v
-            if not self.use_conv_bias:
-                z = self.short_conv(z, _use_cp=_hyena_use_cp)
-            else:
-                # maybe handle num_groups
-                bias = self.conv_bias.repeat_interleave(self.group_dim, dim=0)
-                z = self.short_conv(z, _use_cp=_hyena_use_cp) + rearrange(bias, "h -> 1 h 1") * z  # conv(z) + bias * z
-
-            z = x1 * z if self.postgate else z
-
-            return rearrange(z, "b d l -> b l d")
+        return rearrange(z, "b d l -> b l d")
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
         """

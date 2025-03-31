@@ -863,7 +863,7 @@ class ASRPredictionWriter(BasePredictionWriter):
     ):
         import lhotse
 
-        for sample_id, transcribed_text in prediction:
+        for sample_id, hypotheses in prediction:
             item = {}
             if isinstance(sample_id, lhotse.cut.Cut):
                 sample = sample_id
@@ -878,7 +878,7 @@ class ASRPredictionWriter(BasePredictionWriter):
                 item["text"] = sample.supervisions[0].text or ''
                 if hasattr(sample, 'shard_id'):
                     item["shard_id"] = sample.shard_id
-                item["pred_text"] = transcribed_text
+                item["pred_text"] = hypotheses.text
                 self.outf.write(json.dumps(item) + "\n")
                 self.samples_num += 1
             else:
@@ -887,7 +887,7 @@ class ASRPredictionWriter(BasePredictionWriter):
                 item["offset"] = sample.offset
                 item["duration"] = sample.duration
                 item["text"] = sample.text_raw
-                item["pred_text"] = transcribed_text
+                item["pred_text"] = hypotheses.text
                 self.outf.write(json.dumps(item) + "\n")
                 self.samples_num += 1
         return

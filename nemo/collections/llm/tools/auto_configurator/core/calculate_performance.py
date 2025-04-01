@@ -21,7 +21,6 @@ from tensorboard.backend.event_processing import event_accumulator
 
 GPT_BASED_MODELS = [
     "gpt3",
-    "bert",
     "llama",
     "qwen",
     "mixtral",

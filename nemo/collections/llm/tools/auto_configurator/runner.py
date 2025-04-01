@@ -49,6 +49,7 @@ class AutoConfigurator:
         self,
         recipe: Partial = None,
         path_to_logs: str = None,
+        mode: Optional[str] = "pretrain",
         gpu_memory_gb: Optional[int] = 80,
         tensor_parallel_sizes: Optional[List[int]] = "auto",
         pipeline_parallel_sizes: Optional[List[int]] = "auto",
@@ -69,6 +70,7 @@ class AutoConfigurator:
         Args:
             recipe (Partial): recipe to be used for training.
             path_to_logs (str): path to the directory where the logs will be stored.
+            mode (Optional[str]): pretrain or finetune recipe mode.
             gpu_memory_gb (Optional[int]): memory per GPU, in GB. Currently 40GB and 80GB A100s/H100s supported.
             tensor_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation,
                 or a list, such as [1, 2, 4, 8].
@@ -98,6 +100,11 @@ class AutoConfigurator:
             setattr(self, key, value)
         logging.info(self._get_message(config))
 
+        assert mode in [
+            "pretrain",
+            "finetune",
+        ], "current mode is not supported. Please, set the mode to 'pretrain' or 'finetune'."
+
         model_type = self._get_model_type(recipe.model.config)
         assert model_type in SUPPORTED_MODELS, f"model_type must be set to one of {list(SUPPORTED_MODELS.keys())}."
 
@@ -126,6 +133,32 @@ class AutoConfigurator:
         ), "gpu_memory_gb can only be 40 or 80."
         assert max_minutes_per_run >= 10, "max_minutes_per_run must be an int and be at least 10 minutes."
         assert max_steps_per_run >= 10, "max_steps_per_run must be an int and be at least 10 minutes."
+
+        assert context_parallel_sizes != "auto", "'auto' mode is not supported for context parallelism."
+        assert expert_parallel_sizes != "auto", "'auto' mode is not supported for expert parallelism."
+
+        if mode == "finetune":
+            assert not calculate_model_size, "model size estimation is not supported for 'finetune' mode."
+            assert tensor_parallel_sizes != "auto", "tensor parallelism must be specified for 'finetune' mode."
+            assert pipeline_parallel_sizes != "auto", "pipeline parallelism must be specified for 'finetune' mode."
+
+            if min_model_parallel_size == "auto":
+                self.min_model_parallel_size = (
+                    min(tensor_parallel_sizes)
+                    * min(pipeline_parallel_sizes)
+                    * min(context_parallel_sizes)
+                    * min(expert_parallel_sizes)
+                )
+                assert self.min_model_parallel_size <= gpu_count
+
+            if max_model_parallel_size == "auto":
+                max_mp = (
+                    max(tensor_parallel_sizes)
+                    * max(pipeline_parallel_sizes)
+                    * max(context_parallel_sizes)
+                    * max(expert_parallel_sizes)
+                )
+                self.max_model_parallel_size = max_mp if max_mp <= gpu_count else gpu_count
 
         self.model_type = model_type
         self.model_size_in_b = self._get_model_size(
@@ -170,8 +203,6 @@ class AutoConfigurator:
             if v in str(model):
                 return k
 
-        return None
-
     def _get_model_size(
         self,
         model: Config,
@@ -204,7 +235,7 @@ class AutoConfigurator:
                     return size
                 elif measure == 'M':
                     return size / 1000  # Convert millions to billions
-        elif model_type == "bert":
+        else:
             return np.round(
                 _calculate_model_size(
                     vocab_size=vocab_size,
@@ -217,7 +248,6 @@ class AutoConfigurator:
                 ),
                 3,
             )
-        return None
 
 
 def generate_configs(runner_config: AutoConfigurator = None) -> dict:
@@ -233,7 +263,6 @@ def generate_configs(runner_config: AutoConfigurator = None) -> dict:
 
     # Generate base config for the given model size
     base_config, train_config = generic_base_config(runner_config)
-
     # Launch grid search for training constraints
     base_config, train_configs = generate_grid_search_configs(base_config, train_config)
 
@@ -255,8 +284,6 @@ def generate_configs(runner_config: AutoConfigurator = None) -> dict:
         trainer.strategy.virtual_pipeline_model_parallel_size = config.get(
             "virtual_pipeline_model_parallel_size", None
         )
-        if config.get("tensor_model_parallel_size") > 1:
-            trainer.strategy.sequence_parallel = True
         trainer.max_steps = config.get("max_steps")
         trainer.log_every_n_steps = 1
 

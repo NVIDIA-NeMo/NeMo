@@ -269,3 +269,131 @@ class TestGenerateConfgis:
             1,
             2,
         ], f"[2, 2, 1, 1, 2] is expected configuration output but got {auto_configs[1]}."
+
+    def test_finetune_lora(self):
+        # Llama31 70b lora
+        recipe = partial(
+            llm.llama31_70b.finetune_recipe,
+            num_nodes=64,
+            num_gpus_per_node=8,
+            dir="/",
+            peft_scheme="lora",
+        )()
+        recipe.data.seq_length = 8192
+        recipe.data.global_batch_size = 512
+        recipe.model.config.seq_length = recipe.data.seq_length
+
+        runner = AutoConfigurator(
+            recipe=recipe,
+            mode="finetune",
+            tensor_parallel_sizes=[4, 8],
+            pipeline_parallel_sizes=[2, 4, 8],
+            micro_batch_sizes=[1, 2, 4],
+            context_parallel_sizes=[2],
+            min_model_parallel_size=4,
+            max_model_parallel_size=32,
+            path_to_logs="/",
+        )
+
+        _, configs = generate_configs(runner)
+
+        mbs = [1, 2, 4]
+        for run_name, config, mb in zip(configs.keys(), configs.values(), mbs):
+            assert config.data.micro_batch_size == mb
+            assert config.data.seq_length == 8192
+            assert config.data.global_batch_size == 512
+
+        assert len(configs) == 9, f"{len(configs)} configurations were generated but 9 were expected."
+
+        auto_configs = get_auto_configs(configs)
+        assert auto_configs[0] == [
+            4,
+            2,
+            2,
+            1,
+            1,
+        ], f"[4, 2, 2, 1, 1] is expected configuration output but got {auto_configs[0]}."
+
+    def test_finetune_dora(self):
+        # Nemotron4 15b dora
+        recipe = partial(
+            llm.nemotron4_15b.finetune_recipe,
+            num_nodes=16,
+            num_gpus_per_node=8,
+            dir="/",
+            peft_scheme="dora",
+        )()
+        recipe.data.seq_length = 4096
+        recipe.data.global_batch_size = 128
+        recipe.model.config.seq_length = recipe.data.seq_length
+
+        runner = AutoConfigurator(
+            recipe=recipe,
+            mode="finetune",
+            tensor_parallel_sizes=[2, 4],
+            pipeline_parallel_sizes=[2, 4],
+            micro_batch_sizes=[1, 2],
+            min_model_parallel_size=4,
+            max_model_parallel_size=8,
+            path_to_logs="/",
+        )
+
+        _, configs = generate_configs(runner)
+
+        mbs = [1, 2]
+        for run_name, config, mb in zip(configs.keys(), configs.values(), mbs):
+            assert config.data.micro_batch_size == mb
+            assert config.data.seq_length == 4096
+            assert config.data.global_batch_size == 128
+
+        assert len(configs) == 6, f"{len(configs)} configurations were generated but 6 were expected."
+
+        auto_configs = get_auto_configs(configs)
+        assert auto_configs[0] == [
+            2,
+            2,
+            1,
+            1,
+            1,
+        ], f"[2, 2, 2, 1, 1] is expected configuration output but got {auto_configs[0]}."
+
+    def test_finetune(self):
+        # Qwen2 7b
+        recipe = partial(
+            llm.nemotron4_15b.finetune_recipe,
+            num_nodes=8,
+            num_gpus_per_node=8,
+            dir="/",
+            peft_scheme=None,
+        )()
+        recipe.data.seq_length = 4096
+        recipe.data.global_batch_size = 128
+        recipe.model.config.seq_length = recipe.data.seq_length
+
+        runner = AutoConfigurator(
+            recipe=recipe,
+            mode="finetune",
+            tensor_parallel_sizes=[1, 2, 4],
+            pipeline_parallel_sizes=[1, 2],
+            micro_batch_sizes=[1, 2],
+            path_to_logs="/",
+        )
+
+        _, configs = generate_configs(runner)
+
+        mbs = [1, 2]
+        for run_name, config, mb in zip(configs.keys(), configs.values(), mbs):
+            assert config.data.micro_batch_size == mb
+            assert config.data.seq_length == 4096
+            assert config.data.global_batch_size == 128
+
+        assert len(configs) == 12, f"{len(configs)} configurations were generated but 12 were expected."
+
+        auto_configs = get_auto_configs(configs)
+        assert auto_configs[4] == [
+            2,
+            1,
+            1,
+            1,
+            1,
+        ], f"[2, 1, 1, 1, 1] is expected configuration output but got {auto_configs[4]}."

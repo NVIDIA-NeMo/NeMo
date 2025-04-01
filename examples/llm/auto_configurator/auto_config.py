@@ -48,11 +48,6 @@ class Llama3Config145M(Llama3Config):
 def llama3_145m(num_nodes=1, num_gpus_per_node=1):
     # Setup Llama3 145M config
     recipe = partial(llm.llama3_8b.pretrain_recipe, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)()
-    recipe.data.seq_length = 2048
-
-    recipe.trainer.strategy.context_parallel_size = 1
-    recipe.model.config.seq_length = recipe.data.seq_length
-
     recipe = run.Partial(
         llm.pretrain,
         model=run.Config(LlamaModel, config=run.Config(Llama3Config145M)),
@@ -76,6 +71,7 @@ def train_config(args):
     calculate_model_size = False
     if args.model_type == "llama":
         recipe = partial(llama3_145m)()
+        recipe.data.seq_length = recipe.model.config.seq_length = 2048
     elif args.model_type == "bert":
         recipe = partial(llm.bert_110m.pretrain_recipe, num_nodes=1, num_gpus_per_node=1)()
     elif args.model_type == "t5":

@@ -83,6 +83,7 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
         actual_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
 
     actual_transcripts = [hyp.text for hyp in actual_hypotheses]
+    actual_y_sequences = [hyp.y_sequence for hyp in actual_hypotheses]
 
     decoding_config["greedy"]["use_cuda_graph_decoder"] = True
 
@@ -92,10 +93,13 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
         fast_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
 
     fast_transcripts = [hyp.text for hyp in fast_hypotheses]
+    fast_y_sequences = [hyp.y_sequence for hyp in fast_hypotheses]
 
     wer = jiwer.wer(actual_transcripts, fast_transcripts)
+    y_sequence_eq = [torch.equal(act_y, fast_y) for (act_y, fast_y) in zip(actual_y_sequences, fast_y_sequences)]
 
     assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
+    assert all(y_sequence_eq), "Cuda graph greedy decoder should match original decoder implementation."
 
     for actual, fast in zip(actual_transcripts, fast_transcripts):
         if actual != fast:

@@ -18,7 +18,7 @@ import _io
 import lightning.pytorch as pl
 import torch
 import torch.distributed as dist
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
 from nemo.automodel.loss import masked_cross_entropy
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
@@ -151,15 +151,26 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             else:
                 auto_cls = liger_kernel_trf.AutoLigerKernelForCausalLM
 
-        if self.load_pretrained_weights:
-            return auto_cls.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.bfloat16,
-                device_map=self.device_map,
-                trust_remote_code=self.trust_remote_code,
-                load_in_4bit=self.load_in_4bit,
-                attn_implementation=attn_implementation,
+        quantization_config = None
+        if self.load_in_4bit:
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=self.default_dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_storage=self.default_dtype,
             )
+
+        if self.load_pretrained_weights:
+            m = auto_cls.from_pretrained(
+                self.model_name,
+                torch_dtype=self.default_dtype,
+                device_map=None if self.load_in_4bit else self.device_map,
+                trust_remote_code=self.trust_remote_code,
+                attn_implementation=attn_implementation,
+                quantization_config=quantization_config,
+            )
+            return m
         else:
             from transformers import AutoConfig
 
@@ -414,14 +425,27 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         Used from HFcheckpointio to load a checkpoint
         TODO(@akoumparouli): refactor
         """
-        return AutoModelForCausalLM.from_pretrained(
-            path,
-            torch_dtype='auto',
-            device_map="cpu",
-            trust_remote_code=self.trust_remote_code,
-            load_in_4bit=self.load_in_4bit,
-            attn_implementation=self.attn_implementation,
-        ).state_dict()
+
+        d = {
+            "pretrained_model_name_or_path": path,
+            "torch_dtype": torch.bfloat16,  # Always load in bfloat16 first
+            "device_map": "cpu",
+            "trust_remote_code": self.trust_remote_code,
+            "attn_implementation": self.attn_implementation,
+            "load_in_4bit": self.load_in_4bit,
+        }
+
+        if self.load_in_4bit:
+            d["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_storage=torch.bfloat16,
+            )
+
+        d["torch_dtype"] = torch.bfloat16
+        return AutoModelForCausalLM.from_pretrained(**d).state_dict()
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
         """Loads the state-dict directly to self.model, therefore FQNs are expected

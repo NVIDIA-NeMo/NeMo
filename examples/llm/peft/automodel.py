@@ -137,6 +137,7 @@ def main():
     parser.add_argument(
         '--accumulate_grad_batches', type=int, default=10, help='Number of batches to accumulate gradient over'
     )
+    parser.add_argument('--load-in-4bit', action='store_true', help='Use 4-bit quantization for e.g. for qlora')
     parser.add_argument('--max-steps', type=int, default=100, help='Maximum number of training steps')
     parser.add_argument('--wandb-project', type=str, default=None, help='Wandb project to use')
     parser.add_argument('--use-torch-jit', action='store_true', help='Enables torch.compile on model')
@@ -192,6 +193,7 @@ def main():
         model_accelerator=model_accelerator,
         trust_remote_code=args.trust_remote_code,
         use_liger_kernel=args.liger,
+        load_in_4bit=args.load_in_4bit,
         enable_grad_ckpt=args.enable_grad_ckpt,
     )
     strategy = make_strategy(args.strategy, model, args.devices, args.num_nodes, True, args.enable_cpu_offload)

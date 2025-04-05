@@ -235,8 +235,6 @@ def mlperf_lora_llama2_70b_recipe(
         callbacks=[overlap_callback, gc_callback, timing_callback],
     )
 
-    from nemo.collections.llm.recipes.log.default import tensorboard_logger
-
     recipe = run.Partial(
         llm.finetune,
         model=model,
@@ -289,7 +287,9 @@ if __name__ == "__main__":
 
     env_vars = {
         # pylint: disable=C0301
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1",  # Limit GPUs to one compute stream so that kernels will be executed in consistent order, for best performance with communication overlap configs
+        "CUDA_DEVICE_MAX_CONNECTIONS": (
+            "32" if args.gpu.lower() in ['b200', 'gb200'] else "1"
+        ),  # Limit GPUs to one compute stream so that kernels will be executed in consistent order, for best performance with communication overlap configs
         # pylint: disable=C0301
         "CUBLAS_FORCE_XMMA_KERNEL_INIT": "DEVICE",  # Use a device kernel instead of memset for matrix multiply initialization, which can help reduce CPU-side overhead
         "CUDNN_FRONTEND_ATTN_DP_WORKSPACE_LIMIT": "0",  # Reduce memory used by cuDNN attention
@@ -341,7 +341,13 @@ if __name__ == "__main__":
 
         recipe.log.wandb = wandb_logger(project=args.wandb_prj_name, name=args.wandb_job_name)
 
-    plugins = [PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152 if PP_SIZE > 1 else None)]
+    plugins = [
+        PerfEnvPlugin(
+            enable_vboost=True,
+            nccl_pp_comm_chunksize=2097152 if PP_SIZE > 1 else None,
+            gpu_sm100_or_newer=(args.gpu.lower() in ['b200', 'gb200']),
+        )
+    ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
 

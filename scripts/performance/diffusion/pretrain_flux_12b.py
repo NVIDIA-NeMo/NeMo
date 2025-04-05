@@ -112,7 +112,11 @@ if __name__ == "__main__":
     )
 
     plugins = [
-        PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152 if pp_size > 1 else None),
+        PerfEnvPlugin(
+            enable_vboost=True,
+            nccl_pp_comm_chunksize=2097152 if pp_size > 1 else None,
+            gpu_sm100_or_newer=(args.gpu.lower() in ['b200', 'gb200']),
+        ),
     ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))

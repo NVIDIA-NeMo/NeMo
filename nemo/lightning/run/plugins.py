@@ -67,6 +67,7 @@ class PreemptionPlugin(run.Plugin):
     callbacks: list[run.Config[Callback]] = field(default_factory=lambda: [run.Config(PreemptionCallback)])
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Set up the preemption plugin."""
         if isinstance(task, run.Script):
             logging.warning(
                 f"The {self.__class__.__name__} will have no effect on the task as it's an instance of run.Script"
@@ -76,7 +77,7 @@ class PreemptionPlugin(run.Plugin):
         if isinstance(executor, run.SlurmExecutor):
             # Sends a SIGTERM self.preempt_time seconds before hitting time limit
             logging.info(
-                f"{self.__class__.__name__} will send a SIGTERM {self.preempt_time} seconds before the job's time limit for your Slurm executor."
+                f"{self.__class__.__name__} will send a SIGTERM {self.preempt_time} seconds before the job's time limit for your Slurm executor."  # pylint: disable=C0301
             )
             executor.signal = f"TERM@{self.preempt_time}"
 
@@ -87,13 +88,16 @@ class PreemptionPlugin(run.Plugin):
 class FaultTolerancePlugin(run.Plugin):
     """
     A plugin for setting up the fault tolerance callback from nvidia-resiliency-ext.
-    This plugin enables workload hang detection, automatic calculation of timeouts used for hang detection, detection of rank(s) terminated due to an error and workload respawning in case of a failure.
+    This plugin enables workload hang detection, automatic calculation of timeouts used for hang detection,
+    detection of rank(s) terminated due to an error and workload respawning in case of a failure.
     Note: FaultTolerancePlugin does not work with the NsysPlugin.
     Args:
         num_in_job_restarts (int): Max number of restarts on failure, within the same job. Default is 3.
         num_job_retries_on_failure (int): Max number of new job restarts on failure. Default is 2.
-        initial_rank_heartbeat_timeout (int): Timeouts are time intervals used by a rank monitor to detect that a rank is not alive. This is the max timeout for the initial heartbeat. Default is 1800.
-        rank_heartbeat_timeout (int): This is the timeout for subsequent hearbeats after the initial heartbeat. Default is 300.
+        initial_rank_heartbeat_timeout (int): Timeouts are time intervals used by a rank monitor to detect
+            that a rank is not alive. This is the max timeout for the initial heartbeat. Default is 1800.
+        rank_heartbeat_timeout (int): This is the timeout for subsequent hearbeats after the initial heartbeat.
+            Default is 300.
     """
 
     num_in_job_restarts: int = 3
@@ -102,7 +106,7 @@ class FaultTolerancePlugin(run.Plugin):
     rank_heartbeat_timeout: int = 300
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
-
+        """Set up the fault tolerance plugin."""
         assert HAVE_RES, "nvidia-resiliency-ext.ptl_resiliency is required to use the FaultTolerancePlugin."
 
         executor.launcher = run.FaultTolerance(
@@ -157,6 +161,7 @@ class NsysPlugin(run.Plugin):
     gen_shape: bool = False
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Set up the nsys profiling plugin."""
         if isinstance(task, run.Partial):
             nsys_callback = run.Config(
                 NsysCallback,
@@ -179,7 +184,8 @@ class MemoryProfilePlugin(run.Plugin):
     A plugin for memory profiling.
 
     The MemoryProfilePlugin allows you to profile a timeline of memory allocations during you run.
-    The memory profiling plugin creates snapshots during the entire training. You can specify which ranks to run the profiling.
+    The memory profiling plugin creates snapshots during the entire training. You can specify
+    which ranks to run the profiling.
 
     Args:
         dir (str): Directory to store the memory profile dump .pickle files
@@ -191,6 +197,7 @@ class MemoryProfilePlugin(run.Plugin):
     ranks: Optional[list[int]] = None
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Set up the memory profiling plugin."""
         if isinstance(task, run.Partial):
             memprof_callback = run.Config(
                 MemoryProfileCallback,
@@ -207,7 +214,8 @@ class WandbPlugin(run.Plugin):
     A plugin for setting up Weights & Biases.
 
     This plugin sets a ``WandbLogger`` to ``NeMoLogger``'s ``wandb`` arg,
-    which in turn initializes the Pytorch Lightning `WandbLogger <https://lightning.ai/docs/pytorch/stable/extensions/generated/lightning.pytorch.loggers.WandbLogger.html>`_.
+    which in turn initializes the Pytorch Lightning `WandbLogger
+    <https://lightning.ai/docs/pytorch/stable/extensions/generated/lightning.pytorch.loggers.WandbLogger.html>`_.
 
     This plugin is only activated if the ``WANDB_API_KEY`` environment variable is set.
     The ``WANDB_API_KEY`` environment variables will also be set in the executor's environment variables.
@@ -231,6 +239,7 @@ class WandbPlugin(run.Plugin):
     log_task_config: bool = True
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Set up the wandb plugin."""
         if isinstance(task, run.Script):
             logging.warning(
                 f"The {self.__class__.__name__} will have no effect on the task as it's an instance of run.Script"
@@ -283,8 +292,9 @@ class ConfigValidationPlugin(run.Plugin):
         validate_wandb (bool): Whether to validate Weights and Biases integration. If set to True, the plugin will
             assert that the executor's environment variables contain a `WANDB_API_KEY`
             and that NeMo Logger's `wandb` is set. Defaults to False.
-        validate_nodes_and_devices (bool): Whether to validate the number of devices and nodes. If set to True, the plugin will assert that the task's
-            trainer is configured to use the same number of nodes and devices as the executor. Defaults to True.
+        validate_nodes_and_devices (bool): Whether to validate the number of devices and nodes. If set to True,
+            the plugin will assert that the task's trainer is configured to use the same number of nodes and devices
+            as the executor. Defaults to True.
     """
 
     validate_preemption: bool = True
@@ -294,6 +304,7 @@ class ConfigValidationPlugin(run.Plugin):
     validate_nodes_and_devices: bool = True
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Set up the plugin to configure validation."""
         assert isinstance(task, run.Partial)
         logging.info(f"Validating {task.__fn_or_cls__.__qualname__} and {executor.__class__.__qualname__}.")
         if self.validate_preemption:
@@ -344,6 +355,7 @@ class PerfEnvPlugin(run.Plugin):
     layernorm_sm_margin: int = 16
     enable_vboost: bool = False
     nccl_pp_comm_chunksize: Optional[int] = None
+    gpu_sm100_or_newer: bool = False
 
     def get_vboost_srun_cmd(self, nodes, job_dir):
         "Create the vboost `sudo nvidia-smi boost-slider --vboost 1` command"
@@ -373,7 +385,9 @@ class PerfEnvPlugin(run.Plugin):
             # Force program order kernel launch for TP, CP overlap
             tp_size = task.trainer.strategy.tensor_model_parallel_size
             cp_size = task.trainer.strategy.context_parallel_size
-            if tp_size > 1 or cp_size > 1:
+            if self.gpu_sm100_or_newer and (tp_size > 1 or cp_size > 1):
+                executor.env_vars["CUDA_DEVICE_MAX_CONNECTIONS"] = "32"
+            elif (not self.gpu_sm100_or_newer) and (tp_size > 1 or cp_size > 1):
                 executor.env_vars["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
 
             # Set LayerNorm SM margin to support the overlap with LayerNorm kernel

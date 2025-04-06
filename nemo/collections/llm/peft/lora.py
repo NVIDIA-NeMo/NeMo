@@ -15,8 +15,9 @@
 import math
 from dataclasses import dataclass, field
 from typing import List, Literal
-import bitsandbytes
+from nemo.utils.import_utils import safe_import
 
+bitsandbytes, HAVE_BNB = safe_import("bitsandbytes")
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -331,7 +332,10 @@ def patch_linear_module(
         cls = orig_linear.__class__
         new_cls = type('PatchedTELinearAdapter', (TELinearAdapter, cls), {})
     # If the model uses quantized weights, we want to use orig_linear's forward
-    if hasattr(orig_linear, 'quant_state') and orig_linear.quant_state.__class__ == bitsandbytes.functional.QuantState:
+    if (
+        getattr(orig_linear, 'quant_state', None) is not None
+        and orig_linear.quant_state.__class__ == bitsandbytes.functional.QuantState
+    ):
         orig_linear.super_fwd = orig_linear.forward
 
     orig_linear.__class__ = new_cls
@@ -421,7 +425,10 @@ class LoRA(PEFT, ModuleMatcher):
                 if (
                     self._is_fsdp_v1
                     or hasattr(m.weight.data, '_local_tensor')
-                    or (hasattr(m, 'quant_state') and m.quant_state.__class__ == bitsandbytes.functional.QuantState)
+                    or (
+                        getattr(m, 'quant_state', None) is not None
+                        and m.quant_state.__class__ == bitsandbytes.functional.QuantState
+                    )
                 ):
                     lora_cls = patch_linear_module
                 elif HAVE_TE and m.__class__ == te.Linear:

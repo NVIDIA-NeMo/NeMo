@@ -242,7 +242,11 @@ def set_primary_perf_configs(
 
     recipe.model.config.enable_cuda_graph = enable_cuda_graphs
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
-    if task == "none" or task == "lora" and hasattr(recipe.data, "packed_sequence_specs"):
+    if (
+        task in ["none", "lora"]
+        and hasattr(recipe.data, "packed_sequence_specs")
+        and recipe.data.packed_sequence_specs is not None
+    ):
         recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graphs
 
     return recipe
@@ -258,6 +262,7 @@ def set_exp_logging_configs(
     wandb_prj_name: str,
     wandb_job_name: str,
 ):
+    """Set experiment logging configs."""
     if task == "pre_train" and domain == "llm":
         recipe.trainer.callbacks.append(
             run.Config(

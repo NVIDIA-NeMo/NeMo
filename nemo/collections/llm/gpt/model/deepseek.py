@@ -92,16 +92,16 @@ class DeepSeekConfig(MLATransformerConfig, GPTConfig):
     layernorm_epsilon: float = 1e-6
     bf16: bool = True
     params_dtype: torch.dtype = torch.bfloat16
-    async_tensor_model_parallel_allreduce = True
-    attention_softmax_in_fp32 = False
-    persist_layer_norm = True
+    async_tensor_model_parallel_allreduce: bool = True
+    attention_softmax_in_fp32: bool = False
+    persist_layer_norm: bool = True
 
     # fusions
-    apply_rope_fusion = True
-    bias_activation_fusion = True
-    bias_dropout_fusion = True
-    masked_softmax_fusion = True
-    gradient_accumulation_fusion = True
+    apply_rope_fusion: bool = False
+    bias_activation_fusion: bool = True
+    bias_dropout_fusion: bool = True
+    masked_softmax_fusion: bool = True
+    gradient_accumulation_fusion: bool = True
 
 
 @dataclass

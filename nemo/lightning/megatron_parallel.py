@@ -154,6 +154,8 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         vp_size (Optional[int]): Virtual pipeline parallel size.
         ddp_config (Optional[DistributedDataParallelConfig]): An instance of Megatron core's
             DistributedDataParallelConfig which controls the Megatron DDP configuration.
+        fsdp (Optional[str]): Whether model should run Torch FSDP2 instead of DDP, select from
+            ["megatron", "torch"]. Defaults to None.
         cpu (bool): Whether model should reside on CPU.
         convert_module_fn (Optional[Callable[[ModelT], nn.Module]]): An optional function to
             apply to the model parameters after initialization.
@@ -188,6 +190,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         loss_reduction: Optional[Callable[[ModelT], "MegatronLossReduction"]] = None,
         vp_size: Optional[int] = None,
         ddp_config: Optional[DistributedDataParallelConfig] = None,
+        fsdp: Optional[str] = None,
         cpu: bool = False,
         convert_module_fn: Optional[Callable[[ModelT], nn.Module]] = None,
     ) -> None:
@@ -222,6 +225,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         self.forward_step = forward_step or default_forward_step
         self.loss_reduction: MegatronLossReduction = loss_reduction
         self.ddp_config = ddp_config
+        self.fsdp = fsdp
         self.convert_module_fn = convert_module_fn
 
         # [ModelOpt]: Detect Pipeline-parallel Distillation mode.
@@ -587,8 +591,8 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         from megatron.core.tensor_parallel.layers import set_defaults_if_not_set_tensor_model_parallel_attributes
 
         for model_module in self:
-            if not self._cpu and not (HAVE_CUSTOM_FSDP and self.ddp_config and self.ddp_config.use_custom_fsdp):
-                # If Megatron FSDP is enabled, we don't need to move the model to GPU here to avoid GPU OOM.
+            if not self._cpu and (not HAVE_CUSTOM_FSDP or self.fsdp != "megatron"):
+                # If Megatron custom FSDP is enabled, we don't need to move the model to GPU here to avoid GPU OOM.
                 model_module.cuda(torch.cuda.current_device())
 
             for param in model_module.parameters():
@@ -667,11 +671,19 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                 unwrapped_module = unwrap_model(module, Float16Module)
                 if (
                     HAVE_CUSTOM_FSDP
-                    and self.ddp_config.use_custom_fsdp
+                    and self.fsdp == "megatron"
                     and not isinstance(unwrapped_module, FullyShardedDataParallel)
                 ):
-                    FSDP = FullyShardedDataParallel
-                    dist_module = FSDP(
+                    if not module.config.use_custom_fsdp:
+                        from nemo.utils import logging
+
+                        module.config.use_custom_fsdp = True
+                        logging.warning("Setting module.config.use_custom_fsdp to True for MCore FSDP.")
+
+                    assert module.config.use_custom_fsdp, "Custom FSDP is not enabled in module.config."
+                    assert self.ddp_config.use_custom_fsdp, "Custom FSDP is not enabled in ddp_config."
+
+                    dist_module = FullyShardedDataParallel(
                         module.config,
                         self.ddp_config,
                         module,
@@ -1427,13 +1439,14 @@ class MegatronStep(Generic[ModelT, DataT]):
 
             if has_dataloader_idx:
                 packed_data = [(d, batch_idx, dataloader_idx) for d in data]
-                data = itertools.chain(packed_data)
+                data = [itertools.chain(packed_data)]
         else:
             data = self.data
             # for pretraining (fixed sequence length), we use seq_length inferred from the data sampler.
             seq_length = None
 
-        data = self.to_data_iterator_list(data)
+        if not has_dataloader_idx:
+            data = self.to_data_iterator_list(data)
         return data, seq_length
 
     @functools.cached_property

@@ -26,7 +26,7 @@ on:
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.22.5
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.24.1
     with:
       library-name: NeMo-Toolkit
       python-package: nemo
@@ -36,15 +36,18 @@ jobs:
     secrets:
       SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
+      PAT: ${{ secrets.PAT }}
 
   freeze-tags:
     runs-on: ubuntu-latest
     needs: [code-freeze]
+    environment: main
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           path: ${{ github.run_id }}
+          token: ${{ secrets.PAT }}
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.dry-run == true && inputs.freeze-commit || needs.code-freeze.outputs.release-branch }}

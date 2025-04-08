@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
-def gpt_data_step(dataloader_iter) -> dict[str, torch.Tensor]:
+def gpt_data_step(dataloader_iter, use_mtp=False) -> dict[str, torch.Tensor]:
     """Process a single batch of data from the dataloader iterator.
 
     This function handles the data loading step for GPT models, managing
@@ -62,6 +62,8 @@ def gpt_data_step(dataloader_iter) -> dict[str, torch.Tensor]:
 
     Args:
         dataloader_iter: Iterator over the dataloader
+        use_mtp: Whether the Multi-Token Prediction Module is used. Input needs to be passed
+                 into the last ppieline stage if mtp is used.
 
     Returns:
         dict[str, torch.Tensor]: Processed batch with required tensors moved to appropriate devices
@@ -88,7 +90,7 @@ def gpt_data_step(dataloader_iter) -> dict[str, torch.Tensor]:
         required_host_keys.add("cu_seqlens_argmin")
         required_host_keys.add("max_seqlen")
 
-    if parallel_state.is_pipeline_first_stage():
+    if parallel_state.is_pipeline_first_stage() or use_mtp:
         required_device_keys.update(("tokens", "position_ids"))
     if parallel_state.is_pipeline_last_stage():
         required_device_keys.update(("labels", "loss_mask"))
@@ -210,6 +212,27 @@ def default_layer_spec(config: "GPTConfig") -> ModuleSpec:
             return transformer_engine_layer_spec(config)
     else:
         return local_layer_spec(config)
+
+
+def mtp_block_spec(config: "GPTConfig") -> Optional[ModuleSpec]:
+    """Pass in the MTP block spec if model has MTP layers.
+
+    Args:
+        config: GPT configuration object
+
+    Returns:
+        ModuleSpec: The MTP module specification
+    """
+    if getattr(config, "mtp_num_layers", None):
+        from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+
+        if isinstance(config.transformer_layer_spec, Callable):
+            spec = config.transformer_layer_spec(config)
+        else:
+            spec = config.transformer_layer_spec
+        return get_gpt_mtp_block_spec(config, spec, use_transformer_engine=HAVE_TE)
+    else:
+        return None
 
 
 def torch_dtype_from_mcore_config(config: TransformerConfig) -> torch.dtype:
@@ -341,6 +364,12 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                 build_model_context = fp8_model_init
 
         with build_model_context():
+            import inspect
+
+            if 'mtp_block_spec' in inspect.signature(MCoreGPTModel.__init__).parameters:
+                kwargs = {"mtp_block_spec": mtp_block_spec(self)}
+            else:
+                kwargs = {}
             model = MCoreGPTModel(
                 self,
                 transformer_layer_spec=transformer_layer_spec,
@@ -356,6 +385,7 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                 pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
                 post_process=post_process or parallel_state.is_pipeline_last_stage(),
                 scatter_embedding_sequence_parallel=self.scatter_embedding_sequence_parallel,
+                **kwargs,
             )
 
         # If using full TE layer, need to set TP, CP group since the module call

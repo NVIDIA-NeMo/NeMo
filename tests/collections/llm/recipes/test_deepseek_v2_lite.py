@@ -51,7 +51,8 @@ class TestDeepSeekV2Lite:
         assert recipe.data.micro_batch_size == 1
 
         # Check default parallelism settings
-        assert recipe.trainer.strategy.tensor_model_parallel_size == 4
+        assert recipe.trainer.strategy.tensor_model_parallel_size == 1
+        assert recipe.trainer.strategy.expert_model_parallel_size == 8
 
     def test_finetune_recipe(self, recipe_module):
         recipe = recipe_module.finetune_recipe()

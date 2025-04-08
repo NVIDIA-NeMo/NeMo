@@ -25,15 +25,13 @@ from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
 
 
 def trainer(
-    tensor_parallelism: int = 4,
+    tensor_parallelism: int = 1,
     pipeline_parallelism: int = 1,
     pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
-    virtual_pipeline_parallelism: Optional[int] = 1,
+    virtual_pipeline_parallelism: Optional[int] = None,
     context_parallelism: int = 1,
     expert_parallelism: int = 1,
     sequence_parallelism: bool = True,
-    account_for_embedding_in_pipeline_split: bool = True,
-    account_for_loss_in_pipeline_split: bool = True,
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
@@ -70,8 +68,6 @@ def trainer(
         context_parallel_size=context_parallelism,
         expert_model_parallel_size=expert_parallelism,
         sequence_parallel=sequence_parallelism,
-        account_for_embedding_in_pipeline_split=account_for_embedding_in_pipeline_split,
-        account_for_loss_in_pipeline_split=account_for_loss_in_pipeline_split,
         gradient_as_bucket_view=True,
         ckpt_async_save=True,
         ckpt_parallel_load=True,

@@ -31,6 +31,26 @@ if TYPE_CHECKING:
 
 
 class MockDataModule(pl.LightningDataModule):
+    """PyTorch Lightning-compatible data module for testing pre-training and fine-tuning workloads.
+    MockDataModule will generate random token indices to simulate a dataset.
+    Args:
+        seq_length (int): Sequence length.
+        tokenizer (Optional["TokenizerSpec"]): An instance of a TokenizerSpec object.
+        micro_batch_size (int): Batch size per GPU.
+        global_batch_size (int): Global batch size.
+        rampup_batch_size (Optional[List[int]]): Rampup batch size, should be in format of
+            [start_global_batch_size, batch_size_increment, ramup_samples].
+        num_workers (int): See ``torch.utils.data.DataLoader`` documentation.
+        pin_memory (bool): See ``torch.utils.data.DataLoader`` documentation.
+        persistent_workers (bool): See ``torch.utils.data.DataLoader`` documentation.
+        num_train_samples (Optional[int]): The number of samples to use for training, defaults to total
+            train steps times global batch size.
+        num_val_samples (Optional[int]): The number of samples to use for validation, defaults to total
+            validation steps times global batch size.
+        num_test_samples (Optional[int]): The number of samples to use for testing, defaults to total
+            test steps times global batch size.
+    """
+
     def __init__(
         self,
         seq_length: int = 2048,
@@ -38,7 +58,7 @@ class MockDataModule(pl.LightningDataModule):
         micro_batch_size: int = 4,
         global_batch_size: int = 8,
         rampup_batch_size: Optional[List[int]] = None,
-        num_train_samples: int = 10_000,
+        num_train_samples: int = 10_000_000,
         num_val_samples: int = 10_000,
         num_test_samples: int = 10_000,
         num_workers: int = 8,
@@ -77,6 +97,9 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage: str = "") -> None:
+        """
+        Setup the data module.
+        """
         self._train_ds = _MockGPTDataset(
             self.tokenizer, "train", self.num_train_samples, self.seq_length, self.create_attention_mask
         )
@@ -88,16 +111,25 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
+        """
+        Get the train dataloader.
+        """
         if not hasattr(self, "_train_ds"):
             self.setup()
         return self._create_dataloader(self._train_ds)
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
+        """
+        Get the validation dataloader.
+        """
         if not hasattr(self, "_validation_ds"):
             self.setup()
         return self._create_dataloader(self._validation_ds)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
+        """
+        Get the test dataloader.
+        """
         if not hasattr(self, "_test_ds"):
             self.setup()
         return self._create_dataloader(self._test_ds)
@@ -148,12 +180,11 @@ class _MockGPTDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         # Generate data of the expected size and datatype (based on GPTDataset).
         np_gen = np.random.default_rng(seed=(self.seed + idx))
-        tokens = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64))
-        labels = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64))
+        tokens = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length + 1], dtype=np.int64))
 
         batch = {
-            "tokens": tokens,
-            "labels": labels,
+            "tokens": tokens[:-1],
+            "labels": tokens[1:],
             "loss_mask": self.loss_mask,
             "position_ids": self.position_ids,
         }

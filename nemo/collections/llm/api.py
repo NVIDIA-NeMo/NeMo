@@ -819,6 +819,7 @@ def import_ckpt(
     source: str,
     output_path: Optional[AnyPath] = None,
     overwrite: bool = False,
+    **kwargs,
 ) -> Path:
     """
     Imports a checkpoint into a model using the model's associated importer, typically for
@@ -882,7 +883,7 @@ def import_ckpt(
         if output_path.exists() and not overwrite:
             raise FileExistsError(f"Output path {output_path} exists. Use overwrite=True to force overwrite.")
 
-    output = io.import_ckpt(model=model, source=source, output_path=output_path, overwrite=overwrite)
+    output = io.import_ckpt(model=model, source=source, output_path=output_path, overwrite=overwrite, **kwargs)
 
     console = Console()
     if output_path:

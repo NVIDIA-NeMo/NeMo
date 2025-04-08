@@ -15,7 +15,8 @@
 import nemo_run as run
 import pytest
 
-from nemo.collections.llm.api import finetune
+from nemo.collections.llm.api import finetune, pretrain
+from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model.deepseek import DeepSeekModel, DeepSeekV3Config
 from nemo.collections.llm.peft.lora import LoRA
@@ -35,9 +36,23 @@ class TestDeepSeekV3:
         assert isinstance(model_config.config, run.Config)
         assert model_config.config.__fn_or_cls__ == DeepSeekV3Config
 
-    def test_pretrain_recipe_not_implemented(self, recipe_module):
-        with pytest.raises(NotImplementedError, match="DeepSeek V3 Pretraining recipe in NeMo is not yet available"):
-            recipe_module.pretrain_recipe()
+    def test_pretrain_recipe(self, recipe_module):
+        recipe = recipe_module.pretrain_recipe()
+        assert isinstance(recipe, run.Partial)
+        assert recipe.__fn_or_cls__ == pretrain
+        assert isinstance(recipe.model, run.Config)
+        assert recipe.model.__fn_or_cls__ == DeepSeekModel
+        assert isinstance(recipe.trainer, run.Config)
+        assert recipe.trainer.__fn_or_cls__ == Trainer
+        assert isinstance(recipe.data, run.Config)
+        assert recipe.data.__fn_or_cls__ == MockDataModule
+        assert recipe.data.seq_length == 4096
+        assert recipe.data.global_batch_size == 4096
+        assert recipe.data.micro_batch_size == 1
+
+        # Check default parallelism settings
+        assert recipe.trainer.strategy.tensor_model_parallel_size == 1
+        assert recipe.trainer.strategy.expert_model_parallel_size == 64
 
     def test_finetune_recipe(self, recipe_module):
         recipe = recipe_module.finetune_recipe()

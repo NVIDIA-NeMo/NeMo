@@ -15,10 +15,17 @@
 import math
 from dataclasses import dataclass, field
 from typing import List, Literal
+
+import torch
+
 from nemo.utils.import_utils import safe_import
 
-bitsandbytes, HAVE_BNB = safe_import("bitsandbytes")
-import torch
+if torch.cuda.is_available():
+    bitsandbytes, HAVE_BNB = safe_import("bitsandbytes")
+else:
+    bitsandbytes = None
+    HAVE_BNB = False
+
 import torch.nn.functional as F
 from torch import nn
 

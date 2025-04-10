@@ -27,17 +27,49 @@ from nemo.collections.llm import deploy, evaluate
 from nemo.collections.llm.evaluation.api import ApiEndpoint, ConfigParams, EvaluationConfig, EvaluationTarget
 
 
+ENDPOINT_TYPES = {"chat": "chat/completions/", "completions": "completions/"}
+
+COMPLETIONS_TASKS = (
+    "gsm8k",
+    "mgsm",
+    "mmlu",
+    "mmlu_pro",
+    "mmlu_redux",
+)
+
+CHAT_TASKS = (
+    "gpqa_diamond_cot",
+    "gsm8k_cot_instruct",
+    "ifeval",
+    "mgsm_cot",
+    "mmlu_instruct",
+    "mmlu_pro_instruct",
+    "mmlu_redux_instruct",
+    "wikilingua",
+)
+
+EVAL_TASKS = COMPLETIONS_TASKS + CHAT_TASKS
+
+
 def get_parser():
-    parser = argparse.ArgumentParser(description="NeMo2.0 Pretraining")
+    parser = argparse.ArgumentParser(description="NeMo2.0 Evaluation")
     parser.add_argument(
         "--nemo_checkpoint",
         type=str,
+        required=True,
         help="NeMo 2.0 checkpoint to be evaluated",
     )
     parser.add_argument(
         "--triton_http_address", type=str, default="0.0.0.0", help="IP address at which PyTriton server is created"
     )
-    parser.add_argument("--triton_http_port", type=int, default=8000, help="Port at which PyTriton server is created")
+    parser.add_argument("--fastapi_port", type=int, default=8080, help="Port at which FastAPI server is created")
+    parser.add_argument(
+        "--endpoint_type",
+        type=str,
+        default="completions",
+        help="Whether to use completions or chat endpoint",
+        choices=list(ENDPOINT_TYPES),
+    )
     parser.add_argument(
         "--max_input_len",
         type=int,
@@ -65,15 +97,24 @@ def get_parser():
     parser.add_argument(
         "--eval_task",
         type=str,
-        default="arc_challenge",
+        default="mmlu",
         help="Evaluation benchmark to run.",
-        choices=["mmlu", "gsm8k", "lambada_openai", "winogrande", "arc_challenge", "arc_easy", "copa"],
+        choices=EVAL_TASKS,
     )
     parser.add_argument(
         "--limit", type=int, default=None, help="Limit evaluation to `limit` samples. Default: use all samples."
     )
     parser.add_argument(
-        "--num_fewshot", type=int, default=None, help="Number of examples in few-shot context. Default: None."
+        "--parallel_requests",
+        type=int,
+        default=None,
+        help="Number of parallel requests to send to server. Default: use default for the task.",
+    )
+    parser.add_argument(
+        "--request_timeout",
+        type=int,
+        default=None,
+        help="Request timeout for querying the server. Default: use default for the task.",
     )
     parser.add_argument(
         "--tag",
@@ -180,7 +221,7 @@ def main():
     deploy_fn = run.Partial(
         deploy,
         nemo_checkpoint=args.nemo_checkpoint,
-        triton_http_port=args.triton_http_port,
+        fastapi_port=args.fastapi_port,
         triton_http_address=args.triton_http_address,
         max_input_len=args.max_input_len,
         tensor_parallelism_size=args.tensor_parallelism_size,
@@ -190,12 +231,16 @@ def main():
 
     api_endpoint = run.Config(
         ApiEndpoint,
-        url=f"http://{args.triton_http_address}:{args.triton_http_port}",
-        nemo_checkpoint_path=args.nemo_checkpoint,
-        nemo_triton_http_port=args.triton_http_port,
+        url=f"http://{args.triton_http_address}:{args.fastapi_port}/v1/{ENDPOINT_TYPES[args.endpoint_type]}",
+        type=args.endpoint_type,
     )
     eval_target = run.Config(EvaluationTarget, api_endpoint=api_endpoint)
-    eval_params = run.Config(ConfigParams, limit_samples=args.limit, num_fewshot=args.num_fewshot)
+    eval_params = run.Config(
+        ConfigParams,
+        limit_samples=args.limit,
+        parallelism=args.parallel_requests,
+        request_timeout=args.request_timeout,
+    )
     eval_config = run.Config(EvaluationConfig, type=args.eval_task, params=eval_params)
 
     eval_fn = run.Partial(evaluate, target_cfg=eval_target, eval_cfg=eval_config)

@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+import pkgutil
 import re
+import warnings
+
 import numpy as np
 
+# these imports can be removed when NeMoFWLMEval is removed
 import torch
 import torch.nn.functional as F
 from lm_eval.api.instance import Instance
@@ -23,6 +28,7 @@ from tqdm import tqdm
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
+from nemo.collections.llm.evaluation.api import EvaluationConfig, EvaluationTarget
 from nemo.deploy.nlp import NemoQueryLLM
 from nemo.utils import logging
 
@@ -32,11 +38,19 @@ class NeMoFWLMEval(LM):
     NeMoFWLMEval is a wrapper class subclassing lm_eval.api.model.LM class, that defines how lm_eval interfaces with
     NeMo model deployed on PyTriton server.
     Created based on: https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.4/docs/model_guide.md
+    This class is deprecated and not used for evaluation with nvidia-lm-eval
     """
 
     def __init__(
         self, model_name, api_url, tokenizer, batch_size, max_tokens_to_generate, temperature, top_p, top_k, add_bos
     ):
+        warnings.warn(
+            "NeMoFWLMEval is deprecated and will be removed in 25.06. Please refer to "
+            "https://github.com/NVIDIA/NeMo/blob/main/docs/source/evaluation/evaluation_doc.rst "
+            "and update your code accordingly",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model_name = model_name
         self.api_url = api_url
         self.tokenizer = tokenizer
@@ -234,6 +248,61 @@ class NeMoFWLMEval(LM):
         return results
 
 
+def wait_for_fastapi_server(
+    base_url: str = 'http://0.0.0.0:8080',
+    model_name: str = 'triton_model',
+    max_retries: int = 600,
+    retry_interval: int = 2,
+):
+    """
+    Wait for FastAPI server and model to be ready.
+
+    Args:
+        base_url (str): The URL to the FastAPI server (e.g., "http://0.0.0.0:8080").
+        model_name (str): The name of the deployed model.
+        max_retries (int): Maximum number of retries before giving up.
+        retry_interval (int): Time in seconds to wait between retries.
+
+    Returns:
+        bool: True if both the server and model are ready within the retries, False otherwise.
+    """
+
+    import time
+    import requests
+
+    completions_url = f"{base_url}/v1/completions/"
+    health_url = f"{base_url}/v1/triton_health"
+
+    for _ in range(max_retries):
+        logging.info("Checking server and model readiness...")
+
+        try:
+            # Check server readiness using HTTP health endpoint
+            response = requests.get(health_url)
+            if response.status_code != 200:
+                logging.info(f"Server is not ready. HTTP status code: {response.status_code}")
+                time.sleep(retry_interval)
+                continue
+            logging.info("Server is ready.")
+
+            # Check model readiness
+            response = requests.post(completions_url, json={"model": model_name, "prompt": "hello", "max_tokens": 1})
+            if response.status_code != 200:
+                logging.info(f"Model is not ready. HTTP status code: {response.status_code}")
+                time.sleep(retry_interval)
+                continue
+            logging.info(f"Model '{model_name}' is ready.")
+            return True
+        except requests.exceptions.RequestException:
+            logging.info(f"Pytriton server not ready yet. Retrying in {retry_interval} seconds...")
+
+        # Wait before retrying
+        time.sleep(retry_interval)
+
+    logging.error(f"Server or model '{model_name}' not ready after {max_retries} attempts.")
+    return False
+
+
 def wait_for_server_ready(
     url: str = 'http://0.0.0.0:8000',
     triton_http_port: int = 8000,
@@ -300,3 +369,100 @@ def wait_for_server_ready(
 
     logging.error(f"Server or model '{model_name}' not ready after {max_retries} attempts.")
     return False
+
+
+def _iter_namespace(ns_pkg):
+    # Specifying the second argument (prefix) to iter_modules makes the
+    # returned name an absolute name instead of a relative one. This allows
+    # import_module to work without having to do additional modification to
+    # the name.
+    return pkgutil.iter_modules(ns_pkg.__path__, ns_pkg.__name__ + ".")
+
+
+def find_framework(eval_task: str) -> str:
+    """
+    Find framework for executing the evaluation eval_task.
+
+    This function serches for framework (module) that defines a task with given name and returns the framework name.
+    """
+    # this import can be moved outside of this function when NeMoFWLMEval is
+    # removed and we completed switch to NVIDIA Evals Factory
+    try:
+        import core_evals
+    except ImportError:
+        raise ImportError(
+            "Please ensure that core_evals is installed in your env as it is required to run evaluations"
+        )
+    discovered_modules = {
+        name: importlib.import_module('.input', package=name) for finder, name, ispkg in _iter_namespace(core_evals)
+    }
+
+    for framework_name, input_module in discovered_modules.items():
+        _, task_name_mapping = input_module.get_available_evaluations()
+        if eval_task in task_name_mapping.keys():
+            return framework_name
+
+    raise ValueError(f"Framework for task {eval_task} not found!")
+
+
+def _legacy_evaluate(
+    target_cfg: EvaluationTarget,
+    eval_cfg: EvaluationConfig,
+):
+    """
+    Evaluates nemo model deployed on PyTriton server (via trtllm) using lm-evaluation-harness
+    (https://github.com/EleutherAI/lm-evaluation-harness/tree/main).
+
+    Args:
+        target_cfg (EvaluationTarget): target of the evaluation. Providing nemo_checkpoint_path, model_id, and
+            url in EvaluationTarget.api_endpoint is required to run evaluations.
+        eval_cfg (EvaluationConfig): configuration for evaluations
+    """
+
+    if target_cfg.api_endpoint.nemo_checkpoint_path is None:
+        raise ValueError("Please provide nemo_checkpoint_path in your target_cfg.")
+
+    try:
+        # lm-evaluation-harness import
+        from lm_eval import evaluator
+    except ImportError:
+        raise ImportError(
+            "Please ensure that lm-evaluation-harness is installed in your env as it is required to run evaluations"
+        )
+
+    from nemo.lightning import io
+
+    # Get tokenizer from nemo ckpt. This works only with NeMo 2.0 ckpt.
+    endpoint = target_cfg.api_endpoint
+    tokenizer = io.load_context(endpoint.nemo_checkpoint_path + "/context", subpath="model.tokenizer")
+
+    # Wait for server to be ready before starting evaluation
+    server_ready = wait_for_server_ready(
+        url=endpoint.url, triton_http_port=endpoint.nemo_triton_http_port, model_name=endpoint.model_id
+    )
+    if not server_ready:
+        raise RuntimeError("Server not ready for evaluation")
+    # Create an object of the NeMoFWLM which is passed as a model to evaluator.simple_evaluate
+    params = eval_cfg.params
+    model = NeMoFWLMEval(
+        model_name=endpoint.model_id,
+        api_url=endpoint.url,
+        tokenizer=tokenizer,
+        batch_size=params.batch_size,
+        max_tokens_to_generate=params.max_new_tokens,
+        temperature=params.temperature,
+        top_p=params.top_p,
+        top_k=params.top_k,
+        add_bos=params.add_bos,
+    )
+
+    eval_task = eval_cfg.type
+    results = evaluator.simple_evaluate(
+        model=model,
+        tasks=eval_task,
+        limit=params.limit_samples,
+        num_fewshot=params.num_fewshot,
+        bootstrap_iters=params.bootstrap_iters,
+    )
+
+    logging.info(f"score: {results["results"][eval_task]}")

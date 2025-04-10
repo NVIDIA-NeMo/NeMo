@@ -308,11 +308,10 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
         text_only = True
         if apply_chat_template:
             # Deserialize the JSON string back to a dictionary
-            prompts = self.str_to_dict(prompts[0])
-            prompts = self.apply_chat_template(prompts)
+            prompts = [self.str_to_dict(prompt) for prompt in prompts]
+            prompts = [self.apply_chat_template(prompt) for prompt in prompts]
             # Input to generate should be list of string, otherwise if its string directly TE raises an error:
             # The provided qkv memory layout is not supported!
-            prompts = [prompts]
         if torch.distributed.is_initialized():
             if torch.distributed.get_world_size() > 1:
                 torch.distributed.broadcast(torch.tensor([0], dtype=torch.long, device="cuda"), src=0)

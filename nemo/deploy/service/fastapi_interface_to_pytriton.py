@@ -78,7 +78,7 @@ class CompletionRequest(BaseModel):
     max_tokens: int = 512
     temperature: float = 1.0
     top_p: float = 0.0
-    top_k: int = 1
+    top_k: int = 0
     logprobs: int = None
 
 

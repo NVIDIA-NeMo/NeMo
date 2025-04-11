@@ -18,6 +18,7 @@ import random
 from math import isclose
 from typing import Any, List, Optional, Union
 
+import numpy as np
 import torch
 from lightning.pytorch import LightningModule
 from lightning.pytorch.callbacks import BasePredictionWriter
@@ -879,8 +880,7 @@ class ASRPredictionWriter(BasePredictionWriter):
                 if hasattr(sample, 'shard_id'):
                     item["shard_id"] = sample.shard_id
                 item["pred_text"] = hypotheses.text
-                self.outf.write(json.dumps(item) + "\n")
-                self.samples_num += 1
+
             else:
                 sample = self.dataset.get_manifest_sample(sample_id)
                 item["audio_filepath"] = sample.audio_file
@@ -888,8 +888,20 @@ class ASRPredictionWriter(BasePredictionWriter):
                 item["duration"] = sample.duration
                 item["text"] = sample.text_raw
                 item["pred_text"] = hypotheses.text
-                self.outf.write(json.dumps(item) + "\n")
-                self.samples_num += 1
+
+            if hasattr(hypotheses, "timestamp") and isinstance(hypotheses.timestamp, dict):
+                for timestamp_type, timestamps in hypotheses.timestamp.items():
+                    if timestamp_type in ['char', 'word', 'segment']:
+                        item[f'{timestamp_type}_timestamps'] = [
+                            {
+                                key: int(value) if isinstance(value, np.int64) else value
+                                for key, value in offset.items()
+                            }
+                            for offset in timestamps
+                        ]
+
+            self.outf.write(json.dumps(item) + "\n")
+            self.samples_num += 1
         return
 
     def close_output_file(self):

@@ -82,7 +82,8 @@ from nemo.collections.asr.data.audio_to_text_dataset import ASRPredictionWriter
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
-from nemo.collections.asr.models.configs.asr_models_config import ASRDatasetConfig
+from nemo.collections.asr.models.configs import ASRDatasetConfig
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedRNNTInferConfig
 from nemo.core.config import TrainerConfig, hydra_runner
@@ -105,6 +106,9 @@ class ParallelTranscriptionConfig:
     # decoding strategy for RNNT models
     # Double check whether fused_batch_size=-1 is right
     rnnt_decoding: RNNTDecodingConfig = field(default_factory=lambda: RNNTDecodingConfig(fused_batch_size=-1))
+
+    # Decoding strategy for CTC models
+    ctc_decoding: CTCDecodingConfig = field(default_factory=CTCDecodingConfig)
 
     # decoder type: ctc or rnnt, can be used to switch between CTC and RNNT decoder for Hybrid RNNT/CTC models
     decoder_type: Optional[str] = None
@@ -158,8 +162,20 @@ def main(cfg: ParallelTranscriptionConfig):
         )
         model = ASRModel.from_pretrained(model_name=cfg.model, map_location="cpu")
 
-    if isinstance(model, EncDecHybridRNNTCTCModel) and cfg.decoder_type is not None:
-        model.change_decoding_strategy(decoder_type=cfg.decoder_type)
+    # Setup decoding strategy
+    if hasattr(model, 'change_decoding_strategy') and hasattr(model, 'decoding'):
+        if cfg.decoder_type is not None:
+            decoding_cfg = cfg.rnnt_decoding if cfg.decoder_type == 'rnnt' else cfg.ctc_decoding
+            if hasattr(model, 'cur_decoder'):
+                model.change_decoding_strategy(decoding_cfg, decoder_type=cfg.decoder_type)
+            else:
+                model.change_decoding_strategy(decoding_cfg)
+
+        # Check if ctc or rnnt model
+        elif hasattr(model, 'joint'):  # RNNT model
+            model.change_decoding_strategy(cfg.rnnt_decoding)
+        else:
+            model.change_decoding_strategy(cfg.ctc_decoding)
 
     cfg.predict_ds.return_sample_id = True
     cfg.predict_ds = match_train_config(predict_ds=cfg.predict_ds, train_ds=model.cfg.train_ds)

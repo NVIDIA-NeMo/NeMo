@@ -124,8 +124,8 @@ def override_recipe_configs(
 
     recipe.trainer.strategy.account_for_loss_in_pipeline_split = True
     recipe.trainer.strategy.account_for_embedding_in_pipeline_split = False  # embedding is not split
-    recipe.model.config.num_layers_in_first_pipeline_stage = None
-    recipe.model.config.num_layers_in_last_pipeline_stage = None
+    recipe.trainer.strategy.num_layers_in_first_pipeline_stage = None
+    recipe.trainer.strategy.num_layers_in_last_pipeline_stage = None
     recipe.trainer.strategy.sequence_parallel = False
 
     return recipe

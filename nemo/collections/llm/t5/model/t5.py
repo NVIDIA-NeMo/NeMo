@@ -443,6 +443,7 @@ class HFT5Importer(io.ModelConnector["T5ForConditionalGeneration", T5Model]):
     @property
     def tokenizer(self) -> "AutoTokenizer":
         """Retrieve Tokenizer from HF"""
+        from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
         # Set special tokens to match HF
         bos_token = "<pad>"

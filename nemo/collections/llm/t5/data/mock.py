@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
 
 class MockDataModule(pl.LightningDataModule):
+    """Mock data module for testing"""
+
     def __init__(
         self,
         seq_length: int = 512,
@@ -71,6 +73,7 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage: str = "") -> None:
+        """Setup the datasets"""
         self._train_ds = _MockT5Dataset(
             self.tokenizer, "train", self.num_train_samples, self.seq_length, self.seq_length_dec
         )
@@ -82,16 +85,19 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
+        """Dataloader for training set"""
         if not hasattr(self, "_train_ds"):
             self.setup()
         return self._create_dataloader(self._train_ds)
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
+        """Dataloader for validation set"""
         if not hasattr(self, "_validation_ds"):
             self.setup()
         return self._create_dataloader(self._validation_ds)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
+        """Dataloader for test set"""
         if not hasattr(self, "_test_ds"):
             self.setup()
         return self._create_dataloader(self._test_ds)
@@ -130,8 +136,8 @@ class _MockT5Dataset(Dataset):
         # update for T5 now use FlashFused attention (b11s)
         self.mask_encoder = torch.ones(self.seq_length, device='cpu')
         self.mask_decoder = torch.ones(self.seq_length_dec, device='cpu')
-        self.mask_encoder = self.mask_encoder < 0.5
-        self.mask_decoder = self.mask_decoder < 0.5
+        self.mask_encoder = ~(self.mask_encoder < 0.5)
+        self.mask_decoder = ~(self.mask_decoder < 0.5)
         self.loss_mask = torch.ones(self.seq_length_dec, dtype=torch.float)
 
     def __len__(self) -> int:

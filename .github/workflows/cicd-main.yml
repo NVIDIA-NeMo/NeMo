@@ -1314,6 +1314,16 @@ jobs:
         rm -rf tests/collections/llm/t5_pretrain_results/${{ github.run_id }}
         rm -rf tests/collections/llm/t5_index_mappings/${{ github.run_id }}
 
+  L2_NeMo_2_T5_MockData_Pretraining:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_T5_MockData_Pretraining')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: L2_NeMo_2_T5_MockData_Pretraining
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/t5_pretrain_mockdata_results/${{ github.run_id }}
+
   L2_NeMo_2_T5_Finetuning:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1322,6 +1332,17 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_Finetuning
       AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
+
+  L2_NeMo_2_T5_Squad:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_T5_Squad')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: L2_NeMo_2_T5_Squad
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/squad_download
         rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
 
   L2_NeMo_2_T5_LoRA:
@@ -1963,6 +1984,14 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_Conversion_Test_BERT
 
+  L2_NeMo_2_Conversion_Test_T5:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Conversion_Test_T5') || needs.pre-flight.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: L2_NeMo_2_Conversion_Test_T5
+
   L2_NeMo_2_Export_HF_TRT_LLM:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2015,6 +2044,7 @@ jobs:
       - L2_NeMo_2_Conversion_Test_Qwen2
       - L2_NeMo_2_Conversion_Test_Starcoder
       - L2_NeMo_2_Conversion_Test_Starcoder2
+      - L2_NeMo_2_Conversion_Test_T5
       - L2_NeMo_2_Conversion_Test_BERT
 
       - ASR_dev_run_Speech_to_Text
@@ -2112,7 +2142,9 @@ jobs:
       - L2_NeMo_2_Hyena_DDP_Pretraining_Test
       - L2_NeMo_2_T5_Pretraining
       - L2_NeMo_2_T5_Finetuning
+      - L2_NeMo_2_T5_Squad
       - L2_NeMo_2_T5_LoRA
+      - L2_NeMo_2_T5_MockData_Pretraining
       - L2_NeMo_2_BERT_Pretraining_Megatron
       - L2_NeMo_2_BERT_Pretraining_HuggingFace
       - L2_NeMo_2_GPT_SFT_TP1PP1_MBS1

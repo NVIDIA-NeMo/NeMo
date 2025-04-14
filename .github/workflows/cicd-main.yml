@@ -610,8 +610,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_Speech_Transcription_Canary_Transcribe_With_Prompt
-      AFTER_SCRIPT: |
-        rm -rf preds.json transcribe.log
 
   L2_Speech_Transcription_Canary_Transcribe_Audio_Dir:
     needs: [pre-flight, cicd-test-container-build]
@@ -620,8 +618,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
-      AFTER_SCRIPT: |
-        rm -rf preds.json
       IS_OPTIONAL: true
 
   # L2: Longform without TimeStamps from Audio Dir
@@ -632,8 +628,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir
-      AFTER_SCRIPT: |
-        rm -rf preds.json
 
   # L2: Longform with TimeStamps from Audio Dir
   L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir:
@@ -643,8 +637,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir
-      AFTER_SCRIPT: |
-        rm -rf preds.json
 
   # L2: Longform with TimeStamps from manifest
   L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest:
@@ -727,8 +719,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Post-LN
-      AFTER_SCRIPT: |
-        rm -rf examples/nlp/machine_translation/nmt_results
+
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Pre-LN:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -762,8 +753,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NMT_Attention_is_All_You_Need_Finetuning
-      AFTER_SCRIPT: |
-        rm -rf examples/nlp/machine_translation/nmt_finetune
 
   # L2: NMT Tarred Dataset Creation
   L2_NMT_Tarred_Dataset_Creation_Auto_Tarred_Dataset_Creation:
@@ -789,8 +778,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_Megatron_NMT_Training_TP2
-      AFTER_SCRIPT: |
-        rm -rf examples/nlp/machine_translation/megatron_nmt_results
 
   L2_VLM_HF_Transformer_PEFT:
     needs: [pre-flight, cicd-test-container-build]
@@ -1194,8 +1181,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_Stable_Diffusion_Training
-      AFTER_SCRIPT: |
-        rm -rf examples/multimodal/text_to_image/sd_train_results
 
   L2_NeMo_2_GPT_Pretraining_no_transformer_engine:
     needs: [pre-flight, cicd-test-container-build]
@@ -1291,9 +1276,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_HF_MODEL_IMPORT
-
-      AFTER_SCRIPT: |
-        rm -rf ~/.cache/nemo/models
 
   L2_NeMo_2_jit_callback:
     needs: [pre-flight, cicd-test-container-build]
@@ -1459,8 +1441,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NeMo_2_LLAVA_IMPORT
-      AFTER_SCRIPT: |
-        rm -rf ~/.cache/nemo/models
 
   Optional_L2_NEMO_2_MLLAMA_Inference:
     needs: [pre-flight, cicd-test-container-build]
@@ -1503,8 +1483,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NeMo_2_MLLAMA_IMPORT
-      AFTER_SCRIPT: |
-        rm -rf ~/.cache/nemo/models
 
   L2_NeMo_2_Mixtral_Pretraining:
     needs: [pre-flight, cicd-test-container-build]
@@ -1842,8 +1820,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124
-      AFTER_SCRIPT: |
-        rm -rf examples/llm/auto_configurator/auto_conf_logs_llama
 
   L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124:
     needs: [pre-flight, cicd-test-container-build]
@@ -1852,8 +1828,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124
-      AFTER_SCRIPT: |
-        rm -rf examples/llm/auto_configurator/auto_conf_logs_bert
 
   L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124:
     needs: [pre-flight, cicd-test-container-build]

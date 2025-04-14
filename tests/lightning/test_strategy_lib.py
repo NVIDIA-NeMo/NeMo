@@ -41,7 +41,9 @@ def test_set_model_parallel_attributes() -> None:
 
     class DummyModel:
         def __init__(self):
-            self.config = TransformerConfig(hidden_size=128, num_attention_heads=2, num_layers=2, num_moe_experts=2)
+            self.config = TransformerConfig(
+                hidden_size=128, num_attention_heads=2, num_layers=2, num_moe_experts=2, add_bias_linear=False
+            )
 
         def configure_model(self):
             pass

@@ -45,6 +45,8 @@ Model Classes
     :show-inheritance:
     :members: transcribe
 
+.. _asr-api-modules:
+
 Modules
 -------
 

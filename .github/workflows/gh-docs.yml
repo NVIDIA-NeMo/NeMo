@@ -8,6 +8,9 @@ on:
 # Set the access for individual scopes
 permissions: write-all
 
+env:
+  PYTHON_VERSION: "3.11"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -16,7 +19,7 @@ jobs:
       image: squidfunk/mkdocs-material
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         if: github.event.repository.fork == false
         with:
           ref: gh-pages-src
@@ -36,3 +39,25 @@ jobs:
         continue-on-error: true
         run:  mkdocs gh-deploy --force
 
+  linkcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Sphinx dependencies
+        run: python3 -m pip install -r requirements/requirements_docs.txt
+      - name: Linkcheck docs build
+        run: make -C docs linkcheck || true
+      - name: Eliminate false positives
+        run: ./docs/check_for_broken_links.sh
+      - name: Upload linkcheck output
+        uses: actions/upload-artifact@v4
+        with:
+          name: linkcheck-artifact
+          path: docs/build/linkcheck
+          if-no-files-found: error
+          retention-days: 7

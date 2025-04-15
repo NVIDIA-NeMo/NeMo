@@ -42,7 +42,7 @@ You may perform inference and transcribe a sample of speech after loading the mo
   mbn_model = nemo_asr.models.EncDecClassificationModel.from_pretrained(model_name="<MODEL_NAME>")
   mbn_model.transcribe([list of audio files],  batch_size=BATCH_SIZE, logprobs=False) 
 
-Setting argument ``logprobs`` to True would return the log probabilities instead of transcriptions. You may find more details in `Modules <../api.html#modules>`__.
+Setting argument ``logprobs`` to True would return the log probabilities instead of transcriptions. You may find more details in :ref:`Modules <asr-api-modules>`.
 
 Learn how to fine tune on your own data or on subset classes in ``<NeMo_git_root>/tutorials/asr/Speech_Commands.ipynb``
 

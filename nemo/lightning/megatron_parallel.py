@@ -675,11 +675,15 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                     and self.fsdp == "megatron"
                     and not isinstance(unwrapped_module, FullyShardedDataParallel)
                 ):
-                    if not getattr(module.config, "use_custom_fsdp", False):
-                        from nemo.utils import logging
+                    from nemo.utils import logging
 
+                    if not getattr(module.config, "use_custom_fsdp", False):
                         setattr(module.config, "use_custom_fsdp", True)
                         logging.warning("Setting module.config.use_custom_fsdp to True for MCore FSDP.")
+
+                    if getattr(module.config, "gradient_accumulation_fusion", True):
+                        setattr(module.config, "gradient_accumulation_fusion", False)
+                        logging.warning("Setting module.config.gradient_accumulation_fusion to False for MCore FSDP.")
 
                     assert module.config.use_custom_fsdp, "Custom FSDP is not enabled in module.config."
                     assert self.ddp_config.use_custom_fsdp, "Custom FSDP is not enabled in ddp_config."
@@ -1459,14 +1463,13 @@ class MegatronStep(Generic[ModelT, DataT]):
 
             if has_dataloader_idx:
                 packed_data = [(d, batch_idx, dataloader_idx) for d in data]
-                data = [itertools.chain(packed_data)]
+                data = itertools.chain(packed_data)
         else:
             data = self.data
             # for pretraining (fixed sequence length), we use seq_length inferred from the data sampler.
             seq_length = None
 
-        if not has_dataloader_idx:
-            data = self.to_data_iterator_list(data)
+        data = self.to_data_iterator_list(data)
         return data, seq_length
 
     @functools.cached_property

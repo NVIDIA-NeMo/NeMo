@@ -597,7 +597,7 @@ class ParametricMultichannelWienerFilter(NeuralModule):
         """
         iodtype = input.dtype
 
-        with torch.amp.autocast(self.device.type, enabled=False):
+        with torch.amp.autocast(input.device.type, enabled=False):
             # Convert to double
             input = input.cdouble()
             mask_s = mask_s.double()

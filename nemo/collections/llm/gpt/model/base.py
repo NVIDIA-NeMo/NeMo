@@ -662,7 +662,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         params_dtype: torch.dtype,
         inference_batch_times_seqlen_threshold: int,
         inference_max_seq_length: int = 2560,
-    ) -> torch.Tensor:
+    ) -> GPTInferenceWrapper:
         """Get an inference wrapper for the model.
 
         Creates and configures a GPTInferenceWrapper around the model for efficient inference.
@@ -673,7 +673,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             inference_max_seq_length: Maximum sequence length for inference (prefill and decode)
 
         Returns:
-            torch.Tensor: Wrapped model for inference
+            GPTInferenceWrapper: Wrapped model for inference
         """
         # This is to get the MCore model required in GPTInferenceWrapper.
         mcore_model = self.module

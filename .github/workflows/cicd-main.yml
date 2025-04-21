@@ -179,7 +179,7 @@ jobs:
             python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
 
             # PyTorch Lightning DDP Checks
-            CUDA_VISIBLE_DEVICES="0,1" Gotchapython "tests/core_ptl/check_for_ranks.py"
+            CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
 
             # Basic Import Checks
             python tests/core_ptl/check_imports.py --domain asr

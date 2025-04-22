@@ -67,7 +67,7 @@ jobs:
 
       - name: Install jq
         run: |
-          curl -s https://webinstall.dev/jq | bash
+          curl -sS https://webi.sh/jq | sh
 
       - name: Create UUID
         id: uuid
@@ -83,7 +83,7 @@ jobs:
       - name: Fetch Mcore tag from manifest.json
         id: mcore
         run: |
-          REF=$(cat ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo/requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".ref')
+          REF=$(cat ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo/requirements/manifest.json | ~/.local/bin/jq -r '."vcs-dependencies"."megatron-lm".ref')
           echo "ref=$REF" | tee -a "$GITHUB_OUTPUT"
 
       - name: Checkout Megatron-LM

@@ -38,3 +38,19 @@ jobs:
       pr-reviewers: "chtruong814"
     secrets:
       PAT: ${{ secrets.PAT }}
+
+  notify:
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_ADMIN: <!subteam^${{ secrets.SLACK_WEBHOOK_ADMIN }}>
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          curl -X POST \
+            -H 'Content-type: application/json' \
+            --data "{\"text\":\":robot_joy: <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|Mcore-bump-bot workflow> failed. Please fix manually.\n\ncc ${SLACK_WEBHOOK_ADMIN}\"}" \
+            $SLACK_WEBHOOK

@@ -31,6 +31,11 @@ on:
         description: Upload coverage as unit test
         required: false
         default: false
+      TESTS_TO_RUN:
+        type: string
+        description: Tests to run
+        required: false
+        default: "all"
     outputs:
       conclusion:
         description: Conclusion of main test step
@@ -44,6 +49,8 @@ on:
 jobs:
   main:
     runs-on: ${{ inputs.RUNNER }}
+    name: ${{ inputs.SCRIPT }}
+    if: contains(fromJSON(inputs.TESTS_TO_RUN), inputs.SCRIPT) || contains(fromJSON(inputs.TESTS_TO_RUN), 'all')
     outputs:
       conclusion: ${{ steps.check.conclusion }}
       log: ${{ steps.check.outputs.log }}
@@ -94,7 +101,7 @@ jobs:
 
           ARG=("")
           if [[ -n "${GPU_CONFIGS[${{ runner.name }}]}" ]]; then
-            ARG=("--runtime=nvidia --gpus '\"device=${GPU_CONFIGS[${{ runner.name }}]}\"'")
+            ARG=("--runtime=nvidia --cpus="40" --memory="400g" --gpus '\"device=${GPU_CONFIGS[${{ runner.name }}]}\"'")
           elif [[ "${{ inputs.RUNNER }}" != *cpu* ]]; then
             ARG=("--runtime=nvidia --gpus all")
           fi
@@ -206,13 +213,6 @@ jobs:
             ${{ github.run_id }}/coverage.xml
             ${{ github.run_id }}/.coverage
           include-hidden-files: true
-
-      - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-        if: failure() && inputs.IS_OPTIONAL == false && github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-fail-fast')
-      - name: after_script
-        if: always() && inputs.AFTER_SCRIPT != ':'
-        run: |
-          docker exec nemo_container_${{ github.run_id }}_${{ runner.name }} bash -c '${{ inputs.AFTER_SCRIPT }}'
 
       - name: Container shutdown
         if: always()

@@ -47,7 +47,7 @@ jobs:
       source-ref: ${{ inputs.mcore-target-branch }}
       yaml-path: '."vcs-dependencies"."megatron-lm".ref'
       file: requirements/manifest.json
-      base-branch: ${{ inputs.nemo-target-branch }}
+      base-branch: weekly-bump-${{ inputs.nemo-target-branch }}
       cicd-labels: Run CICD,no-fail-fast
       pr-reviewers: ${{ inputs.pr-reviewers }}
     secrets:

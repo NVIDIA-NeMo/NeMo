@@ -17,7 +17,7 @@ from typing import Callable, Optional
 import lightning.pytorch as pl
 import nemo_run as run
 
-from nemo.collections.llm import Llama33NemotronUltra253BConfig, LlamaNemotronModel
+from nemo.collections.llm import Llama31NemotronUltra253BConfig, LlamaNemotronModel
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.llm.peft import PEFT_STR2CLS
@@ -42,7 +42,7 @@ def model() -> run.Config[pl.LightningModule]:
             >>> model_config = model()
             >>> print(model_config)
     """
-    conf = run.Config(Llama33NemotronUltra253BConfig)
+    conf = run.Config(Llama31NemotronUltra253BConfig)
     conf.seq_length = 8192
     return run.Config(LlamaNemotronModel, config=conf)
 

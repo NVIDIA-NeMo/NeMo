@@ -15,7 +15,7 @@
 import nemo_run as run
 import pytest
 
-from nemo.collections.llm import Llama33NemotronUltra253BConfig, LlamaNemotronModel
+from nemo.collections.llm import Llama31NemotronUltra253BConfig, LlamaNemotronModel
 from nemo.collections.llm.api import finetune
 from nemo.collections.llm.peft import PEFT_STR2CLS
 from nemo.collections.llm.peft.lora import LoRA
@@ -33,7 +33,7 @@ class TestLlama31NemotronUltra253B:
         assert isinstance(model_config, run.Config)
         assert model_config.__fn_or_cls__ == LlamaNemotronModel
         assert isinstance(model_config.config, run.Config)
-        assert model_config.config.__fn_or_cls__ == Llama33NemotronUltra253BConfig
+        assert model_config.config.__fn_or_cls__ == Llama31NemotronUltra253BConfig
         assert model_config.config.seq_length == 8192
 
     def test_pretrain_recipe(self, recipe_module):

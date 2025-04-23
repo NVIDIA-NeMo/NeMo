@@ -92,7 +92,7 @@ class Llama33NemotronSuper49BConfig(Llama31Config70B, HeterogeneousTransformerCo
 
 
 @dataclass
-class Llama33NemotronUltra253BConfig(Llama31Config405B, HeterogeneousTransformerConfig):
+class Llama31NemotronUltra253BConfig(Llama31Config405B, HeterogeneousTransformerConfig):
     """Configuration for an Llama31-Nemotron-Ultra model."""
 
     hidden_size: int = 8192
@@ -250,7 +250,7 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         if getattr(source, 'block_configs') is not None:
             # Convert heterogeneous model (Llama-Nemotron Super/Ultra)
             target_class = (
-                Llama33NemotronSuper49BConfig if source.num_hidden_layers == 80 else Llama33NemotronUltra253BConfig
+                Llama33NemotronSuper49BConfig if source.num_hidden_layers == 80 else Llama31NemotronUltra253BConfig
             )
             cls = partial(
                 target_class,
@@ -520,6 +520,6 @@ __all__ = [
     "LlamaNemotronModel",
     "Llama31NemotronNano8BConfig",
     "Llama33NemotronSuper49BConfig",
-    "Llama33NemotronUltra253BConfig",
+    "Llama31NemotronUltra253BConfig",
     "Llama31Nemotron70BConfig",
 ]

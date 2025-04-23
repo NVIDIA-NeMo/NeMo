@@ -17,8 +17,8 @@ import torch.nn.functional as F
 from nemo.collections.llm.gpt.model.llama_nemotron import (
     Llama31Nemotron70BConfig,
     Llama31NemotronNano8BConfig,
+    Llama31NemotronUltra253BConfig,
     Llama33NemotronSuper49BConfig,
-    Llama33NemotronUltra253BConfig,
 )
 
 
@@ -85,7 +85,7 @@ def test_llama33_nemotron_super_49b_config():
 
 
 def test_llama33_nemotron_ultra_253b_config():
-    config = Llama33NemotronUltra253BConfig()
+    config = Llama31NemotronUltra253BConfig()
     assert config.num_layers == 126
     assert config.hidden_size == 8192
     assert config.num_attention_heads == 64

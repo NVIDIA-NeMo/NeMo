@@ -93,8 +93,8 @@ class VADParams(DiarizerComponentConfig):
     offset: float = 0.1  # Offset threshold for detecting the end of a speech
     pad_onset: float = 0.1  # Adding durations before each speech segment
     pad_offset: float = 0  # Adding durations after each speech segment
-    min_duration_on: float = 0  # Threshold for small non_speech deletion
-    min_duration_off: float = 0.2  # Threshold for short speech segment deletion
+    min_duration_on: float = 0  # Threshold for short speech segment deletion
+    min_duration_off: float = 0.2  # Threshold for small non_speech deletion
     filter_speech_first: bool = True
 
 
@@ -197,7 +197,8 @@ class NeuralDiarizerInferenceConfig(DiarizerComponentConfig):
     def init_config(cls, diar_model_path: str, vad_model_path: str, map_location: str, verbose: bool):
         return NeuralDiarizerInferenceConfig(
             DiarizerConfig(
-                vad=VADConfig(model_path=vad_model_path), msdd_model=MSDDConfig(model_path=diar_model_path),
+                vad=VADConfig(model_path=vad_model_path),
+                msdd_model=MSDDConfig(model_path=diar_model_path),
             ),
             device=map_location,
             verbose=verbose,

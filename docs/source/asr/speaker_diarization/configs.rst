@@ -236,8 +236,8 @@ By default, post-processing is bypassed, and only binarization is performed. If 
     offset: 0.74  # Offset threshold for detecting the end of a speech segment
     pad_onset: 0.06  # Adds the specified duration at the beginning of each speech segment
     pad_offset: 0.0  # Adds the specified duration at the end of each speech segment
-    min_duration_on: 0.1  # Removes short silences if the duration is less than the specified minimum duration
-    min_duration_off: 0.15  # Removes short speech segments if the duration is less than the specified minimum duration
+    min_duration_on: 0.1  # Removes short speech segments if the duration is less than the specified minimum duration
+    min_duration_off: 0.15  # Removes short silences if the duration is less than the specified minimum duration
 
 
 Cascaded Speaker Diarization Configuration Files
@@ -426,8 +426,8 @@ Parameters for VAD model are provided as in the following Hydra config example.
       offset: 0.7 # Offset threshold for detecting the end of a speech
       pad_onset: 0.05 # Adding durations before each speech segment 
       pad_offset: -0.1 # Adding durations after each speech segment 
-      min_duration_on: 0.2 # Threshold for small non_speech deletion
-      min_duration_off: 0.2 # Threshold for short speech segment deletion
+      min_duration_on: 0.2 # Threshold for short speech segment deletion
+      min_duration_off: 0.2 # Threshold for small non_speech deletion
       filter_speech_first: True 
 
 Configurations for Speaker Embedding in Diarization

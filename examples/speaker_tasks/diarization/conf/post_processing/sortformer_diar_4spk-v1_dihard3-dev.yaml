@@ -9,5 +9,5 @@ parameters:
   offset: 0.74  # Offset threshold for detecting the end of a speech segment
   pad_onset: 0.06  # Adds the specified duration at the beginning of each speech segment
   pad_offset: 0.0  # Adds the specified duration at the end of each speech segment
-  min_duration_on: 0.1  # Removes short silences if the duration is less than the specified minimum duration
-  min_duration_off: 0.15  # Removes short speech segments if the duration is less than the specified minimum duration
+  min_duration_on: 0.1  # Removes short speech segments if the duration is less than the specified minimum duration
+  min_duration_off: 0.15  # Removes short silences if the duration is less than the specified minimum duration

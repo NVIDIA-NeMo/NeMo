@@ -32,8 +32,8 @@ diarizer:
       offset: 0.3 # Offset threshold for detecting the end of a speech
       pad_onset: 0.2 # Adding durations before each speech segment 
       pad_offset: 0.2 # Adding durations after each speech segment 
-      min_duration_on: 0.5 # Threshold for small non_speech deletion
-      min_duration_off: 0.5 # Threshold for short speech segment deletion
+      min_duration_on: 0.5 # Threshold for short speech segment deletion
+      min_duration_off: 0.5 # Threshold for small non_speech deletion
       filter_speech_first: True 
 
   speaker_embeddings:

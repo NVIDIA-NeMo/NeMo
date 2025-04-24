@@ -15,7 +15,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     audio_dir=/home/TestData/asr/canary/dev-other-wav \
     output_filename=preds.json \
     batch_size=10 \
-    pretrained_name=nvidia/canary-1b \
+    model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
     num_workers=0 \
     amp=false \
     compute_dtype=bfloat16 \

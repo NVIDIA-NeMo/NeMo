@@ -26,18 +26,19 @@ jobs:
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "Github Actions"
-      - name: Merge ${{ inputs.nemo-target-branch }} back to base branch
+      - name: Merge weekly-bump-${{ inputs.nemo-target-branch }} back to base branch
         run: |
-          git fetch --unshallow
+          git fetch origin ${{ inputs.nemo-target-branch }}
+
           # Try to checkout and pull existing branch, create new one if it doesn't exist
-          if git ls-remote --exit-code origin ${{ inputs.nemo-target-branch }}; then
-            git checkout ${{ inputs.nemo-target-branch }}
-            git pull origin ${{ inputs.nemo-target-branch }}
-            git merge --no-ff ${{ inputs.nemo-target-branch }} -m "chore: Auto-merge main back to ${{ inputs.nemo-target-branch }}"
+          if git ls-remote --exit-code origin weekly-bump-${{ inputs.nemo-target-branch }}; then
+            git fetch origin weekly-bump-${{ inputs.nemo-target-branch }}
+            git checkout weekly-bump-${{ inputs.nemo-target-branch }}
+            git merge --no-ff ${{ inputs.nemo-target-branch }} -m "chore: Auto-merge ${{ inputs.nemo-target-branch }} into weekly-bump-${{ inputs.nemo-target-branch }}"
           else
-            git checkout -b ${{ inputs.nemo-target-branch }} main
+            git checkout -b weekly-bump-${{ inputs.nemo-target-branch }} origin/${{ inputs.nemo-target-branch }}
           fi
-          git push -u origin ${{ inputs.nemo-target-branch }}
+          git push -u origin weekly-bump-${{ inputs.nemo-target-branch }}
 
   mcore:
     uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.27.1

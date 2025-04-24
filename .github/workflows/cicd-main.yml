@@ -19,7 +19,7 @@ on:
     branches:
       - main
       - r**
-      - weekly-bump
+      - weekly-bump*
     types: [labeled]
   push:
     branches:

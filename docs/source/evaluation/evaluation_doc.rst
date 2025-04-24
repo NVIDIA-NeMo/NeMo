@@ -3,14 +3,14 @@ Evaluate NeMo 2.0 Checkpoints
 
 This guide provides detailed instructions on evaluating NeMo 2.0 checkpoints using the `NVIDIA Evals Factory
 <https://pypi.org/project/nvidia-lm-eval/>`__ within the NeMo Framework. Supported benchmarks include:
-    * GPQA,
-    * GSM8K,
-    * IFEval,
-    * MGSM,
-    * MMLU,
-    * MMLU-Pro,
-    * MMLU-Redux, and
-    * Wikilingua.
+    * GPQA
+    * GSM8K
+    * IFEval
+    * MGSM
+    * MMLU
+    * MMLU-Pro
+    * MMLU-Redux
+    * Wikilingua
 
 
 Introduction
@@ -18,30 +18,30 @@ Introduction
 
 The evaluation process employs a server-client approach, comprising two main phases.
 In Phase 1, the NeMo 2.0 checkpoint is deployed in-framework on a PyTriton server by exposing
-OpenAI API (OAI) compatible endppoints. Both completions (`v1/completions`) and chat-completions
-(`v1/chat/completions`) endpoints are exposed enabling to evaluate on both completion and chat benchmarks.
+OpenAI API (OAI) compatible endpoints. Both completions (`v1/completions`) and chat-completions
+(`v1/chat/completions`) endpoints are exposed, enabling evaluation on both completion and chat benchmarks.
 Phase 2 involves running the evaluation on the model using the OAI endpoint and port.
 
-Some of the benchmarks (e.g. GPQA) use a gated dataset. In order to use them, you must authenticate to 
-`HuggingFace Hub <https://huggingface.co/docs/huggingface_hub/quick-start#authentication>`__
+Some of the benchmarks (e.g. GPQA) use a gated dataset. To use them, you must authenticate to the
+`Hugging Face Hub <https://huggingface.co/docs/huggingface_hub/quick-start#authentication>`__
 before launching the evaluation.
 
-NVIDIA Evals Factory provides following predefined configurations for evaluating completions endpoint:
-    * `gsm8k`,
-    * `mgsm`,
-    * `mmlu`,
-    * `mmlu_pro`, and
+The NVIDIA Evals Factory provides the following predefined configurations for evaluating the completions endpoint:
+    * `gsm8k`
+    * `mgsm`
+    * `mmlu`
+    * `mmlu_pro`
     * `mmlu_redux`
 
-...and the following configurations for evaluating the chat endpoint:
-    * `gpqa_diamond_cot`,
-    * `gsm8k_cot_instruct`,
-    * `ifeval`,
-    * `mgsm_cot`,
-    * `mmlu_instruct`,
-    * `mmlu_pro_instruct`,
-    * `mmlu_redux_instruct`, and
-    * `wikilingua`.
+It also provides the following configurations for evaluating the chat endpoint:
+    * `gpqa_diamond_cot`
+    * `gsm8k_cot_instruct`
+    * `ifeval`
+    * `mgsm_cot`
+    * `mmlu_instruct`
+    * `mmlu_pro_instruct`
+    * `mmlu_redux_instruct`
+    * `wikilingua`
 
 Run Evaluations without NeMo-Run
 ---------------------------------
@@ -83,11 +83,7 @@ the processes from being killed and aborting the runs.
         evaluate(target_cfg=eval_target, eval_cfg=eval_config)
 
 .. note::
-
-  Please refer to ``deploy`` and ``evaluate`` method in ``nemo/collections/llm/api.py`` to check all the argument
-  options as these are just sample commands and don't share all arguments and their default settings. For more details
-  on arguments in the ApiEndpoint and ConfigParams classes for evaluation, refer to `nemo/collections/llm/evaluation/api.py
-  <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/evaluation/api.py>`__.
+    Please refer to ``deploy`` and ``evaluate`` method in ``nemo/collections/llm/api.py`` to check all the argument options as these are just sample commands and don't share all arguments and their default settings. For more details on arguments in the ApiEndpoint and ConfigParams classes for evaluation, refer to `nemo/collections/llm/evaluation/api.py <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/evaluation/api.py>`__.
 
 Run Evaluations with NeMo-Run
 ------------------------------
@@ -112,11 +108,10 @@ To run evaluations on your local workstation, use the following command:
 
 .. code-block:: bash
 
-    python scripts/llm/evaluation.py --nemo_checkpoint='/workspace/hf_llama3_8b_nemo2.nemo'
+    python scripts/llm/evaluation.py --nemo_checkpoint '/workspace/hf_llama3_8b_nemo2/' --eval_task 'gsm8k' --devices 2
 
 .. note::
-
-  When running locally with NeMo-Run, you will need to manually terminate the deploy process once evaluations are complete.
+    When running locally with NeMo-Run, you will need to manually terminate the deploy process once evaluations are complete.
 
 Run on Slurm-based Clusters
 ##########################
@@ -135,20 +130,20 @@ environments.
 
 
 
-Run Legacy Evaluations with `lm-evaluation-harness <https://github.com/EleutherAI/lm-evaluation-harness>`__
+Run Legacy Evaluations with lm-evaluation-harness
 -----------------------------------------------------------------------------------------------------------
 
 You can also run evaluations of NeMo 2.0 checkpoints using the integrated `lm-evaluation-harness
 <https://github.com/EleutherAI/lm-evaluation-harness>`__ within the NeMo Framework. Supported benchmarks include
 ``MMLU``, ``GSM8k``, ``lambada_openai``, ``winogrande``, ``arc_challenge``, ``arc_easy``, and ``copa``.
-Please note that this path is deprecated and will be removed in NeMo 25.06 release.
+Please note that this path is deprecated and will be removed in the NeMo Framework 25.06 release.
 
 The evaluation process employs a server-client approach, comprising two main phases. In Phase 1, the NeMo 2.0
 checkpoint is deployed on a PyTriton server by exporting it to TRT-LLM. Phase 2 involves running the evaluation
 on the model using the deployed URL and port.
 
 
-In order to deploy a model, use the following command. Make sure to pass ``backend="trtllm"``:
+To deploy a model, use the following command. Make sure to pass ``backend="trtllm"``:
 
 .. code-block:: python
 
@@ -164,8 +159,8 @@ In order to deploy a model, use the following command. Make sure to pass ``backe
 
 
 The ``evaluate`` method defined in ``nemo/collections/llm/api.py`` supports the legacy way of evaluating the models.
-To run evaluations on the deployed model, use the following command. Make sure to pass `nemo_checkpoint_path` and
-`url` parameters as they are needed to use the legacy evaluation code. Make sure to open a new terminal within the
+To run evaluations on the deployed model, use the following command. Make sure to pass the `nemo_checkpoint_path` and
+the `url` parameters as they are needed to use the legacy evaluation code. Make sure to open a new terminal within the
 same container to execute it. For longer evaluations, it is advisable to run both the deploy and evaluate commands
 in tmux sessions to prevent the processes from being killed and aborting the runs.
 

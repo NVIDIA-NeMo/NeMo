@@ -34,26 +34,13 @@ jobs:
       script: ${{ matrix.script }}
       IS_UNIT_TEST: true
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
+      IMAGE: ${{ inputs.image-name }}
 
-  e2e-tests-export-deploy-tests:
+  e2e-tests-asr-tests:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - script: L2_NeMo_2_Export_HF_TRT_LLM
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_Export_Deploy_Query_In_Framework
-            runner: self-hosted-azure
-          - script: L2_ONNX_TRT_LLM_Embedding_Export
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_Export_TRT_LLM
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_VLLM_EXPORT
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_Export_In_Framework
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_VLLM_VISION
-            runner: self-hosted-azure
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text
           - runner: self-hosted-azure-gpus-1

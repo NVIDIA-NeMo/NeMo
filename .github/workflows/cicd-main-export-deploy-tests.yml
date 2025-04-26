@@ -35,6 +35,7 @@ jobs:
       SCRIPT: ${{ matrix.script }}
       IS_UNIT_TEST: true
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
+      IMAGE: ${{ inputs.image-name }}
 
   e2e-tests-export-deploy-tests:
     strategy:

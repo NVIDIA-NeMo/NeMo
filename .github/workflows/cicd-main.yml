@@ -52,18 +52,18 @@ jobs:
       - name: Select tests to run
         id: test_to_run
         run: |
-          # For manual dispatch, we replace `all` with the actual job names          
+          # For manual dispatch, we replace `all` with the actual job names
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             TESTS_TO_RUN=$TESTS_TO_RUN
 
-          # For correctly labeled PR, we replace `all` with the actual job names          
+          # For correctly labeled PR, we replace `all` with the actual job names
           elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" == "true" ]]; then
             TESTS_TO_RUN=all
 
           # For incorrectly labeled PR, run no tests
           elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" != "true" ]]; then
             TESTS_TO_RUN=""
-            
+
           # For push events, run all tests. This is so that we can generate coverage
           # on branch `main`.
           elif [[ "$EVENT_NAME" == "push" ]]; then
@@ -82,10 +82,19 @@ jobs:
     needs: [pre-flight]
     uses: ./.github/workflows/code-linting.yml
 
+  cicd-wait-in-queue:
+    needs: [pre-flight]
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - name: Running CI tests
+        run: |
+          echo "Running CI tests"
+
   cicd-test-container-build:
     uses: ./.github/workflows/_build_container.yml
     if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
-    needs: [pre-flight, code-linting]
+    needs: [pre-flight, code-linting, cicd-wait-in-queue]
     with:
       image-name: nemo_container
       dockerfile: Dockerfile.ci
@@ -186,7 +195,7 @@ jobs:
           NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
           NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
           NUM_SKIPPED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "skipped") | .name] | length')
-            
+
           if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && $NUM_SKIPPED -eq 0 ]]; then
             RESULT="success"
           elif [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -gt 0 && $NUM_SKIPPED -eq 0 ]]; then

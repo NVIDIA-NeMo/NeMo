@@ -1,0 +1,153 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Approve Test Queue
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Runs every 5 minutes
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  approve-queue:
+    runs-on: ubuntu-latest
+    environment: main
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Approve waiting deployments
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT }}
+          MAX_CONCURRENCY: ${{ vars.MAX_CONCURRENCY || 1 }}
+        run: |
+          python - <<EOF
+          import os
+          import requests
+
+
+          # GitHub API configuration
+          GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          MAX_CONCURRENCY = int(os.environ["MAX_CONCURRENCY"])
+          API_BASE = f"https://api.github.com/repos/{REPO}"
+
+          # Headers for GitHub API
+          headers = {
+              "Authorization": f"token {GITHUB_TOKEN}",
+              "Accept": "application/vnd.github.v3+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def make_request(endpoint, method="GET", data=None):
+              """Make a request to the GitHub API with error handling."""
+              url = f"{API_BASE}/{endpoint}"
+              try:
+                  if method == "GET":
+                      response = requests.get(url, headers=headers)
+                  else:
+                      response = requests.post(url, headers=headers, json=data)
+                  response.raise_for_status()
+                  return response.json()
+              except requests.exceptions.RequestException as e:
+                  print(f"Error making request to {endpoint}: {str(e)}")
+                  if hasattr(e.response, 'text'):
+                      print(f"Response: {e.response.text}")
+                  return None
+
+          # Get current running and queued workflows
+          print("Fetching workflow runs...")
+          queued_workflow_runs = make_request("actions/runs?status=queued").get("workflow_runs", [])
+          in_progress_workflow_runs = make_request("actions/runs?status=in_progress").get("workflow_runs", [])
+
+          # Count running and queued workflows
+          queued_workflows = sum(1 for run in queued_workflow_runs if run["name"] == "CICD NeMo")
+          in_progress_workflows = sum(1 for run in in_progress_workflow_runs if run["name"] == "CICD NeMo")
+
+          total_workflows = queued_workflows + in_progress_workflows
+          print(f"Current queued workflows: {queued_workflows}")
+          print(f"Current running workflows: {in_progress_workflows}")
+          print(f"Total workflows: {total_workflows}")
+          print(f"Max concurrency: {MAX_CONCURRENCY}")
+
+          if total_workflows >= MAX_CONCURRENCY:
+              print("Maximum concurrency reached, no new approvals will be made")
+              exit(0)
+
+          # Get waiting CI workflows for test environment
+          print("Fetching deployments...")
+          pending_workflows = make_request("actions/runs?status=waiting").get("workflow_runs", [])
+          pending_workflows = [run for run in pending_workflows if run["name"] == "CICD NeMo"]
+
+          # Sort deployments by creation date (oldest first)
+          print("Sorting workflows...")
+          pending_workflows = sorted(pending_workflows, key=lambda x: x["created_at"])
+
+          # Process each deployment
+          print("Processing ...")
+          for workflow in pending_workflows:
+              if total_workflows >= MAX_CONCURRENCY:
+                  print("Maximum concurrency reached, stopping approvals")
+                  break
+
+              workflow_id = workflow["id"]
+              workflow_name = workflow["display_title"]
+              pull_request_number = workflow["pull_requests"][0]["number"]
+              print(f"Approving workflow {workflow_name} for PR #{pull_request_number}")
+
+              deployment_url = f"actions/runs/{workflow_id}/pending_deployments"
+              deployment = make_request(deployment_url)[0]
+              environment_id = deployment["environment"]["id"]
+
+              # Approve the deployment
+              status_data = {
+                  "environment_ids": [environment_id],
+                  "state": "approved",
+                  "comment": "Automatically approved by queue manager"
+              }
+              result = make_request(deployment_url, method="POST", data=status_data)
+
+              if result:
+                  total_workflows += 1
+              else:
+                  print(f"Failed to approve deployment {deployment['id']}")
+                  exit(1)
+
+          EOF
+  notify:
+    if: failure()
+    runs-on: ubuntu-latest
+    needs: [approve-queue]
+    steps:
+      - name: Notify
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_ADMIN: <!subteam^${{ secrets.SLACK_WEBHOOK_ADMIN }}>
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          curl -X POST \
+            -H 'Content-type: application/json' \
+            --data "{\"text\":\":robot_joy: <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|Test-queue-approval-bot workflow> failed. Please review manually.\n\ncc ${SLACK_WEBHOOK_ADMIN}\"}" \
+            $SLACK_WEBHOOK

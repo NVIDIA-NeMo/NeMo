@@ -220,7 +220,13 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         if self.use_liger_kernel:
             from liger_kernel.transformers import _apply_liger_kernel_to_instance
 
-            _apply_liger_kernel_to_instance(model=self.model)
+            try:
+                _apply_liger_kernel_to_instance(model=self.model)
+            except Exception as e:
+                logging.warning("Liger failed with: {}. Switching to non-liger path.".format(e))
+                self.use_liger_kernel = False
+                del self.model
+                return self.configure_model()
 
         if self.model_accelerator is not None:
             from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate

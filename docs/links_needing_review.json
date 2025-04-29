@@ -846,3 +846,11 @@
   "uri": "https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html",
   "info": "404 Client Error: Not Found for url: https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html"
 }
+{
+  "filename": "asr/models.rst",
+  "lineno": 46,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://huggingface.co/spaces/nvidia/parakeet-tdt-1.1b",
+  "info": "unauthorized"
+}

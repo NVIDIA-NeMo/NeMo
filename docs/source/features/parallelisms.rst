@@ -403,7 +403,7 @@ NeMo Framework leverages functionalities from both Megatron Core and Transformer
 
 Visit our source code for more insights into the implementation:
 - `Megatron Core wrappers for Transformer Engine <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/extensions/transformer_engine.py>`_
-- `Transformer Engine attention modules <https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/attention.py>`_
+- `Transformer Engine attention modules <https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/attention>`_
 
 
 Parallelism Nomenclature

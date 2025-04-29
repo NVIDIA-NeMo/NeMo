@@ -237,11 +237,7 @@ class LlamaBidirectionalHFAdapter(torch.nn.Module):
 
             fill_value = torch.tensor(float("-inf"), dtype=embeddings.dtype, device=embeddings.device)
 
-            clipped_dimensions = torch.where(
-                dimensions < embeddings.shape[1],
-                dimensions,
-                torch.tensor(embeddings.shape[1], device=embeddings.device),
-            )
+            clipped_dimensions = torch.clamp(dimensions, max=embeddings.shape[1])
 
             embeddings = embeddings.masked_fill(
                 torch.arange(embeddings.shape[1], device=embeddings.device) >= clipped_dimensions.unsqueeze(-1),

@@ -212,7 +212,7 @@ class OnnxLLMExporter(ITritonDeployable):
                 verbose=verbose,
                 opset_version=opset,
             )
-        logging.info(f"Successfully exported PyTorch model to " f"ONNX model ({self.onnx_model_path})")
+        logging.info(f"Successfully exported PyTorch model to ONNX model {self.onnx_model_path}")
 
         existing_directory_path = Path(self.onnx_model_dir) / "tokenizer"
         existing_directory_path.mkdir(exist_ok=True)
@@ -402,19 +402,31 @@ class OnnxLLMExporter(ITritonDeployable):
                     if layer.op == trt.ElementWiseOperation.PROD:
                         self._override_layer_precision_to_fp32(layer)
 
-    def forward(self, prompt: Union[List, Dict]):
-        """Run inference for a given prompt."""
+    def forward(self, inputs: Union[List, Dict], dimensions: Optional[List] = None):
+        """Run inference for a given input.
+
+        Args:
+            inputs (Union[List, Dict]): Input for the model. If list, it should be a list of strings.
+                If dict, it should be a dictionary with keys as the model input names.
+            dimensions (Optional[List]): The dimensions parameter of the model. Required if the model
+                was exported to accept dimensions parameter and inputs is given as a list of strings.
+
+        Returns:
+            np.ndarray: Model output.
+        """
 
         if self.onnx_runtime_session is None:
-            warnings.warn("ONNX Runtime is not available. Please install " "the onnxruntime-gpu and try again.")
+            warnings.warn("ONNX Runtime is not available. Please install the onnxruntime-gpu and try again.")
             return None
-        else:
-            if isinstance(prompt, List):
-                tokenized = self.tokenizer(prompt)
-                prompt = {nn: tokenized[nn] for nn in self.model_input_names}
 
-            output = self.onnx_runtime_session.run(self.model_output_names, prompt)
-            return output[0][0]
+        if isinstance(inputs, List):
+            if "dimensions" in self.model_input_names and dimensions is None:
+                raise ValueError("Dimensions should be provided for list input.")
+            inputs = dict(self.tokenizer(inputs))
+            inputs["dimensions"] = dimensions
+
+        output = self.onnx_runtime_session.run(self.model_output_names, inputs)
+        return output[0]
 
     @property
     def get_model(self):

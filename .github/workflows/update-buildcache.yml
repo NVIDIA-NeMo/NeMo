@@ -64,7 +64,7 @@ jobs:
           LAST_PRS=$(gh api graphql -f query='
             query {
               repository(owner: "NVIDIA", name: "NeMo") {
-                pullRequests(states: MERGED, first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                pullRequests(states: MERGED, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
                   nodes {
                     number
                   }
@@ -81,9 +81,23 @@ jobs:
   cicd-test-container-build:
     needs: [pre-flight]
     uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_container.yml@v0.27.0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: Dockerfile.ci
+            image-name: nemo_container_automodel
+          - dockerfile: Dockerfile.ci
+            image-name: nemo_container_nemo2
+          - dockerfile: Dockerfile.ci
+            image-name: nemo_container_speech
+          - dockerfile: Dockerfile.ci
+            image-name: nemo_container
+          - dockerfile: Dockerfile.ci.export_deploy
+            image-name: nemo_container_export_deploy
     with:
-      image-name: nemo_container
-      dockerfile: Dockerfile.ci
+      image-name: ${{ matrix.image-name }}
+      dockerfile: ${{ matrix.dockerfile }}
       image-label: nemo-core
       build-args: |
         IMAGE_LABEL=nemo-core
@@ -94,5 +108,5 @@ jobs:
       use-inline-cache: false
       prune-filter-timerange: 24h
       cache-from: |
-        nemoci.azurecr.io/$IMAGE_NAME-buildcache:main
+        nemoci.azurecr.io/${{ matrix.image-name }}-buildcache:main
         ${{ needs.pre-flight.outputs.cache-from }}

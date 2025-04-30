@@ -84,6 +84,7 @@ jobs:
 
   cicd-wait-in-queue:
     needs: [pre-flight]
+    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     runs-on: ubuntu-latest
     environment: test
     steps:
@@ -194,7 +195,7 @@ jobs:
       - cicd-main-export-deploy
       - cicd-main-automodel
       - cicd-main-speech
-    if: always() && (github.event.label.name == 'Run CICD' || github.event_name == 'workflow_dispatch')
+    if: always()
     runs-on: ubuntu-latest
     permissions: write-all
     steps:

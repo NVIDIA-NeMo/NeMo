@@ -41,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
+      branch_name: ${{ steps.branch_name.outputs.main }}
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
@@ -77,6 +78,11 @@ jobs:
           parsed_string=$(echo "$TESTS_TO_RUN" | jq -c --raw-input 'split(",")')
           echo "main=${parsed_string}" | tee -a "$GITHUB_OUTPUT"
 
+      - name: Extract branch name
+        shell: bash
+        run: echo "main=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" | tee -a "$GITHUB_OUTPUT"
+        id: branch_name
+
   code-linting:
     if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     needs: [pre-flight]
@@ -84,9 +90,9 @@ jobs:
 
   cicd-wait-in-queue:
     needs: [pre-flight]
-    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     runs-on: ubuntu-latest
     environment: test
+    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' && !startsWith(needs.pre-flight.outputs.branch_name, 'bump-ci-container') }}
     steps:
       - name: Running CI tests
         run: |
@@ -94,14 +100,16 @@ jobs:
 
   cicd-test-container-build:
     uses: ./.github/workflows/_build_container.yml
-    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     needs: [pre-flight, code-linting, cicd-wait-in-queue]
+    if: |
+      needs.pre-flight.outputs.test_to_run != '[]' && (success() || needs.cicd-wait-in-queue.result == 'skipped')
     with:
       image-name: nemo_container
       dockerfile: Dockerfile.ci
 
   cicd-import-tests:
-    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
+    if: |
+      needs.pre-flight.outputs.test_to_run != '[]' && (success() || needs.cicd-wait-in-queue.result == 'skipped')
     needs: [cicd-test-container-build, pre-flight]
     runs-on: self-hosted-azure-gpus-1
     steps:
@@ -141,6 +149,8 @@ jobs:
   L0_Setup_Test_Data_And_Models:
     needs: [pre-flight, cicd-test-container-build]
     runs-on: self-hosted-azure
+    if: |
+      (success() || needs.cicd-wait-in-queue.result == 'skipped')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -157,30 +167,40 @@ jobs:
   cicd-main-unit-tests:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
+    if: |
+      (success() || needs.cicd-wait-in-queue.result == 'skipped')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   cicd-main-export-deploy:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-export-deploy.yml
+    if: |
+      (success() || needs.cicd-wait-in-queue.result == 'skipped')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   cicd-main-speech:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
+    if: |
+      (success() || needs.cicd-wait-in-queue.result == 'skipped')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   cicd-main-automodel:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-automodel.yml
+    if: |
+      (success() || needs.cicd-wait-in-queue.result == 'skipped')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   cicd-main-nemo2:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-nemo2.yml
+    if: |
+      (success() || needs.cicd-wait-in-queue.result == 'skipped')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 

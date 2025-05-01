@@ -349,9 +349,6 @@ def set_primary_perf_configs(
         elif fp8_recipe.lower() == "mxfp8":
             recipe.trainer.plugins = bf16_with_mxfp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
-        if use_mcore_fsdp:
-            logging.warning("Currently FSDP does not support FP8 param gather. Disabling fp8 param gather.")
-            recipe.trainer.plugins.fp8_param_gather = False
 
     # Activation recompute configs
     if recompute_modules is not None:

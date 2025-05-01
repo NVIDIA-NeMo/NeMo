@@ -58,7 +58,12 @@ jobs:
         run: |
           pip install -U pip
           pip install git-python
-          python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
+          else
+            echo '["all"]' | tee -a test_modules.json
+          fi
 
           components_to_run=$(cat test_modules.json)
 

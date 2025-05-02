@@ -23,3 +23,9 @@ This repository contains Jupyter Notebook tutorials using the NeMo Framework for
    * - `Llama3 LoRA Fine-Tuning and Supervised Fine-Tuning using NeMo2 <./nemo2-sft-peft>`_
      - `SQuAD <https://arxiv.org/abs/1606.05250>`_ for LoRA and `Databricks-dolly-15k <https://huggingface.co/datasets/databricks/databricks-dolly-15k>`_ for SFT
      - Perform LoRA PEFT and SFT on Llama 3 8B using NeMo 2.0
+   * - `NeMo SlimPajama Data Pipeline and Pretraining tutorial <./slimpajama>`_
+     - `SlimPajama <https://huggingface.co/datasets/cerebras/SlimPajama-627B>`_
+     - Step-by-step guide to preprocess the SlimPajama dataset and pretrain a Llama3 8B model using NeMo 2.0
+   * - `ChipNeMo - Custom tokenization + Domain Adaptive Pre-training on Llama 2 7b <./domain-adaptive-pretraining>`_
+     - Chip domain/hardware datasets from open-source GitHub, Wikipedia and ArXiv papers.
+     - Tutorial on custom tokenization and Domain-Adaptive Pre-training for a ChipNeMo-like code generation use case.

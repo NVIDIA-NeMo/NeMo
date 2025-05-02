@@ -19,6 +19,7 @@ The following line shows an example of how you can launch a pre-training experim
   - -t/--time_limit: Maximum time limit for your experiment. Your slurm job will be cancelled after this. Default is 30 minutes.
   - -i/--container_image: The NeMo container you want to use. Defaults to latest dev container- 'nvcr.io/nvidia/nemo:dev'.
   - -c/--compute_dtype: Specifies whether you want to use bf16 or fp8 precision for training. Defaults to 'bf16'. You can choose to use 'fp8'.
+  - --fp8_recipe: FP8 recipe. Options: 'ds' (per-tensor delayed scaling), 'cs '(per-tensor current scaling), 'mxfp8' (block-level scaling -- 32 values). Defaults to 'ds'.
   - -en/--enable_nsys: Enable nsys profiling. It is disabled by default. When enabled, profiling will be enabled for 1 step from step 5 to step 6. You can change the step in the respective recipe script.
   - -tb/--tensorboard: Enable tensorboard logging. It is disabled by default.
     - CAUTION: Tensorboard logging may cause performance overhead.

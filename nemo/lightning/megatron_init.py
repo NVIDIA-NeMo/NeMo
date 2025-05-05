@@ -110,6 +110,7 @@ def initialize_model_parallel_for_nemo(
     use_te_rng_tracker=False,
     num_distributed_optimizer_instances=1,
     nccl_communicator_config_path=None,
+    use_sharp=False,
 ):
     """Initialize model parallel groups in NeMo."""
     if virtual_pipeline_model_parallel_size is not None and not HAVE_INTERLEAVED:
@@ -130,6 +131,7 @@ def initialize_model_parallel_for_nemo(
     app_state.encoder_pipeline_model_parallel_size = encoder_pipeline_model_parallel_size
     app_state.pipeline_model_parallel_comm_backend = pipeline_model_parallel_comm_backend
     app_state.use_fp8 = use_fp8
+    app_state.use_sharp = use_sharp
     app_state.init_mpi_proc_group = init_mpi_proc_group
     app_state.expert_tensor_parallel_size = expert_tensor_parallel_size
     app_state.num_distributed_optimizer_instances = num_distributed_optimizer_instances

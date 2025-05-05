@@ -251,6 +251,7 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
     )
 
     recipe.trainer.plugins.grad_reduce_in_fp32 = False
+    recipe.optim.config.use_precision_aware_optimizer = False
 
     return recipe
 
@@ -422,5 +423,7 @@ def finetune_performance_optimizations(
             100,
         )
     )
+
+    recipe.optim.config.use_precision_aware_optimizer = False
 
     return recipe

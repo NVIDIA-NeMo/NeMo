@@ -359,13 +359,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
-
+          HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
         run: |
           # Get workflow run details and check job conclusions
           NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
           NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
 
-          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 ]]; then
+          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && "$HAS_LABEL" == "true" ]]; then
             RESULT="success"
           elif [[ $NUM_FAILED -gt 0 ]]; then
             RESULT="cancelled"
@@ -416,6 +416,7 @@ jobs:
       - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
         if: |
           steps.result.outputs.code == 'failure' 
+          && github.event.label.name == 'Run CICD' 
           && env.SLACK_WEBHOOK != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

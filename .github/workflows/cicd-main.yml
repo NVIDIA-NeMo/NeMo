@@ -134,7 +134,7 @@ jobs:
     uses: ./.github/workflows/code-linting.yml
 
   cicd-wait-in-queue:
-    needs: [pre-flight]
+    needs: [pre-flight, code-linting]
     runs-on: ubuntu-latest
     environment: test
     if: |

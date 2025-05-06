@@ -205,7 +205,7 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
         if parts[1] in top_level_packages and parts[1] != 'collections' and parts[0] != 'tests':
             dependencies[module_path] = list(set(analyze_imports(nemo_root, file_path)))
         elif parts[0] == 'tests':
-            dependencies[module_path] = [relative_path]
+            dependencies[module_path] = [relative_path.replace("/", ".").replace(".py", "")]
         elif parts[1] == 'collections':
             dependencies[module_path] = list(set(analyze_imports(nemo_root, file_path)))
 
@@ -252,7 +252,9 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
     for package, deps in dependencies.items():
         package_parts = package.split('.')
 
-        if os.path.isfile((file_path := f"{os.path.join(*package_parts[:-1])}.py")):
+        if package_parts[0] == "tests":
+            simplified_package_path = f"{os.path.join(*package_parts)}.py"
+        elif os.path.isfile((file_path := f"{os.path.join(*package_parts[:-1])}.py")):
             simplified_package_path = file_path
         elif os.path.isdir((file_path := f"{os.path.join(*package_parts[:-1])}")):
             simplified_package_path = file_path
@@ -267,13 +269,14 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
 
             if (
                 len(dep_parts) >= 2
-                and dep_parts[1] in find_top_level_packages(nemo_root)
+                and (dep_parts[1] in find_top_level_packages(nemo_root))
                 and dep_parts[1] != 'collections'
             ):
                 simplified_dependencies[simplified_package_path].append(f"{dep_parts[0]}.{dep_parts[1]}")
-
+            elif dep_parts[0] == "tests":
+                simplified_dependencies[simplified_package_path].append(".".join(dep_parts))
             elif len(dep_parts) >= 3 and (
-                simplified_name := f"{dep_parts[0]}.{dep_parts[1]}.{dep_parts[2]}"
+                simplified_name := f"nemo.{dep_parts[1]}.{dep_parts[2]}"
             ) in find_collection_modules(nemo_root):
                 simplified_dependencies[simplified_package_path].append(simplified_name)
 
@@ -353,7 +356,7 @@ def main():
 
     # Output as JSON
     data = json.dumps(dependencies, indent=4)
-    # print(data)
+
     with open('nemo_dependencies.json', 'w', encoding='utf-8') as f:
         f.write(data)
 

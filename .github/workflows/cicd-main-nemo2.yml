@@ -96,10 +96,8 @@ jobs:
             runner: self-hosted-azure-gpus-2-h100
           - script: L2_NeMo_2_NEVA_PRELOADED_FINETUNE_PP2_SEQPACK_PAD
             runner: self-hosted-azure-gpus-2-h100
-            is_optional: true
           - script: L2_NeMo_2_NEVA_PRELOADED_FINETUNE_PP2_SEQPACK_TRUNC
             runner: self-hosted-azure-gpus-2-h100
-            is_optional: true
           - script: L2_NeMo_2_NEVA_LOAD_GENERATE
             runner: self-hosted-azure-gpus-1
             is_optional: true

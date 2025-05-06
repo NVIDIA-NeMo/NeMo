@@ -112,7 +112,7 @@ def main(args):
 
         processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
         image_processor = processor.image_processor
-        tokenizer = AutoTokenizer("llava-hf/llava-1.5-7b-hf")
+        tokenizer = AutoTokenizer("llava-hf/llava-1.5-7b-hf", use_fast=False)
 
         # Configure multimodal samples
         config = MultiModalSampleConfig(

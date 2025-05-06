@@ -125,3 +125,100 @@ class TestTensorRTMMExporter:
         assert len(outputs) == 1
         assert outputs[0].name == "outputs"
         assert outputs[0].dtype == bytes
+
+    @pytest.mark.run_only_on('GPU')
+    def test_forward_with_all_params(self, model_dir, mock_runner):
+        from nemo.export.tensorrt_mm_exporter import TensorRTMMExporter
+
+        exporter = TensorRTMMExporter(model_dir, load_model=False)
+        exporter.runner = mock_runner
+
+        result = exporter.forward(
+            input_text="What's in this image?",
+            input_media="test_image.jpg",
+            batch_size=2,
+            max_output_len=50,
+            top_k=5,
+            top_p=0.9,
+            temperature=0.7,
+            repetition_penalty=1.2,
+            num_beams=4,
+            lora_uids=["lora1", "lora2"],
+        )
+
+        assert result == "Test response"
+        mock_runner.load_test_media.assert_called_once()
+        mock_runner.run.assert_called_once_with(
+            "What's in this image?",
+            mock_runner.load_test_media.return_value,
+            50,
+            2,
+            5,
+            0.9,
+            0.7,
+            1.2,
+            4,
+            ["lora1", "lora2"],
+        )
+
+    @pytest.mark.run_only_on('GPU')
+    def test_get_input_media_tensors_vision(self, model_dir):
+        from nemo.export.tensorrt_mm_exporter import TensorRTMMExporter
+
+        exporter = TensorRTMMExporter(model_dir, load_model=False, modality="vision")
+        tensors = exporter.get_input_media_tensors()
+
+        assert len(tensors) == 1
+        assert tensors[0].name == "input_media"
+        assert tensors[0].shape == (-1, -1, -1, 3)
+        assert tensors[0].dtype == np.uint8
+
+    @pytest.mark.run_only_on('GPU')
+    def test_get_input_media_tensors_audio(self, model_dir):
+        from nemo.export.tensorrt_mm_exporter import TensorRTMMExporter
+
+        exporter = TensorRTMMExporter(model_dir, load_model=False, modality="audio")
+        tensors = exporter.get_input_media_tensors()
+
+        assert len(tensors) == 2
+        assert tensors[0].name == "input_signal"
+        assert tensors[0].shape == (-1,)
+        assert tensors[0].dtype == np.single
+        assert tensors[1].name == "input_signal_length"
+        assert tensors[1].shape == (1,)
+        assert tensors[1].dtype == np.intc
+
+    @pytest.mark.run_only_on('GPU')
+    def test_export_with_invalid_model_type(self, model_dir):
+        from nemo.export.tensorrt_mm_exporter import TensorRTMMExporter
+
+        exporter = TensorRTMMExporter(model_dir, load_model=False)
+        with pytest.raises(Exception):
+            exporter.export(
+                visual_checkpoint_path="dummy/path",
+                model_type="invalid_model_type",
+                tensor_parallel_size=1,
+                load_model=False,
+            )
+
+    @pytest.mark.run_only_on('GPU')
+    def test_export_with_existing_files(self, model_dir):
+        import os
+
+        from nemo.export.tensorrt_mm_exporter import TensorRTMMExporter
+
+        # Create some files in the model directory
+        os.makedirs(model_dir, exist_ok=True)
+        with open(os.path.join(model_dir, "test.txt"), "w") as f:
+            f.write("test")
+
+        exporter = TensorRTMMExporter(model_dir, load_model=False)
+        with pytest.raises(Exception) as exc_info:
+            exporter.export(
+                visual_checkpoint_path="dummy/path",
+                model_type="neva",
+                tensor_parallel_size=1,
+                load_model=False,
+                delete_existing_files=False,
+            )
+        assert "There are files in this folder" in str(exc_info.value)

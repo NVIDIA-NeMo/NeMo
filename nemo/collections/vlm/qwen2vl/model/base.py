@@ -62,9 +62,9 @@ def qwen2vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
 
     required_keys = set()
     required_keys.update(("input_ids", "pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw"))
-    if parallel_state.is_pipeline_first_stage():
+    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
         required_keys.update(("position_ids",))
-    if parallel_state.is_pipeline_last_stage():
+    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
         required_keys.update(
             (
                 "labels",
@@ -227,11 +227,11 @@ class Qwen2VLConfig(TransformerConfig, io.IOMixin):
         model = MCoreQwen2VLModel(
             config=self,
             tokenizer=tokenizer,
-            pre_process=ps.is_pipeline_first_stage()
+            pre_process=ps.is_pipeline_first_stage(ignore_virtual=False)
             or ps.get_pipeline_model_parallel_rank() == self.encoder_pipeline_model_parallel_size,
-            post_process=ps.is_pipeline_last_stage(),
-            add_encoder=ps.is_pipeline_first_stage(),
-            add_decoder=ps.is_pipeline_last_stage()
+            post_process=ps.is_pipeline_last_stage(ignore_virtual=False),
+            add_encoder=ps.is_pipeline_first_stage(ignore_virtual=False),
+            add_decoder=ps.is_pipeline_last_stage(ignore_virtual=False)
             or ps.get_pipeline_model_parallel_rank() >= self.encoder_pipeline_model_parallel_size,
             drop_vision_class_token=self.drop_vision_class_token,
         )

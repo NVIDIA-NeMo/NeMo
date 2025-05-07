@@ -47,7 +47,7 @@ def load_distillation_config(cfg: "TransformerConfig") -> Dict[str, Any]:
         "loss_balancer": _DummyLossBalancer(),  # HACK: to appease ModelOpt until validation relaxed
         "skip_lm_loss": True,
     }
-    if cfg.pipeline_model_parallel_size == 1 or parallel_state.is_pipeline_last_stage():
+    if cfg.pipeline_model_parallel_size == 1 or parallel_state.is_pipeline_last_stage(ignore_virtual=False):
         distill_cfg["criterion"][logit_pair] = LogitsKLLoss(cfg)
 
     return distill_cfg

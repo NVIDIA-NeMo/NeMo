@@ -15,7 +15,9 @@
 
 # This code has been adapted from the following private repo: https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/tree/prompt-learning/prefix_tuning_v2
 # Adapted by: @adithyare
-
+#
+# flake8: noqa
+# pylint: skip-file
 
 import itertools
 from typing import Any
@@ -288,7 +290,7 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
 
     def on_validation_epoch_end(self):
         if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
-            if parallel_state.is_pipeline_last_stage():
+            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
                 # only the last pipeline parallel stages return loss
                 averaged_loss = torch.stack([i['loss'] for i in self.validation_step_outputs]).mean()
             else:

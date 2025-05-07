@@ -66,9 +66,9 @@ def bert_data_step(dataloder_iter) -> Dict[str, torch.Tensor]:
 
     required_keys = set()
     required_keys.add("padding_mask")
-    if parallel_state.is_pipeline_first_stage():
+    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
         required_keys.add("text")
-    if parallel_state.is_pipeline_last_stage():
+    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
         required_keys.update(("labels", "loss_mask", "types", "is_random"))
 
     _batch = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in _batch.items()}
@@ -179,8 +179,8 @@ class BertConfig(TransformerConfig, io.IOMixin):
             vocab_size=get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by),
             tokenizer=tokenizer if self.mask_vocab_padding_tokens else None,
             max_sequence_length=self.seq_length,
-            pre_process=parallel_state.is_pipeline_first_stage(),
-            post_process=parallel_state.is_pipeline_last_stage(),
+            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
             fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
             parallel_output=self.parallel_output,
             share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,

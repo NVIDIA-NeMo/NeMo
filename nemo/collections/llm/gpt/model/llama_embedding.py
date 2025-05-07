@@ -86,7 +86,7 @@ def nv_embedding_data_step(dataloder_iter) -> Dict[str, torch.Tensor]:
     required_keys = set()
     required_keys.add("attention_mask")
 
-    if parallel_state.is_pipeline_first_stage():
+    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
         required_keys.add("input_ids")
         required_keys.add("position_ids")
 

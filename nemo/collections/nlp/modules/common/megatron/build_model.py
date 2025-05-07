@@ -41,6 +41,7 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
 
+
 # Apex's `build model' refactored to call Megatron-Core classes
 def build_model(
     model_provider_func: Callable[[Any, Dict[str, Any]], torch.nn.Module],
@@ -81,8 +82,8 @@ def build_model(
                 model_provider_func(
                     *args,
                     **kwargs,
-                    pre_process=parallel_state.is_pipeline_first_stage(),
-                    post_process=parallel_state.is_pipeline_last_stage(),
+                    pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+                    post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
                 )
             )
     else:
@@ -90,12 +91,12 @@ def build_model(
             model = model_provider_func(
                 *args,
                 **kwargs,
-                pre_process=parallel_state.is_pipeline_first_stage(),
-                post_process=parallel_state.is_pipeline_last_stage(),
+                pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+                post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
             )
         elif model_type == ModelType.encoder_and_decoder:
-            pre_process = parallel_state.is_pipeline_first_stage()
-            post_process = parallel_state.is_pipeline_last_stage()
+            pre_process = parallel_state.is_pipeline_first_stage(ignore_virtual=False)
+            post_process = parallel_state.is_pipeline_last_stage(ignore_virtual=False)
             # `add_encoder` & `add_decoder` logic.
             add_encoder, add_decoder = True, True
             if parallel_state.get_pipeline_model_parallel_world_size() > 1:

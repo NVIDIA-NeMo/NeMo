@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# flake8: noqa
+# pylint: skip-file
 
 import enum
 import itertools
@@ -463,7 +466,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
         loss_list = []
         bleu_score_list = []
         for dataloader_idx, output in enumerate(outputs):
-            if parallel_state.is_pipeline_last_stage():
+            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
                 # only the last pipeline parallel stages return loss
                 averaged_loss = torch.stack([x['loss'] for x in output]).mean()
             else:

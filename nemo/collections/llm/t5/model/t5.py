@@ -86,9 +86,9 @@ def t5_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     # set up forward arguments for pipeline parallelism
     required_keys = set()
     required_keys.update(["enc_mask", "dec_mask", "enc_dec_mask"])
-    if parallel_state.is_pipeline_first_stage():
+    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
         required_keys.update(("text_enc", "text_dec"))
-    if parallel_state.is_pipeline_last_stage():
+    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
         required_keys.update(("labels", "loss_mask"))
 
     output = {key: val if key in required_keys else None for key, val in _batch.items()}
@@ -227,8 +227,8 @@ class T5Config(TransformerConfig, io.IOMixin):
             position_embedding_type=self.position_embedding_type,
             rotary_percent=self.rotary_percent,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=parallel_state.is_pipeline_first_stage(),
-            post_process=parallel_state.is_pipeline_last_stage(),
+            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
         )
 
         return model

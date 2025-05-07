@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# flake8: noqa
+# pylint: skip-file
 
 import itertools
 import json
@@ -274,11 +277,11 @@ class MegatronRetroModel(MegatronGPTModel):
                 required_keys.update(batch.keys())
             else:
                 required_keys.add('attention_mask')
-                if parallel_state.is_pipeline_first_stage():
+                if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
                     required_keys.update(
                         ('tokens', 'position_ids', 'context_input_ids', 'context_position_ids', 'context_mask')
                     )
-                if parallel_state.is_pipeline_last_stage():
+                if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
                     required_keys.update(('labels', 'loss_mask'))
             if self.get_attention_mask_from_fusion:
                 required_keys.remove('attention_mask')
@@ -391,7 +394,7 @@ class MegatronRetroModel(MegatronGPTModel):
             # Advance inference sequence offset.
             if self.inference_params:
                 # if last stage, then (final) output is [b, s, h], otherwise it's [s, b, h]
-                if parallel_state.is_pipeline_last_stage():
+                if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
                     self.inference_params.sequence_len_offset += output_tensor.size(1)
                 else:
                     self.inference_params.sequence_len_offset += output_tensor.size(0)

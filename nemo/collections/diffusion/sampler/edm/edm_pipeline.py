@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# flake8: noqa
+# pylint: skip-file
 
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -186,7 +189,7 @@ class EDMPipeline:
         # Sample pertubation noise levels and N(0, 1) noises
         sigma, epsilon = self.draw_training_sigma_and_epsilon(x0.size(), condition)
 
-        if parallel_state.is_pipeline_last_stage():
+        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
             output_batch, pred_mse, edm_loss = self.compute_loss_with_epsilon_and_sigma(
                 data_batch, x0_from_data_batch, x0, condition, epsilon, sigma
             )
@@ -222,7 +225,7 @@ class EDMPipeline:
             **condition,
         )
 
-        if not parallel_state.is_pipeline_last_stage():
+        if not parallel_state.is_pipeline_last_stage(ignore_virtual=False):
             return net_output
 
         x0_pred = batch_mul(c_skip, xt) + batch_mul(c_out, net_output)
@@ -260,7 +263,7 @@ class EDMPipeline:
         # Generate noisy observations
         xt = mean + batch_mul(std, epsilon)  # corrupted data
 
-        if parallel_state.is_pipeline_last_stage():
+        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
             # make prediction
             x0_pred, eps_pred = self.denoise(xt, sigma, condition)
             # loss weights for different noise levels

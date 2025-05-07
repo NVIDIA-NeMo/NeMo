@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# flake8: noqa
+# pylint: skip-file
+
 import itertools
 import json
 from typing import Dict, List
@@ -443,7 +447,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
             if len(loss_vals) == 0:
                 logging.warning("validation_epoch_end: outputs is empty")
                 return
-            if parallel_state.is_pipeline_last_stage():
+            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
                 # only the last pipeline parallel stages return loss
                 loss = torch.stack(loss_vals).mean()
             else:

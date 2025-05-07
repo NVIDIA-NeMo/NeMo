@@ -146,7 +146,9 @@ class DistillationMegatronGPTModel(MegatronGPTModel):
             seq_len_interpolation_factor=self.cfg.get('seq_len_interpolation_factor', None),
             rotary_base=self.cfg.get('rotary_base', 10000),
         )
-        if self.cfg.get("apply_embedding_scaling", False) and parallel_state.is_pipeline_first_stage():
+        if self.cfg.get("apply_embedding_scaling", False) and parallel_state.is_pipeline_first_stage(
+            ignore_virtual=False
+        ):
             extend_instance(model.embedding, EmbeddingScalingMixin)
 
         # [ModelOpt] Distillation mode.
@@ -180,9 +182,9 @@ class DistillationMegatronGPTModel(MegatronGPTModel):
                 required_keys.add('attention_mask')
                 if 'cu_seqlens' in batch:
                     required_keys.add('cu_seqlens')
-                if parallel_state.is_pipeline_first_stage():
+                if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
                     required_keys.update(('tokens', 'position_ids'))
-                if parallel_state.is_pipeline_last_stage():
+                if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
                     required_keys.update(('labels', 'loss_mask'))
             if self.get_attention_mask_from_fusion and 'attention_mask' in required_keys:
                 required_keys.remove('attention_mask')

@@ -60,9 +60,9 @@ def gpt_distillation_data_step(dataloader_iter, attn_mask_cpu=False) -> Dict[str
         required_host_keys.add("cu_seqlens_argmin")
         required_host_keys.add("max_seqlen")
 
-    if parallel_state.is_pipeline_first_stage():
+    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
         required_device_keys.update(("tokens", "position_ids"))
-    if parallel_state.is_pipeline_last_stage():
+    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
         required_device_keys.update(("labels", "loss_mask"))
 
     batch_required_keys = {}

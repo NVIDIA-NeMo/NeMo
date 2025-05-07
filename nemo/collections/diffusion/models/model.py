@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# pylint: skip-file
 
 import importlib
 import warnings
@@ -172,8 +174,8 @@ class DiTConfig(TransformerConfig, io.IOMixin):
             self,
             fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
             parallel_output=self.parallel_output,
-            pre_process=parallel_state.is_pipeline_first_stage(),
-            post_process=parallel_state.is_pipeline_last_stage(),
+            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
             max_img_h=self.max_img_h,
             max_img_w=self.max_img_w,
             max_frames=self.max_frames,
@@ -319,7 +321,7 @@ class DiTModel(GPTModel):
         return self.module.forward(*args, **kwargs)
 
     def forward_step(self, batch) -> torch.Tensor:
-        if parallel_state.is_pipeline_last_stage():
+        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
             output_batch, loss = self.diffusion_pipeline.training_step(batch, 0)
             loss = torch.mean(loss, dim=-1)
             return loss

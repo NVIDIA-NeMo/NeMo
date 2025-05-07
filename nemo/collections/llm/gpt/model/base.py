@@ -89,9 +89,9 @@ def gpt_data_step(dataloader_iter, use_mtp=False) -> dict[str, torch.Tensor]:
         required_host_keys.add("cu_seqlens_argmin")
         required_host_keys.add("max_seqlen")
 
-    if parallel_state.is_pipeline_first_stage() or use_mtp:
+    if parallel_state.is_pipeline_first_stage(ignore_virtual=False) or use_mtp:
         required_device_keys.update(("tokens", "position_ids"))
-    if parallel_state.is_pipeline_last_stage():
+    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
         required_device_keys.update(("labels", "loss_mask"))
 
     _batch_required_keys = {}
@@ -375,8 +375,8 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                 rotary_percent=self.rotary_percent,
                 rotary_base=self.rotary_base,
                 seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-                pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
-                post_process=post_process or parallel_state.is_pipeline_last_stage(),
+                pre_process=pre_process or parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+                post_process=post_process or parallel_state.is_pipeline_last_stage(ignore_virtual=False),
                 scatter_embedding_sequence_parallel=self.scatter_embedding_sequence_parallel,
                 **kwargs,
             )

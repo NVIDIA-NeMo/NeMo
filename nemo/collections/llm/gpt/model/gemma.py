@@ -114,7 +114,7 @@ class GemmaModel(GPTModel):
         from nemo.collections.llm.gpt.model.gemma2 import EmbeddingScalingMixin
 
         super().configure_model()
-        if parallel_state.is_pipeline_first_stage():
+        if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
             extend_instance(self.module.embedding, EmbeddingScalingMixin)
 
 

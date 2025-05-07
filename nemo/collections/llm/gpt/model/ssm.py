@@ -232,8 +232,8 @@ class SSMConfig(TransformerConfig, io.IOMixin):
             rotary_percent=self.rotary_percent,
             rotary_base=self.rotary_base,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
-            post_process=post_process or parallel_state.is_pipeline_last_stage(),
+            pre_process=pre_process or parallel_state.is_pipeline_first_stage(ignore_virtual=False),
+            post_process=post_process or parallel_state.is_pipeline_last_stage(ignore_virtual=False),
         )
 
 

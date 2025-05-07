@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# flake8: noqa
+# pylint: skip-file
 
 import os
 import tempfile
@@ -112,7 +115,7 @@ class NLPAdapterModelMixin:
         return l
 
     def first_stage_of_pipeline(self):
-        return parallel_state.is_pipeline_first_stage()
+        return parallel_state.is_pipeline_first_stage(ignore_virtual=False)
 
     def _get_all_keys(
         self,

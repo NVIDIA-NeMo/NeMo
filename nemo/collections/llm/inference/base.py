@@ -194,7 +194,7 @@ def setup_model_and_tokenizer(
     params_dtype: torch.dtype = torch.bfloat16,
     inference_batch_times_seqlen_threshold: int = 1000,
     inference_max_seq_length: int = 2560,
-    enable_flash_decode: bool = True,
+    enable_flash_decode: bool = False,
 ) -> tuple[AbstractModelInferenceWrapper, MCoreTokenizerWrappper]:
     """
     Sets up the model and tokenizer for inference.
@@ -219,9 +219,15 @@ def setup_model_and_tokenizer(
     model: GPTModel | T5Model = io.load_context(path=ckpt_to_context_subdir(path), subpath="model")
 
     if enable_flash_decode:
-        logging.info("Enabling Flash Decode for in-framework inference")
-        model.config.flash_decode = True
-        model.config.attention_backend = AttnBackend.flash
+        if params_dtype == torch.bfloat16 or params_dtype == torch.float16:
+            logging.info("Enabling Flash Decode for in-framework inference")
+            model.config.flash_decode = True
+            model.config.attention_backend = AttnBackend.flash
+        else:
+            logging.warning(
+                "Flash Decode is not supported for params_dtype %s, defaulting to MCore's attention backend",
+                params_dtype,
+            )
 
     _setup_trainer_and_restore_model(path=path, trainer=trainer, model=model)
 

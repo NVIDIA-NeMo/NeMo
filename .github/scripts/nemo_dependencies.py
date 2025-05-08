@@ -340,6 +340,27 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
 
     dependencies = bucket_deps
 
+    # Additional dependencies
+    # Add all files in requirements/ directory
+    requirements_dir = os.path.join(nemo_root, "requirements")
+    if os.path.exists(requirements_dir):
+        for filename in os.listdir(requirements_dir):
+            filepath = os.path.join("requirements", filename)
+            relative_path = os.path.relpath(filepath, nemo_root)
+
+            dependencies[relative_path] = [
+                "nemo2",
+                "unit-tests",
+                "speech",
+                "automodel",
+                "export-deploy",
+            ]
+
+    # Add all Dockerfile files
+    for file_path in os.listdir(nemo_root):
+        if "Dockerfile" in file_path:
+            dependencies[file_path] = ["nemo2", "unit-tests", "speech", "automodel", "export-deploy"]
+
     # Sort dependencies by length of values (number of dependencies)
     dependencies = dict(sorted(dependencies.items(), key=lambda x: len(x[1]), reverse=True))
 

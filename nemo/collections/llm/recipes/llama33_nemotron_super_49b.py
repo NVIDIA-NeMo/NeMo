@@ -90,6 +90,7 @@ def pretrain_recipe(
 @run.cli.factory(target=finetune, name=NAME)
 def finetune_recipe(
     dir: Optional[str] = None,
+    resume_path: str = "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     name: str = "default",
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
@@ -107,6 +108,7 @@ def finetune_recipe(
 
     Args:
         dir (Optional[str]): Directory for saving logs and checkpoints.
+        resume_path (str): Path to the NeMo checkpoint
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
@@ -142,9 +144,7 @@ def finetune_recipe(
     if seq_length is None:
         seq_length = 4096 if packed_sequence else 2048
 
-    recipe = default_finetune_recipe(
-        model(), "nvidia/Llama-3_3-Nemotron-Super-49B-v1", dir, name, num_nodes, num_gpus_per_node, packed_sequence
-    )
+    recipe = default_finetune_recipe(model(), resume_path, dir, name, num_nodes, num_gpus_per_node, packed_sequence)
     if peft_scheme is None or peft_scheme.lower() == 'none':
         recipe.trainer.strategy.tensor_model_parallel_size = 8
         recipe.trainer.strategy.pipeline_model_parallel_size = 2

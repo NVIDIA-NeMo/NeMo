@@ -25,7 +25,7 @@ from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_fp8_b200_h8192_tp2_mbs1_seqlen8192,
     userbuffers_fp8_h100_h8192_tp4_mbs1_seqlen8192,
 )
-from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
 from ..utils import (
@@ -184,6 +184,9 @@ if __name__ == "__main__":
     ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
+    if args.enable_memory_profile:
+        assert args.memory_profile_out_path is not None
+        plugins.append(MemoryProfilePlugin(dir=args.memory_profile_out_path))
 
     with run.Experiment(exp_name) as exp:
         exp.add(

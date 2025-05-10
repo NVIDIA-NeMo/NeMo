@@ -18,7 +18,7 @@ import nemo_run as run
 
 from nemo.collections.llm.recipes.llama4_e16 import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
-from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
 from ..utils import (
@@ -135,6 +135,9 @@ if __name__ == "__main__":
     ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=15, end_step=16, gen_shape=True))
+    if args.enable_memory_profile:
+        assert args.memory_profile_out_path is not None
+        plugins.append(MemoryProfilePlugin(dir=args.memory_profile_out_path))
 
     with run.Experiment(exp_name) as exp:
         exp.add(

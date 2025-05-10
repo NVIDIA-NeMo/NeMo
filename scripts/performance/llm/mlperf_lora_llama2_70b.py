@@ -24,7 +24,7 @@ from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.llm.gpt.model.llama import *
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
-from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
 from ..utils import args_sanity_check, import_ckpt_experiment, slurm_executor
@@ -350,6 +350,9 @@ if __name__ == "__main__":
     ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
+    if args.enable_memory_profile:
+        assert args.memory_profile_out_path is not None
+        plugins.append(MemoryProfilePlugin(dir=args.memory_profile_out_path))
 
     with run.Experiment(exp_name) as exp:
         if not SKIP_IMPORT:

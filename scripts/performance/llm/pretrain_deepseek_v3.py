@@ -21,7 +21,7 @@ from nemo.collections.llm.recipes.deepseek_v3 import pretrain_recipe
 from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
-from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
 from ..utils import (
@@ -200,6 +200,9 @@ if __name__ == "__main__":
     ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
+    if args.enable_memory_profile:
+        assert args.memory_profile_out_path is not None
+        plugins.append(MemoryProfilePlugin(dir=args.memory_profile_out_path))
 
     with run.Experiment(exp_name) as exp:
         exp.add(

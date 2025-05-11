@@ -71,7 +71,6 @@ class AutoResume:
             resume_from_folder or the run's log_dir takes precedence over restore_config.
         resume_from_directory (str): Path to the checkpointing directory to restore from.
         resume_from_path (str): Path to a specific checkpoint to restore from.
-        adapter_path (str): Path to any adapter checkpoints.
         resume_if_exists (bool): Whether this experiment is resuming from a previous run. If
             True, it sets trainer._checkpoint_connector._ckpt_path so that the trainer should
             auto-resume. exp_manager will move files under log_dir to log_dir/run_{int}.
@@ -89,7 +88,6 @@ class AutoResume:
     restore_config: Optional[RestoreConfig] = None
     resume_from_directory: Optional[str] = None
     resume_from_path: Optional[str] = None
-    adapter_path: Optional[str] = None
     resume_if_exists: bool = False
     resume_past_end: bool = False
     resume_ignore_no_checkpoint: bool = False
@@ -97,9 +95,29 @@ class AutoResume:
     WEIGHTS_PATH = "weights"
 
     def get_weights_path(self, path):
+        """Returns the path to the weights directory within the specified path.
+
+        Args:
+            path: The checkpoint directory path
+
+        Returns:
+            Path: A Path object pointing to the weights directory
+        """
         return Path(path) / self.WEIGHTS_PATH
 
     def setup(self, trainer: Union[pl.Trainer, fl.Fabric], model=None):
+        """Sets up checkpoint restoration for the Pytorch Lightning trainer.
+
+        This method configures the trainer with the appropriate checkpoint path for resuming
+        training and handles loading model artifacts like tokenizers when specified.
+
+        Args:
+            trainer: The PyTorch Lightning trainer or Fabric instance
+            model: Optional model instance to load artifacts into
+
+        Raises:
+            NotImplementedError: If trainer is a Fabric instance (not yet supported)
+        """
         if isinstance(trainer, fl.Fabric):
             raise NotImplementedError("Fabric is not supported yet.")
 
@@ -108,7 +126,7 @@ class AutoResume:
             trainer.ckpt_path = trainer_ckpt_path
             trainer.checkpoint_callback.last_model_path = trainer_ckpt_path
             # Load artifacts
-            if getattr(self.restore_config, 'load_artifacts', False):
+            if getattr(self.restore_config, "load_artifacts", False):
                 if isinstance(trainer_ckpt_path, AdapterPath):
                     # load tokenizer from the base model during peft resume, in case the first peft checkpoint
                     # is deleted before the current peft checkpoint is saved
@@ -121,15 +139,10 @@ class AutoResume:
 
         elif self.restore_config:
             new_path = self._extract_path(
-                model=model,
                 path=self.restore_config.path,
-                adapter_path=self.restore_config.adapter_path,
             )
-            if isinstance(new_path, AdapterPath):
-                self.restore_config.path = new_path.base_model_path
-                self.restore_config.adapter_path = str(new_path)
-            else:
-                self.restore_config.path = str(new_path)
+            assert not isinstance(new_path, AdapterPath), "AdapterPath is not supported for restore_config"
+            self.restore_config.path = str(new_path)
             trainer.strategy.restore_config = self.restore_config
             # Load artifacts
             if self.restore_config.load_artifacts:
@@ -142,9 +155,7 @@ class AutoResume:
 
                 _try_restore_tokenizer(model, context_path)
 
-    def _extract_path(
-        self, model: Optional[io.ConnectorMixin], path: str, adapter_path: Optional[str] = None
-    ) -> BasePath:
+    def _extract_path(self, path: str) -> BasePath:
         if "://" in path:
             assert path.startswith("nemo://"), "Only NeMo based paths starting with nemo:// are currently supported."
             _, _path = path.split("://")
@@ -152,32 +163,22 @@ class AutoResume:
         else:
             new_path = path
 
-        if adapter_path:
-
-            maybe_weights_path = self.get_weights_path(adapter_path)
-            if maybe_weights_path.is_dir():
-                adapter_path = maybe_weights_path
-
-            new_path = AdapterPath(Path(adapter_path), base_model_path=new_path)
-
         if isinstance(new_path, str):
             new_path = Path(new_path)
 
         return new_path
 
-    def _resume_peft(self, adapter_meta_path, model):
+    def _get_base_model_path_for_adapter(self, adapter_meta_path, model):
         with open(adapter_meta_path, "r") as f:
             metadata = json.load(f)
 
-        assert self.restore_config, "PEFT resume requires specifying restore_config"
-        base_model_path = self._extract_path(model, self.restore_config.path)
-        if base_model_path not in [Path(metadata['model_ckpt_path']), Path(metadata['model_ckpt_path']).parent]:
-            logging.warning(
-                f"⚠️ When trying to resume a PEFT training run, found mismatching values: "
-                f"your specified restore_path points to {base_model_path}, "
-                f"but the PEFT checkpoint was trained with "
-                f"model_ckpt_path={metadata['model_ckpt_path']}"
-            )
+        # Use the model_ckpt_path from metadata directly
+        base_model_path = Path(metadata["model_ckpt_path"])
+
+        # If base_model_path points to a specific checkpoint file, use its parent directory
+        if not base_model_path.is_dir() and base_model_path.exists():
+            base_model_path = base_model_path.parent
+
         return base_model_path
 
     def _find_trainer_ckpt_path(self) -> Optional[Path]:
@@ -270,6 +271,18 @@ class AutoResume:
         return checkpoint
 
     def get_context_path(self, model: Optional[io.ConnectorMixin] = None) -> Optional[Path]:
+        """Retrieves the path to the context directory of a checkpoint.
+
+        The context directory contains serialized objects like tokenizers. This method
+        handles both cases where the context is directly in the checkpoint directory
+        or in a subdirectory called "context".
+
+        Args:
+            model: Optional model instance
+
+        Returns:
+            Optional[Path]: Path to the context directory if found, None otherwise
+        """
         checkpoint = None
         app_state = AppState()
         app_state.restore = self.resume_if_exists
@@ -283,13 +296,28 @@ class AutoResume:
         return checkpoint
 
     def get_trainer_ckpt_path(self, model: Optional[io.ConnectorMixin] = None) -> Optional[Path]:
+        """Resolves the path to a checkpoint for resuming training.
+
+        This method handles various checkpoint sources with the following priority:
+        1. Explicit path specified in resume_from_path
+        2. Automatic discovery in the checkpoint directory when resume_if_exists=True
+
+        For adapter checkpoints (PEFT), it also retrieves the base model path from metadata.
+
+        Args:
+            model: Optional model instance
+
+        Returns:
+            Optional[Path]: Path to the checkpoint if found, or AdapterPath for PEFT checkpoints,
+                           or None if no checkpoint is found or needed
+        """
         if self.resume_from_path:
             maybe_weights_path = self.get_weights_path(self.resume_from_path)
             if maybe_weights_path.is_dir():
                 adapter_meta_path = maybe_weights_path / ADAPTER_META_FILENAME
                 if adapter_meta_path.exists():
                     # the resume_from_path is an adapter checkpoint
-                    base_model_path = self._resume_peft(adapter_meta_path, model)
+                    base_model_path = self._get_base_model_path_for_adapter(adapter_meta_path, model)
                     return AdapterPath(Path(self.resume_from_path), base_model_path=base_model_path)
                 else:
                     # the resume_from_path is not PEFT checkpoint
@@ -309,15 +337,12 @@ class AutoResume:
                 checkpoint = maybe_weights_path
 
         if checkpoint:
-            if self.adapter_path:
-                return AdapterPath(Path(self.adapter_path), base_model_path=checkpoint)
+            adapter_meta_path = checkpoint / ADAPTER_META_FILENAME
+            if adapter_meta_path.exists():
+                base_model_path = self._get_base_model_path_for_adapter(adapter_meta_path, model)
+                return AdapterPath(checkpoint, base_model_path=base_model_path)
             else:
-                adapter_meta_path = checkpoint / ADAPTER_META_FILENAME
-                if adapter_meta_path.exists():
-                    base_model_path = self._resume_peft(adapter_meta_path, model)
-                    return AdapterPath(checkpoint, base_model_path=base_model_path)
-                else:
-                    return Path(checkpoint)
+                return Path(checkpoint)
 
         return None
 

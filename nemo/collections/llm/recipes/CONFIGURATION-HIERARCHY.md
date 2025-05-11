@@ -1,7 +1,7 @@
 # NeMo Recipe Configuration Map
 
 - TransformerConfig and ModelParallelConfig defintions (used in recipe -> model -> config -> GPTConfig) can be found here-
-  -  https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_config.py 
+  -  https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_config.py
   -  https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/model_parallel_config.py
 
 - The parameter values are defaults as defined in the base class for a module.
@@ -43,7 +43,7 @@
   sequence_parallel: bool = False # Parallelizes layer norms and dropout sequentially
   expert_model_parallel_size: int = 1 # Distributes Moe Experts across sub data parallel dimension
   pipeline_dtype: Optional[torch.dtype] = None # dtype used in p2p communication
-  ```    
+  ```
   <details open><summary>ddp: Union[DDPLiteral, <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/distributed/distributed_data_parallel_config.py">DistributedDataParallelConfig</a>] = "megatron"</summary>
   <blockquote>
 
@@ -57,7 +57,7 @@
   bucket_size: Optional[int] = None # Maximum number of parameters in each bucket
   average_in_collective: bool = False # If true, compute average in collective directly, as opposed to dividing by the dp_size first and then computing sum in the collective
   fp8_param_gather: bool = False # If true, keep the compute param in fp8 (do not use any other intermediate dtype) and perform the param all-gather in fp8
-  ```  
+  ```
   </blockquote>
   </details>
   </blockquote>
@@ -239,7 +239,7 @@
   <summary>model (pytorch_lightning.LightningModule)</summary>
 
   <blockquote>
-    
+
   <details open><summary>config (<a href="https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/gpt/model/base.py">GPTConfig</a>)</summary>
   <blockquote>
 
@@ -290,7 +290,7 @@
 
   <details open><summary><a href="https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/gpt/data/mock.py">MockDataModule</a></summary>
   <blockquote>
-      
+
   ```sh
   seq_length: int = 2048 # Number of tokens in a single sequence
   tokenizer: Optional["TokenizerSpec"] = None # TokenizerSpec object to convert sequences to tokens
@@ -346,7 +346,7 @@
   log_global_rank_0_only: bool = False # Log only on global rank 0
   ```
   <details open><summary>ckpt (Optional[<a href="https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/callbacks/model_checkpoint.py">ModelCheckpoint</a>] = None)</summary>
-  <blockquote>      
+  <blockquote>
 
   ```sh
   save_last: Optional[bool] = True # saves a `*-last` copy whenever a checkpoint file gets saved
@@ -409,7 +409,7 @@
   ```
   </blockquote>
   </details>
-      
+
   <details open><summary>lr_scheduler (Optional[CosineAnnealingScheduler[<a href="https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/optim/base.py">LRSchedulerModule</a>]] = None)</summary>
   <blockquote>
 
@@ -447,7 +447,6 @@
   restore_config: Optional[RestoreConfig] = None # Optional config for selectively restoring specific parts like model weights, optimizer states, etc. If the config contains a path from HF or another non-NeMo checkpoint format, the checkpoint will be automatically converted to a NeMo compatible format
   resume_from_directory: Optional[str] = None # Path to the checkpointing directory to restore from; this takes precedence over 'restore_config'
   resume_from_path: Optional[str] = None # Path to a specific checkpoint to restore from
-  adapter_path: Optional[str] = None # Path to any adapter checkpoints
   resume_if_exists: bool = False # Whether this experiment is resuming from a previous run. If True, it sets trainer._checkpoint_connector._ckpt_path so that the trainer should auto-resume
   ```
   </blockquote>

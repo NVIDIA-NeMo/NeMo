@@ -133,6 +133,7 @@ def make_strategy(
     elif strategy == 'ddp':
         return pl.strategies.DDPStrategy(
             checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
+            find_unused_parameters=True,
         )
     elif strategy == 'fsdp2':
         print(

@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -79,16 +79,24 @@ def create_hf_model(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Create a HuggingFace model (random initialization) for testing purposes.")
     parser.add_argument(
-        "--model_name_or_path", required=True, help="Model name or local path with model config and tokenizer",
+        "--model_name_or_path",
+        required=True,
+        help="Model name or local path with model config and tokenizer",
     )
     parser.add_argument(
-        "--output_dir", required=True, help="Output directory",
+        "--output_dir",
+        required=True,
+        help="Output directory",
     )
     parser.add_argument(
-        "--config_updates", type=json.loads, help="Parameter updates in JSON format to overwrite for model config",
+        "--config_updates",
+        type=json.loads,
+        help="Parameter updates in JSON format to overwrite for model config",
     )
     parser.add_argument(
-        "--overwrite", action="store_true", help="Overwrite file if it exists",
+        "--overwrite",
+        action="store_true",
+        help="Overwrite file if it exists",
     )
     args = parser.parse_args()
     create_hf_model(args.model_name_or_path, args.output_dir, args.config_updates)

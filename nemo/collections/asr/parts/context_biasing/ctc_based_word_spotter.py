@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,9 +57,9 @@ class WSHyp:
 
 
 def beam_pruning(next_tokens: List[Token], beam_threshold: float) -> List[Token]:
-    """ 
+    """
     Prun all tokens whose score is worse than best_token.score - beam_threshold
-    
+
     Args:
         next_tokens: list of input tokens
         beam_threshold: beam threshold
@@ -77,10 +77,10 @@ def beam_pruning(next_tokens: List[Token], beam_threshold: float) -> List[Token]
 def state_pruning(next_tokens: List[Token]) -> List[Token]:
     """
     If there are several tokens on the same state, then leave only the best of them according to score
-    
+
     Args:
         next_tokens: list of input tokens
-    
+
     Returns:
         list of pruned tokens
     """
@@ -149,7 +149,7 @@ def find_best_hyps(spotted_words: List[WSHyp], intersection_threshold: int = 10)
 def get_ctc_word_alignment(
     logprob: np.ndarray, asr_model, token_weight: float = 1.0, blank_idx: int = 0
 ) -> List[tuple]:
-    """ 
+    """
     Get word level alignment (with start and end frames) based on argmax ctc predictions.
     The word score is a sum of non-blank token logprobs with additional token_weight.
     token_weight is used to prevent false accepts during filtering word spotting hypotheses.
@@ -224,9 +224,9 @@ def filter_wb_hyps(best_hyp_list: List[WSHyp], word_alignment: List[tuple]) -> L
     Args:
         best_hyp_list: list of spotted hypotheses WSHyp
         word_alignment: world level ctc alignment with word scores
-    
+
     Returns:
-        filtered best_hyp_list 
+        filtered best_hyp_list
     """
 
     if not word_alignment:
@@ -279,8 +279,8 @@ def run_word_spotter(
     CTC-based Word Spotter for recognition of words from context biasing graph (paper link)
     The algorithm is based on the Token Passing Algorithm (TPA) and uses run, beam and state prunings.
     Blank and non-blank thresholds are used for preliminary hypotheses pruning.
-    The algorithm is implemented in log semiring. 
-    
+    The algorithm is implemented in log semiring.
+
     Args:
         logprobs: CTC logprobs for one file [Time, Vocab+blank]
         context_graph: Context-Biasing graph

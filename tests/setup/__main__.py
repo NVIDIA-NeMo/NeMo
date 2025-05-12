@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,8 @@ print(f"Arguments are: {vars(args)}")
 os.makedirs(args.save_dir, exist_ok=True)
 
 create_sample_jsonl(
-    output_file=os.path.join(args.save_dir, "test_quantization", "test.json"), overwrite=args.overwrite,
+    output_file=os.path.join(args.save_dir, "test_quantization", "test.json"),
+    overwrite=args.overwrite,
 )
 
 create_hf_model(

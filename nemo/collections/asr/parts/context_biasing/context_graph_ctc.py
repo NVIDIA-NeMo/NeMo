@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,7 +47,10 @@ class ContextState:
     """The state in ContextGraph"""
 
     def __init__(
-        self, index: int, is_end: bool = False, word: Optional[str] = None,
+        self,
+        index: int,
+        is_end: bool = False,
+        word: Optional[str] = None,
     ):
         """Create a ContextState.
         Args:
@@ -154,7 +157,11 @@ class ContextGraphCTC:
                         prev_node = prev_node.next[self.blank_token].next[token]
                     prev_token = token
 
-    def draw(self, title: Optional[str] = None, symbol_table: Optional[Dict[int, str]] = None,) -> "graphviz.Digraph":
+    def draw(
+        self,
+        title: Optional[str] = None,
+        symbol_table: Optional[Dict[int, str]] = None,
+    ) -> "graphviz.Digraph":
         """Visualize a ContextGraph via graphviz.
 
         Render ContextGraph as an image via graphviz, and return the Digraph object

@@ -14,10 +14,12 @@
 
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import torch
 from lightning.pytorch.callbacks import Callback
 
+from nemo.lightning.io.mixin import IOMixin
 from nemo.utils import logging
 from nemo.utils.get_rank import get_rank
 
@@ -36,7 +38,7 @@ def trace_handler(prof, chakra_device_trace_path):
     logging.info(f"Kineto trace saved: {trace_file}")
 
 
-class PytorchProfilerCallback(Callback):
+class PytorchProfilerCallback(Callback, IOMixin):
     """
     A PyTorch Lightning callback for profiling with PyTorch's built-in Profiler and ExecutionTraceObserver.
 
@@ -50,6 +52,7 @@ class PytorchProfilerCallback(Callback):
         warmup_steps (int): Number of warmup steps before profiling starts.
         active_steps (int): Number of active profiling steps.
         trace_dir (str): Directory where traces will be saved.
+        profiler_kwargs (dict, optional): Additional keyword args to pass to torch.profiler.profile
     """
 
     def __init__(
@@ -59,6 +62,7 @@ class PytorchProfilerCallback(Callback):
         warmup_steps: int = 0,
         active_steps: int = 1,
         trace_dir: str = None,
+        profiler_kwargs: Optional[Dict[str, Any]] = None,
     ):
         if trace_dir is None:
             trace_dir = os.path.join(os.getcwd(), 'traces')
@@ -86,22 +90,31 @@ class PytorchProfilerCallback(Callback):
 
         self.trace_observer = torch.profiler.ExecutionTraceObserver()
 
-        self.profiler = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=0, warmup=self.warmup_steps, active=self.active_steps),
-            on_trace_ready=lambda prof: trace_handler(prof, self.chakra_device_trace_path),
-            execution_trace_observer=self.trace_observer,
-        )
+        base_kwargs = {
+            "activities": [
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            "schedule": torch.profiler.schedule(wait=0, warmup=self.warmup_steps, active=self.active_steps),
+            "on_trace_ready": lambda prof: trace_handler(prof, self.chakra_device_trace_path),
+            "execution_trace_observer": self.trace_observer,
+        }
+        if profiler_kwargs is not None:
+            if not isinstance(profiler_kwargs, dict):
+                raise TypeError(f"profiler_kwargs must be a dict if provided. Got {type(profiler_kwargs)}")
+            base_kwargs.update(profiler_kwargs)
 
+        self.profiler = torch.profiler.profile(**base_kwargs)
         self.is_profiling = False
 
         logging.info(
-            f"Chakra profiling initialized:\n"
+            "Chakra profiling initialized:\n"
             f" - Start Step: {self.start_step}\n"
             f" - End Step: {self.end_step}\n"
             f" - Warmup Steps: {self.warmup_steps}\n"
             f" - Active Steps: {self.active_steps}\n"
-            f" - Trace Directory: {self.trace_dir}"
+            f" - Trace Directory: {self.trace_dir}\n"
+            f" - Extra profiler kwargs: {profiler_kwargs or {}}"
         )
 
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx: int) -> None:

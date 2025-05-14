@@ -101,11 +101,15 @@ def get_data_simulation_configs():
             },
             'segment_augmentor': {
                 'add_seg_aug': False,
-                'augmentor': {'gain': {'prob': 0.5, 'min_gain_dbfs': -10.0, 'max_gain_dbfs': 10.0},},
+                'augmentor': {
+                    'gain': {'prob': 0.5, 'min_gain_dbfs': -10.0, 'max_gain_dbfs': 10.0},
+                },
             },
             'session_augmentor': {
                 'add_sess_aug': False,
-                'augmentor': {'white_noise': {'prob': 1.0, 'min_level': -90, 'max_level': -46},},
+                'augmentor': {
+                    'white_noise': {'prob': 1.0, 'min_level': -90, 'max_level': -46},
+                },
             },
             'speaker_enforcement': {'enforce_num_speakers': True, 'enforce_time': [0.25, 0.75]},
             'segment_manifest': {'window': 0.5, 'shift': 0.25, 'step_count': 50, 'deci': 3},
@@ -467,7 +471,7 @@ class TestSpeechSampler:
     @pytest.mark.parametrize("var", [0.5, 0.6])
     def test_get_session_silence_mean_fail(self, sampler, mean, var):
         """
-        This test should raise `ValueError` because `mean_silence_var` 
+        This test should raise `ValueError` because `mean_silence_var`
         should be less than `mean_silence * (1 - mean_silence)`.
         """
         sampler.mean_silence = mean
@@ -488,7 +492,7 @@ class TestSpeechSampler:
     @pytest.mark.parametrize("var", [0.3, 0.8])
     def test_get_session_overlap_mean_fail(self, sampler, mean, var):
         """
-        This test should raise `ValueError` because `mean_overlap_var` 
+        This test should raise `ValueError` because `mean_overlap_var`
         should be less than `mean_overlap * (1 - mean_overlap)`.
         """
         sampler.mean_overlap = mean

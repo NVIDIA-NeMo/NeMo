@@ -16,10 +16,18 @@
 import random
 
 import megatron.core.parallel_state as ps
+import pytest
 import torch
 import torch.distributed as dist
 from megatron.core.models.mamba.mamba_model import MambaModel
 from megatron.core.transformer.spec_utils import import_module
+
+try:
+    import megatron.training
+except ImportError:
+    pytest.skip("Skipping test because 'megatron.training' is not available.", allow_module_level=True)
+
+
 from megatron.training import get_args, get_model, print_rank_0
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.checkpointing import load_checkpoint

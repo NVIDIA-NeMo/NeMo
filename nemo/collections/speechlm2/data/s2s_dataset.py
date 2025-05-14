@@ -147,7 +147,6 @@ def collate_first_turn_audio(
         first_turn_audios_lens.append(truncated_audio.shape[-1])
 
     return collate_vectors(first_turn_audios, padding_value=0), torch.tensor(first_turn_audios_lens)
-    # return collate_audio(CutSet(first_turn_cuts), recording_field=recording_field)
 
 def collate_token_channel(
     cuts: CutSet,

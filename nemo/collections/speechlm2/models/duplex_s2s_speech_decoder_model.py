@@ -514,7 +514,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             input_audio_tokens=first_audio,
             loss_mask=None,
             target_text_tokens=None, # text input will be sampled from llm backbone
-            modality_adapter_emb=source_encoded,
+            modality_adapter_emb=source_encoded[:, :1],
             speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
         )
         gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -668,3 +668,25 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             self.lm_head = fully_shard(self.lm_head, **fsdp_config)
             self.perception = fully_shard(self.perception, **fsdp_config)
             self.speech_generation = fully_shard(self.speech_generation, **fsdp_config)
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        try:
+            super().load_state_dict(state_dict, strict=strict)
+        except RuntimeError as e:
+            logging.info(f"Error loading model state_dict !! Retrying with partial initialization!")
+
+            model_dict = self.state_dict()
+            pretrained_dict = state_dict
+
+            # 1. filter out different size layers and map keys to old codebase compatibility
+            for k, v in pretrained_dict.items():
+                if k in model_dict and hasattr(model_dict[k], "numel") and v.numel() != model_dict[k].numel():
+                    del pretrained_dict[k]
+                    logging.info(" | > Layer with shape mismatach in the model definition: {}".format(k)) 
+
+            # 2. filter out unnecessary keys
+            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+            # 3. overwrite entries in the existing state dict
+            model_dict.update(pretrained_dict)
+            logging.info(" | > {} / {} layers are restored.".format(len(pretrained_dict), len(model_dict)))
+            super().load_state_dict(model_dict, strict=True)

@@ -124,13 +124,13 @@ class TransformerARSpeechDecoder(NeuralModule):
         self.cond_on_text_tokens = self.speech_decoder_parms.pop("cond_on_text_tokens", False)
         self.cond_on_llm_latent = self.speech_decoder_parms.pop("cond_on_llm_latent", True)
         self.cond_on_modality_adapter_emb = self.speech_decoder_parms.pop("cond_on_modality_adapter_emb", False)
+        self.modality_adapter_emb_quantizer_levels = self.speech_decoder_parms.pop("modality_adapter_emb_quantizer_levels", None)
         self.use_speaker_encoder = self.speech_decoder_parms.pop("use_speaker_encoder", True)
         self.speaker_embedding_dim = self.speech_decoder_parms.pop("speaker_embedding_dim", 192)
         self.inference_speaker_reference = self.speech_decoder_parms.pop("inference_speaker_reference", None)
         self.max_speaker_reference_len = self.speech_decoder_parms.pop("max_speaker_reference_len", 5)
         self.speaker_encoder_model_name = self.speech_decoder_parms.pop("speaker_encoder_model_name", 'titanet_large')
         self.cond_on_char_embedding = self.speech_decoder_parms.pop("cond_on_char_embedding", True)
-        self.modality_adapter_emb_quantizer_levels = self.speech_decoder_parms.pop("modality_adapter_emb_quantizer_levels", None)
 
         if self.use_speaker_encoder:
             # load speaker encoder

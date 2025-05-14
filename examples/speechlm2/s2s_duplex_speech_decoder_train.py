@@ -36,7 +36,7 @@ def train(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
-        model = DuplexS2SSpeechDecoderModel(OmegaConf.to_container(cfg.model, resolve=True))
+        model = DuplexS2SSpeechDecoderModel(OmegaConf.to_container(cfg, resolve=True))
 
     dataset = DuplexS2SDataset(
         tokenizer=model.tokenizer,

@@ -16,8 +16,10 @@ from omegaconf import DictConfig
 from torch import Tensor, nn
 import torchaudio
 
+from nemo.collections.asr.models import EncDecSpeakerLabelModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.core.classes.module import NeuralModule
+from nemo.collections.speechlm2.parts.precision import fp32_precision
 
 
 def build_vocabs(subword_vocab_items):
@@ -106,6 +108,7 @@ class TransformerARSpeechDecoder(NeuralModule):
         lantent_dim: int,
         num_audio_codebooks: int,
         num_audio_tokens_per_codebook: int,
+        llm_tokenizer_vocab_items: dict,
     ):
         super().__init__()
         self.use_input_cache = False
@@ -116,27 +119,22 @@ class TransformerARSpeechDecoder(NeuralModule):
         # optional configs
         self.cfg_unconditional_prob = self.speech_decoder_parms.pop("cfg_unconditional_prob", None)
         self.cfg_scale = self.speech_decoder_parms.pop("cfg_scale", 2.5)
-        self.cond_on_prev_audio_tokens = self.speech_decoder_parms.pop("cond_on_prev_audio_tokens", False)
+        self.cond_on_prev_audio_tokens = self.speech_decoder_parms.pop("cond_on_prev_audio_tokens", True)
         self.detach_input = self.speech_decoder_parms.pop("detach_input", False)
         self.cond_on_text_tokens = self.speech_decoder_parms.pop("cond_on_text_tokens", False)
         self.cond_on_llm_latent = self.speech_decoder_parms.pop("cond_on_llm_latent", True)
-        self.cond_on_speech_encoder_emb = self.speech_decoder_parms.pop("cond_on_speech_encoder_emb", False)
-        self.use_speaker_encoder = self.speech_decoder_parms.pop("use_speaker_encoder", False)
+        self.cond_on_modality_adapter_emb = self.speech_decoder_parms.pop("cond_on_modality_adapter_emb", False)
+        self.use_speaker_encoder = self.speech_decoder_parms.pop("use_speaker_encoder", True)
         self.speaker_embedding_dim = self.speech_decoder_parms.pop("speaker_embedding_dim", 192)
         self.inference_speaker_reference = self.speech_decoder_parms.pop("inference_speaker_reference", None)
         self.max_speaker_reference_len = self.speech_decoder_parms.pop("max_speaker_reference_len", 5)
         self.speaker_encoder_model_name = self.speech_decoder_parms.pop("speaker_encoder_model_name", 'titanet_large')
-        self.cond_on_char_embedding = self.speech_decoder_parms.pop("cond_on_char_embedding", False)
-        self.speech_encoder_emb_quantizer_levels = self.speech_decoder_parms.pop("speech_encoder_emb_quantizer_levels", None)
+        self.cond_on_char_embedding = self.speech_decoder_parms.pop("cond_on_char_embedding", True)
+        self.modality_adapter_emb_quantizer_levels = self.speech_decoder_parms.pop("modality_adapter_emb_quantizer_levels", None)
 
         if self.use_speaker_encoder:
-            # NeMo Speaker encoder
-            self.speaker_encoder = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name=self.speaker_encoder_model_name)
-
-            # freeze the pretrained speaker encoder
-            self.speaker_encoder.eval()
-            self.speaker_encoder.freeze()
-
+            # load speaker encoder
+            self.setup_speaker_encoder()
             # speaker encoder projection
             self.speaker_encoder_emb_projection = nn.Linear(self.speaker_embedding_dim, self.speech_decoder_parms["d_model"])
 
@@ -190,15 +188,26 @@ class TransformerARSpeechDecoder(NeuralModule):
         if self.cond_on_llm_latent and (self.cond_on_text_tokens or self.cond_on_char_embedding):
             self.text_input_projection = nn.Linear(self.speech_decoder_parms["d_model"], self.speech_decoder_parms["d_model"])
 
-        if self.cond_on_speech_encoder_emb:
-            if self.speech_encoder_emb_quantizer_levels:
+        if self.cond_on_modality_adapter_emb:
+            if self.modality_adapter_emb_quantizer_levels:
                 from nemo.collections.tts.modules.audio_codec_modules import FiniteScalarQuantizer
-                bottleneck_dim = len(self.speech_encoder_emb_quantizer_levels)
-                self.speech_encoder_emb_quantizer_projection = nn.Linear(lantent_dim, bottleneck_dim)
-                self.see_vector_quantizer = FiniteScalarQuantizer(self.speech_encoder_emb_quantizer_levels)
-                self.speech_encoder_emb_projection = nn.Linear(bottleneck_dim, self.speech_decoder_parms["d_model"])
+                bottleneck_dim = len(self.modality_adapter_emb_quantizer_levels)
+                self.modality_adapter_emb_quantizer_projection = nn.Linear(lantent_dim, bottleneck_dim)
+                self.mae_vector_quantizer = FiniteScalarQuantizer(self.modality_adapter_emb_quantizer_levels)
+                self.modality_adapter_emb_projection = nn.Linear(bottleneck_dim, self.speech_decoder_parms["d_model"])
             else:
-                self.speech_encoder_emb_projection = nn.Linear(lantent_dim, self.speech_decoder_parms["d_model"])
+                self.modality_adapter_emb_projection = nn.Linear(lantent_dim, self.speech_decoder_parms["d_model"])
+
+    def setup_speaker_encoder(self):
+        with fp32_precision():
+            self.speaker_encoder = EncDecSpeakerLabelModel.from_pretrained(model_name=self.speaker_encoder_model_name)
+
+        # freeze the pretrained speaker encoder
+        self.speaker_encoder.eval()
+        self.speaker_encoder.freeze()
+
+        for p in self.speaker_encoder.parameters():
+            p.requires_grad = False
 
     @property
     def device(self):
@@ -208,7 +217,6 @@ class TransformerARSpeechDecoder(NeuralModule):
         audio, sr = torchaudio.load(audio_path)
         audio_len = torch.tensor([audio.size(1)]).long()
         speaker_emb = self.get_speaker_embedding(audio.to(self.device), audio_len.to(self.device), sr)
-        self.inference_speaker_embedding = speaker_emb.to(self.inference_speaker_embedding.dtype)
 
     def get_speaker_embedding(self, audio, audio_len, sr):
         # limit max audio len to avoid memory waste
@@ -220,9 +228,9 @@ class TransformerARSpeechDecoder(NeuralModule):
                 audio_len_resampled = audio_len * (model_sr / sr )
                 _, g = self.speaker_encoder(input_signal=audio_resampled, input_signal_length=audio_len_resampled.long())
                 g = g.unsqueeze(1)
-        return g.to(audio.dtype)
+        return g.to(self.inference_speaker_embedding.dtype)
 
-    def forward(self, hidden_states, speech_mask, input_audio_tokens=None, target_text_tokens=None, speech_encoder_emb=None, speaker_encoder_emb=None, temperature=0.7, topk=80, greedy=True):
+    def forward(self, hidden_states, speech_mask, input_audio_tokens=None, target_text_tokens=None, modality_adapter_emb=None, speaker_encoder_emb=None, temperature=0.7, topk=80, greedy=True):
         # Megatron LLM parallel training returns T, B, F so reshape it
         # T, B, F = hidden_states.size()
         if hidden_states is not None:
@@ -303,31 +311,30 @@ class TransformerARSpeechDecoder(NeuralModule):
             else:
                 speech_decoder_input = char_embs
 
-        if self.cond_on_speech_encoder_emb:
+        if self.cond_on_modality_adapter_emb:
             if self.detach_input:
-                speech_encoder_emb = speech_encoder_emb.detach()
+                modality_adapter_emb = modality_adapter_emb.detach()
 
-            
             if self.use_input_cache:
-                if self.speech_encoder_emb_quantizer_levels:
-                    speech_encoder_emb = self.speech_encoder_emb_quantizer_projection(speech_encoder_emb[:, -1:])
-                    speech_encoder_emb, _ = self.see_vector_quantizer(inputs=speech_encoder_emb.transpose(1, 2), input_len=None)
-                    speech_encoder_emb = speech_encoder_emb.transpose(1, 2)
+                if self.modality_adapter_emb_quantizer_levels:
+                    modality_adapter_emb = self.modality_adapter_emb_quantizer_projection(modality_adapter_emb[:, -1:])
+                    modality_adapter_emb, _ = self.mae_vector_quantizer(inputs=modality_adapter_emb.transpose(1, 2), input_len=None)
+                    modality_adapter_emb = modality_adapter_emb.transpose(1, 2)
 
-                if self.cache["speech_encoder_emb"] is None:
-                    self.cache["speech_encoder_emb"] = speech_encoder_emb
+                if self.cache["modality_adapter_emb"] is None:
+                    self.cache["modality_adapter_emb"] = modality_adapter_emb
                 else:
-                    if speech_encoder_emb is not None:
-                        self.cache["speech_encoder_emb"] = torch.cat([self.cache["speech_encoder_emb"], speech_encoder_emb], dim=1)
-                        speech_encoder_emb = self.cache["speech_encoder_emb"]
+                    if modality_adapter_emb is not None:
+                        self.cache["modality_adapter_emb"] = torch.cat([self.cache["modality_adapter_emb"], modality_adapter_emb], dim=1)
+                        modality_adapter_emb = self.cache["modality_adapter_emb"]
             else:
-                if self.speech_encoder_emb_quantizer_levels:
-                    speech_encoder_emb = self.speech_encoder_emb_quantizer_projection(speech_encoder_emb)
-                    speech_encoder_emb, _ = self.see_vector_quantizer(inputs=speech_encoder_emb.transpose(1, 2), input_len=None)
-                    speech_encoder_emb = speech_encoder_emb.transpose(1, 2)
+                if self.modality_adapter_emb_quantizer_levels:
+                    modality_adapter_emb = self.modality_adapter_emb_quantizer_projection(modality_adapter_emb)
+                    modality_adapter_emb, _ = self.mae_vector_quantizer(inputs=modality_adapter_emb.transpose(1, 2), input_len=None)
+                    modality_adapter_emb = modality_adapter_emb.transpose(1, 2)
 
-            speech_encoder_emb = self.speech_encoder_emb_projection(speech_encoder_emb)
-            speech_decoder_input = speech_decoder_input + speech_encoder_emb
+            modality_adapter_emb = self.modality_adapter_emb_projection(modality_adapter_emb)
+            speech_decoder_input = speech_decoder_input + modality_adapter_emb
 
         if self.use_speaker_encoder:
             # for inference uses the inference cached speaker embedding
@@ -440,6 +447,6 @@ class TransformerARSpeechDecoder(NeuralModule):
             'speech_mask': None,
             'input_audio_tokens': None,
             'target_text_tokens': None,
-            'speech_encoder_emb': None,
+            'modality_adapter_emb': None,
             'char_embs': None,
         }

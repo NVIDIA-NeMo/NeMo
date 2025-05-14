@@ -101,6 +101,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, cuts: CutSet) -> dict:
         cuts = cuts.transform_text(_strip_timestamps)
+
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
         target_audio, target_audio_lens = collate_audio(
             cuts.resample(self.target_sample_rate), recording_field="target_audio"
@@ -111,6 +112,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         source_tokens, source_token_lens = collate_token_channel(
             cuts, self.tokenizer, self.frame_length, roles=self.input_roles
         )
+        # extract target speaker first turn audio to uses for speaker conditioning
+        target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
+            cuts.resample(self.target_sample_rate), roles=self.output_roles, recording_field="target_audio"
+        )
+
         return {
             "source_audio": source_audio,
             "source_audio_lens": source_audio_lens,
@@ -123,8 +129,25 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             "target_texts": [
                 " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
             ],
+            "target_first_turn_audio": target_first_turn_audio,
+            "target_first_turn_audio_lens": target_first_turn_audio_lens,
         }
 
+def collate_first_turn_audio(
+    cuts: CutSet,
+    roles: set[str],
+    recording_field: str = "target_audio",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    first_turn_audios = []
+    first_turn_audios_lens = []
+    for cut in cuts:
+        first_supervision = [s for s in cut.supervisions if s.speaker in roles][0]
+        truncated_audio = cut.truncate(offset=first_supervision.start, duration=first_supervision.duration).load_custom(recording_field)
+        first_turn_audios.append(truncated_audio.squeeze(0))
+        first_turn_audios_lens.append(truncated_audio.shape[-1])
+
+    return collate_vectors(first_turn_audios, padding_value=0), torch.tensor(first_turn_audios_lens)
+    # return collate_audio(CutSet(first_turn_cuts), recording_field=recording_field)
 
 def collate_token_channel(
     cuts: CutSet,

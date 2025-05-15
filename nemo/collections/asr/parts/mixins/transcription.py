@@ -29,10 +29,11 @@ from tqdm import tqdm
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
 from nemo.collections.asr.parts.utils import manifest_utils
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.utils import logging, logging_mode
 
-TranscriptionReturnType = Union[List[str], List['Hypothesis'], Tuple[List[str]], Tuple[List['Hypothesis']]]
+TranscriptionReturnType = Union[List[str], List[Hypothesis], Tuple[List[str]], Tuple[List[Hypothesis]]]
 GenericTranscriptionType = Union[List[Any], List[List[Any]], Tuple[Any], Tuple[List[Any]], Dict[str, List[Any]]]
 
 
@@ -273,18 +274,7 @@ class TranscriptionMixin(ABC):
                     if results is None:
                         results = []
 
-                        # if list of inner list of results, copy structure
-                        if isinstance(processed_outputs[0], list):
-                            for _ in processed_outputs:
-                                results.append([])
-
-                    # If nested list structure
-                    if isinstance(processed_outputs[0], list):
-                        for i, processed_output in enumerate(processed_outputs):
-                            results[i].extend(processed_output)
-                    else:
-                        # If flat list structure
-                        results.extend(processed_outputs)
+                    results.extend(processed_outputs)
 
                 elif isinstance(processed_outputs, dict):
                     # Create a results of the same type as each element in processed_outputs

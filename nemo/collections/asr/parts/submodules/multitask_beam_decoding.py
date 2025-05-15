@@ -220,8 +220,8 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                     hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(self.beam_size)]
                     # Pack results into Hypotheses
                     hypotheses = pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i])
-                    self.format_hypotheses(hypotheses, decoder_input_ids)
                     packed_result.append(NBestHypotheses(hypotheses))
+                self.format_hypotheses(packed_result, decoder_input_ids)
             else:
                 beam_scores = [None for _ in range(len(best_hypo))]
                 best_hypo = best_hypo.detach().cpu()
@@ -234,7 +234,9 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
 
         return (packed_result,)
 
-    def format_hypotheses(self, packed_result: List[Hypothesis], decoder_input_ids: Union[torch.Tensor, None]) -> None:
+    def format_hypotheses(
+        self, packed_result: List[Hypothesis | NBestHypotheses], decoder_input_ids: Union[torch.Tensor, None]
+    ) -> None:
         """
         For each hypothesis in the mini-batch:
         * Remove the decoder input ids (prompt) from the predictions
@@ -246,21 +248,28 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 len(packed_result) == decoder_input_ids.shape[0]
             ), f"Mismatching number of examples {len(packed_result)=} {decoder_input_ids.shape[0]=}"
             decoder_input_ids = decoder_input_ids.detach().cpu()
-            for hyp, prefix in zip(packed_result, decoder_input_ids):
-                assert (
-                    hyp.y_sequence[: prefix.shape[0]] == prefix
-                ).all(), f"The decoder input IDs were not found at the beginning of prediction: {hyp.y_sequence=} {prefix=})"
-                hyp.y_sequence = hyp.y_sequence[prefix.shape[0] :]
-        for hyp in packed_result:
-            ids = hyp.y_sequence
-            ids_len = ids.shape[0]
-            pos = -1
-            while ids[pos] == self.pad or ids[pos] == self.eos:
-                pos -= 1
-                if ids_len + pos == -1:
-                    break  # empty sequence
-            if pos < -1:
-                hyp.y_sequence = ids[: pos + 1]
+
+            for h, prefix in zip(packed_result, decoder_input_ids):
+                hypotheses = h.n_best_hypotheses if isinstance(h, NBestHypotheses) else [h]
+                for hyp in hypotheses:
+                    assert (hyp.y_sequence[: prefix.shape[0]] == prefix).all(), (
+                        f"The decoder input IDs were not found at the beginning of prediction: "
+                        f"{hyp.y_sequence=} {prefix=}"
+                    )
+                    hyp.y_sequence = hyp.y_sequence[prefix.shape[0] :]
+
+        for h in packed_result:
+            hyps = h.n_best_hypotheses if isinstance(h, NBestHypotheses) else [h]
+            for hyp in hyps:
+                ids = hyp.y_sequence
+                ids_len = ids.shape[0]
+                pos = -1
+                while ids[pos] == self.pad or ids[pos] == self.eos:
+                    pos -= 1
+                    if ids_len + pos == -1:
+                        break  # empty sequence
+                if pos < -1:
+                    hyp.y_sequence = ids[: pos + 1]
 
 
 @dataclass

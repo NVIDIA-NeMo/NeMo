@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import copy
 import json
 import os
 from dataclasses import dataclass
@@ -20,6 +20,7 @@ from typing import Any, Dict, List
 
 import pytest
 import torch
+from omegaconf import open_dict
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.data.audio_to_text import _speech_collate_fn
@@ -365,6 +366,54 @@ class TestTranscriptionMixin:
         assert len(outputs) == 2
         assert isinstance(outputs[0], Hypothesis)
         assert isinstance(outputs[1], Hypothesis)
+
+    @pytest.mark.unit
+    def test_transcribe_return_nbest_rnnt(self, audio_files, fast_conformer_transducer_model):
+        fast_conformer_transducer_model.eval()
+        audio1, audio2 = audio_files
+
+        orig_decoding_config = copy.deepcopy(fast_conformer_transducer_model.cfg.decoding)
+
+        decoding_config = copy.deepcopy(fast_conformer_transducer_model.cfg.decoding)
+        with open_dict(decoding_config):
+            decoding_config["strategy"] = "malsd_batch"
+            decoding_config["beam"]["beam_size"] = 4
+            decoding_config["beam"]["return_best_hypothesis"] = False
+            decoding_config["beam"]["allow_cuda_graphs"] = False
+        fast_conformer_transducer_model.change_decoding_strategy(decoding_config)
+
+        outputs = fast_conformer_transducer_model.transcribe([audio1, audio2], batch_size=1, timestamps=False)
+
+        assert len(outputs) == 2
+        assert all(len(output) >= 1 for output in outputs)
+        assert all(isinstance(output, list) for output in outputs)
+        assert all(isinstance(hyp, Hypothesis) for output in outputs for hyp in output)
+
+        # Reset the decoding strategy to original
+        fast_conformer_transducer_model.change_decoding_strategy(orig_decoding_config)
+
+    @pytest.mark.unit
+    def test_transcribe_return_nbest_canary(self, audio_files, canary_1b_flash):
+        canary_1b_flash.eval()
+        audio1, audio2 = audio_files
+
+        orig_decoding_config = copy.deepcopy(canary_1b_flash.cfg.decoding)
+
+        decoding_config = copy.deepcopy(canary_1b_flash.cfg.decoding)
+        with open_dict(decoding_config):
+            decoding_config["beam"]["beam_size"] = 4
+            decoding_config["beam"]["return_best_hypothesis"] = False
+        canary_1b_flash.change_decoding_strategy(decoding_config)
+
+        outputs = canary_1b_flash.transcribe([audio1, audio2], batch_size=1, timestamps=False)
+
+        assert len(outputs) == 2
+        assert all(len(output) >= 1 for output in outputs)
+        assert all(isinstance(output, list) for output in outputs)
+        assert all(isinstance(hyp, Hypothesis) for output in outputs for hyp in output)
+
+        # Reset the decoding strategy to original
+        canary_1b_flash.change_decoding_strategy(orig_decoding_config)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit

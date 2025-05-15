@@ -22,21 +22,12 @@ def process_aed_timestamp_outputs(outputs, subsampling_factor: int = 1, window_s
     """
     Processes AED timestamp outputs and extracts word-level timestamps.
     Args:
-        outputs (list or Hypothesis): The hypothesis outputs to process. Can be a single Hypothesis object or a list of Hypothesis objects.
+        outputs (Hypothesis, list of Hypotesis or list of list of Hypotesis): The hypothesis outputs to process. Can be a single Hypothesis object or a list of Hypothesis objects.
         subsampling_factor (int, optional): The subsampling factor used in the model. Default is 1.
         window_stride (float, optional): The window stride used in the model. Default is 0.01.
     Returns:
-        list or Hypothesis: The processed hypothesis outputs with word-level timestamps added.
+        list of list of Hypotesis: The processed hypothesis outputs with word-level timestamps added.
     """
-
-    if outputs is None:
-        return outputs
-
-    if isinstance(outputs, Hypothesis):
-        outputs = [outputs]
-
-    if not isinstance(outputs[0], Hypothesis):
-        raise ValueError(f"Expected Hypothesis object, got {type(outputs[0])}")
 
     def extract_words_with_timestamps(text, subsampling_factor: int = 1, window_stride: float = 0.01):
         text = text.strip()  # remove leading and trailing whitespaces - training data artifact
@@ -77,24 +68,52 @@ def process_aed_timestamp_outputs(outputs, subsampling_factor: int = 1, window_s
             segment['end'] = segment['end_offset'] * window_stride * subsampling_factor
         return segments
 
-    for idx, hyp in enumerate(outputs):
+    def process_hypothesis(hyp, subsampling_factor: int, window_stride: float):
+        """
+        Processes a single Hypothesis object to extract timestamps.
+        """
         timestamp, text = extract_words_with_timestamps(hyp.text, subsampling_factor, window_stride)
+        hyp.text = text
         if timestamp is not None:
-            if len(outputs[idx].timestamp) == 0:
-                outputs[idx].timestamp = {}
-            outputs[idx].timestamp['char'] = []  # not supported for AED
-            outputs[idx].timestamp['word'] = timestamp
-            outputs[idx].text = text
+            if len(hyp.timestamp) == 0:
+                hyp.timestamp = {}
+
+            hyp.timestamp.update(
+                {
+                    'word': timestamp,
+                    'segment': [],
+                    'char': [],  # not supported for AED
+                }
+            )
+
             segments = AbstractCTCDecoding._get_segment_offsets(timestamp, segment_delimiter_tokens=['.', '?', '!'])
-            segments = segments_offset_to_time(segments, window_stride, subsampling_factor)
-            outputs[idx].timestamp['segment'] = segments
+            hyp.timestamp['segment'] = segments_offset_to_time(segments, window_stride, subsampling_factor)
         else:
-            outputs[idx].text = text
-            outputs[idx].timestamp = {}
-            outputs[idx].timestamp['word'] = []
-            outputs[idx].timestamp['segment'] = []
-            outputs[idx].timestamp['char'] = []
-    return outputs
+            hyp.timestamp = {
+                'word': [],
+                'segment': [],
+                'char': [],
+            }
+
+        return hyp
+
+    if outputs is None:
+        return outputs
+
+    if isinstance(outputs, Hypothesis):
+        return [process_hypothesis(outputs, subsampling_factor, window_stride)]
+    elif isinstance(outputs, list) and isinstance(outputs[0], Hypothesis):
+        # list of Hypothesis
+        return [process_hypothesis(hyp, subsampling_factor, window_stride) for hyp in outputs]
+    elif isinstance(outputs, list) and isinstance(outputs[0], list) and isinstance(outputs[0][0], Hypothesis):
+        # list of list of Hypothesis (for beam decoding)
+        return [
+            [process_hypothesis(hyp, subsampling_factor, window_stride) for hyp in hyps_list] for hyps_list in outputs
+        ]
+    else:
+        raise ValueError(
+            f"Expected Hypothesis, list of Hypothesis or list of list of Hypothesis object, got {type(outputs)}"
+        )
 
 
 def process_timestamp_outputs(outputs, subsampling_factor: int = 1, window_stride: float = 0.01):

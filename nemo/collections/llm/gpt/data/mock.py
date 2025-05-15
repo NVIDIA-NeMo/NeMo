@@ -144,6 +144,29 @@ class MockDataModule(pl.LightningDataModule):
             **kwargs,
         )
 
+    def reconfigure_limit_batches(self):
+        """
+        Reconfigure trainer.limit_train_batches and trainer.limit_val_batches in terms of num of microbatches.
+        """
+        from nemo.collections.llm.gpt.data.utils import _reconfigure_limit_batches
+
+        # Override limit_train_batches in terms of num of microbatches
+        self.trainer.limit_train_batches = _reconfigure_limit_batches(self.trainer.limit_train_batches, self._train_ds)
+        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting
+        #   in between a step
+        self.trainer.limit_val_batches = _reconfigure_limit_batches(
+            self.trainer.limit_val_batches, self._validation_ds
+        )
+
+        try:
+            from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+        except (ImportError, ModuleNotFoundError):
+            from apex.transformer.pipeline_parallel.utils import get_num_microbatches
+
+        # Override num sanity steps to be a multiple of num of microbatches
+        self.trainer.num_sanity_val_steps *= get_num_microbatches()
+
 
 class _MockGPTDataset(Dataset):
     def __init__(

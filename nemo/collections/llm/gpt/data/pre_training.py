@@ -431,57 +431,22 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         """
         Reconfigure trainer.limit_train_batches and trainer.limit_val_batches in terms of num of microbatches.
         """
+        from nemo.collections.llm.gpt.data.utils import _reconfigure_limit_batches
+
         # Override limit_train_batches in terms of num of microbatches
-        self._reconfigure_limit_batches(self.trainer.limit_train_batches, self._train_ds, "train")
+        self.trainer.limit_train_batches = _reconfigure_limit_batches(self.trainer.limit_train_batches, self._train_ds)
         # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting
         #   in between a step
-        self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_ds, "val")
+        self.trainer.limit_val_batches = _reconfigure_limit_batches(
+            self.trainer.limit_val_batches, self._validation_ds
+        )
 
-    def _reconfigure_limit_batches(self, limit_batches, dataloader, mode):
-        """
-        Reconfigure trainer.limit_val_batches for pretraining
-        """
-        # Override limit_batches in terms of num microbatches and so there are limit_batches//num_micro_batches
-        #   num of global batches
         try:
             from megatron.core.num_microbatches_calculator import get_num_microbatches
 
         except (ImportError, ModuleNotFoundError):
             logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
             from apex.transformer.pipeline_parallel.utils import get_num_microbatches
-
-        if isinstance(limit_batches, int):
-            limit_batches *= get_num_microbatches()
-        else:
-            assert isinstance(limit_batches, float)
-            # Don't reconfigure if limit_batches is 0.0 or if there's no dataloader
-            if limit_batches == 0.0 or dataloader is None:
-                return
-            # len(dataloader) returns len as num of microbatches
-            dl_len_in_micro_batches = len(dataloader)
-            if len(dataloader) != float("inf"):
-                if limit_batches == 1.0:
-                    limit_batches = dl_len_in_micro_batches
-                else:
-                    limit_micro_batches = int(dl_len_in_micro_batches * limit_batches)
-                    if limit_micro_batches == 0 and limit_batches > 0.0:
-                        min_percentage = 1.0 / len(dataloader)
-                        raise ValueError(
-                            f"You requested to check {limit_batches} of the val_dataloader but"
-                            f" {limit_batches} * {len(dataloader)} < 1. Please increase the"
-                            f" `limit_val_batches` argument. Try at least"
-                            f" `limit_val_batches={min_percentage}`"
-                        )
-                    # Make sure trainer.limit_val_batches is a multiple of num of microbatches
-                    if limit_micro_batches < get_num_microbatches():
-                        limit_batches = get_num_microbatches()
-                    else:
-                        limit_batches = limit_batches - limit_batches % get_num_microbatches()
-
-        if mode == "train":
-            self.trainer.limit_train_batches = limit_batches
-        else:
-            self.trainer.limit_val_batches = limit_batches
 
         # Override num sanity steps to be a multiple of num of microbatches
         self.trainer.num_sanity_val_steps *= get_num_microbatches()

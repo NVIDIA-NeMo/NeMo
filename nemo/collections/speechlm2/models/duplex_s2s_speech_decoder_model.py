@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 import torch
 import torch.distributed as dist
 from lightning import LightningModule
@@ -59,6 +60,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         cfg = DictConfig(cfg)
         self.cfg = cfg.model
         self.target_sample_rate = cfg.data.target_sample_rate
+        self.source_sample_rate = cfg.data.source_sample_rate
 
         setup_audio_codec(self)
         self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
@@ -439,6 +441,25 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             )
 
             with fp32_precision():  # resample is fragile to bfloat16 default dtype
+                if self.cfg.get('audio_save_path', None) is not None and dist.get_rank() == 0:
+                    os.makedirs(self.cfg.audio_save_path, exist_ok=True)
+                    predicted_audios = results["audio"]
+                    for i in range(len(predicted_audios)):
+                        pred_audio = predicted_audios[i].float()
+                        user_audio = torchaudio.functional.resample(dataset_batch["source_audio"][i].float(), self.source_sample_rate, self.target_sample_rate)
+
+                        T1, T2 = pred_audio.shape[0], user_audio.shape[0]
+                        max_len = max(T1, T2)
+                        pred_audio_padded = torch.nn.functional.pad(pred_audio, (0, max_len - T1), mode='constant', value=0)
+                        user_audio_padded = torch.nn.functional.pad(user_audio, (0, max_len - T2), mode='constant', value=0)
+
+                        # combine audio in a multichannel audio
+                        combined_wav = torch.cat([user_audio_padded.squeeze().unsqueeze(0).detach().cpu(), pred_audio_padded.squeeze().unsqueeze(0).detach().cpu()], dim=0)
+
+                        # save audio
+                        out_audio_path = f"{self.cfg.audio_save_path}/{name}_{dataset_batch['sample_id'][i]}.wav"
+                        torchaudio.save(out_audio_path, combined_wav.squeeze(), self.target_sample_rate)
+
                 self.asr_bleu.update(
                     name=name,
                     refs=dataset_batch["target_texts"],

@@ -27,6 +27,7 @@ from torch.distributed.tensor.parallel import (
     loss_parallel,
     parallelize_module,
 )
+import tempfile
 from transformers import DynamicCache
 
 from nemo.collections.audio.parts.utils.resampling import resample
@@ -40,8 +41,9 @@ from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder
+from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder, set_model_dict_for_partial_init
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.utils import logging
 
 
@@ -95,6 +97,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             llm_tokenizer_vocab_items=llm_tokenizer_vocab_items,
         )
 
+        # load pretrained TTS model
+        if self.cfg.get("pretrained_tts", None):
+            self.init_speech_generation_from_tts_checkpoint(self.cfg.pretrained_tts)
+
         self.embed_audio_tokens = torch.nn.ModuleList(
             [
                 torch.nn.Embedding(self.speech_vocab_size, self.embed_tokens.embedding_dim)
@@ -111,6 +117,19 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+
+    def init_speech_generation_from_tts_checkpoint(self, checkpoint_path):
+        if checkpoint_path is not None:
+            if '.nemo' in checkpoint_path:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                        checkpoint_state = torch.load(checkpoint_path)
+            else:
+                checkpoint_state = torch.load(checkpoint_path)['state_dict']
+
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
+            self.speech_generation.load_state_dict(checkpoint_state, strict=True)
 
     @property
     def speech_vocab_size(self):
@@ -673,19 +692,5 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             super().load_state_dict(state_dict, strict=strict)
         except RuntimeError as e:
             logging.info(f"Error loading model state_dict !! Retrying with partial initialization!")
-
-            model_dict = self.state_dict()
-            pretrained_dict = state_dict
-
-            # 1. filter out different size layers and map keys to old codebase compatibility
-            for k, v in pretrained_dict.items():
-                if k in model_dict and hasattr(model_dict[k], "numel") and v.numel() != model_dict[k].numel():
-                    del pretrained_dict[k]
-                    logging.info(" | > Layer with shape mismatach in the model definition: {}".format(k)) 
-
-            # 2. filter out unnecessary keys
-            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-            # 3. overwrite entries in the existing state dict
-            model_dict.update(pretrained_dict)
-            logging.info(" | > {} / {} layers are restored.".format(len(pretrained_dict), len(model_dict)))
+            model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
             super().load_state_dict(model_dict, strict=True)

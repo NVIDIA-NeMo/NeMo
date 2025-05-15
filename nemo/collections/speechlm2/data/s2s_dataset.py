@@ -15,6 +15,8 @@ import re
 
 import torch
 import torch.utils.data
+import torchaudio
+
 from lhotse import CutSet, Seconds, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_vectors
@@ -88,6 +90,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         target_sample_rate: int,
         input_roles: list[str] = None,
         output_roles: list[str] = None,
+        prompt_audio_path: str = None,
     ):
         self.tokenizer = tokenizer
         self.frame_length = frame_length
@@ -95,12 +98,154 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.target_sample_rate = target_sample_rate
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
-
+        
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
+        if prompt_audio_path is not None:
+            audio, sr = torchaudio.load(prompt_audio_path)
+            self.prompt_audio = torchaudio.functional.resample(audio, sr, self.source_sample_rate)
+
+
+    def __getitem__tts_repeat_after_me(self, cuts) -> dict[str, torch.Tensor | list[str] | dict]:
+
+        # adapted from https://github.com/blisc/NeMo/blob/magpietts_2503/nemo/collections/tts/data/text_to_speech_dataset_lhotse.py
+        cuts = cuts.sort_by_duration()
+        source_audios = []
+        source_audios_lens = []
+        target_audios = []
+        target_audio_lens = []
+        target_first_turn_audio = []
+        target_first_turn_audio_lens = []
+        target_tokens = []
+        target_token_lens = []
+        source_tokens = []
+        source_token_lens = []
+
+        pad_id = get_pad_id(self.tokenizer)
+        for i, cut in enumerate(cuts):
+            # load target/answer audio
+            cur_target_audio = torch.FloatTensor(cut.target_audio.resample(self.target_sample_rate).load_audio())
+            # convert answer to the input sr
+            cur_target_audio_input_sr = torchaudio.functional.resample(cur_target_audio, self.target_sample_rate, self.source_sample_rate)
+
+            # define silences between turns
+            turn_silence_sec = 0.32
+            silence_padding_input = torch.zeros((1, int(turn_silence_sec * self.source_sample_rate))) # input sr silence
+            silence_padding_output = torch.zeros((1, int(turn_silence_sec * self.target_sample_rate))) # output sr silence
+
+            # generate target audio with end 32 ms padding
+            cur_target_audio_with_padding = torch.cat([cur_target_audio, silence_padding_output], dim=1)
+            # generates user audio with prompt and padding
+            source_audio_with_prompt_and_padding = torch.cat([self.prompt_audio, silence_padding_input, cur_target_audio_input_sr, silence_padding_input], dim=1)
+
+            # downsample it to the input/output sr
+            cur_target_audio_with_padding_input_sr = torchaudio.functional.resample(cur_target_audio_with_padding, self.target_sample_rate, self.source_sample_rate)
+            source_audio_with_prompt_and_padding_output_sr = torchaudio.functional.resample(source_audio_with_prompt_and_padding, self.source_sample_rate, self.target_sample_rate)
+
+            # make the final source and target audios
+            source_audio = torch.cat([source_audio_with_prompt_and_padding, torch.zeros_like(cur_target_audio_with_padding_input_sr)], dim=1)
+            target_audio = torch.cat([torch.zeros_like(source_audio_with_prompt_and_padding_output_sr), cur_target_audio_with_padding], dim=1)
+
+            # add source and target audios to the lists
+            source_audios.append(source_audio)
+            source_audios_lens.append(torch.tensor(source_audio.shape[1]).long())
+            target_audios.append(target_audio)
+            target_audio_lens.append(torch.tensor(target_audio.shape[1]).long())
+
+            target_first_turn_audio.append(cur_target_audio)
+            target_first_turn_audio_lens.append(torch.tensor(cur_target_audio.shape[1]).long())
+
+            total_steps = compute_num_frames(
+                duration=(target_audio.size(1) / self.target_sample_rate),
+                frame_shift=self.frame_length,
+                sampling_rate=self.target_sample_rate
+            )
+
+            # target text_start_step is the size of source_audio_with_prompt_and_padding
+            text_start_step = compute_num_frames(
+                duration=(source_audio_with_prompt_and_padding.size(1) / self.target_sample_rate),
+                frame_shift=self.frame_length,
+                sampling_rate=self.target_sample_rate
+            ) - 1
+
+            text_end_step = total_steps - 1
+
+            cur_target_tokens = torch.full(
+                [total_steps],
+                pad_id,
+            )
+            # create emptly sorce text
+            cur_source_tokens = torch.full(
+                [total_steps],
+                pad_id,
+            )
+
+            if cut.supervisions[1].speaker == "agent":
+
+                target_text = torch.as_tensor([self.tokenizer.bos] + self.tokenizer.text_to_ids(cut.supervisions[1].text))
+                source_text = torch.as_tensor([self.tokenizer.bos] + self.tokenizer.text_to_ids("Can you repeat after me? " + cut.supervisions[1].text))
+
+                # added source and target text
+                text_len = min(text_end_step - text_start_step, target_text.shape[0])
+                cur_target_tokens[text_start_step : (text_start_step + text_len)] = target_text[:text_len]
+                cur_target_tokens[text_end_step] = self.tokenizer.eos
+
+                # for source text, the bos happens in the position and eos happens right before target text_start_step
+                source_text_start_step = 0
+                source_text_end_step = text_start_step - 1
+        
+                cur_source_tokens[source_text_end_step] = self.tokenizer.eos
+                text_len = min(source_text_end_step - source_text_start_step, source_text.shape[0])
+                cur_source_tokens[source_text_start_step : (source_text_start_step + text_len)] = source_text[:text_len]
+
+                target_tokens.append(cur_target_tokens)
+                target_token_lens.append(cur_target_tokens.size(0))
+                source_tokens.append(cur_source_tokens)
+                source_token_lens.append(cur_source_tokens.size(0))
+
+
+        # collate_vectors target_audios
+        target_audios = collate_vectors([a.squeeze(0) for a in target_audios], padding_value=0.0)
+        target_audio_lens = torch.tensor(target_audio_lens).long()
+
+        # collate_vectors source_audios
+        source_audio = collate_vectors([a.squeeze(0) for a in source_audios], padding_value=0.0)
+        source_audio_lens = torch.tensor(source_audios_lens).long()
+
+        # prepare target_first_turn_audio that will be used for speaker conditioning
+        target_first_turn_audio = collate_vectors([a.squeeze(0) for a in target_first_turn_audio], padding_value=0.0)
+        target_first_turn_audio_lens = torch.tensor(target_first_turn_audio_lens).long()
+
+        # collate_vectors text tokens
+        target_tokens = collate_vectors(target_tokens, padding_value=pad_id)
+        target_token_lens = torch.tensor(target_token_lens).long()
+        source_tokens = collate_vectors(source_tokens, padding_value=pad_id)
+        source_token_lens = torch.tensor(source_token_lens).long()
+
+        return {
+            "source_audio": source_audio,
+            "source_audio_lens": source_audio_lens,
+            "target_audio": target_audio,
+            "target_audio_lens": target_audio_lens,
+            "target_tokens": target_tokens,
+            "target_token_lens": target_token_lens,
+            "source_tokens": source_tokens,
+            "source_token_lens": source_token_lens,
+            "target_texts": [
+                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+            ],
+            "target_first_turn_audio": target_first_turn_audio,
+            "target_first_turn_audio_lens": target_first_turn_audio_lens,
+        }
+
+        return return_batch
+
     def __getitem__(self, cuts: CutSet) -> dict:
         cuts = cuts.transform_text(_strip_timestamps)
+
+        if getattr(cuts[0], "tts_repeat_after_me", False):
+            return self.__getitem__tts_repeat_after_me(cuts)
 
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
         target_audio, target_audio_lens = collate_audio(

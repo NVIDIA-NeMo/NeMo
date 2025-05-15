@@ -230,6 +230,7 @@ class TransformerARSpeechDecoder(NeuralModule):
                 g = g.unsqueeze(1)
         return g.to(self.inference_speaker_embedding.dtype)
 
+
     def forward(self, hidden_states, speech_mask, input_audio_tokens=None, target_text_tokens=None, modality_adapter_emb=None, speaker_encoder_emb=None, temperature=0.7, topk=80, greedy=True):
         # Megatron LLM parallel training returns T, B, F so reshape it
         # T, B, F = hidden_states.size()

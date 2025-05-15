@@ -222,7 +222,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 target_first_turn_audio = batch["target_first_turn_audio"]
                 target_first_turn_audio_lens = batch["target_first_turn_audio_lens"]
                 speaker_encoder_emb = self.speech_generation.get_speaker_embedding(target_first_turn_audio, target_first_turn_audio_lens, self.target_sample_rate)
-
                 """
                 # debug samples:
                 def write_wave(one_audio_signal, file_name, sr=None):

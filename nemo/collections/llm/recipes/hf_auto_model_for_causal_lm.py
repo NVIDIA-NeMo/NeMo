@@ -118,9 +118,8 @@ def trainer(
         accumulate_grad_batches=10,
         callbacks=callbacks,
         gradient_clip_val=gradient_clip_val,
-        use_distributed_sampler=False,
+        use_distributed_sampler=True,  # for PL compatibility
     )
-
     return trainer
 
 

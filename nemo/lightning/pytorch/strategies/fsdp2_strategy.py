@@ -243,7 +243,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             [self._data_parallel_size, self.context_parallel_size, self._tensor_parallel_size],
             ["data_parallel", "context_parallel", "tensor_parallel"],
         ):
-            mesh_shape.append(dim)
+            mesh_shape.append(int(dim))
             mesh_dim_names.append(name)
 
         self._device_mesh = init_device_mesh(

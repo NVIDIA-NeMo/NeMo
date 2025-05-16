@@ -31,7 +31,7 @@ from megatron.core.transformer.utils import _get_extra_state_offsets
 from torch import Tensor, nn
 from torch.distributed._sharded_tensor import ShardedTensor as TorchShardedTensor
 from torch.distributed._tensor import DTensor, Replicate, Shard
-from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.device_mesh import DeviceMesh, _mesh_resources
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, SequenceParallel, parallelize_module
 
 from nemo.lightning import _strategy_lib
@@ -499,7 +499,9 @@ def fsdp2_strategy_parallelize(
                 parallelize_helper(sub_module, mesh, mp_policy)
 
     # Set FSDP sharding mesh to context parallel mesh if CP > 1, else default to the data parallel mesh.
-    dp_mesh = device_mesh["context_parallel" if device_mesh["context_parallel"].size() > 1 else "data_parallel"]
+    dp_mesh = device_mesh[
+        ("dp_cp" if "dp_cp" in _mesh_resources.root_to_flatten_mapping.get(device_mesh, {}) else "data_parallel")
+    ]
     tp_mesh = device_mesh["tensor_parallel"]
 
     if dp_mesh.size() > 1:

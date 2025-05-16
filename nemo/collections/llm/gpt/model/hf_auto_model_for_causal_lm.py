@@ -19,6 +19,7 @@ import _io
 import lightning.pytorch as pl
 import torch
 import torch.distributed as dist
+from torch.distributed.device_mesh import _mesh_resources
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
 from nemo.automodel.dist_utils import FirstRankPerNode
@@ -379,6 +380,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 labels = labels.view(-1)
                 assert logits.shape[-2] == labels.shape[-1], "Expected logits & labels to have the same length"
                 loss = self.loss_fn(logits, labels, loss_mask)
+
         else:
             batch["output_hidden_states"] = True if self.use_linear_ce_loss else False  # Enable hidden states output
 
@@ -410,6 +412,11 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                     num_items_in_batch=num_items_in_batch,
                     logit_softcapping=logit_softcapping,
                 )
+
+        # In the case where all labels are masked, the loss should be 0.
+        if loss_mask is not None and loss_mask.bool().sum() == 0:
+            loss.detach().copy_(torch.zeros_like(loss))
+
         self.loss_buffer.append(loss.item())
         self.n_tok += labels.numel() - count_tail_padding(labels.view_as(batch['input_ids']))
 
@@ -446,7 +453,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 group = device_mesh[
                     (
                         "dp_cp"
-                        if device_mesh.mesh_dim_names is not None and "dp_cp" in device_mesh.mesh_dim_names
+                        if "dp_cp" in _mesh_resources.root_to_flatten_mapping.get(device_mesh, {})
                         else "data_parallel"
                     )
                 ].get_group()

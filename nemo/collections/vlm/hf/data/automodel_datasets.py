@@ -165,7 +165,7 @@ def mk_hf_vlm_dataset_cord_v2(data_path, processor, mbs, gbs):
 
         for example in examples:
             image, ground_truth = example
-            images.append(image)
+            images.append([image])
 
             conversation = [
                 {

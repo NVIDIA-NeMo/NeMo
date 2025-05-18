@@ -51,6 +51,14 @@ from nemo.collections.llm.gpt.model.gemma2 import (
     Gemma2Config27B,
     Gemma2Model,
 )
+from nemo.collections.llm.gpt.model.gemma3 import (
+    Gemma3Config,
+    Gemma3Config1B,
+    Gemma3Config4B,
+    Gemma3Config12B,
+    Gemma3Config27B,
+    Gemma3Model,
+)
 from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import HFAutoModelForCausalLM
 from nemo.collections.llm.gpt.model.hf_llama_embedding import get_llama_bidirectional_hf_model
 from nemo.collections.llm.gpt.model.hyena import (
@@ -228,6 +236,12 @@ __all__ = [
     "Gemma2Config2B",
     "Gemma2Config9B",
     "Gemma2Model",
+    "Gemma3Config",
+    "Gemma3Config1B",
+    "Gemma3Config4B",
+    "Gemma3Config12B",
+    "Gemma3Config27B",
+    "Gemma3Model",
     "LlamaModel",
     "MLPerfLoRALlamaModel",
     "Baichuan2Config",

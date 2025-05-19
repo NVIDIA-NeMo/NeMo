@@ -230,6 +230,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             (1) Add 'input_audio_tokens' and 'loss_mask' in return value for TransformerARSpeechDecoder
             (2) Remove audio codec embedding from 'input_embeds'
         """
+        # check if audios has the same batch size
+        assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
+        assert batch["target_first_turn_audio"].size(0) == batch["target_audio"].size(0)
 
         source_encoded, source_encoded_lens = self.perception(
             input_signal=batch["source_audio"], input_signal_length=batch["source_audio_lens"]
@@ -243,35 +246,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 target_first_turn_audio = batch["target_first_turn_audio"]
                 target_first_turn_audio_lens = batch["target_first_turn_audio_lens"]
                 speaker_encoder_emb = self.speech_generation.get_speaker_embedding(target_first_turn_audio, target_first_turn_audio_lens, self.target_sample_rate)
-                """
-                # debug samples:
-                def write_wave(one_audio_signal, file_name, sr=None):
-                    import numpy as np
-                    import soundfile as sf
-                    one_audio_signal = one_audio_signal.cpu().numpy()
-                    one_audio_signal = one_audio_signal.astype(np.float32)
-                    if sr is None:
-                        sr = self.target_sample_rate
-                    # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
-                    sf.write(file_name, one_audio_signal, sr)    
-
-                write_wave(
-                    batch['target_audio'][-1],
-                    "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_target_audio.wav",
-                    sr=22050
-                )
-                write_wave(
-                    batch["target_first_turn_audio"][-1],
-                    "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_speaker_ref.wav",
-                    sr=22050
-                )
-                write_wave(
-                    batch["source_audio"][-1],
-                    "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_input.wav",
-                    sr=16000
-                )
-                exit()
-                """
             else:
                 speaker_encoder_emb = None
 
@@ -348,6 +322,49 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             device=self.device,
             dtype=torch.bool,
         )
+
+        """
+        # debug samples:
+        def write_wave(one_audio_signal, file_name, sr=None):
+            import numpy as np
+            import soundfile as sf
+            one_audio_signal = one_audio_signal.cpu().numpy()
+            one_audio_signal = one_audio_signal.astype(np.float32)
+            if sr is None:
+                sr = self.target_sample_rate
+            # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
+            sf.write(file_name, one_audio_signal, sr)    
+
+        write_wave(
+            batch["target_audio"][0],
+            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_target_audio_5.wav",
+            sr=22050
+        )
+        write_wave(
+            batch["target_first_turn_audio"][0],
+            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_speaker_ref_5.wav",
+            sr=22050
+        )
+        write_wave(
+            batch["source_audio"][0],
+            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_input_5.wav",
+            sr=16000
+        )
+        # reconstruct wav
+        audio_labels = replace_control_speech_codes(audio_labels, self._control_codes)
+        with fp32_precision(), torch.no_grad():
+            lengths = torch.tensor([audio_labels.shape[1]]*audio_labels.shape[0]).to(self.audio_codec.device)
+            print(audio_labels.shape, lengths.shape)
+            predicted_audio, predicted_audio_lens = self.audio_codec.decode(
+                tokens=audio_labels.transpose(1, 2), tokens_len=lengths
+            )
+        write_wave(
+            predicted_audio[0],
+            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/reconstructed_codec_audio_5.wav",
+            sr=22050
+        )
+        exit()
+        """
 
         return {
             "input_embeds": input_embeds,
@@ -714,4 +731,4 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         except RuntimeError as e:
             logging.info(f"Error loading model state_dict !! Retrying with partial initialization!")
             model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
-            super().load_state_dict(model_dict, strict=True)
+            super().load_state_dict(model_dict, strict=False)

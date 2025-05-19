@@ -206,7 +206,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
 
         # collate_vectors target_audios
-        target_audios = collate_vectors([a.squeeze(0) for a in target_audios], padding_value=0.0)
+        target_audio = collate_vectors([a.squeeze(0) for a in target_audios], padding_value=0.0)
         target_audio_lens = torch.tensor(target_audio_lens).long()
 
         # collate_vectors source_audios
@@ -222,7 +222,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         target_token_lens = torch.tensor(target_token_lens).long()
         source_tokens = collate_vectors(source_tokens, padding_value=pad_id)
         source_token_lens = torch.tensor(source_token_lens).long()
-
         return {
             "sample_id": ["-".join(s.id for s in cut.supervisions if s.speaker in ["user"]) for cut in cuts],
             "source_audio": source_audio,

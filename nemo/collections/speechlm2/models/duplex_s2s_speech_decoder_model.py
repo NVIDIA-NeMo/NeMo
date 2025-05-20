@@ -61,10 +61,18 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         self.cfg = cfg.model
         self.target_sample_rate = cfg.data.target_sample_rate
         self.source_sample_rate = cfg.data.source_sample_rate
+        # compute source fps
+        self.source_fps = self.source_sample_rate / (self.source_sample_rate * cfg.data.frame_length) # conver frame rate in fps
 
         setup_audio_codec(self)
         self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
         self._num_codebooks = self.audio_codec.vector_quantizer.num_groups
+
+        # compute target fps
+        self.target_fps = self.target_sample_rate / self.audio_codec.samples_per_frame
+        # compute interpolation factor to interpolate 
+        self.interpolation_factor = self.target_fps / self.source_fps
+        # x = torch.nn.functional.interpolate(x.unsqueeze(1), size=None, scale_factor=[1, self.interpolation_factor], mode='nearest-exact', align_corners=None, recompute_scale_factor=None, antialias=False)
 
         # We load the pretrained HF LLM using "ForCausalLM" variant so that we can obtain the
         # pretrained LM head weights.
@@ -128,7 +136,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         checkpoint_path = f"{tmpdir}/model_weights.ckpt"
                         checkpoint_state = torch.load(checkpoint_path)
             else:
-                checkpoint_state = torch.load(checkpoint_path)['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, weights_only=False)['state_dict']
 
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
             self.speech_generation.load_state_dict(checkpoint_state, strict=True)

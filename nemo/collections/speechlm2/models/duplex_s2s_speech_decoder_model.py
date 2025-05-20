@@ -331,6 +331,15 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             dtype=torch.bool,
         )
 
+        # set the mask based on the target_token_lens to disconsider sequence padding in loss
+        for i in range(batch["target_token_lens"].size(0)):
+            speech_end_idx = batch["target_token_lens"][i]
+            loss_mask[i, speech_end_idx:, :] = 0
+
+        # check new mask consistency
+        mask_lengths = loss_mask[:, :, 0].sum(-1)
+        assert torch.allclose(batch["target_token_lens"].float(), mask_lengths.float(), atol=2.0)
+
         """
         # debug samples:
         def write_wave(one_audio_signal, file_name, sr=None):

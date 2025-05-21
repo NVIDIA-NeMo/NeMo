@@ -25,6 +25,7 @@ from lhotse.utils import ifnone
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.utils import logging
+from lightning.pytorch.utilities.parsing import AttributeDict
 
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
@@ -162,9 +163,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 sampling_rate=self.target_sample_rate
             )
 
-            # target text_start_step is the size of source_audio_with_prompt_and_padding
+            # target text_start_step is the size of source_audio_with_prompt_and_padding_output_sr
             text_start_step = compute_num_frames(
-                duration=(source_audio_with_prompt_and_padding.size(1) / self.target_sample_rate),
+                duration=(source_audio_with_prompt_and_padding_output_sr.size(1) / self.target_sample_rate),
                 frame_shift=self.frame_length,
                 sampling_rate=self.target_sample_rate
             ) - 1
@@ -240,13 +241,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         }
 
         return return_batch
-
-    def __getitem__(self, cuts: CutSet) -> dict:
-        cuts = cuts.transform_text(_strip_timestamps)
-
-        if getattr(cuts[0], "tts_repeat_after_me", False):
-            return self.__getitem__tts_repeat_after_me(cuts)
-
+    
+    def __getitem__duplex_(self, cuts: CutSet) -> dict:
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
         target_audio, target_audio_lens = collate_audio(
             cuts.resample(self.target_sample_rate), recording_field="target_audio"
@@ -279,6 +275,35 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             "target_first_turn_audio_lens": target_first_turn_audio_lens,
         }
 
+    def __getitem__duplex_overlay(self, cuts: CutSet) -> dict:
+        # convert overlay format to duplex
+        for cut in cuts:
+            agent_segments = []
+            for seg in cut.agent_segments:
+                seg["speaker"] = "agent"
+                agent_segments.append(AttributeDict(seg))
+            user_segments = []
+            for seg in cut.user_segments:
+                seg["speaker"] = "user"
+                user_segments.append(AttributeDict(seg))
+
+            cut.supervisions = agent_segments + user_segments
+
+        # parse the converted cuts
+        return self.__getitem__duplex_(cuts)
+
+
+    def __getitem__(self, cuts: CutSet) -> dict:
+        cuts = cuts.transform_text(_strip_timestamps)
+
+        if getattr(cuts[0], "tts_repeat_after_me", False):
+            return self.__getitem__tts_repeat_after_me(cuts)
+        elif getattr(cuts[0], "s2s_duplex_overlap", False):
+            return self.__getitem__duplex_overlay(cuts)
+        else:
+            return self.__getitem__duplex_(cuts)
+
+
 def collate_first_turn_audio(
     cuts: CutSet,
     roles: set[str],
@@ -293,6 +318,7 @@ def collate_first_turn_audio(
         first_turn_audios_lens.append(truncated_audio.shape[-1])
 
     return collate_vectors(first_turn_audios, padding_value=0), torch.tensor(first_turn_audios_lens)
+
 
 def collate_token_channel(
     cuts: CutSet,

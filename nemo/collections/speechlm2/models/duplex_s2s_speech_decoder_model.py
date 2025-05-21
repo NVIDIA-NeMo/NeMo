@@ -353,17 +353,17 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             sf.write(file_name, one_audio_signal, sr)    
 
         write_wave(
-            batch["target_audio"][0],
+            batch["target_audio"][-1],
             "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_target_audio_5.wav",
             sr=22050
         )
         write_wave(
-            batch["target_first_turn_audio"][0],
+            batch["target_first_turn_audio"][-1],
             "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_speaker_ref_5.wav",
             sr=22050
         )
         write_wave(
-            batch["source_audio"][0],
+            batch["source_audio"][-1],
             "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_input_5.wav",
             sr=16000
         )
@@ -371,15 +371,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         audio_labels = replace_control_speech_codes(audio_labels, self._control_codes)
         with fp32_precision(), torch.no_grad():
             lengths = torch.tensor([audio_labels.shape[1]]*audio_labels.shape[0]).to(self.audio_codec.device)
-            print(audio_labels.shape, lengths.shape)
             predicted_audio, predicted_audio_lens = self.audio_codec.decode(
                 tokens=audio_labels.transpose(1, 2), tokens_len=lengths
             )
         write_wave(
-            predicted_audio[0],
+            predicted_audio[-1],
             "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/reconstructed_codec_audio_5.wav",
             sr=22050
         )
+
+        # check text
+        print("text_labels", text_labels)
+        print("target labels from dataloader", batch["target_tokens"])
+        print("text_labels", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
+        print("target labels from dataloader",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
+
+        zeros_begening = 0
+        for t in text_labels[-1:].squeeze():
+            if t == 0:
+                zeros_begening += 1
+            else:
+                break
+
+        print("Total aduio seconds padded input:", (zeros_begening*self.audio_codec.samples_per_frame)/ self.target_sample_rate)
+
         exit()
         """
 

@@ -182,7 +182,7 @@ class TransformerARSpeechDecoder(NeuralModule):
             self.audio_embeddings = nn.ModuleList(audio_embeddings)
 
         if self.cond_on_text_tokens:
-            self.text_embeddings = nn.Embedding(llm_vocab_size, self.speech_decoder_parms["d_model"])
+            self.text_embeddings = nn.Embedding(len(llm_tokenizer_vocab_items), self.speech_decoder_parms["d_model"])
 
         # if cond on llm latent create the projection to sum the embeddings
         if self.cond_on_llm_latent and (self.cond_on_text_tokens or self.cond_on_char_embedding):
@@ -280,10 +280,7 @@ class TransformerARSpeechDecoder(NeuralModule):
 
         # if cond on text tokens, sum text tokens with the llm latent
         if self.cond_on_text_tokens and target_text_tokens is not None:
-            if self.use_llm_text_emb:
-                text_tokens_embedded = self.text_emb_projection(target_text_tokens)
-            else:
-                text_tokens_embedded = self.text_embeddings(target_text_tokens)
+            text_tokens_embedded = self.text_embeddings(target_text_tokens)
 
             # if cond_on_llm_latent use a projection to sum the embeddings
             if self.cond_on_llm_latent:

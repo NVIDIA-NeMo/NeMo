@@ -86,9 +86,10 @@ def main():
     cuts, _ = read_cutset_from_config(config)
     min_dur, max_dur = args.min_duration, args.max_duration
     nonaudio, discarded, tot = 0, 0, 0
+    observed_max_dur = 0
 
     def duration_ok(cut) -> bool:
-        nonlocal nonaudio, discarded, tot
+        nonlocal nonaudio, discarded, tot, observed_max_dur
         tot += 1
         if not isinstance(cut, Cut):
             nonaudio += 1
@@ -96,6 +97,7 @@ def main():
         if not (min_dur <= cut.duration <= max_dur):
             discarded += 1
             return False
+        observed_max_dur = max(cut.duration, observed_max_dur)
         return True
 
     cuts = cuts.filter(duration_ok)
@@ -115,6 +117,7 @@ def main():
     print("Use the following options in your config:")
     print(f"\tnum_buckets={args.buckets}")
     print(f"\tbucket_duration_bins={duration_bins}")
+    print(f"\tmax_duration={observed_max_dur}")
 
 
 if __name__ == "__main__":

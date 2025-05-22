@@ -387,7 +387,7 @@ class FilterbankFeatures(nn.Module):
             hop_length=self.hop_length,
             win_length=self.win_length,
             center=False if self.exact_pad else True,
-            window=self.window.to(dtype=torch.float),
+            window=self.window.to(dtype=torch.float, device=x.device),
             return_complex=True,
         )
 

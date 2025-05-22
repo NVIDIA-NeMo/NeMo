@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=missing-function-docstring,missing-class-docstring
 
 from abc import ABC
 from functools import lru_cache
@@ -123,7 +124,7 @@ class PromptFormatter(ABC):
 
 
         >>> formatter = PromptFormatter(tokenizer)
-        ... encoded_for_training = formatter.encode_dialog(
+        ... encoded_for_inference = formatter.encode_dialog(
         ...     turns=[
         ...         {"role": "user", "slots": {"message": "What time is it?"}},
         ...         {"role": "assistant", "slots": {"message": "Ten o'clock."}},
@@ -154,6 +155,10 @@ class PromptFormatter(ABC):
     # Turns under this role indicate responses by the model; if the last turn in
     # PromptFormatter.encode_dialog() ends with this role, it indicates a training example.
     OUTPUT_ROLE = None
+
+    # When specified, we will append this prefix at the end of the prompt at inference time.
+    # We detect inference time by the fact that the last turn is not from OUTPUT_ROLE.
+    INFERENCE_PREFIX = None
 
     # When set to true, we will insert BOS/EOS symbol at the very beginning/end of the dialog
     # (i.e., not before/after every turn).
@@ -246,6 +251,8 @@ class PromptFormatter(ABC):
         self, prompt_template: str, expected_slots: dict[str, Modality], slot_values: dict[str, Any]
     ) -> list[int]:
         prompt = prompt_template
+
+        # normal case
         for slot in expected_slots:
             # For the final substitution of 'slot' in the template we have to mangle it to '|slot|' anyway,
             # but 'slot' form enables to use valid python identifiers as **kwargs
@@ -256,8 +263,11 @@ class PromptFormatter(ABC):
         return self._apply_tokenizer(prompt, lang=slot_values.get(self.PROMPT_LANGUAGE_SLOT))
 
     def encode_dialog(self, turns: list[dict]) -> dict[str, torch.Tensor]:
-        assert len(turns) > 0, "Empty dialog is not supported."
         roles = self.get_roles()
+        assert len(turns) > 0, "Empty dialog is not supported."
+        for turn in turns:
+            assert "role" in turn, f"A turn must have have a 'role' key. We received {turn=}"
+            assert turn["role"] in roles, f"Found turn with {turn['role']=}, but available roles are {roles}"
 
         turn_tokens = []
         turn_token_counts = []
@@ -275,27 +285,38 @@ class PromptFormatter(ABC):
             else:
                 assert (
                     len(preamble_turns) == 1 and preamble_turns[0] == 0
-                ), f"Preamble can only be presented at turn 0, but we found preamble turns at indexes {preamble_turns}."
+                ), f"Preamble can only be presented at turn 0 but we found preamble turns at indexes {preamble_turns}."
 
+        is_inference = turns[-1]["role"] != self.OUTPUT_ROLE
         for turn in turns:
-            assert "role" in turn, f"A turn must have have a 'role' key. We received {turn=}"
             role = turn["role"]
-            assert role in roles, f"Found turn with {role=}, but availables roles are {roles}"
             expected_slots = self.get_slots(role)
-            slot_values = turn.get("slots", {})
-            if expected_slots:
-                assert (
-                    slot_values
-                ), f"A turn for role {role} must have have a non-empty value under 'slots' key. We received {turn=}"
-                self._validate_slot_values(expected_slots, slot_values)
+            if "content" in turn and len(expected_slots) == 1:
+                # User is leveraging the "standard" API prompting LLM; we'll map "content" value
+                # to whatever is the name of the slot, when there's only one slot.
+                slot_values = {k: turn["content"] for k in expected_slots.keys()}  # 1-item dict
+            else:
+                slot_values = turn.get("slots", {})
+                if expected_slots:
+                    assert slot_values, (
+                        f"A turn for role {role} must have have a non-empty value under 'slots' key. "
+                        f"We received {turn=}"
+                    )
+                    self._validate_slot_values(expected_slots, slot_values)
             template = self.get_template(role)
             tokens = self.encode_turn(template, expected_slots, slot_values)
             turn_tokens.extend(tokens)
             turn_token_counts.append(len(tokens))
             turn_mask_values.append(role == self.OUTPUT_ROLE)
 
+        if is_inference and self.INFERENCE_PREFIX is not None:
+            inference_prefix = self._apply_tokenizer(self.INFERENCE_PREFIX)
+            turn_tokens.extend(inference_prefix)
+            turn_token_counts.append(len(inference_prefix))
+            turn_mask_values.append(False)  # not a training example
+
         # Insert EOS only when the last turn comes from the OUTPUT_ROLE.
-        if self.INSERT_EOS and turns[-1]["role"] == self.OUTPUT_ROLE:
+        if self.INSERT_EOS and not is_inference:
             turn_tokens.append(self.tokenizer.eos)
             turn_token_counts[-1] += 1
             turn_mask_values.append(True)

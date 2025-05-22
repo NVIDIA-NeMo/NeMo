@@ -69,8 +69,8 @@ class Formattable:
         ans = apply_prompt_format_fn(self, prompt)
         self.input_ids = ans["input_ids"]
         self.context_ids = ans["context_ids"]
-        self.answer_ids = ans["answer_ids"]
-        self.mask = ans["mask"]
+        self.answer_ids = ans.get("answer_ids")
+        self.mask = ans.get("mask")
         return self
 
 

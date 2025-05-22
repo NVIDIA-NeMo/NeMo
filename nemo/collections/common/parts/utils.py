@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=missing-function-docstring,missing-class-docstring
 
 import logging
 import math
@@ -142,13 +143,13 @@ def mask_sequence_tensor(tensor: torch.Tensor, lengths: torch.Tensor):
     batch_size, *_, max_lengths = tensor.shape
 
     if len(tensor.shape) == 2:
-        mask = torch.ones(batch_size, max_lengths).cumsum(dim=-1).type_as(lengths)
+        mask = torch.ones(batch_size, max_lengths, dtype=lengths.dtype, device=lengths.device).cumsum(dim=-1)
         mask = mask <= einops.rearrange(lengths, 'B -> B 1')
     elif len(tensor.shape) == 3:
-        mask = torch.ones(batch_size, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
+        mask = torch.ones(batch_size, 1, max_lengths, dtype=lengths.dtype, device=lengths.device).cumsum(dim=-1)
         mask = mask <= einops.rearrange(lengths, 'B -> B 1 1')
     elif len(tensor.shape) == 4:
-        mask = torch.ones(batch_size, 1, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
+        mask = torch.ones(batch_size, 1, 1, max_lengths, dtype=lengths.dtype, device=lengths.device).cumsum(dim=-1)
         mask = mask <= einops.rearrange(lengths, 'B -> B 1 1 1')
     else:
         raise ValueError('Can only mask tensors of shape B x L, B x D x L and B x D1 x D2 x L')

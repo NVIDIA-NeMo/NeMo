@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=missing-function-docstring
 
 import torch
 from lhotse.cut import Cut, MixedCut
@@ -129,6 +130,7 @@ class Llama3PromptFormatter(PromptFormatter):
 
     NAME = "llama3"
     OUTPUT_ROLE = "assistant"
+    INFERENCE_PREFIX = f"{LLAMA3_HEADER_BEGIN}assistant{LLAMA3_HEADER_END}{LLAMA3_NL}"
     TEMPLATE = {
         "preamble": {
             "template": LLAMA3_BOS,
@@ -146,7 +148,7 @@ class Llama3PromptFormatter(PromptFormatter):
             },
         },
         OUTPUT_ROLE: {
-            "template": f"{LLAMA3_HEADER_BEGIN}assistant{LLAMA3_HEADER_END}{LLAMA3_NL}|message|{LLAMA3_END_OF_TURN}",
+            "template": f"{INFERENCE_PREFIX}|message|{LLAMA3_END_OF_TURN}",
             "slots": {
                 "message": Modality.Text,
             },
@@ -167,9 +169,8 @@ def llama3(cut: Cut, prompt: Llama3PromptFormatter) -> dict[str, torch.Tensor]:
 
     turns = []
     if cut.has_custom("system_prompt"):
-        turns.append({"role": "system_and_user", "slots": {"system": cut.system_prompt, "message": context}})
-    else:
-        turns.append({"role": "user", "slots": {"message": context}})
+        turns.append({"role": "system", "slots": {"message": cut.system_prompt}})
+    turns.append({"role": "user", "slots": {"message": context}})
     if (answer := cut.supervisions[0].text) is not None:
         turns.append({"role": "assistant", "slots": {"message": answer}})
     return prompt.encode_dialog(turns)

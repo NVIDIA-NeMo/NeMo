@@ -24,21 +24,25 @@ jobs:
         run: |
           if [[ "$DOMAIN" == "speech" ]]; then
             FILTER=$(jq -crn '[
+              "nemo/collections/common/data/lhotse/*.py",
               "nemo/collections/asr/**/*.py",
               "nemo/collections/tts/**/*.py",
               "nemo/collections/audio/**/*.py",
               "nemo/collections/multimodal/speech_llm/**/*.py",
-              "nemo/collections/speechlm/**/*.py"
+              "nemo/collections/speechlm/**/*.py",
+              "nemo/collections/speechlm2/**/*.py"
             ] | join(",")')
 
           else
             FILTER=$(jq -crn '[
               "nemo/**/*.py",
+              "!nemo/collections/common/data/lhotse/*.py",
               "!nemo/collections/asr/**/*.py",
               "!nemo/collections/tts/**/*.py",
               "!nemo/collections/audio/**/*.py",
               "!nemo/collections/multimodal/speech_llm/**/*.py",
-              "!nemo/collections/speechlm/**/*.py"
+              "!nemo/collections/speechlm/**/*.py",
+              "!nemo/collections/speechlm2/**/*.py"
             ] | join(",")')
           fi
 

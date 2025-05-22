@@ -25,6 +25,7 @@ Documentation for the individual collections
    asr/speaker_diarization/intro
    asr/ssl/intro
    asr/speech_intent_slot/intro
+   speechlm2/intro
 
 .. toctree::
    :maxdepth: 1

@@ -288,6 +288,10 @@ class TransformerARSpeechDecoder(NeuralModule):
                 speech_decoder_input = speech_decoder_input + text_tokens_embedded
             else:
                 speech_decoder_input = text_tokens_embedded
+        elif self.cond_on_text_tokens and target_text_tokens is None:
+            raise ValueError(
+                "target_text_tokens should not be None !"
+            )
 
         if self.cond_on_char_embedding:
             # if inference time cache char_embs to speedup inference

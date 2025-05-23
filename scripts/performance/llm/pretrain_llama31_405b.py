@@ -99,6 +99,16 @@ def override_recipe_configs(
         )
         recipe.model.tokenizer = recipe.data.tokenizer
 
+    userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192.qkv_fprop.aggregate = False
+    userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192.proj_dgrad.aggregate = False
+    userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192.fc1_fprop.aggregate = False
+    userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192.fc2_dgrad.aggregate = False
+
+    userbuffers_fp8_h100_h16384_tp8_cp2_mbs1_seqlen8192.qkv_fprop.aggregate = False
+    userbuffers_fp8_h100_h16384_tp8_cp2_mbs1_seqlen8192.proj_dgrad.aggregate = False
+    userbuffers_fp8_h100_h16384_tp8_cp2_mbs1_seqlen8192.fc1_fprop.aggregate = False
+    userbuffers_fp8_h100_h16384_tp8_cp2_mbs1_seqlen8192.fc2_dgrad.aggregate = False
+
     ub_cfg = {
         "h100": {
             "bf16": userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192,

@@ -35,10 +35,7 @@ from ..utils import (
 )
 
 HF_MODEL_URI = "deepseek-ai/DeepSeek-V3-Base"
-
-
-# Use token drop callback
-USE_TOKEN_DROP = True
+USE_TOKEN_DROP = True  # Use token drop callback
 
 
 def override_recipe_configs(
@@ -61,7 +58,7 @@ def override_recipe_configs(
     """
     DeepSeek V3 pre-train recipe aimed at achieving best possible performance.
     """
-    recipe = pretrain_recipe()
+    recipe = pretrain_recipe(performance_mode=True)
     recipe.model.config.moe_permute_fusion = True
     recipe.model.config.recompute_granularity = "selective"
     recipe.model.config.recompute_num_layers = None
@@ -75,20 +72,10 @@ def override_recipe_configs(
     recipe.trainer.strategy.num_layers_in_first_pipeline_stage = num_layers_in_middle_pipeline_stages - 1
     recipe.trainer.strategy.num_layers_in_last_pipeline_stage = num_layers_in_middle_pipeline_stages - 2
 
-    callbacks = []
+    if not hasattr(recipe.trainer, "callbacks") or recipe.trainer.callbacks is None:
+        recipe.trainer.callbacks = []
     if USE_TOKEN_DROP:
-        callbacks.append(run.Config(MegatronTokenDropCallback))
-    garbage_collection_callback = run.Config(
-        GarbageCollectionCallback,
-        gc_interval_train=60,
-        gc_interval_val=60,
-    )
-    comm_overlap_callback = run.Config(
-        MegatronCommOverlapCallback,
-        tp_comm_overlap=False,
-    )
-    callbacks.extend([garbage_collection_callback, comm_overlap_callback])
-    recipe.trainer.callbacks.extend(callbacks)
+        recipe.trainer.callbacks.append(run.Config(MegatronTokenDropCallback))
 
     recipe = set_primary_perf_configs(
         recipe,

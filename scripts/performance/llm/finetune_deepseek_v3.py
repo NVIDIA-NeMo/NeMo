@@ -20,8 +20,6 @@ from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes.deepseek_v3 import finetune_recipe, model
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
-from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
-from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
@@ -43,9 +41,7 @@ HF_MODEL_URI = "deepseek-ai/DeepSeek-V3-Base"
 # at 'NEMO_HOME', fine-tuning job will use this checkpoint, else, it will be
 # downloaded from HuggingFace
 SKIP_IMPORT = True
-
-# Use token drop callback
-UseTokenDrop = True
+USE_TOKEN_DROP = True  # Use token drop callback
 
 
 def override_recipe_configs(
@@ -67,27 +63,15 @@ def override_recipe_configs(
     """
     finetuning_scheme = "none" if args.finetuning == "sft" else args.finetuning
 
-    recipe = finetune_recipe(peft_scheme=finetuning_scheme, packed_sequence=False)
+    recipe = finetune_recipe(peft_scheme=finetuning_scheme, packed_sequence=False, performance_mode=True)
 
     # use mock data module for testing
     recipe.data = run.Config(MockDataModule, seq_length=4096, global_batch_size=gbs, micro_batch_size=1)
-    callbacks = []
-    if UseTokenDrop:
-        callbacks.append(run.Config(MegatronTokenDropCallback))
-    garbage_collection_callback = run.Config(
-        GarbageCollectionCallback,
-        gc_interval_train=60,
-        gc_interval_val=60,
-    )
-    comm_overlap_callback = run.Config(
-        MegatronCommOverlapCallback,
-        tp_comm_overlap=False,
-    )
+
     if not hasattr(recipe.trainer, "callbacks") or recipe.trainer.callbacks is None:
         recipe.trainer.callbacks = []
-
-    callbacks.extend([garbage_collection_callback, comm_overlap_callback])
-    recipe.trainer.callbacks.extend(callbacks)
+    if USE_TOKEN_DROP:
+        recipe.trainer.callbacks.append(run.Config(MegatronTokenDropCallback))
 
     recipe = set_primary_perf_configs(
         recipe,
@@ -126,7 +110,6 @@ def override_recipe_configs(
         # flag is valid only for SquadDataModule
         recipe.data.force_redownload = True
 
-    recipe.trainer.plugins.grad_reduce_in_fp32 = False
     recipe.model.config.recompute_granularity = 'full'
     recipe.model.config.recompute_method = 'uniform'
     recipe.model.config.recompute_num_layers = 1

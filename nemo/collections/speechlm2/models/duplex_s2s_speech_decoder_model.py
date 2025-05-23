@@ -235,9 +235,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # if inference time, uses the target text tokens sampled from the llm backbone
         if self.speech_generation.use_input_cache and not self.training:
             target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
-            # print(self.speech_generation.use_input_cache, target_text_tokens.shape if target_text_tokens is not None else target_text_tokens)
-            # print(tokens_to_str(target_text_tokens[-1:], torch.tensor(target_text_tokens[-1:].shape[1]).long().unsqueeze(0), tokenizer=self.tokenizer, pad_id=self.text_pad_id))
-            # print(self.speech_generation.cache["target_text_tokens"].shape if self.speech_generation.cache["target_text_tokens"] is not None else None)
 
         audio_logits, _  = self.speech_generation(
             out['last_hidden_state'].transpose(0, 1), loss_mask, input_audio_tokens=input_audio_tokens, target_text_tokens=target_text_tokens, modality_adapter_emb=modality_adapter_emb, speaker_encoder_emb=speaker_encoder_emb
@@ -437,6 +434,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm, self.speech_generation):
             if is_frozen(m):
                 m.eval()
+
         inputs = self.prepare_inputs(batch)
         forward_outputs = self(
             inputs["input_embeds"],
@@ -463,8 +461,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             # mask audio logits to ignore sequence padding
             audio_logits = forward_outputs["audio_logits"]
             if self.cfg.get("mask_sequence_loss", True):
-                print(inputs["loss_mask"][:, :, -1].unsqueeze(-1).shape, audio_logits.shape)
-                exit()
                 audio_logits = audio_logits * inputs["loss_mask"][:, :, -1].unsqueeze(-1).unsqueeze(-1)
 
             audio_loss = torch.nn.functional.cross_entropy(

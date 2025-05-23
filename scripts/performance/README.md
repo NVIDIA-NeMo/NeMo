@@ -7,7 +7,7 @@
 
 The following line shows an example of how you can launch a pre-training experiment-
 
-`python -m scripts.performance.llm.pretrain_llama3_8b --account <your_slurm_account> -partition <your_slurm_partition>`
+`python -m scripts.performance.llm.pretrain_llama3_8b --account <your_slurm_account> --partition <your_slurm_partition>`
 
 ## Configuration Options
 
@@ -45,6 +45,8 @@ The following line shows an example of how you can launch a pre-training experim
   - -ms/--max_steps: Number of train steps. Defaults to 100.
   - -cg/--cuda_graphs: Enable CUDA graphs. Options: 'true', '1', 't', 'yes', 'y' to set it to True, 'false', '0', 'f', 'n', 'no' to set it to False. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to false.
   - -fsdp/--use_mcore_fsdp: Enable megatron-core FSDP.  Options: 'true', '1', 't', 'yes', 'y' to set it to True, 'false', '0', 'f', 'n', 'no' to set it to False. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to false.
+  - -ubr/--use_user_buffer_registration: Enable nccl user buffer registration for DP and FSDP communications. 
+  - -sharp/--use_sharp: Enable SHARP. 
   - -rl/--recompute_layers: Number of transformer layers to recompute activations during training. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to 0.
   - -ol/--activation_offload_layers: Number of transformer layers to offload activations to CPU during training. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to 0.
   - -rm/--recompute_modules: Comma separated string of modules in a transformer layer to recompute. If set, program will use selective recompute for all layers. Users should provide zero, one or more than one values. Options are "core_attn", "moe_act", "layernorm", "mla_up_proj", "mlp", "moe". Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to None, which mean no selective recompute. 

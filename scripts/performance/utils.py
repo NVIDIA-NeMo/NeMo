@@ -54,6 +54,7 @@ def slurm_executor(
     hf_token: str = None,
     nemo_home: str = DEFAULT_NEMO_HOME,
     wandb_key: str = None,
+    network: str = None,
 ) -> run.SlurmExecutor:
     """
     Slurm cluster definition with appropriate cluster params and NeMo container params needed for pre-training
@@ -79,10 +80,13 @@ def slurm_executor(
     if wandb_key is not None:
         env_vars["WANDB_API_KEY"] = wandb_key
     mounts = []
-    srun_args = [
-        "--mpi=pmix",
-        "numactl --cpunodebind=$((SLURM_LOCALID/4)) --membind=$((SLURM_LOCALID/4))",
-    ]
+    srun_args = custom_srun_args.copy()
+    srun_args.extend(
+        [
+            "--mpi=pmix",
+            "numactl --cpunodebind=$((SLURM_LOCALID/4)) --membind=$((SLURM_LOCALID/4))",  # numactl command should be always at the end of srun_args
+        ]
+    )
 
     if nemo_home != DEFAULT_NEMO_CACHE_HOME:  # DO NOT change this to 'DEFAULT_NEMO_HOME'/'NEMO_HOME'
         env_vars.update({"NEMO_HOME": nemo_home})
@@ -92,7 +96,6 @@ def slurm_executor(
 
     env_vars |= custom_env_vars
     mounts.extend(custom_mounts)
-    srun_args.extend(custom_srun_args)
 
     # add --segment flag to sbatch if job uses GB200 and goes beyond one rack.
     segment = None
@@ -119,6 +122,7 @@ def slurm_executor(
         exclusive=True,
         packager=run.GitArchivePackager(),
         segment=segment,
+        network=network,
     )
 
     return executor
@@ -247,6 +251,8 @@ def set_primary_perf_configs(
     etp_size: Optional[int] = None,
     enable_cuda_graphs: bool = False,
     use_mcore_fsdp: bool = False,
+    use_user_buffer_registration: bool = False,
+    use_sharp: bool = False,
     recompute_layers: int = 0,
     activation_offload_layers: int = 0,
     compute_dtype: str = None,
@@ -270,6 +276,8 @@ def set_primary_perf_configs(
     logging.info(f"etp_size: {etp_size}")
     logging.info(f"enable_cuda_graphs: {enable_cuda_graphs}")
     logging.info(f"use_mcore_fsdp: {use_mcore_fsdp}")
+    logging.info(f"use_user_buffer_registration: {use_user_buffer_registration}")
+    logging.info(f"use_sharp: {use_sharp}")
     logging.info(f"recompute_layers: {recompute_layers}")
     logging.info(f"activation_offload_layers: {activation_offload_layers}")
     logging.info(f"compute_dtype: {compute_dtype}")
@@ -347,6 +355,14 @@ def set_primary_perf_configs(
                     "A fix is in progress. Disabling TP overlap."
                 )
                 recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap = False
+
+    # User buffers configs
+    if use_user_buffer_registration:
+        recipe.trainer.strategy.ddp.nccl_ub = True
+
+    # Sharp configs
+    if use_sharp:
+        recipe.trainer.strategy.use_sharp = True
 
     # Recompute configs
     if recompute_layers > 0:

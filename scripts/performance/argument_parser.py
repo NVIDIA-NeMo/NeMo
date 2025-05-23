@@ -301,6 +301,22 @@ def parse_cli_args():
         default=None,
     )
     parser.add_argument(
+        "-ubr",
+        "--use_user_buffer_registration",
+        help="Enable user buffer registration. Disabled by default",
+        type=bool_arg,
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
+        "-sharp",
+        "--use_sharp",
+        help="Enable sharp. Disabled by default",
+        type=bool_arg,
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
         "-rl",
         "--recompute_layers",
         type=int,

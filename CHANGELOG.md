@@ -1,6 +1,59 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.3.1
+
+### Highlights
+
+- Collections
+  - LLM
+    - Llama 4: Fixed an accuracy issue caused by MoE probability normalization. Improved pre-train and fine-tune performance.
+- Export & Deploy
+  - Updated vLLMExporter to use vLLM V1 to address a security vulnerability.
+- AutoModel
+  - Improved chat-template handling.
+- Fault Tolerance
+  - Local checkpointing: Fixed support for auto-inserted metric names for resuming from local checkpoints.
+
+### Detailed Changelogs:
+
+</details>
+
+#### Export
+
+<details><summary>Changelog</summary>
+
+- Cherry-pick `Update vLLMExporter to use vLLM V1` (#13498) into `r2.3.0` by @chtruong814 :: PR: #13631
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Bump to 2.3.1 by @chtruong814 :: PR: #13507
+- Cherry pick `Use explicitly cached canary-1b-flash in CI tests (13237)` into `r2.3.0` by @ko3n1g :: PR: #13508
+- Cherry pick `[automodel] bump liger-kernel to 0.5.8 + fallback (13260)` into `r2.3.0` by @ko3n1g :: PR: #13308
+- Cherry-pick `Add recipe and ci scripts for qwen2vl` to `r2.3.0` by @romanbrickie :: PR: #13336
+- Cherry pick `Fix skipme handling (13244)` into `r2.3.0` by @ko3n1g :: PR: #13376
+- Cherry pick `Allow fp8 param gather when using FSDP (13267)` into `r2.3.0` by @ko3n1g :: PR: #13383
+- Cherry pick `Handle boolean args for performance scripts and log received config (13291)` into `r2.3.0` by @ko3n1g :: PR: #13416
+- Cherry pick `new perf configs (13110)` into `r2.3.0` by @ko3n1g :: PR: #13431
+- Cherry pick `Adding additional unit tests for the deploy module (13411)` into `r2.3.0` by @ko3n1g :: PR: #13449
+- Cherry pick `Adding more export tests (13410)` into `r2.3.0` by @ko3n1g :: PR: #13450
+- Cherry pick `[automodel] add FirstRankPerNode (13373)` into `r2.3.0` by @ko3n1g :: PR: #13559
+- Cherry pick `[automodel] deprecate global_batch_size dataset argument (13137)` into `r2.3.0` by @ko3n1g :: PR: #13560
+- Cherry-pick `[automodel] fallback FP8 + LCE -> FP8 + CE`  (#13349) into `r2.3.0` by @chtruong814 :: PR: #13561
+- Cherry pick `[automodel] add find_unused_parameters=True for DDP (13366)` into `r2.3.0` by @ko3n1g :: PR: #13601
+- Cherry pick `Add CI test for local checkpointing (#13012)` into `r2.3.0` by @ananthsub :: PR: #13472
+- Cherry pick `[automodel] fix --mbs/gbs dtype and chat-template (13598)` into `r2.3.0` by @akoumpa :: PR: #13613
+- Cherry-pick `Update t5.py` (#13082) to `r2.3.0` and `bump mcore to f98b1a0`  by @chtruong814 :: PR: #13642
+- [Automodel] Fix CP device_mesh issue, use PTL distsampler (#13473) by @akoumpa :: PR: #13636
+- [Llama4] Fix the recipe bug - cherrypick #13649 by @gdengk :: PR: #13650
+- build: Pin transformers (#13675) by @ko3n1g :: PR: #13692
+
+</details>
+
 ## NVIDIA Neural Modules 2.3.0
 
 ### Highlights

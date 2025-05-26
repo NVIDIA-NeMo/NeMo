@@ -85,6 +85,7 @@ class CharAwareSubwordEncoder(NeuralModule):
             subword_mask = subword_mask.squeeze(-1)
 
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
+
         char_mask = sequence_mask(char_lengths)
         char_emb = self.embed_tokens(char_ids)
         # char emb has the shape  [B*T, N, channels], where N is the max number of chars tokens decoded from bpe tokens
@@ -232,8 +233,7 @@ class TransformerARSpeechDecoder(NeuralModule):
 
 
     def forward(self, hidden_states, speech_mask, input_audio_tokens=None, target_text_tokens=None, modality_adapter_emb=None, speaker_encoder_emb=None, temperature=0.7, topk=80, greedy=True):
-        # Megatron LLM parallel training returns T, B, F so reshape it
-        # T, B, F = hidden_states.size()
+        # LLM returns T, B, F so reshape it
         if hidden_states is not None:
             hidden_states = hidden_states.transpose(0, 1).contiguous() # .reshape(B, T, F) # from [T, B, F] to [B, T, F]
     

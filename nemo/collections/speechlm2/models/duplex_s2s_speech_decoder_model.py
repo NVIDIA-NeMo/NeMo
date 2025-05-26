@@ -507,7 +507,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     def validation_step(self, batch: dict, batch_idx: int):
 
         # Update speaker embedding to reflect the one in the prompt during inference
-        if self.speech_generation.inference_speaker_reference:
+        if self.speech_generation.use_speaker_encoder and self.speech_generation.inference_speaker_reference:
             self.speech_generation.update_inference_speaker_embedding(self.speech_generation.inference_speaker_reference)
 
         for name, dataset_batch in batch.items():

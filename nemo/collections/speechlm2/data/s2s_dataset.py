@@ -17,7 +17,7 @@ import torch
 import torch.utils.data
 import torchaudio
 
-from lhotse import CutSet, Seconds, compute_num_frames
+from lhotse import CutSet, Seconds, SupervisionSegment, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_vectors
 from lhotse.utils import ifnone
@@ -25,7 +25,6 @@ from lhotse.utils import ifnone
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.utils import logging
-from lightning.pytorch.utilities.parsing import AttributeDict
 
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
@@ -223,6 +222,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         target_token_lens = torch.tensor(target_token_lens).long()
         source_tokens = collate_vectors(source_tokens, padding_value=pad_id)
         source_token_lens = torch.tensor(source_token_lens).long()
+
         return {
             "sample_id": ["-".join(s.id for s in cut.supervisions if s.speaker in ["user"]) for cut in cuts],
             "source_audio": source_audio,
@@ -241,7 +241,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         }
 
         return return_batch
-    
+
     def __getitem__duplex_(self, cuts: CutSet) -> dict:
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
         target_audio, target_audio_lens = collate_audio(
@@ -280,14 +280,29 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         for cut in cuts:
             agent_segments = []
             for seg in cut.agent_segments:
-                seg["speaker"] = "agent"
-                agent_segments.append(AttributeDict(seg))
+                ss = SupervisionSegment(
+                    id=cut.id,
+                    recording_id=cut.recording_id,
+                    start=seg["start"],
+                    duration=seg["end"]-seg["start"],
+                    text=seg["text"],
+                    speaker="agent",
+                )
+                agent_segments.append(ss)
+
             user_segments = []
             for seg in cut.user_segments:
-                seg["speaker"] = "user"
-                user_segments.append(AttributeDict(seg))
-
-            cut.supervisions = agent_segments + user_segments
+                ss = SupervisionSegment(
+                    id=cut.id,
+                    recording_id=cut.recording_id,
+                    start=seg["start"],
+                    duration=seg["end"]-seg["start"],
+                    text=seg["text"],
+                    speaker="user",
+                )
+                user_segments.append(ss)
+    
+            cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
 
         # parse the converted cuts
         return self.__getitem__duplex_(cuts)

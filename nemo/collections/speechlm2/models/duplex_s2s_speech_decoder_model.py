@@ -361,63 +361,64 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             mask_lengths = loss_mask[:, :, 0].sum(-1)
             assert torch.allclose(batch["target_token_lens"].float(), mask_lengths.float(), atol=2.0)
 
-        """
         # debug samples:
-        def write_wave(one_audio_signal, file_name, sr=None):
-            import numpy as np
-            import soundfile as sf
-            one_audio_signal = one_audio_signal.cpu().numpy()
-            one_audio_signal = one_audio_signal.astype(np.float32)
-            if sr is None:
-                sr = self.target_sample_rate
-            # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
-            sf.write(file_name, one_audio_signal, sr)    
+        if self.cfg.get("debug_dataloader_audios_path", None) and self.training:
+            
+            def write_wave(one_audio_signal, file_name, sr=None):
+                import numpy as np
+                import soundfile as sf
+                one_audio_signal = one_audio_signal.cpu().numpy()
+                one_audio_signal = one_audio_signal.astype(np.float32)
+                if sr is None:
+                    sr = self.target_sample_rate
+                # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
+                sf.write(file_name, one_audio_signal, sr)    
 
-        write_wave(
-            batch["target_audio"][-1],
-            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_target_audio_5.wav",
-            sr=22050
-        )
-        write_wave(
-            batch["target_first_turn_audio"][-1],
-            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_speaker_ref_5.wav",
-            sr=22050
-        )
-        write_wave(
-            batch["source_audio"][-1],
-            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/new_code_base_input_5.wav",
-            sr=16000
-        )
-        # reconstruct wav
-        audio_labels = replace_control_speech_codes(audio_labels, self._control_codes)
-        with fp32_precision(), torch.no_grad():
-            lengths = torch.tensor([audio_labels.shape[1]]*audio_labels.shape[0]).to(self.audio_codec.device)
-            predicted_audio, predicted_audio_lens = self.audio_codec.decode(
-                tokens=audio_labels.transpose(1, 2), tokens_len=lengths
-            )
-        write_wave(
-            predicted_audio[-1],
-            "/lustre/fsw/portfolios/convai/users/ecasanova/S2S-Duplex-new-codebase/debug-samples/reconstructed_codec_audio_5.wav",
-            sr=22050
-        )
+            # encode and decode the audio
+            with fp32_precision(), torch.no_grad():
+                lengths = torch.tensor([batch["target_audio"].shape[1]]*batch["target_audio"].shape[0]).to(self.audio_codec.device)
+                reconstructed_audio_from_wav, _ = self.audio_codec(audio=batch["target_audio"], audio_len=lengths)
+                # reconstruct wav
+                audio_labels_ = replace_control_speech_codes(audio_labels, self._control_codes)
+                with fp32_precision(), torch.no_grad():
+                    lengths = torch.tensor([audio_labels_.shape[1]]*audio_labels_.shape[0]).to(self.audio_codec.device)
+                    reconstructed_audio_from_tokens, _ = self.audio_codec.decode(
+                        tokens=audio_labels_.transpose(1, 2), tokens_len=lengths
+                    )
+            
+            for i in range(audio_labels_.shape[0]):
+                write_wave(
+                    batch["target_audio"][i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_{i}.wav"),
+                    sr=self.target_sample_rate
+                )
+                write_wave(
+                    batch["target_first_turn_audio"][i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"speaker_ref_{i}.wav"),
+                    sr=self.target_sample_rate
+                )
+                write_wave(
+                    batch["source_audio"][i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"source_audio_{i}.wav"),
+                    sr=self.source_sample_rate
+                )
+                
+                write_wave(
+                    reconstructed_audio_from_tokens[i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"),
+                    sr=self.target_sample_rate
+                )
 
-        # check text
-        print("text_labels", text_labels)
-        print("target labels from dataloader", batch["target_tokens"])
-        print("text_labels", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
-        print("target labels from dataloader",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
+                write_wave(
+                    reconstructed_audio_from_wav[i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_waveform_{i}.wav"),
+                    sr=self.target_sample_rate
+                )
 
-        zeros_begening = 0
-        for t in text_labels[-1:].squeeze():
-            if t == 0:
-                zeros_begening += 1
-            else:
-                break
-
-        print("Total aduio seconds padded input:", (zeros_begening*self.audio_codec.samples_per_frame)/ self.target_sample_rate)
-
-        exit()
-        """
+            # check text
+            print("text_labels decoded:", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
+            print("target labels from dataloader decoded:",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
+            exit()
 
         return {
             "input_embeds": input_embeds,

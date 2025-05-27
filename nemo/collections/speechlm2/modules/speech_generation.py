@@ -217,7 +217,7 @@ class TransformerARSpeechDecoder(NeuralModule):
     def update_inference_speaker_embedding(self, audio_path):
         audio, sr = torchaudio.load(audio_path)
         audio_len = torch.tensor([audio.size(1)]).long()
-        speaker_emb = self.get_speaker_embedding(audio.to(self.device), audio_len.to(self.device), sr)
+        self.inference_speaker_embedding = self.get_speaker_embedding(audio.to(self.device), audio_len.to(self.device), sr)
 
     def get_speaker_embedding(self, audio, audio_len, sr):
         # limit max audio len to avoid memory waste

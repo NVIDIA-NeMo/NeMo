@@ -18,6 +18,7 @@ from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
 from torch import Tensor
+import torchaudio
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -538,7 +539,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         # save audio
                         out_audio_path = f"{self.cfg.audio_save_path}/{name}_{dataset_batch['sample_id'][i]}.wav"
                         torchaudio.save(out_audio_path, combined_wav.squeeze(), self.target_sample_rate)
-                        print("Audio saved at:", out_audio_path)
+                        logging.info(f"Audio saved at: {out_audio_path}")
 
                 self.asr_bleu.update(
                     name=name,

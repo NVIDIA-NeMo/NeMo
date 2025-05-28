@@ -132,6 +132,7 @@ class TransformerARSpeechDecoder(NeuralModule):
         self.max_speaker_reference_len = self.speech_decoder_parms.pop("max_speaker_reference_len", 5)
         self.speaker_encoder_model_name = self.speech_decoder_parms.pop("speaker_encoder_model_name", 'titanet_large')
         self.cond_on_char_embedding = self.speech_decoder_parms.pop("cond_on_char_embedding", True)
+        self.cas_n_layers = self.speech_decoder_parms.pop("cas_n_layers", 1)
 
         if self.use_speaker_encoder:
             # load speaker encoder
@@ -171,7 +172,7 @@ class TransformerARSpeechDecoder(NeuralModule):
         if self.cond_on_char_embedding:
             self.cas_params = dict(self.speech_decoder_parms)
             # uses only 1 layer for the char encoder
-            self.cas_params["n_layers"] = 1
+            self.cas_params["n_layers"] = self.cas_n_layers
             self.cas_encoder = CharAwareSubwordEncoder(self.cas_params, llm_tokenizer_vocab_items)
 
         # create embeddings for encode input tokens
@@ -276,7 +277,10 @@ class TransformerARSpeechDecoder(NeuralModule):
 
         # workaround for inference, because during inference speech_mask will be None
         if speech_mask is None:
-            speech_mask = torch.ones((speech_decoder_input.size(0), speech_decoder_input.size(1))).to(speech_decoder_input.device)
+            speech_mask = torch.ones(
+                (speech_decoder_input.size(0), speech_decoder_input.size(1)),
+                device=speech_decoder_input.device,
+            )
 
         # if cond on text tokens, sum text tokens with the llm latent
         if self.cond_on_text_tokens and target_text_tokens is not None:
@@ -375,7 +379,9 @@ class TransformerARSpeechDecoder(NeuralModule):
             if self.detach_input:
                 input_audio_tokens = input_audio_tokens.detach()
 
-            audio_tokens_embedded = self.embed_audio_tokens(input_audio_tokens.transpose(1, 2).contiguous()) # (B, T', E)
+            audio_tokens_embedded = self.embed_audio_tokens(
+                input_audio_tokens.transpose(1, 2).contiguous()
+            )  # (B, T', E)
             speech_decoder_input = speech_decoder_input + audio_tokens_embedded
 
         decoder_out = self.t5_decoder(x=speech_decoder_input, x_mask=speech_mask)['output']
@@ -414,7 +420,7 @@ class TransformerARSpeechDecoder(NeuralModule):
                 codebook_preds = torch.argmax(codebook_logits, dim=-1)
             else:
                 codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0] # (B, topk)
-                codebook_probs = torch.softmax(codebook_logits / temperature, dim=-1) # (B, num_tokens_per_codebook)
+                codebook_probs = torch.softmax(codebook_logits_topk / temperature, dim=-1) # (B, num_tokens_per_codebook)
                 codebook_preds = torch.multinomial(codebook_probs, 1) # (B, 1)
             all_preds.append(codebook_preds.view(B, T).contiguous().long()) # T, B to be compatible with megatron
 

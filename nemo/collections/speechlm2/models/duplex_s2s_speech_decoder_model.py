@@ -156,7 +156,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False)['state_dict']
 
             # filter keys to keep only speech generation keys and also
-            checkpoint_state = {k.replace("speech_decoder.", "").replace("speech_generation.", ""): v for k, v in checkpoint_state.items() if "speech_decoder." in k or "speech_generation." in k}
+            checkpoint_state = {k.replace("model.speech_decoder.", "").replace("speech_generation.", ""): v for k, v in checkpoint_state.items() if "model.speech_decoder." in k or "speech_generation." in k}
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
             self.speech_generation.load_state_dict(checkpoint_state, strict=True)
 

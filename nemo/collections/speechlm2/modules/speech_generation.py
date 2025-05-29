@@ -40,7 +40,7 @@ def build_vocabs(subword_vocab_items):
 
     return subword_id_to_char_ids, char_vocab, subword_padding_idx
 
-
+    
 def sequence_mask(lengths: Tensor, max_length: int | None = None) -> Tensor:
     if max_length is None:
         max_length = int(lengths.max().item())
@@ -88,6 +88,7 @@ class CharAwareSubwordEncoder(NeuralModule):
 
         char_mask = sequence_mask(char_lengths)
         char_emb = self.embed_tokens(char_ids)
+
         # char emb has the shape  [B*T, N, channels], where N is the max number of chars tokens decoded from bpe tokens
         x = self.encoder(
             x=char_emb,
@@ -133,6 +134,7 @@ class TransformerARSpeechDecoder(NeuralModule):
         self.speaker_encoder_model_name = self.speech_decoder_parms.pop("speaker_encoder_model_name", 'titanet_large')
         self.cond_on_char_embedding = self.speech_decoder_parms.pop("cond_on_char_embedding", True)
         self.cas_n_layers = self.speech_decoder_parms.pop("cas_n_layers", 1)
+        self.use_cas_cache = self.speech_decoder_parms.pop("use_cas_cache", True)
 
         if self.use_speaker_encoder:
             # load speaker encoder
@@ -299,7 +301,7 @@ class TransformerARSpeechDecoder(NeuralModule):
 
         if self.cond_on_char_embedding:
             # if inference time cache char_embs to speedup inference
-            if self.use_input_cache:
+            if self.use_input_cache and self.use_cas_cache:
                 char_emb_last = self.cas_encoder(target_text_tokens[:, -1:], subword_mask=speech_mask[:, -1:])
                 if self.cache["char_embs"] is None:
                     self.cache["char_embs"] = char_emb_last

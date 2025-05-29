@@ -385,7 +385,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     reconstructed_audio_from_tokens, _ = self.audio_codec.decode(
                         tokens=audio_labels_.transpose(1, 2), tokens_len=lengths
                     )
-            
+
             for i in range(audio_labels_.shape[0]):
                 write_wave(
                     batch["target_audio"][i],

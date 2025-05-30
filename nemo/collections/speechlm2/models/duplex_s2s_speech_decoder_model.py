@@ -432,10 +432,43 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             "speaker_encoder_emb": speaker_encoder_emb,
         }
 
+    def track_param_updates(self, param_filter: str = "speech_generation.text_embeddings", verbose=True):
+        if not hasattr(self, "_param_tracker_state"):
+            # First-time call: cache current weights
+            self._param_tracker_state = {
+                name: p.clone().detach()
+                for name, p in self.named_parameters()
+                if param_filter in name
+            }
+            if verbose:
+                print(f"[Tracker] Initialized snapshot for: {[k for k in self._param_tracker_state]}")
+            return
+
+        if verbose:
+            print(f"\n📊 [Tracker] Comparing parameters with filter '{param_filter}':")
+
+        for name, p in self.named_parameters():
+            if param_filter not in name:
+                continue
+            prev = self._param_tracker_state[name]
+            now = p.detach()
+            delta = (now - prev).abs().sum()
+            mean_delta = delta / p.numel()
+
+            if delta.item() == 0.0:
+                print(f"❌ {name:50s} has NOT been updated (Δsum = 0.0)")
+            else:
+                print(f"✅ {name:50s} Δsum={delta.item():.4e}  Δmean={mean_delta.item():.4e}")
+
+            # update tracker state
+            self._param_tracker_state[name] = now.clone().detach()
+
     def training_step(self, batch: dict, batch_idx: int):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm, self.speech_generation):
             if is_frozen(m):
                 m.eval()
+        
+        # self.track_param_updates("speech_generation.")
 
         inputs = self.prepare_inputs(batch)
         forward_outputs = self(

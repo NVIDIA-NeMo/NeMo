@@ -135,12 +135,16 @@ class TransformerARSpeechDecoder(NeuralModule):
         self.cond_on_char_embedding = self.speech_decoder_parms.pop("cond_on_char_embedding", True)
         self.cas_n_layers = self.speech_decoder_parms.pop("cas_n_layers", 1)
         self.use_cas_cache = self.speech_decoder_parms.pop("use_cas_cache", True)
+        self.use_gated_fusion = self.speech_decoder_parms.pop("use_gated_fusion", False)
 
         if self.use_speaker_encoder:
             # load speaker encoder
             self.setup_speaker_encoder()
             # speaker encoder projection
             self.speaker_encoder_emb_projection = nn.Linear(self.speaker_embedding_dim, self.speech_decoder_parms["d_model"])
+            if self.use_gated_fusion:
+                self.se_gate_proj = nn.Linear(2 * self.speech_decoder_parms["d_model"], 1)
+
 
             # generate a random speaker embedding
             inference_speaker_embedding = torch.randn([1, 1, self.speaker_embedding_dim])
@@ -176,6 +180,8 @@ class TransformerARSpeechDecoder(NeuralModule):
             # uses only 1 layer for the char encoder
             self.cas_params["n_layers"] = self.cas_n_layers
             self.cas_encoder = CharAwareSubwordEncoder(self.cas_params, llm_tokenizer_vocab_items)
+            if self.use_gated_fusion and self.cond_on_llm_latent:
+                self.char_gate_proj = nn.Linear(2 * self.speech_decoder_parms["d_model"], 1)
 
         # create embeddings for encode input tokens
         if self.cond_on_prev_audio_tokens:
@@ -184,9 +190,13 @@ class TransformerARSpeechDecoder(NeuralModule):
                 audio_embeddings.append(nn.Embedding(num_audio_tokens_per_codebook, self.speech_decoder_parms["d_model"]))
 
             self.audio_embeddings = nn.ModuleList(audio_embeddings)
+            if self.use_gated_fusion:
+                self.audio_gate_proj = nn.Linear(2 * self.speech_decoder_parms["d_model"], 1)
 
         if self.cond_on_text_tokens:
             self.text_embeddings = nn.Embedding(len(llm_tokenizer_vocab_items), self.speech_decoder_parms["d_model"])
+            if self.use_gated_fusion and self.cond_on_llm_latent:
+                self.text_gate_proj = nn.Linear(2 * self.speech_decoder_parms["d_model"], 1)
 
         # if cond on llm latent create the projection to sum the embeddings
         if self.cond_on_llm_latent and (self.cond_on_text_tokens or self.cond_on_char_embedding):
@@ -270,7 +280,6 @@ class TransformerARSpeechDecoder(NeuralModule):
                     self.cache["target_text_tokens"] = torch.cat([self.cache["target_text_tokens"], target_text_tokens], dim=1)
                     target_text_tokens = self.cache["target_text_tokens"]
 
-
         # map hidden states to the shape of the
         if hidden_states is not None and self.input_proj is not None:
             speech_decoder_input = self.input_proj(hidden_states)
@@ -291,7 +300,12 @@ class TransformerARSpeechDecoder(NeuralModule):
             # if cond_on_llm_latent use a projection to sum the embeddings
             if self.cond_on_llm_latent:
                 speech_decoder_input = self.text_input_projection(speech_decoder_input)
-                speech_decoder_input = speech_decoder_input + text_tokens_embedded
+                if self.use_gated_fusion:
+                    gate_input = torch.cat([speech_decoder_input, text_tokens_embedded], dim=-1)
+                    gate = torch.sigmoid(self.text_gate_proj(gate_input))
+                    speech_decoder_input = gate * speech_decoder_input + (1 - gate) * text_tokens_embedded
+                else:
+                    speech_decoder_input = speech_decoder_input + text_tokens_embedded
             else:
                 speech_decoder_input = text_tokens_embedded
         elif self.cond_on_text_tokens and target_text_tokens is None:
@@ -315,7 +329,12 @@ class TransformerARSpeechDecoder(NeuralModule):
             # if cond_on_llm_latent use a projection to sum the embeddings
             if self.cond_on_llm_latent:
                 speech_decoder_input = self.text_input_projection(speech_decoder_input)
-                speech_decoder_input = speech_decoder_input + char_embs
+                if self.use_gated_fusion:
+                    gate_input = torch.cat([speech_decoder_input, char_embs], dim=-1)
+                    gate = torch.sigmoid(self.char_gate_proj(gate_input))
+                    speech_decoder_input = gate * speech_decoder_input + (1 - gate) * char_embs
+                else:
+                    speech_decoder_input = speech_decoder_input + char_embs
             else:
                 speech_decoder_input = char_embs
 
@@ -357,7 +376,13 @@ class TransformerARSpeechDecoder(NeuralModule):
                     speaker_encoder_emb = speaker_encoder_emb.repeat(1, speech_decoder_input.size(1), 1)
 
             speaker_encoder_emb = self.speaker_encoder_emb_projection(speaker_encoder_emb)
-            speech_decoder_input = speech_decoder_input + speaker_encoder_emb
+
+            if self.use_gated_fusion:
+                gate_input = torch.cat([speech_decoder_input, speaker_encoder_emb], dim=-1)
+                gate = torch.sigmoid(self.se_gate_proj(gate_input))
+                speech_decoder_input = gate * speech_decoder_input + (1 - gate) * speaker_encoder_emb
+            else:
+                speech_decoder_input = speech_decoder_input + speaker_encoder_emb
 
         if self.cfg_unconditional_prob:
             if self.training:
@@ -384,7 +409,13 @@ class TransformerARSpeechDecoder(NeuralModule):
             audio_tokens_embedded = self.embed_audio_tokens(
                 input_audio_tokens.transpose(1, 2).contiguous()
             )  # (B, T', E)
-            speech_decoder_input = speech_decoder_input + audio_tokens_embedded
+
+            if self.use_gated_fusion:
+                gate_input = torch.cat([speech_decoder_input, audio_tokens_embedded], dim=-1)
+                gate = torch.sigmoid(self.audio_gate_proj(gate_input))
+                speech_decoder_input = gate * speech_decoder_input + (1 - gate) * audio_tokens_embedded
+            else:
+                speech_decoder_input = speech_decoder_input + audio_tokens_embedded
 
         decoder_out = self.t5_decoder(x=speech_decoder_input, x_mask=speech_mask)['output']
 

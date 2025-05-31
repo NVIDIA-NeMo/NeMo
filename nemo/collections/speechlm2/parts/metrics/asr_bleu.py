@@ -73,7 +73,7 @@ class ASRBLEU:
 
         for ref, asr_hyp in zip(refs, asr_hyps):
             asr_hyp = asr_hyp.text
-            self._refs[name].append([self.normalizer(ref)])
+            self._refs[name].append(self.normalizer(ref))
             self._hyps[name].append(self.normalizer(asr_hyp))
             if self.verbose:
                 asrb = sacrebleu.sentence_bleu(asr_hyp, [ref]).score
@@ -83,7 +83,7 @@ class ASRBLEU:
         """Computes the final score and deallocates ASR and partial results."""
         corpus_metric = {}
         for name in self._refs.keys():
-            metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], self._refs[name]).score)
+            metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], [self._refs[name]]).score)
             corpus_metric[f"asr_bleu_{name}"] = metric
         corpus_metric["asr_bleu"] = torch.stack(list(corpus_metric.values())).mean()
         self._refs.clear()

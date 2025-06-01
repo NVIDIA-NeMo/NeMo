@@ -68,6 +68,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         setup_audio_codec(self)
         self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
         self._num_codebooks = self.audio_codec.vector_quantizer.num_groups
+        # to be able to load older model
+        if self.cfg.get("custom_codebook_size", None):
+            self._codebook_size = self.cfg.get("custom_codebook_size")
 
         # compute target fps
         self.target_fps = self.target_sample_rate / self.audio_codec.samples_per_frame
@@ -107,6 +110,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             num_audio_tokens_per_codebook=self.speech_vocab_size,
             llm_tokenizer_vocab_items=llm_tokenizer_vocab_items,
         )
+
+        if self.cfg.get("pretrained_s2s_model", None):
+            self.init_from_model_from_ckpt(self.cfg.pretrained_s2s_model)
 
         # load pretrained TTS model
         if self.cfg.get("pretrained_tts", None):
@@ -160,6 +166,20 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
             self.speech_generation.load_state_dict(checkpoint_state, strict=True)
 
+    def init_from_model_from_ckpt(self, checkpoint_path):
+        if checkpoint_path is not None:
+            if '.nemo' in checkpoint_path:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                        checkpoint_state = torch.load(checkpoint_path)
+            else:
+                checkpoint_state = torch.load(checkpoint_path, weights_only=False)['state_dict']
+
+            # partial initialization support
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
+            self.load_state_dict(checkpoint_state, strict=True)
+
     @property
     def speech_vocab_size(self):
         """Return the size of the audio codec codebook including extra speech BOS and EOS tokens."""
@@ -168,16 +188,22 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     @property
     def speech_bos_id(self) -> int:
         """Indicates start of utterance generation (not start of inference!)."""
+        if self.cfg.get("custom_speech_bos_id", None):
+            return self.cfg.get("custom_speech_bos_id")
         return self._codebook_size
 
     @property
     def speech_eos_id(self) -> int:
         """Indicates end of utterance generation."""
+        if self.cfg.get("custom_speech_eos_id", None):
+            return self.cfg.get("custom_speech_eos_id")
         return self._codebook_size + 1
 
     @property
     def speech_delay_id(self) -> int:
         """Indicates start of inference (the very first frame)."""
+        if self.cfg.get("custom_speech_delay_id", None):
+            return self.cfg.get("custom_speech_delay_id")
         return self._codebook_size + 2
 
     @property

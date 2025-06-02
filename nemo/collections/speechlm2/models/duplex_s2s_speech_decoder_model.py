@@ -144,9 +144,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     with tempfile.TemporaryDirectory() as tmpdir:
                         NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
                         checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path)
+                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False)['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
             self.speech_generation.load_state_dict(checkpoint_state, strict=True)
@@ -157,9 +157,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     with tempfile.TemporaryDirectory() as tmpdir:
                         NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
                         checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path)
+                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False)['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             # filter keys to keep only speech generation keys and also
             checkpoint_state = {k.replace("model.speech_decoder.", "").replace("speech_generation.", ""): v for k, v in checkpoint_state.items() if "model.speech_decoder." in k or "speech_generation." in k}
@@ -172,9 +172,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     with tempfile.TemporaryDirectory() as tmpdir:
                         NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
                         checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path)
+                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False)['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             # partial initialization support
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())

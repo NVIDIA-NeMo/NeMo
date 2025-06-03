@@ -608,7 +608,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         combined_wav = torch.cat([user_audio_padded.squeeze().unsqueeze(0).detach().cpu(), pred_audio_padded.squeeze().unsqueeze(0).detach().cpu()], dim=0)
 
                         # save audio
-                        out_audio_path = f"{self.cfg.audio_save_path}/{name}_{dataset_batch['sample_id'][i]}.wav"
+                        sample_id = dataset_batch['sample_id'][i][:150] # make sure that sample id is not too big
+                        out_audio_path = f"{self.cfg.audio_save_path}/{name}_{sample_id}.wav"
                         torchaudio.save(out_audio_path, combined_wav.squeeze(), self.target_sample_rate)
                         logging.info(f"Audio saved at: {out_audio_path}")
 

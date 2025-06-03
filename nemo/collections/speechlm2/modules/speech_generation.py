@@ -321,7 +321,6 @@ class TransformerARSpeechDecoder(NeuralModule):
                     self.cache["char_embs"] = char_emb_last
                 else:
                     self.cache["char_embs"] = torch.cat([self.cache["char_embs"], char_emb_last], dim=1)
-
                 char_embs = self.cache["char_embs"]
             else:
                 char_embs = self.cas_encoder(target_text_tokens, subword_mask=speech_mask)

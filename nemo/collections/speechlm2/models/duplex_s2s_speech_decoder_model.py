@@ -391,7 +391,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         # debug samples:
 
-        if self.cfg.get("debug_dataloader_audios_path", None) and self.training and batch["dataset_tag"][0] == "s2s_duplex":
+        if self.cfg.get("debug_dataloader_audios_path", None) and self.training:
             def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
                 """
                 Count the number of consecutive silence tokens at the beginning of a 1D tensor.

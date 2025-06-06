@@ -44,8 +44,7 @@ def train(cfg):
         source_sample_rate=cfg.data.source_sample_rate,
         target_sample_rate=cfg.data.target_sample_rate,
         input_roles=cfg.data.input_roles,
-        output_roles=cfg.data.output_roles,
-        prompt_audio_path=cfg.data.get("prompt_audio_path", None),
+        output_roles=cfg.data.output_roles
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

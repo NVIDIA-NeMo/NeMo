@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import KeysView, Mapping, Sequence, Tuple, Union
 
 import omegaconf
-from lhotse import CutSet, Features, Recording
+from lhotse import CutSet, Features, Recording, MonoCut, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -479,6 +480,98 @@ def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
 
     cuts, is_tarred = read_cutset_from_config(config)
     cuts = cuts.map(cut_to_conversation)
+    return cuts, is_tarred
+
+
+@data_type_parser(["lhotse_tts_as_repeat_after_me"])
+def read_lhotse_tts_as_repeat_after_me(config) -> tuple[CutSet, bool]:
+    def convert_lhotse_tts_as_repeat_after_me(cut):
+        # create a copy of agent supervision and original duration
+        orig_agent_sup = fastcopy(cut.supervisions[1])
+        original_target_duration = cut.target_audio.duration
+
+        # make the target audio the recording
+        cut.recording = cut.target_audio
+        cut.duration = original_target_duration
+        gap = 0.32
+
+        # added silences
+        cut_target = cut.pad(duration=cut.duration * 2 + gap, direction="left")
+        cut_source = cut.pad(duration=cut.duration * 2 + gap, direction="right").resample(source_sr)
+
+        # add prompt in source and extra padding on target cut
+        cut_source = prompt_cut.mix(cut_source, offset_other_by=prompt_cut.duration + gap, allow_padding=True)
+        cut_target = cut_target.pad(duration=cut_target.duration + prompt_cut.duration + gap, direction="left")
+
+        # save it in memory
+        cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
+        cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
+
+        # set supervisions changing the text
+        agent_sup_t_start = (original_target_duration) + (2 * gap) + prompt_cut.duration
+        agent_text = cut.supervisions[1].text
+        agent_sup = fastcopy(orig_agent_sup, start=agent_sup_t_start, duration=original_target_duration, speaker="agent")
+        user_sup = fastcopy(orig_agent_sup, start=0.0, duration=agent_sup_t_start-gap, speaker="user", text="Can you repeat after me? " + orig_agent_sup.text)
+        cut.supervisions = [user_sup, agent_sup]
+        cut.recording = cut_source.recording
+        cut.target_audio = cut_target.recording
+        cut.duration = cut.target_audio.duration
+        return cut
+
+    # load lhotse cuts
+    cuts, is_tarred = read_cutset_from_config(config)
+    # load prompt cut
+    source_sr = 16000
+    prompt_recording = Recording.from_file(config.prompt_audio_path)
+    # create a MonoCut from the Recording
+    prompt_cut = MonoCut(
+        id="prompt_audio",
+        start=0.0,
+        duration=prompt_recording.duration,
+        channel=0,
+        recording=prompt_recording,
+    ).resample(source_sr)
+    # convert cuts
+    cuts = cuts.map(convert_lhotse_tts_as_repeat_after_me)
+    return cuts, is_tarred
+
+
+@data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
+def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
+
+    def convert_overlap_cut(cut):
+        agent_segments = []
+        for seg in cut.agent_segments:
+            ss = SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.id,
+                start=seg["start"],
+                duration=seg["end"]-seg["start"],
+                text=seg["text"],
+                speaker="agent",
+            )
+            agent_segments.append(ss)
+
+        user_segments = []
+        for seg in cut.user_segments:
+            ss = SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.id,
+                start=seg["start"],
+                duration=seg["end"]-seg["start"],
+                text=seg["text"],
+                speaker="user",
+            )
+            user_segments.append(ss)
+
+        cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
+        return cut
+
+    # load lhotse cuts
+    cuts, is_tarred = read_cutset_from_config(config)
+
+    # convert cuts
+    cuts = cuts.map(convert_overlap_cut)
     return cuts, is_tarred
 
 

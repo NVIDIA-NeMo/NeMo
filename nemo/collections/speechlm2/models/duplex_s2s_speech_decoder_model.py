@@ -390,8 +390,29 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             assert torch.allclose(batch["target_token_lens"].float(), mask_lengths.float(), atol=2.0)
 
         # debug samples:
-        if self.cfg.get("debug_dataloader_audios_path", None) and self.training:
-            
+
+        if self.cfg.get("debug_dataloader_audios_path", None) and self.training and batch["dataset_tag"][0] == "s2s_duplex":
+            def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
+                """
+                Count the number of consecutive silence tokens at the beginning of a 1D tensor.
+
+                Args:
+                    tensor (torch.Tensor): 1D tensor of tokens.
+                    silence_token (int): The token considered as silence (default: 0).
+
+                Returns:
+                    int: Number of consecutive silence tokens at the beginning.
+                """
+                if tensor.ndim != 1:
+                    raise ValueError("Input tensor must be 1D.")
+
+                count = 0
+                for token in tensor:
+                    if token.item() == silence_token:
+                        count += 1
+                    else:
+                        break
+                return count
             def write_wave(one_audio_signal, file_name, sr=None):
                 import numpy as np
                 import soundfile as sf
@@ -446,6 +467,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             # check text
             print("text_labels decoded:", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
             print("target labels from dataloader decoded:",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
+            print("Number of padding tokens on the begining:", count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id))
             exit()
 
         return {

@@ -17,7 +17,7 @@ import torch
 import torch.utils.data
 import torchaudio
 
-from lhotse import CutSet, Seconds, SupervisionSegment, compute_num_frames
+from lhotse import CutSet, MonoCut, Recording, Seconds, SupervisionSegment, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_vectors
 from lhotse.utils import ifnone
@@ -103,6 +103,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
         if prompt_audio_path is not None:
+            self.prompt_audio_path = prompt_audio_path
             audio, sr = torchaudio.load(prompt_audio_path)
             self.prompt_audio = torchaudio.functional.resample(audio, sr, self.source_sample_rate)
 
@@ -238,9 +239,144 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             ],
             "target_first_turn_audio": target_first_turn_audio,
             "target_first_turn_audio_lens": target_first_turn_audio_lens,
+            "dataset_tag": ["tts_repeat_after_me"] * source_audio_lens.size(0),
         }
 
-        return return_batch
+    def __getitem__tts_repeat_after_me_lhotse(self, cuts) -> dict[str, torch.Tensor | list[str] | dict]:
+
+        # adapted from https://github.com/blisc/NeMo/blob/magpietts_2503/nemo/collections/tts/data/text_to_speech_dataset_lhotse.py
+        cuts = cuts.sort_by_duration()
+
+        from lhotse.utils import fastcopy
+        # load prompt cut
+        prompt_recording = Recording.from_file(self.prompt_audio_path)
+        # Create a MonoCut from the Recording
+        prompt_cut = MonoCut(
+            id="prompt_audio",  # Unique ID for this cut
+            start=0.0,  # Start time in seconds
+            duration=prompt_recording.duration,  # Full duration of the recording
+            channel=0,  # Assuming mono audio
+            recording=prompt_recording,
+        ).resample(16000)
+
+        new_cuts = []
+        for i, cut in enumerate(cuts):
+            orig_agent_sup = fastcopy(cut.supervisions[1])
+            original_target_duration = cut.target_audio.duration
+
+            # make the target audio the recording
+            cut.recording = cut.target_audio
+            cut.duration = original_target_duration
+            gap = 0.32
+
+            # added silences
+            cut_target = cut.pad(duration=cut.duration * 2 + gap, direction="left")
+            cut_source = cut.pad(duration=cut.duration * 2 + gap, direction="right")
+
+            # add prompt in source and extra padding on target cut
+            cut_source = prompt_cut.mix(cut_source, offset_other_by=prompt_cut.duration + gap, allow_padding=True).resample(16000)
+            cut_target = cut_target.pad(duration=cut_target.duration + prompt_cut.duration + gap, direction="left")
+            # save it in memory
+            cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
+            cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
+
+            # set supervisions changing the text
+            agent_sup_t_start = (original_target_duration) + (2 * gap) + prompt_cut.duration
+            agent_text = cut.supervisions[1].text
+            agent_sup = fastcopy(orig_agent_sup, start=agent_sup_t_start, duration=original_target_duration, speaker="agent")
+            user_sup = fastcopy(orig_agent_sup, start=0.0, duration=agent_sup_t_start-gap, speaker="user", text="Can you repeat after me? " + orig_agent_sup.text)
+            cut.supervisions = [user_sup, agent_sup]
+            cut.recording = cut_source.recording
+            cut.target_audio = cut_target.recording
+            cut.duration = cut.target_audio.duration
+            new_cuts.append(cut)
+
+        # Create a new CutSet
+        new_cutset = CutSet.from_cuts(new_cuts)
+        # Use duplex__getitem__ for final batching and collating
+        out_dict = self.__getitem__duplex_(new_cutset)
+        out_dict["dataset_tag"] = ["tts_repeat_after_me_new"] * out_dict["source_audio_lens"].size(0)
+        return out_dict
+
+
+    def __getitem__tts_repeat_after_me_lhotse2(self, cuts) -> dict[str, torch.Tensor | list[str] | dict]:
+
+        # adapted from https://github.com/blisc/NeMo/blob/magpietts_2503/nemo/collections/tts/data/text_to_speech_dataset_lhotse.py
+        cuts = cuts.sort_by_duration()
+
+        new_cuts = []
+        for i, cut in enumerate(cuts):
+            # load target/answer audio
+            cur_target_audio = torch.FloatTensor(cut.target_audio.resample(self.target_sample_rate).load_audio())
+            # convert answer to the input sr
+            cur_target_audio_input_sr = torchaudio.functional.resample(cur_target_audio, self.target_sample_rate, self.source_sample_rate)
+
+            # define silences between turns
+            turn_silence_sec = 0.32
+            silence_padding_input = torch.zeros((1, int(turn_silence_sec * self.source_sample_rate))) # input sr silence
+            silence_padding_output = torch.zeros((1, int(turn_silence_sec * self.target_sample_rate))) # output sr silence
+
+            # generate target audio with end 32 ms padding
+            cur_target_audio_with_padding = torch.cat([cur_target_audio, silence_padding_output], dim=1)
+            # generates user audio with prompt and padding
+            source_audio_with_prompt_and_padding = torch.cat([self.prompt_audio, silence_padding_input, cur_target_audio_input_sr, silence_padding_input], dim=1)
+
+            # downsample it to the input/output sr
+            cur_target_audio_with_padding_input_sr = torchaudio.functional.resample(cur_target_audio_with_padding, self.target_sample_rate, self.source_sample_rate)
+            source_audio_with_prompt_and_padding_output_sr = torchaudio.functional.resample(source_audio_with_prompt_and_padding, self.source_sample_rate, self.target_sample_rate)
+
+            # make the final source and target audios
+            source_audio = torch.cat([source_audio_with_prompt_and_padding, torch.zeros_like(cur_target_audio_with_padding_input_sr)], dim=1)
+            target_audio = torch.cat([torch.zeros_like(source_audio_with_prompt_and_padding_output_sr), cur_target_audio_with_padding], dim=1)
+
+            agent_text = cut.supervisions[1].text
+            agent_start_t = (source_audio_with_prompt_and_padding_output_sr.size(1) / self.target_sample_rate)
+            total_duration = target_audio.size(1) / self.target_sample_rate
+
+            source_supervision = SupervisionSegment(
+                id=f"{cut.id}-src",
+                recording_id=cut.id,
+                start=0.0,
+                duration=agent_start_t,
+                text=f"Can you repeat after me? {agent_text}",
+                speaker="user"
+            )
+            target_supervision = SupervisionSegment(
+                id=f"{cut.id}-tgt",
+                recording_id=cut.id,
+                start=agent_start_t,
+                duration=total_duration - agent_start_t,
+                text=agent_text,
+                speaker="agent"
+            )
+
+            # Create synthetic recordings
+            source_recording = Recording.from_audio(
+                samples=source_audio.squeeze(0).numpy(),
+                sampling_rate=self.source_sample_rate
+            )
+            target_recording = Recording.from_audio(
+                samples=target_audio.squeeze(0).numpy(),
+                sampling_rate=self.target_sample_rate
+            )
+
+            # Final synthetic MonoCut
+            new_cut = MonoCut(
+                id=cut.id,
+                start=0.0,
+                duration=total_duration,
+                channel=0,
+                recording=source_recording,
+                custom={"target_audio": target_recording},
+                supervisions=[source_supervision, target_supervision]
+            )
+
+            new_cuts.append(new_cut)
+
+        # Create a new CutSet
+        new_cutset = CutSet.from_cuts(new_cuts)
+        # Use duplex__getitem__ for final batching and collating
+        return self.__getitem__duplex_(new_cutset)
 
     def __getitem__duplex_(self, cuts: CutSet) -> dict:
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
@@ -273,6 +409,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             ],
             "target_first_turn_audio": target_first_turn_audio,
             "target_first_turn_audio_lens": target_first_turn_audio_lens,
+            "dataset_tag": ["s2s_duplex"] * source_audio_lens.size(0), 
         }
 
     def __getitem__duplex_overlay(self, cuts: CutSet) -> dict:
@@ -282,7 +419,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             for seg in cut.agent_segments:
                 ss = SupervisionSegment(
                     id=cut.id,
-                    recording_id=cut.recording_id,
+                    recording_id=cut.id,
                     start=seg["start"],
                     duration=seg["end"]-seg["start"],
                     text=seg["text"],
@@ -294,7 +431,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             for seg in cut.user_segments:
                 ss = SupervisionSegment(
                     id=cut.id,
-                    recording_id=cut.recording_id,
+                    recording_id=cut.id,
                     start=seg["start"],
                     duration=seg["end"]-seg["start"],
                     text=seg["text"],
@@ -305,14 +442,17 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
 
         # parse the converted cuts
-        return self.__getitem__duplex_(cuts)
-
+        out_dict = self.__getitem__duplex_(cuts)
+        out_dict["dataset_tag"] = ["s2s_duplex_overlap"] * out_dict["source_audio_lens"].size(0)
+        return out_dict
 
     def __getitem__(self, cuts: CutSet) -> dict:
         cuts = cuts.transform_text(_strip_timestamps)
 
         if getattr(cuts[0], "tts_repeat_after_me", False):
             return self.__getitem__tts_repeat_after_me(cuts)
+        if getattr(cuts[0], "tts_repeat_after_me_new", False):
+            return self.__getitem__tts_repeat_after_me_lhotse(cuts)
         elif getattr(cuts[0], "s2s_duplex_overlap", False):
             return self.__getitem__duplex_overlay(cuts)
         else:

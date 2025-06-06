@@ -238,7 +238,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         """
         return get_pad_id(self.tokenizer)
 
-    def forward(self, input_embeds: Tensor, cache=None, input_audio_tokens=None, loss_mask=None, target_text_tokens=None, modality_adapter_emb=None, speaker_encoder_emb=None) -> dict[str, Tensor]:
+    def forward(self, input_embeds: Tensor, cache=None, input_audio_tokens=None, loss_mask=None, target_text_tokens=None, modality_adapter_emb=None, asr_emb=None, speaker_encoder_emb=None) -> dict[str, Tensor]:
         """
         Separated text and speech prediction:
             - Speech prediction is achieved by a independent AR decoder based on last_hidden_state + audio tokens
@@ -265,7 +265,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
 
         audio_logits, _  = self.speech_generation(
-            out['last_hidden_state'].transpose(0, 1), loss_mask, input_audio_tokens=input_audio_tokens, target_text_tokens=target_text_tokens, modality_adapter_emb=modality_adapter_emb, speaker_encoder_emb=speaker_encoder_emb
+            out['last_hidden_state'].transpose(0, 1), loss_mask, input_audio_tokens=input_audio_tokens, target_text_tokens=target_text_tokens, modality_adapter_emb=modality_adapter_emb, asr_emb=asr_emb, speaker_encoder_emb=speaker_encoder_emb
         )
 
         audio_logits = audio_logits.view(B, T, self._num_codebooks, self.speech_vocab_size)
@@ -288,8 +288,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
         assert batch["target_first_turn_audio"].size(0) == batch["target_audio"].size(0)
 
-        source_encoded, source_encoded_lens = self.perception(
-            input_signal=batch["source_audio"], input_signal_length=batch["source_audio_lens"]
+        source_encoded, source_encoded_lens, asr_emb = self.perception(
+            input_signal=batch["source_audio"], input_signal_length=batch["source_audio_lens"], return_encoder_emb=True,
         )
 
         # if inference return speaker embedding None and it will uses the cached speaker embedding
@@ -327,6 +327,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             if tl < sl:
                 diff = sl - tl
                 source_encoded = source_encoded[:, :tl]
+                asr_emb = asr_emb[:, :tl]
                 target_tokens = target_tokens[:, :tl]
                 torch.clamp_(source_encoded_lens, max=tl)
             else:
@@ -362,6 +363,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             if (remainder := (input_ids.shape[1] - 1) % tp_world_size) != 0:
                 input_ids = input_ids[:, :-remainder]
                 source_encoded = source_encoded[:, :-remainder]
+                asr_emb = asr_emb[:, :-remainder]
 
         text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
         text_labels = input_ids[:, 1:, -1]  # (B, T-1)
@@ -479,6 +481,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             "audio_labels": audio_labels,
             "loss_mask": loss_mask,
             "perception_emb": source_encoded[:, :-1],
+            "asr_emb": asr_emb[:, :-1],
             "speaker_encoder_emb": speaker_encoder_emb,
         }
 
@@ -527,6 +530,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             loss_mask=inputs["loss_mask"],
             target_text_tokens=inputs["text_labels"],
             modality_adapter_emb=inputs["perception_emb"],
+            asr_emb=inputs["asr_emb"],
             speaker_encoder_emb=inputs["speaker_encoder_emb"],
         )
         num_frames = inputs["input_lens"].sum()
@@ -687,9 +691,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 * "audio": generated waveform of shape (B, T3) (`decode_audio=True`).
                 * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
         """
-        source_encoded, lengths = self.perception(
+        source_encoded, lengths, asr_emb = self.perception(
             input_signal=input_signal,
             input_signal_length=input_signal_lens,
+            return_encoder_emb=True
         )
         B, T_local, H = source_encoded.shape
 
@@ -702,6 +707,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 last_frame = source_encoded[:, T_local - 1 : T_local, :]  # (B,1,H)
                 pad = last_frame.repeat(1, T - T_local, 1)  # (B, T-T_local, H)
                 source_encoded = torch.cat([source_encoded, pad], dim=1)
+                asr_emb = torch.cat([asr_emb, pad], dim=1)
         else:
             T = T_local
 
@@ -731,6 +737,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             loss_mask=None,
             target_text_tokens=None, # text input will be sampled from llm backbone
             modality_adapter_emb=source_encoded[:, :1],
+            asr_emb=asr_emb[:, :1],
             speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
         )
         gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -748,6 +755,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 loss_mask=None,
                 target_text_tokens=None, # text input will be sampled from llm backbone
                 modality_adapter_emb=source_encoded[:, t : t + 1],
+                asr_emb=asr_emb[:, t : t + 1],
                 speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
             )
             gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)

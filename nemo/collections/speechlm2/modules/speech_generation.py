@@ -125,6 +125,9 @@ class TransformerARSpeechDecoder(NeuralModule):
         self.detach_input = self.speech_decoder_parms.pop("detach_input", False)
         self.cond_on_text_tokens = self.speech_decoder_parms.pop("cond_on_text_tokens", False)
         self.cond_on_llm_latent = self.speech_decoder_parms.pop("cond_on_llm_latent", True)
+        self.cond_on_asr_emb = self.speech_decoder_parms.pop("cond_on_asr_emb", False)
+        self.drop_asr_emb_prob = self.speech_decoder_parms.pop("drop_asr_emb_prob", 0.0)
+        self.asr_emb_dim = self.speech_decoder_parms.pop("asr_emb_dim", 512) 
         self.cond_on_modality_adapter_emb = self.speech_decoder_parms.pop("cond_on_modality_adapter_emb", False)
         self.modality_adapter_emb_quantizer_levels = self.speech_decoder_parms.pop("modality_adapter_emb_quantizer_levels", None)
         self.use_speaker_encoder = self.speech_decoder_parms.pop("use_speaker_encoder", True)
@@ -212,6 +215,9 @@ class TransformerARSpeechDecoder(NeuralModule):
             else:
                 self.modality_adapter_emb_projection = nn.Linear(lantent_dim, self.speech_decoder_parms["d_model"])
 
+        if self.cond_on_asr_emb:
+            self.asr_emb_projection = nn.Linear(self.asr_emb_dim, self.speech_decoder_parms["d_model"])
+
     def setup_speaker_encoder(self):
         with fp32_precision():
             self.speaker_encoder = EncDecSpeakerLabelModel.from_pretrained(model_name=self.speaker_encoder_model_name)
@@ -245,7 +251,7 @@ class TransformerARSpeechDecoder(NeuralModule):
         return g.to(self.inference_speaker_embedding.dtype)
 
 
-    def forward(self, hidden_states, speech_mask, input_audio_tokens=None, target_text_tokens=None, modality_adapter_emb=None, speaker_encoder_emb=None, temperature=0.7, topk=80, greedy=True):
+    def forward(self, hidden_states, speech_mask, input_audio_tokens=None, target_text_tokens=None, modality_adapter_emb=None, asr_emb=None, speaker_encoder_emb=None, temperature=0.7, topk=80, greedy=True):
         # LLM returns T, B, F so reshape it
         if hidden_states is not None:
             hidden_states = hidden_states.transpose(0, 1).contiguous() # .reshape(B, T, F) # from [T, B, F] to [B, T, F]
@@ -361,6 +367,25 @@ class TransformerARSpeechDecoder(NeuralModule):
 
             modality_adapter_emb = self.modality_adapter_emb_projection(modality_adapter_emb)
             speech_decoder_input = speech_decoder_input + modality_adapter_emb
+
+        if self.cond_on_asr_emb:
+            if self.detach_input:
+                asr_emb = asr_emb.detach()
+
+            if self.use_input_cache:
+                if self.cache["asr_emb"] is None:
+                    self.cache["asr_emb"] = asr_emb
+                else:
+                    if asr_emb is not None:
+                        self.cache["asr_emb"] = torch.cat([self.cache["asr_emb"], asr_emb], dim=1)
+                        asr_emb = self.cache["asr_emb"]
+
+            asr_emb = self.asr_emb_projection(asr_emb)
+            if self.training and self.drop_asr_emb_prob:
+                if torch.rand(1).item() < self.drop_asr_emb_prob:
+                    asr_emb = torch.zeros_like(asr_emb)
+
+            speech_decoder_input = speech_decoder_input + asr_emb
 
         if self.use_speaker_encoder:
             # for inference uses the inference cached speaker embedding
@@ -488,5 +513,6 @@ class TransformerARSpeechDecoder(NeuralModule):
             'input_audio_tokens': None,
             'target_text_tokens': None,
             'modality_adapter_emb': None,
+            'asr_emb': None,
             'char_embs': None,
         }

@@ -105,6 +105,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         input_signal_length=None,
         processed_signal=None,
         processed_signal_length=None,
+        return_encoder_emb=False,
     ):
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal, input_signal_length, processed_signal, processed_signal_length
@@ -114,20 +115,23 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
-        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+        encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
 
         if self.modality_adapter_quantizer_levels is not None:
-            encoded = self.modality_adapter_quantizer_bottleneck(encoded.transpose(1, 2))
+            encoded = self.modality_adapter_quantizer_bottleneck(encoder_emb.transpose(1, 2))
             encoded, _ = self.modality_adapter_vector_quantizer(inputs=encoded.transpose(1, 2), input_len=None)
             encoded = self.modality_adapter_quantizer_projection(encoded.transpose(1, 2)).transpose(1, 2)
+        else:
+            encoded = encoder_emb
 
         encoded, encoded_len = self.modality_adapter(audio_signal=encoded, length=encoded_len)
 
         # b, c, t -> b, t, c
         encoded = self.proj(encoded.transpose(1, 2))
-
-        return encoded, encoded_len
-
+        if return_encoder_emb:
+            return encoded, encoded_len, encoder_emb.transpose(1, 2)
+        else:
+            return encoded, encoded_len
 
 class IdentityConnector(NeuralModule, Exportable):
     """User to pass encoder's representations as-is to the LLM."""

@@ -649,7 +649,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         self.text_eos_acc = TokenAccuracy(token_name="text_eos", token_id=self.text_eos_id, tolerance=tolerance).reset()
 
     def on_validation_epoch_end(self, prefix="val") -> None:
-        self.results_logger.save_metadata()
         asr_bleu = self.asr_bleu.compute()
         for k, m in asr_bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)

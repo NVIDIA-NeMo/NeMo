@@ -17,7 +17,7 @@ import torch
 import torchaudio
 from collections import defaultdict
 from nemo.utils import logging
-
+import shutil
 
 class ResultsLogger:
     """
@@ -30,10 +30,13 @@ class ResultsLogger:
         os.makedirs(self.audio_save_path, exist_ok=True)
         self.matadata_save_path = os.path.join(save_path, "metadatas")
         os.makedirs(self.matadata_save_path, exist_ok=True)
-        self._refs = defaultdict(list)
-        self.out_dict = defaultdict(list)
 
     def reset(self):
+        # ensures that the output directories is emptly
+        shutil.rmtree(self.audio_save_path)
+        os.makedirs(self.audio_save_path, exist_ok=True)
+        shutil.rmtree(self.matadata_save_path)
+        os.makedirs(self.matadata_save_path, exist_ok=True)
         return self
 
     @staticmethod
@@ -52,22 +55,21 @@ class ResultsLogger:
         logging.info(f"Audio saved at: {out_audio_path}")
 
     def update(self, name: str, refs: list[str], hyps: list[str], asr_hyps: list[str], samples_id: list[str], pred_audio: torch.Tensor, pred_audio_sr: int, user_audio: torch.Tensor, user_audio_sr: int) -> None:
+        out_json_path = os.path.join(self.matadata_save_path, f"{name}.json")
+        out_dicts = []
         for i in range(len(refs)):
             # save audio
             sample_id = samples_id[i][:150] # make sure that sample id is not too big
             out_audio_path = os.path.join(self.audio_save_path, f"{name}_{sample_id}.wav")
             self.merge_and_save_audio(out_audio_path, pred_audio[i], pred_audio_sr, user_audio[i], user_audio_sr)
-            
+
             # cache metadata
             out_dict = {"target_text": refs[i], "pred_text": hyps[i], "speech_pred_transcribed": asr_hyps[i], "audio_path": os.path.relpath(out_audio_path, self.save_path)}
-            self.out_dict[name].append(out_dict)
+            out_dicts.append(out_dict)
 
-    def save_metadata(self) -> None:
-        # save metadatas
-        for name in self.out_dict.keys():
-            out_json_path = os.path.join(self.matadata_save_path, f"{name}.json")
-            print(self.out_dict[name][0])
-            with open(out_json_path, 'w') as fout:
-                json.dump(self.out_dict[name], fout)
-            logging.info(f"Metadata file for {name} dataset saved at: {out_json_path}")
+        with open(out_json_path, 'a+', encoding='utf-8') as fout:
+            for out_dict in out_dicts:
+                json.dump(out_dict, fout)
+
+        logging.info(f"Metadata file for {name} dataset updated at: {out_json_path}")
 

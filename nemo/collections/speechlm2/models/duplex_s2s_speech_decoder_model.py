@@ -42,6 +42,7 @@ from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.metrics.token_accuracy import TokenAccuracy
+from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder, set_model_dict_for_partial_init
@@ -63,6 +64,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         self.cfg = cfg.model
         self.target_sample_rate = cfg.data.target_sample_rate
         self.source_sample_rate = cfg.data.source_sample_rate
+        self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
         # move back text channel by x, in inference it advance the text channel prediction by x frames
         self.advance_text_channel_by = self.cfg.get("advance_text_channel_by", None)
@@ -639,6 +641,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
+        self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.bleu = BLEU().reset()
         tolerance = int(160/(1000/self.target_fps)) # 160 ms as tolerance --> 2 tokens for 12.5FPS and 1 for 50FPS
@@ -646,6 +649,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         self.text_eos_acc = TokenAccuracy(token_name="text_eos", token_id=self.text_eos_id, tolerance=tolerance).reset()
 
     def on_validation_epoch_end(self, prefix="val") -> None:
+        self.results_logger.save_metadata()
         asr_bleu = self.asr_bleu.compute()
         for k, m in asr_bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
@@ -675,32 +679,22 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             )
 
             with fp32_precision():  # resample is fragile to bfloat16 default dtype
-                if self.cfg.get('audio_save_path', None) is not None and dist.get_rank() == 0:
-                    os.makedirs(self.cfg.audio_save_path, exist_ok=True)
-                    predicted_audios = results["audio"]
-                    for i in range(len(predicted_audios)):
-                        pred_audio = predicted_audios[i].float()
-                        user_audio = torchaudio.functional.resample(dataset_batch["source_audio"][i].float(), self.source_sample_rate, self.target_sample_rate)
-
-                        T1, T2 = pred_audio.shape[0], user_audio.shape[0]
-                        max_len = max(T1, T2)
-                        pred_audio_padded = torch.nn.functional.pad(pred_audio, (0, max_len - T1), mode='constant', value=0)
-                        user_audio_padded = torch.nn.functional.pad(user_audio, (0, max_len - T2), mode='constant', value=0)
-
-                        # combine audio in a multichannel audio
-                        combined_wav = torch.cat([user_audio_padded.squeeze().unsqueeze(0).detach().cpu(), pred_audio_padded.squeeze().unsqueeze(0).detach().cpu()], dim=0)
-
-                        # save audio
-                        sample_id = dataset_batch['sample_id'][i][:150] # make sure that sample id is not too big
-                        out_audio_path = f"{self.cfg.audio_save_path}/{name}_{sample_id}.wav"
-                        torchaudio.save(out_audio_path, combined_wav.squeeze(), self.target_sample_rate)
-                        logging.info(f"Audio saved at: {out_audio_path}")
-
-                self.asr_bleu.update(
+                asr_hyps = self.asr_bleu.update(
                     name=name,
                     refs=dataset_batch["target_texts"],
                     pred_audio=resample(results["audio"], 22050, 16000),
                     pred_audio_lens=(results["audio_len"] / 22050 * 16000).to(torch.long),
+                )
+                self.results_logger.update(
+                    name=name,
+                    refs=dataset_batch["target_texts"],
+                    hyps=results["text"],
+                    asr_hyps=asr_hyps,
+                    samples_id=dataset_batch['sample_id'],
+                    pred_audio=results["audio"],
+                    pred_audio_sr=self.target_sample_rate,
+                    user_audio=dataset_batch["source_audio"],
+                    user_audio_sr=self.source_sample_rate,
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])

@@ -33,9 +33,11 @@ class ResultsLogger:
 
     def reset(self):
         # ensures that the output directories is emptly
-        shutil.rmtree(self.audio_save_path)
+        if os.path.isdir(self.audio_save_path):
+            shutil.rmtree(self.audio_save_path)
         os.makedirs(self.audio_save_path, exist_ok=True)
-        shutil.rmtree(self.matadata_save_path)
+        if os.path.isdir(self.matadata_save_path):
+            shutil.rmtree(self.matadata_save_path)
         os.makedirs(self.matadata_save_path, exist_ok=True)
         return self
 

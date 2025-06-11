@@ -296,6 +296,28 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
         assert batch["target_first_turn_audio"].size(0) == batch["target_audio"].size(0)
 
+
+        # change audio volume randomly
+        """
+        if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
+            def get_scale_factor(signal, noise, snr_db):
+                signal_power = torch.mean(signal**2, dim=1) + 1e-8
+                noise_power = torch.mean(noise**2, dim=1) + 1e-8
+
+                target_noise_power = signal_power / (10 ** (snr_db / 10))
+                scaling_factor = torch.sqrt(target_noise_power / noise_power)
+                return scaling_factor
+            scaling_factor = get_scale_factor(
+                batch["source_audio"],
+                batch["source_audio"],
+                random.randint(
+                    self.cfg.get('noise_prob_scale_user_min_snr', -15),
+                    self.cfg.get('noise_prob_scale_user_max_snr', 24),
+                ),
+            )
+            batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
+        """
+
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"], input_signal_length=batch["source_audio_lens"], return_encoder_emb=True,
         )

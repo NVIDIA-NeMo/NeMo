@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 import torch
+import random
 import torch.distributed as dist
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
@@ -684,18 +685,18 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     pred_audio=resample(results["audio"], 22050, 16000),
                     pred_audio_lens=(results["audio_len"] / 22050 * 16000).to(torch.long),
                 )
-                if dist.get_rank() == 0:
-                    self.results_logger.update(
-                        name=name,
-                        refs=dataset_batch["target_texts"],
-                        hyps=results["text"],
-                        asr_hyps=asr_hyps,
-                        samples_id=dataset_batch['sample_id'],
-                        pred_audio=results["audio"],
-                        pred_audio_sr=self.target_sample_rate,
-                        user_audio=dataset_batch["source_audio"],
-                        user_audio_sr=self.source_sample_rate,
-                    )
+
+                self.results_logger.update(
+                    name=name,
+                    refs=dataset_batch["target_texts"],
+                    hyps=results["text"],
+                    asr_hyps=asr_hyps,
+                    samples_id=dataset_batch['sample_id'],
+                    pred_audio=results["audio"],
+                    pred_audio_sr=self.target_sample_rate,
+                    user_audio=dataset_batch["source_audio"],
+                    user_audio_sr=self.source_sample_rate,
+                )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
             self.text_bos_acc.update(name=name, refs=dataset_batch["target_tokens"], hyps=results["tokens_text"])

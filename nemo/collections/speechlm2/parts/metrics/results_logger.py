@@ -19,6 +19,12 @@ from collections import defaultdict
 from nemo.utils import logging
 import shutil
 
+def safe_remove_path(path):
+    try:
+        shutil.rmtree(path)
+    except:
+        pass  # File was already deleted by another thread
+
 class ResultsLogger:
     """
     Saves audios and a json file with the model outputs.
@@ -34,10 +40,10 @@ class ResultsLogger:
     def reset(self):
         # ensures that the output directories is emptly
         if os.path.isdir(self.audio_save_path):
-            shutil.rmtree(self.audio_save_path)
+            safe_remove_path(self.audio_save_path)
         os.makedirs(self.audio_save_path, exist_ok=True)
         if os.path.isdir(self.matadata_save_path):
-            shutil.rmtree(self.matadata_save_path)
+            safe_remove_path(self.matadata_save_path)
         os.makedirs(self.matadata_save_path, exist_ok=True)
         return self
 
@@ -57,6 +63,7 @@ class ResultsLogger:
         logging.info(f"Audio saved at: {out_audio_path}")
 
     def update(self, name: str, refs: list[str], hyps: list[str], asr_hyps: list[str], samples_id: list[str], pred_audio: torch.Tensor, pred_audio_sr: int, user_audio: torch.Tensor, user_audio_sr: int) -> None:
+
         out_json_path = os.path.join(self.matadata_save_path, f"{name}.json")
         out_dicts = []
         for i in range(len(refs)):

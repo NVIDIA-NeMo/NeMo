@@ -120,7 +120,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         )
 
         return {
-            "sample_id": ["-".join(s.id for s in cut.supervisions if s.speaker in ["user"]) for cut in cuts],
+            "sample_id": [str(cut.id) for cut in cuts],
             "source_audio": source_audio,
             "source_audio_lens": source_audio_lens,
             "target_audio": target_audio,

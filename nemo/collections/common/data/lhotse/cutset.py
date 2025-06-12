@@ -510,7 +510,8 @@ def read_lhotse_tts_as_repeat_after_me(config) -> tuple[CutSet, bool]:
         # set supervisions changing the text
         agent_sup_t_start = (original_target_duration) + (2 * gap) + prompt_cut.duration
         agent_text = cut.supervisions[1].text
-        agent_sup = fastcopy(orig_agent_sup, start=agent_sup_t_start, duration=original_target_duration, speaker="agent")
+
+        agent_sup = fastcopy(orig_agent_sup, start=agent_sup_t_start-move_agent_text_back_by, duration=original_target_duration + move_agent_text_back_by, speaker="agent")
         user_sup = fastcopy(orig_agent_sup, start=0.0, duration=agent_sup_t_start-gap, speaker="user", text="Can you repeat after me? " + orig_agent_sup.text)
         cut.supervisions = [user_sup, agent_sup]
         cut.recording = cut_source.recording
@@ -520,6 +521,9 @@ def read_lhotse_tts_as_repeat_after_me(config) -> tuple[CutSet, bool]:
 
     # load lhotse cuts
     cuts, is_tarred = read_cutset_from_config(config)
+
+    move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
+
     # load prompt cut
     source_sr = 16000
     prompt_recording = Recording.from_file(config.prompt_audio_path)
@@ -557,8 +561,8 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
             ss = SupervisionSegment(
                 id=cut.id,
                 recording_id=cut.id,
-                start=seg["start"],
-                duration=seg["end"]-seg["start"],
+                start=seg["start"] - move_agent_text_back_by,
+                duration=seg["end"]-seg["start"] + move_agent_text_back_by,
                 text=seg["text"],
                 speaker="user",
             )
@@ -569,6 +573,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
 
     # load lhotse cuts
     cuts, is_tarred = read_cutset_from_config(config)
+    move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
 
     # convert cuts
     cuts = cuts.map(convert_overlap_cut)

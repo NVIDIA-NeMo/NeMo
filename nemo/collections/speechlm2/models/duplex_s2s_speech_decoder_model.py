@@ -664,7 +664,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
-        self.results_logger = ResultsLogger(self.validation_save_path).reset()
+        if dist.get_rank() == 0:
+            self.results_logger = ResultsLogger(self.validation_save_path).reset()
+
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.bleu = BLEU().reset()
         tolerance = int(160/(1000/self.target_fps)) # 160 ms as tolerance --> 2 tokens for 12.5FPS and 1 for 50FPS

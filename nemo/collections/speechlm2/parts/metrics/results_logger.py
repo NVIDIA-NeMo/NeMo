@@ -38,13 +38,10 @@ class ResultsLogger:
         os.makedirs(self.matadata_save_path, exist_ok=True)
 
     def reset(self):
-        # ensures that the output directories is emptly
-        if os.path.isdir(self.audio_save_path):
-            safe_remove_path(self.audio_save_path)
-        os.makedirs(self.audio_save_path, exist_ok=True)
-        if os.path.isdir(self.matadata_save_path):
-            safe_remove_path(self.matadata_save_path)
-        os.makedirs(self.matadata_save_path, exist_ok=True)
+        # ensures that we are cleaning the metadata files
+        metadata_files = os.listdir(self.matadata_save_path)
+        for f in metadata_files:
+            open(os.path.join(self.matadata_save_path, f), 'w').close()
         return self
 
     @staticmethod
@@ -75,7 +72,7 @@ class ResultsLogger:
             # cache metadata
             out_dict = {"target_text": refs[i], "pred_text": hyps[i], "speech_pred_transcribed": asr_hyps[i], "audio_path": os.path.relpath(out_audio_path, self.save_path)}
             out_dicts.append(out_dict)
-
+        # uses append here to avoid needs to cache
         with open(out_json_path, 'a+', encoding='utf-8') as fout:
             for out_dict in out_dicts:
                 json.dump(out_dict, fout)

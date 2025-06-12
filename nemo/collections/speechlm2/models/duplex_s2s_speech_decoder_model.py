@@ -664,8 +664,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
-        if dist.get_rank() == 0:
-            self.results_logger = ResultsLogger(self.validation_save_path).reset()
+        self.results_logger = ResultsLogger(self.validation_save_path).reset()
 
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.bleu = BLEU().reset()

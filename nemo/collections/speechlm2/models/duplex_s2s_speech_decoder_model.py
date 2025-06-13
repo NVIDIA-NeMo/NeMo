@@ -299,12 +299,20 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # change audio volume randomly
         if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
             # prev codebase had 0.0631 and 5.6234 here we round the values
-            min_scale_val = self.cfg.get('noise_prob_scale_user_min', 0.0631) # -15 snr
-            max_scale_val = self.cfg.get('noise_prob_scale_user_min', 5.6234) # 24 snr
+            min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631) # -15 snr
+            max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234) # 24 snr
 
             # get a random float value between min and max
             scaling_factor = torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device) * (max_scale_val - min_scale_val) + min_scale_val
             batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
+
+        # apply low pass filter
+        if self.training and random.random() < self.cfg.get('noise_prob_low_pass', 0.0):
+            # prev codebase had 0.0631 and 5.6234 here we round the values
+            cutoff_freq = self.cfg.get('noise_low_pass_cutoff_freq', 1000.0)
+            # note here we are using a biquad filter, older codebase we are using a filter of order 5
+            batch["source_audio"] = torchaudio.functional.lowpass_biquad(waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq)
+
 
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"], input_signal_length=batch["source_audio_lens"], return_encoder_emb=True,
@@ -516,7 +524,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"source_audio_{i}.wav"),
                     sr=self.source_sample_rate
                 )
-                
                 write_wave(
                     reconstructed_audio_from_tokens[i],
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"),

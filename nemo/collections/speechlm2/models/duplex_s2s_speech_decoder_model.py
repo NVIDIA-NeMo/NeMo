@@ -296,12 +296,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
         assert batch["target_first_turn_audio"].size(0) == batch["target_audio"].size(0)
 
-
         # change audio volume randomly
         if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
             # prev codebase had 0.0631 and 5.6234 here we round the values
-            min_scale_val = self.cfg.get('noise_prob_scale_user_min', 0.1)
-            max_scale_val = self.cfg.get('noise_prob_scale_user_min', 5.0)
+            min_scale_val = self.cfg.get('noise_prob_scale_user_min', 0.0631) # -15 snr
+            max_scale_val = self.cfg.get('noise_prob_scale_user_min', 5.6234) # 24 snr
+
             # get a random float value between min and max
             scaling_factor = torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device) * (max_scale_val - min_scale_val) + min_scale_val
             batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)

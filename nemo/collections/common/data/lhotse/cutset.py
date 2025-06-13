@@ -549,8 +549,8 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
             ss = SupervisionSegment(
                 id=cut.id,
                 recording_id=cut.id,
-                start=seg["start"],
-                duration=seg["end"]-seg["start"],
+                start=seg["start"] - move_agent_text_back_by,
+                duration=seg["end"]-seg["start"] + move_agent_text_back_by,
                 text=seg["text"],
                 speaker="agent",
             )
@@ -561,8 +561,8 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
             ss = SupervisionSegment(
                 id=cut.id,
                 recording_id=cut.id,
-                start=seg["start"] - move_agent_text_back_by,
-                duration=seg["end"]-seg["start"] + move_agent_text_back_by,
+                start=seg["start"],
+                duration=seg["end"]-seg["start"],
                 text=seg["text"],
                 speaker="user",
             )
@@ -577,6 +577,29 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
 
     # convert cuts
     cuts = cuts.map(convert_overlap_cut)
+    return cuts, is_tarred
+
+@data_type_parser(["s2s_duplex_move_text_channel_back"])
+def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
+    def convert_cut(cut):
+        new_segments = []
+        for seg in cut.supervisions:
+            if seg.speaker in agent_roles:
+                seg = fastcopy(seg, start=seg.start - move_agent_text_back_by, duration=(seg.end - seg.start) + move_agent_text_back_by, speaker=seg.speaker)
+
+            new_segments.append(seg)
+
+        cut.supervisions = sorted(new_segments, key=lambda s: s.start)
+        return cut
+
+    # load lhotse cuts
+    cuts, is_tarred = read_cutset_from_config(config)
+    move_agent_text_back_by = config.get("move_agent_text_back_by", 0.32)
+    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
+
+    # convert cuts
+    if move_agent_text_back_by:
+        cuts = cuts.map(convert_cut)
     return cuts, is_tarred
 
 

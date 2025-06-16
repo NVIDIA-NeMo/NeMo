@@ -286,6 +286,109 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             ans["cache"] = out["past_key_values"]
         return ans
 
+
+    def add_noise_to_batch(self, batch_audio, noise_folder, snr_db=20, noise_prob_scale_user=0.3, noise_prob_scale_user_min_snr=-15, noise_prob_scale_user_max_snr=24, snr_measure_dur=0.0, noise_resample=True, noise_prob_low_pass=0.1):
+
+        batch_size, audio_length = batch_audio.shape
+
+        import glob
+        import soundfile as sf
+        from scipy.signal import butter, lfilter
+        import librosa
+
+        noise_files = [f for f in glob.glob(noise_folder + "/*.wav")]
+        if not noise_files:
+            raise ValueError(f"No noise files found in {noise_folder}")
+
+        for i in range(batch_size):
+
+            def get_scale_factor(signal, noise, snr_db):
+                if snr_measure_dur > 0:
+                    signal = signal[: (snr_measure_dur * self.source_sample_rate)]
+                    noise = noise[: (snr_measure_dur * self.source_sample_rate)]
+                signal_power = torch.mean(signal**2) + 1e-8
+                noise_power = torch.mean(noise**2) + 1e-8
+
+                target_noise_power = signal_power / (10 ** (snr_db / 10))
+                scaling_factor = torch.sqrt(target_noise_power / noise_power)
+                return scaling_factor
+
+            if random.random() < noise_prob_scale_user:
+                scaling_factor = get_scale_factor(
+                    batch_audio[i],
+                    batch_audio[i],
+                    random.randint(
+                        noise_prob_scale_user_min_snr,
+                        noise_prob_scale_user_max_snr
+                    ),
+                )
+                batch_audio[i] = batch_audio[i] * scaling_factor
+
+            def get_noise(noise_files):
+
+                noise_path = random.choice(noise_files)
+                noise, sr = sf.read(noise_path, dtype='float32')
+
+                # resample noise from sr to self.cfg.data.train_ds.sample_rate
+                if noise_resample and sr != self.source_sample_rate:
+                    noise = librosa.resample(noise, orig_sr=sr, target_sr=self.source_sample_rate)
+
+                if len(noise.shape) > 1:
+                    noise = np.mean(noise, axis=1)
+
+                noise_tensor = torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device)
+                scaling_factor = get_scale_factor(batch_audio[i], noise_tensor, snr_db)
+                noise_tensor = noise_tensor * scaling_factor
+                return noise_tensor
+
+            noise = get_noise(noise_files)
+            noise2 = get_noise(noise_files)
+            noise3 = get_noise(noise_files)
+            noise = torch.cat([noise, noise2, noise3], axis=0)
+
+            if noise.size(0) < audio_length:
+                repeat_times = (audio_length // noise.size(0)) + 1
+                # For a 1D tensor, we want to repeat its elements.
+                # If noise has other dimensions, adjust the repeat_times_tuple accordingly.
+                # e.g., if noise is (C, L), and we want to repeat along L,
+                # repeat_times_tuple = (1, repeat_times)
+                noise = noise.repeat(repeat_times)[:audio_length]
+            else:
+                # If noise is a PyTorch tensor
+                start_idx = torch.randint(0, noise.size(0) - audio_length + 1, (1,)).item()
+                # Or if noise was originally a list/numpy array and you want to keep Python's random
+                # start_idx = random.randint(0, len(noise) - audio_length)
+                noise = noise[start_idx : start_idx + audio_length]
+
+
+            # Function to create a low-pass filter
+            def butter_lowpass(cutoff, fs, order=5):
+                nyquist = 0.5 * fs
+                normal_cutoff = cutoff / nyquist
+                b, a = butter(order, normal_cutoff, btype='low', analog=False)
+                return b, a
+
+            # Function to apply the low-pass filter to data (tmp impl on cpu)
+            def lowpass_filter(data, cutoff, fs, order=5):
+                b, a = butter_lowpass(cutoff, fs, order=order)
+                b = torch.tensor(b, dtype=torch.float32).cuda()
+                a = torch.tensor(a, dtype=torch.float32).cuda()
+                # Apply the filter using lfilter function from scipy..numpysig.numpynal (CPU)
+                y_cpu = lfilter(b.cpu().numpy(), a.cpu().numpy(), data.cpu().numpy())
+                # Convert the filtered data back to torch tensor and move to GPU.numpy
+                y_gpu = torch.tensor(y_cpu, dtype=torch.float32).cuda()
+                return y_gpu
+
+            if random.random() < noise_prob_low_pass:
+                # Define the desired cutoff frequency (in Hz)
+                cutoff = 1000.0
+                # Apply low-pass filter to the WAV data
+                noise = lowpass_filter(noise, cutoff, self.source_sample_rate)
+
+            batch_audio[i] = batch_audio[i] + noise
+
+        return batch_audio
+
     def prepare_inputs(self, batch: dict):
         """
         Similar to DuplexS2SModel.prepare_inputs, with following changes:
@@ -296,22 +399,33 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
         assert batch["target_first_turn_audio"].size(0) == batch["target_audio"].size(0)
 
-        # change audio volume randomly
-        if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
-            # prev codebase had 0.0631 and 5.6234 here we round the values
-            min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631) # -15 snr
-            max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234) # 24 snr
+        if self.cfg.get('use_old_noise_aug', None):
+            # ToDo we are applying it in all datasets, old codebase does not applied in real conv data
+            noise_prob = 0.99
+            noise_min_snr = 20
+            noise_max_snr = 50
+            noise_path = "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data/duplex/dns5/dns5_demand_noise/"
+            noise_path_name = "*"
+            no_noise_audio = batch["source_audio"].clone()
+            if self.training and 's2s_duplex_overlap_as_s2s_duplex' not in batch["formatter"] and noise_prob and random.random() < noise_prob:
+                batch["source_audio"] = self.add_noise_to_batch(batch["source_audio"], os.path.join(noise_path, noise_path_name), snr_db=random.randint(noise_min_snr, noise_max_snr), noise_prob_scale_user=0.3, noise_prob_scale_user_min_snr=-15, noise_prob_scale_user_max_snr=24, snr_measure_dur=0.0, noise_resample=True, noise_prob_low_pass=0.1)
+        else:
+            # change audio volume randomly
+            if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
+                # prev codebase had 0.0631 and 5.6234 here we round the values
+                min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631) # -15 snr
+                max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234) # 24 snr
 
-            # get a random float value between min and max
-            scaling_factor = torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device) * (max_scale_val - min_scale_val) + min_scale_val
-            batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
+                # get a random float value between min and max
+                scaling_factor = torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device) * (max_scale_val - min_scale_val) + min_scale_val
+                batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
 
-        # apply low pass filter
-        if self.training and random.random() < self.cfg.get('noise_prob_low_pass', 0.0):
-            # prev codebase had 0.0631 and 5.6234 here we round the values
-            cutoff_freq = self.cfg.get('noise_low_pass_cutoff_freq', 1000.0)
-            # note here we are using a biquad filter, older codebase we are using a filter of order 5
-            batch["source_audio"] = torchaudio.functional.lowpass_biquad(waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq)
+            # apply low pass filter
+            if self.training and random.random() < self.cfg.get('noise_prob_low_pass', 0.0):
+                # prev codebase had 0.0631 and 5.6234 here we round the values
+                cutoff_freq = self.cfg.get('noise_low_pass_cutoff_freq', 1000.0)
+                # note here we are using a biquad filter, older codebase we are using a filter of order 5
+                batch["source_audio"] = torchaudio.functional.lowpass_biquad(waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq)
 
 
         source_encoded, source_encoded_lens, asr_emb = self.perception(
@@ -529,6 +643,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"source_audio_{i}.wav"),
                     sr=self.source_sample_rate
                 )
+                
                 write_wave(
                     reconstructed_audio_from_tokens[i],
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"),
@@ -545,6 +660,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             print("text_labels decoded:", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
             print("target labels from dataloader decoded:",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
             print("Number of padding tokens on the begining:", count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id))
+            print(batch["formatter"])
             exit()
 
         return {

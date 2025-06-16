@@ -517,6 +517,7 @@ def read_lhotse_tts_as_repeat_after_me(config) -> tuple[CutSet, bool]:
         cut.recording = cut_source.recording
         cut.target_audio = cut_target.recording
         cut.duration = cut.target_audio.duration
+        cut.formatter = "lhotse_tts_as_repeat_after_me"
         return cut
 
     # load lhotse cuts
@@ -569,6 +570,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
             user_segments.append(ss)
 
         cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
+        cut.formatter = "s2s_duplex_overlap_as_s2s_duplex"
         return cut
 
     # load lhotse cuts
@@ -590,6 +592,7 @@ def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
             new_segments.append(seg)
 
         cut.supervisions = sorted(new_segments, key=lambda s: s.start)
+        cut.formatter = "s2s_duplex_move_text_channel_back"
         return cut
 
     # load lhotse cuts

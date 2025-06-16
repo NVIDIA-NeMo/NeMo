@@ -270,6 +270,15 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         # if inference time, uses the target text tokens sampled from the llm backbone
         if self.speech_generation.use_input_cache and not self.training:
+            if self.cfg.get("inference_pad_boost", None):
+                print("inference_pad_boost")
+                text_logits[:, :, self.text_pad_id] += self.cfg.inference_pad_boost
+            if self.cfg.get("inference_bos_boost", None):
+                text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost
+            if self.cfg.get("inference_eos_boost", None):
+                text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
+                print("inference_eos_boost")
+
             target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
 
         audio_logits, _  = self.speech_generation(
@@ -951,6 +960,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             )
             gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
             gen_audio[:, t] = ans["audio_logits"][:, -1].argmax(dim=-1)
+
+            # inference trick force speech decoder eos/bos to make the model more robust
+            num_speech_delay = 1
+            if (
+                self.cfg.get('inference_force_speech_bos', None)
+                and  num_speech_delay < gen_text.shape[1]
+            ):
+                gen_audio[:, -1] = torch.where(
+                    (gen_text[:, -1 - num_speech_delay].unsqueeze(-1) == self.text_bos_id)
+                    * (
+                        torch.sum(gen_audio[:, -1 - num_speech_delay :] == self.speech_bos_id, 1)
+                        == 0
+                    ),
+                    self.speech_bos_id,
+                    gen_audio[:, -1],
+                )
+
+            if self.cfg.get('inference_force_speech_eos', None):
+                # tmp solution: force to stop talking if user interruption is detected
+                gen_audio[:, -1] = torch.where(
+                    ((gen_text[:, -1].unsqueeze(-1) == self.text_eos_id)),
+                    self.speech_eos_id,
+                    gen_audio[:, -1],
+                )
 
         # Trim back to local length if padded
         if self._use_fsdp and T > T_local:

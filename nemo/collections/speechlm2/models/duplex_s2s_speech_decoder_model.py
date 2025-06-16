@@ -460,7 +460,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # set eos/bos 6x more important than a speech tokens and 12x more than a silence, this is that high because we will have only one bos/eos per turn and if it is nor right predicted the model will not produce text/speech
                 loss_scale[:, :, :1] = torch.where(labels == self.text_bos_id, 6.0, loss_scale[:, :, :1])
                 loss_scale[:, :, :1] = torch.where(labels == self.text_eos_id, 6.0, loss_scale[:, :, :1])
-            elif self.cfg.scale_loss_by == 'non_sil_4_eos_bos_8':
+            elif self.cfg.scale_loss_by == 'non_sil_4_eos_bos_12':
                 loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) != self.text_pad_id, 4.0, loss_scale[:, :, :1])
                 # set eos/bos 3x more important than a speech tokens and 12x more than a silence, this is that high because we will have only one bos/eos per turn and if it is nor right predicted the model will not produce text/speech
                 loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_bos_id, 12.0, loss_scale[:, :, :1])

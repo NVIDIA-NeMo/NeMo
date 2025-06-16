@@ -566,7 +566,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 for i in range(text_labels.size(0)):
                     current_scale = loss_scale[i, :, :1]
                     labels = text_labels.unsqueeze(-1)
-                    current_scale = loss_scale[i, :, :1]
                     num_real_padding_tokens = (torch.numel(current_scale) - current_scale.sum()).item()
                     silence_idxs = labels[i, :, :1] == self.text_pad_id
 
@@ -588,6 +587,57 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # set eos/bos 3x more important than a speech tokens and 12x more than a silence, this is that high because we will have only one bos/eos per turn and if it is nor right predicted the model will not produce text/speech
                 loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_bos_id, 12.0, loss_scale[:, :, :1])
                 loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_eos_id, 12.0, loss_scale[:, :, :1])
+            elif self.cfg.scale_loss_by == 'non_sil_4_dynamic_eos_bos':
+                # Expand text_labels to match the shape of loss_scale: [B, T] → [B, T, 1]
+                text_labels_exp = text_labels.unsqueeze(-1)
+
+                # Assign a weight of 4.0 to all non-padding tokens in the loss scale
+                # Padding tokens retain their existing value
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels_exp != self.text_pad_id,  # Condition: not a padding token
+                    4.0,                        # Assign fixed weight
+                    loss_scale[:, :, :1]                  # Keep original value otherwise
+                )
+
+                # Compute the total loss weight assigned to valid (non-padding) tokens in each sequence
+                # Shape: [B] — one scalar value per batch item
+                tot_scale_for_valid_tokens = loss_scale[:, :, :1].flatten(1, 2).sum(-1)
+
+                # Count how many BOS tokens are present per sequence
+                # Shape: [B]
+                num_bos_tokens = (text_labels_exp == self.text_bos_id).flatten(1, 2).sum(-1)
+
+                # Count how many EOS tokens are present per sequence
+                # Shape: [B]
+                num_eos_tokens = (text_labels_exp == self.text_eos_id).flatten(1, 2).sum(-1)
+
+                # Compute the total number of special tokens (BOS + EOS) for each sequence
+                # Shape: [B]
+                tot_special_tokens = num_bos_tokens + num_eos_tokens
+
+                # Loop through each item in the batch to reassign loss weight to special tokens
+                for i in range(text_labels.size(0)):
+                    # Avoid division by zero: only compute new weight if BOS/EOS tokens are present
+                    if tot_special_tokens[i] > 0:
+                        # Redistribute the total valid token weight equally across BOS and EOS tokens
+                        new_weight = tot_scale_for_valid_tokens[i] / tot_special_tokens[i]
+                    else:
+                        # No special tokens found — set weight to zero
+                        new_weight = 0.0
+
+                    # Assign new_weight to BOS tokens in the current sequence
+                    loss_scale[i, :, :1] = torch.where(
+                        text_labels_exp[i, :, :1] == self.text_bos_id,
+                        new_weight,
+                        loss_scale[i, :, :1]
+                    )
+
+                    # Assign new_weight to EOS tokens in the current sequence
+                    loss_scale[i, :, :1] = torch.where(
+                        text_labels_exp[i, :, :1] == self.text_eos_id,
+                        new_weight,
+                        loss_scale[i, :, :1]
+                    )
             else:
                 raise ValueError(f"Unknown scale_loss_by: {self.cfg.scale_loss_by}")
 

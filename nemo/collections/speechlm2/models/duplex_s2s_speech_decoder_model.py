@@ -271,15 +271,20 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # if inference time, uses the target text tokens sampled from the llm backbone
         if self.speech_generation.use_input_cache and not self.training:
             if self.cfg.get("inference_pad_boost", None):
-                print("inference_pad_boost")
                 text_logits[:, :, self.text_pad_id] += self.cfg.inference_pad_boost
             if self.cfg.get("inference_bos_boost", None):
                 text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost
             if self.cfg.get("inference_eos_boost", None):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
-                print("inference_eos_boost")
 
             target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
+        else:
+            # drop text bos/eos
+            if self.cfg.get("drop_text_bos_prob", None) and random.random() < self.cfg.drop_text_bos_prob:
+                target_text_tokens = torch.where(target_text_tokens == self.text_bos_id, self.text_pad_id, target_text_tokens)
+
+            if self.cfg.get("drop_text_eos_prob", None) and random.random() < self.cfg.drop_text_eos_prob:
+                target_text_tokens = torch.where(target_text_tokens == self.text_eos_id, self.text_pad_id, target_text_tokens)
 
         audio_logits, _  = self.speech_generation(
             out['last_hidden_state'].transpose(0, 1), seq_mask, input_audio_tokens=input_audio_tokens, target_text_tokens=target_text_tokens, modality_adapter_emb=modality_adapter_emb, asr_emb=asr_emb, speaker_encoder_emb=speaker_encoder_emb
@@ -635,6 +640,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         new_weight,
                         loss_scale[i, :, :1]
                     )
+
             elif self.cfg.scale_loss_by == 'non_sil_4_dynamic_eos_bos_speech_text':
                 # Expand text_labels to match the shape of loss_scale: [B, T] → [B, T, 1]
                 text_labels_exp = text_labels.unsqueeze(-1)

@@ -147,7 +147,7 @@ def collate_first_turn_audio(
     first_turn_audios_lens = []
     for cut in cuts:
         first_supervision = [s for s in cut.supervisions if s.speaker in roles][0]
-        truncated_audio = cut.truncate(offset=first_supervision.start, duration=first_supervision.duration).load_custom(recording_field)
+        truncated_audio = cut.truncate(offset=max(0, first_supervision.start), duration=first_supervision.duration).load_custom(recording_field)
         first_turn_audios.append(truncated_audio.squeeze(0))
         first_turn_audios_lens.append(truncated_audio.shape[-1])
 

@@ -48,6 +48,24 @@ def sequence_mask(lengths: Tensor, max_length: int | None = None) -> Tensor:
     return x.unsqueeze(0) < lengths.unsqueeze(1)
 
 
+class EOUDecoder(NeuralModule):
+    def __init__(self, input_dim, params: DictConfig):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, params["d_model"])
+        self.decoder = transformer_2501.Transformer(**params)
+        self.final_proj = nn.Linear(params["d_model"], 2)
+
+    def forward(self, x: Tensor, x_mask: Tensor | None = None) -> Tensor:
+        x = self.input_proj(x)
+        x = self.decoder(
+            x=x,
+            x_mask=x_mask,
+        )['output']
+
+        x = self.final_proj(x)
+        return x
+
+
 class CharAwareSubwordEncoder(NeuralModule):
     def __init__(self, params: DictConfig, llm_tokenizer_vocab_items: dict = None):
         super().__init__()

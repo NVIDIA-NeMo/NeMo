@@ -473,7 +473,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             noise_prob = 0.99
             noise_min_snr = 20
             noise_max_snr = 50
-            noise_path = "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data/duplex/dns5/dns5_demand_noise/"
+            noise_path = self.cfg.get('old_noise_aug_path', "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data/duplex/dns5/dns5_demand_noise/")
             noise_path_name = "*"
             no_noise_audio = batch["source_audio"].clone()
             if self.training and 's2s_duplex_overlap_as_s2s_duplex' not in batch["formatter"] and noise_prob and random.random() < noise_prob:

@@ -37,7 +37,7 @@ from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str
-from nemo.collections.speechlm2.modules import TransformerARSpeechDecoder, EOUDecoder
+from nemo.collections.speechlm2.modules import TransformerARSpeechDecoder, EOUDecoder, EOUDecoderFromWav
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
@@ -130,23 +130,36 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         setup_speech_encoder(self)
 
         if self.cfg.get("use_eou_decoder", None):
-            t_params = {
-                "n_layers": 3, # 3 layers
-                "d_model": 768,
-                "d_ffn": 3072,
-                "sa_n_heads": 12,
-                "kernel_size": 1,
-                "p_dropout": 0.1,
-                "p_dropout_out": 0.0,
-                "has_xattn": False,
-                "is_causal": True,
-                "apply_norm_to_cond": True,
-                "apply_norm_out": True,
-                "max_length_causal_mask": self.cfg.speech_decoder.max_length_causal_mask,
-            }
-            self.eou_decoder = EOUDecoder(input_dim=self.cfg.get("asr_emb_dim", 512), params=t_params)
+            if self.cfg.get("eou_decoder_from_wav", None):
+                self.eou_decoder = EOUDecoderFromWav(
+                    samples_per_frame=int(self.source_sample_rate/self.source_fps),
+                    audio_proj_size=1024, 
+                    output_dim=2,
+                    n_layers=self.cfg.get("eou_decoder_num_layers", 3),
+                    d_model=1024,
+                    d_ffn=4096,
+                    is_causal=True,
+                    sliding_window_size=12,
+                    max_position_embeddings=self.cfg.speech_decoder.max_length_causal_mask,
+                )
+            else:
+                t_params = {
+                    "n_layers": self.cfg.get("eou_decoder_num_layers", 3), # 3 layers
+                    "d_model": 768,
+                    "d_ffn": 3072,
+                    "sa_n_heads": 12,
+                    "kernel_size": 1,
+                    "p_dropout": 0.1,
+                    "p_dropout_out": 0.0,
+                    "has_xattn": False,
+                    "is_causal": True,
+                    "apply_norm_to_cond": True,
+                    "apply_norm_out": True,
+                    "max_length_causal_mask": self.cfg.speech_decoder.max_length_causal_mask,
+                }
+                self.eou_decoder = EOUDecoder(input_dim=self.cfg.get("asr_emb_dim", 512), params=t_params)
+
             self.eou_embedding = torch.nn.Embedding(2, self.llm.config.hidden_size)
-            # self.eou_projection = nn.Linear(1, self.llm.config.hidden_size)
 
         llm_tokenizer_vocab_items = self.tokenizer.vocab
         # if vocab is a dict it already has the subword and token id, if not, get it from the tokenizer
@@ -605,7 +618,19 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             # create eou labels
             eou_labels = generate_multiturn_speaking_mask(text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id).detach()
             # predict eou logits
-            eou_logits = self.eou_decoder(asr_emb[:, :-1], seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1)))
+            if self.cfg.get("eou_decoder_from_wav", None):
+                eou_logits, _ = self.eou_decoder(batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"])
+            else:
+                eou_logits = self.eou_decoder(asr_emb[:, :-1], seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1)))
+
+            # ensures that logits and labels has the same shape
+            if eou_labels.size(1) > eou_logits.size(1):
+                # Pad on the right (end of time axis)
+                pad_len = eou_labels.size(1) - eou_logits.size(1)
+                eou_logits = torch.nn.functional.pad(eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+            else:
+                eou_logits = eou_logits[:, :eou_labels.size(1)]
+
             # add eou embedding to the llm input
             eou_emb = self.eou_embedding(eou_labels)
             input_embeds.add_(eou_emb)
@@ -1044,6 +1069,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
+                    eou_pred=results["eou_pred"] if self.cfg.get("use_eou_decoder", None) else None,
+                    fps=self.source_fps,
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
@@ -1096,8 +1123,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             input_signal_length=input_signal_lens,
             return_encoder_emb=True
         )
-
         B, T_local, H = source_encoded.shape
+
+        # add eou embedding
+        if self.cfg.get("use_eou_decoder", None):
+            # predict eou logits
+            if self.cfg.get("eou_decoder_from_wav", None):
+                eou_logits, _ = self.eou_decoder(input_signal.to(source_encoded.dtype), input_signal_lens)
+                if source_encoded.size(1) > eou_logits.size(1):
+                    # Pad on the right (end of time axis)
+                    pad_len = source_encoded.size(1) - eou_logits.size(1)
+                    eou_logits = torch.nn.functional.pad(eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                else:
+                    eou_logits = eou_logits[:, :source_encoded.size(1)]
+            else:
+                mask = torch.ones(
+                    (asr_emb.size(0), asr_emb.size(1)),
+                    device=asr_emb.device,
+                )
+                eou_logits = self.eou_decoder(asr_emb, x_mask=mask)
+
+            # if not in training time get eou from the eou decoder
+            eou_pred = torch.argmax(eou_logits, dim=-1).view(B, T_local).contiguous()
+            # add eou embedding to the llm input
+            eou_emb = self.eou_embedding(eou_pred)
 
         # Determine decoding length and pad if FSDP
         if self._use_fsdp:
@@ -1109,25 +1158,17 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 pad = last_frame.repeat(1, T - T_local, 1)  # (B, T-T_local, H)
                 source_encoded = torch.cat([source_encoded, pad], dim=1)
                 asr_emb = torch.cat([asr_emb, pad], dim=1)
+                if self.cfg.get("use_eou_decoder", None):
+                    eou_emb = torch.cat([eou_emb, pad], dim=1)
         else:
             T = T_local
 
         # Apply channel weight
         input_embeds = source_encoded.clone()
         input_embeds *= self.cfg.get("duplex_user_channel_weight", 1.0)
-
+        
         # add eou embedding
         if self.cfg.get("use_eou_decoder", None):
-            mask = torch.ones(
-                (asr_emb.size(0), asr_emb.size(1)),
-                device=asr_emb.device,
-            )
-            # predict eou logits
-            eou_logits = self.eou_decoder(asr_emb, x_mask=mask)
-            # if not in training time get eou from the eou decoder
-            eou_labels = torch.argmax(eou_logits, dim=-1).view(B, T_local).contiguous()
-            # add eou embedding to the llm input
-            eou_emb = self.eou_embedding(eou_labels)
             input_embeds.add_(eou_emb)
 
         # This cache is for self.llm
@@ -1220,6 +1261,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 )
             ans["audio"] = predicted_audio
             ans["audio_len"] = predicted_audio_lens
+
+        if self.cfg.get("use_eou_decoder", None):
+            ans["eou_pred"] = eou_pred
 
         # Call reset_input_and_kv_cache to reset cache for TransformerARSpeechDecoder
         self.speech_generation.reset_input_and_kv_cache(use_cache=False)

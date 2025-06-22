@@ -789,11 +789,80 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         new_weight_speech,
                         loss_scale[i, :, 1:]
                     )
+
+            elif self.cfg.scale_loss_by == 'non_sil_4_dynamic_10x_less_eos_bos_speech_text':
+                # Expand text_labels to match the shape of loss_scale: [B, T] → [B, T, 1]
+                text_labels_exp = text_labels.unsqueeze(-1)
+
+                # Assign a weight of 4.0 to all non-padding tokens in the loss scale
+                # Padding tokens retain their existing value
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels_exp != self.text_pad_id,  # Condition: not a padding token
+                    4.0,                        # Assign fixed weight
+                    loss_scale[:, :, :1]                  # Keep original value otherwise
+                )
+
+                # Compute the total loss weight assigned to valid (non-padding) tokens in each sequence
+                # Shape: [B] — one scalar value per batch item
+                text_tot_scale_for_valid_tokens = loss_scale[:, :, :1].flatten(1, 2).sum(-1)
+                speech_tot_scale_for_valid_tokens = loss_scale[:, :, -1:].flatten(1, 2).sum(-1) # use only the last speech channel because all the channels are identical
+
+                # Count how many BOS tokens are present per sequence
+                # Shape: [B]
+                num_bos_tokens = (text_labels_exp == self.text_bos_id).flatten(1, 2).sum(-1)
+
+                # Count how many EOS tokens are present per sequence
+                # Shape: [B]
+                num_eos_tokens = (text_labels_exp == self.text_eos_id).flatten(1, 2).sum(-1)
+
+                # Compute the total number of special tokens (BOS + EOS) for each sequence
+                # Shape: [B]
+                tot_special_tokens = num_bos_tokens + num_eos_tokens
+                # Loop through each item in the batch to reassign loss weight to special tokens
+                for i in range(text_labels.size(0)):
+                    # Avoid division by zero: only compute new weight if BOS/EOS tokens are present
+                    if tot_special_tokens[i] > 0:
+                        # Redistribute the total valid token weight equally across BOS and EOS tokens
+                        new_weight_text = (text_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / 10.0
+                        new_weight_speech = (speech_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / 10.0
+                    else:
+                        # No special tokens found — set weight to zero
+                        new_weight_text = 0.0
+                        new_weight_speech = 0.0
+
+                    # set text eos/bos scale
+                    # Assign new_weight to BOS tokens in the current sequence
+                    loss_scale[i, :, :1] = torch.where(
+                        text_labels_exp[i, :, :1] == self.text_bos_id,
+                        new_weight_text,
+                        loss_scale[i, :, :1]
+                    )
+
+                    # Assign new_weight to EOS tokens in the current sequence
+                    loss_scale[i, :, :1] = torch.where(
+                        text_labels_exp[i, :, :1] == self.text_eos_id,
+                        new_weight_text,
+                        loss_scale[i, :, :1]
+                    )
+                    # set speech bos/eos scale
+                    # Assign new_weight to BOS tokens in the current sequence
+                    loss_scale[i, :, 1:] = torch.where(
+                        audio_labels[i, :, :] == self.speech_bos_id,
+                        new_weight_speech,
+                        loss_scale[i, :, 1:]
+                    )
+
+                    # Assign new_weight to EOS tokens in the current sequence
+                    loss_scale[i, :, 1:] = torch.where(
+                        audio_labels[i, :, :] == self.speech_eos_id,
+                        new_weight_speech,
+                        loss_scale[i, :, 1:]
+                    )
             else:
                 raise ValueError(f"Unknown scale_loss_by: {self.cfg.scale_loss_by}")
 
         # debug samples:
-        if self.cfg.get("debug_dataloader_audios_path", None) and self.training:
+        if self.cfg.get("debug_dataloader_audios_path", None) and self.training and 's2s_duplex_overlap_as_s2s_duplex' not in batch["formatter"] and 'lhotse_tts_as_repeat_after_me' not in batch["formatter"]:
             def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
                 """
                 Count the number of consecutive silence tokens at the beginning of a 1D tensor.
@@ -871,7 +940,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             print("target labels from dataloader decoded:",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
             print("Number of padding tokens on the begining:", count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id))
             print(batch["formatter"])
-            exit()
+            if len(batch["formatter"]) > 1:
+                exit()
 
         return {
             "input_embeds": input_embeds,

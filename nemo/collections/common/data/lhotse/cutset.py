@@ -18,6 +18,10 @@ from functools import partial
 from itertools import repeat
 from pathlib import Path
 from typing import KeysView, Mapping, Sequence, Tuple, Union
+import io
+import random
+import numpy as np
+import soundfile as sf
 
 import omegaconf
 from lhotse import CutSet, Features, Recording, MonoCut, SupervisionSegment
@@ -587,23 +591,178 @@ def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
         new_segments = []
         for seg in cut.supervisions:
             if seg.speaker in agent_roles:
-                seg = fastcopy(seg, start=seg.start - move_agent_text_back_by, duration=(seg.end - seg.start) + move_agent_text_back_by, speaker=seg.speaker)
-
+                seg = fastcopy(
+                    seg,
+                    start=seg.start - move_agent_text_back_by,
+                    duration=(seg.end - seg.start) + move_agent_text_back_by,
+                    speaker=seg.speaker
+                )
             new_segments.append(seg)
 
         cut.supervisions = sorted(new_segments, key=lambda s: s.start)
         cut.formatter = "s2s_duplex_move_text_channel_back"
         return cut
 
-    # load lhotse cuts
+    def insert_user_silence(cut):
+        if random.random() < insert_user_turn_silence_prob:
+            return insert_silence_before_user_turns(
+                cut,
+                silence_range=silence_range,
+                per_turn_prob=per_turn_prob,
+                agent_roles=agent_roles
+            )
+        else:
+            return cut
+    # Load Lhotse CutSet
     cuts, is_tarred = read_cutset_from_config(config)
+
+    # Read configuration
     move_agent_text_back_by = config.get("move_agent_text_back_by", 0.32)
+    insert_user_turn_silence_prob = config.get("insert_user_turn_silence_prob", 0.0)
+    silence_range = config.get("pad_user_channel_range", [0.5, 5.0])
+    per_turn_prob = config.get("pad_user_channel_turn_prob", 0.6)
     agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
 
-    # convert cuts
+    # Insert random silence in user channel to emulate real world scenario where agent should be quiet when it finish and user does not talk more
+    if insert_user_turn_silence_prob > 0.0:
+        cuts = cuts.map(insert_user_silence)
+
+    # Apply transformations
     if move_agent_text_back_by:
         cuts = cuts.map(convert_cut)
+
     return cuts, is_tarred
+
+
+def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
+    with io.BytesIO() as buffer:
+        sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
+        buffer.seek(0)
+        return Recording.from_bytes(buffer.read(), recording_id=recording_id)
+
+
+# ToDo: find a more "lhotse" way to do it
+def insert_silence_before_user_turns(
+    cut: MonoCut,
+    silence_range=(0.1, 0.5),
+    per_turn_prob=0.5,
+    agent_roles=("agent", "assistant", "Assistant")
+) -> MonoCut:
+    sr = cut.recording.sampling_rate
+    duration = cut.duration
+    supervisions = sorted(cut.supervisions, key=lambda s: s.start)
+
+    segments = []
+    new_supervisions = []
+    silence_durations = {}
+
+    time_cursor = 0.0
+    time_shift = 0.0  # Cumulative shift due to silences
+    for idx, supervision in enumerate(supervisions):
+        # Add unsupervised region before this supervision
+        if supervision.start > time_cursor:
+            gap_dur = supervision.start - time_cursor
+            if gap_dur > 1e-4:
+                unsup_cut = cut.truncate(offset=time_cursor, duration=gap_dur, keep_excessive_supervisions=True)
+                segments.append(unsup_cut)
+            time_cursor = supervision.start
+
+        # Decide whether to insert silence before this supervision
+        add_silence = supervision.speaker not in agent_roles and random.random() < per_turn_prob
+        silence_dur = random.uniform(*silence_range) if add_silence else 0.0
+        silence_durations[idx] = silence_dur
+
+        if supervision.duration <= 1e-4:
+            continue
+
+        # Truncate speech segment
+        speech_cut = cut.truncate(offset=supervision.start, duration=supervision.duration, keep_excessive_supervisions=True)
+        if silence_dur > 0:
+            speech_cut = speech_cut.pad(duration=speech_cut.duration + silence_dur, direction='left')
+
+        # Shift supervision start by total time shift so far
+        shifted_sup = fastcopy(
+            supervision,
+            start=supervision.start + time_shift,
+            duration=supervision.duration + silence_dur,
+        )
+        new_supervisions.append(shifted_sup)
+        segments.append(speech_cut)
+
+        time_cursor = supervision.end
+        time_shift += silence_dur  # Add shift *after* updating supervision
+
+
+    # Add remaining audio tail
+    if time_cursor < duration:
+        tail_dur = duration - time_cursor
+        if tail_dur > 1e-4:
+            tail_cut = cut.truncate(offset=time_cursor, duration=tail_dur, keep_excessive_supervisions=True)
+            segments.append(tail_cut)
+
+    # Stitch all segments
+    final_cut = segments[0]
+    for seg in segments[1:]:
+        final_cut = final_cut.append(seg, preserve_id="left")
+
+    new_audio = final_cut.load_audio()
+    new_recording = create_recording_from_array(new_audio, sr, cut.id)
+
+    # Process target_audio if present
+    if "target_audio" in cut.custom:
+        target = cut.custom["target_audio"]
+        target_audio = target.load_audio()
+        target_sr = target.sampling_rate
+
+        target_cursor = 0
+        padded_target_segments = []
+        shift_accum = 0.0  # Track cumulative silence inserted
+
+        for idx, supervision in enumerate(supervisions):
+            # Gap before supervision
+            gap_dur = supervision.start - target_cursor
+            if gap_dur > 1e-4:
+                start = int(target_cursor * target_sr)
+                end = int(supervision.start * target_sr)
+                padded_target_segments.append(target_audio[:, start:end])
+                target_cursor = supervision.start
+
+            # Silence if applicable
+            sil = silence_durations.get(idx, 0.0)
+            if sil > 0:
+                silence = np.zeros((1, int(sil * target_sr)), dtype=np.float32)
+                padded_target_segments.append(silence)
+                shift_accum += sil
+
+            # Supervision segment
+            start = int(supervision.start * target_sr)
+            end = int(supervision.end * target_sr)
+            segment = target_audio[:, start:end]
+            padded_target_segments.append(segment)
+            target_cursor = supervision.end
+
+        # Tail after last supervision
+        if target_cursor < cut.duration:
+            start = int(target_cursor * target_sr)
+            end = int(cut.duration * target_sr)
+            padded_target_segments.append(target_audio[:, start:end])
+
+        full_target_audio = np.concatenate(padded_target_segments, axis=1)
+        new_target_audio = create_recording_from_array(full_target_audio, target_sr, f"{cut.id}_target")
+        custom_dict = {"target_audio": new_target_audio}
+    else:
+        custom_dict = cut.custom
+
+    new_cut = MonoCut(
+        id=cut.id,
+        start=0.0,
+        duration=new_audio.shape[1] / sr,
+        channel=cut.channel,
+        recording=new_recording,
+        supervisions=new_supervisions,
+        custom=custom_dict,
+    )
+    return new_cut
 
 
 def _resolve_shar_inputs(path: Union[str, Path], only_metadata: bool) -> dict:

@@ -582,13 +582,14 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
     move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
     filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
     agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
+
+    # convert cuts
+    cuts = cuts.map(convert_overlap_cut)
+
     # Filter cuts where the first supervision is agent
     if filter_samples_starting_with_agent:
         cuts = filter_cuts_starting_with_agent(cuts, agent_roles)
 
-
-    # convert cuts
-    cuts = cuts.map(convert_overlap_cut)
     return cuts, is_tarred
 
 
@@ -596,7 +597,10 @@ def filter_cuts_starting_with_agent(cuts: CutSet, agent_roles=("agent", "assista
     def filter_cut_fn(cut):
         # sort supervisions by start
         cut.supervisions = sorted(cut.supervisions, key=lambda s: s.start)
-        return cut.supervisions[0].speaker not in agent_roles
+        if len(cut.supervisions):
+            return cut.supervisions[0].speaker not in agent_roles
+        else:
+            return False # filter emptly supervisions
 
     return cuts.filter(filter_cut_fn)
 

@@ -576,6 +576,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 dtype=torch.long,
             )
             target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by:], pad], dim=-1)
+            # make sure that eos/bos is in the place (it can cut tokens from the first advance_text_channel_by tokens and this will breaks everything)
 
         input_ids = torch.cat([target_codes, target_tokens[..., None]], dim=-1)
         if self._use_tp:
@@ -934,13 +935,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_waveform_{i}.wav"),
                     sr=self.target_sample_rate
                 )
+                if self.cfg.get("use_eou_decoder", None):
+                    repeat_factor = int(self.target_sample_rate / self.target_fps)
+                    eou_wav = eou_labels[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)  # (B, T, repeat_factor)
+                    eou_wav = eou_wav.view(1, -1) # (B, T * repeat_factor)
+                    eou_wav = eou_wav.float() * 0.8 #  make 1 audible and keep 0 as total silence
+                    write_wave(
+                        eou_wav.squeeze(),
+                        os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"eou_{i}.wav"),
+                        sr=self.target_sample_rate
+                    )
 
+            num_bos_tokens = (text_labels.unsqueeze(-1) == self.text_bos_id).flatten(1, 2).sum(-1)
+            # Count how many EOS tokens are present per sequence
+            # Shape: [B]
+            num_eos_tokens = (text_labels.unsqueeze(-1) == self.text_eos_id).flatten(1, 2).sum(-1)
+            print("Num eos:", num_eos_tokens, "num bos:", num_bos_tokens)
             # check text
             print("text_labels decoded:", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
             print("target labels from dataloader decoded:",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
             print("Number of padding tokens on the begining:", count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id))
+            
             print(batch["formatter"])
-            if len(batch["formatter"]) > 1:
+            exit()
+            if num_bos_tokens[0].item() == num_eos_tokens[0].item():
                 exit()
 
         return {

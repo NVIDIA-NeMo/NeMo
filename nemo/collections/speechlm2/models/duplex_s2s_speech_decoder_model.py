@@ -183,8 +183,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self.cfg.get("pretrained_tts", None):
             self.init_speech_generation_from_tts_checkpoint(self.cfg.pretrained_tts)
 
+        # load speech decoder/speech generation module from another checkpoint
         if self.cfg.get("pretrained_tts_from_s2s", None):
             self.init_speech_generation_from_another_s2s_checkpoint(self.cfg.pretrained_tts_from_s2s)
+
+        # restore EOU predictor from another checkpoint
+        if self.cfg.get("pretrained_eou_from_s2s", None):
+            self.init_eou_from_another_s2s_checkpoint(self.cfg.pretrained_tts_from_s2s)
 
         self.embed_audio_tokens = torch.nn.ModuleList(
             [
@@ -230,6 +235,22 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             checkpoint_state = {k.replace("model.speech_decoder.", "").replace("speech_generation.", ""): v for k, v in checkpoint_state.items() if "model.speech_decoder." in k or "speech_generation." in k}
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
             self.speech_generation.load_state_dict(checkpoint_state, strict=True)
+    
+    def init_eou_from_another_s2s_checkpoint(self, checkpoint_path):
+        if checkpoint_path is not None:
+            if '.nemo' in checkpoint_path:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+            else:
+                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+
+            # filter keys to keep only speech generation keys and also
+            checkpoint_state = {k.replace("eou_decoder.", ""): v for k, v in checkpoint_state.items() "eou_decoder." in k}
+            if self.cfg.get("use_eou_decoder", None):
+                checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.eou_decoder.state_dict())
+                self.eou_decoder.load_state_dict(checkpoint_state, strict=True)
 
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:

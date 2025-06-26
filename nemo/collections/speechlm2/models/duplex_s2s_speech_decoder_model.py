@@ -52,6 +52,11 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.utils import logging
 
 
+
+import torch
+import torch.nn.functional as F
+import random
+
 def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
     """
     Efficient, batched speaking mask generator that marks 1 between <bos> and <eos> pairs.
@@ -75,6 +80,57 @@ def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int 
     eos_cumsum = torch.cumsum(eos_mask, dim=1)
     speaking_mask = (bos_cumsum > eos_cumsum).to(torch.float32)
     return speaking_mask.long()
+
+def add_structured_noise_preserve_tail(
+    mask: torch.Tensor,
+    span_prob: float = 0.05,
+    min_len: int = 2,
+    max_len: int = 3,
+    min_preserve: int = 4,
+):
+    """
+    Adds structured noise to a binary mask by flipping random spans (2–3 tokens at a time),
+    while preserving the last `min_preserve` tokens of each speaking region (1s).
+
+    Args:
+        mask (torch.Tensor): Binary mask of shape (B, T), values in {0, 1}
+        span_prob (float): Probability of inserting a noisy span per token
+        min_len (int): Minimum span length to flip
+        max_len (int): Maximum span length to flip
+        min_preserve (int): Number of 1s at the end of each span to protect from flipping
+
+    Returns:
+        torch.Tensor: Noised mask (same shape)
+    """
+    B, T = mask.shape
+    noised_mask = mask.clone()
+
+    for b in range(B):
+        i = 0
+        while i < T:
+            if mask[b, i] == 1:
+                # Start of a speaking region
+                start = i
+                while i < T and mask[b, i] == 1:
+                    i += 1
+                end = i  # exclusive
+                span_len = end - start
+
+                if span_len > min_preserve:
+                    allowed_start = start
+                    allowed_end = end - min_preserve
+                    j = allowed_start
+                    while j < allowed_end:
+                        if random.random() < span_prob:
+                            flip_len = random.randint(min_len, max_len)
+                            flip_end = min(j + flip_len, allowed_end)
+                            noised_mask[b, j:flip_end] = (noised_mask[b, j:flip_end] + 1) % 2
+                            j = flip_end
+                        else:
+                            j += 1
+            else:
+                i += 1
+    return noised_mask
 
 
 class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
@@ -189,7 +245,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         # restore EOU predictor from another checkpoint
         if self.cfg.get("pretrained_eou_from_s2s", None):
-            self.init_eou_from_another_s2s_checkpoint(self.cfg.pretrained_tts_from_s2s)
+            self.init_eou_from_another_s2s_checkpoint(self.cfg.pretrained_eou_from_s2s)
 
         self.embed_audio_tokens = torch.nn.ModuleList(
             [
@@ -247,7 +303,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             # filter keys to keep only speech generation keys and also
-            checkpoint_state = {k.replace("eou_decoder.", ""): v for k, v in checkpoint_state.items() "eou_decoder." in k}
+            checkpoint_state = {k.replace("eou_decoder.", ""): v for k, v in checkpoint_state.items() if "eou_decoder." in k}
             if self.cfg.get("use_eou_decoder", None):
                 checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.eou_decoder.state_dict())
                 self.eou_decoder.load_state_dict(checkpoint_state, strict=True)
@@ -497,7 +553,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             noise_path = self.cfg.get('old_noise_aug_path', "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data/duplex/dns5/dns5_demand_noise/")
             noise_path_name = "*"
             no_noise_audio = batch["source_audio"].clone()
-            if self.training and 's2s_duplex_overlap_as_s2s_duplex' not in batch["formatter"] and noise_prob and random.random() < noise_prob:
+            if self.training and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex' and noise_prob and random.random() < noise_prob:
                 batch["source_audio"] = self.add_noise_to_batch(batch["source_audio"], os.path.join(noise_path, noise_path_name), snr_db=random.randint(noise_min_snr, noise_max_snr), noise_prob_scale_user=0.3, noise_prob_scale_user_min_snr=-15, noise_prob_scale_user_max_snr=24, snr_measure_dur=0.0, noise_resample=True, noise_prob_low_pass=0.1)
         else:
             # change audio volume randomly
@@ -636,25 +692,34 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         eou_logits = None
         eou_labels = None
+        # compute eou labels and logits. Note we are ignoring silence augmented batches because this can break the EOU predictor
         if self.cfg.get("use_eou_decoder", None):
             # create eou labels
             eou_labels = generate_multiturn_speaking_mask(text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id).detach()
-            # predict eou logits
-            if self.cfg.get("eou_decoder_from_wav", None):
-                eou_logits, _ = self.eou_decoder(batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"])
+            # predict eou logits if it is not a silence augmented batch
+            if self.cfg.get("eou_decoder_ignore_sil_batch", False) and "silence_augmented" in batch["formatter"][0]:
+                eou_logits = None
             else:
-                eou_logits = self.eou_decoder(asr_emb[:, :-1], seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1)))
+                if self.cfg.get("eou_decoder_from_wav", None):
+                    eou_logits, _ = self.eou_decoder(batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"])
+                else:
+                    eou_logits = self.eou_decoder(asr_emb[:, :-1], seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1)))
 
-            # ensures that logits and labels has the same shape
-            if eou_labels.size(1) > eou_logits.size(1):
-                # Pad on the right (end of time axis)
-                pad_len = eou_labels.size(1) - eou_logits.size(1)
-                eou_logits = torch.nn.functional.pad(eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                # ensures that logits and labels has the same shape
+                if eou_labels.size(1) > eou_logits.size(1):
+                    # Pad on the right (end of time axis)
+                    pad_len = eou_labels.size(1) - eou_logits.size(1)
+                    eou_logits = torch.nn.functional.pad(eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                else:
+                    eou_logits = eou_logits[:, :eou_labels.size(1)]
+            if self.cfg.get("eou_structured_noise_aug_enabled", None):
+                eou_labels_aug = add_structured_noise_preserve_tail(eou_labels, span_prob=0.05, min_len=2, max_len=3, min_preserve=4)
+                # add eou embedding to the llm input
+                eou_emb = self.eou_embedding(eou_labels_aug)
             else:
-                eou_logits = eou_logits[:, :eou_labels.size(1)]
+                # add eou embedding to the llm input
+                eou_emb = self.eou_embedding(eou_labels)
 
-            # add eou embedding to the llm input
-            eou_emb = self.eou_embedding(eou_labels)
             input_embeds.add_(eou_emb)
             eou_loss_scale = seq_mask[:, :, 0].clone().float()
 
@@ -1083,8 +1148,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         loss = self.cfg.text_loss_weight * text_loss + self.cfg.audio_loss_weight * audio_loss
 
-        eou_loss = None
-        if self.cfg.get("use_eou_decoder", None):
+        eou_loss = 0.0
+        if self.cfg.get("use_eou_decoder", None) and inputs["eou_logits"] is not None:
             eou_loss = (
                 (torch.nn.functional.cross_entropy(
                     inputs["eou_logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)

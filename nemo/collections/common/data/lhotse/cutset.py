@@ -619,7 +619,9 @@ def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
             new_segments.append(seg)
 
         cut.supervisions = sorted(new_segments, key=lambda s: s.start)
-        cut.formatter = "s2s_duplex_move_text_channel_back"
+        # keep older formatter name if it is available
+        if not hasattr(cut, "formatter"):
+            cut.formatter = "s2s_duplex_move_text_channel_back"
         return cut
 
     def insert_user_silence(cut):
@@ -667,7 +669,6 @@ def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recordi
         sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
         buffer.seek(0)
         return Recording.from_bytes(buffer.read(), recording_id=recording_id)
-
 
 
 def insert_silence_before_user_turns(
@@ -802,7 +803,7 @@ def insert_silence_before_user_turns(
         supervisions=new_supervisions,
         custom=custom_dict,
     )
-
+    new_cut.formatter = "s2s_duplex_move_text_channel_back_silence_augmented"
     return new_cut
 
 def insert_silence_before_user_turns_lhotse(

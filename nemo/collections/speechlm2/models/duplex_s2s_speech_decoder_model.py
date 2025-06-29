@@ -701,6 +701,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         eou_logits = None
         eou_labels = None
+        eou_loss_scale = None
         # compute eou labels and logits. Note we are ignoring silence augmented batches because this can break the EOU predictor
         if self.cfg.get("use_eou_decoder", None):
             # create eou labels

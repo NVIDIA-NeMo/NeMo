@@ -260,7 +260,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             "_control_codes",
             torch.tensor([self.speech_bos_id, self.speech_eos_id, self.speech_delay_id], device=self.device),
         )
-
         self._use_fsdp = False
         self._use_tp = False
 
@@ -1366,6 +1365,17 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     should_pad,
                     self.text_pad_id,
                     gen_text[:, t]
+                )
+
+            if self.cfg.get('inference_force_bos_eos_follow_eou_speech_channel', None) and t >= num_transition_tokens:
+                not_special = (gen_audio[:, t] != self.speech_bos_id) & (gen_audio[:, t] != self.speech_eos_id)
+                should_pad = (eou_pred[:, t] == 0) & not_special[:, 0]
+
+                # if EOU is zero, allows text channel only to assume, zero, eou or bos
+                gen_audio[:, t] = torch.where(
+                    should_pad.unsqueeze(-1),
+                    gen_audio[:, 0], # first token that supposed to be silence
+                    gen_audio[:, t]
                 )
 
 

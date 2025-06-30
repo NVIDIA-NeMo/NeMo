@@ -1309,7 +1309,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             modality_adapter_emb=source_encoded[:, :1],
             asr_emb=asr_emb[:, :1],
             speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
-            eou=eou_pred[:, :1],
+            eou=eou_pred[:, :1] if self.cfg.get("use_eou_decoder", None) else None,
         )
         gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
         gen_audio[:, 0] = ans["audio_logits"][:, -1].argmax(dim=-1)
@@ -1328,7 +1328,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 modality_adapter_emb=source_encoded[:, t : t + 1],
                 asr_emb=asr_emb[:, t : t + 1],
                 speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
-                eou=eou_pred[:, t],
+                eou=eou_pred[:, t] if self.cfg.get("use_eou_decoder", None) else None,
             )
             gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
             gen_audio[:, t] = ans["audio_logits"][:, -1].argmax(dim=-1)

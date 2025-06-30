@@ -73,7 +73,7 @@ class EOUDecoderFromWav(NeuralModule):
         sliding_window_size: int = 12,
         max_position_embeddings: int = 8000,
         rope_theta: float = 10000.0,
-        attn_implementation: str = "eager",
+        attn_implementation: str = "eager"
     ):
         super().__init__()
 

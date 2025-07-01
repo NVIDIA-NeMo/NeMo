@@ -756,7 +756,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             eou_labels = generate_multiturn_speaking_mask(text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id).detach()
             # input shifted by one
             eou_input = F.pad(eou_labels[:, :-1], (1, 0), value=0.0).clone()
-
             # add extra delay on eou labels and input to make the eou be predicted before bos/eos
             if self.cfg.get("llm_eou_bos_eos_delay", 0):
                 eou_labels = F.pad(eou_labels[:, :-self.cfg.llm_eou_bos_eos_delay], (self.cfg.llm_eou_bos_eos_delay, 0), value=0.0)
@@ -1372,8 +1371,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # add only the first frame to the model
                 eou_emb = eou_emb + wav_eou_emb[:, :1]
 
-            input_embeds.add_(eou_emb)
+            input_embeds[:, 0] += eou_emb[:, 0]
             gen_eou = torch.empty(B, T, device=self.device, dtype=torch.long)
+
         elif self.cfg.get("use_eou_decoder", None):
             first_eou = gen_eou[:, :1]
             input_embeds.add_(eou_emb)
@@ -1414,18 +1414,19 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         # Autoregressive loop
         for t in range(1, T):
-            last_emb = self.embed_tokens(gen_text[:, t - 1])
-            input_embeds[:, t] += last_emb
-
             if self.cfg.get("llm_predict_eou", None):
                 cond_eou = gen_eou[:, t - 1]
-                eou_emb = self.eou_embedding(cond_eou)
+                eou_emb = self.eou_embedding(gen_eou[:, t - 1 : t])
                 if self.cfg.get("llm_use_extra_eou_waveform_encoder", False):
                     eou_emb = eou_emb + wav_eou_emb[:, t : t + 1]
+                input_embeds[:, t] += eou_emb[:, -1] # add the last eou emb
             elif self.cfg.get("use_eou_decoder", None):
                 cond_eou = gen_eou[:, t]
             else:
                 cond_eou = None
+
+            last_emb = self.embed_tokens(gen_text[:, t - 1])
+            input_embeds[:, t] += last_emb
 
             current_audio = gen_audio[:, t - 1 : t, :]
             ans = self(

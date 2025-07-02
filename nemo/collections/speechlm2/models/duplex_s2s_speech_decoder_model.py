@@ -296,6 +296,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # However, for S2S we need to access the activations before LM head directly
         # to feed them to the audio codec head.
         self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+        if 'Qwen2.5' in self.cfg.pretrained_llm:
+            # For Qwen, '<|im_start|>' is a common choice for a BOS token.
+            # You can check your tokenizer's vocabulary for the best candidate.
+            logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
+            self.tokenizer.bos_token = '<|im_start|>'
+            self.tokenizer.eos_token = '<|im_end|>'
+
         llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights).train()
         self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
         self.lm_head = llm.lm_head

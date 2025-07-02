@@ -613,7 +613,7 @@ def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
                 seg = fastcopy(
                     seg,
                     start=seg.start - move_agent_text_back_by,
-                    duration=(seg.end - seg.start) + move_agent_text_back_by,
+                    duration=(seg.end - seg.start) + move_agent_text_back_by + move_eos_forward_by,
                     speaker=seg.speaker
                 )
             new_segments.append(seg)
@@ -642,6 +642,7 @@ def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
 
     # Read configuration
     move_agent_text_back_by = config.get("move_agent_text_back_by", 0.32)
+    move_eos_forward_by = config.get("move_eos_forward_by", 0.0)
     insert_user_turn_silence_prob = config.get("insert_user_turn_silence_prob", 0.0)
     insert_additional_user_end_silence = config.get("insert_additional_user_end_silence", False)
     first_turn_silence_start = config.get("first_turn_silence_start", 0.0)

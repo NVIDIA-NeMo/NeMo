@@ -1002,7 +1002,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self.cfg.get("scale_loss_by", None):
             if self.cfg.scale_loss_by == 'non_sil_t':
                 loss_scale[:, :, :1] = torch.where(
-                    text_labels.unsqueeze(-1) != self.text_pad_id, 4.0, loss_scale[:, :, :1]
+                    text_labels.unsqueeze(-1) != self.text_pad_id,
+                    self.cfg.get("scale_loss_mask", self.cfg.get("nonsil_weight", 4.0)),
+                    loss_scale[:, :, :1],
                 )
             elif self.cfg.scale_loss_by == 'custom_nonsil_bos_eos':
                 loss_scale[:, :, :1] = torch.where(

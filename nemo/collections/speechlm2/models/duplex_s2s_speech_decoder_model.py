@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-import torch
 import random
+import tempfile
+
+import torch
 import torch.distributed as dist
+import torch.nn.functional as F
+import torchaudio
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
 from torch import Tensor, nn
-import torchaudio
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -30,46 +33,45 @@ from torch.distributed.tensor.parallel import (
     loss_parallel,
     parallelize_module,
 )
-import tempfile
 from transformers import DynamicCache
 
 from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str
-from nemo.collections.speechlm2.modules import TransformerARSpeechDecoder, EOUDecoder, EOUDecoderFromWav
+from nemo.collections.speechlm2.modules import EOUDecoder, EOUDecoderFromWav, TransformerARSpeechDecoder
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
-from nemo.collections.speechlm2.parts.metrics.token_accuracy import TokenAccuracy
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
+from nemo.collections.speechlm2.parts.metrics.token_accuracy import TokenAccuracy
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder, set_model_dict_for_partial_init
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_pretrained_hf,
+    set_model_dict_for_partial_init,
+    setup_audio_codec,
+    setup_speech_encoder,
+)
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
-from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.utils import logging
 
-
-
-import torch
-import torch.nn.functional as F
-import random
 
 def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
     """
     Efficient, batched speaking mask generator that marks 1 between <bos> and <eos> pairs.
     If <eos> is missing after a <bos>, mask continues to end. Handles multiple turns.
-    
+
     Args:
         input_ids (torch.Tensor): LongTensor of shape (B, T)
         bos_token_id (int): Token ID for <bos>
         eos_token_id (int): Token ID for <eos>
-        
+
     Returns:
         torch.Tensor: FloatTensor of shape (B, T), with 1.0 for speaking, 0.0 for silence.
-    
+
     Note BOS is considered as speaking (1) and EOS as non speaking 0
     """
     B, T = input_ids.shape
@@ -80,6 +82,7 @@ def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int 
     eos_cumsum = torch.cumsum(eos_mask, dim=1)
     speaking_mask = (bos_cumsum > eos_cumsum).to(torch.float32)
     return speaking_mask.long()
+
 
 def add_structured_noise_preserve_tail(
     mask: torch.Tensor,
@@ -135,6 +138,7 @@ def add_structured_noise_preserve_tail(
 
 import torch
 
+
 class EfficientBatchStreamingSpeakingMaskGenerator:
     def __init__(
         self,
@@ -146,7 +150,7 @@ class EfficientBatchStreamingSpeakingMaskGenerator:
         eou_window: int = 2,
         eos_lookback: int = 6,
         force_bos_from_eou: bool = False,  # NEW
-        bos_lookback: int = 6,            # NEW
+        bos_lookback: int = 6,  # NEW
     ):
         self.max_length = max_length
         self.batch_size = batch_size
@@ -170,7 +174,7 @@ class EfficientBatchStreamingSpeakingMaskGenerator:
         self.recent_eos_ptr = torch.zeros(batch_size, dtype=torch.long, device=device)
 
         self.recent_is_bos = torch.zeros(batch_size, bos_lookback, dtype=torch.bool, device=device)  # NEW
-        self.recent_bos_ptr = torch.zeros(batch_size, dtype=torch.long, device=device)              # NEW
+        self.recent_bos_ptr = torch.zeros(batch_size, dtype=torch.long, device=device)  # NEW
 
         self.t = 0  # timestep
 
@@ -214,46 +218,30 @@ class EfficientBatchStreamingSpeakingMaskGenerator:
             just_started = (prev_vals == 0.0) & (last_vals == 1.0)  # NEW
 
             no_recent_eos = ~self.recent_is_eos.any(dim=1)
-            no_recent_bos = ~self.recent_is_bos.any(dim=1)         # NEW
+            no_recent_bos = ~self.recent_is_bos.any(dim=1)  # NEW
 
             # Force EOS
-            forced_eos = (
-                (~is_eos) &
-                (self.bos_counts > self.eos_counts) &
-                just_ended &
-                no_recent_eos
-            )
+            forced_eos = (~is_eos) & (self.bos_counts > self.eos_counts) & just_ended & no_recent_eos
 
             self.eos_counts += forced_eos.int()
 
             # Force BOS (optional)
             if self.force_bos_from_eou:
-                forced_bos = (
-                    (~is_bos) &
-                    (self.bos_counts <= self.eos_counts) &
-                    just_started &
-                    no_recent_bos
-                )
+                forced_bos = (~is_bos) & (self.bos_counts <= self.eos_counts) & just_started & no_recent_bos
                 self.bos_counts += forced_bos.int()
 
         # Compute speaking mask
         is_speaking = (self.bos_counts > self.eos_counts).float()
-        is_speaking = torch.where(
-            is_eos | forced_eos,
-            torch.tensor(1.0, device=device),
-            is_speaking
-        )
+        is_speaking = torch.where(is_eos | forced_eos, torch.tensor(1.0, device=device), is_speaking)
 
         if self.t < self.max_length:
             self.target_mask[:, self.t] = is_speaking
 
         self.t += 1
-        return self.target_mask[:, :self.t]
+        return self.target_mask[:, : self.t]
 
     def finalize(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.target_mask[:, :self.t], self.eou_cache[:, :self.t]
-
-
+        return self.target_mask[:, : self.t], self.eou_cache[:, : self.t]
 
 
 class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
@@ -275,7 +263,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         self.advance_text_channel_by = self.cfg.get("advance_text_channel_by", None)
 
         # compute source fps
-        self.source_fps = self.source_sample_rate / (self.source_sample_rate * cfg.data.frame_length) # conver frame rate in fps
+        self.source_fps = self.source_sample_rate / (
+            self.source_sample_rate * cfg.data.frame_length
+        )  # conver frame rate in fps
 
         setup_audio_codec(self)
         self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
@@ -287,7 +277,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         # compute target fps
         self.target_fps = self.target_sample_rate / self.audio_codec.samples_per_frame
-        # compute interpolation factor to interpolate 
+        # compute interpolation factor to interpolate
         self.interpolation_factor = self.target_fps / self.source_fps
         # x = torch.nn.functional.interpolate(x.unsqueeze(1), size=None, scale_factor=[1, self.interpolation_factor], mode='nearest-exact', align_corners=None, recompute_scale_factor=None, antialias=False)
 
@@ -318,8 +308,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self.cfg.get("use_eou_decoder", None):
             if self.cfg.get("eou_decoder_from_wav", None):
                 self.eou_decoder = EOUDecoderFromWav(
-                    samples_per_frame=int(self.source_sample_rate/self.source_fps),
-                    audio_proj_size=1024, 
+                    samples_per_frame=int(self.source_sample_rate / self.source_fps),
+                    audio_proj_size=1024,
                     output_dim=2,
                     n_layers=self.cfg.get("eou_decoder_num_layers", 3),
                     d_model=1024,
@@ -330,7 +320,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 )
             else:
                 t_params = {
-                    "n_layers": self.cfg.get("eou_decoder_num_layers", 3), # 3 layers
+                    "n_layers": self.cfg.get("eou_decoder_num_layers", 3),  # 3 layers
                     "d_model": 768,
                     "d_ffn": 3072,
                     "sa_n_heads": 12,
@@ -348,8 +338,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         if self.cfg.get("inference_use_external_eou_predictor", None):
             self.eou_decoder = EOUDecoderFromWav(
-                samples_per_frame=int(self.source_sample_rate/self.source_fps),
-                audio_proj_size=1024, 
+                samples_per_frame=int(self.source_sample_rate / self.source_fps),
+                audio_proj_size=1024,
                 output_dim=2,
                 n_layers=self.cfg.get("eou_decoder_num_layers", 3),
                 d_model=1024,
@@ -363,15 +353,15 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self.cfg.get("llm_predict_eou", None):
             if self.cfg.get("llm_use_extra_eou_waveform_encoder", False):
                 self.eou_wav_encoder = EOUDecoderFromWav(
-                    samples_per_frame=int(self.source_sample_rate/self.source_fps),
-                    audio_proj_size=1024, 
+                    samples_per_frame=int(self.source_sample_rate / self.source_fps),
+                    audio_proj_size=1024,
                     output_dim=self.llm.config.hidden_size,
                     n_layers=self.cfg.get("llm_extra_eou_waveform_encoder_num_layers", 3),
                     d_model=1024,
                     d_ffn=4096,
                     is_causal=True,
                     sliding_window_size=12,
-                    max_position_embeddings=self.cfg.speech_decoder.max_length_causal_mask
+                    max_position_embeddings=self.cfg.speech_decoder.max_length_causal_mask,
                 )
             self.eou_embedding = torch.nn.Embedding(2, self.llm.config.hidden_size)
             self.eou_projection = nn.Linear(self.llm.config.hidden_size, 2)
@@ -381,7 +371,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if isinstance(llm_tokenizer_vocab_items, dict):
             llm_tokenizer_vocab_items = llm_tokenizer_vocab_items.items()
         else:
-            llm_tokenizer_vocab_items = [(subword, self.tokenizer.tokenizer._tokenizer.token_to_id(subword)) for subword in llm_tokenizer_vocab_items]
+            llm_tokenizer_vocab_items = [
+                (subword, self.tokenizer.tokenizer._tokenizer.token_to_id(subword))
+                for subword in llm_tokenizer_vocab_items
+            ]
 
         self.speech_generation = TransformerARSpeechDecoder(
             speech_decoder_parms=OmegaConf.to_container(self.cfg.speech_decoder),
@@ -425,10 +418,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     def init_speech_generation_from_tts_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
             if '.nemo' in checkpoint_path:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
@@ -438,30 +431,36 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     def init_speech_generation_from_another_s2s_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
             if '.nemo' in checkpoint_path:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             # filter keys to keep only speech generation keys and also
-            checkpoint_state = {k.replace("model.speech_decoder.", "").replace("speech_generation.", ""): v for k, v in checkpoint_state.items() if "model.speech_decoder." in k or "speech_generation." in k}
+            checkpoint_state = {
+                k.replace("model.speech_decoder.", "").replace("speech_generation.", ""): v
+                for k, v in checkpoint_state.items()
+                if "model.speech_decoder." in k or "speech_generation." in k
+            }
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.speech_generation.state_dict())
             self.speech_generation.load_state_dict(checkpoint_state, strict=True)
-    
+
     def init_eou_from_another_s2s_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
             if '.nemo' in checkpoint_path:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             # filter keys to keep only speech generation keys and also
-            checkpoint_state = {k.replace("eou_decoder.", ""): v for k, v in checkpoint_state.items() if "eou_decoder." in k}
+            checkpoint_state = {
+                k.replace("eou_decoder.", ""): v for k, v in checkpoint_state.items() if "eou_decoder." in k
+            }
             if self.cfg.get("use_eou_decoder", None) or self.cfg.get("inference_use_external_eou_predictor", None):
                 checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.eou_decoder.state_dict())
                 self.eou_decoder.load_state_dict(checkpoint_state, strict=True)
@@ -469,10 +468,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
             if '.nemo' in checkpoint_path:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                        checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                        checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
@@ -537,7 +536,18 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         """
         return get_pad_id(self.tokenizer)
 
-    def forward(self, input_embeds: Tensor, cache=None, input_audio_tokens=None, seq_mask=None, target_text_tokens=None, modality_adapter_emb=None, asr_emb=None, speaker_encoder_emb=None, eou=None) -> dict[str, Tensor]:
+    def forward(
+        self,
+        input_embeds: Tensor,
+        cache=None,
+        input_audio_tokens=None,
+        seq_mask=None,
+        target_text_tokens=None,
+        modality_adapter_emb=None,
+        asr_emb=None,
+        speaker_encoder_emb=None,
+        eou=None,
+    ) -> dict[str, Tensor]:
         """
         Separated text and speech prediction:
             - Speech prediction is achieved by a independent AR decoder based on last_hidden_state + audio tokens
@@ -570,24 +580,32 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
 
             if self.cfg.get('inference_force_bos_eos_follow_eou', None) and eou is not None:
-                not_special = (target_text_tokens[:, -1] != self.text_bos_id) & (target_text_tokens[:, -1] != self.text_eos_id)
+                not_special = (target_text_tokens[:, -1] != self.text_bos_id) & (
+                    target_text_tokens[:, -1] != self.text_eos_id
+                )
                 should_pad = (eou == 0).squeeze(-1) & not_special
                 # if EOU is zero, allows text channel only to assume, zero, eou or bos
-                target_text_tokens[:, -1] = torch.where(
-                    should_pad,
-                    self.text_pad_id,
-                    target_text_tokens[:, -1]
-                )
+                target_text_tokens[:, -1] = torch.where(should_pad, self.text_pad_id, target_text_tokens[:, -1])
         else:
             # drop text bos/eos
             if self.cfg.get("drop_text_bos_prob", None) and random.random() < self.cfg.drop_text_bos_prob:
-                target_text_tokens = torch.where(target_text_tokens == self.text_bos_id, self.text_pad_id, target_text_tokens)
+                target_text_tokens = torch.where(
+                    target_text_tokens == self.text_bos_id, self.text_pad_id, target_text_tokens
+                )
 
             if self.cfg.get("drop_text_eos_prob", None) and random.random() < self.cfg.drop_text_eos_prob:
-                target_text_tokens = torch.where(target_text_tokens == self.text_eos_id, self.text_pad_id, target_text_tokens)
+                target_text_tokens = torch.where(
+                    target_text_tokens == self.text_eos_id, self.text_pad_id, target_text_tokens
+                )
 
-        audio_logits, _  = self.speech_generation(
-            out['last_hidden_state'].transpose(0, 1), seq_mask, input_audio_tokens=input_audio_tokens, target_text_tokens=target_text_tokens, modality_adapter_emb=modality_adapter_emb, asr_emb=asr_emb, speaker_encoder_emb=speaker_encoder_emb
+        audio_logits, _ = self.speech_generation(
+            out['last_hidden_state'].transpose(0, 1),
+            seq_mask,
+            input_audio_tokens=input_audio_tokens,
+            target_text_tokens=target_text_tokens,
+            modality_adapter_emb=modality_adapter_emb,
+            asr_emb=asr_emb,
+            speaker_encoder_emb=speaker_encoder_emb,
         )
 
         audio_logits = audio_logits.view(B, T, self._num_codebooks, self.speech_vocab_size)
@@ -598,21 +616,32 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         }
         if cache is not None:
             ans["cache"] = out["past_key_values"]
-        
+
         if self.cfg.get("llm_predict_eou", None):
             eou_logits = self.eou_projection(out['last_hidden_state'])
             ans["eou_logits"] = eou_logits
         return ans
 
-
-    def add_noise_to_batch(self, batch_audio, noise_folder, snr_db=20, noise_prob_scale_user=0.3, noise_prob_scale_user_min_snr=-15, noise_prob_scale_user_max_snr=24, snr_measure_dur=0.0, noise_resample=True, noise_prob_low_pass=0.1):
+    def add_noise_to_batch(
+        self,
+        batch_audio,
+        noise_folder,
+        snr_db=20,
+        noise_prob_scale_user=0.3,
+        noise_prob_scale_user_min_snr=-15,
+        noise_prob_scale_user_max_snr=24,
+        snr_measure_dur=0.0,
+        noise_resample=True,
+        noise_prob_low_pass=0.1,
+    ):
 
         batch_size, audio_length = batch_audio.shape
 
         import glob
+
+        import librosa
         import soundfile as sf
         from scipy.signal import butter, lfilter
-        import librosa
 
         noise_files = [f for f in glob.glob(noise_folder + "/*.wav")]
         if not noise_files:
@@ -635,10 +664,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 scaling_factor = get_scale_factor(
                     batch_audio[i],
                     batch_audio[i],
-                    random.randint(
-                        noise_prob_scale_user_min_snr,
-                        noise_prob_scale_user_max_snr
-                    ),
+                    random.randint(noise_prob_scale_user_min_snr, noise_prob_scale_user_max_snr),
                 )
                 batch_audio[i] = batch_audio[i] * scaling_factor
 
@@ -677,7 +703,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # Or if noise was originally a list/numpy array and you want to keep Python's random
                 # start_idx = random.randint(0, len(noise) - audio_length)
                 noise = noise[start_idx : start_idx + audio_length]
-
 
             # Function to create a low-pass filter
             def butter_lowpass(cutoff, fs, order=5):
@@ -722,20 +747,42 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             noise_prob = 0.99
             noise_min_snr = 20
             noise_max_snr = 50
-            noise_path = self.cfg.get('old_noise_aug_path', "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data/duplex/dns5/dns5_demand_noise/")
+            noise_path = self.cfg.get(
+                'old_noise_aug_path',
+                "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data/duplex/dns5/dns5_demand_noise/",
+            )
             noise_path_name = "*"
             no_noise_audio = batch["source_audio"].clone()
-            if self.training and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex' and noise_prob and random.random() < noise_prob:
-                batch["source_audio"] = self.add_noise_to_batch(batch["source_audio"], os.path.join(noise_path, noise_path_name), snr_db=random.randint(noise_min_snr, noise_max_snr), noise_prob_scale_user=0.3, noise_prob_scale_user_min_snr=-15, noise_prob_scale_user_max_snr=24, snr_measure_dur=0.0, noise_resample=True, noise_prob_low_pass=0.1)
+            if (
+                self.training
+                and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
+                and noise_prob
+                and random.random() < noise_prob
+            ):
+                batch["source_audio"] = self.add_noise_to_batch(
+                    batch["source_audio"],
+                    os.path.join(noise_path, noise_path_name),
+                    snr_db=random.randint(noise_min_snr, noise_max_snr),
+                    noise_prob_scale_user=0.3,
+                    noise_prob_scale_user_min_snr=-15,
+                    noise_prob_scale_user_max_snr=24,
+                    snr_measure_dur=0.0,
+                    noise_resample=True,
+                    noise_prob_low_pass=0.1,
+                )
         else:
             # change audio volume randomly
             if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
                 # prev codebase had 0.0631 and 5.6234 here we round the values
-                min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631) # -15 snr
-                max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234) # 24 snr
+                min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631)  # -15 snr
+                max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234)  # 24 snr
 
                 # get a random float value between min and max
-                scaling_factor = torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device) * (max_scale_val - min_scale_val) + min_scale_val
+                scaling_factor = (
+                    torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device)
+                    * (max_scale_val - min_scale_val)
+                    + min_scale_val
+                )
                 batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
 
             # apply low pass filter
@@ -743,20 +790,26 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # prev codebase had 0.0631 and 5.6234 here we round the values
                 cutoff_freq = self.cfg.get('noise_low_pass_cutoff_freq', 1000.0)
                 # note here we are using a biquad filter, older codebase we are using a filter of order 5
-                batch["source_audio"] = torchaudio.functional.lowpass_biquad(waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq)
+                batch["source_audio"] = torchaudio.functional.lowpass_biquad(
+                    waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq
+                )
 
         source_encoded, source_encoded_lens, asr_emb = self.perception(
-            input_signal=batch["source_audio"], input_signal_length=batch["source_audio_lens"], return_encoder_emb=True,
+            input_signal=batch["source_audio"],
+            input_signal_length=batch["source_audio_lens"],
+            return_encoder_emb=True,
         )
 
         # if inference return speaker embedding None and it will uses the cached speaker embedding
         if not self.training:
             speaker_encoder_emb = None
-        else: # if training or eval extract embedding from first agent turn returned by the dataloader 
+        else:  # if training or eval extract embedding from first agent turn returned by the dataloader
             if self.speech_generation.use_speaker_encoder:
                 target_first_turn_audio = batch["target_first_turn_audio"]
                 target_first_turn_audio_lens = batch["target_first_turn_audio_lens"]
-                speaker_encoder_emb = self.speech_generation.get_speaker_embedding(target_first_turn_audio, target_first_turn_audio_lens, self.target_sample_rate)
+                speaker_encoder_emb = self.speech_generation.get_speaker_embedding(
+                    target_first_turn_audio, target_first_turn_audio_lens, self.target_sample_rate
+                )
             else:
                 speaker_encoder_emb = None
 
@@ -819,11 +872,11 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self.advance_text_channel_by:
             pad = torch.full(
                 (target_tokens.shape[0], self.advance_text_channel_by),
-                fill_value=self.text_pad_id, 
+                fill_value=self.text_pad_id,
                 device=target_tokens.device,
                 dtype=torch.long,
             )
-            target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by:], pad], dim=-1)
+            target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by :], pad], dim=-1)
             # make sure that eos/bos is in the place (it can cut tokens from the first advance_text_channel_by tokens and this will breaks everything)
 
         input_ids = torch.cat([target_codes, target_tokens[..., None]], dim=-1)
@@ -838,7 +891,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         text_labels = input_ids[:, 1:, -1]  # (B, T-1)
         audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
         audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
-
 
         input_embeds = self.embed_tokens(text_inputs)
 
@@ -868,25 +920,35 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # compute eou labels and logits. Note we are ignoring silence augmented batches because this can break the EOU predictor
         if self.cfg.get("use_eou_decoder", None):
             # create eou labels
-            eou_labels = generate_multiturn_speaking_mask(text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id).detach()
+            eou_labels = generate_multiturn_speaking_mask(
+                text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id
+            ).detach()
             # predict eou logits if it is not a silence augmented batch
             if self.cfg.get("eou_decoder_ignore_sil_batch", False) and "silence_augmented" in batch["formatter"][0]:
                 eou_skip_batch = True
             else:
                 if self.cfg.get("eou_decoder_from_wav", None):
-                    eou_logits, _ = self.eou_decoder(batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"])
+                    eou_logits, _ = self.eou_decoder(
+                        batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"]
+                    )
                 else:
-                    eou_logits = self.eou_decoder(asr_emb[:, :-1], seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1)))
+                    eou_logits = self.eou_decoder(
+                        asr_emb[:, :-1], seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1))
+                    )
 
                 # ensures that logits and labels has the same shape
                 if eou_labels.size(1) > eou_logits.size(1):
                     # Pad on the right (end of time axis)
                     pad_len = eou_labels.size(1) - eou_logits.size(1)
-                    eou_logits = torch.nn.functional.pad(eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                    eou_logits = torch.nn.functional.pad(
+                        eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0
+                    )
                 else:
-                    eou_logits = eou_logits[:, :eou_labels.size(1)]
+                    eou_logits = eou_logits[:, : eou_labels.size(1)]
             if self.cfg.get("eou_structured_noise_aug_enabled", None):
-                eou_labels_aug = add_structured_noise_preserve_tail(eou_labels, span_prob=0.05, min_len=2, max_len=3, min_preserve=4)
+                eou_labels_aug = add_structured_noise_preserve_tail(
+                    eou_labels, span_prob=0.05, min_len=2, max_len=3, min_preserve=4
+                )
                 # add eou embedding to the llm input
                 eou_emb = self.eou_embedding(eou_labels_aug)
             else:
@@ -894,28 +956,38 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 eou_emb = self.eou_embedding(eou_labels)
 
             input_embeds.add_(eou_emb)
-            eou_loss_scale = seq_mask[:, :, 0].clone().float()
+        eou_loss_scale = seq_mask[:, :, 0].clone().float()
 
         if self.cfg.get("llm_predict_eou", None):
             # create eou labels
-            eou_labels = generate_multiturn_speaking_mask(text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id).detach()
+            eou_labels = generate_multiturn_speaking_mask(
+                text_labels, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id
+            ).detach()
             # input shifted by one
             eou_input = F.pad(eou_labels[:, :-1], (1, 0), value=0.0).clone()
             # add extra delay on eou labels and input to make the eou be predicted before bos/eos
             if self.cfg.get("llm_eou_bos_eos_delay", 0):
-                eou_labels = F.pad(eou_labels[:, :-self.cfg.llm_eou_bos_eos_delay], (self.cfg.llm_eou_bos_eos_delay, 0), value=0.0)
-                eou_input = F.pad(eou_input[:, :-self.cfg.llm_eou_bos_eos_delay], (self.cfg.llm_eou_bos_eos_delay, 0), value=0.0)
+                eou_labels = F.pad(
+                    eou_labels[:, : -self.cfg.llm_eou_bos_eos_delay], (self.cfg.llm_eou_bos_eos_delay, 0), value=0.0
+                )
+                eou_input = F.pad(
+                    eou_input[:, : -self.cfg.llm_eou_bos_eos_delay], (self.cfg.llm_eou_bos_eos_delay, 0), value=0.0
+                )
 
             eou_emb = self.eou_embedding(eou_input)
             if self.cfg.get("llm_use_extra_eou_waveform_encoder", False):
-                wav_eou_emb, _ = self.eou_wav_encoder(batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"])
+                wav_eou_emb, _ = self.eou_wav_encoder(
+                    batch["source_audio"].to(source_encoded.dtype), batch["source_audio_lens"]
+                )
                 # ensures that logits and labels has the same shape
                 if eou_emb.size(1) > wav_eou_emb.size(1):
                     # Pad on the right (end of time axis)
                     pad_len = eou_emb.size(1) - wav_eou_emb.size(1)
-                    wav_eou_emb = torch.nn.functional.pad(wav_eou_emb, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                    wav_eou_emb = torch.nn.functional.pad(
+                        wav_eou_emb, pad=(0, 0, 0, pad_len), mode='constant', value=0.0
+                    )
                 else:
-                    wav_eou_emb = wav_eou_emb[:, :eou_emb.size(1)]
+                    wav_eou_emb = wav_eou_emb[:, : eou_emb.size(1)]
                 # add eou input emb with the wav encoder embedding
                 eou_emb = eou_emb + wav_eou_emb
 
@@ -929,14 +1001,25 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         if self.cfg.get("scale_loss_by", None):
             if self.cfg.scale_loss_by == 'non_sil_t':
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) != self.text_pad_id, 4.0, loss_scale[:, :, :1])
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) != self.text_pad_id, 4.0, loss_scale[:, :, :1]
+                )
             elif self.cfg.scale_loss_by == 'custom_nonsil_bos_eos':
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) != self.text_pad_id, self.cfg.get("nonsil_weight", 1.0),
-                                                   loss_scale[:, :, :1])
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_bos_id, self.cfg.get("bos_weight", 10.0),
-                                                   loss_scale[:, :, :1])
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_eos_id, self.cfg.get("eos_weight", 10.0),
-                                                   loss_scale[:, :, :1])
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) != self.text_pad_id,
+                    self.cfg.get("nonsil_weight", 1.0),
+                    loss_scale[:, :, :1],
+                )
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) == self.text_bos_id,
+                    self.cfg.get("bos_weight", 10.0),
+                    loss_scale[:, :, :1],
+                )
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) == self.text_eos_id,
+                    self.cfg.get("eos_weight", 10.0),
+                    loss_scale[:, :, :1],
+                )
             elif self.cfg.scale_loss_by == 'dynamic_text_non_sil_4x_and_bos_eos':
                 # Set text loss weights
                 for i in range(text_labels.size(0)):
@@ -959,10 +1042,16 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 loss_scale[:, :, :1] = torch.where(labels == self.text_bos_id, 6.0, loss_scale[:, :, :1])
                 loss_scale[:, :, :1] = torch.where(labels == self.text_eos_id, 6.0, loss_scale[:, :, :1])
             elif self.cfg.scale_loss_by == 'non_sil_4_eos_bos_12':
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) != self.text_pad_id, 4.0, loss_scale[:, :, :1])
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) != self.text_pad_id, 4.0, loss_scale[:, :, :1]
+                )
                 # set eos/bos 3x more important than a speech tokens and 12x more than a silence, this is that high because we will have only one bos/eos per turn and if it is nor right predicted the model will not produce text/speech
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_bos_id, 12.0, loss_scale[:, :, :1])
-                loss_scale[:, :, :1] = torch.where(text_labels.unsqueeze(-1) == self.text_eos_id, 12.0, loss_scale[:, :, :1])
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) == self.text_bos_id, 12.0, loss_scale[:, :, :1]
+                )
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) == self.text_eos_id, 12.0, loss_scale[:, :, :1]
+                )
             elif self.cfg.scale_loss_by == 'non_sil_4_dynamic_eos_bos':
                 # Expand text_labels to match the shape of loss_scale: [B, T] → [B, T, 1]
                 text_labels_exp = text_labels.unsqueeze(-1)
@@ -971,8 +1060,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # Padding tokens retain their existing value
                 loss_scale[:, :, :1] = torch.where(
                     text_labels_exp != self.text_pad_id,  # Condition: not a padding token
-                    4.0,                        # Assign fixed weight
-                    loss_scale[:, :, :1]                  # Keep original value otherwise
+                    4.0,  # Assign fixed weight
+                    loss_scale[:, :, :1],  # Keep original value otherwise
                 )
 
                 # Compute the total loss weight assigned to valid (non-padding) tokens in each sequence
@@ -1003,16 +1092,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
                     # Assign new_weight to BOS tokens in the current sequence
                     loss_scale[i, :, :1] = torch.where(
-                        text_labels_exp[i, :, :1] == self.text_bos_id,
-                        new_weight,
-                        loss_scale[i, :, :1]
+                        text_labels_exp[i, :, :1] == self.text_bos_id, new_weight, loss_scale[i, :, :1]
                     )
 
                     # Assign new_weight to EOS tokens in the current sequence
                     loss_scale[i, :, :1] = torch.where(
-                        text_labels_exp[i, :, :1] == self.text_eos_id,
-                        new_weight,
-                        loss_scale[i, :, :1]
+                        text_labels_exp[i, :, :1] == self.text_eos_id, new_weight, loss_scale[i, :, :1]
                     )
 
             elif self.cfg.scale_loss_by == 'non_sil_4_dynamic_x_less_eos_bos_speech_text':
@@ -1023,14 +1108,16 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # Padding tokens retain their existing value
                 loss_scale[:, :, :1] = torch.where(
                     text_labels_exp != self.text_pad_id,  # Condition: not a padding token
-                    4.0,                        # Assign fixed weight
-                    loss_scale[:, :, :1]                  # Keep original value otherwise
+                    4.0,  # Assign fixed weight
+                    loss_scale[:, :, :1],  # Keep original value otherwise
                 )
 
                 # Compute the total loss weight assigned to valid (non-padding) tokens in each sequence
                 # Shape: [B] — one scalar value per batch item
                 text_tot_scale_for_valid_tokens = loss_scale[:, :, :1].flatten(1, 2).sum(-1)
-                speech_tot_scale_for_valid_tokens = loss_scale[:, :, -1:].flatten(1, 2).sum(-1) # use only the last speech channel because all the channels are identical
+                speech_tot_scale_for_valid_tokens = (
+                    loss_scale[:, :, -1:].flatten(1, 2).sum(-1)
+                )  # use only the last speech channel because all the channels are identical
 
                 # Count how many BOS tokens are present per sequence
                 # Shape: [B]
@@ -1048,8 +1135,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     # Avoid division by zero: only compute new weight if BOS/EOS tokens are present
                     if tot_special_tokens[i] > 0:
                         # Redistribute the total valid token weight equally across BOS and EOS tokens
-                        new_weight_text = (text_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / self.cfg.get("dynamic_scale_loss_x", 10.0)
-                        new_weight_speech = (speech_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / self.cfg.get("dynamic_scale_loss_x", 10.0)
+                        new_weight_text = (text_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / self.cfg.get(
+                            "dynamic_scale_loss_x", 10.0
+                        )
+                        new_weight_speech = (
+                            speech_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]
+                        ) / self.cfg.get("dynamic_scale_loss_x", 10.0)
                     else:
                         # No special tokens found — set weight to zero
                         new_weight_text = 0.0
@@ -1058,37 +1149,96 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     # set text eos/bos scale
                     # Assign new_weight to BOS tokens in the current sequence
                     loss_scale[i, :, :1] = torch.where(
-                        text_labels_exp[i, :, :1] == self.text_bos_id,
-                        new_weight_text,
-                        loss_scale[i, :, :1]
+                        text_labels_exp[i, :, :1] == self.text_bos_id, new_weight_text, loss_scale[i, :, :1]
                     )
 
                     # Assign new_weight to EOS tokens in the current sequence
                     loss_scale[i, :, :1] = torch.where(
-                        text_labels_exp[i, :, :1] == self.text_eos_id,
-                        new_weight_text,
-                        loss_scale[i, :, :1]
+                        text_labels_exp[i, :, :1] == self.text_eos_id, new_weight_text, loss_scale[i, :, :1]
                     )
                     # set speech bos/eos scale
                     # Assign new_weight to BOS tokens in the current sequence
                     loss_scale[i, :, 1:] = torch.where(
-                        audio_labels[i, :, :] == self.speech_bos_id,
-                        new_weight_speech,
-                        loss_scale[i, :, 1:]
+                        audio_labels[i, :, :] == self.speech_bos_id, new_weight_speech, loss_scale[i, :, 1:]
                     )
 
                     # Assign new_weight to EOS tokens in the current sequence
                     loss_scale[i, :, 1:] = torch.where(
-                        audio_labels[i, :, :] == self.speech_eos_id,
-                        new_weight_speech,
-                        loss_scale[i, :, 1:]
+                        audio_labels[i, :, :] == self.speech_eos_id, new_weight_speech, loss_scale[i, :, 1:]
                     )
 
+            elif self.cfg.scale_loss_by == 'non_sil_4_dynamic_10x_less_eos_bos_speech_text':
+                # Expand text_labels to match the shape of loss_scale: [B, T] → [B, T, 1]
+                text_labels_exp = text_labels.unsqueeze(-1)
+
+                # Assign a weight of 4.0 to all non-padding tokens in the loss scale
+                # Padding tokens retain their existing value
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels_exp != self.text_pad_id,  # Condition: not a padding token
+                    4.0,  # Assign fixed weight
+                    loss_scale[:, :, :1],  # Keep original value otherwise
+                )
+
+                # Compute the total loss weight assigned to valid (non-padding) tokens in each sequence
+                # Shape: [B] — one scalar value per batch item
+                text_tot_scale_for_valid_tokens = loss_scale[:, :, :1].flatten(1, 2).sum(-1)
+                speech_tot_scale_for_valid_tokens = (
+                    loss_scale[:, :, -1:].flatten(1, 2).sum(-1)
+                )  # use only the last speech channel because all the channels are identical
+
+                # Count how many BOS tokens are present per sequence
+                # Shape: [B]
+                num_bos_tokens = (text_labels_exp == self.text_bos_id).flatten(1, 2).sum(-1)
+
+                # Count how many EOS tokens are present per sequence
+                # Shape: [B]
+                num_eos_tokens = (text_labels_exp == self.text_eos_id).flatten(1, 2).sum(-1)
+
+                # Compute the total number of special tokens (BOS + EOS) for each sequence
+                # Shape: [B]
+                tot_special_tokens = num_bos_tokens + num_eos_tokens
+                # Loop through each item in the batch to reassign loss weight to special tokens
+                for i in range(text_labels.size(0)):
+                    # Avoid division by zero: only compute new weight if BOS/EOS tokens are present
+                    if tot_special_tokens[i] > 0:
+                        # Redistribute the total valid token weight equally across BOS and EOS tokens
+                        new_weight_text = (text_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / 10.0
+                        new_weight_speech = (speech_tot_scale_for_valid_tokens[i] / tot_special_tokens[i]) / 10.0
+                    else:
+                        # No special tokens found — set weight to zero
+                        new_weight_text = 0.0
+                        new_weight_speech = 0.0
+
+                    # set text eos/bos scale
+                    # Assign new_weight to BOS tokens in the current sequence
+                    loss_scale[i, :, :1] = torch.where(
+                        text_labels_exp[i, :, :1] == self.text_bos_id, new_weight_text, loss_scale[i, :, :1]
+                    )
+
+                    # Assign new_weight to EOS tokens in the current sequence
+                    loss_scale[i, :, :1] = torch.where(
+                        text_labels_exp[i, :, :1] == self.text_eos_id, new_weight_text, loss_scale[i, :, :1]
+                    )
+                    # set speech bos/eos scale
+                    # Assign new_weight to BOS tokens in the current sequence
+                    loss_scale[i, :, 1:] = torch.where(
+                        audio_labels[i, :, :] == self.speech_bos_id, new_weight_speech, loss_scale[i, :, 1:]
+                    )
+
+                    # Assign new_weight to EOS tokens in the current sequence
+                    loss_scale[i, :, 1:] = torch.where(
+                        audio_labels[i, :, :] == self.speech_eos_id, new_weight_speech, loss_scale[i, :, 1:]
+                    )
             else:
                 raise ValueError(f"Unknown scale_loss_by: {self.cfg.scale_loss_by}")
 
         # debug samples:
-        if self.cfg.get("debug_dataloader_audios_path", None) and self.training and "silence_augmented" in batch["formatter"][0]:
+        if (
+            self.cfg.get("debug_dataloader_audios_path", None)
+            and self.training
+            and "silence_augmented" in batch["formatter"][0]
+        ):
+
             def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
                 """
                 Count the number of consecutive silence tokens at the beginning of a 1D tensor.
@@ -1110,24 +1260,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     else:
                         break
                 return count
+
             def write_wave(one_audio_signal, file_name, sr=None):
                 import numpy as np
                 import soundfile as sf
+
                 one_audio_signal = one_audio_signal.cpu().numpy()
                 one_audio_signal = one_audio_signal.astype(np.float32)
                 if sr is None:
                     sr = self.target_sample_rate
                 # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
-                sf.write(file_name, one_audio_signal, sr)    
+                sf.write(file_name, one_audio_signal, sr)
 
             # encode and decode the audio
             with fp32_precision(), torch.no_grad():
-                lengths = torch.tensor([batch["target_audio"].shape[1]]*batch["target_audio"].shape[0]).to(self.audio_codec.device)
+                lengths = torch.tensor([batch["target_audio"].shape[1]] * batch["target_audio"].shape[0]).to(
+                    self.audio_codec.device
+                )
                 reconstructed_audio_from_wav, _ = self.audio_codec(audio=batch["target_audio"], audio_len=lengths)
                 # reconstruct wav
                 audio_labels_ = replace_control_speech_codes(audio_labels, self._control_codes)
                 with fp32_precision(), torch.no_grad():
-                    lengths = torch.tensor([audio_labels_.shape[1]]*audio_labels_.shape[0]).to(self.audio_codec.device)
+                    lengths = torch.tensor([audio_labels_.shape[1]] * audio_labels_.shape[0]).to(
+                        self.audio_codec.device
+                    )
                     reconstructed_audio_from_tokens, _ = self.audio_codec.decode(
                         tokens=audio_labels_.transpose(1, 2), tokens_len=lengths
                     )
@@ -1136,39 +1292,46 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 write_wave(
                     batch["target_audio"][i],
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_{i}.wav"),
-                    sr=self.target_sample_rate
+                    sr=self.target_sample_rate,
                 )
                 write_wave(
                     batch["target_first_turn_audio"][i],
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"speaker_ref_{i}.wav"),
-                    sr=self.target_sample_rate
+                    sr=self.target_sample_rate,
                 )
                 write_wave(
                     batch["source_audio"][i],
                     os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"source_audio_{i}.wav"),
-                    sr=self.source_sample_rate
+                    sr=self.source_sample_rate,
                 )
-                
+
                 write_wave(
                     reconstructed_audio_from_tokens[i],
-                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"),
-                    sr=self.target_sample_rate
+                    os.path.join(
+                        self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"
+                    ),
+                    sr=self.target_sample_rate,
                 )
 
                 write_wave(
                     reconstructed_audio_from_wav[i],
-                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_waveform_{i}.wav"),
-                    sr=self.target_sample_rate
+                    os.path.join(
+                        self.cfg.get("debug_dataloader_audios_path"),
+                        f"target_audio_reconstructed_from_waveform_{i}.wav",
+                    ),
+                    sr=self.target_sample_rate,
                 )
                 if self.cfg.get("use_eou_decoder", None) or self.cfg.get("llm_predict_eou", None):
                     repeat_factor = int(self.target_sample_rate / self.target_fps)
-                    eou_wav = eou_labels[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)  # (B, T, repeat_factor)
-                    eou_wav = eou_wav.view(1, -1) # (B, T * repeat_factor)
-                    eou_wav = eou_wav.float() * 0.8 #  make 1 audible and keep 0 as total silence
+                    eou_wav = (
+                        eou_labels[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)
+                    )  # (B, T, repeat_factor)
+                    eou_wav = eou_wav.view(1, -1)  # (B, T * repeat_factor)
+                    eou_wav = eou_wav.float() * 0.8  #  make 1 audible and keep 0 as total silence
                     write_wave(
                         eou_wav.squeeze(),
                         os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"eou_{i}.wav"),
-                        sr=self.target_sample_rate
+                        sr=self.target_sample_rate,
                     )
 
             num_bos_tokens = (text_labels.unsqueeze(-1) == self.text_bos_id).flatten(1, 2).sum(-1)
@@ -1177,10 +1340,26 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             num_eos_tokens = (text_labels.unsqueeze(-1) == self.text_eos_id).flatten(1, 2).sum(-1)
             print("Num eos:", num_eos_tokens, "num bos:", num_bos_tokens)
             # check text
-            print("text_labels decoded:", tokens_to_str(text_labels[-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
-            print("target labels from dataloader decoded:",  tokens_to_str(batch["target_tokens"][-1:], target_codes_lens-1, tokenizer=self.tokenizer, pad_id=self.text_pad_id))
-            print("Number of padding tokens on the begining:", count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id))
-            
+            print(
+                "text_labels decoded:",
+                tokens_to_str(
+                    text_labels[-1:], target_codes_lens - 1, tokenizer=self.tokenizer, pad_id=self.text_pad_id
+                ),
+            )
+            print(
+                "target labels from dataloader decoded:",
+                tokens_to_str(
+                    batch["target_tokens"][-1:],
+                    target_codes_lens - 1,
+                    tokenizer=self.tokenizer,
+                    pad_id=self.text_pad_id,
+                ),
+            )
+            print(
+                "Number of padding tokens on the begining:",
+                count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id),
+            )
+
             print(batch["formatter"])
             if audio_labels_.shape[0] > 1 and num_bos_tokens[0].item() == num_eos_tokens[0].item():
                 exit()
@@ -1207,9 +1386,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if not hasattr(self, "_param_tracker_state"):
             # First-time call: cache current weights
             self._param_tracker_state = {
-                name: p.clone().detach()
-                for name, p in self.named_parameters()
-                if param_filter in name
+                name: p.clone().detach() for name, p in self.named_parameters() if param_filter in name
             }
             if verbose:
                 print(f"[Tracker] Initialized snapshot for: {[k for k in self._param_tracker_state]}")
@@ -1238,7 +1415,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm, self.speech_generation):
             if is_frozen(m):
                 m.eval()
-        
+
         if self.cfg.get("use_eou_decoder", None):
             if is_frozen(self.eou_decoder):
                 self.eou_decoder.eval()
@@ -1268,13 +1445,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 text_logits = text_logits * inputs["seq_mask"][:, :, 0].unsqueeze(-1)
 
             text_loss = (
-                (torch.nn.functional.cross_entropy(
+                torch.nn.functional.cross_entropy(
                     text_logits.flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
                     inputs["text_labels"].flatten(0, 1),
                     reduction="none",
-                ) * inputs["loss_scale"][:, :, 0].flatten(0, 1)).sum(-1)
-                / num_frames
-            )
+                )
+                * inputs["loss_scale"][:, :, 0].flatten(0, 1)
+            ).sum(-1) / num_frames
 
             # mask audio logits to ignore sequence padding
             audio_logits = forward_outputs["audio_logits"]
@@ -1282,38 +1459,50 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 audio_logits = audio_logits * inputs["seq_mask"][:, :, -1].unsqueeze(-1).unsqueeze(-1)
 
             audio_loss = (
-                (torch.nn.functional.cross_entropy(
+                torch.nn.functional.cross_entropy(
                     audio_logits.flatten(0, 2),  # (B, T, K, Vs) -> (*, Vs)
                     inputs["audio_labels"].flatten(0, 2),
                     reduction="none",
-                ) * inputs["loss_scale"][:, :, 1:].flatten(0, 2)).sum(-1)
-                / (num_frames * self._num_codebooks)
-            )
+                )
+                * inputs["loss_scale"][:, :, 1:].flatten(0, 2)
+            ).sum(-1) / (num_frames * self._num_codebooks)
 
         loss = self.cfg.text_loss_weight * text_loss + self.cfg.audio_loss_weight * audio_loss
 
         eou_loss = 0.0
         if self.cfg.get("use_eou_decoder", None) and not inputs["eou_skip_batch"]:
             eou_loss = (
-                (torch.nn.functional.cross_entropy(
+                torch.nn.functional.cross_entropy(
                     inputs["eou_logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
                     inputs["eou_labels"].flatten(0, 1),
                     reduction="none",
-                ) * inputs["eou_loss_scale"].flatten(0, 1)).sum(-1)
-                / num_frames
-            )
+                )
+                * inputs["eou_loss_scale"].flatten(0, 1)
+            ).sum(-1) / num_frames
 
             loss = loss + eou_loss * self.cfg.get("eou_loss_weight", 2.0)
 
         if self.cfg.get("llm_predict_eou", None) and not inputs["eou_skip_batch"]:
             eou_loss = (
-                (torch.nn.functional.cross_entropy(
+                torch.nn.functional.cross_entropy(
                     forward_outputs["eou_logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
                     inputs["eou_labels"].flatten(0, 1),
                     reduction="none",
-                ) * inputs["eou_loss_scale"].flatten(0, 1)).sum(-1)
-                / num_frames
-            )
+                )
+                * inputs["eou_loss_scale"].flatten(0, 1)
+            ).sum(-1) / num_frames
+
+            loss = loss + eou_loss * self.cfg.get("eou_loss_weight", 2.0)
+
+        if self.cfg.get("llm_predict_eou", None) and not inputs["eou_skip_batch"]:
+            eou_loss = (
+                torch.nn.functional.cross_entropy(
+                    forward_outputs["eou_logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
+                    inputs["eou_labels"].flatten(0, 1),
+                    reduction="none",
+                )
+                * inputs["eou_loss_scale"].flatten(0, 1)
+            ).sum(-1) / num_frames
 
             loss = loss + eou_loss * self.cfg.get("eou_loss_weight", 2.0)
 
@@ -1340,7 +1529,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     def on_train_epoch_start(self) -> None:
         setup_audio_codec(self)  # potentially reloads the audio codec to make sure it's in fp32
         if hasattr(self.speech_generation, "use_speaker_encoder") and self.speech_generation.use_speaker_encoder:
-            self.speech_generation.setup_speaker_encoder() # potentially reloads the speaker encoder to make sure it's in fp32
+            self.speech_generation.setup_speaker_encoder()  # potentially reloads the speaker encoder to make sure it's in fp32
 
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
@@ -1348,9 +1537,15 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.bleu = BLEU().reset()
-        tolerance = int(self.cfg.get("val_acc_tolerance", 160)/(1000/self.target_fps)) # 160 ms as default tolerance --> 2 tokens for 12.5FPS and 1 for 25FPS
-        self.text_bos_acc = TokenAccuracy(token_name="text_bos", token_id=self.text_bos_id, tolerance=tolerance).reset()
-        self.text_eos_acc = TokenAccuracy(token_name="text_eos", token_id=self.text_eos_id, tolerance=tolerance).reset()
+        tolerance = int(
+            self.cfg.get("val_acc_tolerance", 160) / (1000 / self.target_fps)
+        )  # 160 ms as default tolerance --> 2 tokens for 12.5FPS and 1 for 25FPS
+        self.text_bos_acc = TokenAccuracy(
+            token_name="text_bos", token_id=self.text_bos_id, tolerance=tolerance
+        ).reset()
+        self.text_eos_acc = TokenAccuracy(
+            token_name="text_eos", token_id=self.text_eos_id, tolerance=tolerance
+        ).reset()
 
     def on_validation_epoch_end(self, prefix="val") -> None:
         asr_bleu = self.asr_bleu.compute()
@@ -1370,7 +1565,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         # Update speaker embedding to reflect the one in the prompt during inference
         if self.speech_generation.use_speaker_encoder and self.speech_generation.inference_speaker_reference:
-            self.speech_generation.update_inference_speaker_embedding(self.speech_generation.inference_speaker_reference)
+            self.speech_generation.update_inference_speaker_embedding(
+                self.speech_generation.inference_speaker_reference
+            )
 
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
@@ -1399,8 +1596,16 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
-                    eou_pred=results["gen_eou"] if self.cfg.get("use_eou_decoder", None) or self.cfg.get("llm_predict_eou", None)  or self.cfg.get("inference_use_external_eou_predictor", None) else None,
+                    eou_pred=(
+                        results["gen_eou"]
+                        if self.cfg.get("use_eou_decoder", None)
+                        or self.cfg.get("llm_predict_eou", None)
+                        or self.cfg.get("inference_use_external_eou_predictor", None)
+                        else None
+                    ),
                     fps=self.source_fps,
+                    results=results if self.cfg.get("dump_tokens_text", False) else None,
+                    tokenizer=self.tokenizer,
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
@@ -1449,26 +1654,38 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
         """
         source_encoded, lengths, asr_emb = self.perception(
-            input_signal=input_signal,
-            input_signal_length=input_signal_lens,
-            return_encoder_emb=True
+            input_signal=input_signal, input_signal_length=input_signal_lens, return_encoder_emb=True
         )
         B, T_local, H = source_encoded.shape
 
         if self.cfg.get("inference_eou_from_bos_eos", None):
-            eou_mask_generator = EfficientBatchStreamingSpeakingMaskGenerator(device=source_encoded.device, max_length=self.cfg.speech_decoder.max_length_causal_mask, batch_size=B, bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id, eou_window=2, eos_lookback=7, bos_lookback=7, force_bos_from_eou=self.cfg.get("inference_force_follow_external_eou_bos", False))
+            eou_mask_generator = EfficientBatchStreamingSpeakingMaskGenerator(
+                device=source_encoded.device,
+                max_length=self.cfg.speech_decoder.max_length_causal_mask,
+                batch_size=B,
+                bos_token_id=self.text_bos_id,
+                eos_token_id=self.text_eos_id,
+                eou_window=2,
+                eos_lookback=7,
+                bos_lookback=7,
+                force_bos_from_eou=self.cfg.get("inference_force_follow_external_eou_bos", False),
+            )
 
         # add eou embedding
         if self.cfg.get("use_eou_decoder", None) or self.cfg.get("inference_use_external_eou_predictor", None):
             # predict eou logits
-            if self.cfg.get("eou_decoder_from_wav", None) or self.cfg.get("inference_use_external_eou_predictor", None):
+            if self.cfg.get("eou_decoder_from_wav", None) or self.cfg.get(
+                "inference_use_external_eou_predictor", None
+            ):
                 eou_logits, _ = self.eou_decoder(input_signal.to(source_encoded.dtype), input_signal_lens)
                 if source_encoded.size(1) > eou_logits.size(1):
                     # Pad on the right (end of time axis)
                     pad_len = source_encoded.size(1) - eou_logits.size(1)
-                    eou_logits = torch.nn.functional.pad(eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                    eou_logits = torch.nn.functional.pad(
+                        eou_logits, pad=(0, 0, 0, pad_len), mode='constant', value=0.0
+                    )
                 else:
-                    eou_logits = eou_logits[:, :source_encoded.size(1)]
+                    eou_logits = eou_logits[:, : source_encoded.size(1)]
             else:
                 mask = torch.ones(
                     (asr_emb.size(0), asr_emb.size(1)),
@@ -1501,7 +1718,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # Apply channel weight
         input_embeds = source_encoded.clone()
         input_embeds *= self.cfg.get("duplex_user_channel_weight", 1.0)
-        
+
         # create first_eou and add eou embedding
         if self.cfg.get("llm_predict_eou", None):
             first_eou = torch.zeros(B, 1).long().to(source_encoded.device)
@@ -1515,9 +1732,11 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 if source_encoded.size(1) > wav_eou_emb.size(1):
                     # Pad on the right (end of time axis)
                     pad_len = source_encoded.size(1) - wav_eou_emb.size(1)
-                    wav_eou_emb = torch.nn.functional.pad(wav_eou_emb, pad=(0, 0, 0, pad_len), mode='constant', value=0.0)
+                    wav_eou_emb = torch.nn.functional.pad(
+                        wav_eou_emb, pad=(0, 0, 0, pad_len), mode='constant', value=0.0
+                    )
                 else:
-                    wav_eou_emb = wav_eou_emb[:, :source_encoded.size(1)]
+                    wav_eou_emb = wav_eou_emb[:, : source_encoded.size(1)]
                 # add only the first frame to the model
                 eou_emb = eou_emb + wav_eou_emb[:, :1]
 
@@ -1546,14 +1765,14 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             dtype=torch.long,
         )
         ans = self(
-            input_embeds[:, :1], 
+            input_embeds[:, :1],
             cache=cache,
             input_audio_tokens=first_audio,
             seq_mask=None,
-            target_text_tokens=None, # text input will be sampled from llm backbone
+            target_text_tokens=None,  # text input will be sampled from llm backbone
             modality_adapter_emb=source_encoded[:, :1],
             asr_emb=asr_emb[:, :1],
-            speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
+            speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
             eou=first_eou,
         )
         gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -1563,7 +1782,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             gen_eou[:, 0] = ans["eou_logits"][:, -1].argmax(dim=-1)
 
         if self.cfg.get("inference_eou_from_bos_eos", None):
-            gen_eou[:, 0] = eou_mask_generator.step(gen_text[:, 0], eou_probs=external_eou[:, 0] if self.cfg.get("inference_force_follow_external_eou", None) else None)[:, 0]
+            gen_eou[:, 0] = eou_mask_generator.step(
+                gen_text[:, 0],
+                eou_probs=external_eou[:, 0] if self.cfg.get("inference_force_follow_external_eou", None) else None,
+            )[:, 0]
 
         # Autoregressive loop
         for t in range(1, T):
@@ -1572,7 +1794,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 eou_emb = self.eou_embedding(gen_eou[:, t - 1 : t])
                 if self.cfg.get("llm_use_extra_eou_waveform_encoder", False):
                     eou_emb = eou_emb + wav_eou_emb[:, t : t + 1]
-                input_embeds[:, t] += eou_emb[:, -1] # add the last eou emb
+                input_embeds[:, t] += eou_emb[:, -1]  # add the last eou emb
             elif self.cfg.get("use_eou_decoder", None):
                 cond_eou = gen_eou[:, t]
             elif self.cfg.get("inference_eou_from_bos_eos", None):
@@ -1589,10 +1811,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 cache=ans["cache"],
                 input_audio_tokens=current_audio,
                 seq_mask=None,
-                target_text_tokens=None, # text input will be sampled from llm backbone
+                target_text_tokens=None,  # text input will be sampled from llm backbone
                 modality_adapter_emb=source_encoded[:, t : t + 1],
                 asr_emb=asr_emb[:, t : t + 1],
-                speaker_encoder_emb=None, # for inference uses the cached inference_speaker_embedding
+                speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
                 eou=cond_eou,
             )
             gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -1602,42 +1824,35 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 gen_eou[:, t] = ans["eou_logits"][:, -1].argmax(dim=-1)
 
             if self.cfg.get("inference_eou_from_bos_eos", None):
-                gen_eou[:, t] = eou_mask_generator.step(gen_text[:, t], eou_probs=external_eou[:, t] if self.cfg.get("inference_force_follow_external_eou", None) else None)[:, t]
+                gen_eou[:, t] = eou_mask_generator.step(
+                    gen_text[:, t],
+                    eou_probs=(
+                        external_eou[:, t] if self.cfg.get("inference_force_follow_external_eou", None) else None
+                    ),
+                )[:, t]
 
             num_transition_tokens = self.cfg.get('inference_eou_num_transition_tokens', 2)
             if self.cfg.get('inference_force_bos_eos_follow_eou', None) and t >= num_transition_tokens:
                 # Check last num_transition_tokens EOU predictions: if all 0 and current is 1 → BOS in text
-                prev_zeros = (gen_eou[:, t - num_transition_tokens:t] == 0).all(dim=1)
-                curr_is_one = (gen_eou[:, t] == 1)
+                prev_zeros = (gen_eou[:, t - num_transition_tokens : t] == 0).all(dim=1)
+                curr_is_one = gen_eou[:, t] == 1
                 force_bos = prev_zeros & curr_is_one
 
                 # force bos
-                gen_text[:, t] = torch.where(
-                    force_bos,
-                    self.text_bos_id,
-                    gen_text[:, t]
-                )
+                gen_text[:, t] = torch.where(force_bos, self.text_bos_id, gen_text[:, t])
 
                 # Check last num_transition_tokens EOU predictions: if all 1 and current is 0 → EOS in text
-                prev_ones = (gen_eou[:, t - num_transition_tokens:t] == 1).all(dim=1)
-                curr_is_zero = (gen_eou[:, t] == 0)
+                prev_ones = (gen_eou[:, t - num_transition_tokens : t] == 1).all(dim=1)
+                curr_is_zero = gen_eou[:, t] == 0
                 force_eos = prev_ones & curr_is_zero
                 # force eos
-                gen_text[:, t] = torch.where(
-                    force_eos,
-                    self.text_eos_id,
-                    gen_text[:, t]
-                )
+                gen_text[:, t] = torch.where(force_eos, self.text_eos_id, gen_text[:, t])
 
                 not_special = (gen_text[:, t] != self.text_bos_id) & (gen_text[:, t] != self.text_eos_id)
                 should_pad = (gen_eou[:, t] == 0) & not_special
 
                 # if EOU is zero, allows text channel only to assume, zero, eou or bos
-                gen_text[:, t] = torch.where(
-                    should_pad,
-                    self.text_pad_id,
-                    gen_text[:, t]
-                )
+                gen_text[:, t] = torch.where(should_pad, self.text_pad_id, gen_text[:, t])
 
             if self.cfg.get('inference_force_bos_eos_follow_eou_speech_channel', None) and t >= num_transition_tokens:
                 not_special = (gen_audio[:, t] != self.speech_bos_id) & (gen_audio[:, t] != self.speech_eos_id)
@@ -1646,35 +1861,36 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # if EOU is zero, allows text channel only to assume, zero, eou or bos
                 gen_audio[:, t] = torch.where(
                     should_pad.unsqueeze(-1),
-                    gen_audio[:, 0], # first token that supposed to be silence
-                    gen_audio[:, t]
+                    gen_audio[:, 0],  # first token that supposed to be silence
+                    gen_audio[:, t],
                 )
-
 
             # inference trick force speech decoder eos/bos to make the model more robust
             num_speech_delay = 1
-            if (
-                self.cfg.get('inference_force_speech_bos', None)
-                and  num_speech_delay < gen_text.shape[1]
-            ):
+            if self.cfg.get('inference_force_speech_bos', None) and num_speech_delay < gen_text.shape[1]:
                 gen_audio[:, -1] = torch.where(
                     (gen_text[:, -1 - num_speech_delay].unsqueeze(-1) == self.text_bos_id)
-                    * (
-                        torch.sum(gen_audio[:, -1 - num_speech_delay :] == self.speech_bos_id, 1)
-                        == 0
-                    ),
+                    * (torch.sum(gen_audio[:, -1 - num_speech_delay :] == self.speech_bos_id, 1) == 0),
                     self.speech_bos_id,
                     gen_audio[:, -1],
                 )
 
-            if self.cfg.get('inference_force_speech_eos', None):
+            if self.cfg.get('inference_force_speech_eos', None) and gen_text.shape[
+                1
+            ] > num_speech_delay + self.cfg.get("advance_text_channel_by", 0):
                 # tmp solution: force to stop talking if user interruption is detected
                 gen_audio[:, -1] = torch.where(
-                    ((gen_text[:, -1].unsqueeze(-1) == self.text_eos_id)),
+                    (
+                        (
+                            gen_text[:, -1 - num_speech_delay - self.cfg.get("advance_text_channel_by", 0)].unsqueeze(
+                                -1
+                            )
+                            == self.text_eos_id
+                        )
+                    ),
                     self.speech_eos_id,
                     gen_audio[:, -1],
                 )
-            
 
         # Trim back to local length if padded
         if self._use_fsdp and T > T_local:
@@ -1697,7 +1913,11 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             ans["audio"] = predicted_audio
             ans["audio_len"] = predicted_audio_lens
 
-        if self.cfg.get("use_eou_decoder", None) or self.cfg.get("llm_predict_eou", None) or self.cfg.get("inference_use_external_eou_predictor", None):
+        if (
+            self.cfg.get("use_eou_decoder", None)
+            or self.cfg.get("llm_predict_eou", None)
+            or self.cfg.get("inference_use_external_eou_predictor", None)
+        ):
             ans["gen_eou"] = gen_eou
 
         # Call reset_input_and_kv_cache to reset cache for TransformerARSpeechDecoder

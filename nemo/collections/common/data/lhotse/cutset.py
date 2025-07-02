@@ -608,12 +608,20 @@ def filter_cuts_starting_with_agent(cuts: CutSet, agent_roles=("agent", "assista
 def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
     def convert_cut(cut):
         new_segments = []
-        for seg in cut.supervisions:
+        num_sups = len(cut.supervisions)
+        for i, seg in enumerate(cut.supervisions):
             if seg.speaker in agent_roles:
+                duration = (seg.end - seg.start) + move_agent_text_back_by + move_eos_forward_by
+                start = seg.start - move_agent_text_back_by
+
+                # if start is small than 0.0 set it to zero.
+                if start < 0:
+                    start = 0.0
+
                 seg = fastcopy(
                     seg,
                     start=seg.start - move_agent_text_back_by,
-                    duration=(seg.end - seg.start) + move_agent_text_back_by + move_eos_forward_by,
+                    duration=duration,
                     speaker=seg.speaker
                 )
             new_segments.append(seg)

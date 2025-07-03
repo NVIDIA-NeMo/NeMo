@@ -1667,9 +1667,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 batch_size=B,
                 bos_token_id=self.text_bos_id,
                 eos_token_id=self.text_eos_id,
-                eou_window=2,
-                eos_lookback=7,
-                bos_lookback=7,
+                eou_window=self.cfg.get("inference_force_follow_external_eou_eou_window", 7),
+                eos_lookback=self.cfg.get("inference_force_follow_external_eou_eos_lookback", 7),
+                bos_lookback=self.cfg.get("inference_force_follow_external_eou_bos_lookback", 7),
                 force_bos_from_eou=self.cfg.get("inference_force_follow_external_eou_bos", False),
             )
 

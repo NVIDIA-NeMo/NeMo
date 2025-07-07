@@ -22,6 +22,7 @@ import io
 import random
 import numpy as np
 import soundfile as sf
+import lhotse
 
 import omegaconf
 from lhotse import CutSet, Features, Recording, MonoCut, SupervisionSegment
@@ -670,6 +671,99 @@ def read_custom_s2s_duplex(config) -> tuple[CutSet, bool]:
     # Apply transformations
     if move_agent_text_back_by:
         cuts = cuts.map(convert_cut)
+
+    return cuts, is_tarred
+
+@data_type_parser(["s2s_duplex_rm_silence_between_turns"])
+def read_custom_s2s_duplex_no_silence(config) -> tuple[CutSet, bool]:
+    def convert_cut(
+        cut: MonoCut,
+    ) -> MonoCut:
+        sr = cut.recording.sampling_rate
+        duration = cut.duration
+        supervisions = sorted(cut.supervisions, key=lambda s: s.start)
+
+        audio_segments = []
+        new_supervisions = []
+
+        has_target = "target_audio" in cut.custom
+        if has_target:
+            target = cut.custom["target_audio"]
+            target_sr = target.sampling_rate
+            target_audio = target.resample(target_sr).load_audio()
+            target_segments = []
+
+        audio = cut.load_audio()
+        time_cursor = 0.0
+        time_shift = 0.0
+
+        for supervision in supervisions:
+            if supervision.duration <= 1e-4:
+                continue
+
+            # Skip any gap before this supervision
+            if supervision.start > time_cursor:
+                time_cursor = supervision.start  # jump cursor forward
+
+            start = round(supervision.start * sr)
+            end = round(supervision.end * sr)
+            speech_audio = audio[:, start:end]
+
+            # Adjust supervision timing by current time_shift
+            shifted_sup = fastcopy(supervision, start=supervision.start - time_cursor + time_shift)
+            new_supervisions.append(shifted_sup)
+
+            audio_segments.append(speech_audio)
+
+            if has_target:
+                t_start = round(supervision.start * target_sr)
+                t_end = round(supervision.end * target_sr)
+                target_segments.append(target_audio[:, t_start:t_end])
+
+            # Move cursor and shift forward by supervision duration (no silences in between)
+            time_shift += supervision.duration
+            time_cursor = supervision.end
+
+        full_audio = np.concatenate(audio_segments, axis=1)
+        new_recording = create_recording_from_array(full_audio, sr, cut.id)
+
+        custom_dict = dict(cut.custom)
+        if has_target:
+            full_target_audio = np.concatenate(target_segments, axis=1)
+            target_audio_dur = full_target_audio.shape[1] / target_sr
+            if target_audio_dur < new_recording.duration:
+                pad_samples = round((new_recording.duration - target_audio_dur) * target_sr)
+                silence = np.zeros((1, pad_samples), dtype=np.float32)
+                full_target_audio = np.concatenate([full_target_audio, silence], axis=1)
+            full_target_audio = full_target_audio[:, :round(new_recording.duration * target_sr)]
+            new_target_audio = create_recording_from_array(full_target_audio, target_sr, f"{cut.id}_target")
+            custom_dict["target_audio"] = new_target_audio
+
+        new_cut = MonoCut(
+            id=cut.id,
+            start=0.0,
+            duration=new_recording.duration,
+            channel=cut.channel,
+            recording=new_recording,
+            supervisions=new_supervisions,
+            custom=custom_dict,
+        )
+        new_cut.formatter = "s2s_duplex_rm_silence_between_turns"
+        return new_cut
+
+    # Load Lhotse CutSet
+    cuts, is_tarred = read_cutset_from_config(config)
+
+    # Read configuration
+    filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
+    per_turn_prob = config.get("pad_user_channel_turn_prob", 0.6)
+    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
+
+    # Filter cuts where the first supervision is agent
+    if filter_samples_starting_with_agent:
+        cuts = filter_cuts_starting_with_agent(cuts, agent_roles)
+
+    cuts = cuts.map(convert_cut)
 
     return cuts, is_tarred
 

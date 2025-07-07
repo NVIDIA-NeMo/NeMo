@@ -1238,7 +1238,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if (
             self.cfg.get("debug_dataloader_audios_path", None)
             and self.training
-            and "silence_augmented" in batch["formatter"][0]
+            and "s2s_duplex_overlap_as_s2s_duplex" not in batch["formatter"][0]
         ):
 
             def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
@@ -1363,7 +1363,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             )
 
             print(batch["formatter"])
-            if audio_labels_.shape[0] > 1 and num_bos_tokens[0].item() == num_eos_tokens[0].item():
+            if audio_labels_.shape[0] > 1:
                 exit()
 
         return {
@@ -1784,6 +1784,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             gen_eou[:, 0] = ans["eou_logits"][:, -1].argmax(dim=-1)
 
         if self.cfg.get("inference_eou_from_bos_eos", None):
+            gen_eou = torch.empty(B, T, device=self.device, dtype=torch.long)
             gen_eou[:, 0] = eou_mask_generator.step(
                 gen_text[:, 0],
                 eou_probs=external_eou[:, 0] if self.cfg.get("inference_force_follow_external_eou", None) else None,

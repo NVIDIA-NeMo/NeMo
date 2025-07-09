@@ -1790,6 +1790,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 eou_probs=external_eou[:, 0] if self.cfg.get("inference_force_follow_external_eou", None) else None,
             )[:, 0]
 
+        speech_state = torch.zeros(B, device=self.device, dtype=torch.long)
         # Autoregressive loop
         for t in range(1, T):
             if self.cfg.get("llm_predict_eou", None):
@@ -1868,31 +1869,44 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     gen_audio[:, t],
                 )
 
+            if self.cfg.get('inference_force_speech_state', None):
+                # state 0 - silence, state 1 - speech
+                speech_state = torch.where(
+                    gen_text[:, t] == self.text_bos_id, torch.ones_like(speech_state), speech_state
+                )
+                speech_state = torch.where(
+                    gen_text[:, t] == self.text_eos_id, torch.zeros_like(speech_state), speech_state
+                )
+                gen_audio[:, t] = torch.where(
+                    speech_state.unsqueeze(-1) == 0,
+                    gen_audio[:, 0],  # silence
+                    gen_audio[:, t],  # speech
+                )
             # inference trick force speech decoder eos/bos to make the model more robust
             num_speech_delay = 1
             if self.cfg.get('inference_force_speech_bos', None) and num_speech_delay < gen_text.shape[1]:
-                gen_audio[:, -1] = torch.where(
-                    (gen_text[:, -1 - num_speech_delay].unsqueeze(-1) == self.text_bos_id)
-                    * (torch.sum(gen_audio[:, -1 - num_speech_delay :] == self.speech_bos_id, 1) == 0),
+                gen_audio[:, t] = torch.where(
+                    (gen_text[:, t - num_speech_delay].unsqueeze(-1) == self.text_bos_id)
+                    * (torch.sum(gen_audio[:, t - num_speech_delay :] == self.speech_bos_id, 1) == 0),
                     self.speech_bos_id,
-                    gen_audio[:, -1],
+                    gen_audio[:, t],
                 )
 
             if self.cfg.get('inference_force_speech_eos', None) and gen_text.shape[
                 1
             ] > num_speech_delay + self.cfg.get("advance_text_channel_by", 0):
                 # tmp solution: force to stop talking if user interruption is detected
-                gen_audio[:, -1] = torch.where(
+                gen_audio[:, t] = torch.where(
                     (
                         (
-                            gen_text[:, -1 - num_speech_delay - self.cfg.get("advance_text_channel_by", 0)].unsqueeze(
+                            gen_text[:, t - num_speech_delay - self.cfg.get("advance_text_channel_by", 0)].unsqueeze(
                                 -1
                             )
                             == self.text_eos_id
                         )
                     ),
                     self.speech_eos_id,
-                    gen_audio[:, -1],
+                    gen_audio[:, t],
                 )
 
         # Trim back to local length if padded

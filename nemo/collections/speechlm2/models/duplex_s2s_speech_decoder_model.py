@@ -292,6 +292,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
             self.tokenizer.bos_token = '<|im_start|>'
             self.tokenizer.eos_token = '<|im_end|>'
+            if self.cfg.get("use_extra_id_for_pad", False):
+                self.tokenizer.pad_token = '<|extra_1|>'
 
         llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights).train()
         self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"

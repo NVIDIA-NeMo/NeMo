@@ -588,6 +588,11 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 should_pad = (eou == 0).squeeze(-1) & not_special
                 # if EOU is zero, allows text channel only to assume, zero, eou or bos
                 target_text_tokens[:, -1] = torch.where(should_pad, self.text_pad_id, target_text_tokens[:, -1])
+
+            if self.cfg.get('convert_pad_to_extra_id_on_speech_decoder', None):
+                target_text_tokens[target_text_tokens == self.text_pad_id] = (
+                    self.tokenizer.tokenizer._tokenizer.token_to_id("<|endoftext|>")
+                )  # <|endoftext|> token id
         else:
             # drop text bos/eos
             if self.cfg.get("drop_text_bos_prob", None) and random.random() < self.cfg.drop_text_bos_prob:
@@ -1710,12 +1715,17 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             dist.all_reduce(T_tensor, op=dist.ReduceOp.MAX)
             T = int(T_tensor.item())
             if T > T_local:
-                last_frame = source_encoded[:, T_local - 1 : T_local, :]  # (B,1,H)
-                pad = last_frame.repeat(1, T - T_local, 1)  # (B, T-T_local, H)
-                source_encoded = torch.cat([source_encoded, pad], dim=1)
-                asr_emb = torch.cat([asr_emb, pad], dim=1)
+
+                last_frame_source = source_encoded[:, T_local - 1 : T_local, :]
+                pad_source = last_frame_source.repeat(1, T - T_local, 1)
+                source_encoded = torch.cat([source_encoded, pad_source], dim=1)
+
+                last_frame_asr = asr_emb[:, T_local - 1 : T_local, :]
+                pad_asr = last_frame_asr.repeat(1, T - T_local, 1)
+                asr_emb = torch.cat([asr_emb, pad_asr], dim=1)
                 if self.cfg.get("use_eou_decoder", None):
                     eou_emb = torch.cat([eou_emb, pad], dim=1)
+
         else:
             T = T_local
 

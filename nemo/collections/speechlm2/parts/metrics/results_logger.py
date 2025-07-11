@@ -122,6 +122,6 @@ class ResultsLogger:
         # uses append here to avoid needs to cache
         with open(out_json_path, 'a+', encoding='utf-8') as fout:
             for out_dict in out_dicts:
-                json.dump(out_dict, fout)
+                json.dump(out_dict, fout, indent=4, ensure_ascii=False)
 
         logging.info(f"Metadata file for {name} dataset updated at: {out_json_path}")

@@ -171,11 +171,11 @@ def collate_token_channel(
 
 
 def build_token_channel(
-    cut: Cut,
-    tokenizer: TokenizerSpec,
-    frame_length: Seconds,
-    roles: set[str],
-    pad_id: int = -1,
+        cut: Cut,
+        tokenizer: TokenizerSpec,
+        frame_length: Seconds,
+        roles: set[str],
+        pad_id: int = -1,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -183,21 +183,32 @@ def build_token_channel(
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
+
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
             text_ids = torch.as_tensor([tokenizer.bos] + tokenizer.text_to_ids(supervision.text))
 
-            # Determine the frame offset for the start of the supervision to insert the text tokens.
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
-            if pos > len(tokens):
+            if pos >= len(tokens):  # Changed from > to >= for robustness
                 logging.warning(
-                    f"Ill-constructed example: the beginning offset of a supervision {pos} is larger than the example's length {len(tokens)}. {diagnostic}"
+                    f"Ill-constructed example: the beginning offset of a supervision {pos} is larger than or equal to the example's length {len(tokens)}. {diagnostic}"
                 )
                 continue
 
-            # Determine the frame offset for the last non-EOS text token to form a valid range for insertion;
-            # Note that EOS will be placed possibly much later, at the frame that coincides with end of speech,
-            # rather than end of text. The gap between last non-EOS token and EOS token will be filled with `pad_id`.
+
+            eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
+
+
+            available_frames_for_text = eospos - pos
+
+
+            if available_frames_for_text > 0 and len(text_ids) > available_frames_for_text:
+                # Truncate text_ids to fit before the eos position.
+                text_ids = text_ids[:available_frames_for_text]
+            elif available_frames_for_text <= 0:
+                # If there's no space for text (e.g., start >= end), use an empty sequence.
+                text_ids = torch.tensor([], dtype=torch.long)
+
             endpos = pos + len(text_ids)
             if endpos > len(tokens):
                 trunc_len = len(tokens) - pos
@@ -205,18 +216,17 @@ def build_token_channel(
                     f"Truncating training example's text_ids of length {len(text_ids)} by {trunc_len} because {endpos=} > {len(tokens)=}. {diagnostic}"
                 )
                 text_ids = text_ids[:trunc_len]
+                endpos = pos + len(text_ids)  
+
             try:
                 tokens[pos:endpos] = text_ids
             except Exception as e:
                 raise RuntimeError(f"{tokens.shape=} {pos=} {endpos=} {text_ids.shape=} {diagnostic}") from e
 
-            # Insert EOS at the end of the supervision segment.
-            eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
-            if eospos < len(tokens):  # skip otherwise - unfinished turn
+            if eospos < len(tokens):
                 tokens[eospos] = tokenizer.eos
 
     return tokens
-
 
 def _strip_timestamps(
     text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")

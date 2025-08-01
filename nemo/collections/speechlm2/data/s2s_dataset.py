@@ -25,6 +25,7 @@ from lhotse.utils import ifnone
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.utils import logging
+from nemo.collections.common.data.lhotse.text_adapters import Formattable
 
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
@@ -101,40 +102,73 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
-    def __getitem__(self, cuts: CutSet) -> dict:
-        cuts = cuts.transform_text(_strip_timestamps)
+    def __getitem__(self, all_cuts: CutSet) -> dict:
+        # audio mini-batch
+        cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
+        audio_data = None
+        if cuts:
+            cuts = cuts.transform_text(_strip_timestamps)
 
-        source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
-        target_audio, target_audio_lens = collate_audio(
-            cuts.resample(self.target_sample_rate), recording_field="target_audio"
-        )
-        target_tokens, target_token_lens = collate_token_channel(
-            cuts, self.tokenizer, self.frame_length, roles=self.output_roles
-        )
-        source_tokens, source_token_lens = collate_token_channel(
-            cuts, self.tokenizer, self.frame_length, roles=self.input_roles
-        )
-        # extract target speaker first turn audio to uses for speaker conditioning
-        target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
-            cuts.resample(self.target_sample_rate), roles=self.output_roles, recording_field="target_audio"
-        )
+            source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
+            target_audio, target_audio_lens = collate_audio(
+                cuts.resample(self.target_sample_rate), recording_field="target_audio"
+            )
+            target_tokens, target_token_lens = collate_token_channel(
+                cuts, self.tokenizer, self.frame_length, roles=self.output_roles
+            )
+            source_tokens, source_token_lens = collate_token_channel(
+                cuts, self.tokenizer, self.frame_length, roles=self.input_roles
+            )
+            try:
+                # extract target speaker first turn audio to uses for speaker conditioning
+                target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
+                    cuts.resample(self.target_sample_rate), roles=self.output_roles, recording_field="target_audio"
+                )
+            except Exception as e:
+                target_first_turn_audio = None
+                target_first_turn_audio_lens = None
 
+            audio_data = {
+                "sample_id": [str(cut.id) for cut in cuts],
+                "source_audio": source_audio,
+                "source_audio_lens": source_audio_lens,
+                "target_audio": target_audio,
+                "target_audio_lens": target_audio_lens,
+                "target_tokens": target_tokens,
+                "target_token_lens": target_token_lens,
+                "source_tokens": source_tokens,
+                "source_token_lens": source_token_lens,
+                "target_texts": [
+                    " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+                ],
+                "target_first_turn_audio": target_first_turn_audio,
+                "target_first_turn_audio_lens": target_first_turn_audio_lens,
+                "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in cuts],
+            }
+
+        # text mini-batch
+        text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
+        text_data = None
+        if text_cuts:
+            text_tokens = []
+            text_token_lens = []
+            for c in text_cuts:
+                text_ids = c.input_ids
+                text_tokens.append(text_ids)
+                text_token_lens.append(text_ids.shape[0])
+
+            text_tokens = collate_vectors(
+                text_tokens, padding_value=get_pad_id(self.tokenizer)
+            )
+            text_token_lens = torch.tensor(text_token_lens, dtype=torch.long)
+            text_data = {
+                "text_tokens": text_tokens,
+                "text_token_lens": text_token_lens,
+            }
+        
         return {
-            "sample_id": [str(cut.id) for cut in cuts],
-            "source_audio": source_audio,
-            "source_audio_lens": source_audio_lens,
-            "target_audio": target_audio,
-            "target_audio_lens": target_audio_lens,
-            "target_tokens": target_tokens,
-            "target_token_lens": target_token_lens,
-            "source_tokens": source_tokens,
-            "source_token_lens": source_token_lens,
-            "target_texts": [
-                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
-            ],
-            "target_first_turn_audio": target_first_turn_audio,
-            "target_first_turn_audio_lens": target_first_turn_audio_lens,
-            "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in cuts],
+            "audio_data": audio_data,
+            "text_data": text_data,
         }
 
 

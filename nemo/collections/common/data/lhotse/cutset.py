@@ -39,6 +39,7 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     LhotseTextAdapter,
+    LhotseTextJsonlAdapter,
     LhotseTextPairAdapter,
     NeMoMultimodalConversation,
     NeMoMultimodalConversationJsonlAdapter,
@@ -243,6 +244,23 @@ def read_txt_paths(config: DictConfig) -> tuple[CutSet, bool]:
         LhotseTextAdapter(
             paths=config.paths,
             language=config.language,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat()
+    return cuts, True
+
+
+@data_type_parser("txt_jsonl")
+def read_txt_jsonl_paths(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read paths to text files in JSONL format and create a CutSet."""
+    cuts = CutSet(
+        LhotseTextJsonlAdapter(
+            paths=config.paths,
+            language=config.language,
+            text_field=config.text_field,
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
         )

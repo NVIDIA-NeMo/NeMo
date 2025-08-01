@@ -121,6 +121,34 @@ class LhotseTextAdapter:
                     yield TextExample(line, language=self.language)
 
 
+@dataclass
+class LhotseTextJsonlAdapter:
+    """
+    ``LhotseTextJsonlAdapter`` is used to read a JSONL file and wrap
+    the text field of each line into a ``TextExample``.
+    """
+
+    paths: Union[Pathlike, list[Pathlike]]
+    language: str | None = None
+    text_field: str = "text"
+    shuffle_shards: bool = False
+    shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
+
+    def __post_init__(self):
+        self.paths = expand_sharded_filepaths(self.paths)
+
+    def __iter__(self) -> Iterator[TextExample]:
+        paths = self.paths
+        if self.shuffle_shards:
+            seed = resolve_seed(self.shard_seed)
+            random.Random(seed).shuffle(paths)
+        for path in paths:
+            for data in load_jsonl(path):
+                if self.text_field not in data:
+                    continue
+                yield TextExample(data[self.text_field], language=self.language)
+
+
 @registered_prompt_format_fn(TextExample)
 def default_text_example_prompt_format_fn(example: TextExample, prompt):
     # It doesn't really make sense to prompt format a single line text example,

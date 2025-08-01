@@ -68,7 +68,7 @@ class HFHubMixin(
         # To illustrate: if you trained a new model M using a pretrained ASR and a pretrained LLM,
         # this setting skips loading the original pretrained ASR and LLM weights, and loads the
         # final trained model weights directly.
-        model_kwargs['cfg']['pretrained_weights'] = False
+        model_kwargs['cfg']['model']['pretrained_weights'] = False
         return super()._from_pretrained(
             model_id=model_id,
             revision=revision,

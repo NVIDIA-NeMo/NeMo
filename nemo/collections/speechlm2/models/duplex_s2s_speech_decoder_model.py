@@ -1221,6 +1221,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             "tokens_text": gen_text,
             "tokens_audio": gen_audio,
             "tokens_len": lengths,
+            "source_audio": input_signal,
+            "source_audio_len": input_signal_lens,
         }
 
         if decode_audio:

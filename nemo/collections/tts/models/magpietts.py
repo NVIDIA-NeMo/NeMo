@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import os
 import random
 import time
@@ -37,6 +38,7 @@ from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.aligner import AlignmentEncoder
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
+    EOSDetectionMethod,
     LocalTransformerType,
     SpecialAudioToken,
     cosine_schedule,
@@ -175,6 +177,20 @@ class MagpieTTSModel(ModelPT):
 
         self.pad_context_text_to_max_duration = self.model_type in ['decoder_context_tts', 'decoder_ce']
         self.use_kv_cache_for_inference = cfg.get('use_kv_cache_for_inference', False)
+
+        # Below args (text_context_remapping_json, text_context_remapping_prob) are
+        # for combining multiple context_texts into a single one during training.
+        # Eg. if we want to treat Emma_neutral and Emma_conversational as one speaker,
+        # we can create an override dict {'Emma_neutral' : 'Emma', 'Emma_conversational' : 'Emma'}
+        # This dict is saved in a json file given by cfg.model.text_context_remapping_json
+        # If we want to preserve both behaviours i.e (Emma_neutral, Emma_conversational) and just (Emma)
+        # we can do this mapping with a probability during training, as specified by text_context_remapping_prob
+        self.text_context_remapping = None
+        text_context_remapping_json = cfg.get('text_context_remapping_json', None)
+        self.text_context_remapping_prob = cfg.get('text_context_remapping_prob', 0.0)
+        if text_context_remapping_json is not None:
+            with open(text_context_remapping_json, 'r') as f:
+                self.text_context_remapping = json.load(f)
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -1997,7 +2013,7 @@ class MagpieTTSModel(ModelPT):
 
         return cross_attention_maps, headwise_cross_attention_maps
 
-    def find_eos_frame_index(self, codes) -> Optional[int]:
+    def find_eos_frame_index(self, codes, eos_detection_method) -> Optional[int]:
         """
         Checks for EOS in the predicted codes. Returns the index of the first frame within the frame stack
         that contains an EOS token across any codebook, or `None` if no EOS is found.
@@ -2007,12 +2023,37 @@ class MagpieTTSModel(ModelPT):
             index (within the frame stack) of the first frame with EOS, or `None` if no EOS is found
         """
         eos_mask = codes == self.audio_eos_id  # (codebooks, frame_stacking_factor)
-        eos_per_frame = eos_mask.any(dim=0)  # (frame_stacking_factor,) - True if any codebook has EOS in this frame
+        detection_type = EOSDetectionMethod.detection_type(eos_detection_method)
+        if detection_type == "any":
+            eos_per_frame = eos_mask.any(
+                dim=0
+            )  # (frame_stacking_factor,) - True if any codebook has EOS in this frame
+        elif detection_type == "all":
+            eos_per_frame = eos_mask.all(
+                dim=0
+            )  # (frame_stacking_factor,) - True if all codebooks have EOS in this frame
+        elif detection_type == "zero_cb":
+            eos_per_frame = eos_mask[:1, :].any(
+                dim=0
+            )  # (frame_stacking_factor,) - True if zeroth codebook has EOS in this frame
+        else:
+            raise ValueError(f"Invalid EOS detection method: {eos_detection_method}")
         # find first frame with EOS
         if eos_per_frame.any():
             # return index of the first frame with EOS
             return eos_per_frame.nonzero()[0].item()
-        return None
+        return float('inf')
+
+    def detect_eos(self, audio_codes_multinomial, audio_codes_argmax, eos_detection_method):
+        sampling_type = EOSDetectionMethod.sampling_type(eos_detection_method)
+        if sampling_type == "argmax":
+            return self.find_eos_frame_index(audio_codes_argmax, eos_detection_method)
+        elif sampling_type == "argmax_or_multinomial":
+            argmax_eos_frame = self.find_eos_frame_index(audio_codes_argmax, eos_detection_method)
+            multinomial_eos_frame = self.find_eos_frame_index(audio_codes_multinomial, eos_detection_method)
+            return min(argmax_eos_frame, multinomial_eos_frame)
+        else:
+            raise ValueError(f"Invalid EOS detection method: {eos_detection_method}")
 
     def infer_batch(
         self,
@@ -2037,7 +2078,11 @@ class MagpieTTSModel(ModelPT):
         maskgit_fixed_schedule=None,
         maskgit_dynamic_cfg_scale=False,
         maskgit_sampling_type=None,
+        ignore_finished_sentence_tracking=False,
+        eos_detection_method="argmax_or_multinomial_any",
     ):
+
+        eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
             start_time = time.time()
             self.decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
@@ -2194,10 +2239,14 @@ class MagpieTTSModel(ModelPT):
                         batch_size=batch_size,
                     )
 
-                finished_items = {
-                    k: v for k, v in finished_texts_counter.items() if v >= 20
-                }  # Items that have been close to the end for atleast 20 timesteps
-                unfinished_items = {k: v for k, v in unfinished_texts.items() if v}
+                if ignore_finished_sentence_tracking:
+                    finished_items = {}
+                    unfinished_items = {}
+                else:
+                    finished_items = {
+                        k: v for k, v in finished_texts_counter.items() if v >= 20
+                    }  # Items that have been close to the end for atleast 20 timesteps
+                    unfinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 if use_local_transformer_for_inference:
@@ -2250,17 +2299,11 @@ class MagpieTTSModel(ModelPT):
 
                 for item_idx in range(all_codes_next_argmax.size(0)):
                     if item_idx not in end_indices:
-                        # check for EOS (including within the frame stack)
-                        eos_frame_multinomial = self.find_eos_frame_index(audio_codes_next[item_idx])
-                        eos_frame_argmax = self.find_eos_frame_index(all_codes_next_argmax[item_idx])
-                        eos_frame_multinomial = (
-                            eos_frame_multinomial if eos_frame_multinomial is not None else float('inf')
+                        end_frame_index = self.detect_eos(
+                            audio_codes_next[item_idx], all_codes_next_argmax[item_idx], eos_detection_method
                         )
-                        eos_frame_argmax = eos_frame_argmax if eos_frame_argmax is not None else float('inf')
-                        # pick minimum of the two
-                        frame_index = min(eos_frame_multinomial, eos_frame_argmax)
-                        if frame_index != float('inf'):
-                            global_index = idx * self.frame_stacking_factor + frame_index
+                        if end_frame_index != float('inf'):
+                            global_index = idx * self.frame_stacking_factor + end_frame_index
                             end_indices[item_idx] = global_index
                             print(f"End detected for item {item_idx} at decoder timestep: {idx}")
 
@@ -2421,6 +2464,8 @@ class MagpieTTSModel(ModelPT):
             pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,
+            text_context_remapping=self.text_context_remapping,
+            text_context_remapping_prob=self.text_context_remapping_prob,
         )
         dataset.load_16khz_audio = self.model_type == 'single_encoder_sv_tts'
         dataset.tokenizer_config = (
@@ -2450,6 +2495,8 @@ class MagpieTTSModel(ModelPT):
             use_text_conditioning_tokenizer=self.cfg.use_text_conditioning_encoder,
             text_conditioning_tokenizer_name=self.text_conditioning_tokenizer_name,
             tokenizer_config=self.cfg.text_tokenizers,
+            text_context_remapping=self.text_context_remapping,
+            text_context_remapping_prob=self.text_context_remapping_prob,
         )
         data_loader = get_lhotse_dataloader_from_config(
             config=dataset_cfg.dataset,

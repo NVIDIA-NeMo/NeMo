@@ -26,7 +26,7 @@ class BLEU:
     By default, uses Whisper's EnglishTextNormalizer on hypotheses and references.
     """
 
-    def __init__(self, normalize: bool = True, normalizer=None, verbose: bool = True):
+    def __init__(self, normalize: bool = True, normalizer=None, verbose: bool = False):
         self.verbose = verbose
         if normalize:
             if normalizer is None:

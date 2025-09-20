@@ -46,7 +46,7 @@ from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
-from nemo.collections.speechlm2.parts.metrics.token_accuracy import TokenAccuracy
+from nemo.collections.speechlm2.parts.metrics.token_accuracy import TurnTakingMetrics
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import (
@@ -119,31 +119,65 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # move back text channel by x, in inference it advance the text channel prediction by x frames
         self.advance_text_channel_by = self.cfg.get("advance_text_channel_by", None)
 
-        # compute source fps
-        self.source_fps = self.source_sample_rate / (
-            self.source_sample_rate * cfg.data.frame_length
-        )  # conver frame rate in fps
 
-        setup_audio_codec(self)
-        self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
-        self._num_codebooks = self.audio_codec.vector_quantizer.num_groups
-
-        # to be able to load older model
-        if self.cfg.get("custom_codebook_size", None):
-            self._codebook_size = self.cfg.get("custom_codebook_size")
-
-        # compute target fps
-        self.target_fps = self.target_sample_rate / self.audio_codec.samples_per_frame
-        # compute interpolation factor to interpolate
-        self.interpolation_factor = self.target_fps / self.source_fps
-        # x = torch.nn.functional.interpolate(x.unsqueeze(1), size=None, scale_factor=[1, self.interpolation_factor], mode='nearest-exact', align_corners=None, recompute_scale_factor=None, antialias=False)
+        # 条件加载audio codec
+        if self.cfg.audio_loss_weight > 0:
+            setup_audio_codec(self)
+            self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
+            self._num_codebooks = self.audio_codec.vector_quantizer.num_groups
+            
+            # to be able to load older model
+            if self.cfg.get("custom_codebook_size", None):
+                self._codebook_size = self.cfg.get("custom_codebook_size")
+                
+            # cached for quicker audio decoding
+            self.register_buffer(
+                "_control_codes",
+                torch.tensor([self.speech_bos_id, self.speech_eos_id, self.speech_delay_id], device=self.device),
+            )
+        else:
+        
+            self._codebook_size = 2048
+            self._num_codebooks = 8
+            self.audio_codec = None
 
         # We load the pretrained HF LLM using "ForCausalLM" variant so that we can obtain the
         # pretrained LM head weights.
         # However, for S2S we need to access the activations before LM head directly
         # to feed them to the audio codec head.
-        self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
-        if 'Qwen2.5' in self.cfg.pretrained_llm:
+        
+        # Load LLM first
+        llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights).train()
+        
+        # Handle different model types with all their specific configurations
+        if 'Nemotron' in self.cfg.pretrained_llm:
+            # ====== NEMOTRON-SPECIFIC HANDLING ======
+            # Tokenizer with override tokens from config
+            # self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True, **self.cfg.get("override_tokens", {}))
+            self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+            self.tokenizer.bos_token = '<s>'
+            self.tokenizer.eos_token = '</s>'
+            self.tokenizer.pad_token = '<SPECIAL_12>'
+
+
+            self.llm = getattr(llm, self.cfg.get("base_model_name", "model"))
+
+
+
+            self.lm_head = llm.lm_head
+
+
+            embed_tokens_name = self.cfg.get("embed_tokens_name", "embed_tokens")
+
+            self.embed_tokens = getattr(self.llm, embed_tokens_name)
+
+
+            delattr(self.llm, embed_tokens_name)
+            
+        elif 'Qwen2.5' in self.cfg.pretrained_llm:
+            # ====== QWEN2.5-SPECIFIC HANDLING ======
+            # Tokenizer with special token setup
+            self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
             # For Qwen, '<|im_start|>' is a common choice for a BOS token.
             # You can check your tokenizer's vocabulary for the best candidate.
             logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
@@ -151,14 +185,28 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             self.tokenizer.eos_token = '<|im_end|>'
             if self.cfg.get("use_extra_id_for_pad", False):
                 self.tokenizer.pad_token = '<|extra_1|>'
+            
+            # Standard model access
+            self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
+            self.lm_head = llm.lm_head
+            # Note: we have to "move out" the token embedding outside of LLM to avoid
+            #       messing up FSDP/TP hooks.
+            self.embed_tokens = self.llm.embed_tokens
+            del self.llm.embed_tokens
+            
+        else:
 
-        llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights).train()
-        self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
-        self.lm_head = llm.lm_head
-        # Note: we have to "move out" the token embedding outside of LLM to avoid
-        #       messing up FSDP/TP hooks.
-        self.embed_tokens = self.llm.embed_tokens
-        del self.llm.embed_tokens
+            self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+            
+            # Standard model access
+            self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
+            self.lm_head = llm.lm_head
+            # Note: we have to "move out" the token embedding outside of LLM to avoid
+            #       messing up FSDP/TP hooks.
+            self.embed_tokens = self.llm.embed_tokens
+            del self.llm.embed_tokens
+
+
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
@@ -173,14 +221,14 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 (subword, self.tokenizer.tokenizer._tokenizer.token_to_id(subword))
                 for subword in llm_tokenizer_vocab_items
             ]
-
-        self.speech_generation = TransformerARSpeechDecoder(
-            speech_decoder_parms=OmegaConf.to_container(self.cfg.speech_decoder),
-            lantent_dim=self.llm.config.hidden_size,
-            num_audio_codebooks=self._num_codebooks,
-            num_audio_tokens_per_codebook=self.speech_vocab_size,
-            llm_tokenizer_vocab_items=llm_tokenizer_vocab_items,
-        )
+        if self.cfg.audio_loss_weight > 0:
+            self.speech_generation = TransformerARSpeechDecoder(
+                speech_decoder_parms=OmegaConf.to_container(self.cfg.speech_decoder),
+                lantent_dim=self.llm.config.hidden_size,
+                num_audio_codebooks=self._num_codebooks,
+                num_audio_tokens_per_codebook=self.speech_vocab_size,
+                llm_tokenizer_vocab_items=llm_tokenizer_vocab_items,
+            )
 
         if self.cfg.get("pretrained_s2s_model", None):
             self.init_from_model_from_ckpt(self.cfg.pretrained_s2s_model)
@@ -193,21 +241,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self.cfg.get("pretrained_tts_from_s2s", None):
             self.init_speech_generation_from_another_s2s_checkpoint(self.cfg.pretrained_tts_from_s2s)
 
-        # self.embed_audio_tokens = torch.nn.ModuleList(
-        #     [
-        #         torch.nn.Embedding(self.speech_vocab_size, self.embed_tokens.embedding_dim)
-        #         for _ in range(self._num_codebooks)
-        #     ]
-        # )
-        # self.audio_head = torch.nn.Linear(self.llm.config.hidden_size, self.speech_vocab_size * self._num_codebooks)
 
-        # cached for quicker audio decoding
-        self.register_buffer(
-            "_control_codes",
-            torch.tensor([self.speech_bos_id, self.speech_eos_id, self.speech_delay_id], device=self.device),
-        )
         self._use_fsdp = False
         self._use_tp = False
+
+        # Cache for noise file names to avoid repeated glob operations
+        if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
+            self._noise_files_cache = {}
 
     def init_speech_generation_from_tts_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
@@ -330,66 +370,85 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 (1) llm cache depends on input cache is None or Not
                 (2) speech_generation cache relys on reset_input_and_kv_cache function.
         """
-        out = self.llm(
-            inputs_embeds=input_embeds, past_key_values=cache, use_cache=cache is not None, return_dict=True
-        )
+        # Handle different cache parameter names for different models
+        if 'Nemotron' in self.cfg.pretrained_llm:
+            # Nemotron uses cache_params instead of past_key_values
+            kwargs = {
+                "inputs_embeds": input_embeds,
+                "return_dict": True,
+                "use_cache": cache is not None,
+            }
+            if cache is not None:
+                kwargs['use_cache'] = True
+                kwargs[self.cfg.get("cache_key", "past_key_values")] = cache
+            out = self.llm(**kwargs)
+
+        else:
+            out = self.llm(
+                inputs_embeds=input_embeds, past_key_values=cache, use_cache=cache is not None, return_dict=True
+            )
+
+
         B, T = input_embeds.shape[:2]
         text_logits = self.lm_head(out['last_hidden_state'])  # (B, T, text_vocab_size)
 
-        if seq_mask is not None:
-            # This is training Mode
-            seq_mask = seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1))
-            # disable cache in training mode
-            if self.speech_generation.use_input_cache:
-                self.speech_generation.reset_input_and_kv_cache(use_cache=False)
+        ans = {"text_logits": text_logits}
 
-        # if inference time, uses the target text tokens sampled from the llm backbone
-        if self.speech_generation.use_input_cache and not self.training:
-            if self.cfg.get("inference_pad_boost", None):
-                text_logits[:, :, self.text_pad_id] += self.cfg.inference_pad_boost
-            if self.cfg.get("inference_bos_boost", None):
-                text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost
-            if self.cfg.get("inference_eos_boost", None):
-                text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
 
-            target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
+        if self.cfg.audio_loss_weight > 0:
+            if seq_mask is not None:
+                # This is training Mode
+                seq_mask = seq_mask[:, :, -1].reshape(seq_mask.size(0), seq_mask.size(1))
+                # disable cache in training mode
+                if self.speech_generation.use_input_cache:
+                    self.speech_generation.reset_input_and_kv_cache(use_cache=False)
 
-            if self.cfg.get('convert_pad_to_extra_id_on_speech_decoder', None):
-                target_text_tokens[target_text_tokens == self.text_pad_id] = self.tokenizer.tokenizer._tokenizer.token_to_id("<|endoftext|>") # <|endoftext|> token id
-        else:
-            # Drop BOS tokens with per-token probability (augmentation)
-            drop_bos_prob = getattr(self.cfg, "drop_text_bos_prob", 0.0)
-            if drop_bos_prob > 0.0:
-                bos_mask = (target_text_tokens == self.text_bos_id)
-                # Generate random mask only for BOS positions
-                drop_bos_mask = torch.rand_like(target_text_tokens, dtype=torch.float) < drop_bos_prob
-                target_text_tokens = torch.where(bos_mask & drop_bos_mask, self.text_pad_id, target_text_tokens)
 
-            # Drop EOS tokens with per-token probability (augmentation)
-            drop_eos_prob = getattr(self.cfg, "drop_text_eos_prob", 0.0)
-            if drop_eos_prob > 0.0:
-                eos_mask = (target_text_tokens == self.text_eos_id)
-                drop_eos_mask = torch.rand_like(target_text_tokens, dtype=torch.float) < drop_eos_prob
-                target_text_tokens = torch.where(eos_mask & drop_eos_mask, self.text_pad_id, target_text_tokens)
+            if self.speech_generation.use_input_cache and not self.training:
+                if self.cfg.get("inference_pad_boost", None):
+                    text_logits[:, :, self.text_pad_id] += self.cfg.inference_pad_boost
+                if self.cfg.get("inference_bos_boost", None):
+                    text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost  
+                if self.cfg.get("inference_eos_boost", None):
+                    text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
 
-        audio_logits, _ = self.speech_generation(
-            out['last_hidden_state'].transpose(0, 1),
-            seq_mask,
-            input_audio_tokens=input_audio_tokens,
-            target_text_tokens=target_text_tokens,
-            modality_adapter_emb=modality_adapter_emb,
-            asr_emb=asr_emb,
-            speaker_encoder_emb=speaker_encoder_emb,
-        )
+                target_text_tokens = torch.argmax(text_logits, dim=-1).view(B, T).contiguous()
 
-        audio_logits = audio_logits.view(B, T, self._num_codebooks, self.speech_vocab_size)
+                if self.cfg.get('convert_pad_to_extra_id_on_speech_decoder', None):
+                    target_text_tokens[target_text_tokens == self.text_pad_id] = self.tokenizer.tokenizer._tokenizer.token_to_id("<|endoftext|>")
+            else:
 
-        ans = {
-            "text_logits": text_logits,
-            "audio_logits": audio_logits,
-        }
+                drop_bos_prob = getattr(self.cfg, "drop_text_bos_prob", 0.0)
+                if drop_bos_prob > 0.0:
+                    bos_mask = (target_text_tokens == self.text_bos_id)
+                    drop_bos_mask = torch.rand_like(target_text_tokens, dtype=torch.float) < drop_bos_prob
+                    target_text_tokens = torch.where(bos_mask & drop_bos_mask, self.text_pad_id, target_text_tokens)
+
+                drop_eos_prob = getattr(self.cfg, "drop_text_eos_prob", 0.0)
+                if drop_eos_prob > 0.0:
+                    eos_mask = (target_text_tokens == self.text_eos_id)
+                    drop_eos_mask = torch.rand_like(target_text_tokens, dtype=torch.float) < drop_eos_prob
+                    target_text_tokens = torch.where(eos_mask & drop_eos_mask, self.text_pad_id, target_text_tokens)
+
+            audio_logits, _ = self.speech_generation(
+                out['last_hidden_state'].transpose(0, 1), seq_mask,
+                input_audio_tokens=input_audio_tokens,
+                target_text_tokens=target_text_tokens,
+                modality_adapter_emb=modality_adapter_emb,
+                asr_emb=asr_emb,
+                speaker_encoder_emb=speaker_encoder_emb,
+            )
+            audio_logits = audio_logits.view(B, T, self._num_codebooks, self.speech_vocab_size)
+            ans["audio_logits"] = audio_logits
+
         if cache is not None:
-            ans["cache"] = out["past_key_values"]
+            if 'Nemotron' in self.cfg.pretrained_llm:
+                # For Nemotron, get cache from the configured cache key
+                cache_key = self.cfg.get("cache_key", "cache_params")
+                ans["cache"] = getattr(out, cache_key, out.get(cache_key))
+            else:
+                # Standard cache handling
+                ans["cache"] = out["past_key_values"]
 
         return ans
 
@@ -409,15 +468,19 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         batch_size, audio_length = batch_audio.shape
 
         import glob
-
         import librosa
         import numpy as np
         import soundfile as sf
         from scipy.signal import butter, lfilter
 
-        noise_files = [f for f in glob.glob(noise_folder + "/*.wav")]
-        if not noise_files:
-            raise ValueError(f"No noise files found in {noise_folder}")
+        # Use cached noise file list to avoid repeated glob operations
+        if noise_folder not in self._noise_files_cache:
+            noise_files = [f for f in glob.glob(noise_folder + "/*.wav")]
+            if not noise_files:
+                raise ValueError(f"No noise files found in {noise_folder}")
+            self._noise_files_cache[noise_folder] = noise_files
+        else:
+            noise_files = self._noise_files_cache[noise_folder]
 
         for i in range(batch_size):
 
@@ -505,36 +568,24 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         return batch_audio
 
     def prepare_inputs(self, batch: dict):
-        """
-        Similar to DuplexS2SModel.prepare_inputs, with following changes:
-            (1) Add 'input_audio_tokens' and 'seq_mask' in return value for TransformerARSpeechDecoder
-            (2) Remove audio codec embedding from 'input_embeds'
-        """
-        # check if audios has the same batch size
-        assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
-        assert batch["target_first_turn_audio"].size(0) == batch["target_audio"].size(0)
 
-        if self.cfg.get('use_old_noise_aug', None):
-            # ToDo we are applying it in all datasets, old codebase does not applied in real conv data
-            noise_prob = 0.99
-            noise_min_snr = 20
-            noise_max_snr = 50
-            noise_path = self.cfg.get(
-                'old_noise_aug_path',
-                None
-            )
-            noise_path_name = "*"
-            no_noise_audio = batch["source_audio"].clone()
+        source_encoded, source_encoded_lens, asr_emb = self.perception(
+            input_signal=batch["source_audio"],
+            input_signal_length=batch["source_audio_lens"],
+            return_encoder_emb=True,
+        )
+     
+        if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
+
             if (
                 self.training
                 and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
-                and noise_prob
-                and random.random() < noise_prob
+                and random.random() < self.cfg.noise_prob
             ):
                 batch["source_audio"] = self.add_noise_to_batch(
                     batch["source_audio"],
-                    os.path.join(noise_path, noise_path_name),
-                    snr_db=random.randint(noise_min_snr, noise_max_snr),
+                    os.path.join(self.cfg.noise_file_path, "*"),
+                    snr_db=random.randint(20, 50),          #   noise_min_snr = 20 and noise_max_snr = 50
                     noise_prob_scale_user=0.3,
                     noise_prob_scale_user_min_snr=-15,
                     noise_prob_scale_user_max_snr=24,
@@ -542,40 +593,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     noise_resample=True,
                     noise_prob_low_pass=0.1,
                 )
-        else:
-            # change audio volume randomly
-            if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
-                # prev codebase had 0.0631 and 5.6234 here we round the values
-                min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631)  # -15 snr
-                max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234)  # 24 snr
 
-                # get a random float value between min and max
-                scaling_factor = (
-                    torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device)
-                    * (max_scale_val - min_scale_val)
-                    + min_scale_val
-                )
-                batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
 
-            # apply low pass filter
-            if self.training and random.random() < self.cfg.get('noise_prob_low_pass', 0.0):
-                # prev codebase had 0.0631 and 5.6234 here we round the values
-                cutoff_freq = self.cfg.get('noise_low_pass_cutoff_freq', 1000.0)
-                # note here we are using a biquad filter, older codebase we are using a filter of order 5
-                batch["source_audio"] = torchaudio.functional.lowpass_biquad(
-                    waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq
-                )
 
-        source_encoded, source_encoded_lens, asr_emb = self.perception(
-            input_signal=batch["source_audio"],
-            input_signal_length=batch["source_audio_lens"],
-            return_encoder_emb=True,
-        )
 
-        # if inference return speaker embedding None and it will uses the cached speaker embedding
-        if not self.training:
+        if self.cfg.audio_loss_weight > 0 and not self.training:
             speaker_encoder_emb = None
-        else:  # if training or eval extract embedding from first agent turn returned by the dataloader
+        elif self.cfg.audio_loss_weight > 0 and self.training:
             if self.speech_generation.use_speaker_encoder:
                 target_first_turn_audio = batch["target_first_turn_audio"]
                 target_first_turn_audio_lens = batch["target_first_turn_audio_lens"]
@@ -584,318 +608,275 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 )
             else:
                 speaker_encoder_emb = None
+        else:
+            speaker_encoder_emb = None
 
         target_tokens = batch["target_tokens"]
+        
+
         if (diff := target_tokens.shape[1] - source_encoded.shape[1]) < 0:
-            target_tokens = torch.cat(
-                [
-                    target_tokens,
-                    (
-                        torch.ones(source_encoded.shape[0], abs(diff), device=source_encoded.device) * self.text_pad_id
-                    ).to(torch.long),
-                ],
-                dim=-1,
-            )
+            target_tokens = torch.cat([
+                target_tokens,
+                (torch.ones(source_encoded.shape[0], abs(diff), device=source_encoded.device) * self.text_pad_id).to(torch.long),
+            ], dim=-1)
         elif diff > 0:
             target_tokens = target_tokens[:, : source_encoded.shape[1]]
 
-        with fp32_precision(), torch.no_grad():
-            target_codes, target_codes_lens = self.audio_codec.encode(
-                audio=batch["target_audio"], audio_len=batch["target_audio_lens"]
-            )
-        target_codes = target_codes.transpose(1, 2)  # (B, K, T) -> (B, T, K)
+        if self.cfg.audio_loss_weight > 0:
 
-        if (tl := target_codes.shape[1]) != (sl := source_encoded.shape[1]):
-            if tl < sl:
-                diff = sl - tl
-                source_encoded = source_encoded[:, :tl]
-                asr_emb = asr_emb[:, :tl]
-                target_tokens = target_tokens[:, :tl]
-                torch.clamp_(source_encoded_lens, max=tl)
-            else:
-                diff = tl - sl
-                target_codes = target_codes[:, :sl]
-                torch.clamp_(target_codes_lens, max=sl)
-            if diff > 2:
-                logging.warning(
-                    f"A mismatch between source ({sl}) and target ({tl}) sequence length greater than 2 detected. "
-                    f"This may indicate significant desynchronization in longer sessions."
-                )
-
-        btt = target_tokens[..., None]
-        target_codes = torch.where(btt == self.text_bos_id, self.speech_bos_id, target_codes)
-        target_codes = torch.where(btt == self.text_eos_id, self.speech_eos_id, target_codes)
-
-        # ToDo: implement in a way that we can set the number of speech delay > 1
-        target_codes = torch.cat(
-            [
-                torch.full(
-                    [target_codes.shape[0], 1, target_codes.shape[-1]],
-                    fill_value=self.speech_delay_id,
-                    device=self.device,
-                    dtype=torch.long,
-                ),
-                target_codes[:, :-1],
-            ],
-            dim=1,
-        )
-        # move back text channel by x, in inference it advance the text channel prediction
-        # it is the oposite of speech delay applied on text channel
-        if self.advance_text_channel_by:
-            pad = torch.full(
-                (target_tokens.shape[0], self.advance_text_channel_by),
-                fill_value=self.text_pad_id,
-                device=target_tokens.device,
-                dtype=torch.long,
-            )
-            target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by :], pad], dim=-1)
-            # make sure that eos/bos is in the place (it can cut tokens from the first advance_text_channel_by tokens and this will breaks everything)
-
-        if self.cfg.get("delay_text_eos_by", None):
-            target_tokens = delay_eos(target_tokens, self.text_eos_id, self.text_pad_id, shift=self.cfg.delay_text_eos_by)
-
-        input_ids = torch.cat([target_codes, target_tokens[..., None]], dim=-1)
-        if self._use_tp:
-            tp_world_size = self.device_mesh["tensor_parallel"].size()
-            if (remainder := (input_ids.shape[1] - 1) % tp_world_size) != 0:
-                input_ids = input_ids[:, :-remainder]
-                source_encoded = source_encoded[:, :-remainder]
-                asr_emb = asr_emb[:, :-remainder]
-
-        text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
-        text_labels = input_ids[:, 1:, -1]  # (B, T-1)
-        audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
-        audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
-
-        input_embeds = self.embed_tokens(text_inputs)
-
-        input_embeds.add_(source_encoded[:, :-1] * self.cfg.get("duplex_user_channel_weight", 1.0))
-
-        # create sequence mask
-        seq_mask = torch.ones_like(
-            torch.cat([text_labels.unsqueeze(-1), audio_labels], dim=-1),
-            device=self.device,
-            dtype=torch.bool,
-        )
-
-        if self.cfg.get("mask_sequence_loss", True):
-            # set the mask based on the target_token_lens to disconsider sequence padding in loss
-            for i in range(batch["target_token_lens"].size(0)):
-                speech_end_idx = batch["target_token_lens"][i]
-                seq_mask[i, speech_end_idx:, :] = 0
-
-            # check new mask consistency
-            mask_lengths = seq_mask[:, :, 0].sum(-1)
-            assert torch.allclose(batch["target_token_lens"].float(), mask_lengths.float(), atol=2.0)
-
-        # create loss scale mask by copying seq_mask to include mask sequence
-        loss_scale = seq_mask.clone().float()
-
-        if self.cfg.get("scale_loss_by") == 'non_sil_t':
-            loss_scale[:, :, :1] = torch.where(
-                text_labels.unsqueeze(-1) != self.text_pad_id,
-                self.cfg.get("scale_loss_mask", self.cfg.get("nonsil_weight", 4.0)),
-                loss_scale[:, :, :1],
-            )
-
-        # debug samples:
-        if (
-            self.cfg.get("debug_dataloader_audios_path", None)
-            and self.training
-            and "s2s_duplex_overlap_as_s2s_duplex" not in batch["formatter"][0]
-        ):
-
-            def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
-                """
-                Count the number of consecutive silence tokens at the beginning of a 1D tensor.
-
-                Args:
-                    tensor (torch.Tensor): 1D tensor of tokens.
-                    silence_token (int): The token considered as silence (default: 0).
-
-                Returns:
-                    int: Number of consecutive silence tokens at the beginning.
-                """
-                if tensor.ndim != 1:
-                    raise ValueError("Input tensor must be 1D.")
-
-                count = 0
-                for token in tensor:
-                    if token.item() == silence_token:
-                        count += 1
-                    else:
-                        break
-                return count
-
-            def write_wave(one_audio_signal, file_name, sr=None):
-                import numpy as np
-                import soundfile as sf
-
-                one_audio_signal = one_audio_signal.cpu().numpy()
-                one_audio_signal = one_audio_signal.astype(np.float32)
-                if sr is None:
-                    sr = self.target_sample_rate
-                # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
-                sf.write(file_name, one_audio_signal, sr)
-
-            # encode and decode the audio
             with fp32_precision(), torch.no_grad():
-                lengths = torch.tensor([batch["target_audio"].shape[1]] * batch["target_audio"].shape[0]).to(
-                    self.audio_codec.device
+                target_codes, target_codes_lens = self.audio_codec.encode(
+                    audio=batch["target_audio"], audio_len=batch["target_audio_lens"]
                 )
-                reconstructed_audio_from_wav, _ = self.audio_codec(audio=batch["target_audio"], audio_len=lengths)
-                # reconstruct wav
-                audio_labels_ = replace_control_speech_codes(audio_labels, self._control_codes)
-                with fp32_precision(), torch.no_grad():
-                    lengths = torch.tensor([audio_labels_.shape[1]] * audio_labels_.shape[0]).to(
-                        self.audio_codec.device
+            target_codes = target_codes.transpose(1, 2)  # (B, K, T) -> (B, T, K)
+
+            if (tl := target_codes.shape[1]) != (sl := source_encoded.shape[1]):
+                if tl < sl:
+                    diff = sl - tl
+                    source_encoded = source_encoded[:, :tl]
+                    asr_emb = asr_emb[:, :tl]
+                    target_tokens = target_tokens[:, :tl]
+                    torch.clamp_(source_encoded_lens, max=tl)
+                else:
+                    diff = tl - sl
+                    target_codes = target_codes[:, :sl]
+                    torch.clamp_(target_codes_lens, max=sl)
+                if diff > 2:
+                    logging.warning(
+                        f"A mismatch between source ({sl}) and target ({tl}) sequence length greater than 2 detected. "
+                        f"This may indicate significant desynchronization in longer sessions."
                     )
-                    reconstructed_audio_from_tokens, _ = self.audio_codec.decode(
-                        tokens=audio_labels_.transpose(1, 2), tokens_len=lengths
+            btt = target_tokens[..., None]
+            target_codes = torch.where(btt == self.text_bos_id, self.speech_bos_id, target_codes)
+            target_codes = torch.where(btt == self.text_eos_id, self.speech_eos_id, target_codes)
+
+            target_codes = torch.cat([
+                torch.full([target_codes.shape[0], 1, target_codes.shape[-1]],
+                          fill_value=self.speech_delay_id, device=self.device, dtype=torch.long),
+                target_codes[:, :-1],
+            ], dim=1)
+
+
+            if self.advance_text_channel_by:
+                pad = torch.full((target_tokens.shape[0], self.advance_text_channel_by),
+                               fill_value=self.text_pad_id, device=target_tokens.device, dtype=torch.long)
+                target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by :], pad], dim=-1)
+
+            if self.cfg.get("delay_text_eos_by", None):
+                target_tokens = delay_eos(target_tokens, self.text_eos_id, self.text_pad_id, shift=self.cfg.delay_text_eos_by)
+
+            input_ids = torch.cat([target_codes, target_tokens[..., None]], dim=-1)
+            
+            # TP处理
+            if self._use_tp:
+                tp_world_size = self.device_mesh["tensor_parallel"].size()
+                if (remainder := (input_ids.shape[1] - 1) % tp_world_size) != 0:
+                    input_ids = input_ids[:, :-remainder]
+                    source_encoded = source_encoded[:, :-remainder]
+                    asr_emb = asr_emb[:, :-remainder]
+
+            text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
+            text_labels = input_ids[:, 1:, -1]  # (B, T-1)
+            audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
+            audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
+
+            input_embeds = self.embed_tokens(text_inputs)
+            input_embeds.add_(source_encoded[:, :-1] * self.cfg.get("duplex_user_channel_weight", 1.0))
+
+            # 完整的seq_mask
+            seq_mask = torch.ones_like(
+                torch.cat([text_labels.unsqueeze(-1), audio_labels], dim=-1),
+                device=self.device, dtype=torch.bool,
+            )
+
+            if self.cfg.get("mask_sequence_loss", True):
+                for i in range(batch["target_token_lens"].size(0)):
+                    speech_end_idx = batch["target_token_lens"][i]
+                    seq_mask[i, speech_end_idx:, :] = 0
+
+            # 创建loss scale
+            loss_scale = seq_mask.clone().float()
+            if self.cfg.get("token_loss_weight"):
+                token_weights = self.cfg.token_loss_weight
+                pad_weight = token_weights.get("pad", 1.0)
+                bos_weight = token_weights.get("bos", 1.0)
+                eos_weight = token_weights.get("eos", 1.0)
+                text_weight = token_weights.get("text", 1.0)
+
+                text_labels_exp = text_labels.unsqueeze(-1)
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels_exp == self.text_pad_id, pad_weight,
+                    torch.where(
+                        text_labels_exp == self.text_bos_id, bos_weight,
+                        torch.where(
+                            text_labels_exp == self.text_eos_id, eos_weight,
+                            text_weight
+                        )
                     )
-
-            for i in range(audio_labels_.shape[0]):
-                write_wave(
-                    batch["target_audio"][i],
-                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_{i}.wav"),
-                    sr=self.target_sample_rate,
                 )
-                write_wave(
-                    batch["target_first_turn_audio"][i],
-                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"speaker_ref_{i}.wav"),
-                    sr=self.target_sample_rate,
-                )
-                write_wave(
-                    batch["source_audio"][i],
-                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"source_audio_{i}.wav"),
-                    sr=self.source_sample_rate,
+            elif self.cfg.get("scale_loss_by") == 'non_sil_t':
+                loss_scale[:, :, :1] = torch.where(
+                    text_labels.unsqueeze(-1) != self.text_pad_id,
+                    self.cfg.get("scale_loss_mask", self.cfg.get("nonsil_weight", 4.0)),
+                    loss_scale[:, :, :1],
                 )
 
-                write_wave(
-                    reconstructed_audio_from_tokens[i],
-                    os.path.join(
-                        self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"
-                    ),
-                    sr=self.target_sample_rate,
+            return {
+                "input_embeds": input_embeds,
+                "input_lens": source_encoded_lens - 1,
+                "output_lens": target_codes_lens - 1,
+                "text_labels": text_labels,
+                "input_audio_tokens": audio_inputs,
+                "audio_labels": audio_labels,
+                "seq_mask": seq_mask,
+                "loss_scale": loss_scale,
+                "perception_emb": source_encoded[:, :-1],
+                "asr_emb": asr_emb[:, :-1],
+                "speaker_encoder_emb": speaker_encoder_emb,
+            }
+        
+        else:
+
+            text_inputs = target_tokens[:, :-1]  # (B, T-1)
+            text_labels = target_tokens[:, 1:]   # (B, T-1)
+            
+            input_embeds = self.embed_tokens(text_inputs)
+            input_embeds.add_(source_encoded[:, :-1] * self.cfg.get("duplex_user_channel_weight", 1.0))
+
+            seq_mask = torch.ones_like(text_labels.unsqueeze(-1), device=self.device, dtype=torch.bool)
+            
+            if self.cfg.get("mask_sequence_loss", True):
+                for i in range(batch["target_token_lens"].size(0)):
+                    speech_end_idx = batch["target_token_lens"][i]
+                    seq_mask[i, speech_end_idx:, :] = 0
+
+            loss_scale = seq_mask.clone().float()
+            if self.cfg.get("token_loss_weight"):
+                token_weights = self.cfg.token_loss_weight
+                pad_weight = token_weights.get("pad", 1.0)
+                bos_weight = token_weights.get("bos", 1.0)
+                eos_weight = token_weights.get("eos", 1.0)
+                text_weight = token_weights.get("text", 1.0)
+
+                loss_scale = torch.where(
+                    text_labels.unsqueeze(-1) == self.text_pad_id, pad_weight,
+                    torch.where(
+                        text_labels.unsqueeze(-1) == self.text_bos_id, bos_weight,
+                        torch.where(
+                            text_labels.unsqueeze(-1) == self.text_eos_id, eos_weight,
+                            text_weight
+                        )
+                    )
                 )
+            # elif self.cfg.get("scale_loss_by") == 'non_sil_t':
+            #     loss_scale = torch.where(
+            #         text_labels.unsqueeze(-1) != self.text_pad_id,
+            #         self.cfg.get("scale_loss_mask", self.cfg.get("nonsil_weight", 4.0)),
+            #         loss_scale,
+            #     )
 
-                write_wave(
-                    reconstructed_audio_from_wav[i],
-                    os.path.join(
-                        self.cfg.get("debug_dataloader_audios_path"),
-                        f"target_audio_reconstructed_from_waveform_{i}.wav",
-                    ),
-                    sr=self.target_sample_rate,
-                )
-
-            num_bos_tokens = (text_labels.unsqueeze(-1) == self.text_bos_id).flatten(1, 2).sum(-1)
-            # Count how many EOS tokens are present per sequence
-            # Shape: [B]
-            num_eos_tokens = (text_labels.unsqueeze(-1) == self.text_eos_id).flatten(1, 2).sum(-1)
-            print("Num eos:", num_eos_tokens, "num bos:", num_bos_tokens)
-            # check text
-            print(
-                "text_labels decoded:",
-                tokens_to_str(
-                    text_labels[-1:], target_codes_lens - 1, tokenizer=self.tokenizer, pad_id=self.text_pad_id
-                ),
-            )
-            print(
-                "target labels from dataloader decoded:",
-                tokens_to_str(
-                    batch["target_tokens"][-1:],
-                    target_codes_lens - 1,
-                    tokenizer=self.tokenizer,
-                    pad_id=self.text_pad_id,
-                ),
-            )
-            print(
-                "Number of padding tokens on the begining:",
-                count_leading_silence_tokens(text_labels[-1:].squeeze(), self.text_pad_id),
-            )
-
-            print(batch["formatter"])
-            if audio_labels_.shape[0] > 1:
-                exit()
-
-        return {
-            "input_embeds": input_embeds,
-            "input_lens": source_encoded_lens - 1,
-            "output_lens": target_codes_lens - 1,
-            "text_labels": text_labels,
-            "input_audio_tokens": audio_inputs,
-            "audio_labels": audio_labels,
-            "seq_mask": seq_mask,
-            "loss_scale": loss_scale,
-            "perception_emb": source_encoded[:, :-1],
-            "asr_emb": asr_emb[:, :-1],
-            "speaker_encoder_emb": speaker_encoder_emb,
-        }
-
+            return {
+                "input_embeds": input_embeds,
+                "input_lens": source_encoded_lens - 1,
+                "output_lens": source_encoded_lens - 1,  # 使用source长度
+                "text_labels": text_labels,
+                "loss_scale": loss_scale,
+                "seq_mask": seq_mask,
+            }
 
     def training_step(self, batch: dict, batch_idx: int):
-        for m in (self.perception.preprocessor, self.perception.encoder, self.llm, self.speech_generation):
+        for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
 
-        res = {
-            "learning_rate": (
-                torch.as_tensor(self.trainer.optimizers[0].param_groups[0]['lr'] if self._trainer is not None else 0)
-            ),
-        }
+        if self.cfg.audio_loss_weight > 0 and is_frozen(self.speech_generation):
+            self.speech_generation.eval()
+
+        res = {"learning_rate": torch.as_tensor(self.trainer.optimizers[0].param_groups[0]['lr'] if self._trainer is not None else 0)}
+
+
 
         if batch["audio_data"] is not None:
             inputs = self.prepare_inputs(batch["audio_data"])
-            forward_outputs = self(
-                inputs["input_embeds"],
-                input_audio_tokens=inputs["input_audio_tokens"],
-                seq_mask=inputs["seq_mask"],
-                target_text_tokens=inputs["text_labels"],
-                modality_adapter_emb=inputs["perception_emb"],
-                asr_emb=inputs["asr_emb"],
-                speaker_encoder_emb=inputs["speaker_encoder_emb"],
-            )
+            if self.cfg.audio_loss_weight > 0:
+                forward_outputs = self(
+                    inputs["input_embeds"],
+                    input_audio_tokens=inputs["input_audio_tokens"],
+                    seq_mask=inputs["seq_mask"],
+                    target_text_tokens=inputs["text_labels"],
+                    modality_adapter_emb=inputs["perception_emb"],
+                    asr_emb=inputs["asr_emb"],
+                    speaker_encoder_emb=inputs["speaker_encoder_emb"],
+                )
+            else:
+                forward_outputs = self(
+                    inputs["input_embeds"],
+                )
+
             num_frames = inputs["input_lens"].sum()
+
             with loss_parallel():
-                # mask audio logits to ignore sequence padding
+
                 text_logits = forward_outputs["text_logits"]
+
+
                 if self.cfg.get("mask_sequence_loss", True):
                     text_logits = text_logits * inputs["seq_mask"][:, :, 0].unsqueeze(-1)
 
                 text_loss = (
                     torch.nn.functional.cross_entropy(
-                        text_logits.flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
+                        text_logits.flatten(0, 1),
                         inputs["text_labels"].flatten(0, 1),
                         reduction="none",
                     )
                     * inputs["loss_scale"][:, :, 0].flatten(0, 1)
                 ).sum(-1) / num_frames
 
-                # mask audio logits to ignore sequence padding
-                audio_logits = forward_outputs["audio_logits"]
-                if self.cfg.get("mask_sequence_loss", True):
-                    audio_logits = audio_logits * inputs["seq_mask"][:, :, -1].unsqueeze(-1).unsqueeze(-1)
+                with torch.no_grad():
 
-                audio_loss = (
-                    torch.nn.functional.cross_entropy(
-                        audio_logits.flatten(0, 2),  # (B, T, K, Vs) -> (*, Vs)
-                        inputs["audio_labels"].flatten(0, 2),
-                        reduction="none",
-                    )
-                    * inputs["loss_scale"][:, :, 1:].flatten(0, 2)
-                ).sum(-1) / (num_frames * self._num_codebooks)
+                    predicted_tokens = torch.argmax(text_logits, dim=-1)  # (B, T)
+                    target_tokens = inputs["text_labels"]  # (B, T)
+                    valid_mask = (target_tokens != self.text_pad_id)
 
-            loss = self.cfg.text_loss_weight * text_loss + self.cfg.audio_loss_weight * audio_loss
+                    correct_predictions = (predicted_tokens == target_tokens) & valid_mask
 
-            B, T = inputs["input_embeds"].shape[:2]
-            ans = {
-                "audio_loss": loss,
-                "audio_to_text_loss": text_loss,
-                "audio_to_audio_loss": audio_loss,
-                "audio_num_frames": num_frames.to(torch.float32),  # avoid warning
-                "audio_padding_ratio": num_frames / (B * T),
-            }
-            res.update(ans)
+
+                    if valid_mask.sum() > 0:
+                        token_accuracy = correct_predictions.sum().float() / valid_mask.sum().float()
+                    else:
+                        token_accuracy = torch.tensor(0.0, device=text_logits.device)
+
+
+
+                if self.cfg.audio_loss_weight > 0:
+                    audio_logits = forward_outputs["audio_logits"]
+                    if self.cfg.get("mask_sequence_loss", True):
+                        audio_logits = audio_logits * inputs["seq_mask"][:, :, -1].unsqueeze(-1).unsqueeze(-1)
+
+
+                    audio_loss = (
+                        torch.nn.functional.cross_entropy(
+                            audio_logits.flatten(0, 2),
+                            inputs["audio_labels"].flatten(0, 2),
+                            reduction="none",
+                        )
+                        * inputs["loss_scale"][:, :, 1:].flatten(0, 2)
+                    ).sum(-1) / (num_frames * self._num_codebooks)
+
+                    loss = self.cfg.text_loss_weight * text_loss + self.cfg.audio_loss_weight * audio_loss
+                else:
+                    loss = self.cfg.text_loss_weight * text_loss
+
+                B, T = inputs["input_embeds"].shape[:2]
+                ans = {
+                    "audio_loss": loss,
+                    "audio_to_text_loss": text_loss,
+                    "batch": B,
+                    "length": T,
+                    "token_accuracy": token_accuracy,
+                }
+  
+                res.update(ans)
 
         if batch["text_data"] is not None:
             text_input_ids = batch["text_data"]["text_tokens"][:, :-1]
@@ -917,21 +898,20 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             res.update(
                 {
                     "text_to_text_loss": text_loss,
-                    "text_batch_size": text_input_ids.shape[0],
-                    "text_sequence_length": text_input_ids.shape[1],
-                    "text_num_tokens": batch["text_data"]["text_token_lens"].sum(),
                 }
             )
 
         res["loss"] = (1. - self.cfg.text_to_text_loss_weight) * res.get("audio_loss", 0.0) + \
             self.cfg.text_to_text_loss_weight * res.get("text_to_text_loss", 0.0)
         self.log_dict(res, on_step=True)
+        
         return res
 
     def on_train_epoch_start(self) -> None:
-        setup_audio_codec(self)  # potentially reloads the audio codec to make sure it's in fp32
-        if hasattr(self.speech_generation, "use_speaker_encoder") and self.speech_generation.use_speaker_encoder:
-            self.speech_generation.setup_speaker_encoder()  # potentially reloads the speaker encoder to make sure it's in fp32
+        if self.cfg.audio_loss_weight > 0:
+            setup_audio_codec(self)
+            if hasattr(self.speech_generation, "use_speaker_encoder") and self.speech_generation.use_speaker_encoder:
+                self.speech_generation.setup_speaker_encoder()
 
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
@@ -939,37 +919,56 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.bleu = BLEU().reset()
-        tolerance = int(
-            self.cfg.get("val_acc_tolerance", 160) / (1000 / self.target_fps)
-        )  # 160 ms as default tolerance --> 2 tokens for 12.5FPS and 1 for 25FPS
-        self.text_bos_acc = TokenAccuracy(
-            token_name="text_bos", token_id=self.text_bos_id, tolerance=tolerance
+        
+        # Initialize turn taking metrics
+        self.turn_taking_metrics = TurnTakingMetrics(
+            eos_token_id=self.text_eos_id,
+            bos_token_id=self.text_bos_id,
+            tolerance=13,
+            latency_multiplier=0.08
         ).reset()
-        self.text_eos_acc = TokenAccuracy(
-            token_name="text_eos", token_id=self.text_eos_id, tolerance=tolerance
-        ).reset()
+        
+        # Initialize text evaluation metrics
+        # self.perplexity = Perplexity(ignore_index=self.text_pad_id).reset()
+        # self.validation_loss = ValidationLoss(ignore_index=self.text_pad_id).reset()
+
 
     def on_validation_epoch_end(self, prefix="val") -> None:
-        asr_bleu = self.asr_bleu.compute()
-        for k, m in asr_bleu.items():
-            self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
+
         bleu = self.bleu.compute()
         for k, m in bleu.items():
+            if "-qa" not in k:
+                self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
+
+        acc_metrics = self.results_logger.compute_and_save()
+        
+        for name, result_dict in acc_metrics.items():
+            self.log(f"{prefix}_{name}_acc", result_dict['acc'].to(self.device), on_epoch=True, sync_dist=True)
+            # self.log(f"{prefix}_{name}_empty_rate", result_dict['empty_rate'].to(self.device), on_epoch=True, sync_dist=True)
+
+        # Log turn taking metrics
+        turn_taking_metrics = self.turn_taking_metrics.compute()
+        for k, m in turn_taking_metrics.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
-        text_bos_acc = self.text_bos_acc.compute()
-        for k, m in text_bos_acc.items():
-            self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
-        text_eos_acc = self.text_eos_acc.compute()
-        for k, m in text_eos_acc.items():
-            self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
+
+
+        if self.cfg.audio_loss_weight > 0:
+            asr_bleu = self.asr_bleu.compute()
+            for k, m in asr_bleu.items():
+                self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
+
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
 
     def validation_step(self, batch: dict, batch_idx: int):
 
-        # Update speaker embedding to reflect the one in the prompt during inference
-        if self.speech_generation.use_speaker_encoder and self.speech_generation.inference_speaker_reference:
-            self.speech_generation.update_inference_speaker_embedding(
-                self.speech_generation.inference_speaker_reference
-            )
+    
+        if self.cfg.audio_loss_weight > 0:
+            if self.speech_generation.use_speaker_encoder and self.speech_generation.inference_speaker_reference:
+                self.speech_generation.update_inference_speaker_embedding(
+                    self.speech_generation.inference_speaker_reference
+                )
 
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
@@ -981,14 +980,45 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 dataset_batch["source_audio"],
                 dataset_batch["source_audio_lens"],
             )
+            
+            # Always compute text metrics (BLEU, perplexity, validation loss)
+            self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
+            
+            # Update turn taking metrics
+            if "source_tokens" in dataset_batch and results["tokens_text"] is not None:
+                self.turn_taking_metrics.update(
+                    name=name,
+                    source_tokens=dataset_batch["source_tokens"],
+                    pred_tokens=results["tokens_text"]
+                )
 
-            with fp32_precision():  # resample is fragile to bfloat16 default dtype
-                asr_hyps = self.asr_bleu.update(
+
+            if self.cfg.audio_loss_weight == 0:
+                # Generate fake pred_audio based on text tokens
+                fake_pred_audio, fake_audio_len = self._generate_fake_audio_from_tokens(results["tokens_text"])
+
+                self.results_logger.update(
                     name=name,
                     refs=dataset_batch["target_texts"],
-                    pred_audio=resample(results["audio"], 22050, 16000),
-                    pred_audio_lens=(results["audio_len"] / 22050 * 16000).to(torch.long),
+                    hyps=results["text"],
+                    asr_hyps=None,
+                    samples_id=dataset_batch['sample_id'],
+                    pred_audio=fake_pred_audio,
+                    pred_audio_sr=self.target_sample_rate,
+                    user_audio=dataset_batch["source_audio"],
+                    user_audio_sr=self.source_sample_rate,
                 )
+
+                continue  # Skip audio-related metrics
+
+            else:
+                with fp32_precision():  # resample is fragile to bfloat16 default dtype
+                    asr_hyps = self.asr_bleu.update(
+                        name=name,
+                        refs=dataset_batch["target_texts"],
+                        pred_audio=resample(results["audio"], 22050, 16000),
+                        pred_audio_lens=(results["audio_len"] / 22050 * 16000).to(torch.long),
+                    )
 
                 self.results_logger.update(
                     name=name,
@@ -1000,14 +1030,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
-                    fps=self.source_fps,
-                    results=results if self.cfg.get("dump_tokens_text", False) else None,
-                    tokenizer=self.tokenizer,
                 )
 
-            self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
-            self.text_bos_acc.update(name=name, refs=dataset_batch["target_tokens"], hyps=results["tokens_text"])
-            self.text_eos_acc.update(name=name, refs=dataset_batch["target_tokens"], hyps=results["tokens_text"])
+
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()
@@ -1052,6 +1077,72 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         text_bos = torch.full((1,), fill_value=self.text_pad_id, device=self.device)
         input_embeds = self.embed_tokens(text_bos)
         return input_embeds
+
+    def _generate_fake_audio_from_tokens(self, tokens_text: torch.Tensor):
+        """
+        Generate fake audio based on text tokens for analysis when audio_loss_weight == 0.
+        
+        Logic:
+        - Default value: 0
+        - After first text_bos_id: 1
+        - After first text_eos_id: back to 0
+        - text_pad_id between bos and eos: 0.5
+        - text_pad_id elsewhere: 0
+        
+        Args:
+            tokens_text: (batch_size, seq_len) tensor
+            
+        Returns:
+            fake_audio: (batch_size, audio_len) tensor
+            audio_lengths: (batch_size,) tensor with audio lengths
+        """
+        batch_size, seq_len = tokens_text.shape
+        token_duration = 0.08  # seconds per token
+        samples_per_token = int(token_duration * self.target_sample_rate)
+        audio_len = seq_len * samples_per_token
+        
+        # Initialize fake audio tensor
+        fake_audio = torch.zeros(batch_size, audio_len, device=tokens_text.device, dtype=torch.float32)
+        audio_lengths = torch.full((batch_size,), audio_len, device=tokens_text.device, dtype=torch.long)
+        
+        for b in range(batch_size):
+            current_tokens = tokens_text[b].cpu().numpy()  # Convert to numpy for easier processing
+            audio_values = torch.zeros(seq_len, device=tokens_text.device, dtype=torch.float32)
+            
+            in_speech = False  # Track whether we're between bos and eos
+            
+            for t in range(seq_len):
+                token_id = int(current_tokens[t])
+                
+                if token_id == self.text_bos_id:
+                    # Start of speech
+                    in_speech = True
+                    audio_values[t] = 1.0
+                elif token_id == self.text_eos_id:
+                    # End of speech
+                    in_speech = False
+                    audio_values[t] = 0.0
+                elif token_id == self.text_pad_id:
+                    if in_speech:
+                        # Pad token between bos and eos
+                        audio_values[t] = 0.5
+                    else:
+                        # Pad token outside speech
+                        audio_values[t] = 0.0
+                else:
+                    # Regular text token
+                    if in_speech:
+                        audio_values[t] = 1.0
+                    else:
+                        audio_values[t] = 0.0
+            
+            # Expand each token value to cover the corresponding audio samples
+            for t in range(seq_len):
+                start_sample = t * samples_per_token
+                end_sample = min((t + 1) * samples_per_token, audio_len)
+                fake_audio[b, start_sample:end_sample] = audio_values[t]
+        
+        return fake_audio, audio_lengths
 
     @torch.no_grad()
     def offline_inference(
@@ -1119,20 +1210,42 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         input_embeds *= self.cfg.get("duplex_user_channel_weight", 1.0)
 
         # This cache is for self.llm
-        cache = DynamicCache()
+        use_cache = True
+        if 'Nemotron' in self.cfg.pretrained_llm:
+            # For Nemotron, due to cache issues, we disable cache and use full history mode
+            cache = None
+            use_cache = False
+            logging.info("Using no-cache mode for Nemotron (full history each step)")
+        else:
+            # Standard cache for other models
+            cache = DynamicCache()
+            use_cache = True
         # Call reset_input_and_kv_cache to enable cache for TransformerARSpeechDecoder
-        self.speech_generation.reset_input_and_kv_cache(use_cache=True)
-        gen_text = torch.empty(B, T, device=self.device, dtype=torch.long)
-        gen_audio = torch.empty(B, T, self._num_codebooks, device=self.device, dtype=torch.long)
+        if self.cfg.audio_loss_weight > 0:
+            # For Nemotron, we also disable cache in speech generation to be consistent
+            speech_use_cache = use_cache
+            self.speech_generation.reset_input_and_kv_cache(use_cache=speech_use_cache)
 
-        # First step, use speech_delay token
+        gen_text = torch.empty(B, T, device=self.device, dtype=torch.long)
+        if self.cfg.audio_loss_weight > 0:
+            gen_audio = torch.empty(B, T, self._num_codebooks, device=self.device, dtype=torch.long)
+        else:
+
+            gen_audio = torch.zeros(B, T, self._num_codebooks, device=self.device, dtype=torch.long)
+
+
         input_embeds[:, 0] += self._get_bos_embedding()
-        first_audio = torch.full(
-            [B, 1, self._num_codebooks],
-            fill_value=self.speech_delay_id,
-            device=self.device,
-            dtype=torch.long,
-        )
+        if self.cfg.audio_loss_weight > 0:
+            first_audio = torch.full(
+                [B, 1, self._num_codebooks],
+                fill_value=self.speech_delay_id,
+                device=self.device,
+                dtype=torch.long,
+            )
+        else:
+
+            first_audio = torch.zeros([B, 1, self._num_codebooks], device=self.device, dtype=torch.long)
+
         ans = self(
             input_embeds[:, :1],
             cache=cache,
@@ -1144,7 +1257,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
         )
         gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
-        gen_audio[:, 0] = ans["audio_logits"][:, -1].argmax(dim=-1)
+        if self.cfg.audio_loss_weight > 0:
+            gen_audio[:, 0] = ans["audio_logits"][:, -1].argmax(dim=-1)
 
         speech_state = torch.zeros(B, device=self.device, dtype=torch.long)
         # Autoregressive loop
@@ -1157,75 +1271,106 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
             input_embeds[:, t] += last_emb
 
-            current_audio = gen_audio[:, t - 1 : t, :]
-            ans = self(
-                input_embeds[:, t : t + 1],
-                cache=ans["cache"],
-                input_audio_tokens=current_audio,
-                seq_mask=None,
-                target_text_tokens=None,  # text input will be sampled from llm backbone
-                modality_adapter_emb=source_encoded[:, t : t + 1],
-                asr_emb=asr_emb[:, t : t + 1],
-                speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
-            )
-            gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
-            gen_audio[:, t] = ans["audio_logits"][:, -1].argmax(dim=-1)
+            if self.cfg.audio_loss_weight > 0:
+                current_audio = gen_audio[:, t - 1 : t, :]
+            else:
+                current_audio = torch.zeros([B, 1, self._num_codebooks], device=self.device, dtype=torch.long)
+            
+            if use_cache:
+                # Standard cached mode - pass only current step
+                ans = self(
+                    input_embeds[:, t : t + 1],
+                    cache=ans["cache"],
+                    input_audio_tokens=current_audio if self.cfg.audio_loss_weight > 0 else None,
+                    seq_mask=None,
+                    target_text_tokens=None,  # text input will be sampled from llm backbone
+                    modality_adapter_emb=source_encoded[:, t : t + 1],
+                    asr_emb=asr_emb[:, t : t + 1],
+                    speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
+                )
+                gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
+            else:
+                # No-cache mode for Nemotron - pass full history up to current step
+                if self.cfg.audio_loss_weight > 0:
+                    full_audio_history = gen_audio[:, :t, :]
+                else:
+                    full_audio_history = None
+                    
+                ans = self(
+                    input_embeds[:, :t + 1],
+                    cache=None,
+                    input_audio_tokens=full_audio_history,
+                    seq_mask=None,
+                    target_text_tokens=None,  # text input will be sampled from llm backbone
+                    modality_adapter_emb=source_encoded[:, :t + 1],
+                    asr_emb=asr_emb[:, :t + 1],
+                    speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
+                )
+                gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
 
-            if self.cfg.get('inference_force_speech_state', None):
-                # state 0 - silence, state 1 - speech
-                speech_state = torch.where(
-                    gen_text[:, t] == self.text_bos_id, torch.ones_like(speech_state), speech_state
-                )
-                speech_state = torch.where(
-                    gen_text[:, t] == self.text_eos_id, torch.zeros_like(speech_state), speech_state
-                )
-                gen_audio[:, t] = torch.where(
-                    speech_state.unsqueeze(-1) == 0,
-                    gen_audio[:, 0],  # silence
-                    gen_audio[:, t],  # speech
-                )
-            # inference trick force speech decoder eos/bos to make the model more robust
-            num_speech_delay = 1
-            if self.cfg.get('inference_force_speech_bos', None) and num_speech_delay < gen_text.shape[1]:
-                gen_audio[:, t] = torch.where(
-                    (gen_text[:, t - num_speech_delay].unsqueeze(-1) == self.text_bos_id)
-                    * (torch.sum(gen_audio[:, t - num_speech_delay :] == self.speech_bos_id, 1) == 0),
-                    self.speech_bos_id,
-                    gen_audio[:, t],
-                )
 
-            if self.cfg.get('inference_force_speech_eos', None) and gen_text.shape[
-                1
-            ] > num_speech_delay + self.cfg.get("advance_text_channel_by", 0):
-                # tmp solution: force to stop talking if user interruption is detected
-                gen_audio[:, t] = torch.where(
-                    (
+            if self.cfg.audio_loss_weight > 0:
+                gen_audio[:, t] = ans["audio_logits"][:, -1].argmax(dim=-1)
+
+
+            if self.cfg.audio_loss_weight > 0:
+                if self.cfg.get('inference_force_speech_state', None):
+                    # state 0 - silence, state 1 - speech
+                    speech_state = torch.where(
+                        gen_text[:, t] == self.text_bos_id, torch.ones_like(speech_state), speech_state
+                    )
+                    speech_state = torch.where(
+                        gen_text[:, t] == self.text_eos_id, torch.zeros_like(speech_state), speech_state
+                    )
+                    gen_audio[:, t] = torch.where(
+                        speech_state.unsqueeze(-1) == 0,
+                        gen_audio[:, 0],  # silence
+                        gen_audio[:, t],  # speech
+                    )
+                # inference trick force speech decoder eos/bos to make the model more robust
+                num_speech_delay = 1
+                if self.cfg.get('inference_force_speech_bos', None) and num_speech_delay < gen_text.shape[1]:
+                    gen_audio[:, t] = torch.where(
+                        (gen_text[:, t - num_speech_delay].unsqueeze(-1) == self.text_bos_id)
+                        * (torch.sum(gen_audio[:, t - num_speech_delay :] == self.speech_bos_id, 1) == 0),
+                        self.speech_bos_id,
+                        gen_audio[:, t],
+                    )
+
+                if self.cfg.get('inference_force_speech_eos', None) and gen_text.shape[
+                    1
+                ] > num_speech_delay + self.cfg.get("advance_text_channel_by", 0):
+                    # tmp solution: force to stop talking if user interruption is detected
+                    gen_audio[:, t] = torch.where(
                         (
-                            gen_text[:, t - num_speech_delay - self.cfg.get("advance_text_channel_by", 0)].unsqueeze(
-                                -1
+                            (
+                                gen_text[:, t - num_speech_delay - self.cfg.get("advance_text_channel_by", 0)].unsqueeze(
+                                    -1
+                                )
+                                == self.text_eos_id
                             )
-                            == self.text_eos_id
-                        )
-                    ),
-                    self.speech_eos_id,
-                    gen_audio[:, t],
-                )
+                        ),
+                        self.speech_eos_id,
+                        gen_audio[:, t],
+                    )
 
         # Trim back to local length if padded
         if self._use_fsdp and T > T_local:
             gen_text = gen_text[:, :T_local]
             gen_audio = gen_audio[:, :T_local]
 
+
         ans = {
             "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id),
             "tokens_text": gen_text,
-            "tokens_audio": gen_audio,
+            "tokens_audio": gen_audio,  # 即使audio_loss_weight=0也返回，但内容是dummy的
             "tokens_len": lengths,
             "source_audio": input_signal,
             "source_audio_len": input_signal_lens,
         }
 
-        if decode_audio:
+
+        if decode_audio and self.cfg.audio_loss_weight > 0:
             gen_audio_codes = replace_control_speech_codes(gen_audio, self._control_codes)
             with fp32_precision(), torch.no_grad():
                 predicted_audio, predicted_audio_lens = self.audio_codec.decode(
@@ -1234,14 +1379,15 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             ans["audio"] = predicted_audio
             ans["audio_len"] = predicted_audio_lens
 
-        # Call reset_input_and_kv_cache to reset cache for TransformerARSpeechDecoder
-        self.speech_generation.reset_input_and_kv_cache(use_cache=False)
+        if self.cfg.audio_loss_weight > 0:
+            self.speech_generation.reset_input_and_kv_cache(use_cache=False)
 
         if self.cfg.get("custom_sample_inference", None):
             print(ans["audio"].shape, input_signal.shape)
             self.results_logger.merge_and_save_audio(self.cfg.custom_sample_inference+"inf.wav", pred_audio=ans["audio"][0], pred_audio_sr=self.target_sample_rate, user_audio=input_signal[0], user_audio_sr=self.source_sample_rate)
             exit()
         return ans
+
 
     def backward(self, *args, **kwargs):
         with loss_parallel():
@@ -1316,16 +1462,64 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
                 # Adjust attention module to use the local number of heads
                 attn_layer = transformer_block.self_attn
-                for attr in ("num_heads", "num_key_value_heads", "hidden_size"):
-                    val = getattr(attn_layer, attr)
-                    if val % tp_mesh.size() != 0:
-                        logging.warning(
-                            f"attn_layer.{attr}={val} is not divisible by {tp_mesh.size()=}: "
-                            f"set a different tensor parallelism size to avoid errors."
-                        )
-                    setattr(attn_layer, attr, val // tp_mesh.size())
-
-                parallelize_module(transformer_block, tp_mesh, plan)
+                
+                # Get values from model config instead of attention layer (for different model compatibility)
+                try:
+                    config = self.llm.config
+                    
+                    # Get config values
+                    num_attention_heads = getattr(config, 'num_attention_heads', None)
+                    num_key_value_heads = getattr(config, 'num_key_value_heads', None)
+                    hidden_size = getattr(config, 'hidden_size', None)
+                    
+                    if all([num_attention_heads, num_key_value_heads, hidden_size]):
+                        # Check divisibility constraints
+                        for attr_name, val in [("num_attention_heads", num_attention_heads), 
+                                             ("num_key_value_heads", num_key_value_heads), 
+                                             ("hidden_size", hidden_size)]:
+                            if val % tp_mesh.size() != 0:
+                                logging.warning(
+                                    f"config.{attr_name}={val} is not divisible by {tp_mesh.size()=}: "
+                                    f"set a different tensor parallelism size to avoid errors."
+                                )
+                        
+                        # Set sharded values if attributes exist on attention layer
+                        if hasattr(attn_layer, 'num_heads'):
+                            attn_layer.num_heads = num_attention_heads // tp_mesh.size()
+                        elif hasattr(attn_layer, 'num_attention_heads'):
+                            attn_layer.num_attention_heads = num_attention_heads // tp_mesh.size()
+                            
+                        if hasattr(attn_layer, 'num_key_value_heads'):
+                            attn_layer.num_key_value_heads = num_key_value_heads // tp_mesh.size()
+                            
+                        if hasattr(attn_layer, 'hidden_size'):
+                            attn_layer.hidden_size = hidden_size // tp_mesh.size()
+                            
+                        logging.info(f"Configured tensor parallel for attention: "
+                                   f"heads={num_attention_heads//tp_mesh.size()}, "
+                                   f"kv_heads={num_key_value_heads//tp_mesh.size()}, "
+                                   f"hidden_size={hidden_size//tp_mesh.size()}")
+                    else:
+                        raise AttributeError("Required config attributes not found")
+                        
+                except Exception as e:
+                    logging.warning(f"Failed to configure tensor parallel using config: {e}")
+                    logging.warning("Falling back to attention layer attributes...")
+                    
+                    # Fallback: try original method using attention layer attributes
+                    try:
+                        for attr in ("num_heads", "num_key_value_heads", "hidden_size"):
+                            if hasattr(attn_layer, attr):
+                                val = getattr(attn_layer, attr)
+                                if val % tp_mesh.size() != 0:
+                                    logging.warning(
+                                        f"attn_layer.{attr}={val} is not divisible by {tp_mesh.size()=}: "
+                                        f"set a different tensor parallelism size to avoid errors."
+                                    )
+                                setattr(attn_layer, attr, val // tp_mesh.size())
+                    except Exception as fallback_e:
+                        logging.warning(f"Both config and fallback methods failed: {fallback_e}")
+                        logging.warning("Skipping tensor parallel configuration for this attention layer")
 
             for m in (self.lm_head,):
                 parallelize_module(
@@ -1350,7 +1544,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             self.llm = fully_shard(self.llm, **fsdp_config)
             self.lm_head = fully_shard(self.lm_head, **fsdp_config)
             self.perception = fully_shard(self.perception, **fsdp_config)
-            self.speech_generation = fully_shard(self.speech_generation, **fsdp_config)
+            if self.cfg.audio_loss_weight > 0:
+                self.speech_generation = fully_shard(self.speech_generation, **fsdp_config)
+
 
     def load_state_dict(self, state_dict, strict: bool = True):
         try:

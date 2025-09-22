@@ -207,6 +207,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
+        "slice_length": config.get("slice_length", None),
     }
     input_cfg = config.input_cfg
     if isinstance(input_cfg, (str, Path)):
@@ -419,7 +420,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if isinstance(config.shar_path, (str, Path)):
             logging.info(f"Initializing Lhotse Shar CutSet (tarred) from a single data source: '{config.shar_path}'")
             cuts = CutSet.from_shar(
-                **_resolve_shar_inputs(config.shar_path, metadata_only), shuffle_shards=True, seed=shard_seed
+                **_resolve_shar_inputs(config.shar_path, metadata_only),
+                shuffle_shards=True,
+                seed=shard_seed,
+                slice_length=config.get("slice_length", None),
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat()
@@ -436,7 +440,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 if isinstance(item, (str, Path)):
                     path = item
                     cs = CutSet.from_shar(
-                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                        **_resolve_shar_inputs(path, metadata_only),
+                        shuffle_shards=True,
+                        seed=shard_seed,
+                        slice_length=config.get("slice_length", None),
                     )
                     weight = len(cs)
                 else:
@@ -448,7 +455,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                     )
                     path, weight = item
                     cs = CutSet.from_shar(
-                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                        **_resolve_shar_inputs(path, metadata_only),
+                        shuffle_shards=True,
+                        seed=shard_seed,
+                        slice_length=config.get("slice_length", None),
                     )
                 logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs)
@@ -469,7 +479,12 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             )
             if metadata_only:
                 fields = {"cuts": fields["cuts"]}
-            cuts = CutSet.from_shar(fields=fields, shuffle_shards=True, seed=shard_seed)
+            cuts = CutSet.from_shar(
+                fields=fields,
+                shuffle_shards=True,
+                seed=shard_seed,
+                slice_length=config.get("slice_length", None),
+            )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat()
         else:
@@ -1030,6 +1045,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     config.manifest_filepath,
                     tar_paths=config.tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    slice_length=config.get("slice_length", None),
                     **common_kwargs,
                 )
             )
@@ -1074,6 +1090,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    slice_length=config.get("slice_length", None),
                     **common_kwargs,
                 )
             else:

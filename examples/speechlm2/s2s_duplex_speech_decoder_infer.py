@@ -36,7 +36,14 @@ def inference(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
-        model = DuplexS2SSpeechDecoderModel(OmegaConf.to_container(cfg, resolve=True))
+
+        if os.path.isdir(cfg.ckpt_path):
+            # Hugging Face format
+            model = DuplexS2SSpeechDecoderModel.from_pretrained(cfg.ckpt_path)
+        else:
+            # PyTorch Lightning format
+            model = DuplexS2SSpeechDecoderModel(OmegaConf.to_container(cfg, resolve=True))
+
 
     dataset = DuplexS2SDataset(
         tokenizer=model.tokenizer,

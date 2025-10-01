@@ -31,7 +31,10 @@ def main(cfg):
     torch.set_float32_matmul_precision("medium")
     torch.backends.cudnn.allow_tf32 = True
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
-    log_dir = Path(cfg.output_path)
+    print(cfg)
+    print('===')
+    print(cfg.exp_manager)
+    log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     if os.path.isdir(cfg.ckpt_path):
@@ -41,7 +44,6 @@ def main(cfg):
         # PyTorch Lightning format
         model = DuplexS2SSpeechDecoderModel.load_from_checkpoint(cfg.ckpt_path, map_location="cpu")
 
-    model.cfg.prediction = cfg.prediction
 
     dataset = DuplexS2SDataset(
         tokenizer=model.tokenizer,
@@ -54,7 +56,7 @@ def main(cfg):
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     # Predictions are saved by the prediction writer, which is a callback provided in the config
-    trainer.predict(model, datamodule=datamodule)
+    trainer.validate(model, datamodule=datamodule)
 
 
 if __name__ == "__main__":

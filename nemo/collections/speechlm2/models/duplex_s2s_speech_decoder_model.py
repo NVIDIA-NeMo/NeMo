@@ -159,15 +159,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             self.tokenizer.eos_token = '</s>'
             self.tokenizer.pad_token = '<SPECIAL_12>'
 
-
-            self.llm = getattr(llm, self.cfg.get("base_model_name", "model"))
-
+            self.llm = getattr(llm, self.cfg.get("base_model_name", "backbone"))
 
 
             self.lm_head = llm.lm_head
 
 
-            embed_tokens_name = self.cfg.get("embed_tokens_name", "embed_tokens")
+            embed_tokens_name = self.cfg.get("embed_tokens_name", "embeddings")
 
             self.embed_tokens = getattr(self.llm, embed_tokens_name)
 

@@ -40,7 +40,7 @@ def parse_args():
         '5) "path/to/shar_data" - a path to Lhotse Shar data directory; '
         '6) "key=val" - in case none of the previous variants cover your case: "key" is the key you\'d use in NeMo training config with its corresponding value ',
     )
-    parser.add_argument("-b", "--buckets", type=int, default=30, help="The desired number of buckets.")
+    parser.add_argument("-b", "--buckets", type=int, default=10, help="The desired number of buckets.")
     parser.add_argument(
         "-n",
         "--num_examples",

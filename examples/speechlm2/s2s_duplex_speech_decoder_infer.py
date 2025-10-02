@@ -40,6 +40,8 @@ def inference(cfg):
         if os.path.isdir(cfg.ckpt_path):
             # Hugging Face format
             model = DuplexS2SSpeechDecoderModel.from_pretrained(cfg.ckpt_path)
+            # Update the log directory from the checkpoint's config to the current run's config
+            model.validation_save_path = os.path.join(log_dir, "validation_logs")
         else:
             # PyTorch Lightning format
             model = DuplexS2SSpeechDecoderModel(OmegaConf.to_container(cfg, resolve=True))

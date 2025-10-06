@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import torch
-from omegaconf import open_dict
+from omegaconf import open_dict, OmegaConf
 from peft import PeftModel
 from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -88,12 +88,27 @@ def setup_speech_encoder(model: torch.nn.Module):
     Sets up an ``AudioPerceptionModule``, initializing its ``encoder`` and ``preprocessor``
     with a pretrained NeMo ``ASRModel``.
     The result is assigned to ``model.perception`` attribute and is trainable.
+    
+    If user config specifies encoder parameters, they will override the pretrained model's config.
     """
+    # Save user-specified encoder config before loading pretrained model
+    user_encoder_config = {}
+
+    if 'encoder' in model.cfg.perception:
+        user_encoder_config = OmegaConf.to_container(model.cfg.perception.encoder, resolve=True)
+    
     asr = load_pretrained_nemo(ASRModel, model.cfg.pretrained_asr).eval()
     with open_dict(model.cfg):
         model.cfg.perception.preprocessor = asr.cfg.preprocessor
         model.cfg.perception.encoder = asr.cfg.encoder
         model.cfg.perception.output_dim = model.llm.config.hidden_size
+        import pdb;
+        pdb.set_trace()
+        # Override with user-specified encoder parameters
+        if user_encoder_config:
+            for key, value in user_encoder_config.items():
+                if value is not None:  # Only override if user explicitly set a value
+                    model.cfg.perception.encoder[key] = value
     model.perception = AudioPerceptionModule(model.cfg.perception).train()
     model.perception.load_state_dict(asr.state_dict(), strict=False)
 

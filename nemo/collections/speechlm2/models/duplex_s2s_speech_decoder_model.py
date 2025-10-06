@@ -286,6 +286,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
                     checkpoint_path = f"{tmpdir}/model_weights.ckpt"
                     checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+            elif os.path.isdir(checkpoint_path):
+                # Handle HuggingFace format directory
+                logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
+                pretrained_model = self.__class__.from_pretrained(checkpoint_path)
+                checkpoint_state = pretrained_model.state_dict()
+                del pretrained_model
             else:
                 checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
@@ -573,24 +579,24 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             return_encoder_emb=True,
         )
      
-        if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
-
-            if (
-                self.training
-                and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
-                and random.random() < self.cfg.noise_prob
-            ):
-                batch["source_audio"] = self.add_noise_to_batch(
-                    batch["source_audio"],
-                    os.path.join(self.cfg.noise_file_path, "*"),
-                    snr_db=random.randint(20, 50),          #   noise_min_snr = 20 and noise_max_snr = 50
-                    noise_prob_scale_user=0.3,
-                    noise_prob_scale_user_min_snr=-15,
-                    noise_prob_scale_user_max_snr=24,
-                    snr_measure_dur=0.0,
-                    noise_resample=True,
-                    noise_prob_low_pass=0.1,
-                )
+        # if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
+        #
+        #     if (
+        #         self.training
+        #         and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
+        #         and random.random() < self.cfg.noise_prob
+        #     ):
+        #         batch["source_audio"] = self.add_noise_to_batch(
+        #             batch["source_audio"],
+        #             os.path.join(self.cfg.noise_file_path, "*"),
+        #             snr_db=random.randint(20, 50),          #   noise_min_snr = 20 and noise_max_snr = 50
+        #             noise_prob_scale_user=0.3,
+        #             noise_prob_scale_user_min_snr=-15,
+        #             noise_prob_scale_user_max_snr=24,
+        #             snr_measure_dur=0.0,
+        #             noise_resample=True,
+        #             noise_prob_low_pass=0.1,
+        #         )
 
 
 
@@ -913,6 +919,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
+        
+        # Initialize ResultsLogger (it will automatically find manifest_files in its own directory)
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
 
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
@@ -926,23 +934,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             latency_multiplier=0.08
         ).reset()
         
-        # Initialize text evaluation metrics
-        # self.perplexity = Perplexity(ignore_index=self.text_pad_id).reset()
-        # self.validation_loss = ValidationLoss(ignore_index=self.text_pad_id).reset()
+
 
 
     def on_validation_epoch_end(self, prefix="val") -> None:
 
         bleu = self.bleu.compute()
         for k, m in bleu.items():
-            if "-qa" not in k:
+            if "qa" not in k and "mmsu" not in k:
                 self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
 
         acc_metrics = self.results_logger.compute_and_save()
-        
+
         for name, result_dict in acc_metrics.items():
-            self.log(f"{prefix}_{name}_acc", result_dict['acc'].to(self.device), on_epoch=True, sync_dist=True)
-            # self.log(f"{prefix}_{name}_empty_rate", result_dict['empty_rate'].to(self.device), on_epoch=True, sync_dist=True)
+            # Log regular accuracy for QA datasets
+            if 'acc' in result_dict:
+                self.log(f"{prefix}_{name}_acc", result_dict['acc'].to(self.device), on_epoch=True, sync_dist=True)
+            
+            # Log MCQ accuracy for MCQ datasets
+            if 'mcq_acc' in result_dict:
+                self.log(f"{prefix}_{name}_mcq_acc", result_dict['mcq_acc'].to(self.device), on_epoch=True, sync_dist=True)
+            
+            # Optionally log empty rate (commented out by default)
+            # if 'empty_rate' in result_dict:
+            #     self.log(f"{prefix}_{name}_empty_rate", result_dict['empty_rate'].to(self.device), on_epoch=True, sync_dist=True)
 
         # Log turn taking metrics
         turn_taking_metrics = self.turn_taking_metrics.compute()

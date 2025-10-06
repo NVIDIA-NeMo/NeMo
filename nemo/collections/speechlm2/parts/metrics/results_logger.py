@@ -11,6 +11,7 @@ import torch
 import torchaudio
 
 from nemo.utils import logging
+from nemo.collections.speechlm2.parts.metrics.mcq_evaluator import MCQEvaluator
 
 
 def safe_remove_path(path):
@@ -56,6 +57,21 @@ class ResultsLogger:
         os.makedirs(self.matadata_save_path, exist_ok=True)
         self.cached_results = defaultdict(list)
         self.normalizer = EnglishTextNormalizer()
+        
+        # Initialize MCQ evaluator with manifest directory in the same folder
+        self.mcq_evaluator = None
+        # Get the directory where this file is located
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        mcq_manifest_dir = os.path.join(current_file_dir, 'manifest_files')
+        
+        if os.path.exists(mcq_manifest_dir):
+            self.mcq_evaluator = MCQEvaluator(mcq_manifest_dir)
+            logging.info(f"MCQ evaluator initialized with manifest directory: {mcq_manifest_dir}")
+        else:
+            logging.warning(
+                f"MCQ manifest directory not found at {mcq_manifest_dir}. "
+                f"MCQ evaluation (openbookqa, mmsu) will be skipped."
+            )
 
     def reset(self):
         metadata_files = os.listdir(self.matadata_save_path)
@@ -113,7 +129,7 @@ class ResultsLogger:
             }
             self.cached_results[name].append(out_dict)
 
-        logging.info(f"Metadata for {name} dataset cached (rank {rank}).")
+
 
     def _merge_rank_files(self, dataset_name: str) -> List[dict]:
         """
@@ -158,7 +174,7 @@ class ResultsLogger:
         # logging.info(f"Total merged results for {dataset_name}: {len(all_results)} items")
         return all_results
 
-    def compute_and_save(self, special_subset_names: Optional[List[str]] = None):
+    def compute_and_save(self, special_subset_names: Optional[List[str]] = None, mcq_subset_names: Optional[List[str]] = None):
         """
         Saves all cached results. Now supports distributed training:
         1. Each rank saves its own results with rank suffix
@@ -166,14 +182,18 @@ class ResultsLogger:
         3. Computes metrics on the merged results
 
         Args:
-            special_subset_names: A list of validation subset names to compute accuracy for.
+            special_subset_names: A list of validation subset names to compute accuracy for (QA datasets).
+            mcq_subset_names: A list of MCQ dataset names to compute MCQ accuracy for.
 
         Returns:
             A dictionary of calculated metrics (accuracy and empty_rate) for the special subsets.
-            E.g., {'web-qa': {'acc': 0.8, 'empty_rate': 0.1}, ...}
+            E.g., {'web-qa': {'acc': 0.8, 'empty_rate': 0.1}, 'openbookqa': {'mcq_acc': 0.75, 'empty_rate': 0.05}, ...}
         """
         if special_subset_names is None:
             special_subset_names = ['web-qa', 'llama-qa', 'trivia-qa']
+        
+        if mcq_subset_names is None:
+            mcq_subset_names = ['openbookqa', 'mmsu']
 
         rank = get_rank()
         world_size = get_world_size()
@@ -239,6 +259,31 @@ class ResultsLogger:
                     metrics_results[name] = {'acc': torch.tensor(acc), 'empty_rate': torch.tensor(empty_rate)}
                     logging.info(
                         f"Metrics for special subset '{name}': Accuracy={acc}, Empty Rate={empty_rate} (total samples: {total_count})")
+                
+                # Compute MCQ metrics for MCQ datasets
+                if name in mcq_subset_names and merged_results and self.mcq_evaluator:
+                    try:
+                        mcq_metrics = self.mcq_evaluator.evaluate(name, merged_results)
+                        
+                        # Log empty rate info
+                        empty_rate = mcq_metrics['empty_rate']
+                        logging.info(
+                            f"MCQ empty rate for '{name}': {empty_rate*100:.1f}% ({mcq_metrics['num_empty']}/{mcq_metrics['num_samples']})"
+                        )
+                        
+                        # Store only the accuracy metric for wandb logging
+                        # Use the naming convention: [dataset name]_mcq_acc
+                        metrics_results[name] = {
+                            'mcq_acc': torch.tensor(mcq_metrics['acc']),
+                            'empty_rate': torch.tensor(empty_rate)
+                        }
+                        logging.info(
+                            f"MCQ metrics for '{name}': Accuracy={mcq_metrics['acc']*100:.2f}% ({mcq_metrics['num_correct']}/{mcq_metrics['num_samples']})"
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to compute MCQ metrics for '{name}': {e}")
+                elif name in mcq_subset_names and not self.mcq_evaluator:
+                    logging.warning(f"MCQ evaluator not initialized, skipping MCQ evaluation for '{name}'")
 
         # Step 4: Broadcast metrics from rank 0 to all other ranks
         if torch.distributed.is_available() and torch.distributed.is_initialized() and world_size > 1:
@@ -246,10 +291,14 @@ class ResultsLogger:
             if rank == 0:
                 metrics_to_broadcast = {}
                 for name, metrics in metrics_results.items():
-                    metrics_to_broadcast[name] = {
-                        'acc': metrics['acc'].item(),
-                        'empty_rate': metrics['empty_rate'].item()
-                    }
+                    metrics_to_broadcast[name] = {}
+                    # Handle both regular acc and mcq_acc
+                    if 'acc' in metrics:
+                        metrics_to_broadcast[name]['acc'] = metrics['acc'].item()
+                    if 'mcq_acc' in metrics:
+                        metrics_to_broadcast[name]['mcq_acc'] = metrics['mcq_acc'].item()
+                    if 'empty_rate' in metrics:
+                        metrics_to_broadcast[name]['empty_rate'] = metrics['empty_rate'].item()
             else:
                 metrics_to_broadcast = {}
 
@@ -261,9 +310,12 @@ class ResultsLogger:
             if rank != 0:
                 metrics_results = {}
                 for name, metrics in broadcast_list[0].items():
-                    metrics_results[name] = {
-                        'acc': torch.tensor(metrics['acc']),
-                        'empty_rate': torch.tensor(metrics['empty_rate'])
-                    }
+                    metrics_results[name] = {}
+                    if 'acc' in metrics:
+                        metrics_results[name]['acc'] = torch.tensor(metrics['acc'])
+                    if 'mcq_acc' in metrics:
+                        metrics_results[name]['mcq_acc'] = torch.tensor(metrics['mcq_acc'])
+                    if 'empty_rate' in metrics:
+                        metrics_results[name]['empty_rate'] = torch.tensor(metrics['empty_rate'])
 
         return metrics_results

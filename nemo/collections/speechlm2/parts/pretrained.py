@@ -102,8 +102,6 @@ def setup_speech_encoder(model: torch.nn.Module):
         model.cfg.perception.preprocessor = asr.cfg.preprocessor
         model.cfg.perception.encoder = asr.cfg.encoder
         model.cfg.perception.output_dim = model.llm.config.hidden_size
-        import pdb;
-        pdb.set_trace()
         # Override with user-specified encoder parameters
         if user_encoder_config:
             for key, value in user_encoder_config.items():

@@ -246,6 +246,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # Cache for noise file names to avoid repeated glob operations
         if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
             self._noise_files_cache = {}
+            self._lowpass_filter_cache = {}  # Cache for lowpass filter coefficients
 
     def init_speech_generation_from_tts_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
@@ -543,22 +544,24 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 # start_idx = random.randint(0, len(noise) - audio_length)
                 noise = noise[start_idx : start_idx + audio_length]
 
-            # Function to create a low-pass filter
+            # Function to create a low-pass filter (with caching)
             def butter_lowpass(cutoff, fs, order=5):
-                nyquist = 0.5 * fs
-                normal_cutoff = cutoff / nyquist
-                b, a = butter(order, normal_cutoff, btype='low', analog=False)
-                return b, a
+                # Use cache to avoid repeated butter() calls
+                cache_key = (cutoff, fs, order)
+                if cache_key not in self._lowpass_filter_cache:
+                    nyquist = 0.5 * fs
+                    normal_cutoff = cutoff / nyquist
+                    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+                    self._lowpass_filter_cache[cache_key] = (b, a)
+                return self._lowpass_filter_cache[cache_key]
 
             # Function to apply the low-pass filter to data (tmp impl on cpu)
             def lowpass_filter(data, cutoff, fs, order=5):
                 b, a = butter_lowpass(cutoff, fs, order=order)
-                b = torch.tensor(b, dtype=torch.float32).cuda()
-                a = torch.tensor(a, dtype=torch.float32).cuda()
-                # Apply the filter using lfilter function from scipy..numpysig.numpynal (CPU)
-                y_cpu = lfilter(b.cpu().numpy(), a.cpu().numpy(), data.cpu().numpy())
-                # Convert the filtered data back to torch tensor and move to GPU.numpy
-                y_gpu = torch.tensor(y_cpu, dtype=torch.float32).cuda()
+                # Apply the filter using lfilter function from scipy (CPU)
+                y_cpu = lfilter(b, a, data.cpu().numpy())
+                # Convert the filtered data back to torch tensor and move to GPU
+                y_gpu = torch.tensor(y_cpu, dtype=torch.float32, device=data.device)
                 return y_gpu
 
             if random.random() < noise_prob_low_pass:
@@ -579,24 +582,24 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             return_encoder_emb=True,
         )
      
-        # if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
-        #
-        #     if (
-        #         self.training
-        #         and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
-        #         and random.random() < self.cfg.noise_prob
-        #     ):
-        #         batch["source_audio"] = self.add_noise_to_batch(
-        #             batch["source_audio"],
-        #             os.path.join(self.cfg.noise_file_path, "*"),
-        #             snr_db=random.randint(20, 50),          #   noise_min_snr = 20 and noise_max_snr = 50
-        #             noise_prob_scale_user=0.3,
-        #             noise_prob_scale_user_min_snr=-15,
-        #             noise_prob_scale_user_max_snr=24,
-        #             snr_measure_dur=0.0,
-        #             noise_resample=True,
-        #             noise_prob_low_pass=0.1,
-        #         )
+        if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
+
+            if (
+                self.training
+                and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
+                and random.random() < self.cfg.noise_prob
+            ):
+                batch["source_audio"] = self.add_noise_to_batch(
+                    batch["source_audio"],
+                    os.path.join(self.cfg.noise_file_path, "*"),
+                    snr_db=random.randint(-30, 50),          #   noise_min_snr = 20 and noise_max_snr = 50
+                    noise_prob_scale_user=0.5,
+                    noise_prob_scale_user_min_snr=-20,
+                    noise_prob_scale_user_max_snr=24,
+                    snr_measure_dur=0.0,
+                    noise_resample=True,
+                    noise_prob_low_pass=0.2,
+                )
 
 
 
@@ -625,6 +628,16 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             ], dim=-1)
         elif diff > 0:
             target_tokens = target_tokens[:, : source_encoded.shape[1]]
+
+        # Apply text channel temporal alignment operations (before audio processing)
+        if self.advance_text_channel_by:
+            if self.advance_text_channel_by > 0:
+                pad = torch.full((target_tokens.shape[0], self.advance_text_channel_by),
+                               fill_value=self.text_pad_id, device=target_tokens.device, dtype=torch.long)
+                target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by :], pad], dim=-1)
+
+        if self.cfg.get("delay_text_eos_by", None):
+            target_tokens = delay_eos(target_tokens, self.text_eos_id, self.text_pad_id, shift=self.cfg.delay_text_eos_by)
 
         if self.cfg.audio_loss_weight > 0:
 
@@ -660,18 +673,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 target_codes[:, :-1],
             ], dim=1)
 
-
-            if self.advance_text_channel_by:
-                pad = torch.full((target_tokens.shape[0], self.advance_text_channel_by),
-                               fill_value=self.text_pad_id, device=target_tokens.device, dtype=torch.long)
-                target_tokens = torch.cat([target_tokens[:, self.advance_text_channel_by :], pad], dim=-1)
-
-            if self.cfg.get("delay_text_eos_by", None):
-                target_tokens = delay_eos(target_tokens, self.text_eos_id, self.text_pad_id, shift=self.cfg.delay_text_eos_by)
-
             input_ids = torch.cat([target_codes, target_tokens[..., None]], dim=-1)
-            
-            # TP处理
+          
             if self._use_tp:
                 tp_world_size = self.device_mesh["tensor_parallel"].size()
                 if (remainder := (input_ids.shape[1] - 1) % tp_world_size) != 0:
@@ -1305,7 +1308,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             else:
                 # No-cache mode for Nemotron - pass full history up to current step
                 if self.cfg.audio_loss_weight > 0:
-                    full_audio_history = gen_audio[:, :t, :]
+                    # Build full audio input history: [first_audio, gen_audio[:, 0], ..., gen_audio[:, t-1]]
+                    # This matches the shape of input_embeds[:, :t+1]
+                    full_audio_history = torch.cat([
+                        first_audio,  # for position 0
+                        gen_audio[:, :t, :]  # for positions 1 to t
+                    ], dim=1)  # Shape: (B, t+1, K)
                 else:
                     full_audio_history = None
                     

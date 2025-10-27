@@ -91,7 +91,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         target_sample_rate: int,
         input_roles: list[str] = None,
         output_roles: list[str] = None,
-        aug_by_swap_role: bool = True,
+        aug_by_swap_role: bool = False,
     ):
         self.tokenizer = tokenizer
         self.frame_length = frame_length
@@ -99,7 +99,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.target_sample_rate = target_sample_rate
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
-        self.aug_by_swap_role = aug_by_swap_role  # 保存标志
+        self.aug_by_swap_role = aug_by_swap_role
         
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."

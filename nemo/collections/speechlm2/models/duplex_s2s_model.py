@@ -617,7 +617,7 @@ def replace_control_speech_codes(speech_codes: torch.Tensor, control_codes: torc
 
 
 def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTokenizer, pad_id: int,
-                  user_bos_id: int = None, eval_text_turn_taking: bool = False) -> list[str]:
+                  user_bos_id: int = None, eval_text_turn_taking: bool = False, sil_id: int = None) -> list[str]:
     ans = []
     for _, hyp_ids, hyp_len in zip(tokens.cpu(), tokens.cpu(), lengths.cpu()):
         if eval_text_turn_taking:
@@ -650,9 +650,18 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
             out_str.append(tokenizer.ids_to_text(hyp_ids[start_idx:]))
             ans.append(" ".join(out_str))
         else:
+            # For non-turn-taking mode: filter out ALL special tokens, return only pure text
             hyp_ids = hyp_ids[:hyp_len]
+            # Filter out pad
             hyp_ids = hyp_ids[hyp_ids != pad_id]
+            # Filter out agent bos/eos
+            hyp_ids = hyp_ids[hyp_ids != tokenizer.bos]
+            hyp_ids = hyp_ids[hyp_ids != tokenizer.eos]
+            # Filter out user bos if provided
             if user_bos_id is not None:
                 hyp_ids = hyp_ids[hyp_ids != user_bos_id]
+            # Filter out sil if provided
+            if sil_id is not None:
+                hyp_ids = hyp_ids[hyp_ids != sil_id]
             ans.append(tokenizer.ids_to_text(hyp_ids))
     return ans

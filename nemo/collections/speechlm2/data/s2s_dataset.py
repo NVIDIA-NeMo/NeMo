@@ -451,8 +451,26 @@ def build_token_channel(
             except Exception as e:
                 raise RuntimeError(f"{tokens.shape=} {pos=} {endpos=} {text_ids.shape=} {diagnostic}") from e
 
+            # Place EOS token - critical for turn-taking behavior
             if eospos < len(tokens):
+                # Normal case: place EOS at the intended position
                 tokens[eospos] = tokenizer.eos
+            else:
+                # Interruption case: place EOS at the last valid position
+                # This ensures the model learns to stop when interrupted by user
+                if endpos < len(tokens):
+                    # Case 1: text finished, interrupted during sil/audio generation
+                    # Place EOS right after the last text token (or at sequence end if closer)
+                    actual_eos_pos = min(endpos, len(tokens) - 1)
+                    tokens[actual_eos_pos] = tokenizer.eos
+                elif len(tokens) > 0:
+                    # Case 2: text truncated due to interruption
+                    # Place EOS at the very end of the sequence
+                    tokens[-1] = tokenizer.eos
+                logging.warning(
+                    f"Supervision was likely interrupted: {eospos=} >= {len(tokens)=}. "
+                    f"Placed EOS at fallback position to ensure proper turn-taking training. {diagnostic}"
+                )
 
     return tokens
 

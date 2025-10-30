@@ -1262,13 +1262,15 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 * "audio": generated waveform of shape (B, T3) (`decode_audio=True`).
                 * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
         """
-        # Get sil_id for text decoding (if sil_token feature is enabled)
+        # Get sil_id for text decoding
+        # For Nemotron: SPECIAL_11 is the sil token
+        # For Qwen: <|object_ref_start|> is the sil token
+        # Always set sil_id regardless of use_sil_token, as it may appear in predictions
         sil_id = None
-        if self.cfg.get("use_sil_token", False):
-            if 'Nemotron' in self.cfg.pretrained_llm:
-                sil_id = self.tokenizer.tokenizer._tokenizer.token_to_id('<SPECIAL_11>')
-            elif 'Qwen2.5' in self.cfg.pretrained_llm:
-                sil_id = self.tokenizer.tokenizer._tokenizer.token_to_id('<|object_ref_start|>')
+        if 'Nemotron' in self.cfg.pretrained_llm:
+            sil_id = self.tokenizer.tokenizer._tokenizer.token_to_id('<SPECIAL_11>')
+        elif 'Qwen2.5' in self.cfg.pretrained_llm:
+            sil_id = self.tokenizer.tokenizer._tokenizer.token_to_id('<|object_ref_start|>')
 
         if self.cfg.get("custom_sample_inference", None):
             device = input_signal.device

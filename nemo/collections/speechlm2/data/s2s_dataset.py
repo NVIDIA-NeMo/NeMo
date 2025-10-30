@@ -111,9 +111,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         
         if cuts:
             cuts = cuts.transform_text(_strip_timestamps)
-            
 
             swapped_cuts = []
+
             if self.aug_by_swap_role:
                 for cut in cuts:
                     total_turns = cut.custom.get('total_turns', len(cut.supervisions))
@@ -195,13 +195,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         }
 
     def _create_role_swapped_cut(self, cut):
-        """创建单个角色交换的cut"""
+
         from lhotse import AudioSource
         from io import BytesIO
         import soundfile as sf
         import numpy as np
         
-        # 3. 复制并完全交换supervisions
+
         swapped_supervisions = []
         for sup in cut.supervisions:
             if sup.speaker == 'User':
@@ -209,7 +209,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             elif sup.speaker == 'Assistant':
                 new_speaker = 'User'
             else:
-                continue  # 跳过其他speaker
+                continue
                 
             swapped_sup = SupervisionSegment(
                 id=sup.id + "_swapped",
@@ -219,17 +219,17 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 channel=sup.channel,
                 text=sup.text,
                 language=sup.language,
-                speaker=new_speaker,  # 交换角色
+                speaker=new_speaker,
                 gender=sup.gender,
-                custom=sup.custom,  # 完全复制custom
+                custom=sup.custom,
                 alignment=sup.alignment
             )
             swapped_supervisions.append(swapped_sup)
         
-        # 4. 丢掉第一轮Agent和最后一轮User
+
         swapped_supervisions = sorted(swapped_supervisions, key=lambda s: s.start)
         
-        # 找到第一轮Agent和最后一轮User
+
         first_agent_idx = None
         last_user_idx = None
         
@@ -239,7 +239,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             if sup.speaker == 'User':
                 last_user_idx = i
                 
-        # 移除第一轮Agent和最后一轮User
+
         filtered_supervisions = []
         for i, sup in enumerate(swapped_supervisions):
             if i != first_agent_idx and i != last_user_idx:
@@ -247,13 +247,12 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 
         if not filtered_supervisions:
             return None
-            
-        # 5. 计算时间偏移
+
         first_remaining_start = filtered_supervisions[0].start
         last_remaining_end = max(s.start + s.duration for s in filtered_supervisions)
         new_duration = last_remaining_end - first_remaining_start
         
-        # 调整所有supervision的时间偏移
+
         adjusted_supervisions = []
         for sup in filtered_supervisions:
             adjusted_sup = SupervisionSegment(
@@ -271,26 +270,21 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             )
             adjusted_supervisions.append(adjusted_sup)
         
-        # 6. 🔧 关键修复：根据调整后的supervisions重新构建音频
-        
-        # 计算新音频的总长度
+
         total_duration = max(s.start + s.duration for s in adjusted_supervisions)
         total_samples = int(total_duration * cut.sampling_rate)
-        
-        # 创建空音频轨道
+
         new_source_audio = np.zeros(total_samples, dtype=np.float32)
         new_target_audio = np.zeros(total_samples, dtype=np.float32)
-        
-        # 🔧 关键：只为adjusted_supervisions中的时间段填充音频
+
         for sup in adjusted_supervisions:
             start_sample = int(sup.start * cut.sampling_rate)
             end_sample = int((sup.start + sup.duration) * cut.sampling_rate)
             
-            # 根据角色确定音频来源并填充到正确轨道
-            if sup.speaker == 'User':  # 这是原Agent变成的User
-                # 从原Agent音频提取，放到source轨道
-                # 需要从原始时间戳提取（加上offset）
-                original_start = sup.start + first_remaining_start  # 回到原始时间戳
+          
+            if sup.speaker == 'User':
+
+                original_start = sup.start + first_remaining_start
                 agent_audio = cut.custom['target_audio'].to_cut().truncate(
                     offset=original_start,
                     duration=sup.duration
@@ -300,9 +294,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 actual_end = min(end_sample, start_sample + len(agent_audio))
                 new_source_audio[start_sample:actual_end] = agent_audio[:actual_end-start_sample]
                 
-            elif sup.speaker == 'Assistant':  # 这是原User变成的Agent
-                # 从原User音频提取，放到target轨道
-                original_start = sup.start + first_remaining_start  # 回到原始时间戳
+            elif sup.speaker == 'Assistant':
+                original_start = sup.start + first_remaining_start
                 user_audio = cut.recording.to_cut().truncate(
                     offset=original_start,
                     duration=sup.duration
@@ -312,8 +305,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 actual_end = min(end_sample, start_sample + len(user_audio))
                 new_target_audio[start_sample:actual_end] = user_audio[:actual_end-start_sample]
 
-        # 创建新的Recording对象
-        # 为source audio创建Recording
+
         source_buffer = BytesIO()
         sf.write(source_buffer, new_source_audio, cut.sampling_rate, format='wav')
         source_buffer.seek(0)
@@ -330,7 +322,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             )]
         )
         
-        # 为target audio创建Recording
+
         target_buffer = BytesIO()
         sf.write(target_buffer, new_target_audio, cut.sampling_rate, format='wav')
         target_buffer.seek(0)
@@ -347,19 +339,19 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             )]
         )
 
-        # 创建新cut
+
         swapped_cut = MonoCut(
             id=f"{cut.id}_swapped",
             start=0,
             duration=total_duration,
             channel=0,
             supervisions=adjusted_supervisions,
-            recording=new_source_recording,  # 重新构建的source音频
+            recording=new_source_recording,
             custom={
                 **cut.custom,
                 'total_turns': len(adjusted_supervisions),
                 'role_swapped': True,
-                'target_audio': new_target_recording,  # 重新构建的target音频
+                'target_audio': new_target_recording,
             }
         )
         

@@ -618,7 +618,39 @@ def replace_control_speech_codes(speech_codes: torch.Tensor, control_codes: torc
 
 def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTokenizer, pad_id: int,
                   user_bos_id: int = None, eval_text_turn_taking: bool = False, sil_id: int = None) -> list[str]:
+    """
+    Convert token IDs to text strings, filtering out special tokens.
+    
+    Args:
+        tokens: Token IDs tensor (B, T)
+        lengths: Length of each sequence (B,)
+        tokenizer: Tokenizer for decoding
+        pad_id: Pad token ID to filter out
+        user_bos_id: User BOS token ID to filter out (optional)
+        eval_text_turn_taking: If True, insert timestamps at bos/eos positions
+        sil_id: Silence token ID to filter out (optional)
+    
+    Returns:
+        List of decoded text strings
+    """
     ans = []
+    
+    # Helper function to filter special tokens from token IDs
+    # This filtering is applied regardless of eval_text_turn_taking mode
+    def filter_special_tokens(token_ids):
+        # Filter out pad
+        token_ids = token_ids[token_ids != pad_id]
+        # Filter out agent bos/eos
+        token_ids = token_ids[token_ids != tokenizer.bos]
+        token_ids = token_ids[token_ids != tokenizer.eos]
+        # Filter out user bos if provided
+        if user_bos_id is not None:
+            token_ids = token_ids[token_ids != user_bos_id]
+        # Filter out sil if provided
+        if sil_id is not None:
+            token_ids = token_ids[token_ids != sil_id]
+        return token_ids
+    
     for _, hyp_ids, hyp_len in zip(tokens.cpu(), tokens.cpu(), lengths.cpu()):
         if eval_text_turn_taking:
             # Insert timestamps to the text
@@ -640,6 +672,8 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
             out_str = []
             for pos, pos_type in all_positions:
                 text_ids = hyp_ids[start_idx:pos]
+                # Filter out special tokens before converting to text
+                text_ids = filter_special_tokens(text_ids)
                 start_idx = pos
                 timestamp = round(float(pos) * 0.08, 3)
                 out_str.append(tokenizer.ids_to_text(text_ids))
@@ -647,21 +681,13 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
                     out_str.append(f"<|{timestamp}|>")
                 else:  # eos
                     out_str.append(f"<${timestamp}$>")
-            out_str.append(tokenizer.ids_to_text(hyp_ids[start_idx:]))
+            # Filter the remaining tokens after the last position
+            remaining_ids = filter_special_tokens(hyp_ids[start_idx:])
+            out_str.append(tokenizer.ids_to_text(remaining_ids))
             ans.append(" ".join(out_str))
         else:
             # For non-turn-taking mode: filter out ALL special tokens, return only pure text
             hyp_ids = hyp_ids[:hyp_len]
-            # Filter out pad
-            hyp_ids = hyp_ids[hyp_ids != pad_id]
-            # Filter out agent bos/eos
-            hyp_ids = hyp_ids[hyp_ids != tokenizer.bos]
-            hyp_ids = hyp_ids[hyp_ids != tokenizer.eos]
-            # Filter out user bos if provided
-            if user_bos_id is not None:
-                hyp_ids = hyp_ids[hyp_ids != user_bos_id]
-            # Filter out sil if provided
-            if sil_id is not None:
-                hyp_ids = hyp_ids[hyp_ids != sil_id]
+            hyp_ids = filter_special_tokens(hyp_ids)
             ans.append(tokenizer.ids_to_text(hyp_ids))
     return ans

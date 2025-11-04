@@ -616,32 +616,40 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         return target_tokens, sil_id
 
     def prepare_inputs(self, batch: dict):
-        
+  
         if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
 
-            if (
-                    self.training
-                    and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'
-                    and random.random() < self.cfg.noise_prob
-            ):
-                batch["source_audio"] = self.add_noise_to_batch(
-                    batch["source_audio"],
-                    os.path.join(self.cfg.noise_file_path, "*"),
-                    snr_db=random.randint(-30, 50),  # noise_min_snr = 20 and noise_max_snr = 50
-                    noise_prob_scale_user=0.5,
-                    noise_prob_scale_user_min_snr=-20,
-                    noise_prob_scale_user_max_snr=24,
-                    snr_measure_dur=0.0,
-                    noise_resample=True,
-                    noise_prob_low_pass=0.2,
-                )
+            if self.training and random.random() < self.cfg.noise_prob:
+                # Find indices where aug_by_noise is True
+                aug_by_noise_flags = batch["aug_by_noise"]
+                noise_indices = [i for i, flag in enumerate(aug_by_noise_flags) if flag]
+
+                if noise_indices:
+                    # Extract audio samples that need noise augmentation
+                    audio_with_noise = batch["source_audio"][noise_indices]
+
+                    # Apply noise to selected samples
+                    audio_with_noise = self.add_noise_to_batch(
+                        audio_with_noise,
+                        os.path.join(self.cfg.noise_file_path, "*"),
+                        snr_db=random.randint(0, 60),  # noise_min_snr = 20 and noise_max_snr = 50
+                        noise_prob_scale_user=0.5,
+                        noise_prob_scale_user_min_snr=-10,
+                        noise_prob_scale_user_max_snr=34,
+                        snr_measure_dur=0.0,
+                        noise_resample=True,
+                        noise_prob_low_pass=0.2,
+                    )
+
+                    # Put the noisy audio back into the batch at the correct positions
+                    for idx, noise_idx in enumerate(noise_indices):
+                        batch["source_audio"][noise_idx] = audio_with_noise[idx]
 
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],
             input_signal_length=batch["source_audio_lens"],
             return_encoder_emb=True,
         )
-
 
         if self.cfg.audio_loss_weight > 0 and not self.training:
             speaker_encoder_emb = None
@@ -745,7 +753,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     speech_end_idx = batch["target_token_lens"][i]
                     seq_mask[i, speech_end_idx:, :] = 0
 
-     
             loss_scale = seq_mask.clone().float()
             if self.cfg.get("token_loss_weight"):
                 token_weights = self.cfg.token_loss_weight

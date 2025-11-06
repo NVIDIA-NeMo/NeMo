@@ -671,13 +671,11 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
     def prepare_inputs(self, batch: dict):
      
         if self.cfg.get('use_old_noise_aug', None):
-            # ToDo we are applying it in all datasets, old codebase does not applied in real conv data
             noise_prob = self.cfg.get('old_noise_prob', 0.99)
             noise_min_snr = self.cfg.get('old_noise_min_snr', 20)
             noise_max_snr = self.cfg.get('old_noise_max_snr', 50)
             noise_path = self.cfg.get('old_noise_aug_path', None)
             noise_path_name = "*"
-            no_noise_audio = batch["source_audio"].clone()
             
             if (
                 self.training
@@ -692,9 +690,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     noise_prob_scale_user=self.cfg.get('noise_prob_scale_user', 0.3),
                     noise_prob_scale_user_min_snr=self.cfg.get('noise_prob_scale_user_min_snr', -15),
                     noise_prob_scale_user_max_snr=self.cfg.get('noise_prob_scale_user_max_snr', 24),
-                    snr_measure_dur=0.0,
-                    noise_resample=True,
-                    noise_prob_low_pass=0.1,
+                    snr_measure_dur=self.cfg.get('snr_measure_dur', 0.0),
+                    noise_resample=self.cfg.get('noise_resample', True),
+                    noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
                 )
         else:
             # change audio volume randomly
@@ -719,46 +717,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 batch["source_audio"] = torchaudio.functional.lowpass_biquad(
                     waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq
                 )
-
-        if self.cfg.get('noise_prob', None) and self.cfg.noise_prob > 0:
-
-            if self.training and random.random() < self.cfg.noise_prob:
-                # Find indices where aug_by_noise is True
-                aug_by_noise_flags = batch["aug_by_noise"]
-                noise_indices = [i for i, flag in enumerate(aug_by_noise_flags) if flag]
-
-                if noise_indices:
-                    # Extract audio samples that need noise augmentation
-                    audio_with_noise = batch["source_audio"][noise_indices]
-                    
-                    # Get SNR range from config with defaults
-                    snr_min = self.cfg.get('noise_min_snr', -30)
-                    snr_max = self.cfg.get('noise_max_snr', 50)
-                    
-                    # Get other noise parameters from config with defaults
-                    noise_prob_scale_user = self.cfg.get('noise_prob_scale_user', 0.5)
-                    noise_prob_scale_user_min_snr = self.cfg.get('noise_prob_scale_user_min_snr', -20)
-                    noise_prob_scale_user_max_snr = self.cfg.get('noise_prob_scale_user_max_snr', 24)
-                    snr_measure_dur = self.cfg.get('snr_measure_dur', 0.0)
-                    noise_resample = self.cfg.get('noise_resample', True)
-                    noise_prob_low_pass = self.cfg.get('noise_prob_low_pass', 0.2)
-
-                    # Apply noise to selected samples
-                    audio_with_noise = self.add_noise_to_batch(
-                        audio_with_noise,
-                        os.path.join(self.cfg.noise_file_path, "*"),
-                        snr_db=random.randint(snr_min, snr_max),
-                        noise_prob_scale_user=noise_prob_scale_user,
-                        noise_prob_scale_user_min_snr=noise_prob_scale_user_min_snr,
-                        noise_prob_scale_user_max_snr=noise_prob_scale_user_max_snr,
-                        snr_measure_dur=snr_measure_dur,
-                        noise_resample=noise_resample,
-                        noise_prob_low_pass=noise_prob_low_pass,
-                    )
-
-                    # Put the noisy audio back into the batch at the correct positions
-                    for idx, noise_idx in enumerate(noise_indices):
-                        batch["source_audio"][noise_idx] = audio_with_noise[idx]
 
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],

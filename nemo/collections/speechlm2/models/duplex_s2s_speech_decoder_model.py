@@ -650,6 +650,43 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             input_signal_length=batch["source_audio_lens"],
             return_encoder_emb=True,
         )
+        # NOTE: asr_emb is not updated to work with the prompt tokens
+        #       asr_emb is not used since model.audio_loss_weight=0
+        target_tokens = batch["target_tokens"]
+
+        if "prompt_tokens" in batch:
+            prompt_embedded = self.embed_tokens(batch["prompt_tokens"])
+            B, max_prompt_len, H = prompt_embedded.shape
+            T_src = source_encoded.shape[1]
+            T_tgt = target_tokens.shape[1]
+            
+            # Pre-allocate padded tensors with max_prompt_len extra space
+            new_source_encoded = torch.zeros(B, max_prompt_len + T_src, H, 
+                                             dtype=source_encoded.dtype, device=source_encoded.device)
+            new_target_tokens = torch.full((B, max_prompt_len + T_tgt), self.text_pad_id,
+                                          dtype=target_tokens.dtype, device=target_tokens.device)
+
+            # For each item, insert prompt and original data at correct offsets
+            for i, prompt_len in enumerate(batch["prompt_token_lens"]):
+                prompt_len = prompt_len.item()
+                
+                # Insert prompt embeddings at the start
+                if prompt_len > 0:
+                    new_source_encoded[i, :prompt_len, :] = prompt_embedded[i, :prompt_len, :]
+                
+                # Copy original data RIGHT AFTER the prompt
+                src_len = source_encoded_lens[i].item()
+                new_source_encoded[i, prompt_len:prompt_len + src_len, :] = source_encoded[i, :src_len, :]
+                
+                tgt_len = batch["target_token_lens"][i].item()
+                new_target_tokens[i, prompt_len:prompt_len + tgt_len] = target_tokens[i, :tgt_len]
+                
+                # Update lengths
+                source_encoded_lens[i] = prompt_len + src_len
+                batch["target_token_lens"][i] = prompt_len + tgt_len
+            
+            source_encoded = new_source_encoded
+            target_tokens = new_target_tokens
 
         if self.cfg.audio_loss_weight > 0 and not self.training:
             speaker_encoder_emb = None
@@ -664,8 +701,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 speaker_encoder_emb = None
         else:
             speaker_encoder_emb = None
-
-        target_tokens = batch["target_tokens"]
 
         if (diff := target_tokens.shape[1] - source_encoded.shape[1]) < 0:
             target_tokens = torch.cat([
@@ -1065,10 +1100,16 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 continue  # some dataset is exhausted
 
             dataset_batch = dataset_batch["audio_data"]
-
+            
+            # Extract prompt tokens if available
+            prompt_tokens = dataset_batch.get("prompt_tokens", None)
+            prompt_token_lens = dataset_batch.get("prompt_token_lens", None)
+            
             results = self.offline_inference(
                 dataset_batch["source_audio"],
                 dataset_batch["source_audio_lens"],
+                prompt_tokens=prompt_tokens,
+                prompt_token_lens=prompt_token_lens,
             )
 
             # Always compute text metrics (BLEU, perplexity, validation loss)
@@ -1085,6 +1126,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             if self.cfg.audio_loss_weight == 0:
                 # Generate fake pred_audio based on text tokens
                 fake_pred_audio, fake_audio_len = self._generate_fake_audio_from_tokens(results["tokens_text"])
+                
+                # Extract predicted turns from generated tokens
+                pred_turns_list = self._split_agent_tokens_into_turns(results["tokens_text"])
 
                 self.results_logger.update(
                     name=name,
@@ -1096,6 +1140,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
+                    system_prompt=dataset_batch.get("system_prompt", None),
+                    source_turns=dataset_batch.get("source_turn_texts"),
+                    target_turns=dataset_batch.get("target_turn_texts"),
+                    pred_turns=pred_turns_list,
                 )
 
                 continue  # Skip audio-related metrics
@@ -1146,13 +1194,19 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     force_bos_positions.append(tmp[0].item() + force_bos_num_tokens_after_user_eos)
                 else:
                     force_bos_positions.append(None)
-
+        
+        # Extract prompt tokens if available
+        prompt_tokens = batch.get("prompt_tokens", None)
+        prompt_token_lens = batch.get("prompt_token_lens", None)
+            
         prediction = self.offline_inference(
             batch["source_audio"],
             batch["source_audio_lens"],
             decode_audio=self.cfg.prediction.decode_audio,
             input_pad_len=self.cfg.prediction.max_new_seconds * self.cfg.prediction.input_sample_rate,
             force_bos_positions=force_bos_positions,
+            prompt_tokens=prompt_tokens,
+            prompt_token_lens=prompt_token_lens,
         )
         prediction["sample_id"] = batch["sample_id"]
         return prediction
@@ -1164,6 +1218,128 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         text_bos = torch.full((1,), fill_value=self.text_pad_id, device=self.device)
         input_embeds = self.embed_tokens(text_bos)
         return input_embeds
+
+    def _split_agent_tokens_into_turns(self, tokens_text: torch.Tensor):
+        """
+        Split sequence of agent_tokens into turns as detected by text_bos_id and text_eos_id.
+        
+        Args:
+            tokens_text: (batch_size, seq_len) tensor
+            
+        Returns:
+            turns_list: list of list of dictionaries, where each dictionary contains:
+                - start_time: float, start time of turn in seconds
+                - end_time: float, end time of turn in seconds
+                - duration: float, duration of turn in seconds
+                - text: str, decoded text of the turn
+                - token_ids: list of int, token IDs in the turn (excluding BOS/EOS)
+                - start_token_idx: int, starting token index in the sequence
+                - end_token_idx: int, ending token index in the sequence (inclusive)
+                - num_tokens: int, number of tokens in the turn
+                - is_complete: bool, whether turn was properly closed with EOS
+        
+        Edge cases handled:
+            - BOS when already in a turn: saves incomplete turn before starting new one
+            - EOS without matching BOS: ignored
+            - Empty turns (BOS immediately followed by EOS): saved with empty text
+            - Sequence ends mid-turn: saved as incomplete turn with is_complete=False
+            - Multiple consecutive BOS: each BOS closes previous incomplete turn
+        """
+        batch_size, seq_len = tokens_text.shape
+        token_duration = 0.08  # seconds per token
+        
+        # List to store turns for each batch
+        turns_list = []
+        
+        for b in range(batch_size):
+            current_tokens = tokens_text[b].cpu().numpy()  # Convert to numpy for easier processing
+            
+            in_turn = False  # Track whether we're between bos and eos
+            current_turn_start = None  # Start index of current turn
+            current_turn_tokens = []  # Tokens in current turn
+            batch_turns = []  # Turns for this batch element
+            
+            def _save_current_turn(turn_start, turn_tokens, end_token_idx, is_complete=True):
+                """Helper to save current turn and avoid code duplication."""
+                if turn_start is None:
+                    return
+                    
+                start_time = turn_start * token_duration
+                end_time = (end_token_idx + 1) * token_duration
+                duration = end_time - start_time
+                
+                # Decode text from token IDs
+                if len(turn_tokens) > 0:
+                    # Filter out pad tokens
+                    turn_tokens_filtered = [t for t in turn_tokens if t != self.text_pad_id]
+                    text = self.tokenizer.ids_to_text(turn_tokens_filtered)
+                else:
+                    text = ""
+                
+                # Create turn dictionary
+                turn = {
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration": duration,
+                    "text": text,
+                    "token_ids": turn_tokens.copy(),
+                    "start_token_idx": turn_start,
+                    "end_token_idx": end_token_idx,
+                    "num_tokens": len(turn_tokens),
+                    "is_complete": is_complete,
+                }
+                batch_turns.append(turn)
+            
+            for t in range(seq_len):
+                token_id = current_tokens[t]
+
+                if token_id == self.text_bos_id:
+                    # Edge case: BOS when already in a turn
+                    # Save the incomplete turn before starting a new one
+                    if in_turn and current_turn_start is not None:
+                        logging.debug(
+                            f"Batch {b}: Found BOS at position {t} while already in a turn "
+                            f"(started at {current_turn_start}). Saving incomplete turn."
+                        )
+                        _save_current_turn(current_turn_start, current_turn_tokens, end_token_idx=t - 1, is_complete=False)
+                    
+                    # Start new turn
+                    in_turn = True
+                    current_turn_start = t
+                    current_turn_tokens = []
+                    
+                elif token_id == self.text_eos_id:
+                    # End of turn - finalize it
+                    if in_turn:
+                        # Normal case: properly closed turn (even if empty)
+                        _save_current_turn(current_turn_start, current_turn_tokens, end_token_idx=t, is_complete=True)
+                        
+                        # Reset state
+                        current_turn_start = None
+                        current_turn_tokens = []
+                        in_turn = False
+                    # else: Edge case - EOS without matching BOS, ignore it
+                    
+                elif token_id == self.text_pad_id:
+                    if in_turn:
+                        # Pad token between bos and eos - include in turn tokens
+                        current_turn_tokens.append(token_id)
+                else:
+                    # Regular text token
+                    if in_turn:
+                        current_turn_tokens.append(token_id)
+            
+            # Edge case: Handle turn that wasn't closed (sequence ended mid-turn)
+            if in_turn and current_turn_start is not None:
+                logging.debug(
+                    f"Batch {b}: Sequence ended while in a turn (started at {current_turn_start}). "
+                    f"Saving incomplete turn."
+                )
+                _save_current_turn(current_turn_start, current_turn_tokens, end_token_idx=seq_len - 1, is_complete=False)
+            
+            turns_list.append(batch_turns)
+        
+        return turns_list
 
     def _generate_fake_audio_from_tokens(self, tokens_text: torch.Tensor):
         """
@@ -1251,6 +1427,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             decode_audio: bool = True,
             input_pad_len: int = 0,
             force_bos_positions=None,
+            prompt_tokens: torch.Tensor = None,
+            prompt_token_lens: torch.Tensor = None,
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction.
@@ -1297,6 +1475,42 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         source_encoded, lengths, asr_emb = self.perception(
             input_signal=input_signal, input_signal_length=input_signal_lens, return_encoder_emb=True
         )
+
+        # NOTE: asr_emb is not updated to work with the prompt tokens
+        #       asr_emb is not used since model.audio_loss_weight=0
+        B, T_local, H = source_encoded.shape
+        
+        # Handle system prompt if provided (similar to prepare_inputs logic)
+        if prompt_tokens is not None and prompt_token_lens is not None:
+            prompt_embedded = self.embed_tokens(prompt_tokens)
+            B_prompt, max_prompt_len, H_prompt = prompt_embedded.shape
+            
+            assert B == B_prompt, f"Batch size mismatch: source={B}, prompt={B_prompt}"
+            assert H == H_prompt, f"Hidden size mismatch: source={H}, prompt={H_prompt}"
+            
+            # Pre-allocate padded tensor with max_prompt_len extra space
+            new_source_encoded = torch.zeros(B, max_prompt_len + T_local, H, 
+                                            dtype=source_encoded.dtype, device=source_encoded.device)
+            
+            # For each item, insert prompt and original data at correct offsets
+            for i, prompt_len in enumerate(prompt_token_lens):
+                prompt_len = prompt_len.item()
+                
+                # Insert prompt embeddings at the start
+                if prompt_len > 0:
+                    new_source_encoded[i, :prompt_len, :] = prompt_embedded[i, :prompt_len, :]
+                
+                # Copy original data RIGHT AFTER the prompt
+                src_len = lengths[i].item()
+                new_source_encoded[i, prompt_len:prompt_len + src_len, :] = source_encoded[i, :src_len, :]
+                
+                # Update lengths to include prompt
+                lengths[i] = prompt_len + src_len
+            
+            source_encoded = new_source_encoded
+            T_local = source_encoded.shape[1]
+        
+
         B, T_local, H = source_encoded.shape
 
         # Determine decoding length and pad if FSDP
@@ -1341,7 +1555,16 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         else:
 
             gen_audio = torch.zeros(B, T, self._num_codebooks, device=self.device, dtype=torch.long)
-
+        
+        # Initialize prompt region with PAD tokens to match training behavior
+        # During training, target tokens in the prompt region are PAD tokens (see prepare_inputs)
+        if prompt_tokens is not None and prompt_token_lens is not None:
+            for i, prompt_len in enumerate(prompt_token_lens):
+                prompt_len = prompt_len.item()
+                if prompt_len > 0:
+                    gen_text[i, :prompt_len] = self.text_pad_id
+        
+        # Add BOS embedding at position 0 (either to prompt start or to regular start)
         input_embeds[:, 0] += self._get_bos_embedding()
         if self.cfg.audio_loss_weight > 0:
             first_audio = torch.full(
@@ -1353,7 +1576,17 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         else:
 
             first_audio = torch.zeros([B, 1, self._num_codebooks], device=self.device, dtype=torch.long)
-
+        
+        # Determine the starting position for generation
+        # If we have prompts, we process all prompt tokens first
+        # to build up the KV cache, then start generating after the prompt
+        start_gen_pos = 0
+        if prompt_token_lens is not None:
+            # Use the maximum prompt length across the batch
+            max_prompt_len = prompt_token_lens.max().item()
+            start_gen_pos = max_prompt_len
+        
+        # First forward pass
         ans = self(
             input_embeds[:, :1],
             cache=cache,
@@ -1365,10 +1598,27 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
         )
         gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
+
+        # For position 0: use prompt token if available, otherwise generate
+        if start_gen_pos > 0:
+            # Already initialized gen_text[:, 0] with prompt_tokens above
+            pass
+        else:
+            gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
+
         if self.cfg.audio_loss_weight > 0:
             gen_audio[:, 0] = ans["audio_logits"][:, -1].argmax(dim=-1)
 
         speech_state = torch.zeros(B, device=self.device, dtype=torch.long)
+
+        # Pre-compute prompt position mask to avoid recomputing at every timestep
+        is_prompt_position_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
+        if prompt_token_lens is not None:
+            for i, prompt_len in enumerate(prompt_token_lens):
+                prompt_len_val = prompt_len.item()
+                if prompt_len_val > 0:
+                    is_prompt_position_mask[i, :prompt_len_val] = True
+
         # Autoregressive loop
         for t in range(1, T):
             last_emb = self.embed_tokens(gen_text[:, t - 1])
@@ -1384,6 +1634,10 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 current_audio = gen_audio[:, t - 1: t, :]
             else:
                 current_audio = torch.zeros([B, 1, self._num_codebooks], device=self.device, dtype=torch.long)
+            
+            # Check if current position is within prompt region (use pre-computed mask)
+            # For prompt positions, we skip generation since gen_text is already set to PAD
+            is_prompt_position = is_prompt_position_mask[:, t]
 
             if use_cache:
                 # Standard cached mode - pass only current step
@@ -1397,7 +1651,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     asr_emb=asr_emb[:, t: t + 1],
                     speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
                 )
-                gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
+                # gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
+                # Only generate if not in prompt region
+                if not is_prompt_position.all():
+                    generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
+                    # For batch items not in prompt, use generated token; for prompt items, keep PAD token
+                    gen_text[:, t] = torch.where(is_prompt_position, gen_text[:, t], generated_tokens)
             else:
                 # No-cache mode for Nemotron - pass full history up to current step
                 if self.cfg.audio_loss_weight > 0:
@@ -1420,7 +1679,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     asr_emb=asr_emb[:, :t + 1],
                     speaker_encoder_emb=None,  # for inference uses the cached inference_speaker_embedding
                 )
-                gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
+                # gen_text[:, t] = ans["text_logits"][:, -1].argmax(dim=-1)
+                # Only generate if not in prompt region
+                if not is_prompt_position.all():
+                    generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
+                    # For batch items not in prompt, use generated token; for prompt items, keep PAD token
+                    gen_text[:, t] = torch.where(is_prompt_position, gen_text[:, t], generated_tokens)
 
             if self.cfg.audio_loss_weight > 0:
                 gen_audio[:, t] = ans["audio_logits"][:, -1].argmax(dim=-1)
@@ -1471,7 +1735,32 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self._use_fsdp and T > T_local:
             gen_text = gen_text[:, :T_local]
             gen_audio = gen_audio[:, :T_local]
-
+        
+        # Remove prompt tokens from the output before returning
+        # The prompt region contains PAD tokens which shouldn't be part of the actual generation
+        if prompt_token_lens is not None:
+            max_prompt_len = prompt_token_lens.max().item()
+            if max_prompt_len > 0:
+                # Shift tokens left by removing prompt region
+                current_T = gen_text.shape[1]  # Use actual current size after potential FSDP trimming
+                gen_text_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
+                gen_audio_trimmed = torch.zeros(B, current_T - max_prompt_len, self._num_codebooks, device=self.device, dtype=torch.long)
+                lengths_trimmed = lengths.clone()
+                
+                for i, prompt_len in enumerate(prompt_token_lens):
+                    prompt_len_val = prompt_len.item()
+                    # Copy tokens after the prompt region
+                    actual_len = lengths[i].item() - prompt_len_val
+                    if actual_len > 0:
+                        gen_text_trimmed[i, :actual_len] = gen_text[i, prompt_len_val:prompt_len_val + actual_len]
+                        if self.cfg.audio_loss_weight > 0:
+                            gen_audio_trimmed[i, :actual_len] = gen_audio[i, prompt_len_val:prompt_len_val + actual_len]
+                    lengths_trimmed[i] = actual_len
+                
+                gen_text = gen_text_trimmed
+                gen_audio = gen_audio_trimmed
+                lengths = lengths_trimmed
+                
         ans = {
             "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id,
                                   user_bos_id=self.text_bos_id, eval_text_turn_taking=True, sil_id=sil_id),

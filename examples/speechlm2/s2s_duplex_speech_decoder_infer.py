@@ -53,6 +53,7 @@ def inference(cfg):
         target_sample_rate=cfg.data.target_sample_rate,
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
+        include_turn_metadata=True,  # Enable detailed turn metadata for validation
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

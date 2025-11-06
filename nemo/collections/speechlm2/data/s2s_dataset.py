@@ -84,14 +84,14 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
     """
 
     def __init__(
-        self,
-        tokenizer: TokenizerSpec,
-        frame_length: Seconds,
-        source_sample_rate: int,
-        target_sample_rate: int,
-        input_roles: list[str] = None,
-        output_roles: list[str] = None,
-        aug_by_swap_role: bool = False,
+            self,
+            tokenizer: TokenizerSpec,
+            frame_length: Seconds,
+            source_sample_rate: int,
+            target_sample_rate: int,
+            input_roles: list[str] = None,
+            output_roles: list[str] = None,
+            aug_by_swap_role: bool = False,
     ):
         self.tokenizer = tokenizer
         self.frame_length = frame_length
@@ -100,7 +100,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
         self.aug_by_swap_role = aug_by_swap_role
-        
+
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
@@ -108,7 +108,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         # audio mini-batch
         cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
         audio_data = None
-        
+
         if cuts:
             cuts = cuts.transform_text(_strip_timestamps)
 
@@ -117,19 +117,17 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             if self.aug_by_swap_role:
                 for cut in cuts:
                     total_turns = cut.custom.get('total_turns', len(cut.supervisions))
-                    
 
                     if total_turns > 4 and total_turns % 2 == 0:
                         swapped_cut = self._create_role_swapped_cut(cut)
                         if swapped_cut:
                             swapped_cuts.append(swapped_cut)
-            
 
             if swapped_cuts:
                 all_cuts_combined = CutSet.from_cuts(list(cuts) + swapped_cuts)
             else:
                 all_cuts_combined = cuts
-                
+
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
@@ -140,15 +138,15 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             source_tokens, source_token_lens = collate_token_channel(
                 all_cuts_combined, self.tokenizer, self.frame_length, roles=self.input_roles
             )
-            
+
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
-                    all_cuts_combined.resample(self.target_sample_rate), roles=self.output_roles, recording_field="target_audio"
+                    all_cuts_combined.resample(self.target_sample_rate), roles=self.output_roles,
+                    recording_field="target_audio"
                 )
             except Exception as e:
                 target_first_turn_audio = None
                 target_first_turn_audio_lens = None
-
 
             audio_data = {
                 "sample_id": [str(cut.id) for cut in all_cuts_combined],
@@ -161,15 +159,15 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "source_tokens": source_tokens,
                 "source_token_lens": source_token_lens,
                 "target_texts": [
-                    " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) 
+                    " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles)
                     for cut in all_cuts_combined
                 ],
                 "target_first_turn_audio": target_first_turn_audio,
                 "target_first_turn_audio_lens": target_first_turn_audio_lens,
                 "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in all_cuts_combined],
+                "aug_by_noise": [getattr(cut, "aug_by_noise", True) for cut in all_cuts_combined]
             }
 
-        
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None
         if text_cuts:
@@ -188,7 +186,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "text_tokens": text_tokens,
                 "text_token_lens": text_token_lens,
             }
-        
+
         return {
             "audio_data": audio_data,
             "text_data": text_data,
@@ -200,7 +198,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         from io import BytesIO
         import soundfile as sf
         import numpy as np
-        
 
         swapped_supervisions = []
         for sup in cut.supervisions:
@@ -210,7 +207,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 new_speaker = 'User'
             else:
                 continue
-                
+
             swapped_sup = SupervisionSegment(
                 id=sup.id + "_swapped",
                 recording_id=sup.recording_id,
@@ -225,33 +222,29 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 alignment=sup.alignment
             )
             swapped_supervisions.append(swapped_sup)
-        
 
         swapped_supervisions = sorted(swapped_supervisions, key=lambda s: s.start)
-        
 
         first_agent_idx = None
         last_user_idx = None
-        
+
         for i, sup in enumerate(swapped_supervisions):
             if sup.speaker == 'Assistant' and first_agent_idx is None:
                 first_agent_idx = i
             if sup.speaker == 'User':
                 last_user_idx = i
-                
 
         filtered_supervisions = []
         for i, sup in enumerate(swapped_supervisions):
             if i != first_agent_idx and i != last_user_idx:
                 filtered_supervisions.append(sup)
-                
+
         if not filtered_supervisions:
             return None
 
         first_remaining_start = filtered_supervisions[0].start
         last_remaining_end = max(s.start + s.duration for s in filtered_supervisions)
         new_duration = last_remaining_end - first_remaining_start
-        
 
         adjusted_supervisions = []
         for sup in filtered_supervisions:
@@ -269,7 +262,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 alignment=sup.alignment
             )
             adjusted_supervisions.append(adjusted_sup)
-        
 
         total_duration = max(s.start + s.duration for s in adjusted_supervisions)
         total_samples = int(total_duration * cut.sampling_rate)
@@ -280,8 +272,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         for sup in adjusted_supervisions:
             start_sample = int(sup.start * cut.sampling_rate)
             end_sample = int((sup.start + sup.duration) * cut.sampling_rate)
-            
-          
+
             if sup.speaker == 'User':
 
                 original_start = sup.start + first_remaining_start
@@ -292,8 +283,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 if len(agent_audio.shape) > 1:
                     agent_audio = agent_audio.squeeze()
                 actual_end = min(end_sample, start_sample + len(agent_audio))
-                new_source_audio[start_sample:actual_end] = agent_audio[:actual_end-start_sample]
-                
+                new_source_audio[start_sample:actual_end] = agent_audio[:actual_end - start_sample]
+
             elif sup.speaker == 'Assistant':
                 original_start = sup.start + first_remaining_start
                 user_audio = cut.recording.to_cut().truncate(
@@ -303,13 +294,12 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 if len(user_audio.shape) > 1:
                     user_audio = user_audio.squeeze()
                 actual_end = min(end_sample, start_sample + len(user_audio))
-                new_target_audio[start_sample:actual_end] = user_audio[:actual_end-start_sample]
-
+                new_target_audio[start_sample:actual_end] = user_audio[:actual_end - start_sample]
 
         source_buffer = BytesIO()
         sf.write(source_buffer, new_source_audio, cut.sampling_rate, format='wav')
         source_buffer.seek(0)
-        
+
         new_source_recording = Recording(
             id=f"{cut.id}_swapped_source",
             sampling_rate=cut.sampling_rate,
@@ -321,12 +311,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 source=source_buffer.getvalue()
             )]
         )
-        
 
         target_buffer = BytesIO()
         sf.write(target_buffer, new_target_audio, cut.sampling_rate, format='wav')
         target_buffer.seek(0)
-        
+
         new_target_recording = Recording(
             id=f"{cut.id}_swapped_target",
             sampling_rate=cut.sampling_rate,
@@ -338,7 +327,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 source=target_buffer.getvalue()
             )]
         )
-
 
         swapped_cut = MonoCut(
             id=f"{cut.id}_swapped",
@@ -354,20 +342,21 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 'target_audio': new_target_recording,
             }
         )
-        
+
         return swapped_cut
 
 
 def collate_first_turn_audio(
-    cuts: CutSet,
-    roles: set[str],
-    recording_field: str = "target_audio",
+        cuts: CutSet,
+        roles: set[str],
+        recording_field: str = "target_audio",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     first_turn_audios = []
     first_turn_audios_lens = []
     for cut in cuts:
         first_supervision = [s for s in cut.supervisions if s.speaker in roles][0]
-        truncated_audio = cut.truncate(offset=max(0, first_supervision.start), duration=first_supervision.duration).load_custom(recording_field)
+        truncated_audio = cut.truncate(offset=max(0, first_supervision.start),
+                                       duration=first_supervision.duration).load_custom(recording_field)
         first_turn_audios.append(truncated_audio.squeeze(0))
         first_turn_audios_lens.append(truncated_audio.shape[-1])
 
@@ -375,10 +364,10 @@ def collate_first_turn_audio(
 
 
 def collate_token_channel(
-    cuts: CutSet,
-    tokenizer: TokenizerSpec,
-    frame_length: Seconds,
-    roles: set[str],
+        cuts: CutSet,
+        tokenizer: TokenizerSpec,
+        frame_length: Seconds,
+        roles: set[str],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     pad_id = get_pad_id(tokenizer)
     tokens = [
@@ -415,12 +404,9 @@ def build_token_channel(
                 )
                 continue
 
-
             eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
 
-
             available_frames_for_text = eospos - pos
-
 
             if available_frames_for_text > 0 and len(text_ids) > available_frames_for_text:
                 # Truncate text_ids to fit before the eos position.
@@ -436,7 +422,7 @@ def build_token_channel(
                     f"Truncating training example's text_ids of length {len(text_ids)} by {trunc_len} because {endpos=} > {len(tokens)=}. {diagnostic}"
                 )
                 text_ids = text_ids[:trunc_len]
-                endpos = pos + len(text_ids)  
+                endpos = pos + len(text_ids)
 
             try:
                 tokens[pos:endpos] = text_ids
@@ -466,8 +452,9 @@ def build_token_channel(
 
     return tokens
 
+
 def _strip_timestamps(
-    text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
+        text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
 ) -> str:
     """
     Strips timestamp tokens from text, e.g. turns:

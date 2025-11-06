@@ -178,27 +178,23 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 logging.warning(f"All cuts were filtered out! Original batch size: {len(cuts)}. Returning minimal valid batch to continue training.")
                 return self._create_minimal_batch()
             cuts = CutSet.from_cuts(filtered_cuts)
-        
-        if cuts:
-            # cuts = cuts.transform_text(_strip_timestamps)
 
             swapped_cuts = []
+
             if self.aug_by_swap_role:
                 for cut in cuts:
                     total_turns = cut.custom.get('total_turns', len(cut.supervisions))
-                    
 
                     if total_turns > 4 and total_turns % 2 == 0:
                         swapped_cut = self._create_role_swapped_cut(cut)
                         if swapped_cut:
                             swapped_cuts.append(swapped_cut)
-            
 
             if swapped_cuts:
                 all_cuts_combined = CutSet.from_cuts(list(cuts) + swapped_cuts)
             else:
                 all_cuts_combined = cuts
-                
+
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
@@ -248,7 +244,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
-                    all_cuts_combined.resample(self.target_sample_rate), roles=self.output_roles, recording_field="target_audio"
+                    all_cuts_combined.resample(self.target_sample_rate), roles=self.output_roles,
+                    recording_field="target_audio"
                 )
             except Exception as e:
                 target_first_turn_audio = None
@@ -279,7 +276,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                     " ".join(_strip_timestamps(s.text) for s in cut.supervisions if s.speaker in self.input_roles) for cut in all_cuts_combined
                 ],
                 "target_texts": [
-                    " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) 
+                    " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles)
                     for cut in all_cuts_combined
                 ],
                 "all_texts": [
@@ -288,9 +285,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "target_first_turn_audio": target_first_turn_audio,
                 "target_first_turn_audio_lens": target_first_turn_audio_lens,
                 "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in all_cuts_combined],
+                "aug_by_noise": [getattr(cut, "aug_by_noise", True) for cut in all_cuts_combined]
             }
 
-        
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None
         if text_cuts:
@@ -309,20 +306,19 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "text_tokens": text_tokens,
                 "text_token_lens": text_token_lens,
             }
-        
+
         return {
             "audio_data": audio_data,
             "text_data": text_data,
         }
 
     def _create_role_swapped_cut(self, cut):
-        """创建单个角色交换的cut"""
+
         from lhotse import AudioSource
         from io import BytesIO
         import soundfile as sf
         import numpy as np
-        
-        # 3. 复制并完全交换supervisions
+
         swapped_supervisions = []
         for sup in cut.supervisions:
             if sup.speaker == 'User':
@@ -330,8 +326,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             elif sup.speaker == 'Assistant':
                 new_speaker = 'User'
             else:
-                continue  # 跳过其他speaker
-                
+                continue
+
             swapped_sup = SupervisionSegment(
                 id=sup.id + "_swapped",
                 recording_id=sup.recording_id,
@@ -340,41 +336,36 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 channel=sup.channel,
                 text=sup.text,
                 language=sup.language,
-                speaker=new_speaker,  # 交换角色
+                speaker=new_speaker,
                 gender=sup.gender,
-                custom=sup.custom,  # 完全复制custom
+                custom=sup.custom,
                 alignment=sup.alignment
             )
             swapped_supervisions.append(swapped_sup)
-        
-        # 4. 丢掉第一轮Agent和最后一轮User
+
         swapped_supervisions = sorted(swapped_supervisions, key=lambda s: s.start)
-        
-        # 找到第一轮Agent和最后一轮User
+
         first_agent_idx = None
         last_user_idx = None
-        
+
         for i, sup in enumerate(swapped_supervisions):
             if sup.speaker == 'Assistant' and first_agent_idx is None:
                 first_agent_idx = i
             if sup.speaker == 'User':
                 last_user_idx = i
-                
-        # 移除第一轮Agent和最后一轮User
+
         filtered_supervisions = []
         for i, sup in enumerate(swapped_supervisions):
             if i != first_agent_idx and i != last_user_idx:
                 filtered_supervisions.append(sup)
-                
+
         if not filtered_supervisions:
             return None
-            
-        # 5. 计算时间偏移
+
         first_remaining_start = filtered_supervisions[0].start
         last_remaining_end = max(s.start + s.duration for s in filtered_supervisions)
         new_duration = last_remaining_end - first_remaining_start
-        
-        # 调整所有supervision的时间偏移
+
         adjusted_supervisions = []
         for sup in filtered_supervisions:
             adjusted_sup = SupervisionSegment(
@@ -391,27 +382,20 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 alignment=sup.alignment
             )
             adjusted_supervisions.append(adjusted_sup)
-        
-        # 6. 🔧 关键修复：根据调整后的supervisions重新构建音频
-        
-        # 计算新音频的总长度
+
         total_duration = max(s.start + s.duration for s in adjusted_supervisions)
         total_samples = int(total_duration * cut.sampling_rate)
-        
-        # 创建空音频轨道
+
         new_source_audio = np.zeros(total_samples, dtype=np.float32)
         new_target_audio = np.zeros(total_samples, dtype=np.float32)
-        
-        # 🔧 关键：只为adjusted_supervisions中的时间段填充音频
+
         for sup in adjusted_supervisions:
             start_sample = int(sup.start * cut.sampling_rate)
             end_sample = int((sup.start + sup.duration) * cut.sampling_rate)
-            
-            # 根据角色确定音频来源并填充到正确轨道
-            if sup.speaker == 'User':  # 这是原Agent变成的User
-                # 从原Agent音频提取，放到source轨道
-                # 需要从原始时间戳提取（加上offset）
-                original_start = sup.start + first_remaining_start  # 回到原始时间戳
+
+            if sup.speaker == 'User':
+
+                original_start = sup.start + first_remaining_start
                 agent_audio = cut.custom['target_audio'].to_cut().truncate(
                     offset=original_start,
                     duration=sup.duration
@@ -419,11 +403,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 if len(agent_audio.shape) > 1:
                     agent_audio = agent_audio.squeeze()
                 actual_end = min(end_sample, start_sample + len(agent_audio))
-                new_source_audio[start_sample:actual_end] = agent_audio[:actual_end-start_sample]
-                
-            elif sup.speaker == 'Assistant':  # 这是原User变成的Agent
-                # 从原User音频提取，放到target轨道
-                original_start = sup.start + first_remaining_start  # 回到原始时间戳
+                new_source_audio[start_sample:actual_end] = agent_audio[:actual_end - start_sample]
+
+            elif sup.speaker == 'Assistant':
+                original_start = sup.start + first_remaining_start
                 user_audio = cut.recording.to_cut().truncate(
                     offset=original_start,
                     duration=sup.duration
@@ -431,14 +414,12 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 if len(user_audio.shape) > 1:
                     user_audio = user_audio.squeeze()
                 actual_end = min(end_sample, start_sample + len(user_audio))
-                new_target_audio[start_sample:actual_end] = user_audio[:actual_end-start_sample]
+                new_target_audio[start_sample:actual_end] = user_audio[:actual_end - start_sample]
 
-        # 创建新的Recording对象
-        # 为source audio创建Recording
         source_buffer = BytesIO()
         sf.write(source_buffer, new_source_audio, cut.sampling_rate, format='wav')
         source_buffer.seek(0)
-        
+
         new_source_recording = Recording(
             id=f"{cut.id}_swapped_source",
             sampling_rate=cut.sampling_rate,
@@ -450,12 +431,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 source=source_buffer.getvalue()
             )]
         )
-        
-        # 为target audio创建Recording
+
         target_buffer = BytesIO()
         sf.write(target_buffer, new_target_audio, cut.sampling_rate, format='wav')
         target_buffer.seek(0)
-        
+
         new_target_recording = Recording(
             id=f"{cut.id}_swapped_target",
             sampling_rate=cut.sampling_rate,
@@ -468,29 +448,28 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             )]
         )
 
-        # 创建新cut
         swapped_cut = MonoCut(
             id=f"{cut.id}_swapped",
             start=0,
             duration=total_duration,
             channel=0,
             supervisions=adjusted_supervisions,
-            recording=new_source_recording,  # 重新构建的source音频
+            recording=new_source_recording,
             custom={
                 **cut.custom,
                 'total_turns': len(adjusted_supervisions),
                 'role_swapped': True,
-                'target_audio': new_target_recording,  # 重新构建的target音频
+                'target_audio': new_target_recording,
             }
         )
-        
+
         return swapped_cut
 
 
 def collate_first_turn_audio(
-    cuts: CutSet,
-    roles: set[str],
-    recording_field: str = "target_audio",
+        cuts: CutSet,
+        roles: set[str],
+        recording_field: str = "target_audio",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     first_turn_audios = []
     first_turn_audios_lens = []
@@ -602,22 +581,39 @@ def build_token_channel(
                     f"Truncating training example's text_ids of length {len(text_ids)} by {trunc_len} because {endpos=} > {len(tokens)=}. {diagnostic}"
                 )
                 text_ids = text_ids[:trunc_len]
-                endpos = pos + len(text_ids)  
+                endpos = pos + len(text_ids)
 
             try:
                 tokens[pos:endpos] = text_ids
             except Exception as e:
                 raise RuntimeError(f"{tokens.shape=} {pos=} {endpos=} {text_ids.shape=} {diagnostic}") from e
 
+            # Place EOS token - critical for turn-taking behavior
             if eospos < len(tokens) and eos_id is not None:
-                # Only assign eos_id to target tokens, user eos is merged with agent bos
+                # Normal case: place EOS at the intended position
                 tokens[eospos] = eos_id
+            else:
+                # Interruption case: place EOS at the last valid position
+                # This ensures the model learns to stop when interrupted by user
+                if endpos < len(tokens):
+                    # Case 1: text finished, interrupted during sil/audio generation
+                    # Place EOS right after the last text token (or at sequence end if closer)
+                    actual_eos_pos = min(endpos, len(tokens) - 1)
+                    tokens[actual_eos_pos] = eos_id
+                elif len(tokens) > 0:
+                    # Case 2: text truncated due to interruption
+                    # Place EOS at the very end of the sequence
+                    tokens[-1] = eos_id
+                logging.warning(
+                    f"Supervision was likely interrupted: {eospos=} >= {len(tokens)=}. "
+                    f"Placed EOS at fallback position to ensure proper turn-taking training. {diagnostic}"
+                )
 
     return tokens
 
 
 def _strip_timestamps(
-    text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
+        text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
 ) -> str:
     """
     Strips timestamp tokens from text, e.g. turns:

@@ -616,10 +616,43 @@ def replace_control_speech_codes(speech_codes: torch.Tensor, control_codes: torc
     return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
 
 
-def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTokenizer, pad_id: int) -> list[str]:
+def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTokenizer, pad_id: int, user_bos_id: int = None, eval_text_turn_taking: bool = False) -> list[str]:
     ans = []
-    for hyp_ids, hyp_len in zip(tokens.cpu(), lengths.cpu()):
-        hyp_ids = hyp_ids[:hyp_len]
-        hyp_ids = hyp_ids[hyp_ids != pad_id]
-        ans.append(tokenizer.ids_to_text(hyp_ids))
+    for _, hyp_ids, hyp_len in zip(tokens.cpu(), tokens.cpu(), lengths.cpu()):
+        if eval_text_turn_taking:
+            # Insert timestamps to the text
+            hyp_ids_list = hyp_ids.tolist()
+            agent_bos_positions = (hyp_ids == tokenizer.bos).nonzero(as_tuple=True)[0].tolist()
+            agent_eos_positions = (hyp_ids == tokenizer.eos).nonzero(as_tuple=True)[0].tolist()
+            
+            # Combine and sort all positions with their types
+            all_positions = []
+            for pos in agent_bos_positions:
+                all_positions.append((pos, 'bos'))
+            for pos in agent_eos_positions:
+                all_positions.append((pos, 'eos'))
+            
+            # Sort by position
+            all_positions.sort(key=lambda x: x[0])
+            
+            start_idx = 0
+            out_str = []
+            for pos, pos_type in all_positions:
+                text_ids = hyp_ids[start_idx:pos]
+                start_idx = pos
+                timestamp = round(float(pos) * 0.08, 3)
+                out_str.append(tokenizer.ids_to_text(text_ids))
+                if pos_type == 'bos':
+                    out_str.append(f"<|{timestamp}|>")
+                else:  # eos
+                    out_str.append(f"<${timestamp}$>")
+            out_str.append(tokenizer.ids_to_text(hyp_ids[start_idx:]))
+            ans.append(" ".join(out_str))
+        else:
+            hyp_ids = hyp_ids[:hyp_len]
+            hyp_ids = hyp_ids[hyp_ids != pad_id]
+            if user_bos_id is not None:
+                hyp_ids = hyp_ids[hyp_ids != user_bos_id]
+            ans.append(tokenizer.ids_to_text(hyp_ids))
+
     return ans

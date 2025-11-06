@@ -1194,3 +1194,99 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         return cuts
     else:
         raise RuntimeError(f'Unsupported input type: {type(inp)} (expected a dict or a string)')
+
+
+def _convert_tarred_to_duplex(cut, agent_silence_duration):
+    """Helper function to convert single supervision to duplex format.
+    
+    This is a module-level function (not nested) so it can be pickled for multiprocessing.
+    """
+    if len(cut.supervisions) != 1:
+        # Skip cuts that don't have exactly one supervision
+        return cut
+        
+    original_sup = cut.supervisions[0]
+    orig_user_duration = cut.duration
+
+    # Note here we use the last part of the audio as agent silence, which may cut user text, but this avoid using synthetic silence
+    # TODO(kevinhu): Evaluate how this impacts user EOU
+
+    # Append agent_silence_duration of silence to the original recording
+    if agent_silence_duration > 0:
+        sr = cut.recording.sampling_rate
+        user_sil_samples = int(agent_silence_duration * sr)
+        silence_audio = np.zeros((1, user_sil_samples), dtype=np.float32)
+        # Concatenate silence to the end of the original audio
+        orig_audio = cut.recording.load_audio()
+        if orig_audio.ndim == 1:
+            orig_audio = orig_audio[None, :]
+        new_audio = np.concatenate([orig_audio, silence_audio], axis=1)
+        # Create a new Recording with the extended audio
+        new_recording = create_recording_from_array(new_audio, sr, cut.recording.id)
+        cut.recording = new_recording
+        cut.duration = new_audio.shape[1] / sr
+    
+    # Create user supervision (original speech)
+    user_dur = orig_user_duration
+    user_sup = SupervisionSegment(
+        id=f"{cut.id}_user",
+        recording_id=cut.recording_id,
+        start=0.0,
+        duration=user_dur,
+        text=original_sup.text,
+        language=original_sup.language,
+        speaker="user",
+    )
+    
+    # Create agent supervision (silence with configurable duration)
+    agent_start = orig_user_duration + agent_silence_duration if agent_silence_duration < 0 else orig_user_duration
+    agent_dur = abs(agent_silence_duration)
+    agent_sup = SupervisionSegment(
+        id=f"{cut.id}_agent", 
+        recording_id=cut.recording_id,
+        start=agent_start,
+        duration=agent_dur,
+        text="",  # Empty text for silence
+        language=original_sup.language,
+        speaker="agent",
+    )
+    
+    # Create target_audio with all zeros (silence)
+    sr = cut.recording.sampling_rate
+    num_samples = int(cut.duration * sr)
+    silence_audio = np.zeros((1, num_samples), dtype=np.float32)
+    
+    # Create a Recording from the silence audio
+    silence_recording = create_recording_from_array(silence_audio, sr, f"{cut.id}_target")
+    
+    # Replace the single supervision with user and agent supervisions
+    cut.supervisions = [user_sup, agent_sup]
+    cut.formatter = "nemo_tarred_to_duplex"
+    
+    # Add target_audio to cut.custom
+    if cut.custom is None:
+        cut.custom = {}
+    cut.custom["target_audio"] = silence_recording
+    
+    return cut
+
+
+@data_type_parser(["nemo_tarred_to_duplex"])
+def read_nemo_tarred_to_duplex(config) -> tuple[CutSet, bool]:
+    """Convert single supervision NeMo data to duplex format with user speech and agent silence."""
+    
+    # by default, use the last part of user audio as agent silence duration
+    agent_silence_duration = config.get("agent_silence_duration", -0.08)
+
+    # Reuse the existing nemo_tarred parser by creating a config with type: nemo_tarred
+    nemo_config = DictConfig(config)
+    nemo_config.type = "nemo_tarred"
+    
+    # Load the cuts using the original parser
+    cuts, is_tarred = read_nemo_manifest(nemo_config)
+    
+    # Apply the conversion using functools.partial to make it picklable
+    convert_fn = partial(_convert_tarred_to_duplex, agent_silence_duration=agent_silence_duration)
+    cuts = cuts.map(convert_fn)
+    
+    return cuts, is_tarred

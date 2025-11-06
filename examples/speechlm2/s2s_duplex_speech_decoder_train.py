@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import multiprocessing as mp
 
 import torch
 from lightning.pytorch import Trainer
@@ -22,6 +23,13 @@ from nemo.collections.speechlm2 import DataModule, DuplexS2SDataset, DuplexS2SSp
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
+
+# Set multiprocessing start method to 'spawn' for CUDA compatibility with DataLoader workers
+# This prevents "Cannot re-initialize CUDA in forked subprocess" errors
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Start method already set
 
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
@@ -50,7 +58,9 @@ def train(cfg):
         source_sample_rate=cfg.data.source_sample_rate,
         target_sample_rate=cfg.data.target_sample_rate,
         input_roles=cfg.data.input_roles,
-        output_roles=cfg.data.output_roles
+        output_roles=cfg.data.output_roles,
+        cfg=cfg.data,
+        model_cfg=cfg.model,
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

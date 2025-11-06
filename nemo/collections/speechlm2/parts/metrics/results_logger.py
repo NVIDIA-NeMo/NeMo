@@ -111,6 +111,10 @@ class ResultsLogger:
             pred_audio_sr,
             user_audio,
             user_audio_sr,
+            src_refs: list[str],
+            src_hyps: list[str],
+            all_refs: list[str],
+            all_hyps: list[str],
     ):
         rank = get_rank()
 
@@ -126,6 +130,10 @@ class ResultsLogger:
                 "target_text": refs[i],
                 "pred_text": hyps[i],
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
+                "src_text": src_refs[i],
+                "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
+                "all_text": all_refs[i],
+                "pred_all_text": all_hyps[i],
             }
             self.cached_results[name].append(out_dict)
 
@@ -161,7 +169,7 @@ class ResultsLogger:
             if os.path.exists(rank_file):
                 try:
                     with open(rank_file, 'r', encoding='utf-8') as fin:
-                        rank_results = json.load(fin)
+                        rank_results = [json.loads(line) for line in fin if line.strip()]
                         if isinstance(rank_results, list):
                             all_results.extend(rank_results)
                         else:
@@ -203,7 +211,8 @@ class ResultsLogger:
         for name, results_list in self.cached_results.items():
             rank_json_path = os.path.join(self.matadata_save_path, f"{name}_rank{rank}.json")
             with open(rank_json_path, 'w', encoding='utf-8') as fout:
-                json.dump(results_list, fout, indent=4, ensure_ascii=False)
+                for item in results_list:
+                    fout.write(json.dumps(item, ensure_ascii=False) + '\n')
             logging.info(f"Rank {rank} metadata file for {name} dataset saved at: {rank_json_path}")
 
         # Step 2: Synchronize all ranks before merging
@@ -219,7 +228,8 @@ class ResultsLogger:
                 # Save merged results
                 final_json_path = os.path.join(self.matadata_save_path, f"{name}.json")
                 with open(final_json_path, 'w', encoding='utf-8') as fout:
-                    json.dump(merged_results, fout, indent=4, ensure_ascii=False)
+                    for item in merged_results:
+                        fout.write(json.dumps(item, ensure_ascii=False) + '\n')
                 logging.info(f"Final merged metadata file for {name} dataset saved at: {final_json_path}")
 
                 # Compute metrics on merged results

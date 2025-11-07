@@ -627,18 +627,30 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 if noise_indices:
                     # Extract audio samples that need noise augmentation
                     audio_with_noise = batch["source_audio"][noise_indices]
+                    
+                    # Get SNR range from config with defaults
+                    snr_min = self.cfg.get('noise_min_snr', -30)
+                    snr_max = self.cfg.get('noise_max_snr', 50)
+                    
+                    # Get other noise parameters from config with defaults
+                    noise_prob_scale_user = self.cfg.get('noise_prob_scale_user', 0.5)
+                    noise_prob_scale_user_min_snr = self.cfg.get('noise_prob_scale_user_min_snr', -20)
+                    noise_prob_scale_user_max_snr = self.cfg.get('noise_prob_scale_user_max_snr', 24)
+                    snr_measure_dur = self.cfg.get('snr_measure_dur', 0.0)
+                    noise_resample = self.cfg.get('noise_resample', True)
+                    noise_prob_low_pass = self.cfg.get('noise_prob_low_pass', 0.2)
 
                     # Apply noise to selected samples
                     audio_with_noise = self.add_noise_to_batch(
                         audio_with_noise,
                         os.path.join(self.cfg.noise_file_path, "*"),
-                        snr_db=random.randint(0, 60),  # noise_min_snr = 20 and noise_max_snr = 50
-                        noise_prob_scale_user=0.5,
-                        noise_prob_scale_user_min_snr=-10,
-                        noise_prob_scale_user_max_snr=34,
-                        snr_measure_dur=0.0,
-                        noise_resample=True,
-                        noise_prob_low_pass=0.2,
+                        snr_db=random.randint(snr_min, snr_max),
+                        noise_prob_scale_user=noise_prob_scale_user,
+                        noise_prob_scale_user_min_snr=noise_prob_scale_user_min_snr,
+                        noise_prob_scale_user_max_snr=noise_prob_scale_user_max_snr,
+                        snr_measure_dur=snr_measure_dur,
+                        noise_resample=noise_resample,
+                        noise_prob_low_pass=noise_prob_low_pass,
                     )
 
                     # Put the noisy audio back into the batch at the correct positions

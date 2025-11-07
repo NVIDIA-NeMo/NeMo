@@ -144,9 +144,9 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
         return get_pad_id(self.tokenizer)
 
     def forward(
-        self,
-        input_embeds: Tensor,
-        cache=None,
+            self,
+            input_embeds: Tensor,
+            cache=None,
     ) -> dict[str, Tensor]:
         """
         Implements a fully offline forward pass through the entire model.
@@ -199,7 +199,8 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
                 [
                     target_tokens,
                     (
-                        torch.ones(source_encoded.shape[0], abs(diff), device=source_encoded.device) * self.text_pad_id
+                            torch.ones(source_encoded.shape[0], abs(diff),
+                                       device=source_encoded.device) * self.text_pad_id
                     ).to(torch.long),
                 ],
                 dim=-1,
@@ -297,12 +298,12 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
         num_frames = inputs["input_lens"].sum()
         with loss_parallel():
             text_loss = (
-                torch.nn.functional.cross_entropy(
-                    forward_outputs["text_logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
-                    inputs["text_labels"].flatten(0, 1),
-                    reduction="sum",
-                )
-                / num_frames
+                    torch.nn.functional.cross_entropy(
+                        forward_outputs["text_logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
+                        inputs["text_labels"].flatten(0, 1),
+                        reduction="sum",
+                    )
+                    / num_frames
             )
             audio_loss = torch.nn.functional.cross_entropy(
                 forward_outputs["audio_logits"].flatten(0, 2),  # (B, T, K, Vs) -> (*, Vs)
@@ -388,10 +389,10 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
 
     @torch.no_grad()
     def offline_inference(
-        self,
-        input_signal: torch.Tensor,
-        input_signal_lens: torch.Tensor,
-        decode_audio: bool = True,
+            self,
+            input_signal: torch.Tensor,
+            input_signal_lens: torch.Tensor,
+            decode_audio: bool = True,
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction.
@@ -424,7 +425,7 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
             torch.distributed.all_reduce(T_tensor, op=torch.distributed.ReduceOp.MAX)
             T = int(T_tensor.item())
             if T > T_local:
-                last_frame = input_embeds[:, T_local - 1 : T_local, :]  # (B,1,H)
+                last_frame = input_embeds[:, T_local - 1: T_local, :]  # (B,1,H)
                 pad = last_frame.repeat(1, T - T_local, 1)  # (B, T-T_local, H)
                 input_embeds = torch.cat([input_embeds, pad], dim=1)
         else:
@@ -448,7 +449,7 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
             input_embeds[:, t] += self.embed_tokens(gen_text[:, t - 1])
             for cbidx in range(self._num_codebooks):
                 input_embeds[:, t] += self.embed_audio_tokens[cbidx](gen_audio[:, t - 1, cbidx])
-            ans = self(input_embeds[:, t : t + 1], cache=ans["cache"])
+            ans = self(input_embeds[:, t: t + 1], cache=ans["cache"])
             gen_text[:, t] = ans["text_logits"].argmax(dim=-1)[:, -1]
             gen_audio[:, t] = ans["audio_logits"].argmax(dim=-1)[:, -1]
 
@@ -620,7 +621,7 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
                   user_bos_id: int = None, eval_text_turn_taking: bool = False, sil_id: int = None) -> list[str]:
     """
     Convert token IDs to text strings, filtering out special tokens.
-    
+
     Args:
         tokens: Token IDs tensor (B, T)
         lengths: Length of each sequence (B,)
@@ -629,12 +630,12 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
         user_bos_id: User BOS token ID to filter out (optional)
         eval_text_turn_taking: If True, insert timestamps at bos/eos positions
         sil_id: Silence token ID to filter out (optional)
-    
+
     Returns:
         List of decoded text strings
     """
     ans = []
-    
+
     # Helper function to filter special tokens from token IDs
     # This filtering is applied regardless of eval_text_turn_taking mode
     def filter_special_tokens(token_ids):
@@ -650,7 +651,7 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
         if sil_id is not None:
             token_ids = token_ids[token_ids != sil_id]
         return token_ids
-    
+
     for _, hyp_ids, hyp_len in zip(tokens.cpu(), tokens.cpu(), lengths.cpu()):
         if eval_text_turn_taking:
             # Insert timestamps to the text

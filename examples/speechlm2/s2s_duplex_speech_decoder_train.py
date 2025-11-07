@@ -59,7 +59,7 @@ def train(cfg):
         target_sample_rate=cfg.data.target_sample_rate,
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
-        aug_by_swap_role=cfg.data.aug_by_swap_role,
+        aug_by_swap_role=cfg.data.get("aug_by_swap_role", False),
         cfg=cfg.data,
         model_cfg=cfg.model,
     )

@@ -81,6 +81,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 at positions aligned with audio frames
             - source_token_lens: Tensor of source token sequence lengths [B]
             - target_texts: List of full target texts joined from output_roles supervisions [B]
+            - prompt_tokens: Tensor of prompt text tokens [B, T]
+            - prompt_token_lens: Tensor of prompt token sequence lengths [B]
+            - target_turn_texts: (Optional, if include_turn_metadata=True) List of lists of turn dictionaries [B]
+                Each turn dict contains: start_time, duration, role, text
+            - source_turn_texts: (Optional, if include_turn_metadata=True) List of lists of turn dictionaries [B]
+                Each turn dict contains: start_time, duration, role, text
+            - system_prompt: (Optional, if include_turn_metadata=True) List of system prompts [B]
 
     Notes:
         - The dataset ensures frame-level alignment between audio and text by inserting tokens at
@@ -105,6 +112,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         input_roles: list[str] = None,
         output_roles: list[str] = None,
         aug_by_swap_role: bool = False,
+        include_turn_metadata: bool = False,
         cfg: dict = None,
         model_cfg: dict = None,
     ):
@@ -115,6 +123,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
         self.aug_by_swap_role = aug_by_swap_role
+        self.include_turn_metadata = include_turn_metadata
 
         self.word_align_position = cfg.get("word_align_position", "left") if cfg is not None else "left"
         self.predict_user_text = model_cfg.get("predict_user_text", False) if model_cfg is not None else False
@@ -194,7 +203,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined = CutSet.from_cuts(list(cuts) + swapped_cuts)
             else:
                 all_cuts_combined = cuts
-
+            
+            prompt_tokens, prompt_token_lens = collate_system_prompt(
+                all_cuts_combined, self.tokenizer
+            )
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
@@ -287,7 +299,41 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in all_cuts_combined],
                 "aug_by_noise": [getattr(cut, "aug_by_noise", True) for cut in all_cuts_combined]
             }
-
+        
+            if torch.sum(prompt_token_lens) > 0:
+                audio_data['prompt_tokens'] = prompt_tokens
+                audio_data['prompt_token_lens'] = prompt_token_lens
+            
+            # Optionally include detailed turn metadata for analysis
+            if self.include_turn_metadata:
+                audio_data["target_turn_texts"] = [
+                    [
+                        {
+                            "start_time": s.start,
+                            "duration": s.duration,
+                            "role": s.speaker,
+                            "text": s.text,
+                        }
+                        for s in cut.supervisions if s.speaker in self.output_roles
+                    ]
+                    for cut in all_cuts_combined
+                ]
+                audio_data["source_turn_texts"] = [
+                    [
+                        {
+                            "start_time": s.start,
+                            "duration": s.duration,
+                            "role": s.speaker,
+                            "text": s.text,
+                        }
+                        for s in cut.supervisions if s.speaker in self.input_roles
+                    ]
+                    for cut in all_cuts_combined
+                ]
+                audio_data["system_prompt"] = [
+                    cut.custom.get('system_prompt', '') for cut in all_cuts_combined
+                ]
+                
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None
         if text_cuts:
@@ -519,6 +565,32 @@ def collate_token_channel(
     tokens = collate_vectors(tokens, padding_value=pad_id)
     return tokens, token_lens
 
+
+def collate_system_prompt(
+    cuts: CutSet,
+    tokenizer: TokenizerSpec,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Collate system prompts from cuts.
+    System prompts should be stored in cut.custom['system_prompt'].
+    """
+    pad_id = get_pad_id(tokenizer)
+    tokens = []
+    for c in cuts:
+        # Check if system prompt exists in custom field
+        if c.custom and c.custom.get("system_prompt", None):
+            prompt_text = c.custom["system_prompt"]
+            tokens.append(torch.as_tensor(
+                [tokenizer.bos] + tokenizer.text_to_ids(prompt_text) + [tokenizer.eos],
+                dtype=torch.long
+            ))
+        else:
+            # No system prompt for this cut
+            tokens.append(torch.as_tensor([], dtype=torch.long))
+    
+    token_lens = torch.tensor([len(tt) for tt in tokens])
+    tokens = collate_vectors(tokens, padding_value=pad_id)
+    return tokens, token_lens
 
 def build_token_channel(
         cut: Cut,

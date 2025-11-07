@@ -53,8 +53,8 @@ class ResultsLogger:
         self.save_path = save_path
         self.audio_save_path = os.path.join(save_path, "pred_wavs")
         os.makedirs(self.audio_save_path, exist_ok=True)
-        self.matadata_save_path = os.path.join(save_path, "metadatas")
-        os.makedirs(self.matadata_save_path, exist_ok=True)
+        self.metadata_save_path = os.path.join(save_path, "metadatas")
+        os.makedirs(self.metadata_save_path, exist_ok=True)
         self.cached_results = defaultdict(list)
         self.normalizer = EnglishTextNormalizer()
         
@@ -74,9 +74,9 @@ class ResultsLogger:
             )
 
     def reset(self):
-        metadata_files = os.listdir(self.matadata_save_path)
-        for f in metadata_files:
-            open(os.path.join(self.matadata_save_path, f), 'w').close()
+        metadata_files = os.listdir(self.metadata_save_path)
+        # for f in metadata_files:
+        #     open(os.path.join(self.metadata_save_path, f), 'w').close()
         self.cached_results = defaultdict(list)
         return self
 
@@ -100,6 +100,44 @@ class ResultsLogger:
         torchaudio.save(out_audio_path, combined_wav.squeeze(), pred_audio_sr)
         logging.info(f"Audio saved at: {out_audio_path}")
 
+    @staticmethod
+    def merge_turns_chronologically(
+        turns_list_1: Optional[List[dict]] = None,
+        turns_list_2: Optional[List[dict]] = None,
+    ) -> List[dict]:
+        """
+        Merge two lists of turns chronologically based on start_time.
+        
+        Args:
+            turns_list_1: List of turn dicts with keys: start_time, duration, role, text
+            turns_list_2: List of turn dicts with keys: start_time, duration, role, text
+                         OR predicted turns with keys: start_time, end_time, duration, text, 
+                         token_ids, start_token_idx, end_token_idx, num_tokens, is_complete
+        
+        Returns:
+            List of turn dicts sorted by start_time, each with role and text
+        """
+        all_turns = []
+        
+        if turns_list_1:
+            all_turns.extend(turns_list_1)
+        if turns_list_2:
+            all_turns.extend(turns_list_2)
+        
+        # Sort by start_time
+        all_turns.sort(key=lambda x: x.get('start_time', 0))
+        
+        # Extract role and text for each turn
+        merged_turns = [
+            {
+                "role": turn.get("role", "agent"),  # Default to agent for predicted turns
+                "text": turn.get("text", ""),
+            }
+            for turn in all_turns
+        ]
+        
+        return merged_turns
+
     def update(
             self,
             name,
@@ -115,6 +153,10 @@ class ResultsLogger:
             src_hyps: list[str],
             all_refs: list[str],
             all_hyps: list[str],
+            system_prompt=None,
+            source_turns: Optional[List[List[dict]]] = None,
+            target_turns: Optional[List[List[dict]]] = None,
+            pred_turns: Optional[List[List[dict]]] = None,
     ):
         rank = get_rank()
 
@@ -135,6 +177,33 @@ class ResultsLogger:
                 "all_text": all_refs[i],
                 "pred_all_text": all_hyps[i],
             }
+
+            # Add conversation turns only if there are multiple user turns (multi-turn conversation)
+            user_turns = source_turns[i] if source_turns is not None else None
+            has_multi_turn_conversation = user_turns is not None and len(user_turns) > 1
+            
+            if has_multi_turn_conversation and (target_turns is not None or pred_turns is not None):
+                if system_prompt is not None:
+                    out_dict["system_prompt"] = system_prompt[i]
+                
+                conversation_turns = {}
+                
+                # Create ground truth conversation: source (user) + target (agent) turns
+                if target_turns is not None:
+                    conversation_turns["gt_conversation"] = self.merge_turns_chronologically(
+                        turns_list_1=user_turns,
+                        turns_list_2=target_turns[i],
+                    )
+                
+                # Create predicted conversation: source (user) + predicted (agent) turns
+                if pred_turns is not None:
+                    conversation_turns["pred_conversation"] = self.merge_turns_chronologically(
+                        turns_list_1=user_turns,
+                        turns_list_2=pred_turns[i],
+                    )
+                
+                out_dict["conversation_turns"] = conversation_turns
+            
             self.cached_results[name].append(out_dict)
 
 
@@ -157,7 +226,7 @@ class ResultsLogger:
 
         # Collect results from all ranks
         for r in range(world_size):
-            rank_file = os.path.join(self.matadata_save_path, f"{dataset_name}_rank{r}.json")
+            rank_file = os.path.join(self.metadata_save_path, f"{dataset_name}_rank{r}.json")
 
             # Wait for the file to exist (with timeout)
             wait_time = 0
@@ -209,7 +278,7 @@ class ResultsLogger:
 
         # Step 1: Each rank saves its own results with rank suffix
         for name, results_list in self.cached_results.items():
-            rank_json_path = os.path.join(self.matadata_save_path, f"{name}_rank{rank}.json")
+            rank_json_path = os.path.join(self.metadata_save_path, f"{name}_rank{rank}.json")
             with open(rank_json_path, 'w', encoding='utf-8') as fout:
                 for item in results_list:
                     fout.write(json.dumps(item, ensure_ascii=False) + '\n')
@@ -226,7 +295,7 @@ class ResultsLogger:
                 merged_results = self._merge_rank_files(name)
 
                 # Save merged results
-                final_json_path = os.path.join(self.matadata_save_path, f"{name}.json")
+                final_json_path = os.path.join(self.metadata_save_path, f"{name}.json")
                 with open(final_json_path, 'w', encoding='utf-8') as fout:
                     for item in merged_results:
                         fout.write(json.dumps(item, ensure_ascii=False) + '\n')

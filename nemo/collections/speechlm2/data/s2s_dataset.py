@@ -188,6 +188,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 return self._create_minimal_batch()
             cuts = CutSet.from_cuts(filtered_cuts)
 
+        if cuts:
             swapped_cuts = []
 
             if self.aug_by_swap_role:

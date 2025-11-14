@@ -110,8 +110,8 @@ def prepare_labels(
             - text_labels: Text label tokens (B, T-1)
             - audio_inputs: Audio input codes (B, T-1, K) or None if target_codes is None
             - audio_labels: Audio label codes (B, T-1, K) or None if target_codes is None
-            - asr_inputs: ASR input tokens (B, T-1) if use_separate_asr_head is True
-            - asr_labels: ASR label tokens (B, T-1) if use_separate_asr_head is True
+            - asr_inputs: ASR input tokens (B, T-1) if predict_user_text is True
+            - asr_labels: ASR label tokens (B, T-1) if predict_user_text is True
     """
     
     # Apply text channel delay and advance adjustments
@@ -128,10 +128,6 @@ def prepare_labels(
         # make sure that eos/bos is in the place (it can cut tokens from the first advance_text_channel_by tokens and this will breaks everything)
 
     if cfg.get("delay_text_channel_by", 0) > 0:
-        # if batch.get("formatter", None) and batch["formatter"][0] == 'nemo_tarred_to_duplex':
-        #     delay_by = cfg.get("delay_source_text_by", 0)
-        # else:
-        #     delay_by = cfg.get("delay_text_channel_by", 0)
         delay_by = cfg.get("delay_text_channel_by", 0)
 
         eos_mask = (target_tokens == text_eos_id) & (torch.arange(target_tokens.size(1), device=target_tokens.device).unsqueeze(0) >= (target_tokens.size(1) - delay_by))
@@ -176,119 +172,67 @@ def prepare_labels(
                 device=source_tokens.device,
                 dtype=torch.long,
             )
-            # if cfg.get("debug", False):
-                # import pdb; pdb.set_trace()
-            # source_tokens_delayed = torch.cat([pad, source_tokens], dim=-1)
-            # batch["source_token_lens"] = batch["source_token_lens"] + delay_source_text_by
             source_tokens_delayed = torch.cat([pad, source_tokens[:, :-delay_source_text_by]], dim=-1)
-            # Add back user_eos_id since it may be truncated
-            # source_tokens_delayed[:, -1] = user_eos_id
         else:
             source_tokens_delayed = source_tokens
 
         source_tokens_flat = source_tokens_delayed.clone()
         target_tokens_flat = target_tokens.clone()
-        
-        if cfg.get("allow_user_text_in_agent_turn", False):
 
-            assert cfg.get("use_separate_asr_head", False), "allow_user_text_in_agent_turn is only supported when use_separate_asr_head is True"
+        # Keep user and agent text in separate channels and allow overlap between them
+        if cfg.get("debug", False):
+            i = 0
+            target_tokens_flat_masked = target_tokens_flat[i] * (target_tokens_flat[i] != text_pad_id)
+            print(f"target_tokens_flat[i]:", target_tokens_flat_masked)
+            target_tokens_masked = target_tokens[i] * (target_tokens[i] != text_pad_id)
+            print(f"target_tokens[i]:", target_tokens_masked)
+            source_tokens_flat_masked = source_tokens_flat[i] * (source_tokens_flat[i] != text_pad_id)
+            print(f"source_tokens_flat[i]:", source_tokens_flat_masked)
+            stacked = torch.stack([source_tokens_flat_masked, target_tokens_flat_masked], dim=1)
+            print("stacked[:500]:", stacked[:500])
+            import pdb; pdb.set_trace()
 
-            # Keep user and agent text in separate channels and allow overlap between them
-            if cfg.get("debug", False):
-                i = 0
-                target_tokens_flat_masked = target_tokens_flat[i] * (target_tokens_flat[i] != text_pad_id)
-                print(f"target_tokens_flat[i]:", target_tokens_flat_masked)
-                target_tokens_masked = target_tokens[i] * (target_tokens[i] != text_pad_id)
-                print(f"target_tokens[i]:", target_tokens_masked)
-                source_tokens_flat_masked = source_tokens_flat[i] * (source_tokens_flat[i] != text_pad_id)
-                print(f"source_tokens_flat[i]:", source_tokens_flat_masked)
-                stacked = torch.stack([source_tokens_flat_masked, target_tokens_flat_masked], dim=1)
-                print("stacked[:500]:", stacked[:500])
-                import pdb; pdb.set_trace()
+        # To be consistent with the single channel case, replace the user_eos_id with agent_eos_id
+        source_tokens_flat = source_tokens_flat.clone()
+        source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id
+        asr_inputs = source_tokens_flat[:, :-1]
+        asr_labels = source_tokens_flat[:, 1:]
 
-            # To be consistent with the single channel case, replace the user_eos_id with agent_eos_id
-            source_tokens_flat = source_tokens_flat.clone()
-            source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id
-            asr_inputs = source_tokens_flat[:, :-1]
-            asr_labels = source_tokens_flat[:, 1:]
+        if target_codes is not None:
+            input_ids = torch.cat([target_codes, target_tokens_flat[..., None]], dim=-1)
+            text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
+            text_labels = input_ids[:, 1:, -1]  # (B, T-1)
+            audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
+            audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
+        else:
+            text_inputs = target_tokens_flat[:, :-1]
+            text_labels = target_tokens_flat[:, 1:]
+            audio_inputs = None
+            audio_labels = None
 
-            if target_codes is not None:
-                input_ids = torch.cat([target_codes, target_tokens_flat[..., None]], dim=-1)
-                text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
-                text_labels = input_ids[:, 1:, -1]  # (B, T-1)
-                audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
-                audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
-            else:
-                text_inputs = target_tokens_flat[:, :-1]
-                text_labels = target_tokens_flat[:, 1:]
-                audio_inputs = None
-                audio_labels = None
+        print(f"asr_inputs.shape: {asr_inputs.shape}")
+        print(f"text_inputs.shape: {text_inputs.shape}")
+        if audio_inputs is not None:
+            print(f"audio_inputs.shape: {audio_inputs.shape}")
+        else:
+            print("audio_inputs: None")
+        if asr_inputs.shape[1] != text_inputs.shape[1]:
+            import pdb; pdb.set_trace()
+        if audio_inputs is not None and text_inputs.shape[1] != audio_inputs.shape[1]:
+            import pdb; pdb.set_trace()
 
-            print(f"asr_inputs.shape: {asr_inputs.shape}")
-            print(f"text_inputs.shape: {text_inputs.shape}")
-            if audio_inputs is not None:
-                print(f"audio_inputs.shape: {audio_inputs.shape}")
-            else:
-                print("audio_inputs: None")
-            if asr_inputs.shape[1] != text_inputs.shape[1]:
-                import pdb; pdb.set_trace()
-            if audio_inputs is not None and text_inputs.shape[1] != audio_inputs.shape[1]:
-                import pdb; pdb.set_trace()
-
-            result = {
-                "asr_inputs": asr_inputs,
-                "asr_labels": asr_labels,
-                "source_token_lens": batch["source_token_lens"],
-                "text_inputs": text_inputs,
-                "text_labels": text_labels,
-                "target_token_lens": batch["target_token_lens"],
-                "audio_inputs": audio_inputs,
-                "audio_labels": audio_labels,
-                "source_encoded": source_encoded,
-            }
-            return result
-
-        # Merge user and agent text into a single channel
-        mask = torch.zeros_like(source_tokens_flat, dtype=torch.bool)
-        for i in range(source_tokens_flat.size(0)):
-            src = source_tokens_flat[i]
-            user_bos_indices = (src == user_bos_id).nonzero(as_tuple=True)[0]
-            user_eos_indices = (src == user_eos_id).nonzero(as_tuple=True)[0]
-            for user_bos_idx in user_bos_indices:
-                user_eos_after = user_eos_indices[user_eos_indices > user_bos_idx]
-                if len(user_eos_after) == 0:
-                    continue
-                user_eos_idx = user_eos_after[0]
-                
-                # In the case of agent_bos appear during user turn, take the agent_bos
-                # uuuuu
-                #    aaaaa --> uuuaaa
-                bos_in_target = (target_tokens_flat[i, user_bos_idx:user_eos_idx] == text_bos_id).nonzero(as_tuple=True)
-                if bos_in_target[0].numel() > 0:
-                    bos_in_target_idx = bos_in_target[0][0].item() + user_bos_idx
-                    user_eos_idx = min(user_eos_idx, bos_in_target_idx)
-                
-                # Check if there's a text_eos_id (agent turn end) between bos_idx and eos_idx
-                # If so, move it to just before bos_idx to preserve agent turn boundary
-                # aaaaa
-                #    uuuuu --> aaauuuuu
-                text_eos_in_range = (target_tokens_flat[i, user_bos_idx:user_eos_idx] == text_eos_id).nonzero(as_tuple=True)
-                if text_eos_in_range[0].numel() > 0:
-                    text_eos_idx = text_eos_in_range[0][0].item() + user_bos_idx
-                    # Move the text_eos_id before bos_idx
-                    if cfg.get("force_move_text_eos_to_user_speech_start", False):
-                        new_eos_idx = min(user_bos_idx - 1, text_eos_idx - cfg.get("delay_text_channel_by", 1))
-                    else:
-                        new_eos_idx = user_bos_idx - 1
-                    target_tokens_flat[i, new_eos_idx] = text_eos_id
-                    # Clear the original text_eos_id position
-                    target_tokens_flat[i, text_eos_idx] = text_pad_id
-                
-                # Mark mask from bos_idx to eos_idx-1 (inclusive of bos, exclusive of eos)
-                mask[i, user_bos_idx:user_eos_idx] = True
-
-        target_tokens = torch.where(mask, source_tokens_flat, target_tokens_flat)
-        logging.info(f"target_tokens[0] w/ delay of {delay_source_text_by}: {target_tokens[0]}")
+        result = {
+            "asr_inputs": asr_inputs,
+            "asr_labels": asr_labels,
+            "source_token_lens": batch["source_token_lens"],
+            "text_inputs": text_inputs,
+            "text_labels": text_labels,
+            "target_token_lens": batch["target_token_lens"],
+            "audio_inputs": audio_inputs,
+            "audio_labels": audio_labels,
+            "source_encoded": source_encoded,
+        }
+        return result
     else:
         target_tokens_flat = target_tokens
 
@@ -334,33 +278,16 @@ def prepare_labels(
     }
     
     # Split the merged text channel into asr and text channels (no overlap between them)
-    if cfg.get("use_separate_asr_head", False):
+    if cfg.get("predict_user_text", False):
         if target_codes is not None:
             asr_ids = input_ids.clone()[:, :, -1]
         else:
             asr_ids = target_tokens.clone()
-        if cfg.get("is_conv", False):
-            # Remove all asr ids between text_bos_id and text_eos_id and replace with text_pad_id.
-            # Keep the text_eos_id and remove the text_bos_id.
-            for i in range(asr_ids.shape[0]):
-                bos_indices = (asr_ids[i] == text_bos_id).nonzero(as_tuple=True)[0]
-                eos_indices = (asr_ids[i] == text_eos_id).nonzero(as_tuple=True)[0]
-                for bos_idx in bos_indices:
-                    eos_after = eos_indices[eos_indices > bos_idx]
-                    if len(eos_after) == 0:
-                        # This is the last turn
-                        eos_after = torch.tensor([asr_ids.shape[1] - 1], device=asr_ids.device)
-                    eos_idx = eos_after[0]
-                    asr_ids[i, bos_idx + 1:eos_idx + 1] = text_pad_id
         asr_inputs = asr_ids[:, :-1]
         asr_labels = asr_ids[:, 1:]
         
         result["asr_inputs"] = asr_inputs
         result["asr_labels"] = asr_labels
-        
-        if not cfg.get("force_use_asr_head_for_user_agent_text", False):
-            result["text_inputs"] = target_tokens_flat[:, :-1]
-            result["text_labels"] = target_tokens_flat[:, 1:]
     
     if target_codes is not None:
         audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)

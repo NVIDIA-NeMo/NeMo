@@ -601,7 +601,7 @@ def build_token_channel(
             text = supervision.text
 
             # Use different bos_id for user and agent
-            text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps, pad_id=pad_id, user_bos_id=user_bos_id, user_eos_id=agent_bos_id))
+            text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps))
 
             if available_frames_for_text > 0 and len(text_ids) > available_frames_for_text:
                 # Truncate text_ids to fit before the eos position.
@@ -665,10 +665,7 @@ def _text_to_ids(text: str, tokenizer: TokenizerSpec,
                  _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
                  available_frames_for_text=None,
                  word_align_position='left',
-                 remove_timestamps=False,
-                 pad_id=None,
-                 user_bos_id=None,
-                 user_eos_id=None):
+                 remove_timestamps=False):
     if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
         text_ids = _text_with_timestamps_to_ids(text, tokenizer, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position)
     else:

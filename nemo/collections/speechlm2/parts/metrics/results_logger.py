@@ -151,8 +151,6 @@ class ResultsLogger:
             user_audio_sr,
             src_refs: list[str],
             src_hyps: list[str],
-            all_refs: list[str],
-            all_hyps: list[str],
             system_prompt=None,
             source_turns: Optional[List[List[dict]]] = None,
             target_turns: Optional[List[List[dict]]] = None,
@@ -174,8 +172,6 @@ class ResultsLogger:
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
                 "src_text": src_refs[i],
                 "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
-                "all_text": all_refs[i],
-                "pred_all_text": all_hyps[i],
             }
 
             # Add conversation turns only if there are multiple user turns (multi-turn conversation)

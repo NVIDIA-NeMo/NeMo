@@ -128,7 +128,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
             self.lm_head = llm.lm_head
 
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 import copy
                 self.asr_head = copy.deepcopy(self.lm_head)
 
@@ -136,7 +136,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
             self.embed_tokens = getattr(self.llm, embed_tokens_name)
 
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 import copy
                 self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
 
@@ -162,14 +162,14 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
             self.lm_head = llm.lm_head
             
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 import copy
                 self.asr_head = copy.deepcopy(self.lm_head)
             # Note: we have to "move out" the token embedding outside of LLM to avoid
             #       messing up FSDP/TP hooks.
             self.embed_tokens = self.llm.embed_tokens
 
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 import copy
                 self.embed_asr_tokens = copy.deepcopy(self.llm.embed_tokens)
 
@@ -402,7 +402,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         B, T = input_embeds.shape[:2]
         text_logits = self.lm_head(out['last_hidden_state'])  # (B, T, text_vocab_size)
 
-        if self.cfg.get("use_separate_asr_head", False):
+        if self.predict_user_text:
             asr_in = out['last_hidden_state']
             asr_logits = self.asr_head(asr_in)  # (B, T, asr_vocab_size)
 
@@ -416,7 +416,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
 
         ans = {"text_logits": text_logits}
-        if self.cfg.get("use_separate_asr_head", False):
+        if self.predict_user_text:
             ans["asr_logits"] = asr_logits
 
         if self.cfg.audio_loss_weight > 0:
@@ -736,7 +736,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             new_source_encoded = torch.zeros(B, max_prompt_len + T_src, H, 
                                              dtype=source_encoded.dtype, device=source_encoded.device)
             new_target_tokens = torch.full((B, max_prompt_len + T_tgt), self.text_pad_id, dtype=target_tokens.dtype, device=target_tokens.device)
-            # If source_tokens are present (used by ASR head in allow_user_text_in_agent_turn),
+            # If source_tokens are present (used by ASR head for user text prediction),
             # prepend PADs to align ASR labels with the prompt span as well.
             if "source_tokens" in batch:
                 source_tokens = batch["source_tokens"]
@@ -863,14 +863,14 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             text_labels = inputs["text_labels"]
             audio_inputs = inputs["audio_inputs"]
             audio_labels = inputs["audio_labels"]
-            if self.cfg.get("use_separate_asr_head", False) or self.cfg.get("use_separate_asr_llm", False):
+            if self.predict_user_text:
                 asr_inputs = inputs["asr_inputs"]
                 asr_labels = inputs["asr_labels"]
 
             input_embeds = self.embed_tokens(text_inputs) * self.cfg.get("duplex_text_channel_weight", 1.0)
             input_embeds.add_(source_encoded[:, :-1] * self.cfg.get("duplex_user_channel_weight", 1.0))
 
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 asr_inputs_embeds = self.embed_asr_tokens(asr_inputs) * self.cfg.get("duplex_asr_text_weight", 1.0)
                 input_embeds.add_(asr_inputs_embeds)
 
@@ -927,7 +927,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     self.cfg.get("scale_loss_mask", self.cfg.get("nonsil_weight", 4.0)),
                     loss_scale[:, :, :1],
                 )
-                if self.cfg.get("use_separate_asr_head", False):
+                if self.predict_user_text:
                     asr_loss_scale[:, :, :1] = torch.where(
                         asr_labels.unsqueeze(-1) != self.text_pad_id,
                         self.cfg.get("scale_loss_mask", self.cfg.get("nonsil_weight", 4.0)),
@@ -970,13 +970,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             source_encoded = inputs["source_encoded"]
             text_inputs = inputs["text_inputs"]
             text_labels = inputs["text_labels"]
-            if self.cfg.get("use_separate_asr_head", False) or self.cfg.get("use_separate_asr_llm", False):
+            if self.predict_user_text:
                 asr_inputs = inputs["asr_inputs"]
                 asr_labels = inputs["asr_labels"]
 
             input_embeds = self.embed_tokens(text_inputs) * self.cfg.get("duplex_text_channel_weight", 1.0)
             input_embeds.add_(source_encoded[:, :-1] * self.cfg.get("duplex_user_channel_weight", 1.0))
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 asr_inputs_embeds = self.embed_asr_tokens(asr_inputs) * self.cfg.get("duplex_asr_text_weight", 1.0)
                 input_embeds.add_(asr_inputs_embeds)
 
@@ -1023,7 +1023,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         )
                     )
                 loss_scale = self._maybe_zero_out_scale_for_asr(loss_scale, text_labels, batch)
-                if self.cfg.get("use_separate_asr_head", False):
+                if self.predict_user_text:
                     asr_loss_scale = torch.where(
                         asr_labels.unsqueeze(-1) == self.text_pad_id, pad_weight,
                         torch.where(
@@ -1046,7 +1046,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 "loss_scale": loss_scale,
                 "seq_mask": seq_mask,
             }
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 ans["asr_labels"] = asr_labels
                 ans["asr_loss_scale"] = asr_loss_scale
             return ans
@@ -1083,7 +1083,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
             with loss_parallel():
                 text_logits = forward_outputs["text_logits"]
-                if self.cfg.get("use_separate_asr_head", False):
+                if self.predict_user_text:
                     asr_logits = forward_outputs["asr_logits"]
 
                 if self.cfg.get("mask_sequence_loss", True):
@@ -1097,7 +1097,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                                     * inputs["loss_scale"][:, :, 0].flatten(0, 1)
                             ).sum(-1) / num_frames
 
-                if self.cfg.get("use_separate_asr_head", False):
+                if self.predict_user_text:
                     asr_loss = (
                         torch.nn.functional.cross_entropy(
                             asr_logits.flatten(0, 1),
@@ -1143,14 +1143,14 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 else:
                     loss = self.cfg.text_loss_weight * text_loss
                 
-                if self.cfg.get("use_separate_asr_head", False):
+                if self.predict_user_text:
                     loss = loss + self.cfg.get('asr_loss_weight', 1.0) * asr_loss
 
                 B, T = inputs["input_embeds"].shape[:2]
                 ans = {
                     "audio_loss": loss,
                     "audio_to_text_loss": text_loss,
-                    "asr_loss": asr_loss if self.cfg.get("use_separate_asr_head", False) else None,
+                    "asr_loss": asr_loss if self.predict_user_text else None,
                     "batch": B,
                     "length": T,
                     "token_accuracy": token_accuracy,
@@ -1320,8 +1320,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     user_audio_sr=self.source_sample_rate,
                     src_refs=dataset_batch["source_texts"],
                     src_hyps=results["src_text"],
-                    all_refs=dataset_batch["all_texts"],
-                    all_hyps=results["all_text"],
                     system_prompt=dataset_batch.get("system_prompt", None),
                     source_turns=dataset_batch.get("source_turn_texts"),
                     target_turns=dataset_batch.get("target_turn_texts"),
@@ -1347,9 +1345,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
                     src_refs=dataset_batch["source_texts"],
-                    src_hyps=results["src_text"],
-                    all_refs=dataset_batch["all_texts"],
-                    all_hyps=results["all_text"],
+                    src_hyps=results["src_text"]
                 )
 
             if self.cfg.get("eval_text_turn_taking", False):
@@ -1887,7 +1883,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         else:
 
             gen_audio = torch.zeros(B, T, self._num_codebooks, device=self.device, dtype=torch.long)
-        if self.cfg.get("use_separate_asr_head", False) or self.cfg.get("use_separate_asr_llm", False):
+        if self.predict_user_text:
             gen_asr = torch.empty(B, T, device=self.device, dtype=torch.long)
 
         # Initialize prompt region with PAD tokens to match training behavior
@@ -1897,12 +1893,12 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 prompt_len = prompt_len.item()
                 if prompt_len > 0:
                     gen_text[i, :prompt_len] = self.text_pad_id
-                    if self.cfg.get("use_separate_asr_head", False):
+                    if self.predict_user_text:
                         gen_asr[i, :prompt_len] = self.text_pad_id    
 
         # Add BOS embedding at position 0 (either to prompt start or to regular start)
         input_embeds[:, 0] += self._get_bos_embedding() * self.cfg.get("duplex_text_channel_weight", 1.0)
-        if self.cfg.get("use_separate_asr_head", False):
+        if self.predict_user_text:
             input_embeds[:, 0] += self._get_asr_bos_embedding() * self.cfg.get("duplex_asr_text_weight", 1.0)
         
         if self.cfg.audio_loss_weight > 0:
@@ -1942,7 +1938,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             pass
         else:
             gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 gen_asr[:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
 
         if self.cfg.audio_loss_weight > 0:
@@ -1962,7 +1958,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # Autoregressive loop
         for t in range(1, T):
             last_emb = self.embed_tokens(gen_text[:, t - 1]) * self.cfg.get("duplex_text_channel_weight", 1.0)
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 last_asr_emb = self.embed_asr_tokens(gen_asr[:, t - 1]) * self.cfg.get("duplex_asr_text_weight", 1.0)
                 last_emb += last_asr_emb
             if force_bos_positions is not None:
@@ -2030,7 +2026,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
             if self.cfg.audio_loss_weight > 0:
                 gen_audio[:, t] = ans["audio_logits"][:, -1].argmax(dim=-1)
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 # Only update ASR tokens outside the prompt region; keep PAD inside prompt
                 if not is_prompt_position.all():
                     generated_asr = ans["asr_logits"][:, -1].argmax(dim=-1)
@@ -2082,105 +2078,14 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         if self._use_fsdp and T > T_local:
             gen_text = gen_text[:, :T_local]
             gen_audio = gen_audio[:, :T_local]
-            if self.cfg.get("use_separate_asr_head", False) or self.cfg.get("use_separate_asr_llm", False):
+            if self.predict_user_text:
                 gen_asr = gen_asr[:, :T_local]
 
         # Split into source and target texts
-        all_text = gen_text.clone()
-        if self.predict_user_text and ((self.cfg.get("use_separate_asr_head", False) and not self.cfg.get("force_use_asr_head_for_user_agent_text", False)) or self.cfg.get("use_separate_asr_llm", False)):
+        if self.predict_user_text:
             gen_text_src = gen_asr
             src_text_cleaned = [self.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])]
-        elif self.predict_user_text and self.cfg.get("is_asr", False) and not self.cfg.get("predict_eou", False):
-            # ASR only decoding for streaming ASR
-            if self.cfg.get("force_use_asr_head_for_user_agent_text", False):
-                gen_text = gen_asr
-            # Split gen_text into gen_text_src and gen_text_tgt based on self.text_bos_id
-            agent_bos_mask = (gen_text == self.text_bos_id)
-            # Default to last index if not found
-            agent_bos_pos = torch.full((gen_text.size(0),), gen_text.size(1), dtype=torch.long, device=gen_text.device)
-            any_agent_bos = agent_bos_mask.any(dim=1)
-            if any_agent_bos.any():
-                # Use the last BOS:
-                # agent_bos_indices = agent_bos_mask.float().flip(dims=[1]).argmax(dim=1)
-                agent_bos_indices = agent_bos_mask.float().argmax(dim=1)
-                agent_bos_pos = torch.where(any_agent_bos, agent_bos_indices, agent_bos_pos)
-            # Create masks for src and tgt
-            row_idx = torch.arange(gen_text.size(1), device=gen_text.device).unsqueeze(0).expand(gen_text.size(0), -1)
-            # src: keep tokens before agent_bos_pos, pad from agent_bos_pos onwards
-            src_mask = row_idx < agent_bos_pos.unsqueeze(1)
-            gen_text_src = gen_text.clone()
-            gen_text_src[~src_mask] = self.text_pad_id
-            # tgt: keep tokens from agent_bos_pos onwards, pad before agent_bos_pos
-            tgt_mask = row_idx >= agent_bos_pos.unsqueeze(1)
-            gen_text_tgt = gen_text.clone()
-            gen_text_tgt[~tgt_mask] = self.text_pad_id
-            gen_text = gen_text_tgt
-
-            src_text_cleaned = [self.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])]
-        elif self.predict_user_text:
-            # Multi-turn decoding, including
-            # 1) Joint ASR + EOU (pontentially multi-turn), or
-            # 2) Multiturn S2S
-
-            is_asr = self.cfg.get("is_asr", False)
-
-            # Use a single text channel for both user and agent text
-            if self.cfg.get("force_use_asr_head_for_user_agent_text", False):
-                gen_text = gen_asr
-
-            # A few fixes
-            gen_text = self._remove_continuous_agent_bos_id(gen_text, bos_id=self.user_bos_id, is_asr=is_asr)
-            gen_text = self._remove_continuous_agent_bos_id(gen_text, bos_id=self.text_bos_id, is_asr=is_asr)
-            gen_text = self._remove_last_turn_if_short(gen_text, bos_id=self.user_bos_id, is_asr=is_asr)
-            gen_text = self._remove_last_turn_if_short(gen_text, bos_id=self.text_bos_id, is_asr=is_asr)
-
-            # user_eos_indices = self._find_eou(gen_text, is_asr=True)
-
-            # Split gen_text into alternating user and agent text segments
-            if self.cfg.get("eval_text_turn_taking", False):
-                user_eos_id = self.user_eos_id if is_asr else self.text_eos_id
-                gen_text_src, gen_text_tgt = self._segment_alternating_user_agent_text(
-                    gen_text, is_asr=self.cfg.get("is_asr", False), user_eos_id=user_eos_id)
-
-            # Adhoc clean up for user text
-            if is_asr:
-                # Debug: Breakpoint if gen_text_src differs from gen_text for any batch b
-                src_text_cleaned = []
-                for b in range(gen_text.shape[0]):
-                    gen_text_b = self.tokenizer.ids_to_text(gen_text_tgt[b])
-                    gen_text_src_b = self.tokenizer.ids_to_text(gen_text_src[b])
-                    gen_text_src_b = gen_text_src_b.rstrip("^")
-                    # replace continuous ^ with a single one
-                    import re
-                    gen_text_src_b = re.sub(r"\^{2,}", "^", gen_text_src_b)
-                    # Remove the text after the last ^ if it is only 1 word
-                    if "^" in gen_text_src_b:
-                        last_caret_idx = gen_text_src_b.rfind("^")
-                        last_turn = gen_text_src_b[last_caret_idx+1:].strip()
-                        if last_turn and len(last_turn.split()) <= 1 and len(last_turn) and len(last_turn) < 5:
-                            gen_text_src_b = gen_text_src_b[:last_caret_idx+1]
-                    if gen_text_src_b.count("^") > 1:
-                        print(f"Batch index with difference: {b}")
-                        print("gen_text:", gen_text_b)
-                        print("gen_text_src:", gen_text_src_b)
-                        # import pdb; pdb.set_trace()
-                    src_text_cleaned.append(gen_text_src_b)
-            elif self.cfg.get("eval_text_turn_taking", False):
-                src_text_cleaned = [self.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])]
-            else:
-                src_text_cleaned = None
-                gen_text_src = None
-
-            if self.cfg.get("eval_text_turn_taking", False):
-                gen_text = gen_text_tgt
-
-            # For display, use $ to display agent_bos since it is also user_eos
-            if self.cfg.get("display_agent_bos_as_user_eos", False):
-                agent_bos_id = self.text_bos_id
-                user_eos_id = self.user_eos_id
-                gen_text = gen_text.clone()
-                gen_text[gen_text == agent_bos_id] = user_eos_id
-
+        
         # Remove prompt tokens from the output before returning
         # The prompt region contains PAD tokens which shouldn't be part of the actual generation
         if prompt_token_lens is not None:
@@ -2190,7 +2095,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                 current_T = gen_text.shape[1]  # Use actual current size after potential FSDP trimming
                 gen_text_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
                 gen_audio_trimmed = torch.zeros(B, current_T - max_prompt_len, self._num_codebooks, device=self.device, dtype=torch.long)
-                if self.cfg.get("use_separate_asr_head", False):
+                if self.predict_user_text:
                     gen_asr_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
                 lengths_trimmed = lengths.clone()
                 
@@ -2202,20 +2107,19 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
                         gen_text_trimmed[i, :actual_len] = gen_text[i, prompt_len_val:prompt_len_val + actual_len]
                         if self.cfg.audio_loss_weight > 0:
                             gen_audio_trimmed[i, :actual_len] = gen_audio[i, prompt_len_val:prompt_len_val + actual_len]
-                        if self.cfg.get("use_separate_asr_head", False):
+                        if self.predict_user_text:
                             gen_asr_trimmed[i, :actual_len] = gen_asr[i, prompt_len_val:prompt_len_val + actual_len]
                     lengths_trimmed[i] = actual_len
                 
                 gen_text = gen_text_trimmed
                 gen_audio = gen_audio_trimmed
-                if self.cfg.get("use_separate_asr_head", False) or self.cfg.get("use_separate_asr_llm", False):
+                if self.predict_user_text:
                     gen_asr = gen_asr_trimmed
                 lengths = lengths_trimmed
 
         ans = {
             "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=sil_id),
             "src_text": src_text_cleaned if self.predict_user_text else None,
-            "all_text": tokens_to_str(all_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id),
             "tokens_text_src": gen_text_src if self.predict_user_text else None,
             "tokens_text": gen_text,
             "tokens_audio": gen_audio,
@@ -2399,7 +2303,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             self.llm = fully_shard(self.llm, **fsdp_config)
             self.lm_head = fully_shard(self.lm_head, **fsdp_config)
             self.perception = fully_shard(self.perception, **fsdp_config)
-            if self.cfg.get("use_separate_asr_head", False):
+            if self.predict_user_text:
                 self.asr_head = fully_shard(self.asr_head, **fsdp_config)
                 self.embed_asr_tokens = fully_shard(self.embed_asr_tokens, **fsdp_config)
             if self.cfg.audio_loss_weight > 0:

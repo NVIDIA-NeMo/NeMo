@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .data import DataModule, DuplexS2SDataset, SALMDataset
-from .models import SALM, DuplexS2SModel, DuplexS2SSpeechDecoderModel
+from .models import SALM, DuplexS2SModel, DuplexSTTModel
 
 __all__ = [
     'DataModule',
     'DuplexS2SDataset',
     'SALMDataset',
     'DuplexS2SModel',
-    'DuplexS2SSpeechDecoderModel',
+    'DuplexSTTModel',
     'SALM',
 ]

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility functions for preparing model inputs including text, audio, and ASR channels."""
+"""Utility functions for preparing model inputs including text and ASR channels."""
 
 import torch
 from nemo.utils import logging
@@ -62,7 +62,6 @@ def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
 
 def prepare_labels(
     batch,
-    target_codes,
     target_tokens,
     source_encoded,
     asr_emb,
@@ -78,7 +77,7 @@ def prepare_labels(
     device_mesh=None,
 ):
     """
-    Prepare text, audio, and ASR labels from batch data.
+    Prepare text and ASR labels from batch data.
     
     This function handles:
     - Text channel delay/advance adjustments
@@ -89,7 +88,6 @@ def prepare_labels(
     
     Args:
         batch: Dictionary containing batch data including source_tokens, target_tokens, etc.
-        target_codes: Encoded target audio codes (B, T, K), or None if audio is not being predicted
         target_tokens: Target text tokens (B, T)
         source_encoded: Encoded source audio features (B, T, D)
         asr_emb: ASR embedding features (B, T, D)
@@ -108,8 +106,6 @@ def prepare_labels(
         dict: Dictionary containing:
             - text_inputs: Text input tokens (B, T-1)
             - text_labels: Text label tokens (B, T-1)
-            - audio_inputs: Audio input codes (B, T-1, K) or None if target_codes is None
-            - audio_labels: Audio label codes (B, T-1, K) or None if target_codes is None
             - asr_inputs: ASR input tokens (B, T-1) if predict_user_text is True
             - asr_labels: ASR label tokens (B, T-1) if predict_user_text is True
     """
@@ -158,8 +154,6 @@ def prepare_labels(
             min_len = min(source_tokens.shape[1], target_tokens.shape[1])
             source_tokens = source_tokens[:, :min_len]
             target_tokens = target_tokens[:, :min_len]
-            if target_codes is not None:
-                target_codes = target_codes[:, :min_len]
             source_encoded = source_encoded[:, :min_len]
             asr_emb = asr_emb[:, :min_len]
 
@@ -197,28 +191,12 @@ def prepare_labels(
         source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id
         asr_inputs = source_tokens_flat[:, :-1]
         asr_labels = source_tokens_flat[:, 1:]
-
-        if target_codes is not None:
-            input_ids = torch.cat([target_codes, target_tokens_flat[..., None]], dim=-1)
-            text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
-            text_labels = input_ids[:, 1:, -1]  # (B, T-1)
-            audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
-            audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
-        else:
-            text_inputs = target_tokens_flat[:, :-1]
-            text_labels = target_tokens_flat[:, 1:]
-            audio_inputs = None
-            audio_labels = None
+        text_inputs = target_tokens_flat[:, :-1]
+        text_labels = target_tokens_flat[:, 1:]
 
         print(f"asr_inputs.shape: {asr_inputs.shape}")
         print(f"text_inputs.shape: {text_inputs.shape}")
-        if audio_inputs is not None:
-            print(f"audio_inputs.shape: {audio_inputs.shape}")
-        else:
-            print("audio_inputs: None")
         if asr_inputs.shape[1] != text_inputs.shape[1]:
-            import pdb; pdb.set_trace()
-        if audio_inputs is not None and text_inputs.shape[1] != audio_inputs.shape[1]:
             import pdb; pdb.set_trace()
 
         result = {
@@ -228,8 +206,6 @@ def prepare_labels(
             "text_inputs": text_inputs,
             "text_labels": text_labels,
             "target_token_lens": batch["target_token_lens"],
-            "audio_inputs": audio_inputs,
-            "audio_labels": audio_labels,
             "source_encoded": source_encoded,
         }
         return result
@@ -250,27 +226,15 @@ def prepare_labels(
             print("ori_stacked[:500]:", stacked[:500])
         import pdb; pdb.set_trace()
 
-    if target_codes is not None:
-        input_ids = torch.cat([target_codes, target_tokens[..., None]], dim=-1)
-        if use_tp:
-            tp_world_size = device_mesh["tensor_parallel"].size()
-            if (remainder := (input_ids.shape[1] - 1) % tp_world_size) != 0:
-                input_ids = input_ids[:, :-remainder]
-                source_encoded = source_encoded[:, :-remainder]
-                asr_emb = asr_emb[:, :-remainder]
-
-        text_inputs = input_ids[:, :-1, -1]  # (B, T-1)
-        text_labels = input_ids[:, 1:, -1]  # (B, T-1)
-    else:
-        if use_tp:
-            tp_world_size = device_mesh["tensor_parallel"].size()
-            if (remainder := (target_tokens.shape[1] - 1) % tp_world_size) != 0:
-                target_tokens = target_tokens[:, :-remainder]
-                source_encoded = source_encoded[:, :-remainder]
-                asr_emb = asr_emb[:, :-remainder]
-        
-        text_inputs = target_tokens[:, :-1]
-        text_labels = target_tokens[:, 1:]
+    if use_tp:
+        tp_world_size = device_mesh["tensor_parallel"].size()
+        if (remainder := (target_tokens.shape[1] - 1) % tp_world_size) != 0:
+            target_tokens = target_tokens[:, :-remainder]
+            source_encoded = source_encoded[:, :-remainder]
+            asr_emb = asr_emb[:, :-remainder]
+    
+    text_inputs = target_tokens[:, :-1]
+    text_labels = target_tokens[:, 1:]
     
     result = {
         "text_inputs": text_inputs,
@@ -279,25 +243,12 @@ def prepare_labels(
     
     # Split the merged text channel into asr and text channels (no overlap between them)
     if cfg.get("predict_user_text", False):
-        if target_codes is not None:
-            asr_ids = input_ids.clone()[:, :, -1]
-        else:
-            asr_ids = target_tokens.clone()
+        asr_ids = target_tokens.clone()
         asr_inputs = asr_ids[:, :-1]
         asr_labels = asr_ids[:, 1:]
         
         result["asr_inputs"] = asr_inputs
         result["asr_labels"] = asr_labels
-    
-    if target_codes is not None:
-        audio_inputs = input_ids[:, :-1, :-1]  # (B, T-1, K)
-        audio_labels = input_ids[:, 1:, :-1]  # (B, T-1, K)
-    else:
-        audio_inputs = None
-        audio_labels = None
-    
-    result["audio_inputs"] = audio_inputs
-    result["audio_labels"] = audio_labels
 
     if cfg.get("debug", False):
         ori_stacked = torch.stack(

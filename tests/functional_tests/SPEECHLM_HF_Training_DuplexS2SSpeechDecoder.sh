@@ -15,7 +15,7 @@
 # Run training
 torchrun --nproc-per-node 1 --no-python \
   coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
-    examples/speechlm2/s2s_duplex_speech_decoder_train.py \
+    examples/speechlm2/s2s_duplex_stt_train.py \
       model.pretrained_llm=/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1 \
       model.pretrained_audio_codec=/home/TestData/speechlm/pretrained_models/Low_Frame-rate_Speech_Codec++_bf16_nodiscrim.nemo \
       model.pretrained_asr=/home/TestData/speechlm/pretrained_models/stt_en_fastconformer_hybrid_large_streaming_80ms.nemo \
@@ -28,7 +28,7 @@ torchrun --nproc-per-node 1 --no-python \
 # Convert to HF format
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
   examples/speechlm2/to_hf.py \
-    class_path=nemo.collections.speechlm2.models.DuplexS2SSpeechDecoderModel \
+    class_path=nemo.collections.speechlm2.models.DuplexSTTModel \
     ckpt_path=s2s_sdv2_results/checkpoints/step\\=10-last.ckpt \
     ckpt_config=s2s_sdv2_results/exp_config.yaml \
-    output_dir=test_speechlm2_speech_decoder_hf_model
+    output_dir=test_speechlm2_stt_hf_model

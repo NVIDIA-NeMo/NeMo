@@ -12,7 +12,7 @@ It has a first-class support for using dynamic batch sizes via Lhotse and variou
 We currently support three main model types:
 * SALM (Speech-Augmented Language Model) - a simple but effective approach to augmenting pre-trained LLMs with speech understanding capabilities.
 * DuplexS2SModel - a full-duplex speech-to-speech model with an ASR encoder, directly predicting discrete audio codes.
-* DuplexS2SSpeechDecoderModel - a variant of DuplexS2SModel with a separate transformer decoder for speech generation.
+* DuplexSTTModel - a decoder model to generate agent text in duplex, in response to both user speech and text inputs.
 
 Using Pretrained Models
 ----------------------
@@ -185,7 +185,7 @@ Collection Structure
 
 The speechlm2 collection is organized into the following key components:
 
-- **Models**: Contains implementations of DuplexS2SModel, DuplexS2SSpeechDecoderModel, and SALM
+- **Models**: Contains implementations of DuplexS2SModel, DuplexSTTModel, and SALM
 - **Modules**: Contains audio perception and speech generation modules
 - **Data**: Includes dataset classes and data loading utilities
 

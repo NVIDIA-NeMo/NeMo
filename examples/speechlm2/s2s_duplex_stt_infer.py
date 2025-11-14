@@ -17,7 +17,7 @@ import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
-from nemo.collections.speechlm2 import DataModule, DuplexS2SDataset, DuplexS2SSpeechDecoderModel
+from nemo.collections.speechlm2 import DataModule, DuplexS2SDataset, DuplexSTTModel
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
@@ -25,7 +25,7 @@ from nemo.utils.trainer_utils import resolve_trainer_cfg
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-@hydra_runner(config_path="conf", config_name="s2s_duplex_speech_decoder")
+@hydra_runner(config_path="conf", config_name="s2s_duplex_stt")
 def inference(cfg):
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")
@@ -39,11 +39,11 @@ def inference(cfg):
 
         if os.path.isdir(cfg.ckpt_path):
             # Hugging Face format
-            model = DuplexS2SSpeechDecoderModel.from_pretrained(cfg.ckpt_path)
+            model = DuplexSTTModel.from_pretrained(cfg.ckpt_path)
             model.validation_save_path = os.path.join(log_dir, "validation_logs")
         else:
             # PyTorch Lightning format
-            model = DuplexS2SSpeechDecoderModel(OmegaConf.to_container(cfg, resolve=True))
+            model = DuplexSTTModel(OmegaConf.to_container(cfg, resolve=True))
 
 
     dataset = DuplexS2SDataset(

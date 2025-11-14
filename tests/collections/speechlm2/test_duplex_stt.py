@@ -20,7 +20,7 @@ from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data import DuplexS2SDataset
-from nemo.collections.speechlm2.models import DuplexS2SSpeechDecoderModel
+from nemo.collections.speechlm2.models import DuplexSTTModel
 
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
@@ -74,7 +74,7 @@ def model():
         },
         "optimizer": {"_target_": "torch.optim.AdamW"},
     }
-    model = DuplexS2SSpeechDecoderModel(cfg)
+    model = DuplexSTTModel(cfg)
     if torch.cuda.is_available():
         model.to("cuda")
     return model

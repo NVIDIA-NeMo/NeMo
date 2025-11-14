@@ -116,10 +116,10 @@ The DuplexS2SModel adds speech generation capabilities to the configuration:
       perception:
         # ... (similar to SALM perception module)
 
-DuplexS2SSpeechDecoderModel Configuration
+DuplexSTTModel Configuration
 --------------------------------------
 
-The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an additional speech generation transformer decoder:
+The DuplexSTTModel is a speech-to-text model that processes duplex audio conversations and generates agent text responses:
 
 .. code-block:: yaml
 
@@ -278,7 +278,7 @@ Example configurations for all model types can be found in the example directory
 
 - SALM: `examples/speechlm2/conf/salm.yaml`
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
-- DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`
+- DuplexSTTModel: `examples/speechlm2/conf/s2s_duplex_stt.yaml`
 
 Using Configuration Files
 -----------------------

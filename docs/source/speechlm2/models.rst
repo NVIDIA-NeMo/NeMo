@@ -43,10 +43,10 @@ This model is particularly useful for:
 * Voice assistants and interactive dialogue systems
 * Applications requiring natural-sounding spoken responses
 
-DuplexS2SSpeechDecoderModel
+DuplexSTTModel
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-This model focuses on the speech generation aspect of the duplex system, optimizing the decoder for high-quality speech output.
+This model focuses on speech-to-text conversion in duplex conversations, processing both user speech and generating agent text responses.
 
 Key components:
 
@@ -197,8 +197,8 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     # Load DuplexS2SModel
     duplex_model = slm.models.DuplexS2SModel.from_pretrained("path/to/checkpoint")
     
-    # Load DuplexS2SSpeechDecoderModel
-    decoder_model = slm.models.DuplexS2SSpeechDecoderModel.from_pretrained("path/to/checkpoint")
+    # Load DuplexSTTModel
+    decoder_model = slm.models.DuplexSTTModel.from_pretrained("path/to/checkpoint")
 
 Model Configuration
 -----------------

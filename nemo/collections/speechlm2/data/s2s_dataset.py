@@ -59,11 +59,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         output_roles (list[str], optional):
             List of speaker roles (cut.supervisions[:].speaker) to consider as outputs. Defaults to ["agent"].
 
-        train_half_duplex_asr (bool, optional):
-            If True, enables half-duplex ASR mode where source tokens (with timestamps removed) 
-            are assigned to target_tokens for ASR prediction. If False, uses original duplex logic.
-            Defaults to False.
-
         force_align_user_text (bool, optional):
             If True, performs force alignment on user audio segments to generate word-level timestamps.
             Only applies to supervision turns where speaker.role is "user". Defaults to False.
@@ -127,7 +122,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
         self.word_align_position = cfg.get("word_align_position", "left") if cfg is not None else "left"
         self.predict_user_text = model_cfg.get("predict_user_text", False) if model_cfg is not None else False
-        self.train_half_duplex_asr = model_cfg.get("train_half_duplex_asr", False) if model_cfg is not None else False
         self.force_align_user_text = model_cfg.get("force_align_user_text", False) if model_cfg is not None else None
         # Default to CPU for force alignment to avoid OOM during training/validation when main model is on GPU
         self.force_align_device = model_cfg.get("force_align_device", "cpu") if model_cfg is not None else "cpu"
@@ -213,47 +207,32 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
             )
 
-            if self.train_half_duplex_asr:
-                # For half-duplex ASR mode: remove timestamps and assign source tokens to target_tokens
-                source_tokens, source_token_lens = collate_token_channel(
-                    all_cuts_combined, self.tokenizer, self.frame_length, 
-                    roles=self.output_roles, 
-                    bos_id=self.tokenizer.text_to_ids('^')[0],
-                    eos_id=self.tokenizer.text_to_ids('$')[0],
-                    remove_timestamps=True,
-                    user_bos_id=self.tokenizer.text_to_ids('^')[0], 
-                    agent_bos_id=self.tokenizer.bos, 
-                    train_half_duplex_asr=True
-                )
-                target_tokens, target_token_lens = source_tokens, source_token_lens
-            else:
-                # Original logic for duplex mode
-                target_tokens, target_token_lens = collate_token_channel(
-                    all_cuts_combined, self.tokenizer, self.frame_length, roles=self.output_roles, bos_id=self.tokenizer.bos, eos_id=self.tokenizer.eos, remove_timestamps=True
-                )
+            target_tokens, target_token_lens = collate_token_channel(
+                all_cuts_combined, self.tokenizer, self.frame_length, roles=self.output_roles, bos_id=self.tokenizer.bos, eos_id=self.tokenizer.eos, remove_timestamps=True
+            )
 
-                # Only run force alignment during training (when gradients are enabled)
-                if self.force_align_user_text and torch.is_grad_enabled():
-                    logging.info(f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}")
-                    all_cuts_combined = self.force_aligner.batch_force_align_user_audio(all_cuts_combined, source_sample_rate=self.source_sample_rate)
-                    
-                    # Check if we have any cuts left after filtering
-                    if len(all_cuts_combined) == 0:
-                        logging.warning("All cuts filtered out due to force alignment failures, returning minimal valid batch to continue training.")
-                        return self._create_minimal_batch()
+            # Only run force alignment during training (when gradients are enabled)
+            if self.force_align_user_text and torch.is_grad_enabled():
+                logging.info(f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}")
+                all_cuts_combined = self.force_aligner.batch_force_align_user_audio(all_cuts_combined, source_sample_rate=self.source_sample_rate)
+                
+                # Check if we have any cuts left after filtering
+                if len(all_cuts_combined) == 0:
+                    logging.warning("All cuts filtered out due to force alignment failures, returning minimal valid batch to continue training.")
+                    return self._create_minimal_batch()
 
-                source_tokens, source_token_lens = collate_token_channel(
-                    all_cuts_combined, self.tokenizer, self.frame_length,
-                    roles=self.input_roles,
-                    bos_id=self.tokenizer.text_to_ids('^')[0], 
-                    eos_id=self.tokenizer.text_to_ids('$')[0], 
-                    word_align_position=self.word_align_position, 
-                    remove_timestamps=not self.predict_user_text, 
-                    user_bos_id=self.tokenizer.text_to_ids('^')[0], 
-                    agent_bos_id=self.tokenizer.bos, 
-                    threshold=self.cfg.get("eou_threshold", None) if self.cfg is not None else None, 
-                    eos_buffer=self.cfg.get("eos_buffer", None) if self.cfg is not None else None
-                )
+            source_tokens, source_token_lens = collate_token_channel(
+                all_cuts_combined, self.tokenizer, self.frame_length,
+                roles=self.input_roles,
+                bos_id=self.tokenizer.text_to_ids('^')[0], 
+                eos_id=self.tokenizer.text_to_ids('$')[0], 
+                word_align_position=self.word_align_position, 
+                remove_timestamps=not self.predict_user_text, 
+                user_bos_id=self.tokenizer.text_to_ids('^')[0], 
+                agent_bos_id=self.tokenizer.bos, 
+                threshold=self.cfg.get("eou_threshold", None) if self.cfg is not None else None, 
+                eos_buffer=self.cfg.get("eos_buffer", None) if self.cfg is not None else None
+            )
                 
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
@@ -555,11 +534,10 @@ def collate_token_channel(
     agent_bos_id: int = None,
     threshold: int = None,
     eos_buffer: int = None,
-    train_half_duplex_asr: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     pad_id = get_pad_id(tokenizer)
     tokens = [
-        build_token_channel(c, tokenizer=tokenizer, frame_length=frame_length, roles=roles, pad_id=pad_id, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id,agent_bos_id=agent_bos_id, threshold=threshold, eos_buffer=eos_buffer, train_half_duplex_asr=train_half_duplex_asr)
+        build_token_channel(c, tokenizer=tokenizer, frame_length=frame_length, roles=roles, pad_id=pad_id, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id,agent_bos_id=agent_bos_id, threshold=threshold, eos_buffer=eos_buffer)
         for c in cuts
     ]
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -607,7 +585,6 @@ def build_token_channel(
         agent_bos_id: int = None,
         threshold: int = None,
         eos_buffer: int = None,
-        train_half_duplex_asr: bool = False,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -627,18 +604,10 @@ def build_token_channel(
             eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
             available_frames_for_text = eospos - pos
 
-            if train_half_duplex_asr:
-                # Assume the first turn is user text in ASR training
-                text = cut.supervisions[0].text
-                remove_timestamps = True
-            else:
-                text = supervision.text
+            text = supervision.text
 
             # Use different bos_id for user and agent
             text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps, pad_id=pad_id, user_bos_id=user_bos_id, user_eos_id=agent_bos_id, threshold=threshold, eos_buffer=eos_buffer))
-
-            if train_half_duplex_asr:
-                text_ids = torch.cat([text_ids, torch.tensor([eos_id], dtype=torch.long)])        
 
             if available_frames_for_text > 0 and len(text_ids) > available_frames_for_text:
                 # Truncate text_ids to fit before the eos position.

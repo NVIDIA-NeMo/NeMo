@@ -1131,21 +1131,16 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return fake_audio, audio_lengths
 
-    @torch.no_grad()
-    def offline_inference(
+    def _init_inference(
             self,
             input_signal: torch.Tensor,
             input_signal_lens: torch.Tensor,
-            decode_audio: bool = True,
-            input_pad_len: int = 0,
-            force_bos_positions=None,
-            prompt_tokens: torch.Tensor = None,
-            prompt_token_lens: torch.Tensor = None,
-    ) -> dict[str, torch.Tensor]:
-        """
-        Autoregressive prediction (text only).
-        """
-        # Get sil_id for text decoding
+            input_pad_len: int,
+            force_bos_positions,
+            prompt_tokens: torch.Tensor,
+            prompt_token_lens: torch.Tensor,
+    ):
+        """Initialize inference resources and prepare inputs."""
         sil_id = None
         if 'Nemotron' in self.cfg.pretrained_llm:
             sil_id = self.tokenizer.tokenizer._tokenizer.token_to_id('<SPECIAL_11>')
@@ -1173,7 +1168,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         B, T_local, H = source_encoded.shape
 
-        # Handle system prompt if provided
         if prompt_tokens is not None and prompt_token_lens is not None:
             prompt_embedded = self.embed_tokens(prompt_tokens)
             B_prompt, max_prompt_len, H_prompt = prompt_embedded.shape
@@ -1200,7 +1194,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         B, T_local, H = source_encoded.shape
 
-        # Determine decoding length and pad if FSDP
         if self._use_fsdp:
             T_tensor = torch.tensor([T_local], device=source_encoded.device)
             dist.all_reduce(T_tensor, op=dist.ReduceOp.MAX)
@@ -1215,11 +1208,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         else:
             T = T_local
 
-        # Apply channel weight
         input_embeds = source_encoded.clone()
         input_embeds *= self.cfg.get("duplex_user_channel_weight", 1.0)
 
-        # This cache is for self.llm
         use_cache = True
         if 'Nemotron' in self.cfg.pretrained_llm:
             cache = None
@@ -1232,8 +1223,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         gen_text = torch.empty(B, T, device=self.device, dtype=torch.long)
         if self.predict_user_text:
             gen_asr = torch.empty(B, T, device=self.device, dtype=torch.long)
+        else:
+            gen_asr = None
 
-        # Initialize prompt region with PAD tokens to match training behavior
         if prompt_tokens is not None and prompt_token_lens is not None:
             for i, prompt_len in enumerate(prompt_token_lens):
                 prompt_len = prompt_len.item()
@@ -1242,40 +1234,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     if self.predict_user_text:
                         gen_asr[i, :prompt_len] = self.text_pad_id    
 
-        # Add BOS embedding at position 0
         input_embeds[:, 0] += self._get_bos_embedding() * self.cfg.get("duplex_text_channel_weight", 1.0)
         if self.predict_user_text:
             input_embeds[:, 0] += self._get_asr_bos_embedding() * self.cfg.get("duplex_asr_text_weight", 1.0)
 
-        # Determine the starting position for generation
         start_gen_pos = 0
         if prompt_token_lens is not None:
             max_prompt_len = prompt_token_lens.max().item()
             start_gen_pos = max_prompt_len
 
-        # First forward pass
-        ans = self(
-            input_embeds[:, :1],
-            cache=cache,
-            input_audio_tokens=None,
-            seq_mask=None,
-            target_text_tokens=None,
-            modality_adapter_emb=source_encoded[:, :1],
-            asr_emb=asr_emb[:, :1],
-            speaker_encoder_emb=None,
-        )
-
-        # For position 0: use prompt token if available, otherwise generate
-        if start_gen_pos > 0:
-            pass
-        else:
-            gen_text[:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
-            if self.predict_user_text:
-                gen_asr[:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
-
-        speech_state = torch.zeros(B, device=self.device, dtype=torch.long)
-
-        # Pre-compute prompt position mask
         is_prompt_position_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
         if prompt_token_lens is not None:
             for i, prompt_len in enumerate(prompt_token_lens):
@@ -1283,71 +1250,121 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if prompt_len_val > 0:
                     is_prompt_position_mask[i, :prompt_len_val] = True
 
-        # Autoregressive loop
-        for t in range(1, T):
-            last_emb = self.embed_tokens(gen_text[:, t - 1]) * self.cfg.get("duplex_text_channel_weight", 1.0)
+        return {
+            "sil_id": sil_id,
+            "input_signal": input_signal,
+            "input_signal_lens": input_signal_lens,
+            "source_encoded": source_encoded,
+            "asr_emb": asr_emb,
+            "lengths": lengths,
+            "B": B,
+            "T": T,
+            "T_local": T_local,
+            "input_embeds": input_embeds,
+            "cache": cache,
+            "use_cache": use_cache,
+            "gen_text": gen_text,
+            "gen_asr": gen_asr,
+            "start_gen_pos": start_gen_pos,
+            "is_prompt_position_mask": is_prompt_position_mask,
+        }
+
+    def _step_zero(self, inference_state):
+        """Perform inference for the first step (position 0)."""
+        ans = self(
+            inference_state["input_embeds"][:, :1],
+            cache=inference_state["cache"],
+            input_audio_tokens=None,
+            seq_mask=None,
+            target_text_tokens=None,
+            modality_adapter_emb=inference_state["source_encoded"][:, :1],
+            asr_emb=inference_state["asr_emb"][:, :1],
+            speaker_encoder_emb=None,
+        )
+
+        if inference_state["start_gen_pos"] > 0:
+            pass
+        else:
+            inference_state["gen_text"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
             if self.predict_user_text:
-                last_asr_emb = self.embed_asr_tokens(gen_asr[:, t - 1]) * self.cfg.get("duplex_asr_text_weight", 1.0)
-                last_emb += last_asr_emb
-            if force_bos_positions is not None:
-                for batch_idx in range(last_emb.shape[0]):
-                    if force_bos_positions[batch_idx] == t and not (gen_text[batch_idx, :t] == self.text_bos_id).any():
-                        last_emb[batch_idx] = self.embed_tokens(
-                            torch.full((1,), fill_value=self.text_bos_id, device=self.device)) * self.cfg.get(
-                            "duplex_text_channel_weight", 1.0)
+                inference_state["gen_asr"][:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
 
-            input_embeds[:, t] += last_emb
+        return ans
 
-            is_prompt_position = is_prompt_position_mask[:, t]
+    def _step_inference(self, t, inference_state, ans, force_bos_positions):
+        """Perform inference for one step t in the autoregressive loop."""
+        last_emb = self.embed_tokens(inference_state["gen_text"][:, t - 1]) * self.cfg.get("duplex_text_channel_weight", 1.0)
+        if self.predict_user_text:
+            last_asr_emb = self.embed_asr_tokens(inference_state["gen_asr"][:, t - 1]) * self.cfg.get("duplex_asr_text_weight", 1.0)
+            last_emb += last_asr_emb
+        if force_bos_positions is not None:
+            for batch_idx in range(last_emb.shape[0]):
+                if force_bos_positions[batch_idx] == t and not (inference_state["gen_text"][batch_idx, :t] == self.text_bos_id).any():
+                    last_emb[batch_idx] = self.embed_tokens(
+                        torch.full((1,), fill_value=self.text_bos_id, device=self.device)) * self.cfg.get(
+                        "duplex_text_channel_weight", 1.0)
 
-            if use_cache:
-                ans = self(
-                    input_embeds[:, t: t + 1],
-                    cache=ans["cache"],
-                    input_audio_tokens=None,
-                    seq_mask=None,
-                    target_text_tokens=None,
-                    modality_adapter_emb=source_encoded[:, t: t + 1],
-                    asr_emb=asr_emb[:, t: t + 1],
-                    speaker_encoder_emb=None,
-                )
-                if not is_prompt_position.all():
-                    generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
-                    gen_text[:, t] = torch.where(is_prompt_position, gen_text[:, t], generated_tokens)
-            else:
-                # No-cache mode for Nemotron
-                ans = self(
-                    input_embeds[:, :t + 1],
-                    cache=None,
-                    input_audio_tokens=None,
-                    seq_mask=None,
-                    target_text_tokens=None,
-                    modality_adapter_emb=source_encoded[:, :t + 1],
-                    asr_emb=asr_emb[:, :t + 1],
-                    speaker_encoder_emb=None,
-                )
-                if not is_prompt_position.all():
-                    generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
-                    gen_text[:, t] = torch.where(is_prompt_position, gen_text[:, t], generated_tokens)
+        inference_state["input_embeds"][:, t] += last_emb
 
-            if self.predict_user_text:
-                # Only update ASR tokens outside the prompt region; keep PAD inside prompt
-                if not is_prompt_position.all():
-                    generated_asr = ans["asr_logits"][:, -1].argmax(dim=-1)
-                    gen_asr[:, t] = torch.where(is_prompt_position, gen_asr[:, t], generated_asr)
+        is_prompt_position = inference_state["is_prompt_position_mask"][:, t]
 
-        # Trim back to local length if padded
+        if inference_state["use_cache"]:
+            ans = self(
+                inference_state["input_embeds"][:, t: t + 1],
+                cache=ans["cache"],
+                input_audio_tokens=None,
+                seq_mask=None,
+                target_text_tokens=None,
+                modality_adapter_emb=inference_state["source_encoded"][:, t: t + 1],
+                asr_emb=inference_state["asr_emb"][:, t: t + 1],
+                speaker_encoder_emb=None,
+            )
+            if not is_prompt_position.all():
+                generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
+                inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
+        else:
+            ans = self(
+                inference_state["input_embeds"][:, :t + 1],
+                cache=None,
+                input_audio_tokens=None,
+                seq_mask=None,
+                target_text_tokens=None,
+                modality_adapter_emb=inference_state["source_encoded"][:, :t + 1],
+                asr_emb=inference_state["asr_emb"][:, :t + 1],
+                speaker_encoder_emb=None,
+            )
+            if not is_prompt_position.all():
+                generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
+                inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
+
+        if self.predict_user_text:
+            if not is_prompt_position.all():
+                generated_asr = ans["asr_logits"][:, -1].argmax(dim=-1)
+                inference_state["gen_asr"][:, t] = torch.where(is_prompt_position, inference_state["gen_asr"][:, t], generated_asr)
+
+        return ans
+
+    def _post_inference(self, inference_state, prompt_token_lens):
+        """Post-process inference results and prepare output."""
+        gen_text = inference_state["gen_text"]
+        gen_asr = inference_state["gen_asr"]
+        lengths = inference_state["lengths"]
+        T_local = inference_state["T_local"]
+        T = inference_state["T"]
+        B = inference_state["B"]
+
         if self._use_fsdp and T > T_local:
             gen_text = gen_text[:, :T_local]
             if self.predict_user_text:
                 gen_asr = gen_asr[:, :T_local]
 
-        # Split into source and target texts
         if self.predict_user_text:
             gen_text_src = gen_asr
             src_text_cleaned = [self.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])]
+        else:
+            gen_text_src = None
+            src_text_cleaned = None
         
-        # Remove prompt tokens from the output before returning
         if prompt_token_lens is not None:
             max_prompt_len = prompt_token_lens.max().item()
             if max_prompt_len > 0:
@@ -1369,20 +1386,47 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 gen_text = gen_text_trimmed
                 if self.predict_user_text:
                     gen_asr = gen_asr_trimmed
+                    gen_text_src = gen_asr
                 lengths = lengths_trimmed
 
         ans = {
-            "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=sil_id),
-            "src_text": src_text_cleaned if self.predict_user_text else None,
-            "tokens_text_src": gen_text_src if self.predict_user_text else None,
+            "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"]),
+            "src_text": src_text_cleaned,
+            "tokens_text_src": gen_text_src,
             "tokens_text": gen_text,
             "tokens_audio": None,
             "tokens_len": lengths,
-            "source_audio": input_signal,
-            "source_audio_len": input_signal_lens,
+            "source_audio": inference_state["input_signal"],
+            "source_audio_len": inference_state["input_signal_lens"],
         }
 
         return ans
+
+    @torch.no_grad()
+    def offline_inference(
+            self,
+            input_signal: torch.Tensor,
+            input_signal_lens: torch.Tensor,
+            decode_audio: bool = True,
+            input_pad_len: int = 0,
+            force_bos_positions=None,
+            prompt_tokens: torch.Tensor = None,
+            prompt_token_lens: torch.Tensor = None,
+    ) -> dict[str, torch.Tensor]:
+        """
+        Autoregressive prediction (text only).
+        """
+        inference_state = self._init_inference(
+            input_signal, input_signal_lens, input_pad_len,
+            force_bos_positions, prompt_tokens, prompt_token_lens
+        )
+
+        ans = self._step_zero(inference_state)
+
+        for t in range(1, inference_state["T"]):
+            ans = self._step_inference(t, inference_state, ans, force_bos_positions)
+
+        return self._post_inference(inference_state, prompt_token_lens)
 
     def backward(self, *args, **kwargs):
         with loss_parallel():

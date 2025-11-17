@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import copy
 import random
 import tempfile
 
@@ -87,25 +88,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.tokenizer.eos_token = '</s>'
             self.tokenizer.pad_token = '<SPECIAL_12>'
 
-            self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
-            self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
-
             self.llm = getattr(llm, self.cfg.get("base_model_name", "backbone"))
             self.lm_head = llm.lm_head
-
-            if self.predict_user_text:
-                import copy
-                self.asr_head = copy.deepcopy(self.lm_head)
-
             embed_tokens_name = self.cfg.get("embed_tokens_name", "embeddings")
             self.embed_tokens = getattr(self.llm, embed_tokens_name)
 
-            if self.predict_user_text:
-                import copy
-                self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
-
             delattr(self.llm, embed_tokens_name)
-
         elif 'Qwen2.5' in self.cfg.pretrained_llm:
             # ====== QWEN2.5-SPECIFIC HANDLING ======
             self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
@@ -116,30 +104,23 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if self.cfg.get("use_extra_id_for_pad", False):
                 self.tokenizer.pad_token = '<|extra_1|>'
 
-            self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
-            self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
-
             self.llm = llm.model
             self.lm_head = llm.lm_head
-            if self.predict_user_text:
-                import copy
-                self.asr_head = copy.deepcopy(self.lm_head)
-
             self.embed_tokens = self.llm.embed_tokens
 
-            if self.predict_user_text:
-                import copy
-                self.embed_asr_tokens = copy.deepcopy(self.llm.embed_tokens)
-
             del self.llm.embed_tokens
-
         else:
-
             self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
             self.llm = llm.model
             self.lm_head = llm.lm_head
             self.embed_tokens = self.llm.embed_tokens
             del self.llm.embed_tokens
+
+        if self.predict_user_text:
+            self.asr_head = copy.deepcopy(self.lm_head)
+            self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
+        self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
+        self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
 
         maybe_install_lora(self)
 
@@ -470,29 +451,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     noise_resample=self.cfg.get('noise_resample', True),
                     noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
                 )
-        else:
-            # change audio volume randomly
-            if self.training and random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
-                # prev codebase had 0.0631 and 5.6234 here we round the values
-                min_scale_val = self.cfg.get('noise_scale_user_min', 0.0631)  # -15 snr
-                max_scale_val = self.cfg.get('noise_scale_user_min', 5.6234)  # 24 snr
 
-                # get a random float value between min and max
-                scaling_factor = (
-                    torch.rand(batch["source_audio"].size(0), device=batch["source_audio"].device)
-                    * (max_scale_val - min_scale_val)
-                    + min_scale_val
-                )
-                batch["source_audio"] = batch["source_audio"] * scaling_factor.unsqueeze(-1)
-
-            # apply low pass filter
-            if self.training and random.random() < self.cfg.get('noise_prob_low_pass', 0.0):
-                # prev codebase had 0.0631 and 5.6234 here we round the values
-                cutoff_freq = self.cfg.get('noise_low_pass_cutoff_freq', 1000.0)
-                # note here we are using a biquad filter, older codebase we are using a filter of order 5
-                batch["source_audio"] = torchaudio.functional.lowpass_biquad(
-                    waveform=batch["source_audio"], sample_rate=self.source_sample_rate, cutoff_freq=cutoff_freq
-                )
+        
 
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],
@@ -602,6 +562,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 seq_mask[i, speech_end_idx:, :] = 0
 
         loss_scale = seq_mask.clone().float()
+        asr_loss_scale = seq_mask.clone().float()
         if self.cfg.get("token_loss_weight"):
             token_weights = self.cfg.token_loss_weight
             pad_weight = token_weights.get("pad", 1.0)
@@ -651,18 +612,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if self.cfg.get("debug", False):
                 import pdb; pdb.set_trace()
 
-            ans = {
-                "input_embeds": input_embeds,
-                "input_lens": source_encoded_lens - 1,
-                "output_lens": source_encoded_lens - 1,
-                "text_labels": text_labels,
-                "loss_scale": loss_scale,
-                "seq_mask": seq_mask,
-            }
-            if self.predict_user_text:
-                ans["asr_labels"] = asr_labels
-                ans["asr_loss_scale"] = asr_loss_scale
-            return ans
+        ans = {
+            "input_embeds": input_embeds,
+            "input_lens": source_encoded_lens - 1,
+            "output_lens": source_encoded_lens - 1,
+            "text_labels": text_labels,
+            "loss_scale": loss_scale,
+            "seq_mask": seq_mask,
+        }
+        if self.predict_user_text:
+            ans["asr_labels"] = asr_labels
+            ans["asr_loss_scale"] = asr_loss_scale
+        return ans
 
     def training_step(self, batch: dict, batch_idx: int):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
@@ -674,6 +635,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         if batch["audio_data"] is not None:
             inputs = self.prepare_inputs(batch["audio_data"])
+            
             forward_outputs = self(inputs["input_embeds"])
 
             num_frames = inputs["input_lens"].sum()
@@ -732,11 +694,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 ans = {
                     "audio_loss": loss,
                     "audio_to_text_loss": text_loss,
-                    "asr_loss": asr_loss if self.predict_user_text else None,
                     "batch": B,
                     "length": T,
                     "token_accuracy": token_accuracy,
                 }
+                if self.predict_user_text:
+                    ans["asr_loss"] = asr_loss
 
                 res.update(ans)
 
@@ -763,8 +726,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 }
             )
 
-        res["loss"] = (1. - self.cfg.text_to_text_loss_weight) * res.get("audio_loss", 0.0) + \
-                      self.cfg.text_to_text_loss_weight * res.get("text_to_text_loss", 0.0)
+        res["loss"] = (1. - self.cfg.get('text_to_text_loss_weight', 0.0)) * res.get("audio_loss", 0.0) + \
+                      self.cfg.get('text_to_text_loss_weight', 0.0) * res.get("text_to_text_loss", 0.0)
         self.log_dict(res, on_step=True)
 
         return res

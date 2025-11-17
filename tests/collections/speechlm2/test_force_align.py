@@ -1,0 +1,208 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os
+import pytest
+import torch
+import torchaudio
+from lhotse import CutSet, Recording, SupervisionSegment
+from lhotse.testing.dummies import dummy_cut, dummy_recording
+
+from nemo.collections.speechlm2.data.force_align import ForceAligner
+
+
+@pytest.fixture(scope="module")
+def test_data_dir():
+    """Get the path to test data directory"""
+    return os.path.join(os.path.dirname(__file__), "data")
+
+
+@pytest.fixture(scope="module")
+def force_aligner():
+    """Create a ForceAligner instance with CPU device for testing"""
+    aligner = ForceAligner(device='cpu', frame_length=0.02)
+    return aligner
+
+
+@pytest.fixture(scope="module")
+def test_cutset_real_audio(test_data_dir):
+    """Create a test cutset with real audio files, resampled to 16kHz"""
+    audio1_path = os.path.join(test_data_dir, "1.wav")
+    audio2_path = os.path.join(test_data_dir, "2.wav")
+    
+    if not os.path.exists(audio1_path) or not os.path.exists(audio2_path):
+        pytest.skip(f"Test audio files not found in {test_data_dir}")
+    
+    # Load and resample audio files to 16kHz
+    target_sample_rate = 16000
+    
+    audio1_resampled_path = os.path.join(test_data_dir, "1_16k.wav")
+    audio2_resampled_path = os.path.join(test_data_dir, "2_16k.wav")
+    
+    # Resample audio1
+    waveform1, sr1 = torchaudio.load(audio1_path)
+    if sr1 != target_sample_rate:
+        resampler1 = torchaudio.transforms.Resample(orig_freq=sr1, new_freq=target_sample_rate)
+        waveform1 = resampler1(waveform1)
+    torchaudio.save(audio1_resampled_path, waveform1, target_sample_rate)
+    
+    # Resample audio2
+    waveform2, sr2 = torchaudio.load(audio2_path)
+    if sr2 != target_sample_rate:
+        resampler2 = torchaudio.transforms.Resample(orig_freq=sr2, new_freq=target_sample_rate)
+        waveform2 = resampler2(waveform2)
+    torchaudio.save(audio2_resampled_path, waveform2, target_sample_rate)
+    
+    # Create recordings from resampled audio files
+    rec1 = Recording.from_file(audio1_resampled_path)
+    rec2 = Recording.from_file(audio2_resampled_path)
+    
+    # Create cuts with supervisions
+    cut1 = rec1.to_cut()
+    cut1.supervisions = [
+        SupervisionSegment(
+            id=f"{cut1.id}-0",
+            recording_id=cut1.recording_id,
+            start=0.0,
+            duration=min(rec1.duration, 2.0),
+            text='ten companies that let you teach english online without a degree',
+            speaker="user",
+        ),
+    ]
+    
+    cut2 = rec2.to_cut()
+    cut2.supervisions = [
+        SupervisionSegment(
+            id=f"{cut2.id}-0",
+            recording_id=cut2.recording_id,
+            start=0.0,
+            duration=min(rec2.duration, 2.0),
+            text='yeah i yeah i really would like to see canada of course their borader is not open right now but',
+            speaker="user",
+        ),
+    ]
+    
+    cutset = CutSet([cut1, cut2])
+    
+    # Clean up resampled files after creating cutset
+    yield cutset
+    
+    if os.path.exists(audio1_resampled_path):
+        os.remove(audio1_resampled_path)
+    if os.path.exists(audio2_resampled_path):
+        os.remove(audio2_resampled_path)
+
+
+def test_force_align_real_audio(force_aligner, test_cutset_real_audio):
+    """Test force alignment with real audio files from 1.wav and 2.wav"""
+    import re
+    
+    # Store original texts before alignment
+    original_texts = {}
+    for cut in test_cutset_real_audio:
+        for sup in cut.supervisions:
+            if sup.speaker == "user":
+                original_texts[sup.id] = sup.text
+    
+    result_cuts = force_aligner.batch_force_align_user_audio(test_cutset_real_audio, source_sample_rate=16000)
+    
+    assert len(result_cuts) == len(test_cutset_real_audio)
+    assert len(result_cuts) == 2
+    
+    for cut in result_cuts:
+        user_supervisions = [s for s in cut.supervisions if s.speaker == "user"]
+        assert len(user_supervisions) > 0
+        
+        for sup in user_supervisions:
+            original_text = original_texts.get(sup.id, "")
+            aligned_text = sup.text
+            
+            print(f"\n{'='*80}")
+            print(f"Supervision ID: {sup.id}")
+            print(f"{'='*80}")
+            print(f"ORIGINAL TEXT:\n  {original_text}")
+            print(f"\nALIGNED TEXT:\n  {aligned_text}")
+            print(f"{'='*80}")
+            
+            assert "<|" in aligned_text, "Aligned text should contain timestamp markers"
+            
+            # Extract timestamp-word-timestamp patterns: <|start|> word <|end|>
+            pattern = r'<\|(\d+)\|>\s+(\S+)\s+<\|(\d+)\|>'
+            matches = re.findall(pattern, aligned_text)
+            
+            words_only = re.sub(r'<\|\d+\|>', '', aligned_text).split()
+            words_only = [w for w in words_only if w]
+            
+            print(f"\nValidation: Found {len(matches)} timestamped words out of {len(words_only)} total words")
+            
+            assert len(matches) > 0, "Should have at least one timestamped word"
+            assert len(matches) == len(words_only), f"Every word should have timestamps. Found {len(matches)} timestamped words but {len(words_only)} total words"
+            
+            for start_frame, word, end_frame in matches:
+                start_frame = int(start_frame)
+                end_frame = int(end_frame)
+                
+                assert start_frame < end_frame, f"Start frame {start_frame} should be before end frame {end_frame} for word '{word}'"
+                assert start_frame >= 0, f"Start frame should be non-negative for word '{word}'"
+                assert end_frame >= 0, f"End frame should be non-negative for word '{word}'"
+
+
+def test_force_align_no_user_supervisions(force_aligner):
+    """Test with cutset containing no user supervisions"""
+    cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
+    cut.supervisions = [
+        SupervisionSegment(
+            id=cut.id,
+            recording_id=cut.recording_id,
+            start=0,
+            duration=0.5,
+            text='hello',
+            speaker="assistant",
+        ),
+    ]
+    cutset = CutSet([cut])
+    
+    result_cuts = force_aligner.batch_force_align_user_audio(cutset)
+    
+    assert len(result_cuts) == 1
+    result_supervisions = list(result_cuts)[0].supervisions
+    assert result_supervisions[0].text == 'hello'
+
+
+def test_force_align_empty_cutset(force_aligner):
+    """Test with empty cutset"""
+    empty_cutset = CutSet.from_cuts([])
+    result_cuts = force_aligner.batch_force_align_user_audio(empty_cutset)
+    assert len(result_cuts) == 0
+
+
+def test_strip_timestamps(force_aligner):
+    """Test timestamp stripping utility"""
+    text_with_timestamps = "<|10|> hello <|20|> world <|30|>"
+    result = force_aligner._strip_timestamps(text_with_timestamps)
+    assert result == "hello world"
+    assert "<|" not in result
+    
+    text_without_timestamps = "hello world"
+    result = force_aligner._strip_timestamps(text_without_timestamps)
+    assert result == "hello world"
+
+
+def test_normalize_transcript(force_aligner):
+    """Test transcript normalization"""
+    assert force_aligner._normalize_transcript("Hello World!") == "hello world"
+    assert force_aligner._normalize_transcript("don't worry") == "don't worry"
+    assert force_aligner._normalize_transcript("test123") == "test"
+    assert force_aligner._normalize_transcript("A,B.C!D?E") == "a b c d e"
+

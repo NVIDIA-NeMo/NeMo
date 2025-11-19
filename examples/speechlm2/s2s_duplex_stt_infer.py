@@ -36,14 +36,8 @@ def inference(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
-
-        if os.path.isdir(cfg.ckpt_path):
-            # Hugging Face format
-            model = DuplexSTTModel.from_pretrained(cfg.ckpt_path)
-            model.validation_save_path = os.path.join(log_dir, "validation_logs")
-        else:
-            # PyTorch Lightning format
-            model = DuplexSTTModel(OmegaConf.to_container(cfg, resolve=True))
+        model_config = OmegaConf.to_container(cfg, resolve=True)
+        model = DuplexSTTModel(model_config)
 
 
     dataset = DuplexS2SDataset(

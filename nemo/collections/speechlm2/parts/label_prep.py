@@ -64,7 +64,6 @@ def prepare_labels(
     batch,
     target_tokens,
     source_encoded,
-    asr_emb,
     cfg,
     predict_user_text,
     user_bos_id,
@@ -90,7 +89,6 @@ def prepare_labels(
         batch: Dictionary containing batch data including source_tokens, target_tokens, etc.
         target_tokens: Target text tokens (B, T)
         source_encoded: Encoded source audio features (B, T, D)
-        asr_emb: ASR embedding features (B, T, D)
         cfg: Configuration object with model settings
         predict_user_text: Whether to predict user text in addition to agent text
         user_bos_id: Token ID for user turn beginning
@@ -155,7 +153,6 @@ def prepare_labels(
             source_tokens = source_tokens[:, :min_len]
             target_tokens = target_tokens[:, :min_len]
             source_encoded = source_encoded[:, :min_len]
-            asr_emb = asr_emb[:, :min_len]
 
         # Optionally delay the prediction of source_tokens by a flag
         delay_source_text_by = cfg.get("delay_source_text_by", 0)
@@ -231,7 +228,6 @@ def prepare_labels(
         if (remainder := (target_tokens.shape[1] - 1) % tp_world_size) != 0:
             target_tokens = target_tokens[:, :-remainder]
             source_encoded = source_encoded[:, :-remainder]
-            asr_emb = asr_emb[:, :-remainder]
     
     text_inputs = target_tokens[:, :-1]
     text_labels = target_tokens[:, 1:]

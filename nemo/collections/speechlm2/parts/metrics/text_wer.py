@@ -71,7 +71,12 @@ class TextWER:
             for ref, hyp in zip(self._refs[name], self._hyps[name]):
                 ref_words = ref.split()
                 total_ref_words += len(ref_words)
-                total_wer += jiwer.wer(ref, hyp) * len(ref_words)
+                if not ref.strip():
+                    total_wer += 1.0 * len(ref_words)
+                elif not hyp.strip():
+                    total_wer += 1.0 * len(ref_words)
+                else:
+                    total_wer += jiwer.wer(ref, hyp) * len(ref_words)
             
             # Weighted average WER
             corpus_wer = total_wer / total_ref_words if total_ref_words > 0 else 0.0

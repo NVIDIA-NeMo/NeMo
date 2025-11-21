@@ -579,6 +579,7 @@ def build_token_channel(
         remove_timestamps: bool = False,
         user_bos_id: int = None,
         agent_bos_id: int = None,
+        add_eos_for_interruption: bool = False,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -628,7 +629,7 @@ def build_token_channel(
             if eospos < len(tokens) and eos_id is not None:
                 # Normal case: place EOS at the intended position
                 tokens[eospos] = eos_id
-            else:
+            elif add_eos_for_interruption:
                 # Interruption case: place EOS at the last valid position
                 # This ensures the model learns to stop when interrupted by user
                 if endpos < len(tokens):

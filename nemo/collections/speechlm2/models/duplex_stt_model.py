@@ -88,6 +88,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.tokenizer.bos_token = '<s>'
             self.tokenizer.eos_token = '</s>'
             self.tokenizer.pad_token = '<SPECIAL_12>'
+            # self.user_bos_id = self.tokenizer.text_to_ids('<SPECIAL_13>')[0]
+            # self.user_eos_id = self.tokenizer.text_to_ids('<SPECIAL_14>')[0]
+            self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
+            self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
 
             self.llm = getattr(llm, self.cfg.get("base_model_name", "backbone"))
             self.lm_head = llm.lm_head
@@ -101,6 +105,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
             self.tokenizer.bos_token = '<|im_start|>'
             self.tokenizer.eos_token = '<|im_end|>'
+            self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
+            self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
 
             if self.cfg.get("use_extra_id_for_pad", False):
                 self.tokenizer.pad_token = '<|extra_1|>'
@@ -116,12 +122,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.lm_head = llm.lm_head
             self.embed_tokens = self.llm.embed_tokens
             del self.llm.embed_tokens
+            self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
+            self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
 
         if self.predict_user_text:
             self.asr_head = copy.deepcopy(self.lm_head)
             self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
-        self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
-        self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
 
         maybe_install_lora(self)
 
@@ -1569,7 +1575,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                                     logging.warning(
                                         f"attn_layer.{attr}={val} is not divisible by {tp_mesh.size()=}: "
                                         f"set a different tensor parallelism size to avoid errors."
-                                    )
+                                )
                                 setattr(attn_layer, attr, val // tp_mesh.size())
                     except Exception as fallback_e:
                         logging.warning(f"Both config and fallback methods failed: {fallback_e}")

@@ -1361,7 +1361,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 # If the pad window starts at position 0, it doesn't meet the requirement
                 has_pad_window = False
             
-            if (current_asr_token == self.tokenizer.eos or has_pad_window):
+            if has_pad_window:
                 if not (agent_text_window == self.text_bos_id).any():
                     inference_state["gen_text"][batch_idx, t] = self.text_bos_id
             

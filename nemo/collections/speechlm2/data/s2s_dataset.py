@@ -27,7 +27,79 @@ from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 from nemo.utils import logging
 from nemo.collections.common.data.lhotse.text_adapters import Formattable
+import inflect
+import re
 
+_inflect = inflect.engine()
+
+_COMMA_RE    = re.compile(r"([0-9][0-9,]+[0-9])")
+_DECIMAL_RE  = re.compile(r"\b([0-9]+)\.([0-9]+)\b")
+_DOLLARS_RE  = re.compile(r"\$([0-9,]+(?:\.[0-9]+)?)")
+_ORDINAL_RE  = re.compile(r"\b([0-9]+)(st|nd|rd|th)\b", re.IGNORECASE)
+_NUMBER_RE   = re.compile(r"\b[0-9]+\b")
+
+# Roman numerals: only real standalone uppercase numerals
+_ROMAN_RE = re.compile(r"(?<![A-Z])[IVXLCDM]{2,}(?![A-Z])")
+
+_ROMAN = {"I":1,"V":5,"X":10,"L":50,"C":100,"D":500,"M":1000}
+
+
+def _roman_to_int(s):
+    total = 0
+    prev = 0
+    for c in reversed(s):
+        val = _ROMAN[c]
+        total += -val if val < prev else val
+        prev = val
+    return total
+
+def _remove_commas(m):
+    return m.group(1).replace(",", "")
+
+
+def _expand_decimal(m):
+    return f"{_expand_number(int(m.group(1)))} point {_expand_digits(m.group(2))}"
+
+
+def _expand_digits(s):
+    return " ".join(_inflect.number_to_words(int(c)) for c in s)
+
+def _expand_dollars(m):
+    raw = m.group(1).replace(",", "")
+    parts = raw.split(".")
+
+    dollars = int(parts[0])
+    cents = int(parts[1]) if len(parts) > 1 else 0
+
+    out = []
+    if dollars:
+        out.append(f"{_expand_number(dollars)} {'dollar' if dollars == 1 else 'dollars'}")
+    if cents:
+        out.append(f"{_expand_number(cents)} {'cent' if cents == 1 else 'cents'}")
+    return " ".join(out) if out else "zero dollars"
+
+def _expand_ordinal(m):
+    n = int(m.group(1))
+    return _inflect.ordinal(_inflect.number_to_words(n))
+
+def _expand_roman(m):
+    return _inflect.number_to_words(_roman_to_int(m.group()))
+
+def _expand_number(num):
+    return _inflect.number_to_words(num, andword="")
+
+def normalize_numbers(text):
+    try:
+        text = re.sub(_COMMA_RE, _remove_commas, text)
+        text = re.sub(_ROMAN_RE, _expand_roman, text)
+        text = re.sub(_DOLLARS_RE, _expand_dollars, text)
+        text = re.sub(_DECIMAL_RE, _expand_decimal, text)
+        text = re.sub(_ORDINAL_RE, _expand_ordinal, text)
+        text = re.sub(_NUMBER_RE, lambda m: _expand_number(int(m.group())), text)
+        return text
+
+    except Exception:
+        return text   # fallback: return input unchanged
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
     """
@@ -128,6 +200,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
         self.cfg = cfg
         self.model_cfg = model_cfg
+        self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
         
         # Set user tokens based on pretrained LLM type (consistent with duplex_stt_model.py)
         if self.model_cfg is not None and 'Nemotron' in self.model_cfg.get('pretrained_llm', ''):
@@ -315,7 +388,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             )
 
             target_tokens, target_token_lens = collate_token_channel(
-                all_cuts_combined, self.tokenizer, self.frame_length, roles=self.output_roles, bos_id=self.tokenizer.bos, eos_id=self.tokenizer.eos, remove_timestamps=True
+                all_cuts_combined, self.tokenizer, self.frame_length, roles=self.output_roles, bos_id=self.tokenizer.bos, eos_id=self.tokenizer.eos, remove_timestamps=True, use_numbers_norm=self.use_numbers_norm,
             )
 
             # Only run force alignment during training (when gradients are enabled)
@@ -648,10 +721,11 @@ def collate_token_channel(
     remove_timestamps: bool = False,
     user_bos_id: int = None,
     agent_bos_id: int = None,
+    use_numbers_norm: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     pad_id = get_pad_id(tokenizer)
     tokens = [
-        build_token_channel(c, tokenizer=tokenizer, frame_length=frame_length, roles=roles, pad_id=pad_id, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id, agent_bos_id=agent_bos_id)
+        build_token_channel(c, tokenizer=tokenizer, frame_length=frame_length, roles=roles, pad_id=pad_id, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id, agent_bos_id=agent_bos_id, use_numbers_norm=use_numbers_norm)
         for c in cuts
     ]
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -698,6 +772,7 @@ def build_token_channel(
         user_bos_id: int = None,
         agent_bos_id: int = None,
         add_eos_for_interruption: bool = False,
+        use_numbers_norm: bool = False,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -714,10 +789,13 @@ def build_token_channel(
                     f"Ill-constructed example: the beginning offset of a supervision {pos} is larger than or equal to the example's length {len(tokens)}. {diagnostic}"
                 )
                 continue
+
             eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
             available_frames_for_text = eospos - pos
 
             text = supervision.text
+            if use_numbers_norm:
+                text = normalize_numbers(text)
 
             # Use different bos_id for user and agent
             text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps))

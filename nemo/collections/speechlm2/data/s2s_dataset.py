@@ -236,11 +236,22 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         source_audio_lens: torch.Tensor,
         batch_idx: int,
     ) -> None:
-        """Simulate early interruption by randomly truncating an agent turn."""
+        """Simulate early interruption by randomly truncating an agent turn with overlap.
+        
+        Creates a realistic interruption scenario where:
+        1. User starts interrupting at cutoff_pos (user BOS inserted in source_tokens)
+        2. Agent continues speaking for overlap_tokens (~1 second) 
+        3. Agent stops at cutoff_pos + overlap_tokens (agent EOS placed here)
+        
+        This creates an overlap period where both speakers are talking simultaneously.
+        """
         target_seq = target_tokens[batch_idx]
         bos_id = self.tokenizer.bos
         eos_id = self.tokenizer.eos
         pad_id = self.tokenizer.pad_id
+        
+        # Overlap period: ~1 second = 13 tokens (80ms per token)
+        overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 13) if self.cfg is not None else 13
         
         bos_positions = (target_seq == bos_id).nonzero(as_tuple=True)[0]
         eos_positions = (target_seq == eos_id).nonzero(as_tuple=True)[0]
@@ -256,7 +267,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 eos_pos = matching_eos[0]
                 turn_tokens = target_seq[bos_pos+1:eos_pos]
                 non_pad_mask = turn_tokens != pad_id
-                non_pad_positions = (bos_pos + 1 + non_pad_mask.nonzero(as_tuple=True)[0]).tolist()
+                all_non_pad_positions = (bos_pos + 1 + non_pad_mask.nonzero(as_tuple=True)[0]).tolist()
+                
+                # Filter out positions in the last overlap_tokens before eos to ensure overlap
+                # Only keep positions where there's at least overlap_tokens of content remaining
+                non_pad_positions = [pos for pos in all_non_pad_positions if (eos_pos - pos) > overlap_tokens]
                 
                 if len(non_pad_positions) > 0:
                     turns.append({
@@ -273,50 +288,52 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         cutoff_pos = random.choice(selected_turn['non_pad_positions'])
         original_eos_pos = selected_turn['eos_pos']
         
-        frames_to_remove = original_eos_pos - cutoff_pos
+        # Agent stops at cutoff_pos + overlap_tokens to create overlap period
+        new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
+        frames_to_remove = original_eos_pos - new_eos_pos
         if frames_to_remove <= 0:
             return
-
-        # Update target_tokens: place eos at cutoff, shift tail, pad at end
-        target_tokens[batch_idx, cutoff_pos] = eos_id
+        
+        # Update target_tokens: place eos at agent_eos_pos, shift tail, pad at end
+        target_tokens[batch_idx, new_eos_pos] = eos_id
         seq_len = target_tokens.shape[1]
         tail_length = seq_len - (original_eos_pos + 1)
         if tail_length > 0:
-            target_tokens[batch_idx, cutoff_pos+1:cutoff_pos+1+tail_length] = target_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+tail_length].clone()
+            target_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+tail_length] = target_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+tail_length].clone()
         target_tokens[batch_idx, -frames_to_remove:] = pad_id
-        
-        # Update target_audio: shift and pad with silence
-        old_target_len = target_audio_lens[batch_idx].item()
-        cutoff_sample = min(int(cutoff_pos * self.frame_length * self.target_sample_rate), old_target_len)
-        eos_sample = min(int(original_eos_pos * self.frame_length * self.target_sample_rate), old_target_len)
-        
-        tail_audio_length = old_target_len - eos_sample
-        if tail_audio_length > 0:
-            target_audio[batch_idx, cutoff_sample:cutoff_sample+tail_audio_length] = target_audio[batch_idx, eos_sample:old_target_len].clone()
-        
-        samples_to_remove = eos_sample - cutoff_sample
-        if cutoff_sample + tail_audio_length < target_audio.shape[1]:
-            target_audio[batch_idx, cutoff_sample+tail_audio_length:cutoff_sample+tail_audio_length+samples_to_remove] = 0
-        
-        # Update source_tokens: same as target
+
+        # Update source_tokens: shift tail (keep user BOS at cutoff_pos)
         source_seq_len = source_tokens.shape[1]
         source_tail_length = source_seq_len - (original_eos_pos + 1)
         if source_tail_length > 0:
-            source_tokens[batch_idx, cutoff_pos+1:cutoff_pos+1+source_tail_length] = source_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+source_tail_length].clone()
+            source_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+source_tail_length] = source_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+source_tail_length].clone()
         source_tokens[batch_idx, -frames_to_remove:] = pad_id
+        
+        # Update target_audio: shift and pad with silence
+        old_target_len = target_audio_lens[batch_idx].item()
+        new_eos_sample = min(int(new_eos_pos * self.frame_length * self.target_sample_rate), old_target_len)
+        original_eos_sample = min(int(original_eos_pos * self.frame_length * self.target_sample_rate), old_target_len)
+        
+        tail_audio_length = old_target_len - original_eos_sample
+        if tail_audio_length > 0:
+            target_audio[batch_idx, new_eos_sample:new_eos_sample+tail_audio_length] = target_audio[batch_idx, original_eos_sample:old_target_len].clone()
+        
+        samples_to_remove = original_eos_sample - new_eos_sample
+        if new_eos_sample + tail_audio_length < target_audio.shape[1]:
+            target_audio[batch_idx, new_eos_sample+tail_audio_length:new_eos_sample+tail_audio_length+samples_to_remove] = 0
         
         # Update source_audio: shift and pad with silence
         old_source_len = source_audio_lens[batch_idx].item()
-        cutoff_source_sample = min(int(cutoff_pos * self.frame_length * self.source_sample_rate), old_source_len)
-        eos_source_sample = min(int(original_eos_pos * self.frame_length * self.source_sample_rate), old_source_len)
+        new_eos_source_sample = min(int(new_eos_pos * self.frame_length * self.source_sample_rate), old_source_len)
+        original_eos_source_sample = min(int(original_eos_pos * self.frame_length * self.source_sample_rate), old_source_len)
         
-        source_tail_audio_length = old_source_len - eos_source_sample
+        source_tail_audio_length = old_source_len - original_eos_source_sample
         if source_tail_audio_length > 0:
-            source_audio[batch_idx, cutoff_source_sample:cutoff_source_sample+source_tail_audio_length] = source_audio[batch_idx, eos_source_sample:old_source_len].clone()
+            source_audio[batch_idx, new_eos_source_sample:new_eos_source_sample+source_tail_audio_length] = source_audio[batch_idx, original_eos_source_sample:old_source_len].clone()
         
-        source_samples_to_remove = eos_source_sample - cutoff_source_sample
-        if cutoff_source_sample + source_tail_audio_length < source_audio.shape[1]:
-            source_audio[batch_idx, cutoff_source_sample+source_tail_audio_length:cutoff_source_sample+source_tail_audio_length+source_samples_to_remove] = 0
+        source_samples_to_remove = original_eos_source_sample - new_eos_source_sample
+        if new_eos_source_sample + source_tail_audio_length < source_audio.shape[1]:
+            source_audio[batch_idx, new_eos_source_sample+source_tail_audio_length:new_eos_source_sample+source_tail_audio_length+source_samples_to_remove] = 0
 
     def _create_minimal_batch(self) -> dict:
         """Create a minimal valid batch when all cuts are filtered out."""

@@ -501,7 +501,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         
 
-        source_encoded, source_encoded_lens, _ = self.perception(
+        source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],
             input_signal_length=batch["source_audio_lens"],
             return_encoder_emb=True,
@@ -841,13 +841,25 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             prompt_tokens = dataset_batch.get("prompt_tokens", None)
             prompt_token_lens = dataset_batch.get("prompt_token_lens", None)
 
-            results = self.offline_inference(
-                dataset_batch["source_audio"],
-                dataset_batch["source_audio_lens"],
-                prompt_tokens=prompt_tokens,
-                prompt_token_lens=prompt_token_lens,
-                sample_id=dataset_batch.get("sample_id", None),
-            )
+            # Choose between online and offline inference based on config
+            use_online_inference = self.cfg.get("use_online_inference", False)
+            
+            if use_online_inference:
+                logging.info(f"Using ONLINE inference for validation (window_size={self.cfg.get('online_window_size', 70)})")
+                results = self.online_inference(
+                    dataset_batch["source_audio"],
+                    dataset_batch["source_audio_lens"],
+                    prompt_tokens=prompt_tokens,
+                    prompt_token_lens=prompt_token_lens,
+                )
+            else:
+                results = self.offline_inference(
+                    dataset_batch["source_audio"],
+                    dataset_batch["source_audio_lens"],
+                    prompt_tokens=prompt_tokens,
+                    prompt_token_lens=prompt_token_lens,
+                    sample_id=dataset_batch.get("sample_id", None),
+                )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
 
@@ -1211,7 +1223,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_signal = torch.nn.functional.pad(input_signal, (0, input_pad_len), mode='constant', value=0)
             input_signal_lens = input_signal_lens + input_pad_len
 
-        source_encoded, lengths, _ = self.perception(
+        source_encoded, lengths, asr_emb = self.perception(
             input_signal=input_signal, input_signal_length=input_signal_lens, return_encoder_emb=True
         )
 
@@ -1251,6 +1263,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 last_frame_source = source_encoded[:, T_local - 1: T_local, :]
                 pad_source = last_frame_source.repeat(1, T - T_local, 1)
                 source_encoded = torch.cat([source_encoded, pad_source], dim=1)
+                last_frame_asr = asr_emb[:, T_local - 1: T_local, :]
+                pad_asr = last_frame_asr.repeat(1, T - T_local, 1)
+                asr_emb = torch.cat([asr_emb, pad_asr], dim=1)
         else:
             T = T_local
 
@@ -1301,6 +1316,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             "input_signal": input_signal,
             "input_signal_lens": input_signal_lens,
             "source_encoded": source_encoded,
+            "asr_emb": asr_emb,
             "lengths": lengths,
             "B": B,
             "T": T,
@@ -1513,6 +1529,160 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         for t in range(1, inference_state["T"]):
             ans = self._step_inference(t, inference_state, ans, force_bos_positions)
 
+        return self._post_inference(inference_state, prompt_token_lens)
+
+    def _extract_online_audio_window(
+            self,
+            input_signal: torch.Tensor,
+            input_signal_lens: torch.Tensor,
+            audio_frame_idx: int,
+            window_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extract audio window for online inference at given frame index.
+        
+        Window: [max(0, audio_frame_idx - window_size + 1) : audio_frame_idx + 1]
+        
+        Args:
+            input_signal: Full audio signal (B, audio_len)
+            input_signal_lens: Lengths of each audio in batch (B,)
+            audio_frame_idx: Current frame index
+            window_size: Window size in frames
+            
+        Returns:
+            audio_window: (B, window_size * samples_per_frame)
+            audio_window_lens: (B,)
+        """
+        B = input_signal.shape[0]
+        frame_length = 0.08  # 80ms per frame
+        samples_per_frame = int(frame_length * self.source_sample_rate)
+        
+        # Calculate window boundaries in frames
+        window_start_frame = max(0, audio_frame_idx - window_size + 1)
+        window_end_frame = audio_frame_idx + 1
+        
+        # Convert to sample indices
+        window_start_sample = window_start_frame * samples_per_frame
+        window_end_sample = window_end_frame * samples_per_frame
+        
+        # Prepare output tensors
+        audio_window = torch.zeros(B, window_size * samples_per_frame, 
+                                   device=input_signal.device, dtype=input_signal.dtype)
+        audio_window_lens = torch.zeros(B, dtype=torch.long, device=input_signal.device)
+        
+        # Extract window for each batch item
+        for i in range(B):
+            actual_end = min(window_end_sample, input_signal_lens[i].item())
+            actual_start = min(window_start_sample, actual_end)
+            actual_len = actual_end - actual_start
+            
+            if actual_len > 0:
+                audio_window[i, :actual_len] = input_signal[i, actual_start:actual_end]
+                audio_window_lens[i] = actual_len
+        
+        return audio_window, audio_window_lens
+
+    @torch.no_grad()
+    def online_inference(
+            self,
+            input_signal: torch.Tensor,
+            input_signal_lens: torch.Tensor,
+            decode_audio: bool = True,
+            input_pad_len: int = 0,
+            force_bos_positions=None,
+            prompt_tokens: torch.Tensor = None,
+            prompt_token_lens: torch.Tensor = None,
+    ) -> dict[str, torch.Tensor]:
+        """
+        Online inference simulating real-time microphone input with sliding window.
+        
+        For each time step t:
+        - Extract audio window: [max(0, t-window_size+1) : t+1] frames
+        - Pass window through encoder (causal: cannot see frames beyond t)
+        - Use only the LAST frame's embedding for LLM prediction
+        - Stride is always 1 frame
+        
+        This function maximally reuses existing helper functions:
+        - _init_inference: initialize all states (prompts, cache, buffers)
+        - _step_zero: process first step
+        - _step_inference: process subsequent steps
+        - _post_inference: post-process results
+        
+        The key trick is dynamically updating inference_state["source_encoded"] 
+        and inference_state["asr_emb"] at each step with the last frame from 
+        the sliding window.
+        
+        Args:
+            Same as offline_inference
+            
+        Returns:
+            Same format as offline_inference
+        """
+        # Get window size from config (default 70 frames = 5.6 seconds)
+        window_size = self.cfg.get("online_window_size", 70)
+        
+        # Step 1: Initialize inference state using existing function
+        # This handles prompts, cache setup, buffer allocation, etc.
+        inference_state = self._init_inference(
+            input_signal, input_signal_lens, input_pad_len,
+            force_bos_positions, prompt_tokens, prompt_token_lens
+        )
+        
+        # Get start position (accounts for prompts if present)
+        start_gen_pos = inference_state["start_gen_pos"]
+        
+        # Step 2: Process first step (t=0)
+        if start_gen_pos > 0:
+            # We have prompts: use standard _step_zero
+            ans = self._step_zero(inference_state)
+        else:
+            # No prompts: extract first audio window and encode
+            audio_window, audio_window_lens = self._extract_online_audio_window(
+                input_signal, input_signal_lens, 0, window_size
+            )
+            
+            # Encode window (causal: only sees frames [0:1])
+            source_encoded_window, _, asr_emb_window = self.perception(
+                input_signal=audio_window,
+                input_signal_length=audio_window_lens,
+                return_encoder_emb=True,
+            )
+            
+            # Update inference_state with LAST frame's embedding
+            inference_state["source_encoded"][:, :1, :] = source_encoded_window[:, -1:, :]
+            inference_state["asr_emb"][:, :1, :] = asr_emb_window[:, -1:, :]
+            
+            # Now call standard _step_zero
+            ans = self._step_zero(inference_state)
+        
+        # Step 3: Main autoregressive loop (causal mode)
+        for t in range(1, inference_state["T"]):
+            audio_frame_idx = t - start_gen_pos
+            
+            if audio_frame_idx < 0:
+                # Still in prompt region: use standard inference
+                ans = self._step_inference(t, inference_state, ans, force_bos_positions)
+            else:
+                # In audio region: extract window, encode, update state
+                audio_window, audio_window_lens = self._extract_online_audio_window(
+                    input_signal, input_signal_lens, audio_frame_idx, window_size
+                )
+                
+                # Encode window (causal: only sees frames [max(0,t-69):t+1])
+                source_encoded_window, _, asr_emb_window = self.perception(
+                    input_signal=audio_window,
+                    input_signal_length=audio_window_lens,
+                    return_encoder_emb=True,
+                )
+                
+                # Update inference_state with LAST frame's embedding
+                inference_state["source_encoded"][:, t:t+1, :] = source_encoded_window[:, -1:, :]
+                inference_state["asr_emb"][:, t:t+1, :] = asr_emb_window[:, -1:, :]
+                
+                # Call standard _step_inference
+                ans = self._step_inference(t, inference_state, ans, force_bos_positions)
+        
+        # Step 4: Post-process using existing function
         return self._post_inference(inference_state, prompt_token_lens)
 
     def backward(self, *args, **kwargs):

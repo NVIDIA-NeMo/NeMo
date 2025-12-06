@@ -295,6 +295,14 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost
             if self.cfg.get("inference_eos_boost", None):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
+            
+            if self.predict_user_text:
+                if self.cfg.get("inference_user_pad_boost", None):
+                    asr_logits[:, :, self.text_pad_id] += self.cfg.inference_user_pad_boost
+                if self.cfg.get("inference_user_bos_boost", None):
+                    asr_logits[:, :, self.user_bos_id] += self.cfg.inference_user_bos_boost
+                if self.cfg.get("inference_user_eos_boost", None):
+                    asr_logits[:, :, self.text_eos_id] += self.cfg.inference_user_eos_boost
 
         ans = {"text_logits": text_logits}
         if self.predict_user_text:
@@ -1356,7 +1364,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             # Require that the pad window starts after a non-pad token
             if has_pad_window and pad_lookback_start > 0:
                 token_before_window = inference_state["gen_asr"][batch_idx, pad_lookback_start - 1]
-                has_pad_window = (token_before_window != self.text_pad_id)
+                has_pad_window = (token_before_window != self.text_pad_id) and (token_before_window != self.user_bos_id)
             elif has_pad_window and pad_lookback_start == 0:
                 # If the pad window starts at position 0, it doesn't meet the requirement
                 has_pad_window = False

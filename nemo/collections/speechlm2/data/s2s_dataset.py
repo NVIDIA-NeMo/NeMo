@@ -293,7 +293,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         frames_to_remove = original_eos_pos - new_eos_pos
         if frames_to_remove <= 0:
             return
-        
         # Update target_tokens: place eos at agent_eos_pos, shift tail, pad at end
         target_tokens[batch_idx, new_eos_pos] = eos_id
         seq_len = target_tokens.shape[1]
@@ -302,12 +301,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             target_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+tail_length] = target_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+tail_length].clone()
         target_tokens[batch_idx, -frames_to_remove:] = pad_id
 
-        # Update source_tokens: shift tail (keep user BOS at cutoff_pos)
+        # Update source_tokens: shift tail (from cutoff_pos)
+        src_frames_to_remove = original_eos_pos - cutoff_pos
         source_seq_len = source_tokens.shape[1]
         source_tail_length = source_seq_len - (original_eos_pos + 1)
         if source_tail_length > 0:
-            source_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+source_tail_length] = source_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+source_tail_length].clone()
-        source_tokens[batch_idx, -frames_to_remove:] = pad_id
+            source_tokens[batch_idx, cutoff_pos+1:cutoff_pos+1+source_tail_length] = source_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+source_tail_length].clone()
+        source_tokens[batch_idx, -src_frames_to_remove:] = pad_id
         
         # Update target_audio: shift and pad with silence
         old_target_len = target_audio_lens[batch_idx].item()
@@ -324,16 +324,16 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         
         # Update source_audio: shift and pad with silence
         old_source_len = source_audio_lens[batch_idx].item()
-        new_eos_source_sample = min(int(new_eos_pos * self.frame_length * self.source_sample_rate), old_source_len)
+        new_bos_source_sample = min(int(cutoff_pos * self.frame_length * self.source_sample_rate), old_source_len)
         original_eos_source_sample = min(int(original_eos_pos * self.frame_length * self.source_sample_rate), old_source_len)
         
         source_tail_audio_length = old_source_len - original_eos_source_sample
         if source_tail_audio_length > 0:
-            source_audio[batch_idx, new_eos_source_sample:new_eos_source_sample+source_tail_audio_length] = source_audio[batch_idx, original_eos_source_sample:old_source_len].clone()
+            source_audio[batch_idx, new_bos_source_sample:new_bos_source_sample+source_tail_audio_length] = source_audio[batch_idx, original_eos_source_sample:old_source_len].clone()
         
-        source_samples_to_remove = original_eos_source_sample - new_eos_source_sample
-        if new_eos_source_sample + source_tail_audio_length < source_audio.shape[1]:
-            source_audio[batch_idx, new_eos_source_sample+source_tail_audio_length:new_eos_source_sample+source_tail_audio_length+source_samples_to_remove] = 0
+        source_samples_to_remove = original_eos_source_sample - new_bos_source_sample
+        if new_bos_source_sample + source_tail_audio_length < source_audio.shape[1]:
+            source_audio[batch_idx, new_bos_source_sample+source_tail_audio_length:new_bos_source_sample+source_tail_audio_length+source_samples_to_remove] = 0
 
     def _create_minimal_batch(self) -> dict:
         """Create a minimal valid batch when all cuts are filtered out."""

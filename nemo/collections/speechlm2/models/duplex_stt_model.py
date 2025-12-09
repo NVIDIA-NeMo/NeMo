@@ -259,8 +259,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_audio_tokens=None,
             seq_mask=None,
             target_text_tokens=None,
-            modality_adapter_emb=None,
-            speaker_encoder_emb=None,
     ) -> dict[str, Tensor]:
         """
         Text prediction only (audio_loss_weight=0).
@@ -1315,7 +1313,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             "sil_id": sil_id,
             "input_signal": input_signal,
             "input_signal_lens": input_signal_lens,
-            "source_encoded": source_encoded,
             "asr_emb": asr_emb,
             "lengths": lengths,
             "B": B,
@@ -1339,8 +1336,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_audio_tokens=None,
             seq_mask=None,
             target_text_tokens=None,
-            modality_adapter_emb=inference_state["source_encoded"][:, :1],
-            speaker_encoder_emb=None,
         )
 
         if inference_state["start_gen_pos"] > 0:
@@ -1418,8 +1413,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 input_audio_tokens=None,
                 seq_mask=None,
                 target_text_tokens=None,
-                modality_adapter_emb=inference_state["source_encoded"][:, t: t + 1],
-                speaker_encoder_emb=None,
             )
             if not is_prompt_position.all():
                 generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -1431,8 +1424,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 input_audio_tokens=None,
                 seq_mask=None,
                 target_text_tokens=None,
-                modality_adapter_emb=inference_state["source_encoded"][:, :t + 1],
-                speaker_encoder_emb=None,
             )
             if not is_prompt_position.all():
                 generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -1462,7 +1453,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         if self.predict_user_text:
             gen_text_src = gen_asr
-            src_text_cleaned = [self.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])]
+            src_text_cleaned = tokens_to_str(gen_text_src, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"])
         else:
             gen_text_src = None
             src_text_cleaned = None
@@ -1580,6 +1571,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 audio_window[i, :actual_len] = input_signal[i, actual_start:actual_end]
                 audio_window_lens[i] = actual_len
         
+        # Only return the valid portion of audio_window (up to max audio_window_lens)
+        max_len = audio_window_lens.max().item()
+        audio_window = audio_window[:, :max_len]
+        
         return audio_window, audio_window_lens
 
     @torch.no_grad()
@@ -1608,7 +1603,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         - _step_inference: process subsequent steps
         - _post_inference: post-process results
         
-        The key trick is dynamically updating inference_state["source_encoded"] 
+        The key trick is dynamically updating inference_state["input_embeds"] 
         and inference_state["asr_emb"] at each step with the last frame from 
         the sliding window.
         
@@ -1627,6 +1622,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_signal, input_signal_lens, input_pad_len,
             force_bos_positions, prompt_tokens, prompt_token_lens
         )
+        # Reset 'input_embeds' to zeros to ensure it starts fresh in online mode
+        if "input_embeds" in inference_state:
+            inference_state["input_embeds"] = torch.zeros_like(inference_state["input_embeds"])
         
         # Get start position (accounts for prompts if present)
         start_gen_pos = inference_state["start_gen_pos"]
@@ -1649,8 +1647,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             )
             
             # Update inference_state with LAST frame's embedding
-            inference_state["source_encoded"][:, :1, :] = source_encoded_window[:, -1:, :]
-            inference_state["asr_emb"][:, :1, :] = asr_emb_window[:, -1:, :]
+            inference_state["input_embeds"][:, :1, :] = source_encoded_window[:, -1:, :] * self.cfg.get("duplex_user_channel_weight", 1.0)
             
             # Now call standard _step_zero
             ans = self._step_zero(inference_state)
@@ -1676,8 +1673,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
                 
                 # Update inference_state with LAST frame's embedding
-                inference_state["source_encoded"][:, t:t+1, :] = source_encoded_window[:, -1:, :]
-                inference_state["asr_emb"][:, t:t+1, :] = asr_emb_window[:, -1:, :]
+                inference_state["input_embeds"][:, t:t+1, :] = source_encoded_window[:, -1:, :] * self.cfg.get("duplex_user_channel_weight", 1.0)
                 
                 # Call standard _step_inference
                 ans = self._step_inference(t, inference_state, ans, force_bos_positions)

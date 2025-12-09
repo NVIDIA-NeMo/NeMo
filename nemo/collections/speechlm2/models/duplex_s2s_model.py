@@ -655,6 +655,19 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
             hyp_ids_list = hyp_ids.tolist()
             agent_bos_positions = (hyp_ids == tokenizer.bos).nonzero(as_tuple=True)[0].tolist()
             agent_eos_positions = (hyp_ids == tokenizer.eos).nonzero(as_tuple=True)[0].tolist()
+            
+            # Detect end-of-text (EOT) positions: find first pad after each BOS
+            agent_eot_positions = []
+            for bos_pos in agent_bos_positions:
+                # Find the corresponding EOS position for this BOS
+                matching_eos = [eos for eos in agent_eos_positions if eos > bos_pos]
+                end_search_pos = matching_eos[0] if matching_eos else len(hyp_ids)
+                
+                # Search for first pad token after BOS
+                for pos in range(bos_pos + 1, end_search_pos):
+                    if hyp_ids[pos] == pad_id:
+                        agent_eot_positions.append(pos)
+                        break
 
             # Combine and sort all positions with their types
             all_positions = []
@@ -662,6 +675,8 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
                 all_positions.append((pos, 'bos'))
             for pos in agent_eos_positions:
                 all_positions.append((pos, 'eos'))
+            for pos in agent_eot_positions:
+                all_positions.append((pos, 'eot'))
 
             # Sort by position
             all_positions.sort(key=lambda x: x[0])
@@ -677,8 +692,10 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
                 out_str.append(tokenizer.ids_to_text(text_ids))
                 if pos_type == 'bos':
                     out_str.append(f"<|{timestamp}|>")
-                else:  # eos
+                elif pos_type == 'eos':
                     out_str.append(f"<${timestamp}$>")
+                else:  # eot
+                    out_str.append(f"<{timestamp}>")
             # Filter the remaining tokens after the last position
             remaining_ids = filter_special_tokens(hyp_ids[start_idx:])
             out_str.append(tokenizer.ids_to_text(remaining_ids))

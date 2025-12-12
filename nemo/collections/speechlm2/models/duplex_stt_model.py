@@ -653,9 +653,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     )
                 )
 
-            if self.cfg.get("debug", False):
-                import pdb; pdb.set_trace()
-
         ans = {
             "input_embeds": input_embeds,
             "input_lens": source_encoded_lens - 1,
@@ -710,11 +707,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         * inputs["asr_loss_scale"][:, :, 0].flatten(0, 1)
                     ).sum(-1) / num_frames
                     if self.cfg.get("debug", False):
-                        import pdb; pdb.set_trace()
-                        stacked = torch.stack([inputs["asr_labels"][0], inputs["asr_loss_scale"][0, :, 0]], dim=1)
+                        batch_idx = 0
+                        stacked = torch.stack([inputs["asr_labels"][batch_idx], inputs["asr_loss_scale"][batch_idx, :, 0].int()], dim=1)
                         stacked = stacked * (stacked != self.text_pad_id)
                         print("Stacked asr_labels and asr_loss_scale for first batch (up to 500 steps):")
                         print(stacked[:500].int())
+                        import pdb; pdb.set_trace()
                     print(f'asr_loss: {asr_loss}')
 
                 with torch.no_grad():
@@ -1189,6 +1187,39 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return fake_audio, audio_lengths
 
+    def _write_debug_info(self, input_signal: torch.Tensor, source_encoded: torch.Tensor, sample_id=None):
+        """Write debug information for input_signal and source_encoded to file."""
+        import os
+        
+        debug_dir = "/lustre/fsw/portfolios/convai/users/kevinhu/debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # Extract filename from sample_id or use a default
+        if sample_id is not None:
+            if isinstance(sample_id, (list, tuple)):
+                filename_base = str(sample_id[0]) if len(sample_id) > 0 else "unknown"
+            else:
+                filename_base = str(sample_id)
+            # Remove path separators and file extensions
+            filename_base = os.path.basename(filename_base).replace('.', '_')
+        else:
+            filename_base = "unknown"
+        
+        # Save both tensors to a single .pt file
+        # input_signal shape: [B, T] where T is time
+        # source_encoded shape: [B, T, H] where T is time, H is hidden dim
+        offline_file = os.path.join(debug_dir, f"offline_{filename_base}.pt")
+        
+        torch.save({
+            'input_signal': input_signal.detach().cpu(),
+            'source_encoded': source_encoded.detach().cpu()
+        }, offline_file)
+        
+        print(f"Debug info written to {debug_dir}:")
+        print(f"  - offline_{filename_base}.pt")
+        print(f"    input_signal shape: {input_signal.shape}")
+        print(f"    source_encoded shape: {source_encoded.shape}")
+
     def _init_inference(
             self,
             input_signal: torch.Tensor,
@@ -1222,8 +1253,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_signal_lens = input_signal_lens + input_pad_len
 
         source_encoded, lengths, asr_emb = self.perception(
-            input_signal=input_signal, input_signal_length=input_signal_lens, return_encoder_emb=True
+            input_signal=input_signal, input_signal_length=input_signal_lens, return_encoder_emb=True, sample_id=sample_id
         )
+        
+        # Write debug information
+        # self._write_debug_info(input_signal, source_encoded, sample_id)
+        # import pdb; pdb.set_trace()
 
         B, T_local, H = source_encoded.shape
 

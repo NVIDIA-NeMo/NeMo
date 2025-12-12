@@ -417,30 +417,42 @@ class FilterbankFeatures(nn.Module):
         return self.fb
 
     def forward(self, x, seq_len, linear_spec=False):
+        # Initialize debug dictionary
+        # debug_snapshots = {}
+        # debug_snapshots['step0_input'] = x[0, :1280].cpu() if x.shape[1] >= 1280 else x[0].cpu()
+        # debug_snapshots['input_len'] = seq_len[0].item()
+        
         seq_len = self.get_seq_len(seq_len)
+        # debug_snapshots['output_seq_len'] = seq_len[0].item()
 
         if self.stft_pad_amount is not None:
             x = torch.nn.functional.pad(
                 x.unsqueeze(1), (self.stft_pad_amount, self.stft_pad_amount), "reflect"
             ).squeeze(1)
+            # debug_snapshots['step1_after_reflect_pad'] = x[0, :1280].cpu() if x.shape[1] >= 1280 else x[0].cpu()
 
         # dither (only in training mode for eval determinism)
         if self.training and self.dither > 0:
             x += self.dither * torch.randn_like(x)
+            # debug_snapshots['step2_after_dither'] = x[0, :1280].cpu() if x.shape[1] >= 1280 else x[0].cpu()
 
         # do preemphasis
         if self.preemph is not None:
             x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
+            # debug_snapshots['step3_after_preemph'] = x[0, :1280].cpu() if x.shape[1] >= 1280 else x[0].cpu()
 
         # disable autocast to get full range of stft values
         with torch.amp.autocast(x.device.type, enabled=False):
             x = self.stft(x)
+
+        # import pdb; pdb.set_trace()
 
         # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
         # guard is needed for sqrt if grads are passed through
         guard = 0 if not self.use_grads else CONSTANT
         x = torch.view_as_real(x)
         x = torch.sqrt(x.pow(2).sum(-1) + guard)
+        # debug_snapshots['step4_after_stft_magnitude'] = x[0, :, :10].cpu()  # First 10 frames, all freq bins
 
         if self.training and self.nb_augmentation_prob > 0.0:
             for idx in range(x.shape[0]):
@@ -450,6 +462,7 @@ class FilterbankFeatures(nn.Module):
         # get power spectrum
         if self.mag_power != 1.0:
             x = x.pow(self.mag_power)
+            # debug_snapshots['step5_after_power'] = x[0, :, :10].cpu()
 
         # return plain spectrogram if required
         if linear_spec:
@@ -460,6 +473,8 @@ class FilterbankFeatures(nn.Module):
         with torch.amp.autocast(x.device.type, enabled=False):
             # dot with filterbank energies
             x = torch.matmul(self.fb.to(x.dtype), x)
+        # debug_snapshots['step6_after_mel_filterbank'] = x[0, :, :10].cpu()
+        
         # log features if required
         if self.log:
             if self.log_zero_guard_type == "add":
@@ -468,21 +483,26 @@ class FilterbankFeatures(nn.Module):
                 x = torch.log(torch.clamp(x, min=self.log_zero_guard_value_fn(x)))
             else:
                 raise ValueError("log_zero_guard_type was not understood")
+        # debug_snapshots['step7_after_log'] = x[0, :, :10].cpu()
 
         # frame splicing if required
         if self.frame_splicing > 1:
             x = splice_frames(x, self.frame_splicing)
+            # debug_snapshots['step8_after_frame_splicing'] = x[0, :, :10].cpu()
 
         # normalize if required
         if self.normalize:
             x, _, _ = normalize_batch(x, seq_len, normalize_type=self.normalize)
+            # debug_snapshots['step9_after_normalize'] = x[0, :, :10].cpu()
 
         # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
         max_len = x.size(-1)
         mask = torch.arange(max_len, device=x.device)
         mask = mask.repeat(x.size(0), 1) >= seq_len.unsqueeze(1)
         x = x.masked_fill(mask.unsqueeze(1).type(torch.bool).to(device=x.device), self.pad_value)
+        # debug_snapshots['step10_after_masking'] = x[0, :, :10].cpu()
         del mask
+        
         pad_to = self.pad_to
         if pad_to == "max":
             x = nn.functional.pad(x, (0, self.max_length - x.size(-1)), value=self.pad_value)
@@ -490,6 +510,33 @@ class FilterbankFeatures(nn.Module):
             pad_amt = x.size(-1) % pad_to
             if pad_amt != 0:
                 x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
+        # debug_snapshots['step11_after_padding'] = x[0, :, :10].cpu()
+        
+        # Debug: Save all intermediate steps
+        # import os
+        # debug_dir = "/lustre/fsw/portfolios/convai/users/kevinhu/debug"
+        # os.makedirs(debug_dir, exist_ok=True)
+        # debug_filename = f"offline_preprocessor_steps_seqlen{seq_len[0].item()}.pt"
+        # debug_path = os.path.join(debug_dir, debug_filename)
+        
+        # # Add final output and config to debug snapshots
+        # debug_snapshots['final_output'] = x[0].cpu()
+        # debug_snapshots['final_shape'] = list(x.shape)
+        # debug_snapshots['config'] = {
+        #     'pad_to': pad_to,
+        #     'normalize': self.normalize,
+        #     'exact_pad': self.exact_pad,
+        #     'n_fft': self.n_fft,
+        #     'hop_length': self.hop_length,
+        #     'preemph': self.preemph,
+        #     'mag_power': self.mag_power,
+        # }
+        
+        # torch.save(debug_snapshots, debug_path)
+        # print(f"[Preprocessor Debug] Saved {len(debug_snapshots)} steps to {debug_path}")
+        # print(f"  Input length: {debug_snapshots['input_len']}, Output seq_len: {seq_len[0].item()}, Final shape: {x.shape}")
+        # import pdb; pdb.set_trace()
+        
         return x, seq_len
 
 

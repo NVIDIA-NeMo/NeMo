@@ -170,6 +170,14 @@ def prepare_labels(
         source_tokens_flat = source_tokens_delayed.clone()
         target_tokens_flat = target_tokens.clone()
 
+        # To be consistent with the single channel case, replace the user_eos_id with agent_eos_id
+        source_tokens_flat = source_tokens_flat.clone()
+        source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id
+        asr_inputs = source_tokens_flat[:, :-1]
+        asr_labels = source_tokens_flat[:, 1:]
+        text_inputs = target_tokens_flat[:, :-1]
+        text_labels = target_tokens_flat[:, 1:]
+
         # Keep user and agent text in separate channels and allow overlap between them
         if cfg.get("debug", False):
             i = 0
@@ -183,17 +191,8 @@ def prepare_labels(
             print("stacked[:500]:", stacked[:500])
             import pdb; pdb.set_trace()
 
-        # To be consistent with the single channel case, replace the user_eos_id with agent_eos_id
-        source_tokens_flat = source_tokens_flat.clone()
-        source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id
-        asr_inputs = source_tokens_flat[:, :-1]
-        asr_labels = source_tokens_flat[:, 1:]
-        text_inputs = target_tokens_flat[:, :-1]
-        text_labels = target_tokens_flat[:, 1:]
-
-        print(f"asr_inputs.shape: {asr_inputs.shape}")
-        print(f"text_inputs.shape: {text_inputs.shape}")
         if asr_inputs.shape[1] != text_inputs.shape[1]:
+            print(f"mismatch between asr_inputs.shape: {asr_inputs.shape} and text_inputs.shape: {text_inputs.shape}")
             import pdb; pdb.set_trace()
 
         result = {

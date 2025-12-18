@@ -173,17 +173,45 @@ class AudioAugmenter:
                 meter = pyln.Meter(self.sample_rate)
                 try:
                     speech_loudness = meter.integrated_loudness(audio_cpu)
-                except:
+                    # Check for invalid loudness values (-inf for silent audio)
+                    if speech_loudness == float('-inf') or not np.isfinite(speech_loudness):
+                        use_loudness_norm = False
+                except Exception:
                     use_loudness_norm = False
             
             convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
             
+            # Calculate RMS before convolution for gain compensation
+            input_rms = np.sqrt(np.mean(audio_cpu ** 2)) + 1e-8
+            convolved_rms = np.sqrt(np.mean(convolved ** 2)) + 1e-8
+            
             if use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 try:
                     convolved_loudness = meter.integrated_loudness(convolved)
-                    convolved = pyln.normalize.loudness(convolved, convolved_loudness, speech_loudness)
-                except:
-                    pass
+                    # Check for invalid loudness values
+                    if convolved_loudness != float('-inf') and np.isfinite(convolved_loudness) and np.isfinite(speech_loudness):
+                        convolved = pyln.normalize.loudness(convolved, convolved_loudness, speech_loudness)
+                        # Validate output doesn't contain NaN or inf
+                        if not np.isfinite(convolved).all():
+                            convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
+                    else:
+                        # Fallback: Use RMS-based gain compensation to restore signal level
+                        gain_compensation = input_rms / convolved_rms
+                        gain_compensation = min(gain_compensation, 10.0)  # Max 20dB boost
+                        convolved = convolved * gain_compensation
+                except Exception:
+                    # Still apply gain compensation as fallback
+                    gain_compensation = input_rms / convolved_rms
+                    gain_compensation = min(gain_compensation, 10.0)
+                    convolved = convolved * gain_compensation
+            else:
+                # If loudness normalization is disabled, apply simple RMS-based gain compensation
+                gain_compensation = input_rms / convolved_rms
+                gain_compensation = min(gain_compensation, 10.0)
+                convolved = convolved * gain_compensation
+            
+            # Clip to prevent extreme values
+            convolved = np.clip(convolved, -1.0, 1.0)
 
             batch_audio[i, :audio_length] = torch.tensor(convolved, dtype=batch_audio.dtype, device=batch_audio.device)
         
@@ -225,17 +253,45 @@ class AudioAugmenter:
                 meter = pyln.Meter(self.sample_rate)
                 try:
                     speech_loudness = meter.integrated_loudness(audio_cpu)
-                except:
+                    # Check for invalid loudness values (-inf for silent audio)
+                    if speech_loudness == float('-inf') or not np.isfinite(speech_loudness):
+                        use_loudness_norm = False
+                except Exception:
                     use_loudness_norm = False
             
             convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
             
+            # Calculate RMS before convolution for gain compensation
+            input_rms = np.sqrt(np.mean(audio_cpu ** 2)) + 1e-8
+            convolved_rms = np.sqrt(np.mean(convolved ** 2)) + 1e-8
+            
             if use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 try:
                     convolved_loudness = meter.integrated_loudness(convolved)
-                    convolved = pyln.normalize.loudness(convolved, convolved_loudness, speech_loudness)
-                except:
-                    pass
+                    # Check for invalid loudness values
+                    if convolved_loudness != float('-inf') and np.isfinite(convolved_loudness) and np.isfinite(speech_loudness):
+                        convolved = pyln.normalize.loudness(convolved, convolved_loudness, speech_loudness)
+                        # Validate output doesn't contain NaN or inf
+                        if not np.isfinite(convolved).all():
+                            convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
+                    else:
+                        # Fallback: Use RMS-based gain compensation
+                        gain_compensation = input_rms / convolved_rms
+                        gain_compensation = min(gain_compensation, 10.0)
+                        convolved = convolved * gain_compensation
+                except Exception:
+                    # Still apply gain compensation as fallback
+                    gain_compensation = input_rms / convolved_rms
+                    gain_compensation = min(gain_compensation, 10.0)
+                    convolved = convolved * gain_compensation
+            else:
+                # If loudness normalization is disabled, apply simple RMS-based gain compensation
+                gain_compensation = input_rms / convolved_rms
+                gain_compensation = min(gain_compensation, 10.0)
+                convolved = convolved * gain_compensation
+            
+            # Clip to prevent extreme values
+            convolved = np.clip(convolved, -1.0, 1.0)
             
             batch_audio[i, :audio_length] = torch.tensor(convolved, dtype=batch_audio.dtype, device=batch_audio.device)
         
@@ -259,9 +315,13 @@ class AudioAugmenter:
             
             try:
                 degraded = self._apply_ffmpeg_codec(audio_cpu, codec_args)
-                batch_audio[i, :audio_length] = torch.tensor(degraded, dtype=batch_audio.dtype, device=batch_audio.device)
-            except Exception as e:
-                print(f"Warning: Codec application failed for {codec_name}: {e}")
+                
+                # Validate output doesn't contain NaN or inf
+                if np.isfinite(degraded).all():
+                    degraded = np.clip(degraded, -1.0, 1.0)
+                    batch_audio[i, :audio_length] = torch.tensor(degraded, dtype=batch_audio.dtype, device=batch_audio.device)
+            except Exception:
+                # Codec failed, skip augmentation for this sample
                 pass
         
         return batch_audio

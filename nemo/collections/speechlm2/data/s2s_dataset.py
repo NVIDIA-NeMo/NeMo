@@ -287,18 +287,29 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         selected_turn = random.choice(turns)
         cutoff_pos = random.choice(selected_turn['non_pad_positions'])
         original_eos_pos = selected_turn['eos_pos']
+
+        if self.model_cfg is not None and self.model_cfg.get("debug", False):
+            print(f"batch_idx {batch_idx}, selected_turn: {selected_turn}")
+            print(f"tokens: {target_tokens[batch_idx][selected_turn['non_pad_positions']]}")
+            print(f"cutoff_pos: {cutoff_pos}")
+            print(f"tokens from cutoff_pos to original_eos_pos: {target_tokens[batch_idx][cutoff_pos:original_eos_pos]}")
+            print(f"original_eos_pos: {original_eos_pos}")
+            print(f"overlap_tokens: {overlap_tokens}")
+            import pdb; pdb.set_trace()
         
         # Agent stops at cutoff_pos + overlap_tokens to create overlap period
         new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
         frames_to_remove = original_eos_pos - new_eos_pos
         if frames_to_remove <= 0:
             return
-        # Update target_tokens: place eos at agent_eos_pos, shift tail, pad at end
+        
+        # Update target_tokens: place eos at new_eos_pos, shift tail, pad at end
         target_tokens[batch_idx, new_eos_pos] = eos_id
         seq_len = target_tokens.shape[1]
-        tail_length = seq_len - (original_eos_pos + 1)
+        cont_start_pos = original_eos_pos + overlap_tokens
+        tail_length = seq_len - (cont_start_pos + 1)
         if tail_length > 0:
-            target_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+tail_length] = target_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+tail_length].clone()
+            target_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+tail_length] = target_tokens[batch_idx, cont_start_pos+1:cont_start_pos+1+tail_length].clone()
         target_tokens[batch_idx, -frames_to_remove:] = pad_id
 
         # Update source_tokens: shift tail (from cutoff_pos)

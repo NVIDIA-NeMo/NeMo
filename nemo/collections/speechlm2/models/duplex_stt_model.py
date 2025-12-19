@@ -372,6 +372,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
     def prepare_inputs(self, batch: dict):     
 
+        if self.cfg.get('debug', False):
+            import soundfile as sf
+            import os
+            output_dir = "/lustre/fsw/portfolios/llmservice/users/kevinhu/debug"
+            os.makedirs(output_dir, exist_ok=True)
+            wav_path = os.path.join(output_dir, f"{batch['sample_id'][0]}_clean.wav")
+            # Try best to select a valid sampling rate from config or fallback
+            sample_rate = self.cfg.get('source_sample_rate', 16000)
+            src_audio_np = batch["source_audio"][0].detach().cpu().numpy()
+            sf.write(wav_path, src_audio_np, sample_rate)
+            print(f"Wrote batch 0 source_audio to {wav_path}")
+
         # Apply augmentations in order: noise -> room IR -> mic IR -> codec
         # Each augmentation has its own independent condition and flag
         
@@ -437,8 +449,20 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     batch["source_audio_lens"],
                     codec_settings,
                 )
-        
 
+        if self.cfg.get('debug', False):
+            import soundfile as sf
+            import os
+            output_dir = "/lustre/fsw/portfolios/llmservice/users/kevinhu/debug"
+            os.makedirs(output_dir, exist_ok=True)
+            wav_path = os.path.join(output_dir, f"{batch['sample_id'][0]}.wav")
+            sample_rate = self.cfg.get('source_sample_rate', 16000)
+            src_audio_np = batch["source_audio"][0].detach().cpu().numpy()
+            sf.write(wav_path, src_audio_np, sample_rate)
+            print(f"Wrote batch 0 source_audio to {wav_path}")
+            import pdb; pdb.set_trace()
+
+        
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],
             input_signal_length=batch["source_audio_lens"],

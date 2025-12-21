@@ -1452,7 +1452,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         if self.predict_user_text:
             gen_text_src = gen_asr
-            src_text_cleaned = tokens_to_str(gen_text_src, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"])
+            src_text_cleaned = tokens_to_str(gen_text_src, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"])
         else:
             gen_text_src = None
             src_text_cleaned = None
@@ -1482,7 +1482,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 lengths = lengths_trimmed
 
         ans = {
-            "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"]),
+            "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"]),
             "src_text": src_text_cleaned,
             "tokens_text_src": gen_text_src,
             "tokens_text": gen_text,

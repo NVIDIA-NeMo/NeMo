@@ -644,6 +644,9 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
         # Filter out agent bos/eos
         token_ids = token_ids[token_ids != tokenizer.bos]
         token_ids = token_ids[token_ids != tokenizer.eos]
+        # Filter out user bos if provided
+        if user_bos_id is not None:
+            token_ids = token_ids[token_ids != user_bos_id]
         # Filter out sil if provided
         if sil_id is not None:
             token_ids = token_ids[token_ids != sil_id]
@@ -655,6 +658,11 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
             hyp_ids_list = hyp_ids.tolist()
             agent_bos_positions = (hyp_ids == tokenizer.bos).nonzero(as_tuple=True)[0].tolist()
             agent_eos_positions = (hyp_ids == tokenizer.eos).nonzero(as_tuple=True)[0].tolist()
+            
+            # Find user BOS positions ('^' character) if user_bos_id is provided
+            user_bos_positions = []
+            if user_bos_id is not None:
+                user_bos_positions = (hyp_ids == user_bos_id).nonzero(as_tuple=True)[0].tolist()
             
             # Detect end-of-text (EOT) positions: find first pad after each BOS
             agent_eot_positions = []
@@ -673,6 +681,8 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
             all_positions = []
             for pos in agent_bos_positions:
                 all_positions.append((pos, 'bos'))
+            for pos in user_bos_positions:
+                all_positions.append((pos, 'user_bos'))
             for pos in agent_eos_positions:
                 all_positions.append((pos, 'eos'))
             for pos in agent_eot_positions:
@@ -690,7 +700,7 @@ def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTo
                 start_idx = pos
                 timestamp = round(float(pos) * 0.08, 3)
                 out_str.append(tokenizer.ids_to_text(text_ids))
-                if pos_type == 'bos':
+                if pos_type == 'bos' or pos_type == 'user_bos':
                     out_str.append(f"<|{timestamp}|>")
                 elif pos_type == 'eos':
                     out_str.append(f"<${timestamp}$>")

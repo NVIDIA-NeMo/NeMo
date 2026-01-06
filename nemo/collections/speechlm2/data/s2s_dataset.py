@@ -431,8 +431,16 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
             )
 
-            target_tokens, target_token_lens = collate_token_channel(
-                all_cuts_combined, self.tokenizer, self.frame_length, roles=self.output_roles, bos_id=self.tokenizer.bos, eos_id=self.tokenizer.eos, remove_timestamps=True, use_numbers_norm=self.use_numbers_norm,
+            target_tokens, target_token_lens, ei_flags = collate_token_channel(
+                all_cuts_combined,
+                self.tokenizer,
+                self.frame_length,
+                roles=self.output_roles,
+                bos_id=self.tokenizer.bos,
+                eos_id=self.tokenizer.eos,
+                remove_timestamps=True,
+                use_numbers_norm=self.use_numbers_norm,
+                early_interruption_flag_from_cfg=self.early_interruption_prob > 0,
             )
 
             # Run force alignment if enabled
@@ -451,7 +459,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                     logging.warning("All cuts filtered out due to force alignment failures, returning minimal valid batch to continue training.")
                     return self._create_minimal_batch()
 
-            source_tokens, source_token_lens = collate_token_channel(
+            source_tokens, source_token_lens, _ = collate_token_channel(
                 all_cuts_combined, self.tokenizer, self.frame_length,
                 roles=self.input_roles,
                 bos_id=self.user_bos_id, 
@@ -469,15 +477,16 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             if self.early_interruption_prob > 0 and torch.is_grad_enabled():
                 for batch_idx in range(target_tokens.shape[0]):
                     batch_early_interruption_total += 1
-                    if random.random() < early_interruption_prob:
-                        batch_early_interruption_attempted += 1
-                        success = self._apply_early_interruption_augmentation(
-                            target_tokens, target_audio, target_audio_lens,
-                            source_tokens, source_audio, source_audio_lens,
-                            batch_idx
-                        )
-                        if success:
-                            batch_early_interruption_successful += 1
+                    if ei_flags[batch_idx]:
+                        if random.random() < early_interruption_prob:
+                            batch_early_interruption_attempted += 1
+                            success = self._apply_early_interruption_augmentation(
+                                target_tokens, target_audio, target_audio_lens,
+                                source_tokens, source_audio, source_audio_lens,
+                                batch_idx
+                            )
+                            if success:
+                                batch_early_interruption_successful += 1
                 
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
@@ -786,15 +795,18 @@ def collate_token_channel(
     user_bos_id: int = None,
     agent_bos_id: int = None,
     use_numbers_norm: bool = False,
+    early_interruption_flag_from_cfg: bool = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     pad_id = get_pad_id(tokenizer)
     tokens = [
         build_token_channel(c, tokenizer=tokenizer, frame_length=frame_length, roles=roles, pad_id=pad_id, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id, agent_bos_id=agent_bos_id, use_numbers_norm=use_numbers_norm)
         for c in cuts
     ]
+    ei_flags = [getattr(c, 'otf_interruption', early_interruption_flag_from_cfg) for c in cuts]
+
     token_lens = torch.tensor([len(tt) for tt in tokens])
     tokens = collate_vectors(tokens, padding_value=pad_id)
-    return tokens, token_lens
+    return tokens, token_lens, ei_flags
 
 
 def collate_system_prompt(

@@ -185,6 +185,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.cfg.get('use_codec_aug', None)):
             self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
 
+        # Early interruption augmentation counters for cumulative logging
+        self.early_interruption_total = 0
+        self.early_interruption_attempted = 0
+        self.early_interruption_successful = 0
+
     def init_perception_from_another_s2s_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
             if '.nemo' in checkpoint_path:
@@ -734,6 +739,22 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         res["loss"] = (1. - self.cfg.get('text_to_text_loss_weight', 0.0)) * res.get("audio_loss", 0.0) + \
                       self.cfg.get('text_to_text_loss_weight', 0.0) * res.get("text_to_text_loss", 0.0)
+
+        # Track early interruption augmentation stats
+        early_interruption_stats = batch.get("early_interruption_stats")
+        if early_interruption_stats is not None:
+            self.early_interruption_total += early_interruption_stats["batch_total"]
+            self.early_interruption_attempted += early_interruption_stats["batch_attempted"]
+            self.early_interruption_successful += early_interruption_stats["batch_successful"]
+            
+            if self.early_interruption_total > 0:
+                # self.log("early_interruption_attempted_ratio", 
+                #          self.early_interruption_attempted / self.early_interruption_total,
+                #          on_step=True, sync_dist=True)
+                self.log("early_interruption_successful_ratio", 
+                         self.early_interruption_successful / self.early_interruption_total,
+                         on_step=True, sync_dist=True)
+
         self.log_dict(res, on_step=True)
 
         return res

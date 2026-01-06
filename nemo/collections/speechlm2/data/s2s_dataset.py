@@ -235,7 +235,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         source_audio: torch.Tensor,
         source_audio_lens: torch.Tensor,
         batch_idx: int,
-    ) -> None:
+    ) -> bool:
         """Simulate early interruption by randomly truncating an agent turn with overlap.
         
         Creates a realistic interruption scenario where:
@@ -244,6 +244,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         3. Agent stops at cutoff_pos + overlap_tokens (agent EOS placed here)
         
         This creates an overlap period where both speakers are talking simultaneously.
+        
+        Returns:
+            bool: True if augmentation was successfully applied, False otherwise.
         """
         target_seq = target_tokens[batch_idx]
         bos_id = self.tokenizer.bos
@@ -257,7 +260,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         eos_positions = (target_seq == eos_id).nonzero(as_tuple=True)[0]
         
         if len(bos_positions) == 0 or len(eos_positions) == 0:
-            return
+            return False
         
         # Find all complete turns
         turns = []
@@ -281,7 +284,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                     })
         
         if len(turns) == 0:
-            return
+            return False
         
         # Randomly select one turn and cutoff position
         selected_turn = random.choice(turns)
@@ -301,7 +304,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
         frames_to_remove = original_eos_pos - new_eos_pos
         if frames_to_remove <= 0:
-            return
+            return False
         
         # Update target_tokens: place eos at new_eos_pos, shift tail, pad at end
         target_tokens[batch_idx, new_eos_pos] = eos_id
@@ -345,6 +348,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         source_samples_to_remove = original_eos_source_sample - new_bos_source_sample
         if new_bos_source_sample + source_tail_audio_length < source_audio.shape[1]:
             source_audio[batch_idx, new_bos_source_sample+source_tail_audio_length:new_bos_source_sample+source_tail_audio_length+source_samples_to_remove] = 0
+        
+        return True
 
     def _create_minimal_batch(self) -> dict:
         """Create a minimal valid batch when all cuts are filtered out."""
@@ -442,14 +447,21 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
             # Early interruption augmentation
             early_interruption_prob = self.cfg.get("early_interruption_prob", 0.0) if self.cfg is not None else 0.0
+            batch_early_interruption_total = 0
+            batch_early_interruption_attempted = 0
+            batch_early_interruption_successful = 0
             if early_interruption_prob > 0 and torch.is_grad_enabled():
                 for batch_idx in range(target_tokens.shape[0]):
+                    batch_early_interruption_total += 1
                     if random.random() < early_interruption_prob:
-                        self._apply_early_interruption_augmentation(
+                        batch_early_interruption_attempted += 1
+                        success = self._apply_early_interruption_augmentation(
                             target_tokens, target_audio, target_audio_lens,
                             source_tokens, source_audio, source_audio_lens,
                             batch_idx
                         )
+                        if success:
+                            batch_early_interruption_successful += 1
                 
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
@@ -550,9 +562,17 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "text_token_lens": text_token_lens,
             }
 
+        # Per-batch early interruption stats for logging (model accumulates for cumulative)
+        early_interruption_stats = {
+            "batch_total": batch_early_interruption_total,
+            "batch_attempted": batch_early_interruption_attempted,
+            "batch_successful": batch_early_interruption_successful,
+        }
+
         return {
             "audio_data": audio_data,
             "text_data": text_data,
+            "early_interruption_stats": early_interruption_stats,
         }
 
     def _create_role_swapped_cut(self, cut):

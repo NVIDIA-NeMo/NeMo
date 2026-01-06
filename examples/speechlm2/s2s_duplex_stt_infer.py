@@ -49,6 +49,8 @@ def inference(cfg):
         output_roles=cfg.data.output_roles,
         include_turn_metadata=True,  # Enable detailed turn metadata for validation
         model_cfg=model_config,
+        force_align_user_text=False,
+        early_interruption_prob=0.0,
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

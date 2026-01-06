@@ -52,7 +52,7 @@ def train(cfg):
     with trainer.init_module():
         model = DuplexSTTModel(OmegaConf.to_container(cfg, resolve=True))
 
-    dataset = DuplexS2SDataset(
+    train_dataset = DuplexS2SDataset(
         tokenizer=model.tokenizer,
         frame_length=cfg.data.frame_length,
         source_sample_rate=cfg.data.source_sample_rate,
@@ -63,7 +63,20 @@ def train(cfg):
         cfg=cfg.data,
         model_cfg=cfg.model,
     )
-    datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
+    val_dataset = DuplexS2SDataset(
+        tokenizer=model.tokenizer,
+        frame_length=cfg.data.frame_length,
+        source_sample_rate=cfg.data.source_sample_rate,
+        target_sample_rate=cfg.data.target_sample_rate,
+        input_roles=cfg.data.input_roles,
+        output_roles=cfg.data.output_roles,
+        aug_by_swap_role=cfg.data.get("aug_by_swap_role", False),
+        cfg=cfg.data,
+        model_cfg=cfg.model,
+        force_align_user_text=False,
+        early_interruption_prob=0.0,
+    )
+    datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=train_dataset, val_dataset=val_dataset)
 
     trainer.fit(model, datamodule)
 

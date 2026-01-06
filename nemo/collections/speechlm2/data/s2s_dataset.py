@@ -182,6 +182,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         include_turn_metadata: bool = False,
         cfg: dict = None,
         model_cfg: dict = None,
+        force_align_user_text: bool = None,
+        early_interruption_prob: float = None,
     ):
         self.tokenizer = tokenizer
         self.frame_length = frame_length
@@ -194,9 +196,18 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
         self.word_align_position = cfg.get("word_align_position", "left") if cfg is not None else "left"
         self.predict_user_text = model_cfg.get("predict_user_text", False) if model_cfg is not None else False
-        self.force_align_user_text = model_cfg.get("force_align_user_text", False) if model_cfg is not None else None
+        # Force alignment settings: use explicit parameter if provided, otherwise fall back to config
+        if force_align_user_text is not None:
+            self.force_align_user_text = force_align_user_text
+        else:
+            self.force_align_user_text = model_cfg.get("force_align_user_text", False) if model_cfg is not None else False
         # Default to CPU for force alignment to avoid OOM during training/validation when main model is on GPU
         self.force_align_device = model_cfg.get("force_align_device", "cpu") if model_cfg is not None else "cpu"
+
+        if early_interruption_prob is not None:
+            self.early_interruption_prob = early_interruption_prob
+        else:
+            self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
 
         self.cfg = cfg
         self.model_cfg = model_cfg
@@ -218,10 +229,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.user_bos_id = self.tokenizer.text_to_ids(user_bos_token)[0]
         self.user_eos_id = self.tokenizer.text_to_ids(user_eos_token)[0]
 
-        # Initialize force aligner if needed
+        # Initialize force aligner lazily (only when needed during training)
+        # This avoids loading the wav2vec2 model during validation
         self.force_aligner = None
-        if self.force_align_user_text:
-            self.force_aligner = ForceAligner(device=self.force_align_device, frame_length=self.frame_length)
+        self._force_aligner_initialized = False
         
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
@@ -424,8 +435,14 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined, self.tokenizer, self.frame_length, roles=self.output_roles, bos_id=self.tokenizer.bos, eos_id=self.tokenizer.eos, remove_timestamps=True, use_numbers_norm=self.use_numbers_norm,
             )
 
-            # Only run force alignment during training (when gradients are enabled)
-            if self.force_align_user_text and torch.is_grad_enabled():
+            # Run force alignment if enabled
+            # NOTE: For validation, create a separate dataset instance with force_align_user_text=False
+            if self.force_align_user_text:
+                # Only create ForceAligner when first needed
+                if not self._force_aligner_initialized:
+                    logging.info(f"Initializing ForceAligner on device {self.force_align_device}")
+                    self.force_aligner = ForceAligner(device=self.force_align_device, frame_length=self.frame_length)
+                    self._force_aligner_initialized = True
                 logging.info(f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}")
                 all_cuts_combined = self.force_aligner.batch_force_align_user_audio(all_cuts_combined, source_sample_rate=self.source_sample_rate)
                 
@@ -446,11 +463,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             )
 
             # Early interruption augmentation
-            early_interruption_prob = self.cfg.get("early_interruption_prob", 0.0) if self.cfg is not None else 0.0
             batch_early_interruption_total = 0
             batch_early_interruption_attempted = 0
             batch_early_interruption_successful = 0
-            if early_interruption_prob > 0 and torch.is_grad_enabled():
+            if self.early_interruption_prob > 0 and torch.is_grad_enabled():
                 for batch_idx in range(target_tokens.shape[0]):
                     batch_early_interruption_total += 1
                     if random.random() < early_interruption_prob:

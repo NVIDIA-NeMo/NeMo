@@ -208,7 +208,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             self.early_interruption_prob = early_interruption_prob
         else:
             self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
-
+        self.fix_last_turn_eos = cfg.get("fix_last_turn_eos", False) if cfg is not None else False
         self.cfg = cfg
         self.model_cfg = model_cfg
         self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
@@ -228,6 +228,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         
         self.user_bos_id = self.tokenizer.text_to_ids(user_bos_token)[0]
         self.user_eos_id = self.tokenizer.text_to_ids(user_eos_token)[0]
+        self.pad_id = get_pad_id(self.tokenizer)
 
         # Initialize force aligner lazily (only when needed during training)
         # This avoids loading the wav2vec2 model during validation
@@ -237,15 +238,56 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
+    def _save_audacity_labels(self, target_tokens, batch_idx, suffix, debug_dir, frame_length):
+        """Save tokens as Audacity label track (.txt format).
+        
+        To use in Audacity:
+        1. Open the corresponding .wav file
+        2. File -> Import -> Labels
+        3. Select the _labels.txt file
+        """
+        import os
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        tokens = target_tokens[batch_idx].cpu().tolist()
+        label_path = f"{debug_dir}/batch{batch_idx}_{suffix}_labels.txt"
+        
+        bos_id = self.tokenizer.bos
+        eos_id = self.tokenizer.eos
+        pad_id = self.pad_id
+        
+        with open(label_path, 'w') as f:
+            for i, tok in enumerate(tokens):
+                if tok == pad_id:
+                    continue
+                if tok not in [bos_id, eos_id]:
+                    continue
+                start_time = i * frame_length
+                end_time = (i + 1) * frame_length
+                
+                if tok == bos_id:
+                    label = "BOS"
+                elif tok == eos_id:
+                    label = "EOS"
+                else:
+                    label = f"{tok}"
+                
+                f.write(f"{start_time:.4f}\t{end_time:.4f}\t{label}\n")
+        
+        print(f"Saved Audacity labels: {label_path}")
+
     def _apply_early_interruption_augmentation(
         self,
         target_tokens: torch.Tensor,
         target_audio: torch.Tensor,
+        target_token_lens: torch.Tensor,
         target_audio_lens: torch.Tensor,
         source_tokens: torch.Tensor,
         source_audio: torch.Tensor,
+        source_token_lens: torch.Tensor,
         source_audio_lens: torch.Tensor,
         batch_idx: int,
+        identifier: str,
     ) -> bool:
         """Simulate early interruption by randomly truncating an agent turn with overlap.
         
@@ -259,11 +301,44 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         Returns:
             bool: True if augmentation was successfully applied, False otherwise.
         """
+        # Save 2-channel audio before modification
+        if self.model_cfg is not None and self.model_cfg.get("debug", False):
+            import torchaudio
+            import os
+            debug_dir = "/lustre/fsw/portfolios/llmservice/users/apasad/data/duplex/debug5"
+            os.makedirs(debug_dir, exist_ok=True)
+            if identifier is not None:
+                audio_identity = identifier
+            else:
+                audio_identity = random.randint(1, 1000)
+            
+            # Get actual lengths
+            src_len = source_audio_lens[batch_idx].item()
+            tgt_len = target_audio_lens[batch_idx].item()
+            max_len = max(src_len, tgt_len)
+            
+            # Create 2-channel audio: [source, target]
+            src_audio_before = source_audio[batch_idx, :max_len].clone().cpu()
+            tgt_audio_before = target_audio[batch_idx, :max_len].clone().cpu()
+            stereo_before = torch.stack([src_audio_before, tgt_audio_before], dim=0)  # (2, T)
+            
+            # Normalize to prevent clipping
+            if stereo_before.abs().max() > 0:
+                stereo_before = stereo_before / stereo_before.abs().max() * 0.9
+            
+            sample_rate = int(self.source_sample_rate)  # Assuming same for both
+            torchaudio.save(
+                f"{debug_dir}/batch{batch_idx}_BEFORE_{audio_identity}.wav",
+                stereo_before,
+                sample_rate
+            )
+            self._save_audacity_labels(target_tokens, batch_idx, f"BEFORE_{audio_identity}", debug_dir, self.frame_length)
+
         target_seq = target_tokens[batch_idx]
         bos_id = self.tokenizer.bos
         eos_id = self.tokenizer.eos
-        pad_id = self.tokenizer.pad_id
-        
+        pad_id = self.pad_id
+
         # Overlap period: ~1 second = 13 tokens (80ms per token)
         overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 13) if self.cfg is not None else 13
         
@@ -304,16 +379,16 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
         if self.model_cfg is not None and self.model_cfg.get("debug", False):
             print(f"batch_idx {batch_idx}, selected_turn: {selected_turn}")
-            print(f"tokens: {target_tokens[batch_idx][selected_turn['non_pad_positions']]}")
-            print(f"cutoff_pos: {cutoff_pos}")
-            print(f"tokens from cutoff_pos to original_eos_pos: {target_tokens[batch_idx][cutoff_pos:original_eos_pos]}")
-            print(f"original_eos_pos: {original_eos_pos}")
-            print(f"overlap_tokens: {overlap_tokens}")
-            import pdb; pdb.set_trace()
+            # print(f"tokens: {target_tokens[batch_idx][selected_turn['non_pad_positions']]}")
+            # print(f"cutoff_pos: {cutoff_pos}")
+            # print(f"tokens from cutoff_pos to original_eos_pos: {target_tokens[batch_idx][cutoff_pos:original_eos_pos]}")
+            # print(f"original_eos_pos: {original_eos_pos}")
+            # print(f"overlap_tokens: {overlap_tokens}")
+            # import pdb; pdb.set_trace()
         
         # Agent stops at cutoff_pos + overlap_tokens to create overlap period
         new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
-        frames_to_remove = original_eos_pos - new_eos_pos
+        frames_to_remove = original_eos_pos - cutoff_pos
         if frames_to_remove <= 0:
             return False
         
@@ -325,41 +400,66 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         if tail_length > 0:
             target_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+tail_length] = target_tokens[batch_idx, cont_start_pos+1:cont_start_pos+1+tail_length].clone()
         target_tokens[batch_idx, -frames_to_remove:] = pad_id
+        target_token_lens[batch_idx] -= frames_to_remove
 
         # Update source_tokens: shift tail (from cutoff_pos)
-        src_frames_to_remove = original_eos_pos - cutoff_pos
+        # src_frames_to_remove = original_eos_pos - cutoff_pos
         source_seq_len = source_tokens.shape[1]
         source_tail_length = source_seq_len - (original_eos_pos + 1)
         if source_tail_length > 0:
             source_tokens[batch_idx, cutoff_pos+1:cutoff_pos+1+source_tail_length] = source_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+source_tail_length].clone()
-        source_tokens[batch_idx, -src_frames_to_remove:] = pad_id
+        source_tokens[batch_idx, -frames_to_remove:] = pad_id
+        source_token_lens[batch_idx] -= frames_to_remove
         
-        # Update target_audio: shift and pad with silence
+        # Update audio: shift and pad with silence
         old_target_len = target_audio_lens[batch_idx].item()
-        new_eos_sample = min(int(new_eos_pos * self.frame_length * self.target_sample_rate), old_target_len)
-        original_eos_sample = min(int(original_eos_pos * self.frame_length * self.target_sample_rate), old_target_len)
+        old_source_len = source_audio_lens[batch_idx].item()
+        if old_target_len != old_source_len:
+            logging.warning(f"old_target_len != old_source_len: {old_target_len} != {old_source_len}")
+        assert self.target_sample_rate == self.source_sample_rate, "This function assumes target and source sample rates are the same"
+        old_conv_audio_len = min(old_target_len, old_source_len)
+
+        new_eos_sample = min(int((new_eos_pos+1) * self.frame_length * self.target_sample_rate), old_conv_audio_len)
+        original_eos_sample = min(int((original_eos_pos+1) * self.frame_length * self.target_sample_rate), old_conv_audio_len)
+        cont_start_sample = min(int((cont_start_pos+1) * self.frame_length * self.target_sample_rate), old_conv_audio_len)
+        cutoff_sample = min(int((cutoff_pos+1) * self.frame_length * self.source_sample_rate), old_conv_audio_len)
         
-        tail_audio_length = old_target_len - original_eos_sample
+        samples_to_remove = original_eos_sample - cutoff_sample
+        
+        # Update target audio: shift and pad with silence
+        tail_audio_length = old_conv_audio_len - cont_start_sample
         if tail_audio_length > 0:
-            target_audio[batch_idx, new_eos_sample:new_eos_sample+tail_audio_length] = target_audio[batch_idx, original_eos_sample:old_target_len].clone()
+            target_audio[batch_idx, new_eos_sample:new_eos_sample+tail_audio_length] = target_audio[batch_idx, cont_start_sample:old_conv_audio_len].clone()
         
-        samples_to_remove = original_eos_sample - new_eos_sample
         if new_eos_sample + tail_audio_length < target_audio.shape[1]:
             target_audio[batch_idx, new_eos_sample+tail_audio_length:new_eos_sample+tail_audio_length+samples_to_remove] = 0
+        target_audio_lens[batch_idx] = old_conv_audio_len - samples_to_remove
         
         # Update source_audio: shift and pad with silence
-        old_source_len = source_audio_lens[batch_idx].item()
-        new_bos_source_sample = min(int(cutoff_pos * self.frame_length * self.source_sample_rate), old_source_len)
-        original_eos_source_sample = min(int(original_eos_pos * self.frame_length * self.source_sample_rate), old_source_len)
-        
-        source_tail_audio_length = old_source_len - original_eos_source_sample
+        source_tail_audio_length = old_conv_audio_len - original_eos_sample
         if source_tail_audio_length > 0:
-            source_audio[batch_idx, new_bos_source_sample:new_bos_source_sample+source_tail_audio_length] = source_audio[batch_idx, original_eos_source_sample:old_source_len].clone()
+            source_audio[batch_idx, cutoff_sample:cutoff_sample+source_tail_audio_length] = source_audio[batch_idx, original_eos_sample:old_conv_audio_len].clone()
         
-        source_samples_to_remove = original_eos_source_sample - new_bos_source_sample
-        if new_bos_source_sample + source_tail_audio_length < source_audio.shape[1]:
-            source_audio[batch_idx, new_bos_source_sample+source_tail_audio_length:new_bos_source_sample+source_tail_audio_length+source_samples_to_remove] = 0
+        if cutoff_sample + source_tail_audio_length < source_audio.shape[1]:
+            source_audio[batch_idx, cutoff_sample+source_tail_audio_length:cutoff_sample+source_tail_audio_length+samples_to_remove] = 0
+        source_audio_lens[batch_idx] = old_conv_audio_len - samples_to_remove
         
+        # Save 2-channel audio and target_tokens after modification
+        if self.model_cfg is not None and self.model_cfg.get("debug", False):
+            src_audio_after = source_audio[batch_idx, :source_audio_lens[batch_idx].item()].clone().cpu()
+            tgt_audio_after = target_audio[batch_idx, :target_audio_lens[batch_idx].item()].clone().cpu()
+            stereo_after = torch.stack([src_audio_after, tgt_audio_after], dim=0)  # (2, T)
+            
+            if stereo_after.abs().max() > 0:
+                stereo_after = stereo_after / stereo_after.abs().max() * 0.9
+            
+            torchaudio.save(
+                f"{debug_dir}/batch{batch_idx}_AFTER_{audio_identity}.wav",
+                stereo_after,
+                sample_rate
+            )
+            print(f"Saved debug audio to {debug_dir}/batch{batch_idx}_*.wav")
+            self._save_audacity_labels(target_tokens[:target_token_lens[batch_idx].item()], batch_idx, f"AFTER_{audio_identity}", debug_dir, self.frame_length)
         return True
 
     def _create_minimal_batch(self) -> dict:
@@ -374,9 +474,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             "agent_bos_vad": None,
             "target_audio": torch.zeros((1, 22050), dtype=torch.float32),  # 1 second of silence at 22.05kHz
             "target_audio_lens": torch.tensor([22050], dtype=torch.long),
-            "target_tokens": torch.full((1, 50), self.tokenizer.pad_id, dtype=torch.long),
+            "target_tokens": torch.full((1, 50), self.pad_id, dtype=torch.long),
             "target_token_lens": torch.tensor([1], dtype=torch.long),
-            "source_tokens": torch.full((1, 50), self.tokenizer.pad_id, dtype=torch.long),
+            "source_tokens": torch.full((1, 50), self.pad_id, dtype=torch.long),
             "source_token_lens": torch.tensor([1], dtype=torch.long),
             "source_texts": [""],
             "target_texts": [""],
@@ -390,6 +490,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         # audio mini-batch
         cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
         audio_data = None
+        early_interruption_stats = None
 
         if cuts and hasattr(cuts[0], 'formatter') and cuts[0].formatter == 'nemo_tarred_to_duplex':
             filtered_cuts = []
@@ -424,7 +525,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined = cuts
             
             prompt_tokens, prompt_token_lens = collate_system_prompt(
-                all_cuts_combined, self.tokenizer
+                all_cuts_combined, self.tokenizer, self.pad_id
             )
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
@@ -434,6 +535,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             target_tokens, target_token_lens, ei_flags = collate_token_channel(
                 all_cuts_combined,
                 self.tokenizer,
+                self.pad_id,
                 self.frame_length,
                 roles=self.output_roles,
                 bos_id=self.tokenizer.bos,
@@ -460,7 +562,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                     return self._create_minimal_batch()
 
             source_tokens, source_token_lens, _ = collate_token_channel(
-                all_cuts_combined, self.tokenizer, self.frame_length,
+                all_cuts_combined, self.tokenizer, self.pad_id, self.frame_length,
                 roles=self.input_roles,
                 bos_id=self.user_bos_id, 
                 eos_id=self.user_eos_id, 
@@ -478,16 +580,22 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 for batch_idx in range(target_tokens.shape[0]):
                     batch_early_interruption_total += 1
                     if ei_flags[batch_idx]:
-                        if random.random() < early_interruption_prob:
+                        if random.random() < self.early_interruption_prob:
                             batch_early_interruption_attempted += 1
+                            identifier = getattr(all_cuts_combined[batch_idx], 'shard_origin', None)
+                            if identifier is not None:
+                                identifier = '_'.join(str(identifier).split('/')[-4:])
                             success = self._apply_early_interruption_augmentation(
-                                target_tokens, target_audio, target_audio_lens,
-                                source_tokens, source_audio, source_audio_lens,
-                                batch_idx
+                                target_tokens, target_audio, target_token_lens, target_audio_lens,
+                                source_tokens, source_audio, source_token_lens, source_audio_lens,
+                                batch_idx, identifier
                             )
                             if success:
                                 batch_early_interruption_successful += 1
-                
+            
+            if self.fix_last_turn_eos:
+                fix_last_turn_eos(target_tokens, source_tokens, src_eos_id=self.user_eos_id, tgt_eos_id=self.tokenizer.eos, pad_id=self.pad_id)
+
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
                     all_cuts_combined.resample(self.target_sample_rate), roles=self.output_roles,
@@ -497,15 +605,15 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 target_first_turn_audio = None
                 target_first_turn_audio_lens = None
 
-            if self.model_cfg is not None and self.model_cfg.get("debug", False):
-                print("source_tokens[0]:", source_tokens[0][:500]*(source_tokens[0][:500]!=self.tokenizer.pad_id))
-                print("target_tokens[0]:", target_tokens[0][:500]*(target_tokens[0][:500]!=self.tokenizer.pad_id))
-                print("cut.supervisions[0].duration:", int(cuts[0].supervisions[0].duration / 0.08))
-                # Find the indices of the first non-pad tokens in target_tokens[0]
-                first_non_pad_idx = (target_tokens[0] != self.tokenizer.pad_id).nonzero(as_tuple=True)[0][0].item() if (target_tokens[0] != self.tokenizer.pad_id).any() else None
-                print("First non-pad token index in target_tokens[0]:", first_non_pad_idx)
-                # print('Agent start timestamp: ', int(cuts[0].supervisions[1].start / 0.08))
-                import pdb; pdb.set_trace()
+            # if self.model_cfg is not None and self.model_cfg.get("debug", False):
+            #     print("source_tokens[0]:", source_tokens[0][:500]*(source_tokens[0][:500]!=self.pad_id))
+            #     print("target_tokens[0]:", target_tokens[0][:500]*(target_tokens[0][:500]!=self.pad_id))
+            #     print("cut.supervisions[0].duration:", int(cuts[0].supervisions[0].duration / 0.08))
+            #     # Find the indices of the first non-pad tokens in target_tokens[0]
+            #     first_non_pad_idx = (target_tokens[0] != self.pad_id).nonzero(as_tuple=True)[0][0].item() if (target_tokens[0] != self.pad_id).any() else None
+            #     print("First non-pad token index in target_tokens[0]:", first_non_pad_idx)
+            #     # print('Agent start timestamp: ', int(cuts[0].supervisions[1].start / 0.08))
+            #     import pdb; pdb.set_trace()
 
 
             audio_data = {
@@ -532,6 +640,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "target_first_turn_audio_lens": target_first_turn_audio_lens,
                 "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in all_cuts_combined],
                 "aug_by_noise": [getattr(cut, "aug_by_noise", True) for cut in all_cuts_combined]
+            }
+
+            # Per-batch early interruption stats for logging (model accumulates for cumulative)
+            early_interruption_stats = {
+                "batch_total": batch_early_interruption_total,
+                "batch_attempted": batch_early_interruption_attempted,
+                "batch_successful": batch_early_interruption_successful,
             }
         
             if torch.sum(prompt_token_lens) > 0:
@@ -579,20 +694,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 text_token_lens.append(text_ids.shape[0])
 
             text_tokens = collate_vectors(
-                text_tokens, padding_value=get_pad_id(self.tokenizer)
+                text_tokens, padding_value=self.pad_id
             )
             text_token_lens = torch.tensor(text_token_lens, dtype=torch.long)
             text_data = {
                 "text_tokens": text_tokens,
                 "text_token_lens": text_token_lens,
             }
-
-        # Per-batch early interruption stats for logging (model accumulates for cumulative)
-        early_interruption_stats = {
-            "batch_total": batch_early_interruption_total,
-            "batch_attempted": batch_early_interruption_attempted,
-            "batch_successful": batch_early_interruption_successful,
-        }
 
         return {
             "audio_data": audio_data,
@@ -786,6 +894,7 @@ def collate_first_turn_audio(
 def collate_token_channel(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
+    pad_id: int,
     frame_length: Seconds,
     roles: set[str],
     bos_id: int = None,
@@ -797,9 +906,8 @@ def collate_token_channel(
     use_numbers_norm: bool = False,
     early_interruption_flag_from_cfg: bool = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    pad_id = get_pad_id(tokenizer)
     tokens = [
-        build_token_channel(c, tokenizer=tokenizer, frame_length=frame_length, roles=roles, pad_id=pad_id, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id, agent_bos_id=agent_bos_id, use_numbers_norm=use_numbers_norm)
+        build_token_channel(c, tokenizer=tokenizer, pad_id=pad_id, frame_length=frame_length, roles=roles, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id, agent_bos_id=agent_bos_id, use_numbers_norm=use_numbers_norm)
         for c in cuts
     ]
     ei_flags = [getattr(c, 'otf_interruption', early_interruption_flag_from_cfg) for c in cuts]
@@ -808,16 +916,55 @@ def collate_token_channel(
     tokens = collate_vectors(tokens, padding_value=pad_id)
     return tokens, token_lens, ei_flags
 
+def fix_last_turn_eos(target_tokens: torch.Tensor, source_tokens: torch.Tensor, src_eos_id: int, tgt_eos_id: int, pad_id: int):
+    """
+    Make sure that last agent turn, when it is the last turn, does not have an EOS.
+    Modifies target_tokens in-place.
+    This modification ensures that EOS solely functions as detecting start of user turn.
+
+    Args:
+        target_tokens: Tensor of shape (batch_size, max_seq_len)
+        source_tokens: Tensor of shape (batch_size, max_seq_len)
+        src_eos_id: EOS token id for source
+        tgt_eos_id: EOS token id for target
+        pad_id: Padding token id
+    """
+    assert target_tokens.shape == source_tokens.shape, "Mismatch between target and source token shapes"
+    
+    batch_size, seq_len = target_tokens.shape
+    device = target_tokens.device
+    
+    # Create position indices: (1 x seq_len)
+    positions = torch.arange(seq_len, device=device).unsqueeze(0)
+    
+    # Find last EOS position for each batch (use -1 as sentinel for "no EOS")
+    target_eos_mask = (target_tokens == tgt_eos_id)
+    source_eos_mask = (source_tokens == src_eos_id)
+    
+    # position index where EOS exists, -1 if none, return position index of last EOS for each batch
+    last_target_eos = torch.where(target_eos_mask, positions, -1).max(dim=1).values
+    last_source_eos = torch.where(source_eos_mask, positions, -1).max(dim=1).values
+    
+    # Condition: both have EOS AND target's last EOS > source's last EOS
+    should_fix = (last_target_eos >= 0) & (last_source_eos >= 0) & (last_target_eos > last_source_eos)
+    
+    if should_fix.any():
+        batch_indices = torch.where(should_fix)[0]
+        seq_indices = last_target_eos[should_fix]
+        target_tokens[batch_indices, seq_indices] = pad_id
+        logging.info(f"Removed EOS from last turn of target tokens for {should_fix.sum().item()} (of {batch_size}) samples.")
+    else:
+        logging.info(f"No EOS found in last turn of target tokens for {batch_size} samples.")
 
 def collate_system_prompt(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
+    pad_id: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Collate system prompts from cuts.
     System prompts should be stored in cut.custom['system_prompt'].
     """
-    pad_id = get_pad_id(tokenizer)
     tokens = []
     for c in cuts:
         # Check if system prompt exists in custom field
@@ -838,9 +985,9 @@ def collate_system_prompt(
 def build_token_channel(
         cut: Cut,
         tokenizer: TokenizerSpec,
+        pad_id: int,
         frame_length: Seconds,
         roles: set[str],
-        pad_id: int = -1,
         bos_id: int = None,
         eos_id: int = None,
         word_align_position: str = 'left',
@@ -874,7 +1021,7 @@ def build_token_channel(
                 text = normalize_numbers(text)
 
             # Use different bos_id for user and agent
-            text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps))
+            text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, pad_id, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps))
 
             if available_frames_for_text > 0 and len(text_ids) > available_frames_for_text:
                 # Truncate text_ids to fit before the eos position.
@@ -935,12 +1082,13 @@ def _strip_timestamps(
     return _SPACE_PATTERN.sub(" ", text).strip()  # strip multi-whitespaces
 
 def _text_to_ids(text: str, tokenizer: TokenizerSpec,
+                 pad_id: int,
                  _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
                  available_frames_for_text=None,
                  word_align_position='left',
                  remove_timestamps=False):
     if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
-        text_ids = _text_with_timestamps_to_ids(text, tokenizer, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position)
+        text_ids = _text_with_timestamps_to_ids(text, tokenizer, pad_id, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position)
     else:
         _TIMESTAMP_PATTERN = re.compile(_TIMESTAMP_PATTERN_STR)
         text = _TIMESTAMP_PATTERN.sub("", text)
@@ -951,12 +1099,13 @@ def _text_to_ids(text: str, tokenizer: TokenizerSpec,
 
 
 def _text_with_timestamps_to_ids(text: str, tokenizer: TokenizerSpec,
+                                 pad_id: int,
                                  _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
                                  available_frames_for_text=None,
                                  word_align_position='left') -> list[int]:
     text_ids = []
     text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(text, tokenizer, _TIMESTAMP_PATTERN_STR)
-    text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(text_ids, word_lens, start_times, end_times, available_frames_for_text, frame_rate=0.08, pad_id=get_pad_id(tokenizer), word_align_position=word_align_position)
+    text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(text_ids, word_lens, start_times, end_times, available_frames_for_text, frame_rate=0.08, pad_id=pad_id, word_align_position=word_align_position)
     
     if random.random() < 0.1:
         logging.info(f'text_ids_with_timestamps: {text_ids_with_timestamps}')

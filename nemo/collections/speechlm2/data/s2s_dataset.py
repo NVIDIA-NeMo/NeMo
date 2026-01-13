@@ -209,6 +209,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         else:
             self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
         self.fix_last_turn_eos = cfg.get("fix_last_turn_eos", False) if cfg is not None else False
+        self.fix_eos_placements = cfg.get("fix_eos_placements", False) if cfg is not None else False
+        
         self.cfg = cfg
         self.model_cfg = model_cfg
         self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
@@ -238,7 +240,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
-    def _save_audacity_labels(self, target_tokens, batch_idx, suffix, debug_dir, frame_length):
+    def _save_audacity_labels(self, target_tokens, batch_idx, suffix, debug_dir, frame_length, bos_id, eos_id, pad_id):
         """Save tokens as Audacity label track (.txt format).
         
         To use in Audacity:
@@ -251,10 +253,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         
         tokens = target_tokens[batch_idx].cpu().tolist()
         label_path = f"{debug_dir}/batch{batch_idx}_{suffix}_labels.txt"
-        
-        bos_id = self.tokenizer.bos
-        eos_id = self.tokenizer.eos
-        pad_id = self.pad_id
         
         with open(label_path, 'w') as f:
             for i, tok in enumerate(tokens):
@@ -301,11 +299,15 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         Returns:
             bool: True if augmentation was successfully applied, False otherwise.
         """
+        bos_id = self.tokenizer.bos
+        eos_id = self.tokenizer.eos
+        pad_id = self.pad_id
+
         # Save 2-channel audio before modification
         if self.model_cfg is not None and self.model_cfg.get("debug", False):
             import torchaudio
             import os
-            debug_dir = "/lustre/fsw/portfolios/llmservice/users/apasad/data/duplex/debug5"
+            debug_dir = "/lustre/fsw/portfolios/llmservice/users/apasad/data/duplex/debug_topic_src_tgt"
             os.makedirs(debug_dir, exist_ok=True)
             if identifier is not None:
                 audio_identity = identifier
@@ -332,12 +334,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 stereo_before,
                 sample_rate
             )
-            self._save_audacity_labels(target_tokens, batch_idx, f"BEFORE_{audio_identity}", debug_dir, self.frame_length)
+            self._save_audacity_labels(target_tokens, batch_idx, f"BEFORE_target_{audio_identity}", debug_dir, self.frame_length, bos_id, eos_id, pad_id)
+            self._save_audacity_labels(source_tokens, batch_idx, f"BEFORE_source_{audio_identity}", debug_dir, self.frame_length, self.user_bos_id, self.user_eos_id, pad_id)
 
         target_seq = target_tokens[batch_idx]
-        bos_id = self.tokenizer.bos
-        eos_id = self.tokenizer.eos
-        pad_id = self.pad_id
 
         # Overlap period: ~1 second = 13 tokens (80ms per token)
         overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 13) if self.cfg is not None else 13
@@ -543,6 +543,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 remove_timestamps=True,
                 use_numbers_norm=self.use_numbers_norm,
                 early_interruption_flag_from_cfg=self.early_interruption_prob > 0,
+                skip_eos=self.fix_eos_placements,
             )
 
             # Run force alignment if enabled
@@ -569,7 +570,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 word_align_position=self.word_align_position, 
                 remove_timestamps=not self.predict_user_text, 
                 user_bos_id=self.user_bos_id, 
-                agent_bos_id=self.tokenizer.bos
+                agent_bos_id=self.tokenizer.bos,
+                agent_token_channel=target_tokens if self.fix_eos_placements else None,
+                agent_token_channel_lengths=target_token_lens if self.fix_eos_placements else None,
+                agent_eos_id=self.tokenizer.eos if self.fix_eos_placements else None,
             )
 
             # Early interruption augmentation
@@ -582,7 +586,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                     if ei_flags[batch_idx]:
                         if random.random() < self.early_interruption_prob:
                             batch_early_interruption_attempted += 1
-                            identifier = getattr(all_cuts_combined[batch_idx], 'shard_origin', None)
+                            identifier_dirname = getattr(all_cuts_combined[batch_idx], 'shard_origin', None)
+                            identifier_cutname = all_cuts_combined[batch_idx].id
+                            identifier = f"{identifier_dirname}_{identifier_cutname}"
                             if identifier is not None:
                                 identifier = '_'.join(str(identifier).split('/')[-4:])
                             success = self._apply_early_interruption_augmentation(
@@ -905,10 +911,31 @@ def collate_token_channel(
     agent_bos_id: int = None,
     use_numbers_norm: bool = False,
     early_interruption_flag_from_cfg: bool = None,
+    skip_eos: bool = False,
+    agent_token_channel: torch.Tensor = None,
+    agent_token_channel_lengths: torch.Tensor = None,
+    agent_eos_id: int = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     tokens = [
-        build_token_channel(c, tokenizer=tokenizer, pad_id=pad_id, frame_length=frame_length, roles=roles, bos_id=bos_id, eos_id=eos_id, word_align_position=word_align_position, remove_timestamps=remove_timestamps, user_bos_id=user_bos_id, agent_bos_id=agent_bos_id, use_numbers_norm=use_numbers_norm)
-        for c in cuts
+        build_token_channel(
+            c,
+            tokenizer=tokenizer,
+            pad_id=pad_id,
+            frame_length=frame_length,
+            roles=roles,
+            bos_id=bos_id,
+            eos_id=eos_id,
+            word_align_position=word_align_position,
+            remove_timestamps=remove_timestamps,
+            user_bos_id=user_bos_id,
+            agent_bos_id=agent_bos_id, 
+            use_numbers_norm=use_numbers_norm,
+            skip_eos=skip_eos,
+            cut_agent_token_channel=agent_token_channel[cut_idx] if agent_token_channel is not None else None,
+            cut_agent_token_channel_length=agent_token_channel_lengths[cut_idx] if agent_token_channel_lengths is not None else None,
+            agent_eos_id=agent_eos_id,
+        )
+        for cut_idx, c in enumerate(cuts)
     ]
     ei_flags = [getattr(c, 'otf_interruption', early_interruption_flag_from_cfg) for c in cuts]
 
@@ -996,6 +1023,11 @@ def build_token_channel(
         agent_bos_id: int = None,
         add_eos_for_interruption: bool = False,
         use_numbers_norm: bool = False,
+        skip_eos: bool = False,
+        cut_agent_token_channel: torch.Tensor = None,
+        cut_agent_token_channel_length: torch.Tensor = None,
+        eos_offset_frames: int = 8,
+        agent_eos_id: int = None,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -1003,6 +1035,11 @@ def build_token_channel(
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
+    if cut_agent_token_channel is not None:
+        try:
+            assert cut_agent_token_channel_length.item() == total, "Mismatch between agent token and source token lengths"
+        except:
+            logging.error(f"Mismatch between agent token and source token lengths: {cut_agent_token_channel_length.item()} != {total}")
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
 
@@ -1044,26 +1081,35 @@ def build_token_channel(
             except Exception as e:
                 raise RuntimeError(f"{tokens.shape=} {pos=} {endpos=} {text_ids.shape=} {diagnostic}") from e
 
-            # Place EOS token - critical for turn-taking behavior
-            if eospos < len(tokens) and eos_id is not None:
-                # Normal case: place EOS at the intended position
-                tokens[eospos] = eos_id
-            elif add_eos_for_interruption:
-                # Interruption case: place EOS at the last valid position
-                # This ensures the model learns to stop when interrupted by user
-                if endpos < len(tokens):
-                    # Case 1: text finished, interrupted during sil/audio generation
-                    # Place EOS right after the last text token (or at sequence end if closer)
-                    actual_eos_pos = min(endpos, len(tokens) - 1)
-                    tokens[actual_eos_pos] = eos_id
-                elif len(tokens) > 0:
-                    # Case 2: text truncated due to interruption
-                    # Place EOS at the very end of the sequence
-                    tokens[-1] = eos_id
-                logging.warning(
-                    f"Supervision was likely interrupted: {eospos=} >= {len(tokens)=}. "
-                    f"Placed EOS at fallback position to ensure proper turn-taking training. {diagnostic}"
-                )
+            if not skip_eos:
+                if cut_agent_token_channel is not None:
+                    assert agent_eos_id is not None, "Agent EOS ID is not set"
+                    user_bospos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
+                    agent_eospos = user_bospos + eos_offset_frames
+                    if agent_eospos < cut_agent_token_channel_length.item():
+                        cut_agent_token_channel[agent_eospos] = agent_eos_id
+                    else:
+                        logging.warning(f"Agent EOS position {agent_eospos} is out of bounds for agent token channel {cut_agent_token_channel.shape}")
+                # Place EOS token - critical for turn-taking behavior
+                if eospos < len(tokens) and eos_id is not None:
+                    # Normal case: place EOS at the intended position
+                    tokens[eospos] = eos_id
+                elif add_eos_for_interruption:
+                    # Interruption case: place EOS at the last valid position
+                    # This ensures the model learns to stop when interrupted by user
+                    if endpos < len(tokens):
+                        # Case 1: text finished, interrupted during sil/audio generation
+                        # Place EOS right after the last text token (or at sequence end if closer)
+                        actual_eos_pos = min(endpos, len(tokens) - 1)
+                        tokens[actual_eos_pos] = eos_id
+                    elif len(tokens) > 0:
+                        # Case 2: text truncated due to interruption
+                        # Place EOS at the very end of the sequence
+                        tokens[-1] = eos_id
+                    logging.warning(
+                        f"Supervision was likely interrupted: {eospos=} >= {len(tokens)=}. "
+                        f"Placed EOS at fallback position to ensure proper turn-taking training. {diagnostic}"
+                    )
 
     return tokens
 

@@ -119,9 +119,10 @@ class ForceAligner:
             user_sups_in_cut = []
             for supervision in cut.supervisions:
                 if supervision.speaker.lower() == "user":
-                    user_supervisions.append(supervision)
-                    user_cuts.append(cut)
-                    user_sups_in_cut.append(supervision)
+                    if supervision.duration > 0.1:
+                        user_supervisions.append(supervision)
+                        user_cuts.append(cut)
+                        user_sups_in_cut.append(supervision)
             if user_sups_in_cut:
                 cut_to_supervisions[cut.id] = user_sups_in_cut
         

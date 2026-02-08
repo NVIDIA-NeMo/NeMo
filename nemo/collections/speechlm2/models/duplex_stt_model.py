@@ -40,7 +40,11 @@ from transformers import DynamicCache
 from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
-from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.data.utils import (
+    get_pad_id, 
+    create_one_second_silence_template,
+    get_silence_embeddings_from_ratio,
+)
 from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
 from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter, DEFAULT_CODEC_SETTINGS
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
@@ -134,6 +138,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.predict_user_text:
             self.asr_head = copy.deepcopy(self.lm_head)
             self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
+        
+        # Initialize function calling head (separate from text head) - always enabled
+        self.function_head = copy.deepcopy(self.lm_head)
+        logging.info("[Function Calling] Initialized separate function_head (shared embeddings with text channel)")
 
         maybe_install_lora(self)
 
@@ -198,6 +206,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # Cache for backchannel file names to avoid repeated glob operations
         if self.cfg.get('backchannel_prob', None) and self.cfg.backchannel_prob > 0:
             self._backchannel_files_cache = {}
+        
+        # Lazy initialization of silence template
+        # We defer creation until first use to avoid device/dtype issues during __init__
+        # (model may not be fully moved to GPU yet during __init__)
+        self._silence_template_embeddings = None
+        self._silence_template_asr_embeddings = None
+        self._silence_frames_per_second = None
+        self._silence_template_initialized = False
+        logging.info("Silence template will be created lazily on first use (after model is moved to device)")
 
     def init_perception_from_another_s2s_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
@@ -302,6 +319,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.predict_user_text:
             asr_in = out['last_hidden_state']
             asr_logits = self.asr_head(asr_in)  # (B, T, asr_vocab_size)
+        
+        # Function calling: separate head for function channel, shared vocab with text
+        function_in = out['last_hidden_state']
+        function_logits = self.function_head(function_in)  # (B, T, vocab_size)
 
         if not self.training:
             if self.cfg.get("inference_pad_boost", None):
@@ -319,7 +340,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if self.cfg.get("inference_user_eos_boost", None):
                     asr_logits[:, :, self.text_eos_id] += self.cfg.inference_user_eos_boost
 
-        ans = {"text_logits": text_logits}
+        ans = {"text_logits": text_logits, "function_logits": function_logits}
         if self.predict_user_text:
             ans["asr_logits"] = asr_logits
 
@@ -377,7 +398,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             debug_max_files: Maximum number of debug files to save
             target_audio: Agent audio tensor (B, T_audio) - optional, saved for debugging
         """
-
         # Check if we should save debug files
         should_save_debug = False
         if debug and debug_save_path is not None:
@@ -614,7 +634,759 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return target_tokens, sil_id
 
-    def prepare_inputs(self, batch: dict):     
+    def _log_long_list(self, tag: str, values: list[int], chunk_size: int) -> None:
+        if not values:
+            logging.info(f"{tag}: []")
+            return
+        if chunk_size <= 0:
+            logging.info(f"{tag}: {values}")
+            return
+        total = len(values)
+        for start in range(0, total, chunk_size):
+            end = min(start + chunk_size, total)
+            logging.info(f"{tag} [{start}:{end}]: {values[start:end]}")
+
+    def _get_function_call_special_tokens(self):
+        """
+        Get function calling special tokens based on model type.
+        Model-specific logic ensures portability across different LLMs.
+        """
+        if 'Nemotron' in self.cfg.pretrained_llm:
+            # Nemotron uses <SPECIAL_XX> tokens
+            sotc_token = '<SPECIAL_20>'  # Start Of Tool Call
+            eotc_token = '<SPECIAL_21>'  # End Of Tool Call  
+            eotr_token = '<SPECIAL_22>'  # End Of Tool Response
+        elif 'Qwen' in self.cfg.pretrained_llm:
+            # Qwen might use different tokens - configure as needed
+            # For now, using same tokens if available in Qwen tokenizer
+            sotc_token = '<SPECIAL_20>'
+            eotc_token = '<SPECIAL_21>'
+            eotr_token = '<SPECIAL_22>'
+        else:
+            # Default/fallback tokens
+            sotc_token = '<SPECIAL_20>'
+            eotc_token = '<SPECIAL_21>'
+            eotr_token = '<SPECIAL_22>'
+        
+        # Get token IDs
+        sotc_id = self.tokenizer.text_to_ids(sotc_token)[0]
+        eotc_id = self.tokenizer.text_to_ids(eotc_token)[0]
+        eotr_id = self.tokenizer.text_to_ids(eotr_token)[0]
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[FC Model] Using special tokens for {self.cfg.pretrained_llm}: "
+                        f"SOTC={sotc_token}({sotc_id}), EOTC={eotc_token}({eotc_id}), EOTR={eotr_token}({eotr_id})")
+        
+        return sotc_id, eotc_id, eotr_id
+
+    def _build_function_calling_channel(self, batch: dict, seq_length: int) -> tuple:
+        """
+        Build function calling channel using insertion approach to expand sequence length.
+        
+        According to the architecture diagram:
+        - Function calls/responses are INSERTED at specific positions
+        - Sequence length expands from L to L+F where F is total function token length
+        - Agent text channel will have PAD at insertion positions
+        - User audio channel will have silence (zeros) at insertion positions
+        
+        Args:
+            batch: Batch dictionary containing function calling data
+            seq_length: Current sequence length (AFTER system prompt prepending if applicable)
+        
+        Returns:
+            function_channel: Tensor of shape [B, T_expanded] with function tokens
+            function_loss_mask: Tensor of shape [B, T_expanded] - True for calls, False for responses/padding
+            insertion_positions: List[List[Tuple[int, int]]] - (position, length) pairs per batch item
+        """
+        B = batch["function_calls"].shape[0] if batch.get("function_calls") is not None else len(batch["target_tokens"])
+        device = batch["target_tokens"].device
+        
+        # Get model-specific special token IDs
+        sotc_id, eotc_id, eotr_id = self._get_function_call_special_tokens()
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[FC Model] Building function calling channel with INSERTION approach")
+            logging.info(f"[FC Model] Batch size: {B}, Sequence length (with prompt): {seq_length}")
+            logging.info(f"[FC Model] Special tokens: SOTC={sotc_id}, EOTC={eotc_id}, EOTR={eotr_id}")
+        
+        # If no function calling data, return empty channel with no insertions
+        if batch.get("function_calls") is None:
+            if self.cfg.get("debug_fc", False):
+                logging.info("[FC Model] No function calling data in batch")
+            function_channel = torch.full((B, seq_length), self.text_pad_id, dtype=torch.long, device=device)
+            function_loss_mask = torch.zeros((B, seq_length), dtype=torch.bool, device=device)
+            insertion_positions = [[] for _ in range(B)]
+            return function_channel, function_loss_mask, insertion_positions
+        
+        function_calls = batch["function_calls"]  # [B, num_turns, max_call_len]
+        function_call_lengths = batch["function_call_lengths"]  # [B, num_turns]
+        function_call_steps = batch["function_call_steps"]  # [B, num_turns]
+        function_responses = batch["function_responses"]  # [B, num_turns, max_response_len]
+        function_response_lengths = batch["function_response_lengths"]  # [B, num_turns]
+        function_response_steps = batch["function_response_steps"]  # [B, num_turns]
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[FC Model] Function calls shape: {function_calls.shape}")
+            logging.info(f"[FC Model] Function responses shape: {function_responses.shape}")
+        
+        # Build function channel per batch item using efficient insertion
+        batch_channels = []
+        batch_loss_masks = []
+        batch_insertions = []
+        num_turns = function_calls.shape[1]
+        
+        for b in range(B):
+            # Calculate per-sample prompt offset if system prompt is present
+            # function_call_steps/function_response_steps are in ORIGINAL coordinate space (without prompt)
+            # We need to add prompt_offset to get positions in CURRENT coordinate space (with prompt)
+            prompt_offset = 0
+            if "prompt_token_lens" in batch and batch["prompt_token_lens"] is not None:
+                prompt_offset = batch["prompt_token_lens"][b].item()
+                if self.cfg.get("debug_fc", False):
+                    logging.info(f"[FC Model] System prompt offset (batch {b}): {prompt_offset} frames")
+            # Collect all function call/response events with their positions
+            events = []  # List of (position, tokens, is_call) tuples
+            
+            for turn_idx in range(num_turns):
+                # Process function call
+                call_step_original = function_call_steps[b, turn_idx].item()
+                call_length = function_call_lengths[b, turn_idx].item()
+                
+                if call_step_original >= 0 and call_length > 0:
+                    # IMPORTANT: Add prompt offset to get position in current coordinate space
+                    call_step_adjusted = call_step_original + prompt_offset
+                    
+                    # Extract call tokens and wrap with special tokens: <SOTC> tokens <EOTC>
+                    call_tokens = function_calls[b, turn_idx, :call_length]
+                    wrapped_call = torch.cat([
+                        torch.tensor([sotc_id], device=device, dtype=torch.long),
+                        call_tokens,
+                        torch.tensor([eotc_id], device=device, dtype=torch.long)
+                    ])
+                    events.append((call_step_adjusted, wrapped_call, True))  # True = compute loss
+                    
+                    # Decode wrapped_call to text for logging
+                    wrapped_call_text = self.tokenizer.ids_to_text(wrapped_call.tolist())
+                    logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Call at step {call_step_adjusted} (original={call_step_original}, offset={prompt_offset}), length {len(wrapped_call)}, wrapped_call: {wrapped_call}, wrapped_call_text: {wrapped_call_text}")
+                
+                # Process function response
+                response_step_original = function_response_steps[b, turn_idx].item()
+                response_length = function_response_lengths[b, turn_idx].item()
+                
+                if response_step_original >= 0 and response_length > 0:
+                    # IMPORTANT: Add prompt offset to get position in current coordinate space
+                    response_step_adjusted = response_step_original + prompt_offset
+                    
+                    # Insert response content first (without loss - from API)
+                    # Sequence: <EOTC> <TOOLRESPONSE> response_content </TOOLRESPONSE> <EOTR>
+                    response_tokens = function_responses[b, turn_idx, :response_length]
+                    events.append((response_step_adjusted, response_tokens, False))  # False = no loss on response content
+                    
+                    # Then insert EOTR marker after response (with loss - model should learn this marker)
+                    eotr_marker = torch.tensor([eotr_id], device=device, dtype=torch.long)
+                    events.append((response_step_adjusted, eotr_marker, True))  # True = compute loss on EOTR
+                    
+                    # Decode response to text for logging
+                    response_text = self.tokenizer.ids_to_text(response_tokens.tolist())
+                    logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Response content at step {response_step_adjusted}, length {len(response_tokens)}, response_text: {response_text}")
+                    logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: EOTR marker after response at step {response_step_adjusted} (original={response_step_original}, offset={prompt_offset})")
+            
+            # Build channel by inserting function tokens at specified positions
+            channel_tokens = []
+            loss_mask = []
+            insertions = []
+            current_pos = 0
+            
+            for insert_pos, tokens, compute_loss in events:
+                # Add PAD tokens from current position to insertion point (both in original space)
+                pad_length = insert_pos - current_pos
+                if pad_length > 0:
+                    channel_tokens.extend([self.text_pad_id] * pad_length)
+                    loss_mask.extend([True] * pad_length)  # Enable PAD loss to prevent hallucination
+                
+                # Insert function tokens (this expands the sequence)
+                channel_tokens.extend(tokens.tolist())
+                loss_mask.extend([compute_loss] * len(tokens))
+                
+                # Track insertion for expanding other channels
+                insertions.append((insert_pos, len(tokens)))
+                
+                # Update current position to AFTER insertion point in ORIGINAL space
+                # (We stay in original coordinate space, not expanded space)
+                current_pos = insert_pos
+            
+            # Add remaining PAD tokens from last insertion point to end of original sequence
+            remaining = seq_length - current_pos
+            if remaining > 0:
+                channel_tokens.extend([self.text_pad_id] * remaining)
+                loss_mask.extend([True] * remaining)  # Enable PAD loss to prevent hallucination
+            
+            # Convert to tensors
+            batch_channels.append(torch.tensor(channel_tokens, dtype=torch.long, device=device))
+            batch_loss_masks.append(torch.tensor(loss_mask, dtype=torch.bool, device=device))
+            batch_insertions.append(insertions)
+            
+            if self.cfg.get("debug_fc", False):
+                expanded_length = len(channel_tokens)
+                total_inserted = sum(length for _, length in insertions)
+                logging.info(f"[FC Model] Batch {b}: {len(events)} events, {len(insertions)} insertions")
+                logging.info(f"[FC Model] Batch {b}: Original length {seq_length} → Expanded length {expanded_length} (inserted {total_inserted})")
+        
+        # Pad all batch items to maximum expanded length
+        max_expanded_length = max(len(ch) for ch in batch_channels)
+        function_channel = torch.full((B, max_expanded_length), self.text_pad_id, dtype=torch.long, device=device)
+        function_loss_mask = torch.zeros((B, max_expanded_length), dtype=torch.bool, device=device)
+        
+        for b in range(B):
+            length = len(batch_channels[b])
+            function_channel[b, :length] = batch_channels[b]
+            function_loss_mask[b, :length] = batch_loss_masks[b]
+        
+        if self.cfg.get("debug_fc", False):
+            non_pad = (function_channel != self.text_pad_id).sum().item()
+            loss_true = function_loss_mask.sum().item()
+            logging.info(f"[FC Model] Final function channel shape: {function_channel.shape}")
+            logging.info(f"[FC Model] Non-PAD tokens: {non_pad}, Loss computed on: {loss_true} tokens")
+            
+            # Print first batch item's function channel in detail
+            logging.info(f"[FC Model] ============ FUNCTION CHANNEL VERIFICATION (Batch 0) ============")
+            fc_sample = function_channel[0]
+            fc_mask_sample = function_loss_mask[0]
+            
+            # Find non-PAD positions
+            non_pad_positions = (fc_sample != self.text_pad_id).nonzero(as_tuple=True)[0]
+            if len(non_pad_positions) > 0:
+                logging.info(f"[FC Model] Non-PAD positions: {non_pad_positions.tolist()}")
+                logging.info(f"[FC Model] Function tokens at those positions:")
+                for pos in non_pad_positions[:20]:  # Show first 20
+                    pos_val = pos.item()
+                    token_id = fc_sample[pos_val].item()
+                    compute_loss = fc_mask_sample[pos_val].item()
+                    # Decode token
+                    try:
+                        token_text = self.tokenizer.ids_to_text([token_id])
+                    except:
+                        token_text = f"<ID:{token_id}>"
+                    loss_str = "LOSS=YES" if compute_loss else "LOSS=NO"
+                    logging.info(f"[FC Model]   Pos {pos_val}: Token={token_text} (id={token_id}) {loss_str}")
+            else:
+                logging.info(f"[FC Model] No function calls/responses in this batch")
+            logging.info(f"[FC Model] ================================================================")
+        return function_channel, function_loss_mask, batch_insertions
+
+    def _compute_audio_duration_from_frames(self, num_frames: int, subsampling_factor: float, sample_rate: int) -> float:
+        """
+        Reverse calculation: Convert number of embedding frames back to audio duration.
+        
+        This reverses the typical compute_num_frames calculation:
+            Forward:  num_frames = floor(audio_samples / subsampling_factor)
+            Reverse:  audio_samples = num_frames * subsampling_factor
+            Duration: duration_seconds = audio_samples / sample_rate
+        
+        Args:
+            num_frames: Number of embedding frames
+            subsampling_factor: The ratio of audio samples to embedding frames
+            sample_rate: Audio sampling rate (e.g., 16000 Hz)
+            
+        Returns:
+            duration_seconds: Duration in seconds
+        """
+        audio_samples = num_frames * subsampling_factor
+        duration_seconds = audio_samples / sample_rate
+        return duration_seconds
+    
+    def _ensure_silence_fps_initialized(self):
+        """
+        Ensure the silence frames-per-second ratio is initialized.
+        
+        This should be called from on_train_start() for eager initialization,
+        or as a fallback during inference if not yet initialized.
+        """
+        if self._silence_frames_per_second is not None:
+            return  # Already initialized
+            
+        if not hasattr(self, 'perception') or self.perception is None:
+            logging.warning("Perception module not available, skipping silence FPS initialization")
+            return
+        
+        # Create 1-second template to get frames-per-second ratio
+        logging.info("[Silence Init] Creating 1-second silence template to compute frames-per-second ratio...")
+        try:
+            device = next(self.perception.parameters()).device
+            _, training_fps = create_one_second_silence_template(
+                perception_module=self.perception,
+                sample_rate=self.source_sample_rate,
+                device=device,
+            )
+            self._silence_frames_per_second = training_fps
+            
+            if torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+                logging.info(f"[Silence Init] Rank {rank}: Silence ratio = {training_fps:.2f} frames/sec")
+            else:
+                logging.info(f"[Silence Init] Silence ratio = {training_fps:.2f} frames/sec")
+        except Exception as e:
+            logging.error(f"[Silence Init] Failed to create silence FPS template: {e}")
+            raise
+    
+    def _ensure_silence_template_initialized(self):
+        """
+        Lazily initialize the full 60-second silence template for INFERENCE.
+        
+        This is only needed during inference when function responses are injected.
+        Typically only called during inference/validation, not training.
+        """
+        if self._silence_template_initialized:
+            return  # Already initialized
+            
+        if not hasattr(self, 'perception') or self.perception is None:
+            logging.warning("Perception module not available, skipping silence template initialization")
+            return
+        
+        # Create silence template (60 seconds for INFERENCE)
+        silence_template_seconds = 60
+        logging.info(f"[Silence Template Init] Creating {silence_template_seconds}-second silence template for inference...")
+        
+        try:
+            silence_embeddings, silence_asr_embeddings, silence_fps = self._create_silence_template(
+                duration_seconds=silence_template_seconds,
+            )
+            
+            # Move to CPU for storage to save GPU memory
+            self._silence_template_embeddings = silence_embeddings.cpu()
+            self._silence_template_asr_embeddings = silence_asr_embeddings.cpu()
+            self._silence_frames_per_second = silence_fps
+            self._silence_template_initialized = True
+            
+            if torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+                logging.info(f"[Rank {rank}] 60s silence template created: {self._silence_template_embeddings.shape[0]} frames "
+                           f"({silence_template_seconds}s @ {self._silence_frames_per_second:.2f} frames/sec)")
+            else:
+                logging.info(f"[Silence Template Init] Silence template created: {self._silence_template_embeddings.shape[0]} frames "
+                           f"({silence_template_seconds}s @ {self._silence_frames_per_second:.2f} frames/sec)")
+        except Exception as e:
+            logging.error(f"[Silence Template Init] Failed to create 60s silence template: {e}")
+            raise
+    
+    def on_train_start(self) -> None:
+        """
+        PyTorch Lightning hook called when training starts.
+        
+        Initialize silence templates here to ensure:
+        - Model is fully on GPU and distributed setup is complete
+        - All ranks participate together (no deadlocks)
+        - Happens before any batches are processed
+        """
+        super().on_train_start()
+        
+        if torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+            logging.info(f"[Rank {rank}] on_train_start: Initializing silence templates for training...")
+        else:
+            logging.info("[on_train_start] Initializing silence templates for training...")
+        
+        # Initialize the 1-second template for training (all ranks participate)
+        self._ensure_silence_fps_initialized()
+        
+        if torch.distributed.is_initialized():
+            # Synchronize all ranks before proceeding
+            torch.distributed.barrier()
+            logging.info(f"[Rank {rank}] Silence FPS initialization complete, training ready to start.")
+        else:
+            logging.info("Silence FPS initialization complete, training ready to start.")
+    
+    def _create_silence_template(
+        self,
+        duration_seconds: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, float]:
+        """
+        Create a silence embedding template of specified duration.
+        
+        This template will be used to efficiently insert silence during function calling
+        by slicing frame-by-frame instead of regenerating silence each time.
+        
+        Args:
+            duration_seconds: Duration of silence template in seconds (e.g., 60)
+            
+        Returns:
+            silence_embeddings: Tensor of shape [num_frames, hidden_size] 
+            frames_per_second: Number of embedding frames per second
+        """
+        # Create silence audio
+        num_samples = int(duration_seconds * self.source_sample_rate)
+        
+        # Use the same device and dtype as regular user audio
+        # Audio is always float32 by default, same as user audio from dataset
+        perception_device = next(self.perception.parameters()).device
+        perception_dtype = next(self.perception.parameters()).dtype
+        audio_dtype = torch.float32  # Standard dtype for audio, same as user audio
+        
+        logging.info(f"[Silence Template] Creating with device={perception_device}, audio_dtype={audio_dtype} (matching user audio)")
+        logging.info(f"[Silence Template] Perception module parameters dtype: {perception_dtype}")
+        
+        silence_audio = torch.zeros(1, num_samples, device=perception_device, dtype=audio_dtype)
+        audio_length = torch.tensor([num_samples], device=perception_device, dtype=torch.long)
+        
+        logging.info(f"[Silence Template] Created silence_audio with dtype={silence_audio.dtype}, device={silence_audio.device}")
+        
+        # Encode through perception module with autocast if needed
+        # During training, autocast is enabled which handles float32->bfloat16 conversion
+        # During init, we need to explicitly enable it to match training behavior
+        with torch.no_grad():
+            # Enable autocast if perception module uses bfloat16 (to match training behavior)
+            if perception_dtype == torch.bfloat16 and perception_device.type == 'cuda':
+                logging.info(f"[Silence Template] Enabling autocast for bfloat16 perception module")
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    silence_encoded, encoded_length, silence_asr = self.perception(
+                        input_signal=silence_audio,
+                        input_signal_length=audio_length,
+                        return_encoder_emb=True
+                    )
+            else:
+                silence_encoded, encoded_length, silence_asr = self.perception(
+                    input_signal=silence_audio,
+                    input_signal_length=audio_length,
+                    return_encoder_emb=True
+                )
+        
+        # Extract embeddings (remove batch dimension)
+        num_frames = encoded_length[0].item()
+        silence_embeddings = silence_encoded[0, :num_frames, :].clone()  # [num_frames, H]
+        silence_asr_embeddings = silence_asr[0, :num_frames, :].clone()  # [num_frames, H]
+        
+        # Calculate frames per second ratio
+        frames_per_second = num_frames / duration_seconds
+        
+        # Log statistics to check if silence is uniform across time
+        if self.cfg.get("debug_fc", False) or True:  # Always log this for now
+            logging.info(f"[Silence Template] Statistics for {duration_seconds}s template ({num_frames} frames):")
+            
+            # Overall statistics
+            silence_mean = silence_embeddings.mean().item()
+            silence_std = silence_embeddings.std().item()
+            silence_min = silence_embeddings.min().item()
+            silence_max = silence_embeddings.max().item()
+            logging.info(f"[Silence Template]   Overall: mean={silence_mean:.6f}, std={silence_std:.6f}, min={silence_min:.6f}, max={silence_max:.6f}")
+            
+            # Compare different time positions to check uniformity
+            if num_frames >= 10:
+                # Sample frames at 0%, 25%, 50%, 75%, 100% positions
+                positions = [0, num_frames // 4, num_frames // 2, 3 * num_frames // 4, num_frames - 1]
+                logging.info(f"[Silence Template]   Comparing frames at different positions:")
+                
+                for i, pos in enumerate(positions):
+                    frame = silence_embeddings[pos]  # [H]
+                    frame_mean = frame.mean().item()
+                    frame_std = frame.std().item()
+                    frame_norm = torch.norm(frame).item()
+                    logging.info(f"[Silence Template]     Frame {pos} ({pos/num_frames*100:.0f}%): mean={frame_mean:.6f}, std={frame_std:.6f}, L2norm={frame_norm:.6f}")
+                
+                # Check similarity between first and last frame
+                first_frame = silence_embeddings[0]
+                last_frame = silence_embeddings[-1]
+                cosine_sim = torch.nn.functional.cosine_similarity(first_frame.unsqueeze(0), last_frame.unsqueeze(0)).item()
+                l2_distance = torch.norm(first_frame - last_frame).item()
+                logging.info(f"[Silence Template]   First vs Last frame: cosine_similarity={cosine_sim:.6f}, L2_distance={l2_distance:.6f}")
+                
+                # Check frame-to-frame variance
+                frame_diffs = torch.diff(silence_embeddings, dim=0)  # [num_frames-1, H]
+                avg_frame_diff = torch.norm(frame_diffs, dim=1).mean().item()
+                max_frame_diff = torch.norm(frame_diffs, dim=1).max().item()
+                logging.info(f"[Silence Template]   Frame-to-frame variation: avg_L2_diff={avg_frame_diff:.6f}, max_L2_diff={max_frame_diff:.6f}")
+                
+                # Recommendation
+                if cosine_sim > 0.99 and avg_frame_diff < 0.01:
+                    logging.info(f"[Silence Template]   ✓ Silence is HIGHLY UNIFORM - can use single-frame repetition for efficiency")
+                elif cosine_sim > 0.95 and avg_frame_diff < 0.1:
+                    logging.info(f"[Silence Template]   ~ Silence is MOSTLY UNIFORM - single-frame repetition likely acceptable")
+                else:
+                    logging.info(f"[Silence Template]   ✗ Silence varies across time - full template needed")
+        
+        return silence_embeddings, silence_asr_embeddings, frames_per_second
+    
+    def _get_silence_embeddings(
+        self, 
+        length: int, 
+        subsampling_factor: float = None
+    ) -> torch.Tensor:
+        """
+        Generate proper silence embeddings for TRAINING by encoding actual silence audio.
+        
+        Uses pre-computed frames-per-second ratio to calculate exact audio duration needed.
+        Device and dtype are auto-detected from the perception module.
+        
+        Args:
+            length: Number of embedding frames needed
+            subsampling_factor: Ratio of audio samples to embedding frames (optional, for compatibility)
+            
+        Returns:
+            silence_embeddings: [length, hidden_size] - proper silence embeddings
+        """
+        # Ensure FPS ratio is initialized (lazy initialization on first use during training)
+        # This only creates a 1-second template to compute the ratio (much faster than 60s)
+        self._ensure_silence_fps_initialized()
+        
+        # Use the pre-computed ratio to generate silence for training
+        # Device and dtype are auto-detected from perception module
+        return get_silence_embeddings_from_ratio(
+            perception_module=self.perception,
+            frames_per_second=self._silence_frames_per_second,
+            sample_rate=self.source_sample_rate,
+            length=length,
+        )
+    
+    def _get_silence_embeddings_from_template(
+        self,
+        length: int,
+        device: torch.device = None,
+        dtype: torch.dtype = None,
+    ) -> torch.Tensor:
+        """
+        Generate silence embeddings for INFERENCE by slicing from pre-computed template.
+        
+        This is used during inference when function responses are injected to extend
+        the user audio channel, maintaining consistency with training's expanded sequences.
+        
+        Example:
+            - Template has 3000 frames (60 seconds @ 50 fps)
+            - Need 20 frames → slice template[0:20]
+            - Need 3500 frames → slice template[0:3000] + repeat template[-1] 500 times
+        
+        Args:
+            length: Number of embedding frames needed
+            device: Device to create tensors on (optional, defaults to template's device)
+            dtype: Data type for the embeddings (optional, defaults to template's dtype)
+            
+        Returns:
+            silence_embeddings: [length, hidden_size] - silence embeddings of exact length
+        """
+        # Ensure template is initialized (lazy initialization on first use)
+        self._ensure_silence_template_initialized()
+        
+        # Use template's device and dtype if not specified
+        if device is None:
+            device = self._silence_template_embeddings.device
+        if dtype is None:
+            dtype = self._silence_template_embeddings.dtype
+            
+        # Move template to target device if needed
+        template = self._silence_template_embeddings.to(device=device, dtype=dtype)
+        template_length = template.shape[0]
+        
+        if length <= template_length:
+            # Simple case: slice from template
+            result = template[:length].clone()
+        else:
+            # Requested length exceeds template: slice all + repeat last frame
+            num_repeats = length - template_length
+            last_frame = template[-1:].expand(num_repeats, -1)  # [num_repeats, H]
+            result = torch.cat([template, last_frame], dim=0)  # [length, H]
+        
+        # Log statistics about the sliced silence (only occasionally to avoid spam)
+        if self.cfg.get("debug_fc", False) and random.random() < 0.05:  # 5% sampling
+            result_mean = result.mean().item()
+            result_std = result.std().item()
+            result_norm = torch.norm(result).item()
+            logging.info(f"[Silence Slice] Requested {length} frames: mean={result_mean:.6f}, std={result_std:.6f}, L2norm={result_norm:.6f}")
+            
+            if length > template_length:
+                logging.info(f"[Silence Slice]   Extended beyond template: used {template_length} real + {num_repeats} repeated frames")
+        
+        return result
+
+    def _get_silence_asr_embeddings_from_template(
+        self,
+        length: int,
+        device: torch.device = None,
+        dtype: torch.dtype = None,
+    ) -> torch.Tensor:
+        """
+        Generate silence ASR embeddings for INFERENCE by slicing from pre-computed template.
+        """
+        self._ensure_silence_template_initialized()
+
+        if self._silence_template_asr_embeddings is None:
+            raise RuntimeError("Silence ASR template embeddings are not initialized.")
+
+        if device is None:
+            device = self._silence_template_asr_embeddings.device
+        if dtype is None:
+            dtype = self._silence_template_asr_embeddings.dtype
+
+        template = self._silence_template_asr_embeddings.to(device=device, dtype=dtype)
+        template_length = template.shape[0]
+
+        if length <= template_length:
+            result = template[:length].clone()
+        else:
+            num_repeats = length - template_length
+            last_frame = template[-1:].expand(num_repeats, -1)
+            result = torch.cat([template, last_frame], dim=0)
+
+        return result
+    
+    def _expand_channels_with_insertions(
+        self,
+        target_tokens: torch.Tensor,
+        source_encoded: torch.Tensor,
+        insertion_positions: list,
+        subsampling_factor: float = 8.0,
+        source_tokens: torch.Tensor = None,
+    ) -> tuple:
+        """
+        Expand agent text, user audio, and optionally user text channels by inserting PAD/silence at function call positions.
+        
+        According to the architecture diagram:
+        - Agent text channel gets PAD tokens at function call positions
+        - User audio channel gets silence (proper encoded silence) at function call positions
+        - User text channel (if provided) gets PAD tokens at function call positions
+        - Original content is preserved by shifting right
+        
+        Args:
+            target_tokens: [B, L] - original agent text tokens
+            source_encoded: [B, L, H] - original user audio encoding  
+            insertion_positions: List[List[Tuple[int, int]]] - (position, length) pairs per batch item
+            subsampling_factor: Ratio of audio samples to embedding frames (computed from batch)
+            source_tokens: [B, L] - optional user text tokens (ASR transcription)
+        
+        Returns:
+            target_tokens_expanded: [B, L+F] - agent text with PAD insertions
+            source_encoded_expanded: [B, L+F, H] - user audio with silence insertions
+            expanded_lengths: [B] - actual lengths after expansion
+            source_tokens_expanded: [B, L+F] - user text with PAD insertions (only if source_tokens provided)
+        """
+        B, L = target_tokens.shape
+        H = source_encoded.shape[2]
+        device = target_tokens.device
+        dtype = source_encoded.dtype
+        
+        expanded_target_list = []
+        expanded_source_list = []
+        expanded_source_tokens_list = [] if source_tokens is not None else None
+        
+        # IMPORTANT: In distributed training, all ranks must call perception.forward() the SAME NUMBER OF TIMES
+        # to avoid NCCL deadlocks. We need to find the maximum number of insertions across all ranks
+        # and ensure every rank participates in that many perception calls.
+        
+        # Count total insertions per rank
+        total_insertions_this_rank = sum(len(pos_list) for pos_list in insertion_positions)
+        
+        if torch.distributed.is_initialized():
+            # Find the maximum number of insertions across all ranks
+            max_insertions_tensor = torch.tensor([total_insertions_this_rank], device=device, dtype=torch.int32)
+            torch.distributed.all_reduce(max_insertions_tensor, op=torch.distributed.ReduceOp.MAX)
+            max_insertions_across_ranks = max_insertions_tensor.item()
+            
+            # Calculate how many dummy calls this rank needs to make
+            dummy_calls_needed = max_insertions_across_ranks - total_insertions_this_rank
+            # ALL ranks must participate in collective operations the same number of times.
+            if dummy_calls_needed > 0:
+                rank = torch.distributed.get_rank()
+                logging.debug(f"[Rank {rank}] Making {dummy_calls_needed} dummy silence calls for synchronization (has {total_insertions_this_rank}, max is {max_insertions_across_ranks})")
+                # Make dummy calls to participate in collective ops
+                for _ in range(dummy_calls_needed):
+                    dummy_silence = self._get_silence_embeddings(1, subsampling_factor)
+        
+        for b in range(B):
+            # Work with individual sequences
+            tokens = target_tokens[b]  # [L]
+            encoded = source_encoded[b]  # [L, H]
+            src_tokens = source_tokens[b] if source_tokens is not None else None  # [L]
+            
+            # Apply insertions sequentially (already sorted by position in _build_function_calling_channel)
+            offset = 0  # Track cumulative shift
+            for insert_pos, insert_length in insertion_positions[b]:
+                adjusted_pos = insert_pos + offset
+                
+                # Insert PAD tokens in agent text channel (silence during function calling)
+                pad_tokens = torch.full((insert_length,), self.text_pad_id, device=device, dtype=tokens.dtype)
+                tokens = torch.cat([tokens[:adjusted_pos], pad_tokens, tokens[adjusted_pos:]], dim=0)
+                
+                # Insert proper silence embeddings in user audio channel (encoded from actual silence audio)
+                # Device and dtype are auto-detected from perception module
+                silence = self._get_silence_embeddings(insert_length, subsampling_factor)
+                encoded = torch.cat([encoded[:adjusted_pos], silence, encoded[adjusted_pos:]], dim=0)
+                
+                # Insert PAD tokens in user text channel if present (ASR transcription)
+                if src_tokens is not None:
+                    src_tokens = torch.cat([src_tokens[:adjusted_pos], pad_tokens, src_tokens[adjusted_pos:]], dim=0)
+                
+                offset += insert_length
+            
+            expanded_target_list.append(tokens)
+            expanded_source_list.append(encoded)
+            if src_tokens is not None:
+                expanded_source_tokens_list.append(src_tokens)
+        
+        # Pad to maximum expanded length across batch
+        max_expanded_length = max(len(tokens) for tokens in expanded_target_list)
+        target_tokens_expanded = torch.full((B, max_expanded_length), self.text_pad_id, dtype=torch.long, device=device)
+        source_encoded_expanded = torch.zeros((B, max_expanded_length, H), device=device, dtype=dtype)
+        source_tokens_expanded = torch.full((B, max_expanded_length), self.text_pad_id, dtype=torch.long, device=device) if source_tokens is not None else None
+        
+        # Track actual lengths for each batch item (before padding to max)
+        expanded_lengths = torch.zeros(B, dtype=torch.long, device=device)
+        
+        for b in range(B):
+            length = len(expanded_target_list[b])
+            target_tokens_expanded[b, :length] = expanded_target_list[b]
+            source_encoded_expanded[b, :length] = expanded_source_list[b]
+            if source_tokens_expanded is not None:
+                source_tokens_expanded[b, :length] = expanded_source_tokens_list[b]
+            expanded_lengths[b] = length
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[FC Model] Expanded channels: {L} → {max_expanded_length} (+{max_expanded_length - L})")
+            
+            # Detailed verification for first batch item
+            logging.info(f"[FC Model] ============ CHANNEL EXPANSION VERIFICATION (Batch 0) ============")
+            logging.info(f"[FC Model] Insertion positions: {insertion_positions[0]}")
+            
+            # Show agent text tokens at insertion positions
+            expanded_tokens = expanded_target_list[0]
+            expanded_audio = expanded_source_list[0]
+            
+            for insert_idx, (pos, length) in enumerate(insertion_positions[0]):
+                # Calculate actual position after previous insertions
+                actual_pos = pos + sum(l for p, l in insertion_positions[0][:insert_idx])
+                
+                logging.info(f"[FC Model] Insertion {insert_idx+1}: Original pos={pos}, Actual pos={actual_pos}, Length={length}")
+                
+                # Show agent text tokens at insertion (should be all PAD)
+                agent_tokens_at_insertion = expanded_tokens[actual_pos:actual_pos+length]
+                num_pads = (agent_tokens_at_insertion == self.text_pad_id).sum().item()
+                logging.info(f"[FC Model]   Agent text at insertion: {num_pads}/{length} are PAD tokens ✓" if num_pads == length else f"[FC Model]   Agent text at insertion: {num_pads}/{length} are PAD tokens ✗")
+                
+                # Show user audio at insertion (should be all zeros)
+                audio_at_insertion = expanded_audio[actual_pos:actual_pos+length]
+                audio_norm = torch.norm(audio_at_insertion).item()
+                logging.info(f"[FC Model]   User audio at insertion: L2 norm={audio_norm:.6f} (should be ~0.0)")
+                
+                # Show what comes before and after
+                if actual_pos > 0:
+                    before_tokens = expanded_tokens[max(0, actual_pos-3):actual_pos]
+                    try:
+                        before_text = self.tokenizer.ids_to_text(before_tokens.tolist())
+                    except:
+                        before_text = str(before_tokens.tolist())
+                    logging.info(f"[FC Model]   Agent text BEFORE insertion: '{before_text}'")
+                
+                if actual_pos + length < len(expanded_tokens):
+                    after_tokens = expanded_tokens[actual_pos+length:min(len(expanded_tokens), actual_pos+length+3)]
+                    try:
+                        after_text = self.tokenizer.ids_to_text(after_tokens.tolist())
+                    except:
+                        after_text = str(after_tokens.tolist())
+                    logging.info(f"[FC Model]   Agent text AFTER insertion: '{after_text}'")
+            
+            logging.info(f"[FC Model] ==================================================================")
+        if source_tokens_expanded is not None:
+            return target_tokens_expanded, source_encoded_expanded, expanded_lengths, source_tokens_expanded
+        else:
+            return target_tokens_expanded, source_encoded_expanded, expanded_lengths
+
+    def prepare_inputs(self, batch: dict):
 
         if self.cfg.get('debug', False):
             import soundfile as sf
@@ -701,7 +1473,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             src_audio_np = batch["source_audio"][0].detach().cpu().numpy()
             sf.write(wav_path, src_audio_np, sample_rate)
             print(f"Wrote batch 0 source_audio to {wav_path}")
-            import pdb; pdb.set_trace()
 
         # Add backchannel augmentation (only during training, when agent is talking / user is silent)
         if self.cfg.get('backchannel_prob', None) and self.cfg.backchannel_prob > 0:
@@ -727,6 +1498,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
 
         
+        # Log user audio dtype for debugging
+        logging.info(f"User audio dtype: {batch['source_audio'].dtype}, device: {batch['source_audio'].device}, shape: {batch['source_audio'].shape}")
+        
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],
             input_signal_length=batch["source_audio_lens"],
@@ -740,6 +1514,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             B, max_prompt_len, H = prompt_embedded.shape
             T_src = source_encoded.shape[1]
             T_tgt = target_tokens.shape[1]
+            
+            # Always log system prompt (regardless of debug_fc setting)
+            logging.info(f"[Training] System prompt detected: batch_size={B}, max_prompt_len={max_prompt_len}")
+            for i in range(min(B, 2)):  # Show first 2 samples
+                prompt_len = batch["prompt_token_lens"][i].item()
+                if prompt_len > 0:
+                    prompt_tokens_sample = batch["prompt_tokens"][i, :prompt_len].tolist()
+                    prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
+                logging.info(f"[Training] System Prompt (Sample {i}, {prompt_len} tokens):")
+                logging.info(f"[Training]   Full text: {prompt_text}")
+                if len(prompt_text) > 200:
+                    logging.info(f"[Training]   (truncated preview): {prompt_text[:200]}...")
 
             new_source_encoded = torch.zeros(B, max_prompt_len + T_src, H,
                                              dtype=source_encoded.dtype, device=source_encoded.device)
@@ -778,6 +1564,16 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     new_source_tokens[i, prompt_len:prompt_len + src_len] = source_tokens[i, :src_len]
                     batch["source_token_lens"][i] = prompt_len + src_len
             
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[Training] After prompt prepending: source_encoded shape={new_source_encoded.shape}, "
+                           f"target_tokens shape={new_target_tokens.shape}")
+                # Verify PAD region
+                for i in range(min(B, 2)):
+                    prompt_len = batch["prompt_token_lens"][i].item()
+                    if prompt_len > 0:
+                        pad_count = (new_target_tokens[i, :prompt_len] == self.text_pad_id).sum().item()
+                        logging.info(f"[Training] Sample {i}: prompt_len={prompt_len}, PAD tokens in prompt region={pad_count}")
+            
             source_encoded = new_source_encoded
             target_tokens = new_target_tokens
             if "source_tokens" in batch:
@@ -792,10 +1588,142 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         elif diff > 0:
             target_tokens = target_tokens[:, : source_encoded.shape[1]]
 
+
+        # Align source_tokens (user text) with source_encoded (user audio) if present
+        # Semantically correct: user text aligns with user audio (both are source/user content)
+        if "source_tokens" in batch and self.predict_user_text:
+            source_tokens = batch["source_tokens"]
+            if (diff := source_tokens.shape[1] - source_encoded.shape[1]) < 0:
+                source_tokens = torch.cat([
+                    source_tokens,
+                    (torch.ones(source_encoded.shape[0], abs(diff), device=source_encoded.device) * self.text_pad_id).to(
+                        torch.long),
+                ], dim=-1)
+                batch["source_token_lens"] = batch["source_token_lens"] + abs(diff)
+            elif diff > 0:
+                source_tokens = source_tokens[:, : source_encoded.shape[1]]
+                batch["source_token_lens"] = batch["source_token_lens"] - diff
+            batch["source_tokens"] = source_tokens
+
         # Optional: convert pad tokens to sil tokens
         sil_id = None
         if self.cfg.get("use_sil_token", False):
             target_tokens, sil_id = self._convert_pad_to_sil(target_tokens)
+
+        # Build function calling channel and expand sequences BEFORE prepare_labels
+        # IMPORTANT: Using insertion approach - sequence length will expand from L to L+F
+        function_channel = None
+        function_channel_loss_mask = None
+        insertion_positions = None
+        
+        if "function_calls" in batch and batch["function_calls"] is not None:
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] FUNCTION CALLING INSERTION - BEFORE EXPANSION")
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] Original target_tokens shape: {target_tokens.shape}")
+                logging.info(f"[FC Model] Original source_encoded shape: {source_encoded.shape}")
+                
+                # Show sample of original agent text
+                sample_len = min(50, target_tokens.shape[1])
+                sample_tokens = target_tokens[0, :sample_len]
+                try:
+                    sample_text = self.tokenizer.ids_to_text(sample_tokens.tolist())
+                    logging.info(f"[FC Model] Original agent text (first 50 tokens): '{sample_text}'")
+                except:
+                    logging.info(f"[FC Model] Original agent text (first 50 tokens): {sample_tokens.tolist()}")
+            
+            # Build function channel with insertion approach
+            # Returns expanded sequence and insertion positions for other channels
+            function_channel, function_channel_loss_mask, insertion_positions = self._build_function_calling_channel(
+                batch, target_tokens.shape[1]
+            )
+            
+            # Compute subsampling factor from the actual batch data
+            # This is the ratio of audio samples to embedding frames
+            # Average across the batch for more robust estimation
+            audio_lens = batch["source_audio_lens"]
+            subsampling_factors = []
+            for i in range(min(len(audio_lens), len(source_encoded_lens))):
+                audio_len = audio_lens[i].item()
+                encoded_len = source_encoded_lens[i].item()
+                if encoded_len > 0:  # Avoid division by zero
+                    subsampling_factors.append(audio_len / encoded_len)
+            
+            subsampling_factor = sum(subsampling_factors) / len(subsampling_factors) if subsampling_factors else 8.0
+            
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[FC Model] Computed subsampling factor: {subsampling_factor:.2f} (avg of {len(subsampling_factors)} samples)")
+            
+            # Expand target_tokens, source_encoded, and optionally source_tokens to match function channel
+            # This inserts PAD in text channels and proper silence embeddings in user audio at function positions
+            source_tokens_to_expand = batch.get("source_tokens") if self.predict_user_text else None
+            
+            if source_tokens_to_expand is not None:
+                # Expand all three channels together
+                target_tokens, source_encoded, expanded_lengths, source_tokens_expanded = self._expand_channels_with_insertions(
+                    target_tokens, source_encoded, insertion_positions, subsampling_factor, source_tokens_to_expand
+                )
+                batch["source_tokens"] = source_tokens_expanded
+                
+                if self.cfg.get("debug_fc", False):
+                    logging.info(f"[FC Model] Expanded source_tokens (ASR): {source_tokens_expanded.shape}")
+            else:
+                # Only expand target_tokens and source_encoded
+                target_tokens, source_encoded, expanded_lengths = self._expand_channels_with_insertions(
+                    target_tokens, source_encoded, insertion_positions, subsampling_factor
+                )
+            
+            # Update batch["target_token_lens"] and source_encoded_lens with expanded lengths
+            batch["target_token_lens"] = expanded_lengths
+            source_encoded_lens = expanded_lengths.clone()
+            
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] FUNCTION CALLING INSERTION - AFTER EXPANSION")
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] Expanded target_tokens: {target_tokens.shape}")
+                logging.info(f"[FC Model] Expanded source_encoded: {source_encoded.shape}")
+                logging.info(f"[FC Model] Function channel: {function_channel.shape}")
+                logging.info(f"[FC Model] Expansion: {target_tokens.shape[1] - function_channel.shape[1] + function_channel.shape[1]} = Original + Inserted")
+                
+                # Show sample of expanded agent text to verify PAD insertions
+                sample_len = min(50, target_tokens.shape[1])
+                sample_tokens = target_tokens[0, :sample_len]
+                try:
+                    sample_text = self.tokenizer.ids_to_text(sample_tokens.tolist())
+                    logging.info(f"[FC Model] Expanded agent text (first 50 tokens): '{sample_text}'")
+                except:
+                    logging.info(f"[FC Model] Expanded agent text (first 50 tokens): {sample_tokens.tolist()}")
+                
+                # Count PAD tokens in expanded sequence
+                num_pads = (target_tokens[0] == self.text_pad_id).sum().item()
+                logging.info(f"[FC Model] Number of PAD tokens in expanded agent text: {num_pads}")
+                
+                # Verify all three channels have same length
+                assert target_tokens.shape[1] == source_encoded.shape[1] == function_channel.shape[1], \
+                    f"Channel length mismatch: target={target_tokens.shape[1]}, source={source_encoded.shape[1]}, function={function_channel.shape[1]}"
+                logging.info(f"[FC Model] ✓ All channels have same length: {target_tokens.shape[1]}")
+                logging.info(f"[FC Model] ============================================================")
+        else:
+            if self.cfg.get("debug_fc", False):
+                logging.debug(f"[FC Model] No function calling data in this batch")
+        
+        # Now call prepare_labels with EXPANDED sequences
+        if function_channel is not None and self.cfg.get("debug_fc", False):
+            chunk_size = int(self.cfg.get("debug_fc", 200))
+            for b in range(function_channel.shape[0]):
+                self._log_long_list(
+                    f"[FC Model] FULL function_channel[{b}] len={function_channel.shape[1]}",
+                    function_channel[b].tolist(),
+                    chunk_size,
+                )
+                self._log_long_list(
+                    f"[FC Model] FULL function_loss_mask[{b}] len={function_channel_loss_mask.shape[1]}",
+                    function_channel_loss_mask[b].int().tolist(),
+                    chunk_size,
+                )
+                logging.info(f"[FC Model] Insertion positions (original space) batch {b}: {insertion_positions[b]}")
 
         inputs = prepare_labels(
             batch=batch,
@@ -811,6 +1739,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             advance_text_channel_by=self.advance_text_channel_by,
             use_tp=self._use_tp,
             device_mesh=self.device_mesh if self._use_tp else None,
+            function_channel=function_channel,
+            function_channel_loss_mask=function_channel_loss_mask,
+            prompt_token_lens=batch.get("prompt_token_lens", None),
         )
 
         source_encoded = inputs["source_encoded"]
@@ -819,19 +1750,162 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.predict_user_text:
             asr_inputs = inputs["asr_inputs"]
             asr_labels = inputs["asr_labels"]
-
+        
+        # Extract function calling channel if present 
+        function_inputs = None
+        function_labels = None
+        function_loss_mask = None
+        if function_channel is not None:
+            function_inputs = inputs["function_inputs"]
+            function_labels = inputs["function_labels"]
+            function_loss_mask = inputs["function_loss_mask"]
+            
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] AFTER TEMPORAL SHIFTS (advance_text_channel_by={self.advance_text_channel_by}, "
+                           f"delay_text_channel_by={self.cfg.get('delay_text_channel_by', 0)})")
+                logging.info(f"[FC Model] text_inputs shape: {text_inputs.shape}")
+                logging.info(f"[FC Model] function_inputs shape: {function_inputs.shape}")
+                logging.info(f"[FC Model] source_encoded shape (after [:, :-1]): {source_encoded[:, :-1].shape}")
+                
+                # Show first 50 tokens from each channel to verify alignment
+                sample_len = min(50, text_inputs.shape[1])
+                
+                # Agent text channel
+                text_sample = text_inputs[0, :sample_len]
+                try:
+                    text_decoded = self.tokenizer.ids_to_text(text_sample.tolist())
+                    logging.info(f"[FC Model] Agent text (first {sample_len}): '{text_decoded}'")
+                except:
+                    logging.info(f"[FC Model] Agent text (first {sample_len}): {text_sample.tolist()}")
+                
+                # Function calling channel
+                func_sample = function_inputs[0, :sample_len]
+                non_pad_func = func_sample[func_sample != self.text_pad_id]
+                if len(non_pad_func) > 0:
+                    try:
+                        func_decoded = self.tokenizer.ids_to_text(func_sample.tolist())
+                        logging.info(f"[FC Model] Function channel (first {sample_len}): '{func_decoded}'")
+                        logging.info(f"[FC Model] Function channel non-PAD tokens: {non_pad_func.tolist()[:20]}")
+                    except:
+                        logging.info(f"[FC Model] Function channel (first {sample_len}): {func_sample.tolist()}")
+                else:
+                    logging.info(f"[FC Model] Function channel (first {sample_len}): all PAD tokens")
+                
+                # Check alignment at positions where function tokens exist
+                func_positions = (function_inputs[0] != self.text_pad_id).nonzero(as_tuple=True)[0]
+                if len(func_positions) > 0:
+                    logging.info(f"[FC Model] Function tokens found at {len(func_positions)} positions")
+                    logging.info(f"[FC Model] First 10 function token positions: {func_positions[:10].tolist()}")
+                    
+                    # Verify that agent text has PAD at these positions
+                    text_at_func_pos = text_inputs[0, func_positions[:10]]
+                    num_text_pads = (text_at_func_pos == self.text_pad_id).sum().item()
+                    logging.info(f"[FC Model] At first 10 function positions, agent text has {num_text_pads}/10 PAD tokens (should be high)")
+                
+                # Show loss mask statistics
+                num_loss_on = function_loss_mask[0].sum().item()
+                total_positions = function_loss_mask[0].numel()
+                logging.info(f"[FC Model] Function loss mask: {num_loss_on}/{total_positions} positions enabled")
+                logging.info(f"[FC Model] ============================================================")
+        
+        # Build input embeddings from all channels
         input_embeds = self.embed_tokens(text_inputs) * self.cfg.get("duplex_text_channel_weight", 1.0)
         input_embeds.add_(source_encoded[:, :-1] * self.cfg.get("duplex_user_channel_weight", 1.0))
+        
         if self.predict_user_text:
+            # ASR inputs are text tokens IDs for the user asr channel
             asr_inputs_embeds = self.embed_asr_tokens(asr_inputs) * self.cfg.get("duplex_asr_text_weight", 1.0)
             input_embeds.add_(asr_inputs_embeds)
-
+        
+        # Add function calling channel embedding if present
+        if function_inputs is not None:
+            # Verify shape consistency after expansion and temporal shifts
+            if function_inputs.shape != text_inputs.shape:
+                raise ValueError(
+                    f"Shape mismatch after insertion and temporal shifts: function_inputs {function_inputs.shape} "
+                    f"vs text_inputs {text_inputs.shape}. This indicates a bug in expansion/shift logic."
+                )
+            
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] FINAL INPUT EMBEDDINGS - ALL CHANNELS COMBINED")
+                logging.info(f"[FC Model] ============================================================")
+                logging.info(f"[FC Model] Adding function calling channel to input_embeds")
+                logging.info(f"[FC Model] text_inputs shape: {text_inputs.shape}")
+                logging.info(f"[FC Model] function_inputs shape: {function_inputs.shape}")
+                logging.info(f"[FC Model] ✓ Shapes match - channels are properly aligned")
+                
+                # Show where each channel contributes to the input
+                # Sample first 30 positions
+                sample_len = min(30, text_inputs.shape[1])
+                logging.info(f"[FC Model] Channel contribution (first {sample_len} positions, batch 0):")
+                logging.info(f"[FC Model] {'Pos':<5} {'Agent':<15} {'Function':<15} {'Combined'}")
+                logging.info(f"[FC Model] {'-'*5} {'-'*15} {'-'*15} {'-'*15}")
+                
+                for pos in range(sample_len):
+                    text_token = text_inputs[0, pos].item()
+                    func_token = function_inputs[0, pos].item()
+                    
+                    # Decode tokens
+                    try:
+                        text_str = self.tokenizer.ids_to_text([text_token])[:10]
+                    except:
+                        text_str = f"<{text_token}>"
+                    
+                    try:
+                        func_str = self.tokenizer.ids_to_text([func_token])[:10]
+                    except:
+                        func_str = f"<{func_token}>"
+                    
+                    # Determine what's active
+                    text_active = "✓" if text_token != self.text_pad_id else " "
+                    func_active = "✓" if func_token != self.text_pad_id else " "
+                    
+                    combined = []
+                    if text_token != self.text_pad_id:
+                        combined.append("Agent")
+                    if func_token != self.text_pad_id:
+                        combined.append("Function")
+                    if not combined:
+                        combined.append("Silence")
+                    
+                    logging.info(f"[FC Model] {pos:<5} {text_active} {text_str:<13} {func_active} {func_str:<13} {'+'.join(combined)}")
+                
+                logging.info(f"[FC Model] ============================================================")
+            
+            # Use shared embedding for function channel (same vocab as text)
+            function_channel_weight = self.cfg.get("duplex_function_channel_weight", 1.0)
+            function_inputs_embeds = self.embed_tokens(function_inputs) * function_channel_weight
+            input_embeds.add_(function_inputs_embeds)
+        else:
+            function_labels = None
+            function_channel_loss_mask = None
+        
         seq_mask = torch.ones_like(text_labels.unsqueeze(-1), device=self.device, dtype=torch.bool)
-
+        
         if self.cfg.get("mask_sequence_loss", True):
             for i in range(batch["target_token_lens"].size(0)):
-                speech_end_idx = batch["target_token_lens"][i]
+                # If function calling is present, batch["target_token_lens"] contains expanded_lengths
+                # Need to subtract 1 to account for temporal shift in prepare_labels ([:, :-1])
+                if function_channel is not None:
+                    speech_end_idx = batch["target_token_lens"][i] - 1
+                else:
+                    speech_end_idx = batch["target_token_lens"][i]
                 seq_mask[i, speech_end_idx:, :] = 0
+        
+        # Explicitly mask system prompt region to prevent loss computation
+        # This ensures no loss is computed on prompt regardless of pad_weight setting
+        # Account for temporal shift: prepare_labels does [:, 1:] which removes first token
+        if "prompt_token_lens" in batch:
+            for i, prompt_len in enumerate(batch["prompt_token_lens"]):
+                prompt_len_val = prompt_len.item()
+                if prompt_len_val > 0:
+                    # Subtract 1 to account for temporal shift
+                    shifted_prompt_len = prompt_len_val - 1
+                    seq_mask[i, :shifted_prompt_len, :] = 0
+                    if self.cfg.get("debug_fc", False) and i == 0:
+                        logging.info(f"[Training] Masked system prompt region [0:{shifted_prompt_len}] from loss computation (original: {prompt_len_val})")
 
         loss_scale = seq_mask.clone().float()
         asr_loss_scale = seq_mask.clone().float()
@@ -869,6 +1943,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     )
                 )
             loss_scale = self._maybe_zero_out_scale_for_asr(loss_scale, text_labels, batch)
+            
+            # Re-apply seq_mask to preserve prompt masking and sequence boundaries
+            loss_scale = loss_scale * seq_mask
+            
             if self.predict_user_text:
                 asr_loss_scale = torch.where(
                     asr_labels.unsqueeze(-1) == self.text_pad_id, pad_weight,
@@ -880,6 +1958,21 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         )
                     )
                 )
+                # Re-apply seq_mask for ASR loss scale too
+                asr_loss_scale = asr_loss_scale * seq_mask
+
+        # Function calling loss scale
+        function_loss_scale = None
+        if function_loss_mask is not None:
+            # Use the already-shifted mask from prepare_labels
+            function_loss_scale = function_loss_mask.unsqueeze(-1).float()
+            # Apply sequence mask
+            function_loss_scale = function_loss_scale * seq_mask
+            
+            if self.cfg.get("debug_fc", False):
+                num_loss_positions = (function_loss_scale > 0).sum().item()
+                num_no_loss_positions = (function_loss_scale == 0).sum().item() - (seq_mask == 0).sum().item()
+                logging.info(f"[FC Model] Function loss scale: loss_on={num_loss_positions}, loss_off={num_no_loss_positions}")
 
         ans = {
             "input_embeds": input_embeds,
@@ -892,6 +1985,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.predict_user_text:
             ans["asr_labels"] = asr_labels
             ans["asr_loss_scale"] = asr_loss_scale
+        if function_labels is not None:
+            ans["function_labels"] = function_labels
+            ans["function_loss_scale"] = function_loss_scale
         return ans
 
     def training_step(self, batch: dict, batch_idx: int):
@@ -940,8 +2036,111 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         stacked = stacked * (stacked != self.text_pad_id)
                         print("Stacked asr_labels and asr_loss_scale for first batch (up to 500 steps):")
                         print(stacked[:500].int())
-                        import pdb; pdb.set_trace()
                     print(f'asr_loss: {asr_loss}')
+
+                # Function calling loss (use separate head if available)
+                function_loss = torch.tensor(0.0, device=text_loss.device)
+                if "function_labels" in inputs and inputs["function_labels"] is not None:
+                    # Get special token IDs
+                    sotc_id, eotc_id, eotr_id = self._get_function_call_special_tokens()
+                    
+                    # Always use separate function_head for function calling loss
+                    function_logits = forward_outputs["function_logits"]
+                    
+                    if self.cfg.get("mask_sequence_loss", True):
+                        function_logits = function_logits * inputs["seq_mask"][:, :, 0].unsqueeze(-1)
+                    
+                    # Log function channel predictions
+                    with torch.no_grad():
+                        function_predicted_tokens = torch.argmax(function_logits, dim=-1)  # (B, T)
+                        function_target_tokens = inputs["function_labels"]  # (B, T)
+                        
+                        # Log first sample's function channel
+                        pred_tokens = function_predicted_tokens[0].cpu().tolist()
+                        target_tokens = function_target_tokens[0].cpu().tolist()
+                        
+                        # Only log non-PAD tokens
+                        pred_non_pad = [t for t in pred_tokens if t != self.text_pad_id]
+                        target_non_pad = [t for t in target_tokens if t != self.text_pad_id]
+                        
+                        if len(pred_non_pad) > 0 or len(target_non_pad) > 0:
+                            pred_text = self.tokenizer.ids_to_text(pred_non_pad[:100]) if len(pred_non_pad) > 0 else ""
+                            target_text = self.tokenizer.ids_to_text(target_non_pad[:100]) if len(target_non_pad) > 0 else ""
+                            
+                            logging.info(f"[FC Channel] Predicted ({len(pred_non_pad)} tokens): {pred_text[:150]}")
+                            logging.info(f"[FC Channel] Target ({len(target_non_pad)} tokens): {target_text[:150]}")
+                    
+                    # Start with base function loss scale (now includes PAD=True, responses=False)
+                    function_loss_scale = inputs["function_loss_scale"][:, :, 0].float()  # [B, T]
+                    
+                    # Apply fine-grained token-specific weights
+                    if self.cfg.get("function_token_loss_weight"):
+                        func_weights = self.cfg.function_token_loss_weight
+                        pad_weight = func_weights.get("pad", 0.1)        # PAD tokens
+                        sotc_weight = func_weights.get("sotc", 10.0)    # Start of Tool Call marker
+                        eotc_weight = func_weights.get("eotc", 10.0)    # End of Tool Call marker
+                        eotr_weight = func_weights.get("eotr", 1.0)     # End of Tool Response marker (won't have loss anyway)
+                        call_weight = func_weights.get("call", 5.0)     # Actual call content tokens
+                        
+                        function_labels_2d = inputs["function_labels"]  # [B, T]
+                        
+                        # Build weight mask - start with call_weight as default
+                        weight_mask = torch.full_like(function_labels_2d, call_weight, dtype=torch.float32)
+                        
+                        # Override with specific weights for each token type
+                        weight_mask = torch.where(function_labels_2d == self.text_pad_id, pad_weight, weight_mask)
+                        weight_mask = torch.where(function_labels_2d == sotc_id, sotc_weight, weight_mask)
+                        weight_mask = torch.where(function_labels_2d == eotc_id, eotc_weight, weight_mask)
+                        weight_mask = torch.where(function_labels_2d == eotr_id, eotr_weight, weight_mask)
+                        
+                        # Apply weights
+                        function_loss_scale = function_loss_scale * weight_mask
+                    
+                    # Apply sequence mask
+                    function_loss_scale = function_loss_scale.unsqueeze(-1) * inputs["seq_mask"]
+                    
+                    # Calculate loss (normalized by num_frames, consistent with text loss)
+                    function_loss = (
+                        torch.nn.functional.cross_entropy(
+                            function_logits.flatten(0, 1),
+                            inputs["function_labels"].flatten(0, 1),
+                            reduction="none",
+                        )
+                        * function_loss_scale[:, :, 0].flatten(0, 1)
+                    ).sum(-1) / num_frames
+                    
+                    if self.cfg.get("debug_fc", False):
+                        # Log detailed loss statistics
+                        num_loss_tokens = (function_loss_scale[:, :, 0] > 0).sum().item()
+                        num_pad = ((inputs["function_labels"] == self.text_pad_id) & (function_loss_scale[:, :, 0] > 0)).sum().item()
+                        num_sotc = ((inputs["function_labels"] == sotc_id) & (function_loss_scale[:, :, 0] > 0)).sum().item()
+                        num_eotc = ((inputs["function_labels"] == eotc_id) & (function_loss_scale[:, :, 0] > 0)).sum().item()
+                        num_eotr = ((inputs["function_labels"] == eotr_id) & (function_loss_scale[:, :, 0] > 0)).sum().item()
+                        num_call = num_loss_tokens - num_pad - num_sotc - num_eotc - num_eotr
+                        
+                        logging.info(f"[FC Model Training] Function loss: {function_loss.item():.6f}")
+                        logging.info(f"[FC Model Training] Loss breakdown: PAD={num_pad}, SOTC={num_sotc}, EOTC={num_eotc}, EOTR={num_eotr}, CALL={num_call}")
+                        
+                        # Log function calling predictions vs labels
+                        with torch.no_grad():
+                            function_predicted_tokens = torch.argmax(function_logits, dim=-1)  # (B, T)
+                            function_target_tokens = inputs["function_labels"]  # (B, T)
+                            logging.info(f"[FC Model Training] Function calling predictions:")
+                            # Show first sample's predictions vs labels
+                            fc_pred_tokens_sample = function_predicted_tokens[0, :min(100, function_predicted_tokens.shape[1])].cpu().tolist()
+                            fc_label_tokens_sample = function_target_tokens[0, :min(100, function_target_tokens.shape[1])].cpu().tolist()
+                            fc_loss_mask_sample = inputs["function_loss_scale"][0, :min(100, inputs["function_loss_scale"].shape[1]), 0].cpu().tolist()
+                            fc_pred_text = self.tokenizer.ids_to_text([t for t, m in zip(fc_pred_tokens_sample, fc_loss_mask_sample) if m > 0 and t != self.text_pad_id])
+                            fc_label_text = self.tokenizer.ids_to_text([t for t, m in zip(fc_label_tokens_sample, fc_loss_mask_sample) if m > 0 and t != self.text_pad_id])
+                            logging.info(f"[FC Model Training]   Predicted text (calls only): '{fc_pred_text[:200]}'")
+                            logging.info(f"[FC Model Training]   Label text (calls only): '{fc_label_text[:200]}'")
+                            
+                            # Calculate function call token accuracy (only on tokens with loss)
+                            fc_valid_mask = (inputs["function_loss_scale"][:, :, 0] > 0)
+                            if fc_valid_mask.sum() > 0:
+                                fc_correct = (function_predicted_tokens == function_target_tokens) & fc_valid_mask
+                                fc_accuracy = fc_correct.sum().float() / fc_valid_mask.sum().float()
+                                logging.info(f"[FC Model Training]   Function call token accuracy: {fc_accuracy.item():.4f}")
 
                 with torch.no_grad():
                     predicted_tokens = torch.argmax(text_logits, dim=-1)  # (B, T)
@@ -954,11 +2153,43 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         token_accuracy = correct_predictions.sum().float() / valid_mask.sum().float()
                     else:
                         token_accuracy = torch.tensor(0.0, device=text_logits.device)
+                    
+                    # Log predictions vs labels if debug_fc is enabled
+                    if self.cfg.get("debug_fc", False):
+                        logging.info(f"[FC Model Training] Agent text predictions:")
+                        # Show first sample's predictions vs labels
+                        pred_tokens_sample = predicted_tokens[0, :min(100, predicted_tokens.shape[1])].cpu().tolist()
+                        label_tokens_sample = target_tokens[0, :min(100, target_tokens.shape[1])].cpu().tolist()
+                        pred_text = self.tokenizer.ids_to_text(pred_tokens_sample)
+                        label_text = self.tokenizer.ids_to_text(label_tokens_sample)
+                        logging.info(f"[FC Model Training]   Predicted tokens[:100]: {pred_tokens_sample}")
+                        logging.info(f"[FC Model Training]   Predicted text[:100]: '{pred_text[:200]}'")
+                        logging.info(f"[FC Model Training]   Label tokens[:100]: {label_tokens_sample}")
+                        logging.info(f"[FC Model Training]   Label text[:100]: '{label_text[:200]}'")
+                        logging.info(f"[FC Model Training]   Token accuracy: {token_accuracy.item():.4f}")
+                        
+                        # Log user text predictions if enabled
+                        if self.predict_user_text:
+                            asr_predicted_tokens = torch.argmax(asr_logits, dim=-1)  # (B, T)
+                            asr_target_tokens = inputs["asr_labels"]  # (B, T)
+                            logging.info(f"[FC Model Training] User text predictions:")
+                            asr_pred_tokens_sample = asr_predicted_tokens[0, :min(100, asr_predicted_tokens.shape[1])].cpu().tolist()
+                            asr_label_tokens_sample = asr_target_tokens[0, :min(100, asr_target_tokens.shape[1])].cpu().tolist()
+                            asr_pred_text = self.tokenizer.ids_to_text(asr_pred_tokens_sample)
+                            asr_label_text = self.tokenizer.ids_to_text(asr_label_tokens_sample)
+                            logging.info(f"[FC Model Training]   Predicted tokens[:100]: {asr_pred_tokens_sample}")
+                            logging.info(f"[FC Model Training]   Predicted text[:100]: '{asr_pred_text[:200]}'")
+                            logging.info(f"[FC Model Training]   Label tokens[:100]: {asr_label_tokens_sample}")
+                            logging.info(f"[FC Model Training]   Label text[:100]: '{asr_label_text[:200]}'")
 
                 loss = self.cfg.text_loss_weight * text_loss
     
                 if self.predict_user_text:
                     loss = loss + self.cfg.get('asr_loss_weight', 1.0) * asr_loss
+                
+                # Add function calling loss
+                if "function_labels" in inputs and inputs["function_labels"] is not None:
+                    loss = loss + self.cfg.get('function_loss_weight', 1.0) * function_loss
 
                 B, T = inputs["input_embeds"].shape[:2]
                 ans = {
@@ -970,6 +2201,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 }
                 if self.predict_user_text:
                     ans["asr_loss"] = asr_loss
+                if "function_labels" in inputs and inputs["function_labels"] is not None:
+                    ans["function_loss"] = function_loss
 
                 res.update(ans)
 
@@ -1080,10 +2313,25 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             prompt_tokens = dataset_batch.get("prompt_tokens", None)
             prompt_token_lens = dataset_batch.get("prompt_token_lens", None)
+            
+            # Get function calling data if present in test set
+            # function_calls: ground truth calls (for logging/comparison)
+            # function_responses: API responses (for inference injection)
+            function_calls = dataset_batch.get("function_calls", None)
+            function_call_lengths = dataset_batch.get("function_call_lengths", None)
+            function_call_steps = dataset_batch.get("function_call_steps", None)
+            function_responses = dataset_batch.get("function_responses", None)
+            function_response_lengths = dataset_batch.get("function_response_lengths", None)
+            function_response_steps = dataset_batch.get("function_response_steps", None)
 
             # Choose between online and offline inference based on config
             use_online_inference = self.cfg.get("use_online_inference", False)
             
+            # Use fixed-length inference (pre-allocated, faster)
+            extra_decoding_seconds = self.cfg.get("extra_decoding_seconds", 0.0)
+            input_pad_len = int(extra_decoding_seconds * self.source_sample_rate)
+            logging.info(f"Padding input audio by {extra_decoding_seconds} seconds")
+
             if use_online_inference:
                 logging.info(f"Using ONLINE inference for validation (window_size={self.cfg.get('online_window_size', 70)})")
                 results = self.online_inference(
@@ -1093,12 +2341,20 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     prompt_token_lens=prompt_token_lens,
                 )
             else:
+                # Use fixed-length inference (pre-allocated, faster)
                 results = self.offline_inference(
                     dataset_batch["source_audio"],
                     dataset_batch["source_audio_lens"],
+                    input_pad_len=input_pad_len,
                     prompt_tokens=prompt_tokens,
                     prompt_token_lens=prompt_token_lens,
                     sample_id=dataset_batch.get("sample_id", None),
+                    function_calls=function_calls,
+                    function_call_lengths=function_call_lengths,
+                    function_responses=function_responses,
+                    function_response_lengths=function_response_lengths,
+                    function_response_steps=function_response_steps,
+                    function_call_steps=function_call_steps,
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
@@ -1114,6 +2370,104 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             pred_turns_list = self._split_agent_tokens_into_turns(results["tokens_text"])
 
+            # Decode function channel tokens to text
+            function_channel_text = None
+            function_call_positions = None
+            func_tokens_for_pred = results.get("tokens_function_pred", results.get("tokens_function", None))
+            if func_tokens_for_pred is not None:
+                function_channel_text = tokens_to_str(
+                    func_tokens_for_pred,
+                    results["tokens_len"], 
+                    tokenizer=self.tokenizer, 
+                    pad_id=self.text_pad_id, 
+                    user_bos_id=self.user_bos_id, 
+                    eval_text_turn_taking=False,
+                    sil_id=None
+                )
+
+                # Also decode full function channel (includes prefilled responses) for debugging
+                function_channel_with_inserted_response = None
+                if results.get("tokens_function") is not None:
+                    function_channel_with_inserted_response = tokens_to_str(
+                        results["tokens_function"],
+                        results["tokens_len"],
+                        tokenizer=self.tokenizer,
+                        pad_id=self.text_pad_id,
+                        user_bos_id=self.user_bos_id,
+                        eval_text_turn_taking=False,
+                        sil_id=None
+                    )
+                
+                # Extract function call positions/timing
+                function_call_positions = self._extract_function_call_positions(
+                    func_tokens_for_pred,
+                    results["tokens_len"],
+                    results["tokens_text"]
+                )
+                
+                # Log function channel predictions before saving
+                logging.info(f"[Function Channel Predictions - {name}]:")
+                for idx, fc_text in enumerate(function_channel_text):
+                    sample_id = dataset_batch['sample_id'][idx]
+                    logging.info(f"  Sample {sample_id}: {fc_text}")
+                    # Log raw predicted tokens for quick inspection
+                    try:
+                        pred_tokens = func_tokens_for_pred[idx, :results["tokens_len"][idx]].tolist()
+                        logging.info(f"    tokens_function_pred[:40]: {pred_tokens[:40]}")
+                    except Exception as e:
+                        logging.info(f"    tokens_function_pred: <unavailable> ({e})")
+                    if function_call_positions is not None and idx < len(function_call_positions):
+                        pos_info = function_call_positions[idx]
+                        logging.info(f"    Timeline for sample {sample_id}:")
+                        
+                        # Log user speech segments
+                        if pos_info.get("user_speech_segments"):
+                            for i, seg in enumerate(pos_info["user_speech_segments"]):
+                                logging.info(f"      User Speech {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}]")
+                        
+                        # Log function calls
+                        if pos_info.get("function_calls"):
+                            for i, call in enumerate(pos_info["function_calls"]):
+                                logging.info(f"      Function Call {i+1}: pos [{call['start_pos']}:{call['end_pos']}]")
+                        
+                        # Log agent text segments
+                        if pos_info.get("agent_text_segments"):
+                            for i, seg in enumerate(pos_info["agent_text_segments"]):
+                                logging.info(f"      Agent Response {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}] - '{seg['text_preview']}'")
+
+            # Decode ground truth function channel tokens (target)
+            # Note: target_function_channel contains ground truth CALLS (what model should predict)
+            # NOT responses (which come from external APIs and are used for inference injection)
+            target_function_channel = None
+            if function_calls is not None:
+                # function_calls shape: [B, T, L] where T is num calls, L is max length
+                B = function_calls.shape[0]
+                target_function_channel_list = []
+                
+                for b in range(B):
+                    # Flatten all function calls for this batch item into one sequence
+                    calls_for_batch = []
+                    if function_call_lengths is not None:
+                        num_calls = (function_call_lengths[b] > 0).sum().item()
+                        for t in range(num_calls):
+                            call_length = function_call_lengths[b, t].item()
+                            if call_length > 0:
+                                call_tokens = function_calls[b, t, :call_length]
+                                call_text = self.tokenizer.ids_to_text(call_tokens.tolist())
+                                calls_for_batch.append(call_text)
+                    
+                    # Join all calls into one string
+                    target_text = "".join(calls_for_batch) if calls_for_batch else ""
+                    target_function_channel_list.append(target_text)
+                
+                target_function_channel = target_function_channel_list
+                
+                # Log ground truth function channel (CALLS only, not responses)
+                logging.info(f"[Target Function Channel - {name}]:")
+                for idx, target_fc_text in enumerate(target_function_channel):
+                    sample_id = dataset_batch['sample_id'][idx]
+                    logging.info(f"  Sample {sample_id}: {target_fc_text}")
+
             self.results_logger.update(
                 name=name,
                 refs=dataset_batch["target_texts"],
@@ -1122,7 +2476,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 samples_id=dataset_batch['sample_id'],
                 pred_audio=fake_pred_audio,
                 pred_audio_sr=self.target_sample_rate,
-                user_audio=dataset_batch["source_audio"],
+                # Use padded input audio from inference so saved WAV includes extra decoding tail.
+                user_audio=results["source_audio"],
                 user_audio_sr=self.source_sample_rate,
                 src_refs=dataset_batch["source_texts"],
                 src_hyps=results["src_text"],
@@ -1130,6 +2485,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 source_turns=dataset_batch.get("source_turn_texts"),
                 target_turns=dataset_batch.get("target_turn_texts"),
                 pred_turns=pred_turns_list,
+                function_channel_text=function_channel_text,
+                function_channel_with_inserted_response=function_channel_with_inserted_response,
+                target_function_channel=target_function_channel,
+                function_call_positions=function_call_positions,
             )
 
             if self.cfg.get("eval_text_turn_taking", False):
@@ -1170,7 +2529,16 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         prompt_tokens = batch.get("prompt_tokens", None)
         prompt_token_lens = batch.get("prompt_token_lens", None)
+        
+        # Get function calling data if present
+        function_calls = batch.get("function_calls", None)
+        function_call_lengths = batch.get("function_call_lengths", None)
+        function_call_steps = batch.get("function_call_steps", None)
+        function_responses = batch.get("function_responses", None)
+        function_response_lengths = batch.get("function_response_lengths", None)
+        function_response_steps = batch.get("function_response_steps", None)
 
+        # Use fixed-length inference (pre-allocated, faster)
         prediction = self.offline_inference(
             batch["source_audio"],
             batch["source_audio_lens"],
@@ -1180,6 +2548,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             prompt_tokens=prompt_tokens,
             prompt_token_lens=prompt_token_lens,
             sample_id=batch.get("sample_id", None),
+            function_calls=function_calls,
+            function_call_lengths=function_call_lengths,
+            function_responses=function_responses,
+            function_response_lengths=function_response_lengths,
+            function_response_steps=function_response_steps,
+            function_call_steps=function_call_steps,
         )
         prediction["sample_id"] = batch["sample_id"]
         return prediction
@@ -1293,6 +2667,121 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         gen_text_tgt[~agent_mask] = self.text_pad_id
 
         return gen_text_src, gen_text_tgt
+
+    def _extract_function_call_positions(self, tokens_function: torch.Tensor, tokens_len: torch.Tensor, tokens_text: torch.Tensor) -> list:
+        """
+        Extract position/timing information for function calls and agent text predictions.
+        
+        Returns:
+            List of dicts for each batch item, each containing:
+            - function_calls: list of {"start_pos", "end_pos", "call_text"}
+            - agent_text_segments: list of {"start_pos", "end_pos", "text_preview"}
+            - user_speech_segments: list of {"start_pos", "end_pos"}
+            - total_length: total sequence length
+        """
+        sotc_id, eotc_id, eotr_id = self._get_function_call_special_tokens()
+        B = tokens_function.shape[0]
+        
+        positions_list = []
+        
+        for b in range(B):
+            length = tokens_len[b].item()
+            func_tokens = tokens_function[b, :length].cpu().tolist()
+            text_tokens = tokens_text[b, :length].cpu().tolist()
+            
+            # Find function call boundaries
+            function_calls = []
+            current_call_start = None
+            
+            for pos, token_id in enumerate(func_tokens):
+                if token_id == sotc_id and current_call_start is None:
+                    # Start of function call
+                    current_call_start = pos
+                elif token_id == eotc_id and current_call_start is not None:
+                    # End of function call
+                    call_tokens = func_tokens[current_call_start:pos+1]
+                    call_text = self.tokenizer.ids_to_text(call_tokens)
+                    function_calls.append({
+                        "start_pos": current_call_start,
+                        "end_pos": pos,
+                        "call_text": call_text
+                    })
+                    current_call_start = None
+            
+            # Find all user speech segments (marked by user BOS)
+            user_speech_segments = []
+            if self.user_bos_id is not None:
+                current_user_start = None
+                for pos, token_id in enumerate(text_tokens):
+                    if token_id == self.user_bos_id:
+                        if current_user_start is not None:
+                            # Previous user segment ended
+                            user_speech_segments.append({
+                                "start_pos": current_user_start,
+                                "end_pos": pos - 1
+                            })
+                        current_user_start = pos
+                
+                # Close last user segment if any
+                if current_user_start is not None:
+                    # Find where user speech likely ends (next agent BOS or EOS)
+                    user_end = current_user_start
+                    for pos in range(current_user_start + 1, length):
+                        if text_tokens[pos] == self.text_bos_id or text_tokens[pos] == self.text_eos_id:
+                            user_end = pos - 1
+                            break
+                        user_end = pos
+                    
+                    user_speech_segments.append({
+                        "start_pos": current_user_start,
+                        "end_pos": user_end
+                    })
+            
+            # Find all agent text segments (marked by agent BOS)
+            agent_text_segments = []
+            if self.text_bos_id is not None:
+                current_agent_start = None
+                for pos, token_id in enumerate(text_tokens):
+                    if token_id == self.text_bos_id:
+                        if current_agent_start is not None:
+                            # Previous agent segment ended, extract text
+                            segment_tokens = text_tokens[current_agent_start:pos]
+                            # Get preview (first 50 chars)
+                            segment_text = self.tokenizer.ids_to_text(segment_tokens)
+                            text_preview = segment_text[:50] + "..." if len(segment_text) > 50 else segment_text
+                            agent_text_segments.append({
+                                "start_pos": current_agent_start,
+                                "end_pos": pos - 1,
+                                "text_preview": text_preview
+                            })
+                        current_agent_start = pos
+                
+                # Close last agent segment if any
+                if current_agent_start is not None:
+                    # Find where agent speech likely ends (EOS or end of sequence)
+                    agent_end = length - 1
+                    for pos in range(current_agent_start + 1, length):
+                        if text_tokens[pos] == self.text_eos_id:
+                            agent_end = pos
+                            break
+                    
+                    segment_tokens = text_tokens[current_agent_start:agent_end+1]
+                    segment_text = self.tokenizer.ids_to_text(segment_tokens)
+                    text_preview = segment_text[:50] + "..." if len(segment_text) > 50 else segment_text
+                    agent_text_segments.append({
+                        "start_pos": current_agent_start,
+                        "end_pos": agent_end,
+                        "text_preview": text_preview
+                    })
+            
+            positions_list.append({
+                "function_calls": function_calls,
+                "agent_text_segments": agent_text_segments,
+                "user_speech_segments": user_speech_segments,
+                "total_length": length
+            })
+        
+        return positions_list
 
     def _split_agent_tokens_into_turns(self, tokens_text: torch.Tensor):
         """Split sequence of agent_tokens into turns as detected by text_bos_id and text_eos_id."""
@@ -1501,13 +2990,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         
         # Write debug information
         # self._write_debug_info(input_signal, source_encoded, sample_id)
-        # import pdb; pdb.set_trace()
 
         B, T_local, H = source_encoded.shape
 
         if prompt_tokens is not None and prompt_token_lens is not None:
             prompt_embedded = self.embed_tokens(prompt_tokens)
             B_prompt, max_prompt_len, H_prompt = prompt_embedded.shape
+
+            # Always log system prompt (regardless of debug_fc setting)
+            logging.info(f"[Inference Init] System prompt detected: batch_size={B_prompt}, max_prompt_len={max_prompt_len}")
+            for i in range(min(B_prompt, 2)):  # Show first 2 samples
+                prompt_len = prompt_token_lens[i].item()
+                if prompt_len > 0:
+                    prompt_tokens_sample = prompt_tokens[i, :prompt_len].tolist()
+                    prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
+                logging.info(f"[Inference Init] Sample {i} system prompt ({prompt_len} tokens):")
+                logging.info(f"[Inference Init]   Full text: {prompt_text}")
+                if len(prompt_text) > 200:
+                    logging.info(f"[Inference Init]   (truncated preview): {prompt_text[:200]}...")
 
             assert B == B_prompt, f"Batch size mismatch: source={B}, prompt={B_prompt}"
             assert H == H_prompt, f"Hidden size mismatch: source={H}, prompt={H_prompt}"
@@ -1525,6 +3025,13 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 new_source_encoded[i, prompt_len:prompt_len + src_len, :] = source_encoded[i, :src_len, :]
 
                 lengths[i] = prompt_len + src_len
+
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[Inference Init] After prompt prepending: source_encoded shape={new_source_encoded.shape}")
+                for i in range(min(B, 2)):
+                    prompt_len = prompt_token_lens[i].item()
+                    total_len = lengths[i].item()
+                    logging.info(f"[Inference Init] Sample {i}: prompt_len={prompt_len}, total_len={total_len}, audio_len={total_len - prompt_len}")
 
             source_encoded = new_source_encoded
             T_local = source_encoded.shape[1]
@@ -1557,11 +3064,21 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             cache = DynamicCache()
             use_cache = True
 
-        gen_text = torch.empty(B, T, device=self.device, dtype=torch.long)
+        use_pad_init = self.cfg.get("inference_init_with_pad", True)
+        if use_pad_init:
+            gen_text = torch.full((B, T), self.text_pad_id, device=self.device, dtype=torch.long)
+        else:
+            gen_text = torch.empty(B, T, device=self.device, dtype=torch.long)
         if self.predict_user_text:
-            gen_asr = torch.empty(B, T, device=self.device, dtype=torch.long)
+            if use_pad_init:
+                gen_asr = torch.full((B, T), self.text_pad_id, device=self.device, dtype=torch.long)
+            else:
+                gen_asr = torch.empty(B, T, device=self.device, dtype=torch.long)
         else:
             gen_asr = None
+        
+        # Initialize function calling channel (all PAD tokens initially, shared vocab with text)
+        gen_function = torch.full((B, T), self.text_pad_id, device=self.device, dtype=torch.long)
 
         if prompt_tokens is not None and prompt_token_lens is not None:
             for i, prompt_len in enumerate(prompt_token_lens):
@@ -1569,16 +3086,32 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if prompt_len > 0:
                     gen_text[i, :prompt_len] = self.text_pad_id
                     if self.predict_user_text:
-                        gen_asr[i, :prompt_len] = self.text_pad_id    
+                        gen_asr[i, :prompt_len] = self.text_pad_id
+                    # Function channel also starts with PAD in prompt region
+                    gen_function[i, :prompt_len] = self.text_pad_id
+            
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[Inference Init] Initialized generation tensors with PAD in prompt region")
+                for i in range(min(B, 2)):
+                    prompt_len = prompt_token_lens[i].item()
+                    if prompt_len > 0:
+                        pad_count_text = (gen_text[i, :prompt_len] == self.text_pad_id).sum().item()
+                        pad_count_func = (gen_function[i, :prompt_len] == self.text_pad_id).sum().item()
+                        logging.info(f"[Inference Init] Sample {i}: prompt_len={prompt_len}, "
+                                   f"gen_text PAD={pad_count_text}, gen_function PAD={pad_count_func}")
 
         input_embeds[:, 0] += self._get_bos_embedding() * self.cfg.get("duplex_text_channel_weight", 1.0)
         if self.predict_user_text:
             input_embeds[:, 0] += self._get_asr_bos_embedding() * self.cfg.get("duplex_asr_text_weight", 1.0)
+        # Function channel starts with PAD (no embedding contribution for PAD)
 
         start_gen_pos = 0
         if prompt_token_lens is not None:
             max_prompt_len = prompt_token_lens.max().item()
             start_gen_pos = max_prompt_len
+            
+            if self.cfg.get("debug_fc", False):
+                logging.info(f"[Inference Init] Generation will start at position {start_gen_pos} (after prompt)")
 
         is_prompt_position_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
         if prompt_token_lens is not None:
@@ -1586,7 +3119,22 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 prompt_len_val = prompt_len.item()
                 if prompt_len_val > 0:
                     is_prompt_position_mask[i, :prompt_len_val] = True
+            
+            if self.cfg.get("debug_fc", False):
+                prompt_mask_counts = is_prompt_position_mask.sum(dim=1)
+                logging.info(f"[Inference Init] Prompt position mask created: {prompt_mask_counts.tolist()}")
 
+        # [TESTING] Silence template initialization DISABLED - using zeros for silence
+        # This is a temporary test to isolate the NCCL timeout issue
+        # if hasattr(self, '_ensure_silence_template_initialized'):
+        #     if self.cfg.get("debug_fc", False):
+        #         logging.info("[Inference Init] Initializing silence template for function calling...")
+        #     self._ensure_silence_template_initialized()
+        #     if self.cfg.get("debug_fc", False):
+        #         logging.info("[Inference Init] Silence template ready")
+        if self.cfg.get("debug_fc", False):
+            logging.info("[Inference Init] Using ZERO embeddings for silence (testing mode)")
+        
         return {
             "sil_id": sil_id,
             "input_signal": input_signal,
@@ -1601,6 +3149,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             "use_cache": use_cache,
             "gen_text": gen_text,
             "gen_asr": gen_asr,
+            "gen_function": gen_function,
             "start_gen_pos": start_gen_pos,
             "is_prompt_position_mask": is_prompt_position_mask,
             "sample_id": sample_id,
@@ -1622,6 +3171,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             inference_state["gen_text"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
             if self.predict_user_text:
                 inference_state["gen_asr"][:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
+            # Function channel prediction (same logits, different role)
+            inference_state["gen_function"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
 
         return ans, inference_state
 
@@ -1673,6 +3224,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.predict_user_text:
             last_asr_emb = self.embed_asr_tokens(inference_state["gen_asr"][:, t - 1]) * self.cfg.get("duplex_asr_text_weight", 1.0)
             last_emb += last_asr_emb
+        
+        # Add function calling channel embedding (shared embeddings with text channel)
+        last_function_emb = self.embed_tokens(inference_state["gen_function"][:, t - 1]) * self.cfg.get("duplex_function_channel_weight", 1.0)
+        last_emb += last_function_emb
+        
         if force_bos_positions is not None:
             for batch_idx in range(last_emb.shape[0]):
                 if force_bos_positions[batch_idx] == t and not (inference_state["gen_text"][batch_idx, :t] == self.text_bos_id).any():
@@ -1695,6 +3251,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if not is_prompt_position.all():
                 generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
                 inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
+                
+                # Function channel: always use separate head
+                generated_function_tokens = ans["function_logits"][:, -1].argmax(dim=-1)
+                
+                # Check if already set (from response injection) - only predict if not already injected
+                already_injected = (inference_state["gen_function"][:, t] != self.text_pad_id)
+                should_predict = ~is_prompt_position & ~already_injected
+                inference_state["gen_function"][:, t] = torch.where(
+                    should_predict, 
+                    generated_function_tokens,
+                    inference_state["gen_function"][:, t]
+                )
         else:
             ans = self(
                 inference_state["input_embeds"][:, :t + 1],
@@ -1706,6 +3274,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if not is_prompt_position.all():
                 generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
                 inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
+                
+                # Function channel: always use separate head
+                generated_function_tokens = ans["function_logits"][:, -1].argmax(dim=-1)
+                
+                # Check if already set (from response injection) - only predict if not already injected
+                already_injected = (inference_state["gen_function"][:, t] != self.text_pad_id)
+                should_predict = ~is_prompt_position & ~already_injected
+                inference_state["gen_function"][:, t] = torch.where(
+                    should_predict,
+                    generated_function_tokens,
+                    inference_state["gen_function"][:, t]
+                )
 
         if self.predict_user_text:
             if not is_prompt_position.all():
@@ -1715,17 +3295,79 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return ans
 
+    def _prepare_function_responses_for_detection(
+        self,
+        function_responses: torch.Tensor = None,
+        function_response_lengths: torch.Tensor = None,
+        function_response_steps: torch.Tensor = None,
+    ) -> dict:
+        """
+        Prepare function responses to be inserted when EOTC is detected.
+        
+        Note: function_response_steps from ground truth is used to know WHICH response
+        to inject (for multiple function calls), but NOT the exact position (model decides).
+        
+        Returns:
+        - response_queue: List of (turn_idx, response_tokens) for each batch item
+        """
+        if function_responses is None:
+            return {"response_queue": []}
+        
+        B = function_responses.shape[0]
+        num_responses = function_responses.shape[1]
+        
+        sotc_id, eotc_id, eotr_id = self._get_function_call_special_tokens()
+        
+        # For each batch, prepare queue of responses to inject
+        response_queue = []
+        for b in range(B):
+            batch_queue = []
+            for turn_idx in range(num_responses):
+                response_length = function_response_lengths[b, turn_idx].item()
+                if response_length > 0:
+                    # Extract response tokens and prepend EOTR marker
+                    response_tokens = function_responses[b, turn_idx, :response_length]
+                    response_with_marker = torch.cat([
+                        torch.tensor([eotr_id], device=self.device, dtype=torch.long),
+                        response_tokens
+                    ])
+                    batch_queue.append((turn_idx, response_with_marker))
+            response_queue.append(batch_queue)
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[Function Response Preparation] Prepared {sum(len(q) for q in response_queue)} responses across {B} batches")
+        
+        return {
+            "response_queue": response_queue,
+            "sotc_id": sotc_id,
+            "eotc_id": eotc_id,
+            "eotr_id": eotr_id,
+        }
+
     def _post_inference(self, inference_state, prompt_token_lens):
         """Post-process inference results and prepare output."""
         gen_text = inference_state["gen_text"]
         gen_asr = inference_state["gen_asr"]
+        gen_function = inference_state["gen_function"]
+        response_spans = inference_state.get("function_response_spans", None)
         lengths = inference_state["lengths"]
         T_local = inference_state["T_local"]
         T = inference_state["T"]
         B = inference_state["B"]
 
+        # Trim to local expanded length first (mirrors old FSDP padding behavior)
+        if self._use_fsdp and inference_state.get("T_expanded_local") is not None:
+            local_len = inference_state["T_expanded_local"]
+            gen_text = gen_text[:, :local_len]
+            gen_function = gen_function[:, :local_len]
+            if self.predict_user_text:
+                gen_asr = gen_asr[:, :local_len]
+            # Keep lengths within local_len for decoding
+            lengths = torch.minimum(lengths, torch.tensor(local_len, device=lengths.device))
+
         if self._use_fsdp and T > T_local:
             gen_text = gen_text[:, :T_local]
+            gen_function = gen_function[:, :T_local]
             if self.predict_user_text:
                 gen_asr = gen_asr[:, :T_local]
 
@@ -1741,6 +3383,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if max_prompt_len > 0:
                 current_T = gen_text.shape[1]
                 gen_text_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
+                gen_function_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
                 if self.predict_user_text:
                     gen_asr_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
                 lengths_trimmed = lengths.clone()
@@ -1750,21 +3393,50 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     actual_len = lengths[i].item() - prompt_len_val
                     if actual_len > 0:
                         gen_text_trimmed[i, :actual_len] = gen_text[i, prompt_len_val:prompt_len_val + actual_len]
+                        gen_function_trimmed[i, :actual_len] = gen_function[i, prompt_len_val:prompt_len_val + actual_len]
                         if self.predict_user_text:
                             gen_asr_trimmed[i, :actual_len] = gen_asr[i, prompt_len_val:prompt_len_val + actual_len]
                     lengths_trimmed[i] = actual_len
                 
                 gen_text = gen_text_trimmed
+                gen_function = gen_function_trimmed
                 if self.predict_user_text:
                     gen_asr = gen_asr_trimmed
                     gen_text_src = gen_asr
                 lengths = lengths_trimmed
+                if response_spans is not None:
+                    # Shift response spans to match prompt-trimmed coordinates
+                    shifted_spans = [[] for _ in range(B)]
+                    for i, spans in enumerate(response_spans):
+                        prompt_len_val = prompt_token_lens[i].item()
+                        for start, end in spans:
+                            start_shifted = start - prompt_len_val
+                            end_shifted = end - prompt_len_val
+                            if end_shifted <= 0:
+                                continue
+                            if start_shifted < 0:
+                                start_shifted = 0
+                            shifted_spans[i].append((start_shifted, end_shifted))
+                    response_spans = shifted_spans
+
+        # Build function-channel predictions with prefilled responses masked out
+        gen_function_pred = gen_function
+        if response_spans is not None:
+            gen_function_pred = gen_function.clone()
+            for b in range(B):
+                for start, end in response_spans[b]:
+                    start_idx = max(0, start)
+                    end_idx = min(gen_function_pred.shape[1], end)
+                    if end_idx > start_idx:
+                        gen_function_pred[b, start_idx:end_idx] = self.text_pad_id
 
         ans = {
             "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"]),
             "src_text": src_text_cleaned,
             "tokens_text_src": gen_text_src,
             "tokens_text": gen_text,
+            "tokens_function": gen_function,
+            "tokens_function_pred": gen_function_pred,
             "tokens_audio": None,
             "tokens_len": lengths,
             "source_audio": inference_state["input_signal"],
@@ -1772,6 +3444,420 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         }
 
         return ans
+
+    def _expand_for_function_calling(
+            self,
+            inference_state: dict,
+            function_call_lengths: torch.Tensor = None,
+            function_responses: torch.Tensor = None,
+            function_response_lengths: torch.Tensor = None,
+            function_response_steps: torch.Tensor = None,
+            function_call_steps: torch.Tensor = None,
+            prompt_token_lens: torch.Tensor = None,
+    ) -> dict:
+        """
+        Expand and pre-fill sequence for function calling inference.
+        
+        This helper handles all the complex expansion logic:
+        1. Calculate total expansion needed (calls + responses + EOTR)
+        2. Pre-allocate expanded tensors
+        3. Shift original content and insert:
+           - PADDING for call positions (model predicts)
+           - PRE-FILLED response tokens (from API)
+           - PADDING for EOTR positions (model predicts)
+        
+        Args:
+            inference_state: State from _init_inference
+            function_call_lengths: Ground truth call lengths [B, max_calls]
+            function_responses: Response tokens [B, max_calls, max_resp_len]
+            function_response_lengths: Response lengths [B, max_calls]
+            function_response_steps: Insertion positions [B, max_calls]
+            prompt_token_lens: System prompt lengths [B]
+            
+        Returns:
+            Updated inference_state with expanded sequences
+        """
+        
+        # ALWAYS log to verify function is being called
+        logging.info(f"╔═══ [FC EXPAND CALLED] ═══╗")
+        logging.info(f"║ function_call_lengths: {function_call_lengths.shape if function_call_lengths is not None else 'None'}")
+        logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
+        logging.info(f"║ debug_fc: {self.cfg.get('debug_fc', 'NOT_SET')}")
+        logging.info(f"╚═════════════════════════╝")
+        
+        B = inference_state["B"]
+        T_original = inference_state["T"]
+        
+        # Calculate total expansion from ground truth
+        response_expansion_per_batch = function_response_lengths.sum(dim=1)  # [B]
+        num_responses_per_batch = (function_response_lengths > 0).sum(dim=1)  # [B]
+        response_expansion_per_batch += num_responses_per_batch  # Add EOTR tokens
+        
+        if function_call_lengths is not None:
+            call_expansion_per_batch = function_call_lengths.sum(dim=1)  # [B]
+            num_calls_per_batch = (function_call_lengths > 0).sum(dim=1)  # [B]
+            call_expansion_per_batch += num_calls_per_batch * 2  # Add SOTC + EOTC tokens
+        else:
+            logging.warning("[Expand FC] function_call_lengths not provided, using conservative estimate")
+            call_expansion_per_batch = num_responses_per_batch * 50
+        
+        total_expansion_per_batch = response_expansion_per_batch + call_expansion_per_batch
+        total_expansion = total_expansion_per_batch.max().item()
+        T_expanded = T_original + total_expansion
+        T_expanded_local = T_expanded
+
+        # IMPORTANT: when using FSDP/DDP, all ranks must run the SAME number of steps.
+        # If T_expanded differs across ranks, some ranks will finish early and others will hang
+        # during FSDP all_gather. Synchronize to the global max T_expanded.
+        if dist.is_initialized():
+            T_tensor = torch.tensor(
+                [T_expanded],
+                device=device if "device" in locals() else inference_state["gen_text"].device,
+                dtype=torch.int32,
+            )
+            dist.all_reduce(T_tensor, op=dist.ReduceOp.MAX)
+            T_expanded = int(T_tensor.item())
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[Expand FC] T_original={T_original}, expansion={total_expansion}, T_expanded={T_expanded}")
+        
+        # Pre-allocate expanded tensors
+        device = inference_state["gen_text"].device
+        dtype = inference_state["gen_text"].dtype
+        H = inference_state["input_embeds"].shape[2]
+        
+        gen_text_expanded = torch.full((B, T_expanded), self.text_pad_id, dtype=dtype, device=device)
+        gen_function_expanded = torch.full((B, T_expanded), self.text_pad_id, dtype=dtype, device=device)
+        input_embeds_expanded = torch.zeros(B, T_expanded, H, dtype=inference_state["input_embeds"].dtype, device=device)
+        is_prompt_expanded = torch.zeros(B, T_expanded, dtype=torch.bool, device=device)
+        # [TODO] Is there any need for asr_emb_expanded?
+        if inference_state.get("asr_emb") is not None:
+            asr_emb = inference_state["asr_emb"]
+            asr_emb_expanded = torch.zeros(B, T_expanded, asr_emb.shape[2], dtype=asr_emb.dtype, device=asr_emb.device)
+        else:
+            asr_emb_expanded = None
+        
+        if self.predict_user_text and inference_state["gen_asr"] is not None:
+            gen_asr_expanded = torch.full((B, T_expanded), self.text_pad_id, dtype=dtype, device=device)
+        else:
+            gen_asr_expanded = None
+        
+        # Build insertion plan for each batch
+        insertion_events = []
+        response_spans = [[] for _ in range(B)]  # expanded-space spans for response tokens
+        for b in range(B):
+            expansion_plan = []
+            if function_call_lengths is not None:
+                num_calls = function_call_lengths.shape[1] if len(function_call_lengths.shape) > 1 else 1
+            else:
+                num_calls = function_response_lengths.shape[1] if len(function_response_lengths.shape) > 1 else 1
+            
+            prompt_offset = 0
+            if prompt_token_lens is not None:
+                prompt_offset = prompt_token_lens[b].item()
+            
+            if b == 0:
+                logging.info(f"[FC Expand] Building expansion plan for batch {b}")
+                logging.info(f"[FC Expand] Prompt offset: {prompt_offset}, Num calls: {num_calls}")
+                if function_call_lengths is not None:
+                    logging.info(f"[FC Expand] function_call_lengths provided: shape={function_call_lengths.shape}")
+                else:
+                    logging.info(f"[FC Expand] WARNING: function_call_lengths is None - call regions won't be padded!")
+            
+            for call_idx in range(num_calls):
+                # Note: in the dataset both function call and function responses has the same insertion step because it use the same start time in seconds
+                response_len = function_response_lengths[b, call_idx].item() if len(function_response_lengths.shape) > 1 else function_response_lengths[b].item()
+                insertion_step = function_call_steps[b, call_idx].item() if len(function_call_steps.shape) > 1 else function_call_steps[b].item()
+                
+                if insertion_step < 0:
+                    if b == 0:
+                        logging.info(f"[FC Expand] Skipping call {call_idx}: insertion_step={insertion_step} < 0")
+                    continue
+                
+                insertion_step_with_prompt = insertion_step + prompt_offset
+                
+                # Track position as we add events (call -> response -> eotr)
+                current_insertion_pos = insertion_step_with_prompt
+                
+                # ALWAYS log call_len for debugging
+                call_len = function_call_lengths[b, call_idx].item() if len(function_call_lengths.shape) > 1 else 0
+                logging.info(f"[FC Expand DEBUG] Batch {b}, Call {call_idx}: call_len={call_len}, function_call_lengths shape={function_call_lengths.shape if function_call_lengths is not None else 'None'}")
+                
+                # Reserve PADDING for call
+                if function_call_lengths is not None and call_len > 0:
+                    call_space = call_len + 2  # SOTC + call + EOTC
+                    expansion_plan.append((current_insertion_pos, call_space, None, 'call'))
+                    if b == 0:
+                        logging.info(f"[FC Expand] Call {call_idx}: position={current_insertion_pos}, space={call_space} (call_len={call_len})")
+                else:
+                    # If no call space reserved, response will overwrite where call should be!
+                    logging.error(f"[FC Expand BUG] Batch {b}, Call {call_idx}: NO SPACE RESERVED FOR CALL! call_len={call_len}, function_call_lengths={'None' if function_call_lengths is None else 'provided'}")
+                    if b == 0:
+                        logging.error(f"[FC Expand BUG] This means response tokens will be placed at position {current_insertion_pos} with NO call tokens before them!")
+                    call_space = 0
+                
+                # Pre-fill response
+                if response_len > 0:
+                    # Remove padding tokens
+                    if len(function_responses.shape) == 3:
+                        response_tokens = function_responses[b, call_idx, :response_len]
+                    else:
+                        response_tokens = function_responses[b, :response_len]
+                    
+                    expansion_plan.append((current_insertion_pos, None, response_tokens, 'response'))
+                    if b == 0:
+                        response_text = self.tokenizer.ids_to_text(response_tokens.tolist())
+                        logging.info(f"[FC Expand] Response {call_idx}: position={current_insertion_pos}, length={response_len}")
+                        logging.info(f"[FC Expand] Response text: {response_text[:100]}")
+                    
+                    # Reserve PADDING for EOTR
+                    expansion_plan.append((current_insertion_pos, 1, None, 'eotr'))
+                    if b == 0:
+                        logging.info(f"[FC Expand] EOTR {call_idx}: position={current_insertion_pos}, space=1")
+            
+            insertion_events.append(expansion_plan)
+            
+            if b == 0:
+                logging.info(f"[FC Expand] Batch {b} expansion plan: {len(expansion_plan)} events")
+        
+        # Expand each batch item by shifting and inserting
+        for b in range(B):
+            original_text = inference_state["gen_text"][b]
+            original_function = inference_state["gen_function"][b]
+            original_embeds = inference_state["input_embeds"][b]
+            original_prompt_mask = inference_state["is_prompt_position_mask"][b]
+            if gen_asr_expanded is not None:
+                original_asr = inference_state["gen_asr"][b]
+            if asr_emb_expanded is not None:
+                original_asr_emb = inference_state["asr_emb"][b]
+                if prompt_token_lens is not None:
+                    prompt_len = prompt_token_lens[b].item()
+                    if prompt_len > 0:
+                        aligned_asr = torch.zeros(
+                            T_original,
+                            original_asr_emb.shape[1],
+                            device=original_asr_emb.device,
+                            dtype=original_asr_emb.dtype,
+                        )
+                        copy_len = min(original_asr_emb.shape[0], T_original - prompt_len)
+                        if copy_len > 0:
+                            aligned_asr[prompt_len:prompt_len + copy_len] = original_asr_emb[:copy_len]
+                        original_asr_emb = aligned_asr
+            
+            current_pos = 0
+            offset = 0
+            
+            if b == 0:
+                logging.info(f"[FC Expand] Batch {b}: Processing {len(insertion_events[b])} insertion events")
+            
+            for event_idx, (insert_pos, space, tokens, event_type) in enumerate(insertion_events[b]):
+                # Copy segment before insertion
+                segment_length = insert_pos - current_pos
+                if segment_length > 0:
+                    new_start = current_pos + offset
+                    new_end = new_start + segment_length
+                    gen_text_expanded[b, new_start:new_end] = original_text[current_pos:insert_pos]
+                    gen_function_expanded[b, new_start:new_end] = original_function[current_pos:insert_pos]
+                    input_embeds_expanded[b, new_start:new_end] = original_embeds[current_pos:insert_pos]
+                    is_prompt_expanded[b, new_start:new_end] = original_prompt_mask[current_pos:insert_pos]
+                    if gen_asr_expanded is not None:
+                        gen_asr_expanded[b, new_start:new_end] = original_asr[current_pos:insert_pos]
+                    if asr_emb_expanded is not None:
+                        asr_emb_expanded[b, new_start:new_end] = original_asr_emb[current_pos:insert_pos]
+                    
+                    if b == 0:
+                        logging.info(f"[FC Expand] Event {event_idx} ({event_type}): Copied original[{current_pos}:{insert_pos}] → expanded[{new_start}:{new_end}]")
+                
+                # Insert based on event type
+                insertion_start = insert_pos + offset  # Position in expanded space
+                if event_type == 'call':
+                    # gen_function_expanded already initialized to PAD (for model to predict)
+                    if b == 0:
+                        logging.info(f"[FC Expand] Event {event_idx} (call): Reserved PAD region expanded[{insertion_start}:{insertion_start + space}] for model to predict call")
+                    try:
+                        silence_embeds = self._get_silence_embeddings_from_template(
+                            space,
+                            device=input_embeds_expanded.device,
+                            dtype=input_embeds_expanded.dtype,
+                        )
+                    except Exception:
+                        silence_embeds = torch.zeros(
+                            space,
+                            input_embeds_expanded.shape[2],
+                            device=input_embeds_expanded.device,
+                            dtype=input_embeds_expanded.dtype,
+                        )
+                    silence_embeds = silence_embeds * self.cfg.get("duplex_user_channel_weight", 1.0)
+                    input_embeds_expanded[b, insertion_start:insertion_start + space] = silence_embeds
+                    if asr_emb_expanded is not None:
+                        try:
+                            silence_asr = self._get_silence_asr_embeddings_from_template(
+                                space,
+                                device=asr_emb_expanded.device,
+                                dtype=asr_emb_expanded.dtype,
+                            )
+                        except Exception:
+                            silence_asr = torch.zeros(
+                                space,
+                                asr_emb_expanded.shape[2],
+                                device=asr_emb_expanded.device,
+                                dtype=asr_emb_expanded.dtype,
+                            )
+                        asr_emb_expanded[b, insertion_start:insertion_start + space] = silence_asr
+                    offset += space
+                elif event_type == 'response':
+                    response_len = len(tokens)
+                    response_start = insertion_start
+                    response_end = response_start + response_len
+                    gen_function_expanded[b, response_start:response_end] = tokens  # Pre-fill response
+                    try:
+                        silence_embeds = self._get_silence_embeddings_from_template(
+                            response_len,
+                            device=input_embeds_expanded.device,
+                            dtype=input_embeds_expanded.dtype,
+                        )
+                    except Exception:
+                        silence_embeds = torch.zeros(
+                            response_len,
+                            input_embeds_expanded.shape[2],
+                            device=input_embeds_expanded.device,
+                            dtype=input_embeds_expanded.dtype,
+                        )
+                    silence_embeds = silence_embeds * self.cfg.get("duplex_user_channel_weight", 1.0)
+                    input_embeds_expanded[b, response_start:response_end] = silence_embeds
+                    if b == 0:
+                        logging.info(f"[FC Expand] Event {event_idx} (response): Pre-filled response expanded[{response_start}:{response_end}] with {response_len} tokens")
+                        response_text = self.tokenizer.ids_to_text(tokens.tolist())
+                        logging.info(f"[FC Expand] Response text: {response_text[:100]}")
+                    response_spans[b].append((response_start, response_end))
+                    if asr_emb_expanded is not None:
+                        try:
+                            silence_asr = self._get_silence_asr_embeddings_from_template(
+                                response_len,
+                                device=asr_emb_expanded.device,
+                                dtype=asr_emb_expanded.dtype,
+                            )
+                        except Exception:
+                            silence_asr = torch.zeros(
+                                response_len,
+                                asr_emb_expanded.shape[2],
+                                device=asr_emb_expanded.device,
+                                dtype=asr_emb_expanded.dtype,
+                            )
+                        asr_emb_expanded[b, response_start:response_end] = silence_asr
+                    offset += response_len
+                elif event_type == 'eotr':
+                    # gen_function_expanded already initialized to PAD (for model to predict)
+                    if b == 0:
+                        logging.info(f"[FC Expand] Event {event_idx} (eotr): Reserved PAD region expanded[{insertion_start}:{insertion_start + space}] for model to predict EOTR")
+                    try:
+                        silence_embeds = self._get_silence_embeddings_from_template(
+                            space,
+                            device=input_embeds_expanded.device,
+                            dtype=input_embeds_expanded.dtype,
+                        )
+                    except Exception:
+                        silence_embeds = torch.zeros(
+                            space,
+                            input_embeds_expanded.shape[2],
+                            device=input_embeds_expanded.device,
+                            dtype=input_embeds_expanded.dtype,
+                        )
+                    silence_embeds = silence_embeds * self.cfg.get("duplex_user_channel_weight", 1.0)
+                    input_embeds_expanded[b, insertion_start:insertion_start + space] = silence_embeds
+                    if asr_emb_expanded is not None:
+                        try:
+                            silence_asr = self._get_silence_asr_embeddings_from_template(
+                                space,
+                                device=asr_emb_expanded.device,
+                                dtype=asr_emb_expanded.dtype,
+                            )
+                        except Exception:
+                            silence_asr = torch.zeros(
+                                space,
+                                asr_emb_expanded.shape[2],
+                                device=asr_emb_expanded.device,
+                                dtype=asr_emb_expanded.dtype,
+                            )
+                        asr_emb_expanded[b, insertion_start:insertion_start + space] = silence_asr
+                    offset += space
+                
+                current_pos = insert_pos
+            
+            # Copy remaining content after last insertion
+            remaining_length = T_original - current_pos
+            if remaining_length > 0:
+                new_start = current_pos + offset
+                new_end = new_start + remaining_length
+                gen_text_expanded[b, new_start:new_end] = original_text[current_pos:T_original]
+                gen_function_expanded[b, new_start:new_end] = original_function[current_pos:T_original]
+                input_embeds_expanded[b, new_start:new_end] = original_embeds[current_pos:T_original]
+                is_prompt_expanded[b, new_start:new_end] = original_prompt_mask[current_pos:T_original]
+                if gen_asr_expanded is not None:
+                    gen_asr_expanded[b, new_start:new_end] = original_asr[current_pos:T_original]
+                if asr_emb_expanded is not None:
+                    asr_emb_expanded[b, new_start:new_end] = original_asr_emb[current_pos:T_original]
+                
+                if b == 0:
+                    logging.info(f"[FC Expand] Copied remaining original[{current_pos}:{T_original}] → expanded[{new_start}:{new_end}]")
+            
+            if b == 0:
+                logging.info(f"[FC Expand] Batch {b}: Final expanded length = {T_expanded}, offset = {offset}")
+                # Show what's in gen_function_expanded
+                non_pad_positions = (gen_function_expanded[b] != self.text_pad_id).nonzero(as_tuple=True)[0]
+                if len(non_pad_positions) > 0:
+                    logging.info(f"[FC Expand] Non-PAD positions in gen_function_expanded: {non_pad_positions.tolist()[:20]}")
+                    for pos in non_pad_positions[:10]:
+                        token_id = gen_function_expanded[b, pos].item()
+                        try:
+                            token_text = self.tokenizer.ids_to_text([token_id])
+                        except:
+                            token_text = f"<ID:{token_id}>"
+                        logging.info(f"[FC Expand]   Pos {pos}: {token_text} (id={token_id})")
+        
+        # Update inference state with expanded tensors
+        inference_state["gen_text"] = gen_text_expanded
+        inference_state["gen_function"] = gen_function_expanded
+        inference_state["input_embeds"] = input_embeds_expanded
+        inference_state["is_prompt_position_mask"] = is_prompt_expanded
+        if gen_asr_expanded is not None:
+            inference_state["gen_asr"] = gen_asr_expanded
+        if asr_emb_expanded is not None:
+            inference_state["asr_emb"] = asr_emb_expanded
+        inference_state["T"] = T_expanded
+        inference_state["T_expanded_local"] = T_expanded_local
+        inference_state["function_response_spans"] = response_spans
+        
+        if self.cfg.get("debug_fc", False):
+            logging.info(f"[FC Expand] ===== EXPANSION SUMMARY =====")
+            logging.info(f"[FC Expand] Original length: {T_original} → Expanded length: {T_expanded}")
+            for b in range(min(B, 2)):
+                non_pad_count = (gen_function_expanded[b] != self.text_pad_id).sum().item()
+                logging.info(f"[FC Expand] Batch {b}: {non_pad_count} non-PAD tokens in gen_function_expanded")
+                
+                # Decode the entire gen_function channel to see what's in it
+                all_tokens = gen_function_expanded[b].cpu().tolist()
+                # Remove trailing PADs for cleaner display
+                last_non_pad = T_expanded - 1
+                while last_non_pad >= 0 and all_tokens[last_non_pad] == self.text_pad_id:
+                    last_non_pad -= 1
+                
+                if last_non_pad >= 0:
+                    relevant_tokens = all_tokens[:last_non_pad + 1]
+                    decoded_text = self.tokenizer.ids_to_text([t for t in relevant_tokens if t != self.text_pad_id])
+                    logging.info(f"[FC Expand] Batch {b} gen_function (non-PAD decoded): {decoded_text[:200]}")
+
+        if self.cfg.get("debug_fc", False):
+            chunk_size = int(self.cfg.get("debug_fc_chunk_size", 200))
+            for b in range(B):
+                self._log_long_list(
+                    f"[FC Expand] FULL gen_function_expanded[{b}] len={gen_function_expanded.shape[1]}",
+                    gen_function_expanded[b].tolist(),
+                    chunk_size,
+                )
+                logging.info(f"[FC Expand] Insertion plan (original space) batch {b}: {insertion_events[b]}")
+                logging.info(f"[FC Expand] Response spans (expanded space) batch {b}: {response_spans[b]}")
+        return inference_state
 
     @torch.no_grad()
     def offline_inference(
@@ -1784,20 +3870,50 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             prompt_tokens: torch.Tensor = None,
             prompt_token_lens: torch.Tensor = None,
             sample_id=None,
+            function_calls: torch.Tensor = None,  # Not used, only lengths needed
+            function_call_lengths: torch.Tensor = None,
+            function_responses: torch.Tensor = None,
+            function_response_lengths: torch.Tensor = None,
+            function_response_steps: torch.Tensor = None,
+            function_call_steps: torch.Tensor = None,
     ) -> dict[str, torch.Tensor]:
         """
-        Autoregressive prediction (text only).
+        Autoregressive prediction (simple loop like original).
+        
+        For function calling: expansion/pre-filling is handled by helper function.
         """
+        #  ALWAYS log to verify offline_inference is being called
+        logging.info(f"╔═══ [OFFLINE_INFERENCE CALLED] ═══╗")
+        logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
+        logging.info(f"║ function_response_lengths: {function_response_lengths.shape if function_response_lengths is not None else 'None'}")
+        logging.info(f"║ function_call_steps: {function_call_steps.shape if function_call_steps is not None else 'None'}")
+        logging.info(f"║ Will call _expand_for_function_calling: {function_responses is not None and function_response_lengths is not None}")
+        logging.info(f"╚══════════════════════════════════╝")
+        
+        # Initialize inference state (basic setup)
         inference_state = self._init_inference(
             input_signal, input_signal_lens, input_pad_len,
             force_bos_positions, prompt_tokens, prompt_token_lens, sample_id
         )
-
+        
+        # Expand for function calling if needed
+        if function_responses is not None and function_response_lengths is not None:
+            inference_state = self._expand_for_function_calling(
+                inference_state,
+                function_call_lengths=function_call_lengths,
+                function_responses=function_responses,
+                function_response_lengths=function_response_lengths,
+                function_response_steps=function_response_steps,
+                function_call_steps=function_call_steps,
+                prompt_token_lens=prompt_token_lens,
+            )
+        
+        # Simple generation loop (same as original)
         ans, inference_state = self._step_zero(inference_state)
-
+        
         for t in range(1, inference_state["T"]):
             ans = self._step_inference(t, inference_state, ans, force_bos_positions)
-
+        
         return self._post_inference(inference_state, prompt_token_lens)
 
     def _extract_online_audio_window(
@@ -2107,6 +4223,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if self.predict_user_text:
                 self.asr_head = fully_shard(self.asr_head, **fsdp_config)
                 self.embed_asr_tokens = fully_shard(self.embed_asr_tokens, **fsdp_config)
+            # Function calling uses shared embeddings, only shard the head
+            self.function_head = fully_shard(self.function_head, **fsdp_config)
 
     def load_state_dict(self, state_dict, strict: bool = True):
         try:

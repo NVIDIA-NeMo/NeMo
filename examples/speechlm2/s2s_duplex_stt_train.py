@@ -31,11 +31,10 @@ try:
 except RuntimeError:
     pass  # Start method already set
 
-torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-
 
 @hydra_runner(config_path="conf", config_name="s2s_duplex_stt")
 def train(cfg):
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")
     torch.set_float32_matmul_precision("medium")

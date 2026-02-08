@@ -22,11 +22,10 @@ from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
-torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-
 
 @hydra_runner(config_path="conf", config_name="s2s_duplex_stt")
 def inference(cfg):
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")
     torch.set_float32_matmul_precision("medium")
@@ -36,8 +35,20 @@ def inference(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
-        model_config = OmegaConf.to_container(cfg, resolve=True)
-        model = DuplexSTTModel(model_config)
+        if os.path.isdir(cfg.ckpt_path):
+            # Hugging Face format
+            model = DuplexSTTModel.from_pretrained(cfg.ckpt_path)
+            model.validation_save_path = os.path.join(log_dir, "validation_logs")
+            # Prioritize inference yaml config, fall back to model config for defaults.
+            if hasattr(cfg, "model") and hasattr(model, "cfg"):
+                model.cfg = OmegaConf.merge(model.cfg, cfg.model)
+            # Use the model's actual config if available, otherwise use cfg.model
+            model_config = OmegaConf.to_container(model.cfg.model) if hasattr(model, 'cfg') and hasattr(model.cfg, 'model') else OmegaConf.to_container(cfg.model) if hasattr(cfg, 'model') else {}
+        else:
+            # PyTorch Lightning format
+            model = DuplexSTTModel(OmegaConf.to_container(cfg, resolve=True))
+            # Extract just the model config section
+            model_config = OmegaConf.to_container(cfg.model) if hasattr(cfg, 'model') else {}
 
 
     dataset = DuplexS2SDataset(
@@ -48,9 +59,9 @@ def inference(cfg):
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
         include_turn_metadata=True,  # Enable detailed turn metadata for validation
-        model_cfg=model_config,
         force_align_user_text=False,
-        early_interruption_prob=0.0,
+        model_cfg=model_config,
+        early_interruption_prob=0.0
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

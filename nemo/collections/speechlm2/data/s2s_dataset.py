@@ -16,6 +16,8 @@ import random
 import torch
 import torch.utils.data
 import torchaudio
+from dataclasses import dataclass
+from typing import List, Tuple, Optional
 
 from lhotse import CutSet, MonoCut, Recording, Seconds, SupervisionSegment, compute_num_frames
 from lhotse.cut import Cut
@@ -23,12 +25,11 @@ from lhotse.dataset.collation import collate_audio, collate_vectors
 from lhotse.utils import ifnone
 
 from nemo.collections.common.tokenizers import TokenizerSpec
-from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.data.utils import get_pad_id, collate_and_pad, collate_and_pad_1d, collate_and_pad_2d
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 from nemo.utils import logging
 from nemo.collections.common.data.lhotse.text_adapters import Formattable
 import inflect
-import re
 
 _inflect = inflect.engine()
 
@@ -42,6 +43,35 @@ _NUMBER_RE   = re.compile(r"\b[0-9]+\b")
 _ROMAN_RE = re.compile(r"(?<![A-Z])[IVXLCDM]{2,}(?![A-Z])")
 
 _ROMAN = {"I":1,"V":5,"X":10,"L":50,"C":100,"D":500,"M":1000}
+
+# Regex pattern for timestamp tokens (compiled once at module level for efficiency)
+_TIMESTAMP_PATTERN = re.compile(r"<\|\d+\|>")
+
+
+@dataclass
+class FunctionCallData:
+    """Stores function call metadata."""
+    tokens: torch.Tensor
+    length: torch.Tensor
+    time: float
+    step: int
+    raw_text: str
+
+
+@dataclass
+class FunctionCallingBatch:
+    """Stores batched function calling data."""
+    calls: List[torch.Tensor]
+    call_lengths: List[torch.Tensor]
+    call_times: List[float]
+    call_steps: List[int]
+    call_raw_text: List[str]
+    
+    responses: List[torch.Tensor]
+    response_lengths: List[torch.Tensor]
+    response_times: List[float]
+    response_steps: List[int]
+    response_raw_text: List[str]
 
 
 def _roman_to_int(s):
@@ -100,6 +130,139 @@ def normalize_numbers(text):
 
     except Exception:
         return text   # fallback: return input unchanged
+
+
+# ===== Function Calling Helper Functions =====
+
+def _validate_time(input_time: float, cut_duration: float) -> float:
+    """Validate and clamp time to cut duration."""
+    if input_time > cut_duration + 0.16:
+        logging.info(f"{input_time} > {cut_duration} in cut")
+    return min(input_time, cut_duration)
+
+
+def _clean_text(text: str) -> str:
+    """Collapse consecutive whitespace (including newlines) into one space."""
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def _extract_instruction_text(
+    segment: SupervisionSegment, 
+    tokenizer: TokenizerSpec,
+    clean_text: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, str]:
+    """Extract and tokenize instruction text from system segment."""
+    output_text = _clean_text(segment.text) if clean_text else segment.text
+    target_text = torch.as_tensor(tokenizer.text_to_ids(output_text))
+    target_text_length = torch.as_tensor(len(target_text))
+    return target_text, target_text_length, segment.text
+
+
+def _process_function_segment(
+    supervision: SupervisionSegment,
+    tokenizer: TokenizerSpec,
+    frame_length: float,
+    target_sample_rate: int,
+    cut_duration: float,
+    debug_fc: bool = False,
+    clean_text: bool = False,
+) -> FunctionCallData:
+    """Process a single function call or response supervision segment.
+    
+    This function handles both function calls and responses equally - it simply
+    tokenizes the text and computes timing information. The distinction between
+    calls and responses is made at the batch collection level based on segment order.
+    """
+    func_text = supervision.custom['function']
+    func_text_clean = _clean_text(func_text) if clean_text else func_text
+    
+    # Check if _clean_text actually changed anything for function calling
+    if debug_fc and func_text != func_text_clean:
+        logging.info(f"[FC] _clean_text CHANGED the text:")
+        logging.info(f"[FC]   BEFORE: '{func_text}'")
+        logging.info(f"[FC]   AFTER:  '{func_text_clean}'")
+        logging.info(f"[FC]   DIFF: Removed {len(func_text) - len(func_text_clean)} characters")
+    elif debug_fc:
+        logging.debug(f"[FC] _clean_text: NO CHANGE (text already clean)")
+    
+    func_tokens = torch.as_tensor(tokenizer.text_to_ids(func_text_clean))
+    
+    func_start_time = _validate_time(supervision.start, cut_duration)
+    func_start_step = compute_num_frames(
+        duration=func_start_time,
+        frame_shift=frame_length,
+        sampling_rate=target_sample_rate
+    )
+    
+    if debug_fc:
+        logging.debug(f"[FC] Processing function segment: text='{func_text_clean[:50]}...', "
+                     f"tokens={len(func_tokens)}, start_time={func_start_time:.2f}s, step={func_start_step}")
+    
+    return FunctionCallData(
+        tokens=func_tokens,
+        length=torch.as_tensor(len(func_tokens)),
+        time=func_start_time,
+        step=func_start_step,
+        raw_text=func_text
+    )
+
+
+def _extract_function_calling_data(
+    segments: List[SupervisionSegment],
+    tokenizer: TokenizerSpec,
+    frame_length: float,
+    target_sample_rate: int,
+    cut_duration: float,
+    debug_fc: bool = False,
+    clean_text: bool = False,
+) -> FunctionCallingBatch:
+    """
+    Extract function calls and responses from segments.
+    
+    Assumes segments alternate: [call, response, call, response, ...]
+    """
+    if debug_fc:
+        logging.info(f"[FC] Extracting function calling data from {len(segments)} segments")
+    
+    batch = FunctionCallingBatch(
+        calls=[], call_lengths=[], call_times=[], call_steps=[], call_raw_text=[],
+        responses=[], response_lengths=[], response_times=[], response_steps=[], response_raw_text=[]
+    )
+    
+    for i in range(0, len(segments), 2):
+        # Process function call
+        call = _process_function_segment(
+            segments[i], tokenizer, frame_length, target_sample_rate, cut_duration, debug_fc, clean_text
+        )
+        batch.calls.append(call.tokens)
+        batch.call_lengths.append(call.length)
+        batch.call_times.append(call.time)
+        batch.call_steps.append(call.step)
+        batch.call_raw_text.append(call.raw_text)
+        
+        # Process function response (if exists)
+        if i + 1 < len(segments):
+            response = _process_function_segment(
+                segments[i + 1], tokenizer, frame_length, target_sample_rate, cut_duration, debug_fc, clean_text
+            )
+            batch.responses.append(response.tokens)
+            batch.response_lengths.append(response.length)
+            batch.response_times.append(response.time)
+            batch.response_steps.append(response.step)
+            batch.response_raw_text.append(response.raw_text)
+        else:
+            # No response - add empty placeholders
+            batch.responses.append(torch.tensor([], dtype=torch.long))
+            batch.response_lengths.append(torch.as_tensor(0))
+            batch.response_times.append(0.0)
+            batch.response_steps.append(0)
+            batch.response_raw_text.append("")
+    
+    if debug_fc:
+        logging.info(f"[FC] Extracted {len(batch.calls)} function calls and {len(batch.responses)} responses")
+    
+    return batch
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
     """
@@ -214,6 +377,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.cfg = cfg
         self.model_cfg = model_cfg
         self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
+        self.debug_fc = model_cfg.get("debug_fc", False) if model_cfg is not None else False
+        self.clean_fc_text = model_cfg.get("clean_fc_text", False) if model_cfg is not None else False
+        self.clean_system_prompt = model_cfg.get("clean_system_prompt", False) if model_cfg is not None else False
         
         # Set user tokens based on pretrained LLM type (consistent with duplex_stt_model.py)
         if self.model_cfg is not None and 'Nemotron' in self.model_cfg.get('pretrained_llm', ''):
@@ -384,7 +550,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             # print(f"tokens from cutoff_pos to original_eos_pos: {target_tokens[batch_idx][cutoff_pos:original_eos_pos]}")
             # print(f"original_eos_pos: {original_eos_pos}")
             # print(f"overlap_tokens: {overlap_tokens}")
-            # import pdb; pdb.set_trace()
         
         # Agent stops at cutoff_pos + overlap_tokens to create overlap period
         new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
@@ -487,8 +652,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         }
 
     def __getitem__(self, all_cuts: CutSet) -> dict:
-        # audio mini-batch
+        # Check if this is a function calling batch
         cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
+        is_function_calling_batch = cuts and getattr(cuts[0], "s2s_duplex_function_calling", False)
+        
+        # audio mini-batch
         audio_data = None
         early_interruption_stats = None
 
@@ -510,7 +678,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         if cuts:
             swapped_cuts = []
 
-            if self.aug_by_swap_role:
+            # Skip role swapping for function calling batches
+            if self.aug_by_swap_role and not is_function_calling_batch:
                 for cut in cuts:
                     total_turns = cut.custom.get('total_turns', len(cut.supervisions))
 
@@ -525,13 +694,12 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined = cuts
             
             prompt_tokens, prompt_token_lens = collate_system_prompt(
-                all_cuts_combined, self.tokenizer, self.pad_id
+                all_cuts_combined, self.tokenizer, self.pad_id, self.debug_fc, self.clean_system_prompt
             )
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
             )
-
             target_tokens, target_token_lens, ei_flags = collate_token_channel(
                 all_cuts_combined,
                 self.tokenizer,
@@ -555,7 +723,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                     self.force_aligner = ForceAligner(device=self.force_align_device, frame_length=self.frame_length)
                     self._force_aligner_initialized = True
                 logging.info(f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}")
-                all_cuts_combined = self.force_aligner.batch_force_align_user_audio(all_cuts_combined, source_sample_rate=self.source_sample_rate)
+                all_cuts_combined = self.force_aligner.batch_force_align_user_audio(
+                    all_cuts_combined,
+                    source_sample_rate=self.source_sample_rate,
+                    input_roles=list(self.input_roles),
+                )
                 
                 # Check if we have any cuts left after filtering
                 if len(all_cuts_combined) == 0:
@@ -575,12 +747,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 agent_token_channel_lengths=target_token_lens if self.fix_eos_placements else None,
                 agent_eos_id=self.tokenizer.eos if self.fix_eos_placements else None,
             )
-
-            # Early interruption augmentation
+            # Early interruption augmentation (skip for function calling batches to avoid position misalignment)
             batch_early_interruption_total = 0
             batch_early_interruption_attempted = 0
             batch_early_interruption_successful = 0
-            if self.early_interruption_prob > 0 and torch.is_grad_enabled():
+            if self.early_interruption_prob > 0 and torch.is_grad_enabled() and not is_function_calling_batch:
                 for batch_idx in range(target_tokens.shape[0]):
                     batch_early_interruption_total += 1
                     if ei_flags[batch_idx]:
@@ -598,7 +769,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                             )
                             if success:
                                 batch_early_interruption_successful += 1
-            
+            elif is_function_calling_batch and self.early_interruption_prob > 0:
+                logging.debug(f"Skipping early interruption for function calling batch to avoid position misalignment")
             if self.fix_last_turn_eos:
                 fix_last_turn_eos(target_tokens, source_tokens, src_eos_id=self.user_eos_id, tgt_eos_id=self.tokenizer.eos, pad_id=self.pad_id)
 
@@ -619,7 +791,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             #     first_non_pad_idx = (target_tokens[0] != self.pad_id).nonzero(as_tuple=True)[0][0].item() if (target_tokens[0] != self.pad_id).any() else None
             #     print("First non-pad token index in target_tokens[0]:", first_non_pad_idx)
             #     # print('Agent start timestamp: ', int(cuts[0].supervisions[1].start / 0.08))
-            #     import pdb; pdb.set_trace()
 
 
             audio_data = {
@@ -688,6 +859,154 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 audio_data["system_prompt"] = [
                     cut.custom.get('system_prompt', '') for cut in all_cuts_combined
                 ]
+            
+            # ===== Function Calling Metadata Extraction =====
+            # Extract function calling data if this is a function calling batch
+            if is_function_calling_batch:
+                if self.debug_fc:
+                    logging.info(f"[FC] Processing function calling batch with {len(all_cuts_combined)} cuts")
+                
+                metadata = []
+                num_turns = []
+                # Separate storage for calls and responses
+                function_calls, function_call_lengths = [], []
+                function_call_times, function_call_steps = [], []
+                function_call_raw_text = []
+                function_responses, function_response_lengths = [], []
+                function_response_times, function_response_steps = [], []
+                function_response_raw_text = []
+
+                # Iterate over all cuts in batch to extract function calling metadata
+                for cut_id, cut in enumerate(all_cuts_combined):
+                    # Note: First supervision (system) is now handled by collate_system_prompt as prompt_tokens
+                    # We only extract function calls and responses here (supervisions[1:])
+                    num_turns.append(len(cut.supervisions) - 1)  # 1st supervision is system prompt
+                    metadata.append({'audio_filepath': cut.id + '.wav'})
+                    
+                    if self.debug_fc:
+                        logging.debug(f"[FC] Processing cut {cut_id}: {cut.id}, supervisions={len(cut.supervisions)}")
+                    
+                    # Validate first supervision is system (now extracted as system prompt)
+                    if cut.supervisions[0].speaker != 'system':
+                        logging.error(f"Assertion failed: cut.id={cut.id}, first supervision speaker='{cut.supervisions[0].speaker}', expected='system'")
+                        logging.error(f"Cut object: {cut}")
+                    
+                    assert cut.supervisions[0].speaker == 'system'
+                    
+                    # Extract function segments (if they exist) from supervisions[1:]
+                    if len(cut.supervisions) > 1 and 'function' in cut.supervisions[1].custom:
+                        function_segments = [
+                            sup
+                            for sup in cut.supervisions[1:]
+                            if (sup.custom.get("function") or "").strip() != ""
+                        ]
+                        if self.debug_fc:
+                            logging.debug(f"[FC] Cut {cut_id} has {len(function_segments)} function segments")
+                    else:
+                        function_segments = []
+                        if self.debug_fc:
+                            logging.debug(f"[FC] Cut {cut_id} has no function segments")
+                    
+                    # Extract function calls and responses separately using module-level helper
+                    if len(function_segments) > 0:
+                        fc_batch = _extract_function_calling_data(
+                            function_segments,
+                            self.tokenizer,
+                            self.frame_length,
+                            self.target_sample_rate,
+                            cut.duration,
+                            self.debug_fc,
+                            self.clean_fc_text,
+                        )
+                        
+                        # Collate calls
+                        function_calls.append(collate_and_pad(fc_batch.calls, get_pad_id(self.tokenizer))[0])
+                        function_call_lengths.append(fc_batch.call_lengths)
+                        function_call_times.append(fc_batch.call_times)
+                        function_call_steps.append(fc_batch.call_steps)
+                        function_call_raw_text.append(fc_batch.call_raw_text)
+                        
+                        # Collate responses
+                        function_responses.append(collate_and_pad(fc_batch.responses, get_pad_id(self.tokenizer))[0])
+                        function_response_lengths.append(fc_batch.response_lengths)
+                        function_response_times.append(fc_batch.response_times)
+                        function_response_steps.append(fc_batch.response_steps)
+                        function_response_raw_text.append(fc_batch.response_raw_text)
+                    else:
+                        # No function segments in this cut (e.g., refusal-only samples in FC datasets):
+                        # append empty placeholders so batch size stays aligned with target_tokens.
+                        empty_calls = torch.empty((0, 0), dtype=torch.long)
+                        empty_lengths = torch.tensor([], dtype=torch.long)
+                        empty_times = torch.tensor([], dtype=torch.float)
+                        empty_steps = torch.tensor([], dtype=torch.long)
+                        
+                        function_calls.append(empty_calls)
+                        function_call_lengths.append(empty_lengths)
+                        function_call_times.append(empty_times)
+                        function_call_steps.append(empty_steps)
+                        function_call_raw_text.append([])
+                        
+                        function_responses.append(empty_calls)
+                        function_response_lengths.append(empty_lengths)
+                        function_response_times.append(empty_times)
+                        function_response_steps.append(empty_steps)
+                        function_response_raw_text.append([])
+                
+                # Collate function calling data if present
+                if len(function_calls) > 0:
+                    # Collate function calls
+                    function_calls = collate_and_pad_2d(function_calls, get_pad_id(self.tokenizer))  # [b, t, l]
+                    function_call_lengths = collate_and_pad_1d(function_call_lengths)  # [b, t]
+                    function_call_times = collate_and_pad_1d(function_call_times)  # [b, t]
+                    function_call_steps = collate_and_pad_1d(function_call_steps)  # [b, t]
+                    
+                    if self.debug_fc:
+                        logging.info(f"[FC] Collated function calls: shape={function_calls.shape}, "
+                                   f"lengths={function_call_lengths.shape}, steps={function_call_steps.shape}")
+                    
+                    # Collate function responses
+                    function_responses = collate_and_pad_2d(function_responses, get_pad_id(self.tokenizer))  # [b, t, l]
+                    function_response_lengths = collate_and_pad_1d(function_response_lengths)  # [b, t]
+                    function_response_times = collate_and_pad_1d(function_response_times)  # [b, t]
+                    function_response_steps = collate_and_pad_1d(function_response_steps)  # [b, t]
+                    
+                    if self.debug_fc:
+                        logging.info(f"[FC] Collated function responses: shape={function_responses.shape}, "
+                                   f"lengths={function_response_lengths.shape}, steps={function_response_steps.shape}")
+                else:
+                    if self.debug_fc:
+                        logging.info("[FC] No function calling data to collate")
+                    # No function calling data
+                    function_calls = None
+                    function_call_lengths = None
+                    function_call_times = None
+                    function_call_steps = None
+                    function_responses = None
+                    function_response_lengths = None
+                    function_response_times = None
+                    function_response_steps = None
+                
+                # Add function calling metadata to audio_data
+                # Note: System prompt (instructions) is now in prompt_tokens (handled by collate_system_prompt)
+                audio_data["metadata"] = metadata
+                audio_data["num_turns"] = torch.tensor(num_turns)
+                # Function calls (separate)
+                audio_data["function_calls"] = function_calls
+                audio_data["function_call_lengths"] = function_call_lengths
+                audio_data["function_call_times"] = function_call_times
+                audio_data["function_call_steps"] = function_call_steps
+                audio_data["function_call_raw_text"] = function_call_raw_text
+                # Function responses (separate)
+                audio_data["function_responses"] = function_responses
+                audio_data["function_response_lengths"] = function_response_lengths
+                audio_data["function_response_times"] = function_response_times
+                audio_data["function_response_steps"] = function_response_steps
+                audio_data["function_response_raw_text"] = function_response_raw_text
+                
+                if self.debug_fc:
+                    logging.info(f"[FC] Function calling metadata added to batch: "
+                               f"num_cuts={len(metadata)}, has_calls={function_calls is not None}")
+                    logging.info(f"[FC] System prompt for function calling is in prompt_tokens (from collate_system_prompt)")
                 
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None
@@ -707,7 +1026,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "text_tokens": text_tokens,
                 "text_token_lens": text_token_lens,
             }
-
         return {
             "audio_data": audio_data,
             "text_data": text_data,
@@ -987,26 +1305,57 @@ def collate_system_prompt(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
     pad_id: int,
+    debug_fc: bool = False,
+    clean_text: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Collate system prompts from cuts.
-    System prompts should be stored in cut.custom['system_prompt'].
+    
+    For regular data: System prompt from cut.custom['system_prompt']
+    For function calling data: System prompt from cut.supervisions[0].text (speaker='system')
     """
     tokens = []
-    for c in cuts:
-        # Check if system prompt exists in custom field
-        if c.custom and c.custom.get("system_prompt", None):
+    for idx, c in enumerate(cuts):
+        prompt_text = None
+        source_type = None
+        
+        # Check if this is a function calling cut with system supervision
+        is_function_calling = getattr(c, "s2s_duplex_function_calling", False)
+        if is_function_calling and len(c.supervisions) > 0 and c.supervisions[0].speaker == 'system':
+            # Function calling: use system prompt from first supervision
+            # This contains tool descriptions like <AVAILABLE_TOOLS>[...]</AVAILABLE_TOOLS>
+            prompt_text = c.supervisions[0].text
+            source_type = "function_calling_supervision"
+        elif c.custom and c.custom.get("system_prompt", None):
+            # Regular data: use system prompt from custom field
             prompt_text = c.custom["system_prompt"]
-            tokens.append(torch.as_tensor(
-                [tokenizer.bos] + tokenizer.text_to_ids(prompt_text) + [tokenizer.eos],
+            source_type = "custom_field"
+        
+        if prompt_text:
+            # Clean text (normalize whitespace)
+            prompt_text_clean = _clean_text(prompt_text) if clean_text else prompt_text
+            prompt_tokens = torch.as_tensor(
+                [tokenizer.bos] + tokenizer.text_to_ids(prompt_text_clean) + [tokenizer.eos],
                 dtype=torch.long
-            ))
+            )
+            tokens.append(prompt_tokens)
+            
+            if debug_fc and idx < 2:  # Log first 2 cuts
+                logging.info(f"[Dataset] Cut {idx} system prompt from {source_type}:")
+                logging.info(f"[Dataset]   Length: {len(prompt_tokens)} tokens")
+                logging.info(f"[Dataset]   Text (first 200 chars): {prompt_text_clean[:200]}...")
         else:
             # No system prompt for this cut
             tokens.append(torch.as_tensor([], dtype=torch.long))
+            if debug_fc and idx < 2:
+                logging.info(f"[Dataset] Cut {idx} has no system prompt")
     
     token_lens = torch.tensor([len(tt) for tt in tokens])
     tokens = collate_vectors(tokens, padding_value=pad_id)
+    
+    if debug_fc:
+        logging.info(f"[Dataset] Collated system prompts: shape={tokens.shape}, lens={token_lens.tolist()[:5]}...")
+    
     return tokens, token_lens
 
 def build_token_channel(
@@ -1041,8 +1390,10 @@ def build_token_channel(
         except:
             logging.error(f"Mismatch between agent token and source token lengths: {cut_agent_token_channel_length.item()} != {total}")
     for supervision in cut.supervisions:
-        if supervision.speaker in roles:
-
+        
+        # if supervision.speaker in roles:
+        custom = getattr(supervision, 'custom', None)
+        if supervision.speaker in roles and (not custom or 'function' not in custom or custom['function'] == ''):
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             if pos >= len(tokens):  # Changed from > to >= for robustness
                 logging.warning(

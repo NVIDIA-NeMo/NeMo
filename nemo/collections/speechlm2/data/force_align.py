@@ -92,7 +92,12 @@ class ForceAligner:
             logging.error(f"Failed to load wav2vec2 model for force alignment: {e}")
             self.wav2vec2_model = None
     
-    def batch_force_align_user_audio(self, cuts: CutSet, source_sample_rate: int = 16000) -> CutSet:
+    def batch_force_align_user_audio(
+        self,
+        cuts: CutSet,
+        source_sample_rate: int = 16000,
+        input_roles: Optional[List[str]] = None,
+    ) -> CutSet:
         """
         Perform batch force alignment on all user audio segments.
         
@@ -115,14 +120,24 @@ class ForceAligner:
         user_cuts = []
         cut_to_supervisions = {}
         
+        input_role_set = {role.lower() for role in (input_roles or ["user"])}
         for cut in cuts:
             user_sups_in_cut = []
             for supervision in cut.supervisions:
-                if supervision.speaker.lower() == "user":
-                    if supervision.duration > 0.1:
-                        user_supervisions.append(supervision)
-                        user_cuts.append(cut)
-                        user_sups_in_cut.append(supervision)
+                custom = getattr(supervision, "custom", None) or {}
+                func_text = (custom.get("function") or "").strip()
+                cleaned_text = self._strip_timestamps(supervision.text)
+                # Skip non-user, tool-only, too-short, or empty-text segments
+                if (
+                    supervision.speaker.lower() not in input_role_set
+                    or func_text != ""
+                    or supervision.duration <= 0.1
+                    or not cleaned_text
+                ):
+                    continue
+                user_supervisions.append(supervision)
+                user_cuts.append(cut)
+                user_sups_in_cut.append(supervision)
             if user_sups_in_cut:
                 cut_to_supervisions[cut.id] = user_sups_in_cut
         

@@ -155,6 +155,10 @@ class ResultsLogger:
             source_turns: Optional[List[List[dict]]] = None,
             target_turns: Optional[List[List[dict]]] = None,
             pred_turns: Optional[List[List[dict]]] = None,
+            function_channel_text: Optional[list[str]] = None,
+            function_channel_with_inserted_response: Optional[list[str]] = None,
+            target_function_channel: Optional[list[str]] = None,
+            function_call_positions: Optional[list[dict]] = None,
     ):
         rank = get_rank()
 
@@ -172,7 +176,21 @@ class ResultsLogger:
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
                 "src_text": src_refs[i],
                 "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
+                "function_channel_text": function_channel_text[i] if function_channel_text is not None else "",
+                "function_channel_with_inserted_response": function_channel_with_inserted_response[i]
+                if function_channel_with_inserted_response is not None
+                else "",
+                "target_function_channel": target_function_channel[i] if target_function_channel is not None else "",
+                "function_call_positions": function_call_positions[i] if function_call_positions is not None else None,
             }
+            
+            # Log function channel prediction before saving
+            if function_channel_text is not None:
+                logging.info(f"[Function Channel] Sample {sample_id}: {function_channel_text[i]}")
+            
+            # Log target function channel (ground truth)
+            if target_function_channel is not None:
+                logging.info(f"[Target Function Channel] Sample {sample_id}: {target_function_channel[i]}")
 
             # Add conversation turns only if there are multiple user turns (multi-turn conversation)
             user_turns = source_turns[i] if source_turns is not None else None

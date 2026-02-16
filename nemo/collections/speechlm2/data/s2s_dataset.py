@@ -47,6 +47,20 @@ _ROMAN = {"I":1,"V":5,"X":10,"L":50,"C":100,"D":500,"M":1000}
 # Regex pattern for timestamp tokens (compiled once at module level for efficiency)
 _TIMESTAMP_PATTERN = re.compile(r"<\|\d+\|>")
 
+# Default template for augmenting function-calling system prompts that only contain <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>.
+# Use {tools_content} as placeholder for the existing tools block.
+# Literal braces in the template are escaped ({{ }}) so .format(tools_content=...) does not interpret them.
+DEFAULT_FC_SYSTEM_PROMPT_TEMPLATE = """You can use the following tools to assist the user if required:
+{tools_content}
+
+If you decide to call any tool(s), use the following format:
+<TOOLCALL>[{{"name": "tool_name1", "arguments": "tool_args1"}}, {{"name": "tool_name2", "arguments": "tool_args2"}}]</TOOLCALL>
+
+The user will execute tool-calls and return responses from tool(s) in this format:
+<TOOL_RESPONSE>[{{"tool_response1"}}, {{"tool_response2"}}]</TOOL_RESPONSE>
+
+Based on the tool responses, you can call additional tools if needed, correct tool calls if any errors are found, or just respond to the user."""
+
 
 @dataclass
 class FunctionCallData:
@@ -133,6 +147,24 @@ def normalize_numbers(text):
 
 
 # ===== Function Calling Helper Functions =====
+
+def _fc_system_prompt_needs_augment(prompt_text: str) -> bool:
+    """Return True if the function-calling system prompt is tools-only and should be wrapped with full instructions.
+    We only check for the instruction phrase; many FC datasets already have <TOOLCALL> in content but lack the preamble.
+    """
+    if not prompt_text or not prompt_text.strip():
+        return False
+    text = prompt_text.strip()
+    # Already has the full format if it contains the instruction preamble
+    if "If you decide to call any tool" in text:
+        return False
+    return True
+
+
+def _augment_fc_system_prompt(prompt_text: str, template: str) -> str:
+    """Wrap a tools-only system prompt with the full function-calling instruction template."""
+    return template.format(tools_content=prompt_text.strip())
+
 
 def _validate_time(input_time: float, cut_duration: float) -> float:
     """Validate and clamp time to cut duration."""
@@ -264,6 +296,22 @@ def _extract_function_calling_data(
     
     return batch
 
+
+def _is_function_calling_cut(cut: Cut) -> bool:
+    """Robustly detect if a cut contains function-calling supervision content."""
+    if getattr(cut, "s2s_duplex_function_calling", False):
+        return True
+    if len(cut.supervisions) <= 1:
+        return False
+    # Typical FC format: first supervision is system and later turns contain custom["function"].
+    if cut.supervisions[0].speaker != "system":
+        return False
+    for sup in cut.supervisions[1:]:
+        custom = getattr(sup, "custom", None) or {}
+        if (custom.get("function") or "").strip() != "":
+            return True
+    return False
+
 class DuplexS2SDataset(torch.utils.data.Dataset):
     """
     A dataset for duplex speech-to-speech models that handles bidirectional conversations.
@@ -380,6 +428,31 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.debug_fc = model_cfg.get("debug_fc", False) if model_cfg is not None else False
         self.clean_fc_text = model_cfg.get("clean_fc_text", False) if model_cfg is not None else False
         self.clean_system_prompt = model_cfg.get("clean_system_prompt", False) if model_cfg is not None else False
+        # Augment function-calling system prompts that only have <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>
+        # with full instructions (TOOLCALL/TOOL_RESPONSE format). Check model_cfg then cfg.
+        self.augment_fc_system_prompt = (
+            model_cfg.get("augment_fc_system_prompt", False) if model_cfg is not None else False
+        ) or (cfg.get("augment_fc_system_prompt", False) if cfg is not None else False)
+        self.fc_system_prompt_template = None
+        if self.augment_fc_system_prompt:
+            self.fc_system_prompt_template = (
+                (model_cfg or {}).get("fc_system_prompt_template")
+                or (cfg or {}).get("fc_system_prompt_template")
+                or DEFAULT_FC_SYSTEM_PROMPT_TEMPLATE
+            )
+        # When system prompt + function-call content exceeds this token count, drop the batch (return minimal)
+        self.max_fc_total_tokens = (
+            (cfg or {}).get("max_fc_total_tokens")
+            or (model_cfg or {}).get("max_fc_total_tokens")
+        )
+        if self.max_fc_total_tokens is not None:
+            try:
+                self.max_fc_total_tokens = int(self.max_fc_total_tokens)
+            except Exception:
+                logging.warning(
+                    f"Invalid max_fc_total_tokens={self.max_fc_total_tokens!r}; disabling FC-token filtering."
+                )
+                self.max_fc_total_tokens = None
         
         # Set user tokens based on pretrained LLM type (consistent with duplex_stt_model.py)
         if self.model_cfg is not None and 'Nemotron' in self.model_cfg.get('pretrained_llm', ''):
@@ -627,34 +700,179 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             self._save_audacity_labels(target_tokens[:target_token_lens[batch_idx].item()], batch_idx, f"AFTER_{audio_identity}", debug_dir, self.frame_length)
         return True
 
-    def _create_minimal_batch(self) -> dict:
-        """Create a minimal valid batch when all cuts are filtered out."""
-        # Create minimal tensors with batch size 1
-        device = torch.device('cpu')  # Default device
-        
-        return {
+    def _create_minimal_batch(
+        self,
+        minimal_batch_fc: bool = False,
+        fc_drop_info: dict | None = None,
+    ) -> dict:
+        """Create a minimal valid batch when all cuts are filtered out or FC sample is dropped.
+
+        Args:
+            minimal_batch_fc: If True, this minimal batch was created because the batch was dropped
+                due to FC (e.g. system+FC tokens > max_fc_total_tokens). Used for logging and metrics.
+            fc_drop_info: Optional dict when minimal_batch_fc=True, e.g.:
+                {"cut_id": str, "total_prompt_tokens": int, "max_fc_total_tokens": int, "reason": str}.
+                Used for debugging and tuning thresholds.
+        """
+        # Create minimal tensors with batch size 1.
+        # Keep source/target audio and token channels shape-consistent so placeholder batches
+        # do not trigger downstream shape drift.
+        duration_sec = 1.0
+        shared_audio_len = int(self.source_sample_rate * duration_sec)
+        # Keep a small safety margin (+1) for encoder/frame rounding so placeholder
+        # text channels are not shorter than encoded source length in minimal batches.
+        token_seq_len = max(
+            2,
+            compute_num_frames(
+                duration=duration_sec,
+                frame_shift=self.frame_length,
+                sampling_rate=self.source_sample_rate,
+            )
+            + 1,
+        )
+
+        source_audio = torch.zeros((1, shared_audio_len), dtype=torch.float32)
+        target_audio = torch.zeros((1, shared_audio_len), dtype=torch.float32)
+        target_tokens = torch.full((1, token_seq_len), self.pad_id, dtype=torch.long)
+        source_tokens = torch.full((1, token_seq_len), self.pad_id, dtype=torch.long)
+
+        # Flags so the model can take sync-only path and log reason (FC vs non-FC minimal batch).
+        out = {
+            "is_minimal_batch": True,
+            "minimal_batch_fc": minimal_batch_fc,
+            "minimal_batch_non_fc": not minimal_batch_fc,
             "sample_id": ["empty_batch"],
-            "source_audio": torch.zeros((1, 1000), dtype=torch.float32),  # 1 second of silence at 16kHz
-            "source_audio_lens": torch.tensor([1000], dtype=torch.long),
+            "source_audio": source_audio,
+            "source_audio_lens": torch.tensor([shared_audio_len], dtype=torch.long),
             "agent_bos_vad": None,
-            "target_audio": torch.zeros((1, 22050), dtype=torch.float32),  # 1 second of silence at 22.05kHz
-            "target_audio_lens": torch.tensor([22050], dtype=torch.long),
-            "target_tokens": torch.full((1, 50), self.pad_id, dtype=torch.long),
-            "target_token_lens": torch.tensor([1], dtype=torch.long),
-            "source_tokens": torch.full((1, 50), self.pad_id, dtype=torch.long),
-            "source_token_lens": torch.tensor([1], dtype=torch.long),
+            "target_audio": target_audio,
+            "target_audio_lens": torch.tensor([shared_audio_len], dtype=torch.long),
+            "target_tokens": target_tokens,
+            "target_token_lens": torch.tensor([token_seq_len], dtype=torch.long),
+            "source_tokens": source_tokens,
+            "source_token_lens": torch.tensor([token_seq_len], dtype=torch.long),
             "source_texts": [""],
             "target_texts": [""],
             "all_texts": [""],
-            "target_first_turn_audio": torch.zeros((1, 22050), dtype=torch.float32),
-            "target_first_turn_audio_lens": torch.tensor([22050], dtype=torch.long),
+            "target_first_turn_audio": target_audio.clone(),
+            "target_first_turn_audio_lens": torch.tensor([shared_audio_len], dtype=torch.long),
             "formatter": ["s2s_duplex"],
+            "aug_by_noise": [True],
         }
+        if minimal_batch_fc:
+            if fc_drop_info is not None:
+                out["fc_drop_info"] = fc_drop_info
+            # Same keys as real FC batch so downstream/collation never sees missing keys; values are None/empty.
+            out["metadata"] = [{"audio_filepath": "empty_batch.wav"}]
+            tool_call_text = (
+                '<TOOLCALL>[{"name": "execute_program", "arguments": {"program_name": "DataAnalysis", '
+                '"arguments": ["dataset1", "dataset2"]}}]</TOOLCALL>'
+            )
+            tool_response_text = (
+                '<TOOL_RESPONSE>[{"status": "success", "message": "The program \'DataAnalysis\' has been successfully executed '
+                'with the arguments \'dataset1\' and \'dataset2\'. The output file \'AnalysisResult\' has been created."}]</TOOL_RESPONSE>'
+            )
+            call_ids = self.tokenizer.text_to_ids(tool_call_text) if self.tokenizer is not None else []
+            resp_ids = self.tokenizer.text_to_ids(tool_response_text) if self.tokenizer is not None else []
+
+            # One synthetic FC turn for minimal_fc batches to keep FC path schema-consistent.
+            # Keep time/step relationship consistent with normal extraction path:
+            # step ~= compute_num_frames(time, frame_length, sample_rate).
+            minimal_fc_step = 12
+            minimal_fc_time = minimal_fc_step * self.frame_length
+            out["num_turns"] = torch.tensor([1], dtype=torch.long)
+            out["function_calls"] = torch.as_tensor([[call_ids]], dtype=torch.long)
+            out["function_call_lengths"] = torch.tensor([[len(call_ids)]], dtype=torch.long)
+            out["function_call_times"] = torch.tensor([[minimal_fc_time]], dtype=torch.float)
+            out["function_call_steps"] = torch.tensor([[minimal_fc_step]], dtype=torch.long)
+            out["function_call_raw_text"] = [[tool_call_text]]
+            out["function_responses"] = torch.as_tensor([[resp_ids]], dtype=torch.long)
+            out["function_response_lengths"] = torch.tensor([[len(resp_ids)]], dtype=torch.long)
+            out["function_response_times"] = torch.tensor([[minimal_fc_time]], dtype=torch.float)
+            out["function_response_steps"] = torch.tensor([[minimal_fc_step]], dtype=torch.long)
+            out["function_response_raw_text"] = [[tool_response_text]]
+            # Optional keys present on real FC batch when prompt_tokens / include_turn_metadata are used.
+            # Keep a non-empty default system prompt for minimal FC batches to mimic real FC traffic.
+            default_minimal_fc_prompt = (
+                '<AVAILABLE_TOOLS>[{"name":"execute_program","description":"Execute a specific program with given arguments",'
+                '"parameters":{"type":"dict","properties":{"program_name":{"type":"string","description":"The name of the program to be executed"},'
+                '"arguments":{"type":"array","items":{"type":"string"},"description":"The arguments to be passed to the program"}},'
+                '"required":["program_name"]}},{"name":"generate_qr_code","description":"Generate a QR code for a given text",'
+                '"parameters":{"type":"dict","properties":{"text":{"type":"string","description":"The text to encode in the QR code"}},'
+                '"required":["text"]}}]</AVAILABLE_TOOLS>'
+            )
+            minimal_fc_prompt_text = default_minimal_fc_prompt
+            if self.model_cfg is not None:
+                minimal_fc_prompt_text = self.model_cfg.get("minimal_batch_fc_prompt_text", default_minimal_fc_prompt)
+
+            prompt_ids = []
+            if self.tokenizer is not None and minimal_fc_prompt_text:
+                bos = getattr(self.tokenizer, "bos", None)
+                eos = getattr(self.tokenizer, "eos", None)
+                if bos is not None:
+                    prompt_ids.append(int(bos))
+                prompt_ids.extend(self.tokenizer.text_to_ids(minimal_fc_prompt_text))
+                if eos is not None:
+                    prompt_ids.append(int(eos))
+            if len(prompt_ids) == 0:
+                out["prompt_tokens"] = torch.empty((1, 0), dtype=torch.long)
+                out["prompt_token_lens"] = torch.tensor([0], dtype=torch.long)
+            else:
+                out["prompt_tokens"] = torch.as_tensor([prompt_ids], dtype=torch.long)
+                out["prompt_token_lens"] = torch.tensor([len(prompt_ids)], dtype=torch.long)
+            # Keep turn metadata schema-compatible (list of dict turns) even for minimal FC batches.
+            # Using one empty placeholder turn avoids downstream key/index assumptions on turn dicts.
+            out["target_turn_texts"] = [[{
+                "start_time": 0.0,
+                "duration": 0.0,
+                "role": "assistant",
+                "text": "hello",
+            }]]
+            out["source_turn_texts"] = [[{
+                "start_time": 0.0,
+                "duration": 0.0,
+                "role": "user",
+                "text": "hello",
+            }]]
+            out["system_prompt"] = [minimal_fc_prompt_text]
+        return out
+
+    def _get_fc_cut_total_prompt_tokens(self, cut: Cut) -> int:
+        """Compute total token count for system prompt + all function-call/response segments.
+        Used to decide if we should drop the batch when over threshold.
+        """
+        if not _is_function_calling_cut(cut) or len(cut.supervisions) == 0:
+            return 0
+        total = 0
+        # System prompt (same logic as collate_system_prompt: BOS + text + EOS)
+        prompt_text = cut.supervisions[0].text if cut.supervisions[0].speaker == 'system' else ""
+        if prompt_text:
+            if self.augment_fc_system_prompt and self.fc_system_prompt_template and _fc_system_prompt_needs_augment(prompt_text):
+                prompt_text = _augment_fc_system_prompt(prompt_text, self.fc_system_prompt_template)
+            prompt_text_clean = _clean_text(prompt_text) if self.clean_system_prompt else prompt_text
+            total += 1 + len(self.tokenizer.text_to_ids(prompt_text_clean)) + 1
+        # All function-call and response segments.
+        # Even indices are calls: +2 for <SOTC>/<EOTC>.
+        # Odd indices are responses: +1 for <EOTR>.
+        function_segments = []
+        for sup in cut.supervisions[1:]:
+            custom = getattr(sup, "custom", None) or {}
+            seg_text = (custom.get("function") or sup.text or "").strip()
+            if seg_text:
+                function_segments.append(seg_text)
+        for idx, seg_text in enumerate(function_segments):
+            seg_clean = _clean_text(seg_text) if self.clean_fc_text else seg_text
+            total += len(self.tokenizer.text_to_ids(seg_clean))
+            if idx % 2 == 0:
+                total += 2
+            else:
+                total += 1
+        return total
 
     def __getitem__(self, all_cuts: CutSet) -> dict:
         # Check if this is a function calling batch
         cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
-        is_function_calling_batch = cuts and getattr(cuts[0], "s2s_duplex_function_calling", False)
+        is_function_calling_batch = len(cuts) > 0 and any(_is_function_calling_cut(c) for c in cuts)
         
         # audio mini-batch
         audio_data = None
@@ -672,7 +890,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 logging.info(f"Skipped {len(skipped_cuts)} cuts with empty input text. Skipped cut ids: {', '.join(skipped_cuts)}")
             if not filtered_cuts:
                 logging.warning(f"All cuts were filtered out! Original batch size: {len(cuts)}. Returning minimal valid batch to continue training.")
-                return self._create_minimal_batch()
+                return {
+                    "audio_data": self._create_minimal_batch(),
+                    "text_data": None,
+                    "early_interruption_stats": None,
+                }
             cuts = CutSet.from_cuts(filtered_cuts)
 
         if cuts:
@@ -692,9 +914,58 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 all_cuts_combined = CutSet.from_cuts(list(cuts) + swapped_cuts)
             else:
                 all_cuts_combined = cuts
-            
-            prompt_tokens, prompt_token_lens = collate_system_prompt(
-                all_cuts_combined, self.tokenizer, self.pad_id, self.debug_fc, self.clean_system_prompt
+
+            # For function calling: per-cut filtering by system+FC token length threshold.
+            # Keep valid cuts and only fall back to minimal batch when everything is filtered out.
+            if self.max_fc_total_tokens is not None:
+                kept_cuts = []
+                dropped_cuts = []
+                for cut in all_cuts_combined:
+                    if not _is_function_calling_cut(cut):
+                        kept_cuts.append(cut)
+                    else:
+                        total_tokens = self._get_fc_cut_total_prompt_tokens(cut)
+                        if total_tokens <= self.max_fc_total_tokens:
+                            kept_cuts.append(cut)
+                        else:
+                            dropped_cuts.append((cut.id, total_tokens))
+
+                if dropped_cuts:
+                    preview = ", ".join(
+                        f"{cut_id}({tok_cnt}>{self.max_fc_total_tokens})" for cut_id, tok_cnt in dropped_cuts[:10]
+                    )
+                    logging.info(
+                        f"[FC] Filtered {len(dropped_cuts)} cuts over max_fc_total_tokens. Examples: {preview}"
+                    )
+
+                if len(kept_cuts) == 0:
+                    # Return same structure as normal path so batch["audio_data"] exists (minimal batch has no FC fields)
+                    return {
+                        "audio_data": self._create_minimal_batch(
+                            minimal_batch_fc=True,
+                            fc_drop_info={
+                                "cut_id": dropped_cuts[0][0] if dropped_cuts else "unknown",
+                                "total_prompt_tokens": int(dropped_cuts[0][1]) if dropped_cuts else -1,
+                                "max_fc_total_tokens": self.max_fc_total_tokens,
+                                "reason": "max_fc_total_tokens_all_filtered",
+                                "num_dropped_cuts": len(dropped_cuts),
+                            },
+                        ),
+                        "text_data": None,
+                        "early_interruption_stats": None,
+                    }
+
+                if len(kept_cuts) != len(all_cuts_combined):
+                    all_cuts_combined = CutSet.from_cuts(kept_cuts)
+
+            prompt_tokens, prompt_token_lens, prompt_texts = collate_system_prompt(
+                all_cuts_combined,
+                self.tokenizer,
+                self.pad_id,
+                debug_fc=self.debug_fc,
+                clean_text=self.clean_system_prompt,
+                augment_fc_system_prompt=self.augment_fc_system_prompt,
+                fc_system_prompt_template=self.fc_system_prompt_template,
             )
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
@@ -732,7 +1003,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 # Check if we have any cuts left after filtering
                 if len(all_cuts_combined) == 0:
                     logging.warning("All cuts filtered out due to force alignment failures, returning minimal valid batch to continue training.")
-                    return self._create_minimal_batch()
+                    return {
+                        "audio_data": self._create_minimal_batch(),
+                        "text_data": None,
+                        "early_interruption_stats": None,
+                    }
 
             source_tokens, source_token_lens, _ = collate_token_channel(
                 all_cuts_combined, self.tokenizer, self.pad_id, self.frame_length,
@@ -829,6 +1104,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             if torch.sum(prompt_token_lens) > 0:
                 audio_data['prompt_tokens'] = prompt_tokens
                 audio_data['prompt_token_lens'] = prompt_token_lens
+            # Raw prompt string used to build prompt_tokens (typically supervision[0] for FC cuts).
+            audio_data["system_prompt_supervision_0"] = prompt_texts
             
             # Optionally include detailed turn metadata for analysis
             if self.include_turn_metadata:
@@ -1307,14 +1584,19 @@ def collate_system_prompt(
     pad_id: int,
     debug_fc: bool = False,
     clean_text: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    augment_fc_system_prompt: bool = False,
+    fc_system_prompt_template: Optional[str] = None,
+) -> tuple[torch.Tensor, torch.Tensor, list[str]]:
     """
     Collate system prompts from cuts.
     
     For regular data: System prompt from cut.custom['system_prompt']
-    For function calling data: System prompt from cut.supervisions[0].text (speaker='system')
+    For function calling data: System prompt from cut.supervisions[0].text (speaker='system').
+    If augment_fc_system_prompt is True and the FC prompt is tools-only (e.g. only
+    <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>), it is wrapped with the full instruction template.
     """
     tokens = []
+    prompt_texts = []
     for idx, c in enumerate(cuts):
         prompt_text = None
         source_type = None
@@ -1326,6 +1608,26 @@ def collate_system_prompt(
             # This contains tool descriptions like <AVAILABLE_TOOLS>[...]</AVAILABLE_TOOLS>
             prompt_text = c.supervisions[0].text
             source_type = "function_calling_supervision"
+            # Optionally augment tools-only prompts with full TOOLCALL/TOOL_RESPONSE instructions
+            if augment_fc_system_prompt and fc_system_prompt_template:
+                needs_augment = _fc_system_prompt_needs_augment(prompt_text)
+                if debug_fc and idx < 2:
+                    logging.info(
+                        f"[FC system prompt] Cut {idx}: augment_fc_system_prompt=True, needs_augment={needs_augment}, "
+                        f"len(prompt)={len(prompt_text)}"
+                    )
+                    logging.info(f"[FC system prompt] Cut {idx} BEFORE: {repr(prompt_text)}")
+                if needs_augment:
+                    prompt_text = _augment_fc_system_prompt(prompt_text, fc_system_prompt_template)
+                    if debug_fc and idx < 2:
+                        logging.info(
+                            f"[FC system prompt] Cut {idx} augmented (tools-only -> full format). "
+                            f"AFTER : {repr(prompt_text)}"
+                        )
+                elif debug_fc and idx < 2:
+                    logging.info(
+                        f"[FC system prompt] Cut {idx} not augmented (already contains 'If you decide to call any tool')"
+                    )
         elif c.custom and c.custom.get("system_prompt", None):
             # Regular data: use system prompt from custom field
             prompt_text = c.custom["system_prompt"]
@@ -1344,11 +1646,13 @@ def collate_system_prompt(
                 logging.info(f"[Dataset] Cut {idx} system prompt from {source_type}:")
                 logging.info(f"[Dataset]   Length: {len(prompt_tokens)} tokens")
                 logging.info(f"[Dataset]   Text (first 200 chars): {prompt_text_clean[:200]}...")
+            prompt_texts.append(prompt_text_clean)
         else:
             # No system prompt for this cut
             tokens.append(torch.as_tensor([], dtype=torch.long))
             if debug_fc and idx < 2:
                 logging.info(f"[Dataset] Cut {idx} has no system prompt")
+            prompt_texts.append("")
     
     token_lens = torch.tensor([len(tt) for tt in tokens])
     tokens = collate_vectors(tokens, padding_value=pad_id)
@@ -1356,7 +1660,7 @@ def collate_system_prompt(
     if debug_fc:
         logging.info(f"[Dataset] Collated system prompts: shape={tokens.shape}, lens={token_lens.tolist()[:5]}...")
     
-    return tokens, token_lens
+    return tokens, token_lens, prompt_texts
 
 def build_token_channel(
         cut: Cut,

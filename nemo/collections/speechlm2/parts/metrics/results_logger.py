@@ -181,6 +181,7 @@ class ResultsLogger:
             src_refs: Optional[list[str]] = None,
             src_hyps: Optional[list[str]] = None,
             system_prompt=None,
+            system_prompt_supervision_0: Optional[list[str]] = None,
             source_turns: Optional[List[List[dict]]] = None,
             target_turns: Optional[List[List[dict]]] = None,
             pred_turns: Optional[List[List[dict]]] = None,
@@ -221,6 +222,12 @@ class ResultsLogger:
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
                 "src_text": src_refs[i] if src_refs is not None else "",
                 "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
+                "system_prompt": system_prompt[i] if system_prompt is not None and system_prompt[i] is not None else "",
+                "system_prompt_supervision_0": (
+                    system_prompt_supervision_0[i]
+                    if system_prompt_supervision_0 is not None and system_prompt_supervision_0[i] is not None
+                    else ""
+                ),
                 "function_channel_text": function_channel_text[i] if function_channel_text is not None else "",
                 "function_channel_with_inserted_response": function_channel_with_inserted_response[i]
                 if function_channel_with_inserted_response is not None
@@ -243,9 +250,6 @@ class ResultsLogger:
             has_multi_turn_conversation = user_turns is not None and len(user_turns) > 1
             
             if has_multi_turn_conversation and (target_turns is not None or pred_turns is not None):
-                if system_prompt is not None:
-                    out_dict["system_prompt"] = system_prompt[i]
-                
                 conversation_turns = {}
                 
                 # Create ground truth conversation: source (user) + target (agent) turns

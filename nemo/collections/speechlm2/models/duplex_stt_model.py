@@ -1225,7 +1225,22 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             result = torch.cat([template, last_frame], dim=0)
 
         return result
-    
+
+    def _sync_fc_insertions_collective(self, total_insertions_this_rank: int, subsampling_factor: float = 8.0):
+        """Participate in the same NCCL collectives as _expand_channels_with_insertions without modifying tensors.
+        Used for minimal/dropped batch so this rank does not desync (avoids timeout).
+        """
+        if not torch.distributed.is_initialized():
+            return
+        device = next(self.parameters()).device
+        max_insertions_tensor = torch.tensor([total_insertions_this_rank], device=device, dtype=torch.int32)
+        torch.distributed.all_reduce(max_insertions_tensor, op=torch.distributed.ReduceOp.MAX)
+        max_insertions_across_ranks = max_insertions_tensor.item()
+        dummy_calls_needed = max_insertions_across_ranks - total_insertions_this_rank
+        if dummy_calls_needed > 0:
+            for _ in range(dummy_calls_needed):
+                _ = self._get_silence_embeddings(1, subsampling_factor)
+
     def _expand_channels_with_insertions(
         self,
         target_tokens: torch.Tensor,
@@ -1358,10 +1373,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 num_pads = (agent_tokens_at_insertion == self.text_pad_id).sum().item()
                 logging.info(f"[FC Model]   Agent text at insertion: {num_pads}/{length} are PAD tokens ✓" if num_pads == length else f"[FC Model]   Agent text at insertion: {num_pads}/{length} are PAD tokens ✗")
                 
-                # Show user audio at insertion (should be all zeros)
+                # Show user-audio channel at insertion.
+                # Note: this channel contains encoded silence embeddings, which are non-zero.
                 audio_at_insertion = expanded_audio[actual_pos:actual_pos+length]
                 audio_norm = torch.norm(audio_at_insertion).item()
-                logging.info(f"[FC Model]   User audio at insertion: L2 norm={audio_norm:.6f} (should be ~0.0)")
+                audio_rms = torch.sqrt(torch.mean(audio_at_insertion.float().pow(2))).item()
+                logging.info(
+                    f"[FC Model]   User audio at insertion: L2 norm={audio_norm:.6f}, "
+                    f"RMS={audio_rms:.6f} (encoded silence is expected to be non-zero)"
+                )
                 
                 # Show what comes before and after
                 if actual_pos > 0:
@@ -1478,6 +1498,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.cfg.get('backchannel_prob', None) and self.cfg.backchannel_prob > 0:
             if (
                 self.training
+                and not batch.get("is_minimal_batch", False)  # Skip placeholder minimal batches
                 and "source_tokens" in batch  # Ensure source_tokens exists
                 and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'  # Skip overlap data (already has real backchannels)
                 and batch["formatter"][0] != 'nemo_tarred_to_duplex'  # Skip ASR datasets
@@ -1508,8 +1529,16 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         )
 
         target_tokens = batch["target_tokens"]
+        batch_size = source_encoded.shape[0]
 
-        if "prompt_tokens" in batch:
+        # Distributed safety: keep prompt branch identical across ranks.
+        # Some ranks may miss prompt keys (e.g., non-FC/minimal mixes); normalize to empty prompt tensors.
+        if "prompt_tokens" not in batch or batch["prompt_tokens"] is None:
+            batch["prompt_tokens"] = torch.empty((batch_size, 0), dtype=torch.long, device=target_tokens.device)
+        if "prompt_token_lens" not in batch or batch["prompt_token_lens"] is None:
+            batch["prompt_token_lens"] = torch.zeros((batch_size,), dtype=torch.long, device=target_tokens.device)
+
+        if batch["prompt_tokens"] is not None:
             prompt_embedded = self.embed_tokens(batch["prompt_tokens"])
             B, max_prompt_len, H = prompt_embedded.shape
             T_src = source_encoded.shape[1]
@@ -1522,10 +1551,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if prompt_len > 0:
                     prompt_tokens_sample = batch["prompt_tokens"][i, :prompt_len].tolist()
                     prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
-                logging.info(f"[Training] System Prompt (Sample {i}, {prompt_len} tokens):")
-                logging.info(f"[Training]   Full text: {prompt_text}")
-                if len(prompt_text) > 200:
-                    logging.info(f"[Training]   (truncated preview): {prompt_text[:200]}...")
+                    logging.info(f"[Training] System Prompt (Sample {i}, {prompt_len} tokens):")
+                    logging.info(f"[Training]   Full text: {prompt_text}")
+                    if len(prompt_text) > 200:
+                        logging.info(f"[Training]   (truncated preview): {prompt_text[:200]}...")
 
             new_source_encoded = torch.zeros(B, max_prompt_len + T_src, H,
                                              dtype=source_encoded.dtype, device=source_encoded.device)
@@ -1612,80 +1641,116 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         # Build function calling channel and expand sequences BEFORE prepare_labels
         # IMPORTANT: Using insertion approach - sequence length will expand from L to L+F
+        # Also enter this block for minimal/dropped batch so this rank participates in the same
+        # collectives (all_reduce in _expand_channels_with_insertions) and avoids NCCL timeout.
         function_channel = None
         function_channel_loss_mask = None
         insertion_positions = None
+        has_fc = "function_calls" in batch and batch["function_calls"] is not None
+        is_minimal_batch = batch.get("is_minimal_batch", False)
+        is_minimal_batch_fc = batch.get("minimal_batch_fc", False)  # True iff minimal batch was dropped due to FC (e.g. over max_fc_total_tokens)
+        is_minimal_batch_non_fc = is_minimal_batch and not is_minimal_batch_fc  # e.g. all-cuts-filtered, force-align failed
         
-        if "function_calls" in batch and batch["function_calls"] is not None:
-            if self.cfg.get("debug_fc", False):
-                logging.info(f"[FC Model] ============================================================")
-                logging.info(f"[FC Model] FUNCTION CALLING INSERTION - BEFORE EXPANSION")
-                logging.info(f"[FC Model] ============================================================")
-                logging.info(f"[FC Model] Original target_tokens shape: {target_tokens.shape}")
-                logging.info(f"[FC Model] Original source_encoded shape: {source_encoded.shape}")
-                
-                # Show sample of original agent text
-                sample_len = min(50, target_tokens.shape[1])
-                sample_tokens = target_tokens[0, :sample_len]
-                try:
-                    sample_text = self.tokenizer.ids_to_text(sample_tokens.tolist())
-                    logging.info(f"[FC Model] Original agent text (first 50 tokens): '{sample_text}'")
-                except:
-                    logging.info(f"[FC Model] Original agent text (first 50 tokens): {sample_tokens.tolist()}")
-            
-            # Build function channel with insertion approach
-            # Returns expanded sequence and insertion positions for other channels
-            function_channel, function_channel_loss_mask, insertion_positions = self._build_function_calling_channel(
-                batch, target_tokens.shape[1]
-            )
-            
-            # Compute subsampling factor from the actual batch data
-            # This is the ratio of audio samples to embedding frames
-            # Average across the batch for more robust estimation
+        # Enter for FC batches, any minimal batch, or (when distributed) normal non-FC so all ranks participate
+        # in the same collectives (avoid NCCL timeout). With mixed batch types across ranks (e.g. one rank normal
+        # non-FC, another FC or minimal), every rank must run the same all_reduce/dummy path; when this rank has
+        # normal non-FC we go through the expansion path with empty insertion_positions (sync only, tensors unchanged).
+        if has_fc or is_minimal_batch or (torch.distributed.is_initialized() and not has_fc):
+            # Compute subsampling factor (needed for sync and for expansion)
             audio_lens = batch["source_audio_lens"]
             subsampling_factors = []
             for i in range(min(len(audio_lens), len(source_encoded_lens))):
                 audio_len = audio_lens[i].item()
                 encoded_len = source_encoded_lens[i].item()
-                if encoded_len > 0:  # Avoid division by zero
+                if encoded_len > 0:
                     subsampling_factors.append(audio_len / encoded_len)
-            
             subsampling_factor = sum(subsampling_factors) / len(subsampling_factors) if subsampling_factors else 8.0
-            
-            if self.cfg.get("debug_fc", False):
-                logging.info(f"[FC Model] Computed subsampling factor: {subsampling_factor:.2f} (avg of {len(subsampling_factors)} samples)")
-            
-            # Expand target_tokens, source_encoded, and optionally source_tokens to match function channel
-            # This inserts PAD in text channels and proper silence embeddings in user audio at function positions
-            source_tokens_to_expand = batch.get("source_tokens") if self.predict_user_text else None
-            
-            if source_tokens_to_expand is not None:
-                # Expand all three channels together
-                target_tokens, source_encoded, expanded_lengths, source_tokens_expanded = self._expand_channels_with_insertions(
-                    target_tokens, source_encoded, insertion_positions, subsampling_factor, source_tokens_to_expand
-                )
-                batch["source_tokens"] = source_tokens_expanded
+
+            # Minimal batches should take sync-only path on all setups.
+            # This avoids unnecessary FC/data-dependent branching while still participating
+            # in the same collectives via _sync_fc_insertions_collective.
+            if is_minimal_batch:
+                if is_minimal_batch_fc:
+                    fc_drop = batch.get("fc_drop_info")
+                    if fc_drop:
+                        logging.info(
+                            "[FC Model] is_minimal_batch_fc=True | cut_id=%s total_prompt_tokens=%s max_fc_total_tokens=%s reason=%s; using sync-only path.",
+                            fc_drop.get("cut_id", "?"),
+                            fc_drop.get("total_prompt_tokens", "?"),
+                            fc_drop.get("max_fc_total_tokens", fc_drop.get("max_system_fc_tokens", "?")),
+                            fc_drop.get("reason", "?"),
+                        )
+                    else:
+                        logging.info("[FC Model] is_minimal_batch_fc=True (dropped due to FC); using sync-only path.")
+                elif is_minimal_batch_non_fc:
+                    logging.info("[FC Model] is_minimal_batch_non_fc=True (e.g. all-cuts-filtered, force-align failed); using sync-only path.")
+                self._sync_fc_insertions_collective(0, subsampling_factor)
+                # Keep schema consistent with FC path: build a neutral function channel tensor
+                # (all PAD, no loss) so downstream/debug logic does not see None.
+                B, T = target_tokens.shape
+                function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
+                function_channel_loss_mask = torch.zeros((B, T), dtype=torch.bool, device=target_tokens.device)
+                insertion_positions = [[] for _ in range(B)]
+            else:
+                if has_fc and self.cfg.get("debug_fc", False):
+                    logging.info(f"[FC Model] ============================================================")
+                    logging.info(f"[FC Model] FUNCTION CALLING INSERTION - BEFORE EXPANSION")
+                    logging.info(f"[FC Model] ============================================================")
+                    logging.info(f"[FC Model] Original target_tokens shape: {target_tokens.shape}")
+                    logging.info(f"[FC Model] Original source_encoded shape: {source_encoded.shape}")
+                    
+                    sample_len = min(50, target_tokens.shape[1])
+                    sample_tokens = target_tokens[0, :sample_len]
+                    try:
+                        sample_text = self.tokenizer.ids_to_text(sample_tokens.tolist())
+                        logging.info(f"[FC Model] Original agent text (first 50 tokens): '{sample_text}'")
+                    except:
+                        logging.info(f"[FC Model] Original agent text (first 50 tokens): {sample_tokens.tolist()}")
+                
+                if has_fc:
+                    function_channel, function_channel_loss_mask, insertion_positions = self._build_function_calling_channel(
+                        batch, target_tokens.shape[1]
+                    )
+                else:
+                    B = target_tokens.shape[0]
+                    T = target_tokens.shape[1]
+                    # Non-FC batch: supervise function channel to stay PAD.
+                    function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
+                    function_channel_loss_mask = torch.ones((B, T), dtype=torch.bool, device=target_tokens.device)
+                    insertion_positions = [[] for _ in range(B)]
                 
                 if self.cfg.get("debug_fc", False):
-                    logging.info(f"[FC Model] Expanded source_tokens (ASR): {source_tokens_expanded.shape}")
-            else:
-                # Only expand target_tokens and source_encoded
-                target_tokens, source_encoded, expanded_lengths = self._expand_channels_with_insertions(
-                    target_tokens, source_encoded, insertion_positions, subsampling_factor
-                )
+                    logging.info(f"[FC Model] Computed subsampling factor: {subsampling_factor:.2f} (avg of {len(subsampling_factors)} samples)")
+                
+                source_tokens_to_expand = batch.get("source_tokens") if self.predict_user_text else None
+                if source_tokens_to_expand is not None:
+                    target_tokens, source_encoded, expanded_lengths, source_tokens_expanded = self._expand_channels_with_insertions(
+                        target_tokens, source_encoded, insertion_positions, subsampling_factor, source_tokens_to_expand
+                    )
+                    batch["source_tokens"] = source_tokens_expanded
+                    if self.cfg.get("debug_fc", False):
+                        logging.info(f"[FC Model] Expanded source_tokens (ASR): {source_tokens_expanded.shape}")
+                else:
+                    target_tokens, source_encoded, expanded_lengths = self._expand_channels_with_insertions(
+                        target_tokens, source_encoded, insertion_positions, subsampling_factor
+                    )
+                
+                batch["target_token_lens"] = expanded_lengths
+                source_encoded_lens = expanded_lengths.clone()
             
-            # Update batch["target_token_lens"] and source_encoded_lens with expanded lengths
-            batch["target_token_lens"] = expanded_lengths
-            source_encoded_lens = expanded_lengths.clone()
-            
-            if self.cfg.get("debug_fc", False):
+            if has_fc and self.cfg.get("debug_fc", False):
                 logging.info(f"[FC Model] ============================================================")
                 logging.info(f"[FC Model] FUNCTION CALLING INSERTION - AFTER EXPANSION")
                 logging.info(f"[FC Model] ============================================================")
                 logging.info(f"[FC Model] Expanded target_tokens: {target_tokens.shape}")
                 logging.info(f"[FC Model] Expanded source_encoded: {source_encoded.shape}")
-                logging.info(f"[FC Model] Function channel: {function_channel.shape}")
-                logging.info(f"[FC Model] Expansion: {target_tokens.shape[1] - function_channel.shape[1] + function_channel.shape[1]} = Original + Inserted")
+                if function_channel is None:
+                    logging.info("[FC Model] Function channel: None (sync-only/minimal batch path)")
+                else:
+                    logging.info(f"[FC Model] Function channel: {function_channel.shape}")
+                    logging.info(
+                        f"[FC Model] Expansion result length: target={target_tokens.shape[1]}, function={function_channel.shape[1]}"
+                    )
                 
                 # Show sample of expanded agent text to verify PAD insertions
                 sample_len = min(50, target_tokens.shape[1])
@@ -1700,14 +1765,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 num_pads = (target_tokens[0] == self.text_pad_id).sum().item()
                 logging.info(f"[FC Model] Number of PAD tokens in expanded agent text: {num_pads}")
                 
-                # Verify all three channels have same length
-                assert target_tokens.shape[1] == source_encoded.shape[1] == function_channel.shape[1], \
-                    f"Channel length mismatch: target={target_tokens.shape[1]}, source={source_encoded.shape[1]}, function={function_channel.shape[1]}"
-                logging.info(f"[FC Model] ✓ All channels have same length: {target_tokens.shape[1]}")
+                # Verify channel lengths only when function channel exists (non-minimal FC path).
+                if function_channel is not None:
+                    assert target_tokens.shape[1] == source_encoded.shape[1] == function_channel.shape[1], \
+                        f"Channel length mismatch: target={target_tokens.shape[1]}, source={source_encoded.shape[1]}, function={function_channel.shape[1]}"
+                    logging.info(f"[FC Model] ✓ All channels have same length: {target_tokens.shape[1]}")
                 logging.info(f"[FC Model] ============================================================")
         else:
             if self.cfg.get("debug_fc", False):
                 logging.debug(f"[FC Model] No function calling data in this batch")
+
+        # Single-device/non-distributed non-FC path may skip the FC/sync branch above.
+        # Still train function channel to PAD on those batches.
+        if function_channel is None and not has_fc and not is_minimal_batch:
+            B, T = target_tokens.shape
+            function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
+            function_channel_loss_mask = torch.ones((B, T), dtype=torch.bool, device=target_tokens.device)
+            if insertion_positions is None:
+                insertion_positions = [[] for _ in range(B)]
         
         # Now call prepare_labels with EXPANDED sequences
         if function_channel is not None and self.cfg.get("debug_fc", False):
@@ -2000,6 +2075,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         if batch["audio_data"] is not None:
             inputs = self.prepare_inputs(batch["audio_data"])
+            is_minimal_batch = batch["audio_data"].get("is_minimal_batch", False)
             
             forward_outputs = self(inputs["input_embeds"])
 
@@ -2040,12 +2116,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
                 # Function calling loss (use separate head if available)
                 function_loss = torch.tensor(0.0, device=text_loss.device)
+                # Always read function logits so function_head is part of the graph on all ranks.
+                # This avoids per-rank autograd divergence when some ranks have FC labels and others do not.
+                function_logits = forward_outputs["function_logits"]
                 if "function_labels" in inputs and inputs["function_labels"] is not None:
                     # Get special token IDs
                     sotc_id, eotc_id, eotr_id = self._get_function_call_special_tokens()
-                    
-                    # Always use separate function_head for function calling loss
-                    function_logits = forward_outputs["function_logits"]
                     
                     if self.cfg.get("mask_sequence_loss", True):
                         function_logits = function_logits * inputs["seq_mask"][:, :, 0].unsqueeze(-1)
@@ -2141,6 +2217,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                                 fc_correct = (function_predicted_tokens == function_target_tokens) & fc_valid_mask
                                 fc_accuracy = fc_correct.sum().float() / fc_valid_mask.sum().float()
                                 logging.info(f"[FC Model Training]   Function call token accuracy: {fc_accuracy.item():.4f}")
+                else:
+                    if is_minimal_batch:
+                        # Minimal/sync-only placeholder batches should not contribute FC loss,
+                        # but keep function_head in the graph for distributed consistency.
+                        function_loss = function_logits[..., :1].sum() * 0.0
+                    else:
+                        # Non-minimal batches (including regular non-FC) are expected to provide
+                        # function_labels so function channel is trained (PAD for non-FC data).
+                        raise RuntimeError(
+                            "Missing function_labels on a non-minimal batch. "
+                            "Expected PAD-supervised function channel for non-FC batches."
+                        )
 
                 with torch.no_grad():
                     predicted_tokens = torch.argmax(text_logits, dim=-1)  # (B, T)
@@ -2182,12 +2270,25 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                             logging.info(f"[FC Model Training]   Label tokens[:100]: {asr_label_tokens_sample}")
                             logging.info(f"[FC Model Training]   Label text[:100]: '{asr_label_text[:200]}'")
 
+                # For placeholder minimal batches, keep distributed control-flow but do not optimize on fake labels.
+                if is_minimal_batch:
+                    # Keep autograd graph valid across ranks while making this batch contribute 0 loss.
+                    text_loss = text_loss * 0.0
+                    token_accuracy = token_accuracy * 0.0
+                    if self.predict_user_text:
+                        asr_loss = asr_loss * 0.0
+                    function_loss = function_loss * 0.0
+                    if self.cfg.get("debug_fc", False):
+                        logging.info("[Training] Minimal batch detected: zeroing text/asr/function losses.")
+
                 loss = self.cfg.text_loss_weight * text_loss
     
                 if self.predict_user_text:
                     loss = loss + self.cfg.get('asr_loss_weight', 1.0) * asr_loss
                 
-                # Add function calling loss
+                # Always connect function branch into the final loss when labels exist.
+                # For minimal batches, function_loss is already zeroed above, so this keeps
+                # autograd/FSDP graph parity across ranks without updating on fake labels.
                 if "function_labels" in inputs and inputs["function_labels"] is not None:
                     loss = loss + self.cfg.get('function_loss_weight', 1.0) * function_loss
 
@@ -2198,11 +2299,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     "batch": B,
                     "length": T,
                     "token_accuracy": token_accuracy,
+                    # Distributed safety: keep logged metric keys identical across ranks
+                    # when batches are mixed (FC/minimal/non-FC) to avoid logger sync desync.
+                    "function_loss": function_loss,
                 }
                 if self.predict_user_text:
                     ans["asr_loss"] = asr_loss
-                if "function_labels" in inputs and inputs["function_labels"] is not None:
-                    ans["function_loss"] = function_loss
 
                 res.update(ans)
 
@@ -2238,14 +2340,20 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.early_interruption_total += early_interruption_stats["batch_total"]
             self.early_interruption_attempted += early_interruption_stats["batch_attempted"]
             self.early_interruption_successful += early_interruption_stats["batch_successful"]
-            
-            if self.early_interruption_total > 0:
-                # self.log("early_interruption_attempted_ratio", 
-                #          self.early_interruption_attempted / self.early_interruption_total,
-                #          on_step=True, sync_dist=True)
-                self.log("early_interruption_successful_ratio", 
-                         self.early_interruption_successful / self.early_interruption_total,
-                         on_step=True, sync_dist=True)
+
+        # Always execute this sync_dist log so all ranks participate in the same collectives,
+        # even when some ranks only see FC/minimal batches and do not update EI counters.
+        early_interruption_successful_ratio = (
+            self.early_interruption_successful / self.early_interruption_total
+            if self.early_interruption_total > 0
+            else 0.0
+        )
+        self.log(
+            "early_interruption_successful_ratio",
+            early_interruption_successful_ratio,
+            on_step=True,
+            sync_dist=True,
+        )
 
         self.log_dict(res, on_step=True)
 
@@ -2310,6 +2418,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 continue
 
             dataset_batch = dataset_batch["audio_data"]
+            if dataset_batch.get("is_minimal_batch", False):
+                continue  # Skip placeholder minimal batches in validation
 
             prompt_tokens = dataset_batch.get("prompt_tokens", None)
             prompt_token_lens = dataset_batch.get("prompt_token_lens", None)
@@ -2482,6 +2592,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 src_refs=dataset_batch["source_texts"],
                 src_hyps=results["src_text"],
                 system_prompt=dataset_batch.get("system_prompt", None),
+                system_prompt_supervision_0=dataset_batch.get("system_prompt_supervision_0", None),
                 source_turns=dataset_batch.get("source_turn_texts"),
                 target_turns=dataset_batch.get("target_turn_texts"),
                 pred_turns=pred_turns_list,
@@ -2515,6 +2626,22 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
     def predict_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0):
         batch = batch["audio_data"]
+        if batch.get("is_minimal_batch", False):
+            # Return minimal prediction for placeholder batches (e.g. dropped FC)
+            B = 1
+            return {
+                "text": [""],
+                "src_text": [""] if self.predict_user_text else None,
+                "tokens_text_src": torch.full((B, 0), self.text_pad_id, device=self.device, dtype=torch.long) if self.predict_user_text else None,
+                "tokens_text": torch.full((B, 0), self.text_pad_id, device=self.device, dtype=torch.long),
+                "tokens_function": torch.full((B, 0), self.text_pad_id, device=self.device, dtype=torch.long),
+                "tokens_function_pred": torch.full((B, 0), self.text_pad_id, device=self.device, dtype=torch.long),
+                "tokens_audio": None,
+                "tokens_len": torch.tensor([0], device=self.device, dtype=torch.long),
+                "source_audio": batch["source_audio"],
+                "source_audio_len": batch["source_audio_lens"],
+                "sample_id": batch.get("sample_id", ["empty_batch"]),
+            }
 
         force_bos_positions = None
         force_bos_num_tokens_after_user_eos = self.cfg.prediction.get("force_bos_num_tokens_after_user_eos", None)

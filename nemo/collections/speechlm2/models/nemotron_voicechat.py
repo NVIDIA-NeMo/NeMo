@@ -406,6 +406,82 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     # Timestamp detection disabled or model not available
                     asr_hyps_with_timestamps = asr_hyps
 
+                # Decode function channel tokens to text (same as DuplexSTTModel.validation_step)
+                function_channel_text = None
+                function_channel_with_inserted_response = None
+                function_call_positions = None
+                func_tokens_for_pred = results.get("tokens_function_pred", results.get("tokens_function", None))
+                if func_tokens_for_pred is not None:
+                    function_channel_text = tokens_to_str(
+                        func_tokens_for_pred,
+                        results["tokens_len"],
+                        tokenizer=self.stt_model.tokenizer,
+                        pad_id=self.stt_model.text_pad_id,
+                        user_bos_id=self.stt_model.user_bos_id,
+                        eval_text_turn_taking=False,
+                        sil_id=None
+                    )
+
+                    # Also decode full function channel (includes prefilled responses) for debugging
+                    if results.get("tokens_function") is not None:
+                        function_channel_with_inserted_response = tokens_to_str(
+                            results["tokens_function"],
+                            results["tokens_len"],
+                            tokenizer=self.stt_model.tokenizer,
+                            pad_id=self.stt_model.text_pad_id,
+                            user_bos_id=self.stt_model.user_bos_id,
+                            eval_text_turn_taking=False,
+                            sil_id=None
+                        )
+
+                    # Extract function call positions/timing
+                    function_call_positions = self.stt_model._extract_function_call_positions(
+                        func_tokens_for_pred,
+                        results["tokens_len"],
+                        results["tokens_text"]
+                    )
+
+                    # Log function channel predictions before saving
+                    logging.info(f"[Function Channel Predictions - {name}]:")
+                    for idx, fc_text in enumerate(function_channel_text):
+                        sample_id = dataset_batch['sample_id'][idx]
+                        logging.info(f"  Sample {sample_id}: {fc_text}")
+                        if function_call_positions is not None and idx < len(function_call_positions):
+                            pos_info = function_call_positions[idx]
+                            logging.info(f"    Timeline for sample {sample_id}:")
+                            if pos_info.get("user_speech_segments"):
+                                for i, seg in enumerate(pos_info["user_speech_segments"]):
+                                    logging.info(f"      User Speech {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}]")
+                            if pos_info.get("function_calls"):
+                                for i, call in enumerate(pos_info["function_calls"]):
+                                    logging.info(f"      Function Call {i+1}: pos [{call['start_pos']}:{call['end_pos']}]")
+                            if pos_info.get("agent_text_segments"):
+                                for i, seg in enumerate(pos_info["agent_text_segments"]):
+                                    logging.info(f"      Agent Response {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}] - '{seg['text_preview']}'")
+
+                # Decode ground truth function channel (target)
+                target_function_channel = None
+                if function_calls is not None:
+                    B_fc = function_calls.shape[0]
+                    target_function_channel_list = []
+                    for b in range(B_fc):
+                        calls_for_batch = []
+                        if function_call_lengths is not None:
+                            num_calls = (function_call_lengths[b] > 0).sum().item()
+                            for t in range(num_calls):
+                                call_length = function_call_lengths[b, t].item()
+                                if call_length > 0:
+                                    call_tokens = function_calls[b, t, :call_length]
+                                    call_text = self.stt_model.tokenizer.ids_to_text(call_tokens.tolist())
+                                    calls_for_batch.append(call_text)
+                        target_text = "".join(calls_for_batch) if calls_for_batch else ""
+                        target_function_channel_list.append(target_text)
+                    target_function_channel = target_function_channel_list
+                    logging.info(f"[Target Function Channel - {name}]:")
+                    for idx, target_fc_text in enumerate(target_function_channel):
+                        sample_id = dataset_batch['sample_id'][idx]
+                        logging.info(f"  Sample {sample_id}: {target_fc_text}")
+
                 self.results_logger.update(
                     name=name,
                     refs=dataset_batch["target_texts"],
@@ -424,6 +500,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     fps=self.source_fps,
                     results=results if self.cfg.get("dump_tokens_text", False) else None,
                     tokenizer=self.stt_model.tokenizer,
+                    function_channel_text=function_channel_text,
+                    function_channel_with_inserted_response=function_channel_with_inserted_response,
+                    target_function_channel=target_function_channel,
+                    function_call_positions=function_call_positions,
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])

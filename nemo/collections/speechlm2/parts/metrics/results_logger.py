@@ -189,6 +189,7 @@ class ResultsLogger:
             function_channel_with_inserted_response: Optional[list[str]] = None,
             target_function_channel: Optional[list[str]] = None,
             function_call_positions: Optional[list[dict]] = None,
+            target_text_after_tool_response: Optional[list] = None,
             # Optional fields used by NemotronVoiceChat (ignored here if provided).
             eou_pred=None,
             fps=None,
@@ -234,6 +235,12 @@ class ResultsLogger:
                 else "",
                 "target_function_channel": target_function_channel[i] if target_function_channel is not None else "",
                 "function_call_positions": function_call_positions[i] if function_call_positions is not None else None,
+                "target_text_after_tool_response": (
+                    target_text_after_tool_response[i]
+                    if target_text_after_tool_response is not None
+                    and i < len(target_text_after_tool_response)
+                    else []
+                ),
                 "audio_path": os.path.relpath(out_audio_path, self.save_path) if pred_audio is not None else None,
             }
             

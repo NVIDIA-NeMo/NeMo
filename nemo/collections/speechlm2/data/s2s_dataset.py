@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import re
 import random
 import torch
@@ -46,6 +47,11 @@ _ROMAN = {"I":1,"V":5,"X":10,"L":50,"C":100,"D":500,"M":1000}
 
 # Regex pattern for timestamp tokens (compiled once at module level for efficiency)
 _TIMESTAMP_PATTERN = re.compile(r"<\|\d+\|>")
+
+# One-time log for strip_text_before_toolcall
+_logged_strip_toolcall_example = False
+# One-time log for normalize_toolcall_arguments (when debug_fc is True)
+_logged_normalize_toolcall_example = False
 
 # Default template for augmenting function-calling system prompts that only contain <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>.
 # Use {tools_content} as placeholder for the existing tools block.
@@ -179,6 +185,60 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
+# Regex to find <TOOLCALL>...</TOOLCALL> blocks for argument normalization
+_TOOLCALL_BLOCK_PATTERN = re.compile(r'<TOOLCALL>(.*?)</TOOLCALL>', re.DOTALL)
+
+
+def _strip_text_before_toolcall(text: str) -> str:
+    """Remove acknowledgement or any text before <TOOLCALL> in an assistant turn.
+
+    When an assistant turn contains <think>...</think> and/or free text followed by <TOOLCALL>,
+    we keep only from the first <TOOLCALL> to the end so the model sees only the
+    tool-call block. If <TOOLCALL> is not present, the text is returned unchanged.
+    """
+    idx = text.find("<TOOLCALL>")
+    if idx >= 0:
+        return text[idx:]
+    return text
+
+
+def _normalize_toolcall_arguments(text: str) -> str:
+    """Convert TOOLCALL content from raw-arguments format to no-escapes format.
+
+    When data was created with only:
+      "arguments": tool_call["function"]["arguments"]
+    the 'arguments' value is a JSON string (e.g. \"{\\\"key\\\": \\\"value\\\"}\").
+    This function parses that string so the stored format matches the try-block
+    format where arguments are parsed with json.loads before json.dumps (so
+    arguments are JSON objects, not escaped strings). Use this when loading
+    lhotse shar created from the raw-format jsonl so training sees the same
+    format as the no_escapes jsonl.
+    """
+    def replace_one(match):
+        inner = match.group(1).strip()
+        try:
+            arr = json.loads(inner)
+        except json.JSONDecodeError:
+            return match.group(0)
+        if not isinstance(arr, list):
+            return match.group(0)
+        normalized = []
+        for item in arr:
+            if not isinstance(item, dict):
+                normalized.append(item)
+                continue
+            args = item.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            normalized.append({**item, "arguments": args})
+        return "<TOOLCALL>" + json.dumps(normalized) + "</TOOLCALL>"
+
+    return _TOOLCALL_BLOCK_PATTERN.sub(replace_one, text)
+
+
 def _extract_instruction_text(
     segment: SupervisionSegment, 
     tokenizer: TokenizerSpec,
@@ -199,6 +259,8 @@ def _process_function_segment(
     cut_duration: float,
     debug_fc: bool = False,
     clean_text: bool = False,
+    normalize_toolcall_arguments: bool = False,
+    strip_text_before_toolcall: bool = False,
 ) -> FunctionCallData:
     """Process a single function call or response supervision segment.
     
@@ -207,6 +269,36 @@ def _process_function_segment(
     calls and responses is made at the batch collection level based on segment order.
     """
     func_text = supervision.custom['function']
+    # Only strip text before <TOOLCALL> when segment contains <TOOLCALL> (agent turn); skip system and TOOL_RESPONSE.
+    if strip_text_before_toolcall and "<TOOLCALL>" in func_text:
+        global _logged_strip_toolcall_example
+        if not _logged_strip_toolcall_example:
+            before_strip = func_text
+            func_text = _strip_text_before_toolcall(func_text)
+            _logged_strip_toolcall_example = True
+            if before_strip != func_text:
+                logging.info("[FC] strip_text_before_toolcall example (one-time per process):")
+                logging.info(f"[FC]   BEFORE: {before_strip}")
+                logging.info(f"[FC]   AFTER:  {func_text}")
+            else:
+                logging.info("[FC] strip_text_before_toolcall: no change for this example (before == after)")
+        else:
+            func_text = _strip_text_before_toolcall(func_text)
+    # Only normalize TOOLCALL arguments when segment contains <TOOLCALL>; skip TOOL_RESPONSE segments.
+    if normalize_toolcall_arguments and "<TOOLCALL>" in func_text:
+        global _logged_normalize_toolcall_example
+        if not _logged_normalize_toolcall_example:
+            before_norm = func_text
+            func_text = _normalize_toolcall_arguments(func_text)
+            _logged_normalize_toolcall_example = True
+            if before_norm != func_text:
+                logging.info("[FC] normalize_toolcall_arguments example (one-time per process):")
+                logging.info(f"[FC]   BEFORE: {before_norm}")
+                logging.info(f"[FC]   AFTER:  {func_text}")
+            else:
+                logging.info("[FC] normalize_toolcall_arguments: no change for this example (before == after)")
+        else:
+            func_text = _normalize_toolcall_arguments(func_text)
     func_text_clean = _clean_text(func_text) if clean_text else func_text
     
     # Check if _clean_text actually changed anything for function calling
@@ -248,6 +340,8 @@ def _extract_function_calling_data(
     cut_duration: float,
     debug_fc: bool = False,
     clean_text: bool = False,
+    normalize_toolcall_arguments: bool = False,
+    strip_text_before_toolcall: bool = False,
 ) -> FunctionCallingBatch:
     """
     Extract function calls and responses from segments.
@@ -263,9 +357,10 @@ def _extract_function_calling_data(
     )
     
     for i in range(0, len(segments), 2):
-        # Process function call
+        # Process function call (assistant turn): strip text before <TOOLCALL> when flag is True
         call = _process_function_segment(
-            segments[i], tokenizer, frame_length, target_sample_rate, cut_duration, debug_fc, clean_text
+            segments[i], tokenizer, frame_length, target_sample_rate, cut_duration,
+            debug_fc, clean_text, normalize_toolcall_arguments, strip_text_before_toolcall,
         )
         batch.calls.append(call.tokens)
         batch.call_lengths.append(call.length)
@@ -273,10 +368,11 @@ def _extract_function_calling_data(
         batch.call_steps.append(call.step)
         batch.call_raw_text.append(call.raw_text)
         
-        # Process function response (if exists)
+        # Process function response (user turn): 
         if i + 1 < len(segments):
             response = _process_function_segment(
-                segments[i + 1], tokenizer, frame_length, target_sample_rate, cut_duration, debug_fc, clean_text
+                segments[i + 1], tokenizer, frame_length, target_sample_rate, cut_duration,
+                debug_fc, clean_text, normalize_toolcall_arguments, False,
             )
             batch.responses.append(response.tokens)
             batch.response_lengths.append(response.length)
@@ -311,6 +407,56 @@ def _is_function_calling_cut(cut: Cut) -> bool:
         if (custom.get("function") or "").strip() != "":
             return True
     return False
+
+
+# Closing tags for TOOLRESPONSE (dataset uses <TOOL_RESPONSE>...</TOOL_RESPONSE> or <TOOLRESPONSE>...</TOOLRESPONSE>)
+_TOOLRESPONSE_CLOSING_TAGS = ("</TOOLRESPONSE>", "</TOOL_RESPONSE>")
+
+
+def _is_agent_toolcall(sup) -> bool:
+    """True if this supervision is an agent turn that is a TOOLCALL (not natural-language text)."""
+    custom = getattr(sup, "custom", None) or {}
+    raw = (custom.get("function") or getattr(sup, "text", None) or "").strip()
+    return raw.startswith("<TOOLCALL>")
+
+
+def _extract_target_text_after_tool_response(cut: Cut, output_roles: set) -> list:
+    """
+    Extract every assistant (output_roles) response that comes right after a
+    <TOOLRESPONSE>...</TOOLRESPONSE> / <TOOL_RESPONSE>...</TOOL_RESPONSE> turn,
+    and is actual natural-language text (not another TOOLCALL).
+
+    - TOOL_RESPONSE lives in user (or system) turns, not agent turns.
+    - Walk all supervisions in order. When a turn contains the closing tag, find
+      the next turn with speaker in output_roles (agent). If that agent turn is
+      a TOOLCALL, skip (don't add). If it is real text, append it to segments.
+    """
+    segments = []
+    supervisions = list(cut.supervisions)
+    for i, sup in enumerate(supervisions):
+        custom = getattr(sup, "custom", None) or {}
+        text = (custom.get("function") or getattr(sup, "text", None) or "").strip()
+        if not any(tag in text for tag in _TOOLRESPONSE_CLOSING_TAGS):
+            continue
+        # This turn is a TOOL_RESPONSE. Find the next agent turn.
+        for j in range(i + 1, len(supervisions)):
+            next_sup = supervisions[j]
+            if next_sup.speaker not in output_roles:
+                continue
+            # Next agent turn found.
+            if _is_agent_toolcall(next_sup):
+                break  # Agent sent another TOOLCALL, not a text response; don't add.
+            next_text = (
+                getattr(next_sup, "text", None)
+                or (getattr(next_sup, "custom", None) or {}).get("orig_text")
+                or ""
+            ).strip()
+            if next_text:
+                segments.append(next_text)
+            break
+
+    return segments
+
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
     """
@@ -426,8 +572,25 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.model_cfg = model_cfg
         self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
         self.debug_fc = model_cfg.get("debug_fc", False) if model_cfg is not None else False
+        self.fc_log = model_cfg.get("fc_log", False) if model_cfg is not None else False
         self.clean_fc_text = model_cfg.get("clean_fc_text", False) if model_cfg is not None else False
         self.clean_system_prompt = model_cfg.get("clean_system_prompt", False) if model_cfg is not None else False
+        # When True (default), normalize <TOOLCALL> content so "arguments" are parsed from JSON string
+        # to object (mimics the try-block conversion used in no_escapes jsonl). Set to false only if
+        # all lhotse shar are built from no_escapes jsonl and you want to avoid re-serialization.
+        _norm_fc = True
+        if model_cfg is not None and "normalize_fc_toolcall_arguments" in model_cfg:
+            _norm_fc = model_cfg["normalize_fc_toolcall_arguments"]
+        if cfg is not None and "normalize_fc_toolcall_arguments" in cfg:
+            _norm_fc = cfg["normalize_fc_toolcall_arguments"]
+        self.normalize_fc_toolcall_arguments = bool(_norm_fc)
+        # When True (default), strip acknowledgement/text before <TOOLCALL> in assistant turns only.
+        _strip_before = True
+        if model_cfg is not None and "strip_fc_text_before_toolcall" in model_cfg:
+            _strip_before = model_cfg["strip_fc_text_before_toolcall"]
+        if cfg is not None and "strip_fc_text_before_toolcall" in cfg:
+            _strip_before = cfg["strip_fc_text_before_toolcall"]
+        self.strip_fc_text_before_toolcall = bool(_strip_before)
         # Augment function-calling system prompts that only have <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>
         # with full instructions (TOOLCALL/TOOL_RESPONSE format). Check model_cfg then cfg.
         self.augment_fc_system_prompt = (
@@ -930,7 +1093,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                         else:
                             dropped_cuts.append((cut.id, total_tokens))
 
-                if dropped_cuts:
+                if dropped_cuts and self.fc_log:
                     preview = ", ".join(
                         f"{cut_id}({tok_cnt}>{self.max_fc_total_tokens})" for cut_id, tok_cnt in dropped_cuts[:10]
                     )
@@ -1194,6 +1357,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                             cut.duration,
                             self.debug_fc,
                             self.clean_fc_text,
+                            self.normalize_fc_toolcall_arguments,
+                            self.strip_fc_text_before_toolcall,
                         )
                         
                         # Collate calls
@@ -1279,6 +1444,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 audio_data["function_response_times"] = function_response_times
                 audio_data["function_response_steps"] = function_response_steps
                 audio_data["function_response_raw_text"] = function_response_raw_text
+
+                # Extract "assistant response after TOOLRESPONSE" per cut for BLEU-after-tool metric
+                audio_data["target_text_after_tool_response"] = [
+                    _extract_target_text_after_tool_response(cut, self.output_roles)
+                    for cut in all_cuts_combined
+                ]
+
                 
                 if self.debug_fc:
                     logging.info(f"[FC] Function calling metadata added to batch: "

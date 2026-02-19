@@ -764,10 +764,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         torch.tensor([eotc_id], device=device, dtype=torch.long)
                     ])
                     events.append((call_step_adjusted, wrapped_call, True))  # True = compute loss
-                    
-                    # Decode wrapped_call to text for logging
-                    wrapped_call_text = self.tokenizer.ids_to_text(wrapped_call.tolist())
-                    logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Call at step {call_step_adjusted} (original={call_step_original}, offset={prompt_offset}), length {len(wrapped_call)}, wrapped_call: {wrapped_call}, wrapped_call_text: {wrapped_call_text}")
+                    if self.cfg.get("fc_log", False):
+                        wrapped_call_text = self.tokenizer.ids_to_text(wrapped_call.tolist())
+                        logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Call at step {call_step_adjusted} (original={call_step_original}, offset={prompt_offset}), length {len(wrapped_call)}, wrapped_call: {wrapped_call}, wrapped_call_text: {wrapped_call_text}")
                 
                 # Process function response
                 response_step_original = function_response_steps[b, turn_idx].item()
@@ -785,11 +784,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     # Then insert EOTR marker after response (with loss - model should learn this marker)
                     eotr_marker = torch.tensor([eotr_id], device=device, dtype=torch.long)
                     events.append((response_step_adjusted, eotr_marker, True))  # True = compute loss on EOTR
-                    
-                    # Decode response to text for logging
-                    response_text = self.tokenizer.ids_to_text(response_tokens.tolist())
-                    logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Response content at step {response_step_adjusted}, length {len(response_tokens)}, response_text: {response_text}")
-                    logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: EOTR marker after response at step {response_step_adjusted} (original={response_step_original}, offset={prompt_offset})")
+                    if self.cfg.get("fc_log", False):
+                        response_text = self.tokenizer.ids_to_text(response_tokens.tolist())
+                        logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Response content at step {response_step_adjusted}, length {len(response_tokens)}, response_text: {response_text}")
+                        logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: EOTR marker after response at step {response_step_adjusted} (original={response_step_original}, offset={prompt_offset})")
             
             # Build channel by inserting function tokens at specified positions
             channel_tokens = []
@@ -1519,8 +1517,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
 
         
-        # Log user audio dtype for debugging
-        logging.info(f"User audio dtype: {batch['source_audio'].dtype}, device: {batch['source_audio'].device}, shape: {batch['source_audio'].shape}")
+        if self.cfg.get("asr_log", False):
+            logging.info(f"User audio dtype: {batch['source_audio'].dtype}, device: {batch['source_audio'].device}, shape: {batch['source_audio'].shape}")
         
         source_encoded, source_encoded_lens, asr_emb = self.perception(
             input_signal=batch["source_audio"],
@@ -1544,17 +1542,17 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             T_src = source_encoded.shape[1]
             T_tgt = target_tokens.shape[1]
             
-            # Always log system prompt (regardless of debug_fc setting)
-            logging.info(f"[Training] System prompt detected: batch_size={B}, max_prompt_len={max_prompt_len}")
-            for i in range(min(B, 2)):  # Show first 2 samples
-                prompt_len = batch["prompt_token_lens"][i].item()
-                if prompt_len > 0:
-                    prompt_tokens_sample = batch["prompt_tokens"][i, :prompt_len].tolist()
-                    prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
-                    logging.info(f"[Training] System Prompt (Sample {i}, {prompt_len} tokens):")
-                    logging.info(f"[Training]   Full text: {prompt_text}")
-                    if len(prompt_text) > 200:
-                        logging.info(f"[Training]   (truncated preview): {prompt_text[:200]}...")
+            if self.cfg.get("fc_log", False):
+                logging.info(f"[Training] System prompt detected: batch_size={B}, max_prompt_len={max_prompt_len}")
+                for i in range(min(B, 2)):  # Show first 2 samples
+                    prompt_len = batch["prompt_token_lens"][i].item()
+                    if prompt_len > 0:
+                        prompt_tokens_sample = batch["prompt_tokens"][i, :prompt_len].tolist()
+                        prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
+                        logging.info(f"[Training] System Prompt (Sample {i}, {prompt_len} tokens):")
+                        logging.info(f"[Training]   Full text: {prompt_text}")
+                        if len(prompt_text) > 200:
+                            logging.info(f"[Training]   (truncated preview): {prompt_text[:200]}...")
 
             new_source_encoded = torch.zeros(B, max_prompt_len + T_src, H,
                                              dtype=source_encoded.dtype, device=source_encoded.device)
@@ -2112,7 +2110,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         stacked = stacked * (stacked != self.text_pad_id)
                         print("Stacked asr_labels and asr_loss_scale for first batch (up to 500 steps):")
                         print(stacked[:500].int())
-                    print(f'asr_loss: {asr_loss}')
+                    if self.cfg.get("asr_log", False):
+                        print(f'asr_loss: {asr_loss}')
 
                 # Function calling loss (use separate head if available)
                 function_loss = torch.tensor(0.0, device=text_loss.device)
@@ -2365,6 +2364,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     def on_validation_epoch_start(self) -> None:
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.bleu = BLEU().reset()
+        # BLEU for "assistant response after TOOLRESPONSE": ref = extracted GT segment, hyp = full agent prediction
+        self.bleu_after_tool = BLEU().reset()
 
         self.turn_taking_metrics = TurnTakingMetrics(
             eos_token_id=self.tokenizer.text_to_ids('$')[0],
@@ -2383,6 +2384,13 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         for k, m in bleu.items():
             if "qa" not in k and "mmsu" not in k:
                 self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
+
+        # BLEU: ref = ground-truth "assistant response after TOOLRESPONSE" only, hyp = full agent prediction.
+        # Log key is val_txt_bleu_after_tool (distinct from main BLEU's val_txt_bleu / val_txt_bleu_{name}).
+        # Always log the same key so all ranks participate in sync_dist.
+        bleu_after_tool = self.bleu_after_tool.compute()
+        after_tool_val = bleu_after_tool["txt_bleu"].to(self.device) if bleu_after_tool and "txt_bleu" in bleu_after_tool else torch.tensor(0.0, device=self.device)
+        self.log(f"{prefix}_txt_bleu_after_tool", after_tool_val, on_epoch=True, sync_dist=True)
 
         acc_metrics = self.results_logger.compute_and_save()
 
@@ -2469,6 +2477,27 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
 
+            # BLEU for assistant response after TOOLRESPONSE: refs = segments after each TOOLRESPONSE (dataset), hyp = full agent prediction per sample.
+            # Skip only empty references (no GT to compare to); empty hypotheses are included and score 0.
+            if function_calls is not None:
+                n_samples = len(results["text"])
+                raw_refs = dataset_batch.get("target_text_after_tool_response")
+                if raw_refs is None or len(raw_refs) != n_samples:
+                    raw_refs = [[] for _ in range(n_samples)]
+                full_hyps = results["text"]
+                refs_filt, hyps_filt = [], []
+                for sample_refs, h in zip(raw_refs, full_hyps):
+                    if not isinstance(sample_refs, (list, tuple)):
+                        sample_refs = [sample_refs] if (sample_refs is not None and str(sample_refs).strip()) else []
+                    h = h if h is not None else ""
+                    for r in sample_refs:
+                        if r is None or not str(r).strip():
+                            continue
+                        refs_filt.append(r)
+                        hyps_filt.append(h)
+                if refs_filt and hyps_filt:
+                    self.bleu_after_tool.update(name=name, refs=refs_filt, hyps=hyps_filt)
+
             if "source_tokens" in dataset_batch and results["tokens_text"] is not None:
                 self.turn_taking_metrics.update(
                     name=name,
@@ -2515,35 +2544,28 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     results["tokens_text"]
                 )
                 
-                # Log function channel predictions before saving
-                logging.info(f"[Function Channel Predictions - {name}]:")
-                for idx, fc_text in enumerate(function_channel_text):
-                    sample_id = dataset_batch['sample_id'][idx]
-                    logging.info(f"  Sample {sample_id}: {fc_text}")
-                    # Log raw predicted tokens for quick inspection
-                    try:
-                        pred_tokens = func_tokens_for_pred[idx, :results["tokens_len"][idx]].tolist()
-                        logging.info(f"    tokens_function_pred[:40]: {pred_tokens[:40]}")
-                    except Exception as e:
-                        logging.info(f"    tokens_function_pred: <unavailable> ({e})")
-                    if function_call_positions is not None and idx < len(function_call_positions):
-                        pos_info = function_call_positions[idx]
-                        logging.info(f"    Timeline for sample {sample_id}:")
-                        
-                        # Log user speech segments
-                        if pos_info.get("user_speech_segments"):
-                            for i, seg in enumerate(pos_info["user_speech_segments"]):
-                                logging.info(f"      User Speech {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}]")
-                        
-                        # Log function calls
-                        if pos_info.get("function_calls"):
-                            for i, call in enumerate(pos_info["function_calls"]):
-                                logging.info(f"      Function Call {i+1}: pos [{call['start_pos']}:{call['end_pos']}]")
-                        
-                        # Log agent text segments
-                        if pos_info.get("agent_text_segments"):
-                            for i, seg in enumerate(pos_info["agent_text_segments"]):
-                                logging.info(f"      Agent Response {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}] - '{seg['text_preview']}'")
+                if self.cfg.get("fc_log", False):
+                    logging.info(f"[Function Channel Predictions - {name}]:")
+                    for idx, fc_text in enumerate(function_channel_text):
+                        sample_id = dataset_batch['sample_id'][idx]
+                        logging.info(f"  Sample {sample_id}: {fc_text}")
+                        try:
+                            pred_tokens = func_tokens_for_pred[idx, :results["tokens_len"][idx]].tolist()
+                            logging.info(f"    tokens_function_pred[:40]: {pred_tokens[:40]}")
+                        except Exception as e:
+                            logging.info(f"    tokens_function_pred: <unavailable> ({e})")
+                        if function_call_positions is not None and idx < len(function_call_positions):
+                            pos_info = function_call_positions[idx]
+                            logging.info(f"    Timeline for sample {sample_id}:")
+                            if pos_info.get("user_speech_segments"):
+                                for i, seg in enumerate(pos_info["user_speech_segments"]):
+                                    logging.info(f"      User Speech {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}]")
+                            if pos_info.get("function_calls"):
+                                for i, call in enumerate(pos_info["function_calls"]):
+                                    logging.info(f"      Function Call {i+1}: pos [{call['start_pos']}:{call['end_pos']}]")
+                            if pos_info.get("agent_text_segments"):
+                                for i, seg in enumerate(pos_info["agent_text_segments"]):
+                                    logging.info(f"      Agent Response {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}] - '{seg['text_preview']}'")
 
             # Decode ground truth function channel tokens (target)
             # Note: target_function_channel contains ground truth CALLS (what model should predict)
@@ -2571,12 +2593,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     target_function_channel_list.append(target_text)
                 
                 target_function_channel = target_function_channel_list
-                
-                # Log ground truth function channel (CALLS only, not responses)
-                logging.info(f"[Target Function Channel - {name}]:")
-                for idx, target_fc_text in enumerate(target_function_channel):
-                    sample_id = dataset_batch['sample_id'][idx]
-                    logging.info(f"  Sample {sample_id}: {target_fc_text}")
+                if self.cfg.get("fc_log", False):
+                    logging.info(f"[Target Function Channel - {name}]:")
+                    for idx, target_fc_text in enumerate(target_function_channel):
+                        sample_id = dataset_batch['sample_id'][idx]
+                        logging.info(f"  Sample {sample_id}: {target_fc_text}")
 
             self.results_logger.update(
                 name=name,
@@ -2600,6 +2621,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 function_channel_with_inserted_response=function_channel_with_inserted_response,
                 target_function_channel=target_function_channel,
                 function_call_positions=function_call_positions,
+                target_text_after_tool_response=dataset_batch.get("target_text_after_tool_response"),
             )
 
             if self.cfg.get("eval_text_turn_taking", False):
@@ -3124,17 +3146,17 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             prompt_embedded = self.embed_tokens(prompt_tokens)
             B_prompt, max_prompt_len, H_prompt = prompt_embedded.shape
 
-            # Always log system prompt (regardless of debug_fc setting)
-            logging.info(f"[Inference Init] System prompt detected: batch_size={B_prompt}, max_prompt_len={max_prompt_len}")
-            for i in range(min(B_prompt, 2)):  # Show first 2 samples
-                prompt_len = prompt_token_lens[i].item()
-                if prompt_len > 0:
-                    prompt_tokens_sample = prompt_tokens[i, :prompt_len].tolist()
-                    prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
-                logging.info(f"[Inference Init] Sample {i} system prompt ({prompt_len} tokens):")
-                logging.info(f"[Inference Init]   Full text: {prompt_text}")
-                if len(prompt_text) > 200:
-                    logging.info(f"[Inference Init]   (truncated preview): {prompt_text[:200]}...")
+            if self.cfg.get("fc_log", False):
+                logging.info(f"[Inference Init] System prompt detected: batch_size={B_prompt}, max_prompt_len={max_prompt_len}")
+                for i in range(min(B_prompt, 2)):  # Show first 2 samples
+                    prompt_len = prompt_token_lens[i].item()
+                    if prompt_len > 0:
+                        prompt_tokens_sample = prompt_tokens[i, :prompt_len].tolist()
+                        prompt_text = self.tokenizer.ids_to_text(prompt_tokens_sample)
+                        logging.info(f"[Inference Init] Sample {i} system prompt ({prompt_len} tokens):")
+                        logging.info(f"[Inference Init]   Full text: {prompt_text}")
+                        if len(prompt_text) > 200:
+                            logging.info(f"[Inference Init]   (truncated preview): {prompt_text[:200]}...")
 
             assert B == B_prompt, f"Batch size mismatch: source={B}, prompt={B_prompt}"
             assert H == H_prompt, f"Hidden size mismatch: source={H}, prompt={H_prompt}"
@@ -3605,12 +3627,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             Updated inference_state with expanded sequences
         """
         
-        # ALWAYS log to verify function is being called
-        logging.info(f"╔═══ [FC EXPAND CALLED] ═══╗")
-        logging.info(f"║ function_call_lengths: {function_call_lengths.shape if function_call_lengths is not None else 'None'}")
-        logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
-        logging.info(f"║ debug_fc: {self.cfg.get('debug_fc', 'NOT_SET')}")
-        logging.info(f"╚═════════════════════════╝")
+        if self.cfg.get("fc_log", False):
+            logging.info(f"╔═══ [FC EXPAND CALLED] ═══╗")
+            logging.info(f"║ function_call_lengths: {function_call_lengths.shape if function_call_lengths is not None else 'None'}")
+            logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
+            logging.info(f"║ fc_log: {self.cfg.get('fc_log', 'NOT_SET')}")
+            logging.info(f"╚═════════════════════════╝")
         
         B = inference_state["B"]
         T_original = inference_state["T"]
@@ -3683,7 +3705,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if prompt_token_lens is not None:
                 prompt_offset = prompt_token_lens[b].item()
             
-            if b == 0:
+            if b == 0 and self.cfg.get("fc_log", False):
                 logging.info(f"[FC Expand] Building expansion plan for batch {b}")
                 logging.info(f"[FC Expand] Prompt offset: {prompt_offset}, Num calls: {num_calls}")
                 if function_call_lengths is not None:
@@ -3697,7 +3719,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 insertion_step = function_call_steps[b, call_idx].item() if len(function_call_steps.shape) > 1 else function_call_steps[b].item()
                 
                 if insertion_step < 0:
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Skipping call {call_idx}: insertion_step={insertion_step} < 0")
                     continue
                 
@@ -3706,20 +3728,20 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 # Track position as we add events (call -> response -> eotr)
                 current_insertion_pos = insertion_step_with_prompt
                 
-                # ALWAYS log call_len for debugging
                 call_len = function_call_lengths[b, call_idx].item() if len(function_call_lengths.shape) > 1 else 0
-                logging.info(f"[FC Expand DEBUG] Batch {b}, Call {call_idx}: call_len={call_len}, function_call_lengths shape={function_call_lengths.shape if function_call_lengths is not None else 'None'}")
+                if self.cfg.get("fc_log", False):
+                    logging.info(f"[FC Expand DEBUG] Batch {b}, Call {call_idx}: call_len={call_len}, function_call_lengths shape={function_call_lengths.shape if function_call_lengths is not None else 'None'}")
                 
                 # Reserve PADDING for call
                 if function_call_lengths is not None and call_len > 0:
                     call_space = call_len + 2  # SOTC + call + EOTC
                     expansion_plan.append((current_insertion_pos, call_space, None, 'call'))
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Call {call_idx}: position={current_insertion_pos}, space={call_space} (call_len={call_len})")
                 else:
-                    # If no call space reserved, response will overwrite where call should be!
-                    logging.error(f"[FC Expand BUG] Batch {b}, Call {call_idx}: NO SPACE RESERVED FOR CALL! call_len={call_len}, function_call_lengths={'None' if function_call_lengths is None else 'provided'}")
-                    if b == 0:
+                    if self.cfg.get("fc_log", False):
+                        logging.error(f"[FC Expand BUG] Batch {b}, Call {call_idx}: NO SPACE RESERVED FOR CALL! call_len={call_len}, function_call_lengths={'None' if function_call_lengths is None else 'provided'}")
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.error(f"[FC Expand BUG] This means response tokens will be placed at position {current_insertion_pos} with NO call tokens before them!")
                     call_space = 0
                 
@@ -3732,19 +3754,19 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         response_tokens = function_responses[b, :response_len]
                     
                     expansion_plan.append((current_insertion_pos, None, response_tokens, 'response'))
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         response_text = self.tokenizer.ids_to_text(response_tokens.tolist())
                         logging.info(f"[FC Expand] Response {call_idx}: position={current_insertion_pos}, length={response_len}")
                         logging.info(f"[FC Expand] Response text: {response_text[:100]}")
                     
                     # Reserve PADDING for EOTR
                     expansion_plan.append((current_insertion_pos, 1, None, 'eotr'))
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] EOTR {call_idx}: position={current_insertion_pos}, space=1")
             
             insertion_events.append(expansion_plan)
             
-            if b == 0:
+            if b == 0 and self.cfg.get("fc_log", False):
                 logging.info(f"[FC Expand] Batch {b} expansion plan: {len(expansion_plan)} events")
         
         # Expand each batch item by shifting and inserting
@@ -3774,7 +3796,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             current_pos = 0
             offset = 0
             
-            if b == 0:
+            if b == 0 and self.cfg.get("fc_log", False):
                 logging.info(f"[FC Expand] Batch {b}: Processing {len(insertion_events[b])} insertion events")
             
             for event_idx, (insert_pos, space, tokens, event_type) in enumerate(insertion_events[b]):
@@ -3792,14 +3814,14 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     if asr_emb_expanded is not None:
                         asr_emb_expanded[b, new_start:new_end] = original_asr_emb[current_pos:insert_pos]
                     
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Event {event_idx} ({event_type}): Copied original[{current_pos}:{insert_pos}] → expanded[{new_start}:{new_end}]")
                 
                 # Insert based on event type
                 insertion_start = insert_pos + offset  # Position in expanded space
                 if event_type == 'call':
                     # gen_function_expanded already initialized to PAD (for model to predict)
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Event {event_idx} (call): Reserved PAD region expanded[{insertion_start}:{insertion_start + space}] for model to predict call")
                     try:
                         silence_embeds = self._get_silence_embeddings_from_template(
@@ -3852,7 +3874,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         )
                     silence_embeds = silence_embeds * self.cfg.get("duplex_user_channel_weight", 1.0)
                     input_embeds_expanded[b, response_start:response_end] = silence_embeds
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Event {event_idx} (response): Pre-filled response expanded[{response_start}:{response_end}] with {response_len} tokens")
                         response_text = self.tokenizer.ids_to_text(tokens.tolist())
                         logging.info(f"[FC Expand] Response text: {response_text[:100]}")
@@ -3875,7 +3897,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     offset += response_len
                 elif event_type == 'eotr':
                     # gen_function_expanded already initialized to PAD (for model to predict)
-                    if b == 0:
+                    if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Event {event_idx} (eotr): Reserved PAD region expanded[{insertion_start}:{insertion_start + space}] for model to predict EOTR")
                     try:
                         silence_embeds = self._get_silence_embeddings_from_template(
@@ -3925,10 +3947,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if asr_emb_expanded is not None:
                     asr_emb_expanded[b, new_start:new_end] = original_asr_emb[current_pos:T_original]
                 
-                if b == 0:
+                if b == 0 and self.cfg.get("fc_log", False):
                     logging.info(f"[FC Expand] Copied remaining original[{current_pos}:{T_original}] → expanded[{new_start}:{new_end}]")
             
-            if b == 0:
+            if b == 0 and self.cfg.get("fc_log", False):
                 logging.info(f"[FC Expand] Batch {b}: Final expanded length = {T_expanded}, offset = {offset}")
                 # Show what's in gen_function_expanded
                 non_pad_positions = (gen_function_expanded[b] != self.text_pad_id).nonzero(as_tuple=True)[0]
@@ -4009,13 +4031,13 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         
         For function calling: expansion/pre-filling is handled by helper function.
         """
-        #  ALWAYS log to verify offline_inference is being called
-        logging.info(f"╔═══ [OFFLINE_INFERENCE CALLED] ═══╗")
-        logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
-        logging.info(f"║ function_response_lengths: {function_response_lengths.shape if function_response_lengths is not None else 'None'}")
-        logging.info(f"║ function_call_steps: {function_call_steps.shape if function_call_steps is not None else 'None'}")
-        logging.info(f"║ Will call _expand_for_function_calling: {function_responses is not None and function_response_lengths is not None}")
-        logging.info(f"╚══════════════════════════════════╝")
+        if self.cfg.get("fc_log", False):
+            logging.info(f"╔═══ [OFFLINE_INFERENCE CALLED] ═══╗")
+            logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
+            logging.info(f"║ function_response_lengths: {function_response_lengths.shape if function_response_lengths is not None else 'None'}")
+            logging.info(f"║ function_call_steps: {function_call_steps.shape if function_call_steps is not None else 'None'}")
+            logging.info(f"║ Will call _expand_for_function_calling: {function_responses is not None and function_response_lengths is not None}")
+            logging.info(f"╚══════════════════════════════════╝")
         
         # Initialize inference state (basic setup)
         inference_state = self._init_inference(

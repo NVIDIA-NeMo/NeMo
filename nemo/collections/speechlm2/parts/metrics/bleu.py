@@ -55,7 +55,11 @@ class BLEU:
         for name in self._refs.keys():
             metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], [self._refs[name]]).score)
             corpus_metric[f"txt_bleu_{name}"] = metric
-        corpus_metric["txt_bleu"] = torch.stack(list(corpus_metric.values())).mean()
+        if corpus_metric:
+            corpus_metric["txt_bleu"] = torch.stack(list(corpus_metric.values())).mean()
+        else:
+            # No updates (e.g. no tool-response refs in any batch): return 0 so logging/sync_dist is valid
+            corpus_metric["txt_bleu"] = torch.tensor(0.0, dtype=torch.float32)
         self._refs.clear()
         self._hyps.clear()
         return corpus_metric

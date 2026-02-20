@@ -190,6 +190,7 @@ class ResultsLogger:
             target_function_channel: Optional[list[str]] = None,
             function_call_positions: Optional[list[dict]] = None,
             target_text_after_tool_response: Optional[list] = None,
+            audio_lens: Optional[torch.Tensor] = None,
             # Optional fields used by NemotronVoiceChat (ignored here if provided).
             eou_pred=None,
             fps=None,
@@ -206,11 +207,21 @@ class ResultsLogger:
                 out_audio_path = os.path.join(self.audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
                 agent_out_audio_path = os.path.join(self.agent_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
                 user_out_audio_path = os.path.join(self.user_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
+
+                # Trim batch-padded audio to per-sample actual length (accounts for extra_decoding_seconds).
+                cur_user_audio = user_audio[i] if user_audio is not None else None
+                cur_pred_audio = pred_audio[i]
+                if audio_lens is not None and cur_user_audio is not None:
+                    actual_user_len = int(audio_lens[i].item())
+                    cur_user_audio = cur_user_audio[:actual_user_len]
+                    actual_pred_len = int(actual_user_len / user_audio_sr * pred_audio_sr)
+                    cur_pred_audio = cur_pred_audio[:actual_pred_len]
+
                 self.merge_and_save_audio(
                     out_audio_path,
-                    pred_audio[i],
+                    cur_pred_audio,
                     pred_audio_sr,
-                    user_audio[i] if user_audio is not None else None,
+                    cur_user_audio,
                     user_audio_sr,
                     agent_out_audio_path=agent_out_audio_path,
                     user_out_audio_path=user_out_audio_path,

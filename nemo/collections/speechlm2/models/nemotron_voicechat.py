@@ -308,6 +308,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         for k, m in bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
 
+        # Combine per-rank files into one per dataset (ifeval_rank0.json + ifeval_rank1.json + ... -> ifeval.json)
+        self.results_logger.compute_and_save()
+
     def validation_step(self, batch: dict, batch_idx: int):
 
         for name, dataset_batch in batch.items():
@@ -492,6 +495,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
+                    audio_lens=dataset_batch["source_audio_lens"] + input_pad_len,
                     eou_pred=(
                         results["gen_eou"]
                         if "gen_eou" in results

@@ -34,9 +34,13 @@
 import re
 from typing import List
 
-import jieba
-import opencc
-from pangu import spacing
+try:
+    import jieba
+    import opencc
+    from pangu import spacing
+    _CHINESE_LIBS_AVAILABLE = True
+except Exception:
+    _CHINESE_LIBS_AVAILABLE = False
 
 
 class ChineseProcessor:

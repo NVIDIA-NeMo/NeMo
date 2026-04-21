@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from contextlib import contextmanager
+import os
 from pathlib import Path
 
 import torch
@@ -96,8 +97,11 @@ def setup_speech_encoder(model: torch.nn.Module):
 
     if 'encoder' in model.cfg.perception:
         user_encoder_config = OmegaConf.to_container(model.cfg.perception.encoder, resolve=True)
-    
-    asr = load_pretrained_nemo(ASRModel, model.cfg.pretrained_asr).eval()
+
+    # S2S_PRETRAINED_ASR env var overrides the path baked into config.json
+    pretrained_asr_path = os.environ.get("S2S_PRETRAINED_ASR", model.cfg.pretrained_asr)
+    logging.info(f"setup_speech_encoder: loading ASR from {pretrained_asr_path}")
+    asr = load_pretrained_nemo(ASRModel, pretrained_asr_path).eval()
     with open_dict(model.cfg):
         model.cfg.perception.preprocessor = asr.cfg.preprocessor
         model.cfg.perception.encoder = asr.cfg.encoder

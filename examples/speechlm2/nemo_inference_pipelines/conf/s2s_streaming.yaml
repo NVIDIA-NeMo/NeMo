@@ -84,7 +84,9 @@ s2s:
   # Each RNNT frame = 80ms of user audio (one encoder output per 80ms chunk)
   rnnt_eou_enabled: false   # Enable RNNT blank-count turn-taking (overrides force_turn_taking for EOU)
   asr_eou: 4                # Consecutive RNNT blank frames after speech → EOU → agent BOS (4 × 80ms = 320ms)
-  asr_bou: 1                # Consecutive RNNT non-blank frames during agent speech → BOU → agent EOS (1 × 80ms = 80ms)
+  asr_bou: 4                # (legacy alias) Consecutive RNNT non-blank frames → user BOS → interrupt agent
+  user_bos_frames: 4        # Consecutive RNNT non-blank frames of user speech → interrupt agent EOS (4 × 80ms = 320ms)
+                            # Set to 2 for 160ms (more aggressive) or 4 for 320ms (more robust)
 
   # Inference logit boosts (applied to model logits at inference time)
   inference_user_pad_boost: 0.8         # Boost ASR pad logit

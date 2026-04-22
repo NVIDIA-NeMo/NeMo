@@ -1,0 +1,113 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runtime args (overridden via CLI)
+# audio_file: "/path/to/your/audio_or_directory"
+audio_file: ???
+output_dir: ./generated
+
+# Input audio padding (set at most one; null = disabled)
+pad_audio_to_sec: null       # Pad each audio to this fixed duration (seconds)
+pad_silence_ratio: null      # Append silence = ratio * original duration (e.g. 0.2 = 20%)
+pad_audio_by_sec: null       # Append this fixed number of extra seconds of silence
+
+pipeline_type: s2s_streaming
+
+# S2S model block
+s2s:
+  model_path: ???
+  llm_checkpoint_path: ???
+  speaker_reference: ???
+  engine_type: ??? # Engine type: 'native' or 'vllm_llm' or 'vllm_eartts' or 'vllm_llm_vllm_eartts'
+  vllm_llm_config:
+    model_path: ${s2s.model_path}             # Inherits from s2s.model_path
+    max_model_len: 8192                       # Maximum sequence length for vLLM
+    gpu_memory_utilization: 0.45               # GPU memory utilization (0.0-1.0)
+    dtype: bfloat16                           # Data type for vLLM inference
+    engine_path: null                         # Path to vLLM engine (null = auto-convert if needed)
+    pretrained_llm: ${s2s.llm_checkpoint_path}  # Inherits from s2s.llm_checkpoint_path
+    device_id: 1                              # LLM on GPU 1 (large model: ~19 GiB)
+
+  vllm_tts_config:
+    model_path: ${s2s.vllm_llm_config.model_path}             # Inherits from s2s.model_path
+    max_model_len: ${s2s.vllm_llm_config.max_model_len}
+    gpu_memory_utilization: 0.45
+    dtype: float32                              # EarTTS requires float32 for proper audio quality (bfloat16 causes hallucinations)
+    engine_path: null
+    pretrained_llm: null
+    skip_tokenizer_init: true
+    device_id: 0                              # EarTTS on GPU 0 (small model: ~3 GiB)
+
+  device: cuda 
+  # ========================
+  # Device Configuration
+  # ========================
+  device_id: 0                                # GPU device ID
+  compute_dtype: bfloat16                     # Compute precision: 'bfloat16' for Ampere+, 
+                                              #                    'float16' for older GPUs 
+                                              #                    'float32'
+  # ========================
+  # Inference settings
+  # ========================
+  codec_token_history_size: 60                # Sliding-window buffer size; ignored when use_codec_cache is true
+  use_perception_cache: true                  # Enable cache-aware streaming for perception encoder
+  use_perception_cudagraph: true              # Enable CUDA graph-accelerated perception encoder
+  use_codec_cache: true                       # Incremental codec decode to remove clicking sounds and wasted computation
+                                              # (when true, codec_token_history_size is unused)
+
+  # Deterministic inference (native engine only). Ensures identical results across
+  # runs by disabling FlashAttention and forcing deterministic CUDA algorithms.
+  # Trade-offs: slower inference, might be worse results than non-deterministic mode, since
+  # non-deterministic mode was used in training.
+  deterministic: false
+
+  # sampling parameters. if set all to 1.0, it will be greedy decoding.
+  top_p: 0.5
+  repetition_penalty: 1.1
+  temperature: 0.3
+  force_turn_taking: true
+  force_turn_taking_threshold: 40
+  force_turn_taking_pad_window: 25
+
+  # RNNT-based EOU/BOU turn-taking (blank frame counting on ASR encoder)
+  # Each RNNT frame = 80ms of user audio (one encoder output per 80ms chunk)
+  rnnt_eou_enabled: false   # Enable RNNT blank-count turn-taking (overrides force_turn_taking for EOU)
+  asr_eou: 4                # Consecutive RNNT blank frames after speech → EOU → agent BOS (4 × 80ms = 320ms)
+  asr_bou: 1                # Consecutive RNNT non-blank frames during agent speech → BOU → agent EOS (1 × 80ms = 80ms)
+
+  # Inference logit boosts (applied to model logits at inference time)
+  inference_user_pad_boost: 0.8         # Boost ASR pad logit
+  inference_user_bos_boost: null         # Boost ASR BOS logit
+  inference_user_eos_boost: null         # Boost ASR EOS logit
+
+  system_prompt: ???
+  tts_system_prompt: null              # TTS system prompt - conditions TTS generation style
+                                       # Requires a checkpoint trained with individual TTS prompts
+
+
+
+# ========================
+# Pipeline settings
+# ========================
+matmul_precision: medium                     # Matrix multiplication precision: highest, high, medium
+
+streaming:
+  input_sample_rate: 16000                          # Audio sample rate in Hz
+  output_sample_rate: 22050                          # Audio sample rate in Hz
+  batch_size: 1                               # Number of audio frames per batch
+  att_context_size: [70,0]                    # Attention context size: [70,13],[70,6],[70,2],[70,0]
+  chunk_size_in_secs: ???                    # Needs to be multiple of 80ms
+  buffer_size_in_secs: ???                    # Audio buffer size in seconds (larger = more context, better quality)
+  request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
+  max_len: 8192

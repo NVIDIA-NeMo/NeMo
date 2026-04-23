@@ -1265,15 +1265,17 @@ class NemotronVoicechatInferenceWrapper:
     def _rnnt_init_state(self, B: int, device) -> dict:
         """Initialize RNNT streaming state for EOU/BOU detection."""
         return {
-            'pred_out':        None,
-            'pred_hidden':     None,
-            'blank_count':     torch.zeros(B, dtype=torch.long, device=device),
-            'speech_frames':   torch.zeros(B, dtype=torch.long, device=device),
-            'nonblank_consec': torch.zeros(B, dtype=torch.long, device=device),
+            'pred_out':         None,
+            'pred_hidden':      None,
+            'blank_count':      torch.zeros(B, dtype=torch.long, device=device),
+            'nonblank_consec':  torch.zeros(B, dtype=torch.long, device=device),
+            # speech_confirmed: set True only when nonblank_consec reaches asr_min_speech_frames.
+            # Requires CONSECUTIVE non-blank frames, so brief noise bursts (1-2 frames)
+            # never trigger EOU. Replaces the old speech_frames (total non-blank) which
+            # accumulated room noise over time and fired EOU without real user speech.
+            'speech_confirmed': torch.zeros(B, dtype=torch.bool, device=device),
             # Persistent agent-speaking flag — not window-bounded.
-            # Window-only detection loses track after ~3.2s (40 frames × 80ms),
-            # preventing barge-in and allowing echo re-trigger on long responses.
-            'agent_speaking':  torch.zeros(B, dtype=torch.bool, device=device),
+            'agent_speaking':   torch.zeros(B, dtype=torch.bool, device=device),
         }
 
     @torch.no_grad()
@@ -1316,17 +1318,17 @@ class NemotronVoicechatInferenceWrapper:
                 new_pred_hidden = new_pred_hidden_cand
 
         new_state = {
-            'pred_out':        new_pred_out,
-            'pred_hidden':     new_pred_hidden,
-            'blank_count':     torch.where(is_blank,
-                                           rnnt_state['blank_count'] + 1,
-                                           torch.zeros_like(rnnt_state['blank_count'])),
-            'speech_frames':   torch.where(is_blank,
-                                           rnnt_state['speech_frames'],
-                                           rnnt_state['speech_frames'] + 1),
-            'nonblank_consec': torch.where(is_blank,
-                                           torch.zeros_like(rnnt_state['nonblank_consec']),
-                                           rnnt_state['nonblank_consec'] + 1),
+            'pred_out':         new_pred_out,
+            'pred_hidden':      new_pred_hidden,
+            'blank_count':      torch.where(is_blank,
+                                            rnnt_state['blank_count'] + 1,
+                                            torch.zeros_like(rnnt_state['blank_count'])),
+            'nonblank_consec':  torch.where(is_blank,
+                                            torch.zeros_like(rnnt_state['nonblank_consec']),
+                                            rnnt_state['nonblank_consec'] + 1),
+            # speech_confirmed and agent_speaking are managed in _apply_rnnt_turn_taking
+            'speech_confirmed': rnnt_state['speech_confirmed'],
+            'agent_speaking':   rnnt_state['agent_speaking'],
         }
         return new_state, is_blank
 
@@ -1349,13 +1351,11 @@ class NemotronVoicechatInferenceWrapper:
             lookback_start = max(0, t - threshold)
             agent_window   = gen_text[b, lookback_start:t]
 
-            blank_cnt    = rnnt_state['blank_count'][b].item()
-            nonblank_cnt = rnnt_state['nonblank_consec'][b].item()
-            speech_total = rnnt_state['speech_frames'][b].item()
+            blank_cnt        = rnnt_state['blank_count'][b].item()
+            nonblank_cnt     = rnnt_state['nonblank_consec'][b].item()
+            speech_confirmed = rnnt_state['speech_confirmed'][b].item()
 
-            # Use persistent agent_speaking flag (survives beyond the 3.2s window).
-            # Sync it whenever BOS or EOS appears in the recent window so injections
-            # made by this function or by other code paths are reflected immediately.
+            # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
             agent_speaking = rnnt_state['agent_speaking'][b].item()
             if (agent_window == bos_id).any():
                 agent_speaking = True
@@ -1364,34 +1364,38 @@ class NemotronVoicechatInferenceWrapper:
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
 
-            # While agent is speaking, suppress mic-echo in speech_frames so that
-            # inter-word silence during a long response doesn't re-trigger EOU.
+            # While agent is speaking, clear speech_confirmed so mic-echo / room noise
+            # accumulated during agent response cannot trigger EOU immediately after EOS.
             if agent_speaking:
-                rnnt_state['speech_frames'][b] = 0
+                rnnt_state['speech_confirmed'][b] = False
+                speech_confirmed = False
 
-            # EOU: N consecutive blank frames after sufficient user speech → inject agent BOS.
-            # asr_min_speech guard: require at least 3 frames (240ms) of real speech before
-            # EOU can fire, so a single noise burst at mic open doesn't trigger the agent.
-            if blank_cnt >= asr_eou and speech_total >= asr_min_speech and not agent_speaking:
+            # Confirm real user speech only when N consecutive non-blank frames arrive
+            # and the agent is NOT speaking (prevents echo from confirming speech).
+            if nonblank_cnt >= asr_min_speech and not agent_speaking:
+                rnnt_state['speech_confirmed'][b] = True
+                speech_confirmed = True
+
+            # EOU: N consecutive blank frames after confirmed user speech → inject agent BOS.
+            if blank_cnt >= asr_eou and speech_confirmed and not agent_speaking:
                 if not (agent_window == bos_id).any():
                     gen_text[b, t] = bos_id
-                    rnnt_state['speech_frames'][b] = 0
+                    rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['agent_speaking'][b] = True
                     logging.info(
                         f"RNNT EOU t={t}: agent BOS "
-                        f"(blank_count={blank_cnt}, speech_frames={speech_total})"
+                        f"(blank_count={blank_cnt}, speech_confirmed=True)"
                     )
                 return  # EOU takes priority over user BOS interrupt
 
-            # User BOS / barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
-            # Persistent flag ensures this fires even for responses longer than 3.2s.
+            # Barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any():
                     gen_text[b, t] = eos_id
                     rnnt_state['nonblank_consec'][b] = 0
                     rnnt_state['agent_speaking'][b] = False
                     logging.info(
-                        f"RNNT user BOS t={t}: agent EOS "
+                        f"RNNT barge-in t={t}: agent EOS "
                         f"(nonblank_consec={nonblank_cnt}, user_bos_frames={user_bos_frames})"
                     )
 

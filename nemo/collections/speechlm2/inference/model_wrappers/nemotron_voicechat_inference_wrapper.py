@@ -1265,11 +1265,15 @@ class NemotronVoicechatInferenceWrapper:
     def _rnnt_init_state(self, B: int, device) -> dict:
         """Initialize RNNT streaming state for EOU/BOU detection."""
         return {
-            'pred_out':      None,  # prediction network output [B, 1, pred_dim], lazy-init on first step
-            'pred_hidden':   None,  # LSTM hidden state
+            'pred_out':        None,
+            'pred_hidden':     None,
             'blank_count':     torch.zeros(B, dtype=torch.long, device=device),
             'speech_frames':   torch.zeros(B, dtype=torch.long, device=device),
             'nonblank_consec': torch.zeros(B, dtype=torch.long, device=device),
+            # Persistent agent-speaking flag — not window-bounded.
+            # Window-only detection loses track after ~3.2s (40 frames × 80ms),
+            # preventing barge-in and allowing echo re-trigger on long responses.
+            'agent_speaking':  torch.zeros(B, dtype=torch.bool, device=device),
         }
 
     @torch.no_grad()
@@ -1348,31 +1352,42 @@ class NemotronVoicechatInferenceWrapper:
             nonblank_cnt = rnnt_state['nonblank_consec'][b].item()
             speech_total = rnnt_state['speech_frames'][b].item()
 
-            agent_speaking = (agent_window == bos_id).any() and not (agent_window == eos_id).any()
+            # Use persistent agent_speaking flag (survives beyond the 3.2s window).
+            # Sync it whenever BOS or EOS appears in the recent window so injections
+            # made by this function or by other code paths are reflected immediately.
+            agent_speaking = rnnt_state['agent_speaking'][b].item()
+            if (agent_window == bos_id).any():
+                agent_speaking = True
+                rnnt_state['agent_speaking'][b] = True
+            if (agent_window == eos_id).any():
+                agent_speaking = False
+                rnnt_state['agent_speaking'][b] = False
 
-            # While agent is speaking, suppress mic-echo accumulation in speech_frames.
-            # Without this, the RNNT hears the agent's audio and increments speech_frames,
-            # causing EOU to re-fire between the agent's words (continuous hallucination).
+            # While agent is speaking, suppress mic-echo in speech_frames so that
+            # inter-word silence during a long response doesn't re-trigger EOU.
             if agent_speaking:
                 rnnt_state['speech_frames'][b] = 0
 
-            # EOU: N consecutive blanks after confirmed USER speech → inject agent BOS.
-            # Guard: skip if agent is already speaking to prevent echo-triggered re-firing.
+            # EOU: N consecutive blank frames after confirmed user speech → inject agent BOS.
+            # Guard: blocked while agent is speaking (prevents echo re-trigger).
             if blank_cnt >= asr_eou and speech_total > 0 and not agent_speaking:
                 if not (agent_window == bos_id).any():
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_frames'][b] = 0
+                    rnnt_state['agent_speaking'][b] = True
                     logging.info(
                         f"RNNT EOU t={t}: agent BOS "
                         f"(blank_count={blank_cnt}, speech_frames={speech_total})"
                     )
                 return  # EOU takes priority over user BOS interrupt
 
-            # User BOS / interrupt: N consecutive non-blank frames while agent is speaking → agent EOS
+            # User BOS / barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
+            # Persistent flag ensures this fires even for responses longer than 3.2s.
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any():
                     gen_text[b, t] = eos_id
-                    rnnt_state['nonblank_consec'][b] = 0  # reset to avoid re-firing every frame
+                    rnnt_state['nonblank_consec'][b] = 0
+                    rnnt_state['agent_speaking'][b] = False
                     logging.info(
                         f"RNNT user BOS t={t}: agent EOS "
                         f"(nonblank_consec={nonblank_cnt}, user_bos_frames={user_bos_frames})"

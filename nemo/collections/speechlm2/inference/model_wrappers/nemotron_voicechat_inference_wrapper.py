@@ -1336,9 +1336,10 @@ class NemotronVoicechatInferenceWrapper:
         if not self.model_cfg.get("rnnt_eou_enabled", False):
             return
 
-        asr_eou         = int(self.model_cfg.get("asr_eou", 4))          # blank frames → EOU → agent BOS (N × 80ms silence)
-        user_bos_frames = int(self.model_cfg.get("user_bos_frames",       # consecutive non-blank frames of user speech
-                               self.model_cfg.get("asr_bou", 4)))         # → user BOS → interrupt agent (N × 80ms)
+        asr_eou          = int(self.model_cfg.get("asr_eou", 4))           # blank frames → EOU (N × 80ms silence)
+        asr_min_speech   = int(self.model_cfg.get("asr_min_speech_frames", 3))  # min speech frames before EOU can fire (noise guard)
+        user_bos_frames  = int(self.model_cfg.get("user_bos_frames",       # consecutive non-blank frames → barge-in
+                                self.model_cfg.get("asr_bou", 4)))
         threshold = int(self.model_cfg.get("force_turn_taking_threshold", 40))
         bos_id   = self.model.stt_model.text_bos_id
         eos_id   = self.model.stt_model.text_eos_id
@@ -1368,9 +1369,10 @@ class NemotronVoicechatInferenceWrapper:
             if agent_speaking:
                 rnnt_state['speech_frames'][b] = 0
 
-            # EOU: N consecutive blank frames after confirmed user speech → inject agent BOS.
-            # Guard: blocked while agent is speaking (prevents echo re-trigger).
-            if blank_cnt >= asr_eou and speech_total > 0 and not agent_speaking:
+            # EOU: N consecutive blank frames after sufficient user speech → inject agent BOS.
+            # asr_min_speech guard: require at least 3 frames (240ms) of real speech before
+            # EOU can fire, so a single noise burst at mic open doesn't trigger the agent.
+            if blank_cnt >= asr_eou and speech_total >= asr_min_speech and not agent_speaking:
                 if not (agent_window == bos_id).any():
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_frames'][b] = 0

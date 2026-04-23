@@ -66,10 +66,11 @@ class TritonPythonModel:
             "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.08),
             "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 5.6),
             # RNNT EOU / user-BOS turn-taking
-            "s2s.rnnt_eou_enabled":       ("S2S_RNNT_EOU_ENABLED", False),
-            "s2s.asr_eou":                ("S2S_ASR_EOU", 4),
-            "s2s.asr_bou":                ("S2S_ASR_BOU", 4),
-            "s2s.user_bos_frames":        ("S2S_USER_BOS_FRAMES", 4),
+            "s2s.rnnt_eou_enabled":        ("S2S_RNNT_EOU_ENABLED", False),
+            "s2s.asr_eou":                 ("S2S_ASR_EOU", 4),
+            "s2s.asr_bou":                 ("S2S_ASR_BOU", 4),
+            "s2s.user_bos_frames":         ("S2S_USER_BOS_FRAMES", 4),
+            "s2s.asr_min_speech_frames":   ("S2S_ASR_MIN_SPEECH_FRAMES", 3),
         }
         for cfg_key, (env_var, default) in env_overrides.items():
             val = os.environ.get(env_var)

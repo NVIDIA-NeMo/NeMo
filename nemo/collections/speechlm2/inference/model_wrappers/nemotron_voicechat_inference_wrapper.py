@@ -1348,11 +1348,20 @@ class NemotronVoicechatInferenceWrapper:
             nonblank_cnt = rnnt_state['nonblank_consec'][b].item()
             speech_total = rnnt_state['speech_frames'][b].item()
 
-            # EOU: N consecutive blanks after confirmed speech → inject agent BOS
-            if blank_cnt >= asr_eou and speech_total > 0:
+            agent_speaking = (agent_window == bos_id).any() and not (agent_window == eos_id).any()
+
+            # While agent is speaking, suppress mic-echo accumulation in speech_frames.
+            # Without this, the RNNT hears the agent's audio and increments speech_frames,
+            # causing EOU to re-fire between the agent's words (continuous hallucination).
+            if agent_speaking:
+                rnnt_state['speech_frames'][b] = 0
+
+            # EOU: N consecutive blanks after confirmed USER speech → inject agent BOS.
+            # Guard: skip if agent is already speaking to prevent echo-triggered re-firing.
+            if blank_cnt >= asr_eou and speech_total > 0 and not agent_speaking:
                 if not (agent_window == bos_id).any():
                     gen_text[b, t] = bos_id
-                    rnnt_state['speech_frames'][b] = 0  # reset to avoid re-triggering
+                    rnnt_state['speech_frames'][b] = 0
                     logging.info(
                         f"RNNT EOU t={t}: agent BOS "
                         f"(blank_count={blank_cnt}, speech_frames={speech_total})"
@@ -1360,7 +1369,6 @@ class NemotronVoicechatInferenceWrapper:
                 return  # EOU takes priority over user BOS interrupt
 
             # User BOS / interrupt: N consecutive non-blank frames while agent is speaking → agent EOS
-            agent_speaking = (agent_window == bos_id).any() and not (agent_window == eos_id).any()
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any():
                     gen_text[b, t] = eos_id

@@ -311,6 +311,7 @@ class VllmLLMModel(ModelInterface):
             gpu_memory_utilization=gpu_memory_utilization,
             trust_remote_code=trust_remote_code,
             dtype=dtype,
+            device_id=device_id,
             **sampling_kwargs
         )
         # Track request counter

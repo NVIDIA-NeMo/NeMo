@@ -1372,7 +1372,7 @@ class NemotronVoicechatInferenceWrapper:
             # short word like "hello" + brief pause triggers the response.
             # After first turn: use normal (stricter) configured thresholds.
             if first_turn:
-                effective_min_speech = int(self.model_cfg.get("asr_min_speech_frames_first_turn", 1))
+                effective_min_speech = int(self.model_cfg.get("asr_min_speech_frames_first_turn", 2))
                 effective_eou        = int(self.model_cfg.get("asr_eou_first_turn", 2))
             else:
                 effective_min_speech = asr_min_speech

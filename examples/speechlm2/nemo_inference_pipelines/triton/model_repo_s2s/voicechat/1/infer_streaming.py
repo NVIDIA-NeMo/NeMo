@@ -266,8 +266,14 @@ class TritonPythonModel:
         for frame in frames:
             stream_id = frame.stream_id
 
-            # Prefill-only frames don't produce audio/text output
+            # Prefill-only frames don't produce audio/text output.
+            # Initialize text positions to the current pipeline state length so any
+            # initialization tokens (e.g., EOS placed at gen_text[0] by the pipeline)
+            # don't appear as incremental output on the very first real frame.
             if frame.is_first and frame.samples.numel() == 0:
+                state = self.pipeline.get_or_create_state(stream_id)
+                self.text_positions[stream_id] = len(state.get_output_text())
+                self.asr_text_positions[stream_id] = len(state.get_output_asr_text())
                 generations.append((torch.empty(1, 0), "", ""))
                 continue
             

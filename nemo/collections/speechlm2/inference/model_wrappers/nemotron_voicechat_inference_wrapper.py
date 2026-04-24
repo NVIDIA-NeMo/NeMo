@@ -1379,25 +1379,29 @@ class NemotronVoicechatInferenceWrapper:
                 effective_eou        = asr_eou
 
             # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
+            # Any BOS in the window (from RNNT EOU or force_turn_taking) ends the first turn.
             agent_speaking = rnnt_state['agent_speaking'][b].item()
             if (agent_window == bos_id).any():
                 agent_speaking = True
                 rnnt_state['agent_speaking'][b] = True
+                rnnt_state['first_turn'][b] = False
+                first_turn = False
             if (agent_window == eos_id).any():
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
 
-            # While agent is speaking, clear speech_confirmed and reset nonblank_total so
-            # mic-echo during agent response cannot trigger EOU immediately after EOS.
+            # While agent is speaking, suppress speech_confirmed (echo guard) but do NOT
+            # reset nonblank_total. Keeping the user's accumulated non-blank count means
+            # that if the user was already speaking while the agent talked, speech_confirmed
+            # fires immediately after the agent stops — avoiding a re-accumulation delay.
+            # nonblank_total was already zeroed when agent BOS was injected (see EOU block).
             if agent_speaking:
                 rnnt_state['speech_confirmed'][b] = False
-                rnnt_state['nonblank_total'][b] = 0
                 speech_confirmed = False
 
             # Noise-accumulation guard: after long silence (10 × 80ms = 800ms) without
             # confirmed speech, reset nonblank_total so isolated noise spikes don't
             # slowly add up across minutes to falsely trigger speech_confirmed.
-            # (EOU fires at asr_eou=4 frames, well before this 10-frame reset threshold.)
             noise_reset_frames = int(self.model_cfg.get("nonblank_reset_after_silence", 10))
             if blank_cnt >= noise_reset_frames and not speech_confirmed and not agent_speaking:
                 rnnt_state['nonblank_total'][b] = 0
@@ -1409,6 +1413,23 @@ class NemotronVoicechatInferenceWrapper:
             if (nonblank_cnt >= effective_min_speech or nonblank_total >= effective_min_speech) and not agent_speaking:
                 rnnt_state['speech_confirmed'][b] = True
                 speech_confirmed = True
+
+            # First-turn timer fallback: if the user hasn't triggered EOU via RNNT after
+            # first_turn_fallback_frames (default 50 × 80ms = 4s), inject BOS anyway so
+            # the agent always responds on the first turn even if RNNT misses the speech.
+            # This is force_turn_taking scoped to first_turn only — safe alongside RNNT.
+            first_turn_fallback = int(self.model_cfg.get("first_turn_fallback_frames", 50))
+            if first_turn and t >= first_turn_fallback and not (agent_window == bos_id).any():
+                gen_text[b, t] = bos_id
+                rnnt_state['speech_confirmed'][b] = False
+                rnnt_state['nonblank_total'][b] = 0
+                rnnt_state['agent_speaking'][b] = True
+                rnnt_state['first_turn'][b] = False
+                logging.info(
+                    f"RNNT first-turn fallback t={t}: agent BOS "
+                    f"(no EOU detected in {first_turn_fallback} frames)"
+                )
+                return
 
             # EOU: N blank frames after confirmed user speech → inject agent BOS.
             if blank_cnt >= effective_eou and speech_confirmed and not agent_speaking:

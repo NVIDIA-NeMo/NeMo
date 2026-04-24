@@ -1390,14 +1390,9 @@ class NemotronVoicechatInferenceWrapper:
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
 
-            # While agent is speaking, suppress speech_confirmed (echo guard) but do NOT
-            # reset nonblank_total. Keeping the user's accumulated non-blank count means
-            # that if the user was already speaking while the agent talked, speech_confirmed
-            # fires immediately after the agent stops — avoiding a re-accumulation delay.
-            # nonblank_total was already zeroed when agent BOS was injected (see EOU block).
-            if agent_speaking:
-                rnnt_state['speech_confirmed'][b] = False
-                speech_confirmed = False
+            # No echo suppression: UI-side AEC + headset hardware handle echo.
+            # speech_confirmed and nonblank_total accumulate freely even while agent speaks.
+            # EOU is still gated by `not agent_speaking` so it cannot fire mid-agent-turn.
 
             # Noise-accumulation guard: after long silence (10 × 80ms = 800ms) without
             # confirmed speech, reset nonblank_total so isolated noise spikes don't

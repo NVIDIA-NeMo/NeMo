@@ -71,6 +71,9 @@ class TritonPythonModel:
             "s2s.asr_bou":                 ("S2S_ASR_BOU", 4),
             "s2s.user_bos_frames":         ("S2S_USER_BOS_FRAMES", 4),
             "s2s.asr_min_speech_frames":   ("S2S_ASR_MIN_SPEECH_FRAMES", 3),
+            # Force turn-taking (must be False when RNNT EOU is enabled)
+            "s2s.force_turn_taking":       ("S2S_FORCE_TURN_TAKING", False),
+            "s2s.max_len":                 ("S2S_MAX_LEN", 8192),
         }
         for cfg_key, (env_var, default) in env_overrides.items():
             val = os.environ.get(env_var)

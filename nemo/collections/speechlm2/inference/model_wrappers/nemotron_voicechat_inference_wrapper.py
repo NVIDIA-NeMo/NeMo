@@ -1269,16 +1269,19 @@ class NemotronVoicechatInferenceWrapper:
             'pred_hidden':      None,
             'blank_count':      torch.zeros(B, dtype=torch.long, device=device),
             'nonblank_consec':  torch.zeros(B, dtype=torch.long, device=device),
-            # nonblank_total: cumulative non-blank frames since last reset. Resets on EOU
-            # or agent-speaking. Unlike nonblank_consec, blanks mid-word don't reset it,
-            # so short words like "hello" (few frames, gaps between phonemes) still
-            # accumulate enough count to confirm real speech.
+            # nonblank_total: cumulative non-blank frames since last reset. Resets on EOU,
+            # agent-speaking, or after long silence (to prevent noise accumulation).
+            # Unlike nonblank_consec, blanks mid-word don't reset it, so short words like
+            # "hello" still accumulate enough count to confirm real speech.
             'nonblank_total':   torch.zeros(B, dtype=torch.long, device=device),
-            # speech_confirmed: True when real user speech is detected (not echo/noise).
-            # Set when nonblank_consec OR nonblank_total reaches asr_min_speech_frames.
+            # speech_confirmed: True when real user speech detected (not echo/noise).
+            # Set when nonblank_consec OR nonblank_total reaches the speech threshold.
             'speech_confirmed': torch.zeros(B, dtype=torch.bool, device=device),
             # Persistent agent-speaking flag — not window-bounded.
             'agent_speaking':   torch.zeros(B, dtype=torch.bool, device=device),
+            # First turn: True until agent speaks for the first time. Uses lower thresholds
+            # so the user doesn't need to say many words before the agent responds.
+            'first_turn':       torch.ones(B, dtype=torch.bool, device=device),
         }
 
     @torch.no_grad()
@@ -1333,9 +1336,10 @@ class NemotronVoicechatInferenceWrapper:
             'nonblank_total':   torch.where(is_blank,
                                             rnnt_state['nonblank_total'],
                                             rnnt_state['nonblank_total'] + 1),
-            # speech_confirmed and agent_speaking are managed in _apply_rnnt_turn_taking
+            # speech_confirmed, agent_speaking, and first_turn are managed in _apply_rnnt_turn_taking
             'speech_confirmed': rnnt_state['speech_confirmed'],
             'agent_speaking':   rnnt_state['agent_speaking'],
+            'first_turn':       rnnt_state['first_turn'],
         }
         return new_state, is_blank
 
@@ -1362,6 +1366,17 @@ class NemotronVoicechatInferenceWrapper:
             nonblank_cnt     = rnnt_state['nonblank_consec'][b].item()
             nonblank_total   = rnnt_state['nonblank_total'][b].item()
             speech_confirmed = rnnt_state['speech_confirmed'][b].item()
+            first_turn       = rnnt_state['first_turn'][b].item()
+
+            # First-turn thresholds: before agent ever speaks, use lower bar so a single
+            # short word like "hello" + brief pause triggers the response.
+            # After first turn: use normal (stricter) configured thresholds.
+            if first_turn:
+                effective_min_speech = int(self.model_cfg.get("asr_min_speech_frames_first_turn", 1))
+                effective_eou        = int(self.model_cfg.get("asr_eou_first_turn", 2))
+            else:
+                effective_min_speech = asr_min_speech
+                effective_eou        = asr_eou
 
             # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
             agent_speaking = rnnt_state['agent_speaking'][b].item()
@@ -1379,26 +1394,34 @@ class NemotronVoicechatInferenceWrapper:
                 rnnt_state['nonblank_total'][b] = 0
                 speech_confirmed = False
 
-            # Confirm real user speech when:
-            #   (a) N consecutive non-blank frames — original strict check, OR
-            #   (b) N total non-blank frames since last reset — catches short words like
-            #       "hello" where RNNT inserts blanks between phonemes, resetting consec.
-            # Both checks require asr_min_speech_frames (default 3 × 80ms = 240ms total).
-            if (nonblank_cnt >= asr_min_speech or nonblank_total >= asr_min_speech) and not agent_speaking:
+            # Noise-accumulation guard: after long silence (10 × 80ms = 800ms) without
+            # confirmed speech, reset nonblank_total so isolated noise spikes don't
+            # slowly add up across minutes to falsely trigger speech_confirmed.
+            # (EOU fires at asr_eou=4 frames, well before this 10-frame reset threshold.)
+            noise_reset_frames = int(self.model_cfg.get("nonblank_reset_after_silence", 10))
+            if blank_cnt >= noise_reset_frames and not speech_confirmed and not agent_speaking:
+                rnnt_state['nonblank_total'][b] = 0
+                nonblank_total = 0
+
+            # Confirm real user speech when (a) N consecutive non-blank frames (strict),
+            # OR (b) N total non-blank frames since last reset (catches short words where
+            # RNNT inserts blanks between phonemes, breaking the consecutive streak).
+            if (nonblank_cnt >= effective_min_speech or nonblank_total >= effective_min_speech) and not agent_speaking:
                 rnnt_state['speech_confirmed'][b] = True
                 speech_confirmed = True
 
-            # EOU: N consecutive blank frames after confirmed user speech → inject agent BOS.
-            if blank_cnt >= asr_eou and speech_confirmed and not agent_speaking:
+            # EOU: N blank frames after confirmed user speech → inject agent BOS.
+            if blank_cnt >= effective_eou and speech_confirmed and not agent_speaking:
                 if not (agent_window == bos_id).any():
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
+                    rnnt_state['first_turn'][b] = False
                     logging.info(
                         f"RNNT EOU t={t}: agent BOS "
-                        f"(blank_count={blank_cnt}, nonblank_consec={nonblank_cnt}, "
-                        f"nonblank_total={nonblank_total})"
+                        f"(first_turn={first_turn}, blank_count={blank_cnt}, "
+                        f"nonblank_consec={nonblank_cnt}, nonblank_total={nonblank_total})"
                     )
                 return  # EOU takes priority over user BOS interrupt
 

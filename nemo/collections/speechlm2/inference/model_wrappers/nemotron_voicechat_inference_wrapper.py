@@ -1269,10 +1269,13 @@ class NemotronVoicechatInferenceWrapper:
             'pred_hidden':      None,
             'blank_count':      torch.zeros(B, dtype=torch.long, device=device),
             'nonblank_consec':  torch.zeros(B, dtype=torch.long, device=device),
-            # speech_confirmed: set True only when nonblank_consec reaches asr_min_speech_frames.
-            # Requires CONSECUTIVE non-blank frames, so brief noise bursts (1-2 frames)
-            # never trigger EOU. Replaces the old speech_frames (total non-blank) which
-            # accumulated room noise over time and fired EOU without real user speech.
+            # nonblank_total: cumulative non-blank frames since last reset. Resets on EOU
+            # or agent-speaking. Unlike nonblank_consec, blanks mid-word don't reset it,
+            # so short words like "hello" (few frames, gaps between phonemes) still
+            # accumulate enough count to confirm real speech.
+            'nonblank_total':   torch.zeros(B, dtype=torch.long, device=device),
+            # speech_confirmed: True when real user speech is detected (not echo/noise).
+            # Set when nonblank_consec OR nonblank_total reaches asr_min_speech_frames.
             'speech_confirmed': torch.zeros(B, dtype=torch.bool, device=device),
             # Persistent agent-speaking flag — not window-bounded.
             'agent_speaking':   torch.zeros(B, dtype=torch.bool, device=device),
@@ -1326,6 +1329,10 @@ class NemotronVoicechatInferenceWrapper:
             'nonblank_consec':  torch.where(is_blank,
                                             torch.zeros_like(rnnt_state['nonblank_consec']),
                                             rnnt_state['nonblank_consec'] + 1),
+            # nonblank_total increments on non-blank, holds on blank (reset by _apply_rnnt_turn_taking)
+            'nonblank_total':   torch.where(is_blank,
+                                            rnnt_state['nonblank_total'],
+                                            rnnt_state['nonblank_total'] + 1),
             # speech_confirmed and agent_speaking are managed in _apply_rnnt_turn_taking
             'speech_confirmed': rnnt_state['speech_confirmed'],
             'agent_speaking':   rnnt_state['agent_speaking'],
@@ -1353,6 +1360,7 @@ class NemotronVoicechatInferenceWrapper:
 
             blank_cnt        = rnnt_state['blank_count'][b].item()
             nonblank_cnt     = rnnt_state['nonblank_consec'][b].item()
+            nonblank_total   = rnnt_state['nonblank_total'][b].item()
             speech_confirmed = rnnt_state['speech_confirmed'][b].item()
 
             # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
@@ -1364,15 +1372,19 @@ class NemotronVoicechatInferenceWrapper:
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
 
-            # While agent is speaking, clear speech_confirmed so mic-echo / room noise
-            # accumulated during agent response cannot trigger EOU immediately after EOS.
+            # While agent is speaking, clear speech_confirmed and reset nonblank_total so
+            # mic-echo during agent response cannot trigger EOU immediately after EOS.
             if agent_speaking:
                 rnnt_state['speech_confirmed'][b] = False
+                rnnt_state['nonblank_total'][b] = 0
                 speech_confirmed = False
 
-            # Confirm real user speech only when N consecutive non-blank frames arrive
-            # and the agent is NOT speaking (prevents echo from confirming speech).
-            if nonblank_cnt >= asr_min_speech and not agent_speaking:
+            # Confirm real user speech when:
+            #   (a) N consecutive non-blank frames — original strict check, OR
+            #   (b) N total non-blank frames since last reset — catches short words like
+            #       "hello" where RNNT inserts blanks between phonemes, resetting consec.
+            # Both checks require asr_min_speech_frames (default 3 × 80ms = 240ms total).
+            if (nonblank_cnt >= asr_min_speech or nonblank_total >= asr_min_speech) and not agent_speaking:
                 rnnt_state['speech_confirmed'][b] = True
                 speech_confirmed = True
 
@@ -1381,10 +1393,12 @@ class NemotronVoicechatInferenceWrapper:
                 if not (agent_window == bos_id).any():
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_confirmed'][b] = False
+                    rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     logging.info(
                         f"RNNT EOU t={t}: agent BOS "
-                        f"(blank_count={blank_cnt}, speech_confirmed=True)"
+                        f"(blank_count={blank_cnt}, nonblank_consec={nonblank_cnt}, "
+                        f"nonblank_total={nonblank_total})"
                     )
                 return  # EOU takes priority over user BOS interrupt
 
@@ -1393,6 +1407,7 @@ class NemotronVoicechatInferenceWrapper:
                 if not (agent_window == eos_id).any():
                     gen_text[b, t] = eos_id
                     rnnt_state['nonblank_consec'][b] = 0
+                    rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = False
                     logging.info(
                         f"RNNT barge-in t={t}: agent EOS "

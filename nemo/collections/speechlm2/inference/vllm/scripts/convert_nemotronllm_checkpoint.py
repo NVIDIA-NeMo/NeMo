@@ -185,20 +185,6 @@ def convert_nemo_to_hf_format(
             f"Available prefixes: {set(k.split('.')[0] for k in state_dict.keys())}"
         )
 
-    # Only advertise ASR outputs if the checkpoint actually has ASR weights.
-    # Without this check, vLLM creates asr_head/embed_asr_tokens layers and then
-    # fails with "weights not initialized" when the checkpoint lacks those keys.
-    has_asr_weights = any(
-        k.startswith("stt_model.asr_head") or k.startswith("stt_model.embed_asr_tokens")
-        for k in filtered_state_dict
-    )
-    if not has_asr_weights:
-        logging.info("Checkpoint has no ASR weights — removing asr_tokens/asr_logits from custom_outputs")
-        custom_outputs = base_config.custom_outputs if hasattr(base_config, "custom_outputs") else []
-        base_config.update({
-            "custom_outputs": [o for o in custom_outputs if o not in ("asr_tokens", "asr_logits")]
-        })
-
     # Save tensors
     output_model_path = output_path / "model.safetensors"
     logging.info(f"Saving tensors to {output_model_path}")

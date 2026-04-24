@@ -491,7 +491,7 @@ class VllmLLMModel(ModelInterface):
                 break
 
             text_token_ids.append(result.token_id)
-            asr_token_ids.append(result.custom_outputs["asr_tokens"])  # Assuming custom_outputs contains asr tokens
+            asr_token_ids.append(result.custom_outputs.get("asr_tokens", torch.zeros(1, dtype=torch.long)))
 
             if result.is_finished:
                 break

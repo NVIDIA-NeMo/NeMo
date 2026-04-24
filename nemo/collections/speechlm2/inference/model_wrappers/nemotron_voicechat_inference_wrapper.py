@@ -1389,10 +1389,14 @@ class NemotronVoicechatInferenceWrapper:
             if (agent_window == eos_id).any():
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
-
-            # No echo suppression: UI-side AEC + headset hardware handle echo.
-            # speech_confirmed and nonblank_total accumulate freely even while agent speaks.
-            # EOU is still gated by `not agent_speaking` so it cannot fire mid-agent-turn.
+                # Turn-boundary reset: clear accumulated signal from during agent speech.
+                # This is not echo suppression — it's a clean slate for the next user turn.
+                # Without this, nonblank_total from noise/signal during agent speech would
+                # immediately re-trigger EOU the moment the agent stops.
+                rnnt_state['speech_confirmed'][b] = False
+                rnnt_state['nonblank_total'][b] = 0
+                speech_confirmed = False
+                nonblank_total = 0
 
             # Noise-accumulation guard: after long silence (10 × 80ms = 800ms) without
             # confirmed speech, reset nonblank_total so isolated noise spikes don't
@@ -1414,7 +1418,7 @@ class NemotronVoicechatInferenceWrapper:
             # the agent always responds on the first turn even if RNNT misses the speech.
             # This is force_turn_taking scoped to first_turn only — safe alongside RNNT.
             first_turn_fallback = int(self.model_cfg.get("first_turn_fallback_frames", 50))
-            if first_turn and t >= first_turn_fallback and not (agent_window == bos_id).any():
+            if first_turn and t >= first_turn_fallback and speech_confirmed and not (agent_window == bos_id).any():
                 gen_text[b, t] = bos_id
                 rnnt_state['speech_confirmed'][b] = False
                 rnnt_state['nonblank_total'][b] = 0

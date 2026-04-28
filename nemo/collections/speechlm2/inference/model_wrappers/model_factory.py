@@ -882,8 +882,15 @@ class NativeModel(ModelInterface):
             current_step=current_step,
         )
 
-        # ASR tokens use greedy decoding (no sampling)
-        asr_predicted_token = result["asr_logits"][:, -1].argmax(dim=-1)
+        # ASR tokens use greedy decoding; GA FC checkpoint has no asr_head → fallback to zeros
+        if "asr_logits" in result:
+            asr_logits = result["asr_logits"][:, -1]
+            asr_logits = torch.nan_to_num(asr_logits, nan=0.0, posinf=1e4, neginf=-1e4)
+            vocab_size = asr_logits.shape[-1]
+            asr_predicted_token = asr_logits.argmax(dim=-1).clamp(0, vocab_size - 1)
+        else:
+            asr_predicted_token = torch.zeros(text_logits.shape[0], dtype=torch.long,
+                                              device=text_logits.device)
 
         ans = {
             "predicted_token": predicted_token,

@@ -172,6 +172,16 @@ class NemotronVoicechatInferenceWrapper:
 
         self.model_cfg = model_cfg
 
+        # RNNT EOU event log: timestamped file written whenever EOU or BOU fires
+        import datetime
+        _eou_log = model_cfg.get("rnnt_eou_log", None)
+        self._rnnt_eou_log_path = _eou_log
+        if _eou_log:
+            os.makedirs(os.path.dirname(os.path.abspath(_eou_log)), exist_ok=True)
+            with open(_eou_log, "w") as _f:
+                _f.write(f"# RNNT EOU/BOU event log — started {datetime.datetime.now().isoformat()}\n")
+                _f.write("# format: ISO-timestamp | event | audio_frame | t_sec | blank_cnt | nonblank_total | notes\n")
+
         self.model_path = model_cfg.get("model_path")
         if not self.model_path:
             raise ValueError("`model_cfg.model_path` must be provided.")
@@ -1026,9 +1036,14 @@ class NemotronVoicechatInferenceWrapper:
 
             # RNNT-based EOU/BOU turn-taking
             if rnnt_state is not None and encoder_emb_raw is not None:
+                # encoder_emb_raw format depends on code path:
+                #   non-cache: perception.py returns [B, T, D] (transposed at source)
+                #   cache:     perception_cache.py returns [B, D, T] (channels-first, NOT transposed)
+                # Normalise to [B, T, D] so frame extraction is consistent.
+                rnnt_enc = encoder_emb_raw.transpose(1, 2) if used_perception_cache else encoder_emb_raw
                 emb_idx = frame_offset if used_perception_cache else current_frame_index
-                emb_idx = min(emb_idx, encoder_emb_raw.shape[1] - 1)
-                rnnt_frame = encoder_emb_raw[:, emb_idx, :]  # [B, 1024]
+                emb_idx = min(emb_idx, rnnt_enc.shape[1] - 1)
+                rnnt_frame = rnnt_enc[:, emb_idx, :]  # [B, D]
                 rnnt_state, rnnt_is_blank = self._rnnt_step(rnnt_frame, rnnt_state)
                 self._apply_rnnt_turn_taking(current_frame_idx, gen_text, rnnt_is_blank, rnnt_state)
                 predicted_tokens[:, frame_offset] = gen_text[:, current_frame_idx]
@@ -1433,21 +1448,94 @@ class NemotronVoicechatInferenceWrapper:
             # EOU: N blank frames after confirmed user speech → inject agent BOS.
             if blank_cnt >= effective_eou and speech_confirmed and not agent_speaking:
                 if not (agent_window == bos_id).any():
+                    # CONFLICT CHECK: RNNT is about to overwrite a non-pad LLM token.
+                    # This happens when the LLM backbone already placed a speech/text token
+                    # at frame t while RNNT is trying to write BOS — the two disagree on
+                    # what should happen at this frame.
+                    existing_tok = gen_text[b, t].item()
+                    _pad_id = self.model.stt_model.text_pad_id
+                    if existing_tok != _pad_id and existing_tok != bos_id:
+                        import datetime
+                        _conflict_msg = (
+                            f"CONFLICT [RNNT-EOU overwrites LLM token] t={t} t_sec={t*0.08:.2f}: "
+                            f"LLM placed token={existing_tok} at frame {t}, "
+                            f"RNNT overwriting with BOS (blank_cnt={blank_cnt}, "
+                            f"nonblank_total={nonblank_total})"
+                        )
+                        logging.warning(_conflict_msg)
+                        if getattr(self, '_rnnt_eou_log_path', None):
+                            with open(self._rnnt_eou_log_path, 'a') as _lf:
+                                _lf.write(
+                                    f"{datetime.datetime.now().isoformat()} | CONFLICT_EOU_OVERWRITE | frame={t} | "
+                                    f"t_sec={t*0.08:.2f} | llm_token={existing_tok} | "
+                                    f"blank_cnt={blank_cnt} | nonblank_total={nonblank_total}\n"
+                                )
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     rnnt_state['first_turn'][b] = False
-                    logging.info(
+                    _msg = (
                         f"RNNT EOU t={t}: agent BOS "
                         f"(first_turn={first_turn}, blank_count={blank_cnt}, "
                         f"nonblank_consec={nonblank_cnt}, nonblank_total={nonblank_total})"
                     )
+                    logging.info(_msg)
+                    if getattr(self, '_rnnt_eou_log_path', None):
+                        import datetime
+                        with open(self._rnnt_eou_log_path, 'a') as _lf:
+                            _lf.write(
+                                f"{datetime.datetime.now().isoformat()} | EOU | frame={t} | "
+                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
+                                f"nonblank_total={nonblank_total} | first_turn={first_turn}\n"
+                            )
+                else:
+                    # CONFLICT: RNNT EOU would fire but LLM backbone already placed BOS in
+                    # the lookback window (premature LLM BOS suppresses the RNNT EOU).
+                    # This is the primary failure mode when force_turn_taking fires at 0.72s
+                    # before the user finishes speaking.
+                    import datetime
+                    _llm_bos_offsets = (agent_window == bos_id).nonzero(as_tuple=True)[0].tolist()
+                    _llm_bos_frames = [lookback_start + off for off in _llm_bos_offsets]
+                    _conflict_msg = (
+                        f"CONFLICT [RNNT-EOU suppressed by LLM-BOS] t={t} t_sec={t*0.08:.2f}: "
+                        f"LLM already has BOS at frames {_llm_bos_frames} "
+                        f"(t_sec={[f*0.08 for f in _llm_bos_frames]}), "
+                        f"RNNT wanted EOU (blank_cnt={blank_cnt}, nonblank_total={nonblank_total})"
+                    )
+                    logging.warning(_conflict_msg)
+                    if getattr(self, '_rnnt_eou_log_path', None):
+                        with open(self._rnnt_eou_log_path, 'a') as _lf:
+                            _lf.write(
+                                f"{datetime.datetime.now().isoformat()} | CONFLICT_EOU_SUPPRESSED | frame={t} | "
+                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
+                                f"nonblank_total={nonblank_total} | "
+                                f"llm_bos_frames={_llm_bos_frames} | "
+                                f"llm_bos_t_sec={[round(f*0.08,2) for f in _llm_bos_frames]}\n"
+                            )
                 return  # EOU takes priority over user BOS interrupt
 
             # Barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any():
+                    # CONFLICT CHECK: RNNT barge-in about to overwrite a non-pad LLM token.
+                    existing_tok = gen_text[b, t].item()
+                    _pad_id = self.model.stt_model.text_pad_id
+                    if existing_tok != _pad_id and existing_tok != eos_id:
+                        import datetime
+                        _conflict_msg = (
+                            f"CONFLICT [RNNT-barge-in overwrites LLM token] t={t} t_sec={t*0.08:.2f}: "
+                            f"LLM placed token={existing_tok}, RNNT overwriting with EOS "
+                            f"(nonblank_consec={nonblank_cnt})"
+                        )
+                        logging.warning(_conflict_msg)
+                        if getattr(self, '_rnnt_eou_log_path', None):
+                            with open(self._rnnt_eou_log_path, 'a') as _lf:
+                                _lf.write(
+                                    f"{datetime.datetime.now().isoformat()} | CONFLICT_BARGEIN_OVERWRITE | frame={t} | "
+                                    f"t_sec={t*0.08:.2f} | llm_token={existing_tok} | "
+                                    f"nonblank_consec={nonblank_cnt}\n"
+                                )
                     gen_text[b, t] = eos_id
                     rnnt_state['nonblank_consec'][b] = 0
                     rnnt_state['nonblank_total'][b] = 0
@@ -1456,6 +1544,24 @@ class NemotronVoicechatInferenceWrapper:
                         f"RNNT barge-in t={t}: agent EOS "
                         f"(nonblank_consec={nonblank_cnt}, user_bos_frames={user_bos_frames})"
                     )
+                else:
+                    # CONFLICT: barge-in EOS suppressed because LLM already placed EOS in window.
+                    import datetime
+                    _llm_eos_offsets = (agent_window == eos_id).nonzero(as_tuple=True)[0].tolist()
+                    _llm_eos_frames = [lookback_start + off for off in _llm_eos_offsets]
+                    _conflict_msg = (
+                        f"CONFLICT [RNNT-barge-in suppressed by LLM-EOS] t={t} t_sec={t*0.08:.2f}: "
+                        f"LLM already has EOS at frames {_llm_eos_frames}, "
+                        f"RNNT wanted barge-in EOS (nonblank_consec={nonblank_cnt})"
+                    )
+                    logging.warning(_conflict_msg)
+                    if getattr(self, '_rnnt_eou_log_path', None):
+                        with open(self._rnnt_eou_log_path, 'a') as _lf:
+                            _lf.write(
+                                f"{datetime.datetime.now().isoformat()} | CONFLICT_BARGEIN_SUPPRESSED | frame={t} | "
+                                f"t_sec={t*0.08:.2f} | nonblank_consec={nonblank_cnt} | "
+                                f"llm_eos_frames={_llm_eos_frames}\n"
+                            )
 
     @torch.no_grad()
     def inference_realtime_streaming(self, audio_path: str, num_frames_per_chunk: int = None, request_id: Optional[str] = None, pad_audio_to_sec: Optional[float] = None, pad_silence_ratio: Optional[float] = None, pad_audio_by_sec: Optional[float] = None, system_prompt: Optional[str] = None):

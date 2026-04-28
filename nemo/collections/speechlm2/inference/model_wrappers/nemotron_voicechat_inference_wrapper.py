@@ -1055,9 +1055,28 @@ class NemotronVoicechatInferenceWrapper:
                 emb_idx = frame_offset if used_perception_cache else current_frame_index
                 emb_idx = min(emb_idx, rnnt_enc.shape[1] - 1)
                 rnnt_frame = rnnt_enc[:, emb_idx, :]  # [B, D]
+                tok_before = gen_text[0, current_frame_idx].item()
                 rnnt_state, rnnt_is_blank = self._rnnt_step(rnnt_frame, rnnt_state)
                 self._apply_rnnt_turn_taking(current_frame_idx, gen_text, rnnt_is_blank, rnnt_state)
+                tok_after = gen_text[0, current_frame_idx].item()
                 predicted_tokens[:, frame_offset] = gen_text[:, current_frame_idx]
+                # Print when RNNT EOU/BOU actively changed the voicechat response token
+                if tok_after != tok_before:
+                    import datetime as _dt
+                    bos_id = self.model.stt_model.text_bos_id
+                    eos_id = self.model.stt_model.text_eos_id
+                    _evt = ("BOS→agent-start" if tok_after == bos_id else
+                            "EOS→agent-stop(barge-in)" if tok_after == eos_id else f"tok={tok_after}")
+                    _t_sec = round(current_frame_idx * 0.08, 2)
+                    print(
+                        f"[RNNT-CTRL {_dt.datetime.now().isoformat()}] "
+                        f"frame={current_frame_idx} t={_t_sec}s "
+                        f"RNNT overrode LLM: llm_tok={tok_before} → {_evt} "
+                        f"(blank={rnnt_is_blank.item()}, "
+                        f"blank_cnt={rnnt_state['blank_count'][0].item()}, "
+                        f"nonblank_total={rnnt_state['nonblank_total'][0].item()})",
+                        flush=True
+                    )
 
             if self.decode_audio:
                 current_subword_id = gen_text[:, current_frame_idx].unsqueeze(-1)
@@ -1344,17 +1363,23 @@ class NemotronVoicechatInferenceWrapper:
         if not is_blank.all():
             non_blank_tokens = torch.where(is_blank, torch.full_like(tokens, blank_id), tokens)
             y = non_blank_tokens.unsqueeze(1)  # [B, 1]
-            new_pred_out_cand, new_pred_hidden_cand = decoder.predict(
-                y=y, state=pred_hidden, add_sos=False, batch_size=B
-            )
-            if B == 1:
-                if not is_blank[0]:
-                    new_pred_out    = new_pred_out_cand
+            try:
+                new_pred_out_cand, new_pred_hidden_cand = decoder.predict(
+                    y=y, state=pred_hidden, add_sos=False, batch_size=B
+                )
+                if B == 1:
+                    if not is_blank[0]:
+                        new_pred_out    = new_pred_out_cand
+                        new_pred_hidden = new_pred_hidden_cand
+                else:
+                    mask = is_blank.view(B, 1, 1).expand_as(pred_out)
+                    new_pred_out    = torch.where(mask, pred_out, new_pred_out_cand)
                     new_pred_hidden = new_pred_hidden_cand
-            else:
-                mask = is_blank.view(B, 1, 1).expand_as(pred_out)
-                new_pred_out    = torch.where(mask, pred_out, new_pred_out_cand)
-                new_pred_hidden = new_pred_hidden_cand
+            except Exception as _e:
+                # Decoder state update failed (e.g., hidden-state shape mismatch on first
+                # non-blank token). EOU blank/nonblank counting still works correctly;
+                # only the decoder conditioning is affected.
+                logging.warning(f"RNNT decoder update skipped: {_e}")
 
         new_state = {
             'pred_out':         new_pred_out,

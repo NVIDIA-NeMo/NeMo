@@ -159,11 +159,19 @@ class S2SContextManager:
 		# Initialize RNNT EOU/BOU state if enabled
 		rnnt_state = None
 		if self.use_rnnt_eou:
+			import datetime as _dt
 			rnnt_state = self.s2s_model._rnnt_init_state(1, self.device)
+			_asr_eou = self.s2s_model.model_cfg.get('asr_eou', 4)
+			_msg = (
+				f"[RNNT-ACTIVE {_dt.datetime.now().isoformat()}] "
+				f"New stream: RNNT EOU controlling voicechat turn-taking "
+				f"(EOU after {_asr_eou} blank frames = {_asr_eou * 80}ms silence)"
+			)
+			print(_msg, flush=True)
 			logging.info(
 				f"RNNT EOU/BOU enabled for new stream: "
-				f"asr_eou={self.s2s_model.model_cfg.get('asr_eou', 4)} frames "
-				f"({self.s2s_model.model_cfg.get('asr_eou', 4) * 80}ms silence→EOU)"
+				f"asr_eou={_asr_eou} frames "
+				f"({_asr_eou * 80}ms silence→EOU)"
 			)
 
 		return StreamingRealtimeContext(

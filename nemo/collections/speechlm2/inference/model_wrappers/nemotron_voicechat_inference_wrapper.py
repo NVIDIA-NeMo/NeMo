@@ -1354,6 +1354,11 @@ class NemotronVoicechatInferenceWrapper:
         if pred_out is None:
             pred_out, pred_hidden = decoder.predict(y=None, state=None, add_sos=True, batch_size=B)
 
+        # add_sos=True may return pred_out with T>1 (e.g. [B, 2, D]).
+        # The RNNT joint expects [B, 1, D] — keep only the last decoder step.
+        if pred_out.dim() == 3 and pred_out.shape[1] > 1:
+            pred_out = pred_out[:, -1:, :]   # [B, 1, D]
+
         logits = joint.joint(f, pred_out)           # [B, 1, 1, V]
         tokens = logits.squeeze(1).squeeze(1).argmax(-1)  # [B]
         is_blank = (tokens == blank_id)

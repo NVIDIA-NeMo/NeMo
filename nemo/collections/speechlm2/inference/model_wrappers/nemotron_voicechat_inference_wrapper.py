@@ -519,6 +519,16 @@ class NemotronVoicechatInferenceWrapper:
         self.model.to(self.device)
         self.model.eval()
 
+        # Optionally move TTS to a separate GPU to split memory load across devices.
+        # Config: s2s.tts_device_id=1 sends EarTTS to GPU 1, leaving STT/LLM on GPU 0.
+        tts_device_id = self.model_cfg.get("tts_device_id", None)
+        if tts_device_id is not None and hasattr(self.model, 'tts_model'):
+            self.tts_device = torch.device(f"cuda:{tts_device_id}")
+            self.model.tts_model.to(self.tts_device)
+            logging.info(f"TTS model moved to {self.tts_device} (STT/LLM stays on {self.device})")
+        else:
+            self.tts_device = self.device
+
         # Convert only the S2S components to the configured dtype, not the TTS model
         logging.info(f"Converting S2S components to {self.dtype} (keeping TTS in float32)...")
         if self.model.stt_model.llm is not None:
@@ -768,8 +778,9 @@ class NemotronVoicechatInferenceWrapper:
             speaker_audio, speaker_sr = torchaudio.load(self.speaker_reference)
             speaker_audio = resample(speaker_audio, speaker_sr, self.model.tts_model.target_sample_rate)
 
-        speaker_audio = speaker_audio.to(self.device)
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long()
+        tts_dev = getattr(self, 'tts_device', self.device)
+        speaker_audio = speaker_audio.to(tts_dev)
+        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=tts_dev).long()
 
         #  init tts_model
         self.model.tts_model.set_init_inputs(
@@ -1066,11 +1077,14 @@ class NemotronVoicechatInferenceWrapper:
                     raise RuntimeError("generation_config is not initialized. Ensure TTS warmup ran successfully.")
 
                 start_tts_model = time.time()
+                # If TTS is on a different device, move tensors there and back.
+                tts_dev = getattr(self, 'tts_device', self.device)
+                tts_xdev = (tts_dev != self.device)
                 inputs = {
-                    "current_subword_id": current_subword_id,
-                    "prev_subword_id": prev_subword_id,
-                    "current_subword_mask": current_subword_mask,
-                    "prev_audio_tokens": code,
+                    "current_subword_id": current_subword_id.to(tts_dev),
+                    "prev_subword_id": prev_subword_id.to(tts_dev),
+                    "current_subword_mask": current_subword_mask.to(tts_dev),
+                    "prev_audio_tokens": code.to(tts_dev) if code is not None else None,
                     "past_key_values": past_key_values,
                     "guidance_enabled": True,
                     "generation_config": self.generation_config,
@@ -1082,6 +1096,10 @@ class NemotronVoicechatInferenceWrapper:
                 code, past_key_values = self.model.tts_model.infer_codes_one_step(
                         **inputs
                 )
+
+                # Move outputs back to main device if TTS was on a different device.
+                if tts_xdev:
+                    code = code.to(self.device)
 
                 torch.cuda.synchronize()
                 time_tts_model = time.time() - start_tts_model

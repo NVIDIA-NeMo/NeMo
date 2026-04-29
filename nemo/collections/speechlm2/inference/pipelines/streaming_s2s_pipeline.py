@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Author: Harishchandra Dubey (hdubey@nvidia.com)
+# Change: pass rnnt_state from context to infer_one_step() for per-stream RNNT EOU turn-taking
 
 import os
 import time

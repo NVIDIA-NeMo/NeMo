@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Author: Harishchandra Dubey (hdubey@nvidia.com)
+# RNNT EOU/BOU turn-taking: _rnnt_init_state, _rnnt_step, _apply_rnnt_turn_taking
+# Mechanisms: rolling density, adaptive min_speech, post-EOS fallback, force-EOS, BOS suppression
 
 import torch
 import yaml

@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Author: Harishchandra Dubey (hdubey@nvidia.com)
+# Change: pass rnnt_eou_log path from config into model_cfg for RNNT EOU event logging
 
 """
 Model Interface for S2S Inference

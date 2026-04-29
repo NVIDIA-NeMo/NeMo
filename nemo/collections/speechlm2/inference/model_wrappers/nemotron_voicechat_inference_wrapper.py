@@ -1068,13 +1068,15 @@ class NemotronVoicechatInferenceWrapper:
                     _evt = ("BOS→agent-start" if tok_after == bos_id else
                             "EOS→agent-stop(barge-in)" if tok_after == eos_id else f"tok={tok_after}")
                     _t_sec = round(current_frame_idx * 0.08, 2)
+                    _density_val = rnnt_state['rolling_density'][0].item()
                     print(
                         f"[RNNT-CTRL {_dt.datetime.now().isoformat()}] "
                         f"frame={current_frame_idx} t={_t_sec}s "
                         f"RNNT overrode LLM: llm_tok={tok_before} → {_evt} "
                         f"(blank={rnnt_is_blank.item()}, "
                         f"blank_cnt={rnnt_state['blank_count'][0].item()}, "
-                        f"nonblank_total={rnnt_state['nonblank_total'][0].item()})",
+                        f"nonblank_total={rnnt_state['nonblank_total'][0].item()}, "
+                        f"density={_density_val:.3f})",
                         flush=True
                     )
 
@@ -1334,6 +1336,10 @@ class NemotronVoicechatInferenceWrapper:
             # First turn: True until agent speaks for the first time. Uses lower thresholds
             # so the user doesn't need to say many words before the agent responds.
             'first_turn':       torch.ones(B, dtype=torch.bool, device=device),
+            # rolling_density: exponential moving average of non-blank rate (0.0–1.0).
+            # Tracks how speech-dense this speaker is. Low density → accent/noise/sparse
+            # speech → adaptive lower min_speech_frames threshold.
+            'rolling_density':  torch.zeros(B, dtype=torch.float32, device=device),
         }
 
     @torch.no_grad()
@@ -1386,6 +1392,18 @@ class NemotronVoicechatInferenceWrapper:
                 # only the decoder conditioning is affected.
                 logging.warning(f"RNNT decoder update skipped: {_e}")
 
+        # EMA density: track fraction of non-blank frames (speaker-level, not reset on turns).
+        # Alpha=0.1 means ~10-frame (0.8s) effective window for density estimation.
+        # During agent speech, RNNT sees the agent's TTS audio — we want user density only,
+        # so only update density when agent is NOT speaking.
+        density_alpha = 0.1
+        is_speech_float = (~is_blank).float()
+        if rnnt_state.get('agent_speaking') is not None and rnnt_state['agent_speaking'].any():
+            # Don't corrupt density estimate with agent's own TTS audio
+            new_density = rnnt_state['rolling_density']
+        else:
+            new_density = density_alpha * is_speech_float + (1.0 - density_alpha) * rnnt_state['rolling_density']
+
         new_state = {
             'pred_out':         new_pred_out,
             'pred_hidden':      new_pred_hidden,
@@ -1403,6 +1421,7 @@ class NemotronVoicechatInferenceWrapper:
             'speech_confirmed': rnnt_state['speech_confirmed'],
             'agent_speaking':   rnnt_state['agent_speaking'],
             'first_turn':       rnnt_state['first_turn'],
+            'rolling_density':  new_density,
         }
         return new_state, is_blank
 
@@ -1440,6 +1459,18 @@ class NemotronVoicechatInferenceWrapper:
             else:
                 effective_min_speech = asr_min_speech
                 effective_eou        = asr_eou
+
+            # Adaptive speech density: if this speaker produces sparse non-blank tokens
+            # (accent, noise, synthetic speech), lower effective_min_speech automatically.
+            # rolling_density is EMA of non-blank rate; values <density_threshold indicate
+            # a sparse-speech speaker who needs a lower confirmation threshold.
+            density_threshold  = float(self.model_cfg.get("density_speech_threshold", 0.15))
+            density_low_min    = int(self.model_cfg.get("density_low_min_speech", 1))
+            rolling_density    = rnnt_state['rolling_density'][b].item()
+            density_adapted    = False
+            if not first_turn and rolling_density < density_threshold and rolling_density > 0.0:
+                effective_min_speech = density_low_min
+                density_adapted = True
 
             # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
             # Any BOS in the window (from RNNT EOU or force_turn_taking) ends the first turn.
@@ -1523,10 +1554,15 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     rnnt_state['first_turn'][b] = False
+                    _density_note = (
+                        f" [ADAPTIVE density={rolling_density:.3f}<{density_threshold} → min_speech={density_low_min}]"
+                        if density_adapted else ""
+                    )
                     _msg = (
                         f"RNNT EOU t={t}: agent BOS "
                         f"(first_turn={first_turn}, blank_count={blank_cnt}, "
-                        f"nonblank_consec={nonblank_cnt}, nonblank_total={nonblank_total})"
+                        f"nonblank_consec={nonblank_cnt}, nonblank_total={nonblank_total}, "
+                        f"density={rolling_density:.3f}){_density_note}"
                     )
                     logging.info(_msg)
                     if getattr(self, '_rnnt_eou_log_path', None):
@@ -1535,7 +1571,8 @@ class NemotronVoicechatInferenceWrapper:
                             _lf.write(
                                 f"{datetime.datetime.now().isoformat()} | EOU | frame={t} | "
                                 f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
-                                f"nonblank_total={nonblank_total} | first_turn={first_turn}\n"
+                                f"nonblank_total={nonblank_total} | first_turn={first_turn} | "
+                                f"density={rolling_density:.3f} | adapted={density_adapted}\n"
                             )
                 else:
                     # CONFLICT: RNNT EOU would fire but LLM backbone already placed BOS in

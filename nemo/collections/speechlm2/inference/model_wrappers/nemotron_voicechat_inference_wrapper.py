@@ -1604,6 +1604,43 @@ class NemotronVoicechatInferenceWrapper:
                             )
                 return  # EOU takes priority over user BOS interrupt
 
+            # Force-EOS: if the agent has been speaking for too long (blank_cnt >= threshold)
+            # with zero user speech detected (speech_confirmed=False), the LLM is generating
+            # indefinitely without natural EOS (common for zero-RNNT-detection speakers like
+            # Kevin/Edresson/Moshi whose audio produces 0 RNNT non-blank tokens). Inject EOS to
+            # stop the agent turn so that post_eos_fallback can then trigger a new BOS response.
+            # NOT triggered for control speakers: their barge-ins reset blank_cnt before threshold.
+            force_eos_frames = int(self.model_cfg.get("force_eos_after_frames", 0))  # 0=disabled
+            if (force_eos_frames > 0 and agent_speaking and not speech_confirmed
+                    and not first_turn and not (agent_window == eos_id).any()):
+                if blank_cnt >= force_eos_frames:
+                    import datetime as _dt_fef
+                    gen_text[b, t] = eos_id
+                    rnnt_state['agent_speaking'][b] = False
+                    rnnt_state['speech_confirmed'][b] = False
+                    rnnt_state['nonblank_total'][b] = 0
+                    _fef_msg = (
+                        f"RNNT force-EOS t={t}: agent EOS injected "
+                        f"(agent speaking > {force_eos_frames} blank frames with no user speech, "
+                        f"blank_cnt={blank_cnt}, density={rolling_density:.3f})"
+                    )
+                    logging.info(_fef_msg)
+                    print(
+                        f"[RNNT-CTRL {_dt_fef.datetime.now().isoformat()}] "
+                        f"frame={t} t={t*0.08:.2f}s "
+                        f"FORCE-EOS: agent stopped (no user speech in {blank_cnt} blanks, "
+                        f"density={rolling_density:.3f})",
+                        flush=True
+                    )
+                    if getattr(self, '_rnnt_eou_log_path', None):
+                        with open(self._rnnt_eou_log_path, 'a') as _lf:
+                            _lf.write(
+                                f"{_dt_fef.datetime.now().isoformat()} | FORCE_EOS | frame={t} | "
+                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
+                                f"density={rolling_density:.3f} | adapted={density_adapted}\n"
+                            )
+                    return
+
             # Post-EOS fallback: if agent finished speaking and blank_count accumulates past
             # post_eos_fallback_frames without ANY confirmed user speech, inject BOS unconditionally.
             # This handles speakers whose acoustic properties produce 0 RNNT non-blank tokens

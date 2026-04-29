@@ -1613,7 +1613,7 @@ class NemotronVoicechatInferenceWrapper:
             post_eos_fallback = int(self.model_cfg.get("post_eos_fallback_frames", 0))  # 0=disabled
             if (post_eos_fallback > 0 and not first_turn and not agent_speaking
                     and not speech_confirmed and not rnnt_state['post_eos_fired'][b]):
-                if blank_cnt >= post_eos_fallback and not (agent_window == bos_id).any():
+                if blank_cnt >= post_eos_fallback:
                     import datetime as _dt_pef
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_confirmed'][b] = False

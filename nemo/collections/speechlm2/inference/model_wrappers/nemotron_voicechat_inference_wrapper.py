@@ -1600,6 +1600,43 @@ class NemotronVoicechatInferenceWrapper:
                             )
                 return  # EOU takes priority over user BOS interrupt
 
+            # Post-EOS fallback: if agent finished speaking and blank_count accumulates past
+            # post_eos_fallback_frames without ANY confirmed user speech, inject BOS unconditionally.
+            # This handles speakers whose acoustic properties produce 0 RNNT non-blank tokens
+            # (e.g., heavy accent, synthetic speech) — Kratos can't detect them, so we fall back
+            # to a time-based response trigger. Only fires when speech_confirmed=False (if RNNT
+            # DID detect user speech, the normal EOU path above handles it).
+            post_eos_fallback = int(self.model_cfg.get("post_eos_fallback_frames", 0))  # 0=disabled
+            if post_eos_fallback > 0 and not first_turn and not agent_speaking and not speech_confirmed:
+                if blank_cnt >= post_eos_fallback and not (agent_window == bos_id).any():
+                    import datetime as _dt_pef
+                    gen_text[b, t] = bos_id
+                    rnnt_state['speech_confirmed'][b] = False
+                    rnnt_state['nonblank_total'][b] = 0
+                    rnnt_state['agent_speaking'][b] = True
+                    rnnt_state['first_turn'][b] = False
+                    _pef_msg = (
+                        f"RNNT post-EOS fallback t={t}: agent BOS "
+                        f"(blank_cnt={blank_cnt}>={post_eos_fallback}, "
+                        f"density={rolling_density:.3f}, speech_confirmed=False)"
+                    )
+                    logging.info(_pef_msg)
+                    print(
+                        f"[RNNT-CTRL {_dt_pef.datetime.now().isoformat()}] "
+                        f"frame={t} t={t*0.08:.2f}s "
+                        f"POST-EOS fallback: BOS injected (no speech detected in {blank_cnt} blanks, "
+                        f"density={rolling_density:.3f})",
+                        flush=True
+                    )
+                    if getattr(self, '_rnnt_eou_log_path', None):
+                        with open(self._rnnt_eou_log_path, 'a') as _lf:
+                            _lf.write(
+                                f"{_dt_pef.datetime.now().isoformat()} | POST_EOS_FALLBACK | frame={t} | "
+                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
+                                f"density={rolling_density:.3f} | adapted={density_adapted}\n"
+                            )
+                    return
+
             # Barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any():

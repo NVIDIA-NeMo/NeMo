@@ -1680,6 +1680,19 @@ class NemotronVoicechatInferenceWrapper:
                             )
                     return
 
+            # BOS suppression: after post_eos fired once and RNNT still detects no user speech,
+            # suppress any LLM-native BOS tokens that would start hallucinated self-play turns.
+            # post_eos already gave the agent one response; additional LLM-generated BOS tokens
+            # are a runaway conversation loop — overwrite with pad to stop generation.
+            # speech_confirmed=True bypasses suppression so barge-ins from real users still work.
+            if (post_eos_fallback > 0 and not first_turn and not speech_confirmed
+                    and rnnt_state['post_eos_fired'][b]):
+                _pad_id = self.model.stt_model.text_pad_id
+                if gen_text[b, t].item() == bos_id:
+                    gen_text[b, t] = _pad_id
+                    rnnt_state['agent_speaking'][b] = False
+                    return
+
             # Barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any():

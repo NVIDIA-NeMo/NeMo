@@ -1340,6 +1340,9 @@ class NemotronVoicechatInferenceWrapper:
             # Tracks how speech-dense this speaker is. Low density → accent/noise/sparse
             # speech → adaptive lower min_speech_frames threshold.
             'rolling_density':  torch.zeros(B, dtype=torch.float32, device=device),
+            # post_eos_fired: True after post_eos_fallback fires once for the current agent turn.
+            # Prevents repeated post_eos triggers to silence. Resets when agent starts speaking.
+            'post_eos_fired':   torch.zeros(B, dtype=torch.bool, device=device),
         }
 
     @torch.no_grad()
@@ -1422,6 +1425,7 @@ class NemotronVoicechatInferenceWrapper:
             'agent_speaking':   rnnt_state['agent_speaking'],
             'first_turn':       rnnt_state['first_turn'],
             'rolling_density':  new_density,
+            'post_eos_fired':   rnnt_state['post_eos_fired'],
         }
         return new_state, is_blank
 
@@ -1479,6 +1483,7 @@ class NemotronVoicechatInferenceWrapper:
                 agent_speaking = True
                 rnnt_state['agent_speaking'][b] = True
                 rnnt_state['first_turn'][b] = False
+                rnnt_state['post_eos_fired'][b] = False  # new agent turn: allow one post_eos trigger
                 first_turn = False
             if (agent_window == eos_id).any():
                 agent_speaking = False
@@ -1607,7 +1612,8 @@ class NemotronVoicechatInferenceWrapper:
             # to a time-based response trigger. Only fires when speech_confirmed=False (if RNNT
             # DID detect user speech, the normal EOU path above handles it).
             post_eos_fallback = int(self.model_cfg.get("post_eos_fallback_frames", 0))  # 0=disabled
-            if post_eos_fallback > 0 and not first_turn and not agent_speaking and not speech_confirmed:
+            if (post_eos_fallback > 0 and not first_turn and not agent_speaking
+                    and not speech_confirmed and not rnnt_state['post_eos_fired'][b]):
                 if blank_cnt >= post_eos_fallback and not (agent_window == bos_id).any():
                     import datetime as _dt_pef
                     gen_text[b, t] = bos_id
@@ -1615,6 +1621,7 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     rnnt_state['first_turn'][b] = False
+                    rnnt_state['post_eos_fired'][b] = True  # fire at most once per agent turn
                     _pef_msg = (
                         f"RNNT post-EOS fallback t={t}: agent BOS "
                         f"(blank_cnt={blank_cnt}>={post_eos_fallback}, "

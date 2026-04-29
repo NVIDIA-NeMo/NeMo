@@ -1483,7 +1483,6 @@ class NemotronVoicechatInferenceWrapper:
                 agent_speaking = True
                 rnnt_state['agent_speaking'][b] = True
                 rnnt_state['first_turn'][b] = False
-                rnnt_state['post_eos_fired'][b] = False  # new agent turn: allow one post_eos trigger
                 first_turn = False
             if (agent_window == eos_id).any():
                 agent_speaking = False

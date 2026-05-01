@@ -11,10 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Author: Harishchandra Dubey (hdubey@nvidia.com)
-# RNNT EOU/BOU turn-taking: _rnnt_init_state, _rnnt_step, _apply_rnnt_turn_taking
-# Mechanisms: rolling density, adaptive min_speech, post-EOS fallback, force-EOS, BOS suppression
 
 import torch
 import yaml
@@ -1216,8 +1212,28 @@ class NemotronVoicechatInferenceWrapper:
             asr_predicted_toks_b = [tok for tok in asr_predicted_toks_b if tok != '<SPECIAL_12>']
             asr_predicted_text_strs.append(self.tokenizer.tokens_to_text(asr_predicted_toks_b))
 
+        # Decode FC tokens to strings (same tokenizer as agent text).
+        # function_predicted_tokens is initialized with torch.empty() so uninitialized frames
+        # may contain garbage values. Filter to valid vocab range before decoding to avoid
+        # OverflowError in ids_to_tokens on out-of-range integers.
+        fc_predicted_text_strs = []
+        if self.model.stt_model.function_head is not None:
+            _fc_vocab_size = self.model.stt_model.embed_tokens.weight.shape[0]
+            for fc_tok_ids_b in function_predicted_tokens:
+                fc_tok_ids_b = fc_tok_ids_b.tolist()
+                # Clamp to valid range: drop any garbage IDs from uninitialized frames
+                fc_tok_ids_b = [tid for tid in fc_tok_ids_b if 0 <= tid < _fc_vocab_size]
+                if not fc_tok_ids_b:
+                    fc_predicted_text_strs.append("")
+                    continue
+                fc_toks_b = self.tokenizer.ids_to_tokens(fc_tok_ids_b)
+                fc_toks_b = [tok for tok in fc_toks_b if tok != '<SPECIAL_12>']
+                fc_predicted_text_strs.append(self.tokenizer.tokens_to_text(fc_toks_b))
+
         logging.info(f'frame {frame_idx}: USER\'s asr_predicted_text_strs: {asr_predicted_text_strs}')
         logging.info(f'frame {frame_idx}: --------------------------------AGENT\'s predicted_text_strs: {predicted_text_strs}')
+        if fc_predicted_text_strs and any(s for s in fc_predicted_text_strs):
+            logging.info(f'frame {frame_idx}: FC predicted_text_strs: {fc_predicted_text_strs}')
 
         torch.cuda.synchronize()
 
@@ -1231,6 +1247,7 @@ class NemotronVoicechatInferenceWrapper:
             'decoded_audio_new': decoded_audio_new,
             'predicted_text_strs': predicted_text_strs,
             'asr_predicted_text_strs': asr_predicted_text_strs,
+            'fc_predicted_text_strs': fc_predicted_text_strs,
             'input_embeds_history': input_embeds_history + new_input_embeds if not use_cache else input_embeds_history,
             'dynamic_cache': dynamic_cache if use_cache else None,
             'past_key_values': past_key_values,
@@ -1481,14 +1498,24 @@ class NemotronVoicechatInferenceWrapper:
                 density_adapted = True
 
             # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
-            # Any BOS in the window (from RNNT EOU or force_turn_taking) ends the first turn.
+            # Also check gen_text[b, t] so that tokens placed at the current frame by
+            # _maybe_apply_forced_turn_taking (which runs before us) are adopted immediately
+            # rather than waiting one frame for t to enter the lookback window.
             agent_speaking = rnnt_state['agent_speaking'][b].item()
-            if (agent_window == bos_id).any():
+            current_tok = gen_text[b, t].item()
+            if (agent_window == bos_id).any() or current_tok == bos_id:
                 agent_speaking = True
                 rnnt_state['agent_speaking'][b] = True
                 rnnt_state['first_turn'][b] = False
                 first_turn = False
-            if (agent_window == eos_id).any():
+                if current_tok == bos_id:
+                    # LLM (force_turn_taking) just fired BOS — reset RNNT speech accumulator
+                    # so stale speech signal from before the BOS doesn't prematurely re-trigger EOU.
+                    rnnt_state['speech_confirmed'][b] = False
+                    rnnt_state['nonblank_total'][b] = 0
+                    speech_confirmed = False
+                    nonblank_total = 0
+            if (agent_window == eos_id).any() or current_tok == eos_id:
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
                 # Turn-boundary reset: clear accumulated signal from during agent speech.
@@ -1533,8 +1560,9 @@ class NemotronVoicechatInferenceWrapper:
                 return
 
             # EOU: N blank frames after confirmed user speech → inject agent BOS.
+            # Safety-net: skip if LLM (force_turn_taking) already placed BOS this frame or in window.
             if blank_cnt >= effective_eou and speech_confirmed and not agent_speaking:
-                if not (agent_window == bos_id).any():
+                if not (agent_window == bos_id).any() and current_tok != bos_id:
                     # CONFLICT CHECK: RNNT is about to overwrite a non-pad LLM token.
                     # This happens when the LLM backbone already placed a speech/text token
                     # at frame t while RNNT is trying to write BOS — the two disagree on
@@ -1698,8 +1726,9 @@ class NemotronVoicechatInferenceWrapper:
                     return
 
             # Barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
+            # Safety-net: skip if LLM (force_turn_taking) already placed EOS this frame or in window.
             if nonblank_cnt >= user_bos_frames and agent_speaking:
-                if not (agent_window == eos_id).any():
+                if not (agent_window == eos_id).any() and current_tok != eos_id:
                     # CONFLICT CHECK: RNNT barge-in about to overwrite a non-pad LLM token.
                     existing_tok = gen_text[b, t].item()
                     _pad_id = self.model.stt_model.text_pad_id

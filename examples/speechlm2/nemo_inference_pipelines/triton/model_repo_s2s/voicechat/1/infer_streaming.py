@@ -71,8 +71,13 @@ class TritonPythonModel:
             "s2s.asr_bou":                 ("S2S_ASR_BOU", 4),
             "s2s.user_bos_frames":         ("S2S_USER_BOS_FRAMES", 4),
             "s2s.asr_min_speech_frames":   ("S2S_ASR_MIN_SPEECH_FRAMES", 3),
-            # Force turn-taking (must be False when RNNT EOU is enabled)
-            "s2s.force_turn_taking":       ("S2S_FORCE_TURN_TAKING", False),
+            "s2s.force_turn_taking":             ("S2S_FORCE_TURN_TAKING", False),
+            "s2s.force_turn_taking_pad_window":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 25),
+            "s2s.force_turn_taking_threshold":   ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
+            # First-turn EOU: how many blank frames before agent responds on the very first turn.
+            # Default 10 = 800ms — lets user finish their greeting before agent jumps in.
+            "s2s.asr_eou_first_turn":            ("S2S_ASR_EOU_FIRST_TURN", 10),
+            "s2s.asr_min_speech_frames_first_turn": ("S2S_ASR_MIN_SPEECH_FRAMES_FIRST_TURN", 2),
             "s2s.max_len":                 ("S2S_MAX_LEN", 8192),
         }
         for cfg_key, (env_var, default) in env_overrides.items():
@@ -109,6 +114,7 @@ class TritonPythonModel:
         # Track text positions to return only incremental updates
         self.text_positions = {}  # stream_id -> last_text_length
         self.asr_text_positions = {}  # stream_id -> last_asr_text_length
+        self.fc_text_positions = {}  # stream_id -> last_fc_text_length
 
     def initialize(self, args):
         """`initialize` is called only once when the model is being loaded.
@@ -274,37 +280,47 @@ class TritonPythonModel:
                 state = self.pipeline.get_or_create_state(stream_id)
                 self.text_positions[stream_id] = len(state.get_output_text())
                 self.asr_text_positions[stream_id] = len(state.get_output_asr_text())
-                generations.append((torch.empty(1, 0), "", ""))
+                self.fc_text_positions[stream_id] = len(state.get_output_function_text())
+                generations.append((torch.empty(1, 0), "", "", ""))
                 continue
-            
+
             state = self.pipeline.get_or_create_state(stream_id)
             audio = state.audio_buffer
-            
+
             full_text = state.get_output_text()
             full_asr_text = state.get_output_asr_text()
-            
+            full_fc_text = state.get_output_function_text()
+
             if stream_id not in self.text_positions:
                 self.text_positions[stream_id] = 0
             last_position = self.text_positions[stream_id]
             incremental_text = full_text[last_position:]
             self.text_positions[stream_id] = len(full_text)
-            
+
             if stream_id not in self.asr_text_positions:
                 self.asr_text_positions[stream_id] = 0
             last_asr_position = self.asr_text_positions[stream_id]
             incremental_asr_text = full_asr_text[last_asr_position:]
             self.asr_text_positions[stream_id] = len(full_asr_text)
-            
-            generations.append((audio, incremental_text, incremental_asr_text))
-            
+
+            if stream_id not in self.fc_text_positions:
+                self.fc_text_positions[stream_id] = 0
+            last_fc_position = self.fc_text_positions[stream_id]
+            incremental_fc_text = full_fc_text[last_fc_position:]
+            self.fc_text_positions[stream_id] = len(full_fc_text)
+
+            generations.append((audio, incremental_text, incremental_asr_text, incremental_fc_text))
+
             state.cleanup_after_response()
-            
+
             if frame.is_last:
                 self.pipeline.delete_state(stream_id)
                 if stream_id in self.text_positions:
                     del self.text_positions[stream_id]
                 if stream_id in self.asr_text_positions:
                     del self.asr_text_positions[stream_id]
+                if stream_id in self.fc_text_positions:
+                    del self.fc_text_positions[stream_id]
         _t_extract_done = time.time()
         
         logging.info(f"get_generations breakdown: generate_step={(_t_generate_step_done - _t_generate_step)*1000:.2f}ms, "
@@ -335,21 +351,23 @@ class TritonPythonModel:
         _t_generations_done = time.time()
         
         responses = []
-        for audio, text, asr_text in generations:
+        for audio, text, asr_text, fc_text in generations:
             if isinstance(audio, torch.Tensor):
                 audio_np = audio.detach().cpu().numpy().astype(np.float32)
                 if audio_np.ndim == 1:
                     audio_np = audio_np.reshape(1, -1)
             else:
                 audio_np = np.zeros((1, 0), dtype=np.float32)
-            
+
             text_np = np.array([text.encode('utf-8')], dtype=object)
             asr_text_np = np.array([asr_text.encode('utf-8')], dtype=object)
-            
+            function_text_np = np.array([fc_text.encode('utf-8')], dtype=object)
+
             responses.append(pb_utils.InferenceResponse(output_tensors=[
                 pb_utils.Tensor("output_audio", audio_np),
                 pb_utils.Tensor("output_text", text_np),
                 pb_utils.Tensor("output_asr_text", asr_text_np),
+                pb_utils.Tensor("output_function_text", function_text_np),
             ]))
 
         end_time = time.time()

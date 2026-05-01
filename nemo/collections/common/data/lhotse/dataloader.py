@@ -257,6 +257,16 @@ class LhotseDataLoadingConfig:
     # The first K examples will actually be read and then discarded, incurring the IO cost, due to
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
+    # Forwarded to ``CutSet.from_file(path, indexed=...)`` for plain JSONL ``cuts_path`` inputs.
+    # ``None`` = lhotse auto-detect (uses .idx if present, falls back to streaming).
+    # ``True`` = require indexed reads (errors if .idx is missing).
+    # ``False`` = streaming reads only.
+    indexed: Optional[bool] = None
+    # When True, build the dataloader with ``torchdata.stateful_dataloader.StatefulDataLoader``
+    # instead of ``torch.utils.data.DataLoader``. Combined with a checkpointable lhotse sampler
+    # (DynamicBucketingSampler / DynamicCutSampler), this enables exact resume from the next batch
+    # within the current epoch via the standard PyTorch state_dict / load_state_dict protocol.
+    use_stateful_dataloader: bool = False
 
 
 def resolve_excluded_speaker_ids(excluded_speaker_ids):
@@ -296,6 +306,18 @@ def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfi
     ), "Conflicting options: force_map_dataset=True and force_iterable_dataset=True"
     use_iterable_dataset = (use_iterable_dataset or config.force_iterable_dataset) and not config.force_map_dataset
     return use_iterable_dataset
+
+
+def _build_dataloader(use_stateful_dataloader: bool, **kwargs) -> torch.utils.data.DataLoader:
+    """
+    Construct a DataLoader, optionally using ``torchdata.stateful_dataloader.StatefulDataLoader``
+    so that resume picks up at the exact next batch via ``state_dict()`` / ``load_state_dict()``.
+    """
+    if use_stateful_dataloader:
+        from torchdata.stateful_dataloader import StatefulDataLoader
+
+        return StatefulDataLoader(**kwargs)
+    return torch.utils.data.DataLoader(**kwargs)
 
 
 def get_lhotse_dataloader_from_config(
@@ -402,7 +424,8 @@ def get_lhotse_dataloader_from_single_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
-    dloader = torch.utils.data.DataLoader(
+    dloader = _build_dataloader(
+        use_stateful_dataloader=config.use_stateful_dataloader,
         **dloader_kwargs,
         batch_size=None,
         num_workers=config.num_workers,
@@ -453,6 +476,7 @@ def get_lhotse_dataloader_from_multi_config(
             "multi_config",
             "metadata_only",
             "force_finite",
+            "use_stateful_dataloader",
         ]
         defaults = OmegaConf.structured(LhotseDataLoadingConfig)
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
@@ -526,7 +550,8 @@ def get_lhotse_dataloader_from_multi_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
-    dloader = torch.utils.data.DataLoader(
+    dloader = _build_dataloader(
+        use_stateful_dataloader=shared_opts.use_stateful_dataloader,
         **dloader_kwargs,
         batch_size=None,
         num_workers=shared_opts.num_workers,
@@ -551,9 +576,6 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
 
     # Resample as a safeguard; it's a no-op when SR is already OK
     cuts = cuts.map(partial(resample, sampling_rate=config.sample_rate), apply_fn=None)
-
-    # Expands cuts if multiple translations are provided.
-    cuts = CutSet(LazyFlattener(cuts.map(_flatten_alt_text, apply_fn=None)))
 
     if config.use_multimodal_sampling:
         assert tokenizer is not None, (
@@ -975,22 +997,6 @@ def _normalize_loudness(cuts: CutSet, db_norm: float) -> CutSet:
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:
     return cuts.merge_supervisions()
-
-
-def _flatten_alt_text(cut) -> list:
-    ans = [cut]
-    if not isinstance(cut, Cut) or cut.custom is None or cut.custom.get("alt_text") is None:
-        return ans
-    cut = cut.move_to_memory(audio_format="wav")  # performs I/O once and holds audio in memory from now on
-    # Popping to ease eyesight on debug.
-    paired_text = cut.custom.pop("alt_text")
-    for data in paired_text.values():
-        # Copy to avoid lazy dataloading issues
-        data = data.copy()
-        text_instance = cut.map_supervisions(lambda s: fastcopy(s, text=data["text"], language=data["lang"]))
-        text_instance.custom = {"text": data.pop("text"), "lang": data.pop("lang"), **data}
-        ans.append(text_instance)
-    return ans
 
 
 def maybe_set_cuda_expandable_segments(enabled: bool):

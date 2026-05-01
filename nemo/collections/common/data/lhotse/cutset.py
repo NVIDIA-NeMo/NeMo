@@ -715,7 +715,9 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         path = config.cuts_path
-        cuts = CutSet.from_file(path).map(partial(resolve_relative_paths, manifest_path=path))
+        cuts = CutSet.from_file(path, indexed=config.get("indexed", None)).map(
+            partial(resolve_relative_paths, manifest_path=path)
+        )
     return cuts, is_tarred
 
 

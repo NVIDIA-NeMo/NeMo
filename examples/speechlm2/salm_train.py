@@ -60,6 +60,9 @@ def train(cfg):
 
     trainer.fit(model, datamodule)
 
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+
 
 if __name__ == "__main__":
     train()

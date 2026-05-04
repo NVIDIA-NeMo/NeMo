@@ -1299,42 +1299,54 @@ class NemotronVoicechatInferenceWrapper:
         if not self.model_cfg.get("force_turn_taking", False):
             return
 
-        threshold = self.model_cfg.get("force_turn_taking_threshold", 40)
+        threshold        = self.model_cfg.get("force_turn_taking_threshold", 40)
         pad_window_steps = self.model_cfg.get("force_turn_taking_pad_window", 25)
+        # Shorter silence window for the very first turn so "Hello" + pause triggers a response.
+        # Defaults to pad_window_steps (no change) if not set.
+        pad_window_first = self.model_cfg.get("force_turn_taking_pad_window_first_turn", pad_window_steps)
+
+        bos_id      = self.model.stt_model.text_bos_id
+        eos_id      = self.model.stt_model.text_eos_id
+        pad_id      = self.model.stt_model.text_pad_id
+        user_bos_id = self.model.stt_model.user_bos_id
 
         B = gen_text.size(0)
 
         for batch_idx in range(B):
-            lookback_start = max(0, t - threshold)
+            lookback_start    = max(0, t - threshold)
             agent_text_window = gen_text[batch_idx, lookback_start:t]
             current_asr_token = gen_asr[batch_idx, t]
 
-            # ASR EOS or ~1 sec of pad tokens → insert agent BOS if not present in window
-            # Skip if we don't have enough tokens at the beginning
-            if t < pad_window_steps:
+            # First turn = agent has never written a BOS token yet
+            is_first_turn = not (gen_text[batch_idx, 0:t] == bos_id).any().item()
+            active_window = pad_window_first if is_first_turn else pad_window_steps
+
+            if t < active_window:
                 continue
 
-            pad_lookback_start = t - pad_window_steps
-            asr_recent_tokens = gen_asr[batch_idx, pad_lookback_start:t]
-            has_pad_window = (asr_recent_tokens == self.model.stt_model.text_pad_id).all() if len(asr_recent_tokens) > 0 else False
+            pad_lookback_start = t - active_window
+            asr_recent_tokens  = gen_asr[batch_idx, pad_lookback_start:t]
+            has_pad_window = (asr_recent_tokens == pad_id).all() if len(asr_recent_tokens) > 0 else False
 
             # Require that the pad window starts after a non-pad token
             if has_pad_window and pad_lookback_start > 0:
                 token_before_window = gen_asr[batch_idx, pad_lookback_start - 1]
-                has_pad_window = (token_before_window != self.model.stt_model.text_pad_id) and (token_before_window != self.model.stt_model.user_bos_id)
+                has_pad_window = (token_before_window != pad_id) and (token_before_window != user_bos_id)
             elif has_pad_window and pad_lookback_start == 0:
-                # If the pad window starts at position 0, it doesn't meet the requirement
                 has_pad_window = False
 
             if has_pad_window:
-                if not (agent_text_window == self.model.stt_model.text_bos_id).any():
-                    gen_text[batch_idx, t] = self.model.stt_model.text_bos_id
-                    logging.info(f"Forced turn-taking at frame {t}: inserted agent BOS (reason: pad window)")
+                if not (agent_text_window == bos_id).any():
+                    gen_text[batch_idx, t] = bos_id
+                    logging.info(
+                        f"Forced turn-taking at frame {t}: inserted agent BOS "
+                        f"(pad_window={active_window}, first_turn={is_first_turn})"
+                    )
 
             # ASR BOS → insert agent EOS if not present in window
-            elif current_asr_token == self.model.stt_model.user_bos_id:
-                if not (agent_text_window == self.model.stt_model.text_eos_id).any():
-                    gen_text[batch_idx, t] = self.model.stt_model.text_eos_id
+            elif current_asr_token == user_bos_id:
+                if not (agent_text_window == eos_id).any():
+                    gen_text[batch_idx, t] = eos_id
                     logging.info(f"Forced turn-taking at frame {t}: inserted agent EOS (reason: user started speaking)")
 
     def _rnnt_init_state(self, B: int, device) -> dict:

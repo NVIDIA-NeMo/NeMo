@@ -72,8 +72,9 @@ class TritonPythonModel:
             "s2s.user_bos_frames":         ("S2S_USER_BOS_FRAMES", 4),
             "s2s.asr_min_speech_frames":   ("S2S_ASR_MIN_SPEECH_FRAMES", 3),
             "s2s.force_turn_taking":             ("S2S_FORCE_TURN_TAKING", False),
-            "s2s.force_turn_taking_pad_window":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 25),
-            "s2s.force_turn_taking_threshold":   ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
+            "s2s.force_turn_taking_pad_window":             ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 25),
+            "s2s.force_turn_taking_pad_window_first_turn":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 25),
+            "s2s.force_turn_taking_threshold":              ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
             # First-turn EOU: how many blank frames before agent responds on the very first turn.
             # Default 10 = 800ms — lets user finish their greeting before agent jumps in.
             "s2s.asr_eou_first_turn":            ("S2S_ASR_EOU_FIRST_TURN", 10),

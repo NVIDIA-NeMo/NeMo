@@ -24,6 +24,10 @@ import numpy as np
 # Knuth's multiplicative hash constant (golden-ratio derived, 32-bit).
 _KNUTH_HASH = 2654435761
 
+# Tar block size + the all-zeros block that marks end-of-archive in tar.
+_TAR_BLOCK_SIZE = 512
+_TAR_ZERO_BLOCK = b'\0' * _TAR_BLOCK_SIZE
+
 
 class LazyShuffledRange:
     """
@@ -184,8 +188,8 @@ class IndexedTarSampleReader:
             last = int(self.offsets[self._len - 1])
             with open(self.data_path, 'rb') as f:
                 f.seek(last)
-                buf = f.read(512)
-            if len(buf) < 512 or buf == b'\0' * 512:
+                buf = f.read(_TAR_BLOCK_SIZE)
+            if len(buf) < _TAR_BLOCK_SIZE or buf == _TAR_ZERO_BLOCK:
                 self._len -= 1
             else:
                 break
@@ -193,13 +197,13 @@ class IndexedTarSampleReader:
     def _check_offset_is_tar_header(self, offset: int, label: str = ""):
         with open(self.data_path, 'rb') as f:
             f.seek(offset)
-            buf = f.read(512)
-        if len(buf) < 512:
+            buf = f.read(_TAR_BLOCK_SIZE)
+        if len(buf) < _TAR_BLOCK_SIZE:
             raise ValueError(
                 f"Tar index for {self.data_path}: {label} offset {offset} "
                 f"is too close to EOF (file size {self._data_size})."
             )
-        if buf == b'\0' * 512:
+        if buf == _TAR_ZERO_BLOCK:
             raise ValueError(
                 f"Tar index for {self.data_path}: {label} offset {offset} "
                 f"points to a zero block (end-of-archive marker), not a tar header. "
@@ -328,11 +332,10 @@ class IndexedTarMemberReader:
         name_to_idx: dict[str, int] = {}
         self._ensure_open()
         for i in range(self._len):
-            offset = int(self.offsets[i])
-            self._fh.seek(offset)
+            self._fh.seek(int(self.offsets[i]))
             while True:
-                header = self._fh.read(512)
-                if len(header) < 512 or header == b"\0" * 512:
+                header = self._fh.read(_TAR_BLOCK_SIZE)
+                if len(header) < _TAR_BLOCK_SIZE or header == _TAR_ZERO_BLOCK:
                     break
                 info = tarfile.TarInfo.frombuf(
                     header, tarfile.ENCODING, "surrogateescape"
@@ -340,9 +343,8 @@ class IndexedTarMemberReader:
                 if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
                     name_to_idx[info.name] = i
                     break
-                # Non-regular (PAX header, GNU long-name, etc.):
-                # skip its data + 512-byte padding and continue.
-                size_blocks = (info.size + 511) // 512 * 512
+                # Skip non-regular member (PAX/GNU long-name) data + padding.
+                size_blocks = -(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE
                 self._fh.seek(size_blocks, 1)
         return name_to_idx
 
@@ -378,16 +380,16 @@ def _read_tar_member(f):
     arbitrary byte offset and read just the members we need in O(1).
     """
     while True:
-        header_buf = f.read(512)
-        if len(header_buf) < 512 or header_buf == b'\0' * 512:
+        header_buf = f.read(_TAR_BLOCK_SIZE)
+        if len(header_buf) < _TAR_BLOCK_SIZE or header_buf == _TAR_ZERO_BLOCK:
             raise EOFError("End of tar archive or unexpected EOF")
         info = tarfile.TarInfo.frombuf(header_buf, tarfile.ENCODING, "surrogateescape")
         data = f.read(info.size)
         if len(data) < info.size:
             raise EOFError("Unexpected end of tar file while reading data")
-        remainder = info.size % 512
+        remainder = info.size % _TAR_BLOCK_SIZE
         if remainder:
-            f.seek(512 - remainder, 1)
+            f.seek(_TAR_BLOCK_SIZE - remainder, 1)
         if info.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
             continue
         return info.name, data
@@ -399,10 +401,14 @@ def create_index(jsonl_path, idx_path):
 
     Format: sequence of little-endian uint64 values
     ``[Offset_0, Offset_1, ..., Offset_N, File_Size]``
+
+    Written atomically (tmp + ``os.replace``) so concurrent writers can't
+    observe a half-written ``.idx``.
     """
     # Flush the write buffer every 8 MiB to limit memory usage on large files.
     flush_threshold = 8 * 1024 * 1024
-    with open(jsonl_path, 'rb') as f_in, open(idx_path, 'wb') as f_out:
+    tmp_path = f"{idx_path}.tmp.{os.getpid()}"
+    with open(jsonl_path, 'rb') as f_in, open(tmp_path, 'wb') as f_out:
         current_offset = 0
         write_buffer = bytearray()
         write_buffer.extend(struct.pack('<Q', current_offset))
@@ -414,6 +420,7 @@ def create_index(jsonl_path, idx_path):
                 write_buffer.clear()
         if write_buffer:
             f_out.write(write_buffer)
+    os.replace(tmp_path, idx_path)
 
 
 def create_tar_index(tar_path, idx_path):
@@ -422,6 +429,10 @@ def create_tar_index(tar_path, idx_path):
     Stores the byte offset of the first member of each sample (grouped by basename),
     followed by a sentinel equal to the tar file size.
     Format is identical to :func:`create_index`.
+
+    Written atomically: data is staged in a per-process temp file next to
+    ``idx_path`` and then ``os.replace()``-d into place, so concurrent writers
+    can't observe a half-written ``.idx``.
     """
     offsets = []
     prev_stem = None
@@ -433,9 +444,11 @@ def create_tar_index(tar_path, idx_path):
             if stem != prev_stem:
                 offsets.append(member.offset)
                 prev_stem = stem
-    with open(idx_path, 'wb') as f:
+    tmp_path = f"{idx_path}.tmp.{os.getpid()}"
+    with open(tmp_path, 'wb') as f:
         buf = bytearray()
         for off in offsets:
             buf.extend(struct.pack('<Q', off))
         buf.extend(struct.pack('<Q', os.path.getsize(tar_path)))
         f.write(buf)
+    os.replace(tmp_path, idx_path)

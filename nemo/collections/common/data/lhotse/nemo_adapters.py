@@ -37,7 +37,9 @@ from lhotse.audio.backend import LibsndfileBackend
 from lhotse.cut import Cut
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.lazy import (
+    GraphOriginDict,
     IteratorNode,
+    LazyIndexedManifestIterator,
     LazyIteratorChain,
     LazyJsonlIterator,
     attach_graph_origin,
@@ -49,6 +51,11 @@ from lhotse.utils import compute_num_samples, ifnone
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
 from nemo.utils.data_utils import is_datastore_path
+
+# NeMo tarred manifests support per-recording offsets via "-subN" audio_filepath
+# suffixes. We use this pattern in both indexed and streaming code paths to
+# recover the actual tar member name (offsets share a single member).
+_OFFSET_PATTERN = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
 
 
 class LazyNeMoIterator(IteratorNode):
@@ -143,7 +150,9 @@ class LazyNeMoIterator(IteratorNode):
                     "graph-token random access."
                 )
             seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
-            indexed_sources = [_LazyIndexedJsonlDictNode(p) for p in paths]
+            indexed_sources = [
+                LazyIndexedManifestIterator(p, decode=GraphOriginDict) for p in paths
+            ]
             if len(indexed_sources) == 1:
                 self.source = indexed_sources[0]
             else:
@@ -298,66 +307,6 @@ class LazyNeMoIterator(IteratorNode):
             )
         else:
             return Recording.from_file(audio_path)
-
-
-class _GraphOriginDict(dict):
-    """``dict`` subclass that can carry runtime attributes (e.g. ``_graph_origin``)."""
-
-    __slots__ = ("_graph_origin",)
-
-
-class _LazyIndexedJsonlDictNode(IteratorNode):
-    """
-    Internal helper: a graph-restorable indexed JSONL reader that yields raw dicts
-    (not Cuts). Built on top of :class:`lhotse.indexing.IndexedJsonlReader`.
-
-    Used as the source iterator for :class:`LazyNeMoIterator` (and other adapters)
-    when ``indexed=True``. Yielded items carry ``_graph_origin`` set to their
-    integer line index, which allows downstream nodes (e.g. ``LazyIteratorChain``,
-    ``LazyShuffler``) to compose graph tokens for exact restore.
-    """
-
-    is_checkpointable = True
-    is_indexed = True
-    has_constant_time_access = True
-
-    def __init__(self, path: str | Path) -> None:
-        from lhotse.indexing import IndexedJsonlReader
-
-        self.path = path
-        self._reader = IndexedJsonlReader(path)
-        self._position = 0
-        self._restored = False
-
-    def __getitem__(self, idx):
-        idx = int(normalize_graph_token(idx))
-        item = _GraphOriginDict(self._reader[idx])
-        return attach_graph_origin(item, idx)
-
-    def __len__(self) -> int:
-        return len(self._reader)
-
-    def __iter__(self):
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = len(self._reader)
-        for i in range(start, n):
-            self._position = i + 1
-            item = _GraphOriginDict(self._reader[i])
-            attach_graph_origin(item, i)
-            yield item
-
-    def state_dict(self) -> dict:
-        return {"position": self._position}
-
-    def load_state_dict(self, sd: dict) -> None:
-        self._position = sd["position"]
-        self._restored = True
-
-
-# NeMo-tar indexed access is delegated to ``IndexedTarMemberReader`` from
-# ``indexed_adapters`` — the same canonical .idx format (uint64 LE offsets +
-# sentinel) used everywhere else in NeMo and lhotse for indexed access.
 
 
 class LazyNeMoTarredIterator(IteratorNode):
@@ -566,7 +515,6 @@ class LazyNeMoTarredIterator(IteratorNode):
         self._total_len = cum
         self._position = 0
         self._restored = False
-        self._offset_pattern = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
 
     def to_shards(self) -> List["LazyNeMoTarredIterator"]:
         """Convert this iterator to a list of separate iterators for each shard."""
@@ -741,6 +689,31 @@ class LazyNeMoTarredIterator(IteratorNode):
         sid = self._sorted_shard_ids[shard_pos]
         return sid, idx - self._cum_lens[shard_pos]
 
+    def _audio_member_name_from_entry(self, entry: dict) -> str:
+        af = entry["audio_filepath"]
+        m = _OFFSET_PATTERN.match(af)
+        if m is None:
+            return af
+        return m.group("stem") + ifnone(m.group("ext"), "")
+
+    def _attach_supervision_and_metadata(
+        self, cut: Cut, data: dict, manifest_path: str, tar_path: str
+    ) -> Cut:
+        cut.supervisions.append(
+            SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.recording_id,
+                start=0,
+                duration=cut.duration,
+                text=data.get(self.text_field),
+                language=data.get(self.lang_field),
+            )
+        )
+        cut.custom = _to_custom_attr_dict(data)
+        cut.manifest_origin = manifest_path
+        cut.tar_origin = tar_path
+        return cut
+
     def _build_indexed_cut(self, data: dict, audio_bytes: bytes, manifest_path: str, tar_path: str) -> Cut | None:
         """Decode a single (manifest_entry, audio_bytes) pair into a Cut, mirroring the streaming path."""
         if data.get("_skipme", False):
@@ -762,35 +735,14 @@ class LazyNeMoTarredIterator(IteratorNode):
         cut = make_cut_with_subset_inmemory_recording(
             recording, offset=data.get("offset", 0.0), duration=data.get("duration")
         )
-        cut.supervisions.append(
-            SupervisionSegment(
-                id=cut.id,
-                recording_id=cut.recording_id,
-                start=0,
-                duration=cut.duration,
-                text=data.get(self.text_field),
-                language=data.get(self.lang_field),
-            )
-        )
-        cut.custom = _to_custom_attr_dict(data)
-        cut.manifest_origin = manifest_path
-        cut.tar_origin = tar_path
-        return cut
-
-    def _audio_member_name_from_entry(self, entry: dict) -> str:
-        af = entry["audio_filepath"]
-        m = self._offset_pattern.match(af)
-        if m is None:
-            return af
-        return m.group("stem") + ifnone(m.group("ext"), "")
+        return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
 
     def _build_indexed_url_cut(self, data: dict, manifest_path: str, tar_path: str) -> Cut | None:
         """
         AIS GetBatch counterpart of ``_build_indexed_cut``: produces a Cut backed
         by a URL/file AudioSource (no audio bytes loaded), so that
         ``AudioSamples(use_batch_loader=True)`` can fetch the entire minibatch in
-        a single AIS GetBatch request. Mirrors the streaming path in
-        ``_iter_batch_for_ais_get_batch``.
+        a single AIS GetBatch request. Mirrors ``_iter_batch_for_ais_get_batch``.
         """
         if data.get("_skipme", False):
             return None
@@ -802,9 +754,8 @@ class LazyNeMoTarredIterator(IteratorNode):
             return None
         audio_filename = self._audio_member_name_from_entry(data)
         audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
-        # Mirror the streaming path's convention: use type="url" since open_best()
-        # transparently handles both local paths and remote URLs (ais://, http(s)://, ...).
-        # AudioSamples' GetBatch loader inspects the URL scheme to dispatch to AIS.
+        # ``open_best`` handles ais://, http(s)://, and local paths uniformly;
+        # the AIS GetBatch loader still keys off the URL scheme.
         source_type = "url" if "://" in tar_path else "file"
         offset = data.get("offset", 0.0)
         sampling_rate = data.get("sampling_rate", 16000)
@@ -819,20 +770,29 @@ class LazyNeMoTarredIterator(IteratorNode):
         if offset > 0:
             cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
             cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
-        cut.supervisions.append(
-            SupervisionSegment(
-                id=cut.id,
-                recording_id=cut.recording_id,
-                start=0,
-                duration=cut.duration,
-                text=data.get(self.text_field),
-                language=data.get(self.lang_field),
-            )
-        )
-        cut.custom = _to_custom_attr_dict(data)
-        cut.manifest_origin = manifest_path
-        cut.tar_origin = tar_path
-        return cut
+        return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
+
+    def _decode_cut_at(self, idx: int) -> Cut | None:
+        """Build the Cut for a global index in indexed mode (AIS or local).
+
+        Returns ``None`` if the audio member is missing and
+        ``skip_missing_manifest_entries`` is set, or if the entry has
+        ``_skipme=True`` / undecodable audio.
+        """
+        sid, local_idx = self._resolve_global_idx(idx)
+        data = self._cuts_readers[sid][local_idx]
+        manifest_path = self._cuts_readers[sid].path
+        tar_path = self.shard_id_to_tar_path[sid]
+        if self.use_ais_get_batch:
+            return self._build_indexed_url_cut(data, manifest_path, tar_path)
+        member_name = self._audio_member_name_from_entry(data)
+        try:
+            audio_bytes = self._tar_readers[sid].get(member_name)
+        except KeyError:
+            if self.skip_missing_manifest_entries:
+                return None
+            raise
+        return self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
 
     def __getitem__(self, token):
         if not self.indexed:
@@ -840,20 +800,10 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "LazyNeMoTarredIterator only supports __getitem__ when constructed with indexed=True."
             )
         idx = int(normalize_graph_token(token))
-        sid, local_idx = self._resolve_global_idx(idx)
-        data = self._cuts_readers[sid][local_idx]
-        manifest_path = self._cuts_readers[sid].path
-        tar_path = self.shard_id_to_tar_path[sid]
-        if self.use_ais_get_batch:
-            cut = self._build_indexed_url_cut(data, manifest_path, tar_path)
-        else:
-            member_name = self._audio_member_name_from_entry(data)
-            audio_bytes = self._tar_readers[sid].get(member_name)
-            cut = self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+        cut = self._decode_cut_at(idx)
         if cut is None:
             raise RuntimeError(
-                f"Cut at global index {idx} (shard {sid}, local {local_idx}) is not decodable; "
-                f"cannot satisfy random-access __getitem__."
+                f"Cut at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
             )
         return attach_graph_origin(cut, idx)
 
@@ -877,24 +827,9 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _iter_indexed(self) -> Generator[Cut, None, None]:
         start = self._position if self._restored else 0
         self._restored = False
-        n = self._total_len
-        for i in range(start, n):
+        for i in range(start, self._total_len):
             self._position = i + 1
-            sid, local_idx = self._resolve_global_idx(i)
-            data = self._cuts_readers[sid][local_idx]
-            manifest_path = self._cuts_readers[sid].path
-            tar_path = self.shard_id_to_tar_path[sid]
-            if self.use_ais_get_batch:
-                cut = self._build_indexed_url_cut(data, manifest_path, tar_path)
-            else:
-                member_name = self._audio_member_name_from_entry(data)
-                try:
-                    audio_bytes = self._tar_readers[sid].get(member_name)
-                except KeyError:
-                    if self.skip_missing_manifest_entries:
-                        continue
-                    raise
-                cut = self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+            cut = self._decode_cut_at(i)
             if cut is None:
                 continue
             attach_graph_origin(cut, i)
@@ -917,17 +852,15 @@ class LazyNeMoTarredIterator(IteratorNode):
         # Propagate the random seed
         extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
 
-        # Handle NeMo tarred manifests with offsets.
-        # They have multiple JSONL entries where audio paths end with '-sub1', '-sub2', etc. for each offset.
-        offset_pattern = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
-
+        # NeMo tarred manifests can have multiple JSONL entries pointing at the
+        # same audio member with -subN audio_filepath suffixes (per-offset cuts).
         for sid in shard_ids:
             manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
 
             def basename(d: dict) -> str:
                 return (
                     m.group("stem") + ifnone(m.group("ext"), "")
-                    if (m := offset_pattern.match(k := d["audio_filepath"])) is not None
+                    if (m := _OFFSET_PATTERN.match(k := d["audio_filepath"])) is not None
                     else k
                 )
 

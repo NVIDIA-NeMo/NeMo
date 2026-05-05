@@ -350,7 +350,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             device_capability=device_capability,
         )
 
-    def training_step(self, batch: dict, batch_idx: int):
+    def training_step(self, dataloader_iter):
+        # Use the explicit ``dataloader_iter`` signature so Lightning selects
+        # ``_DataLoaderIterDataFetcher`` (no upfront prefetch). With
+        # ``_PrefetchDataFetcher`` Lightning re-primes one batch from the
+        # dataloader every time iteration starts (including on resume), which
+        # advances the StatefulDataLoader past the saved snapshot point and
+        # breaks bit-identical resumption. The dataloader_iter path consumes
+        # one batch per training step, so save/restore captures the exact
+        # next-batch position.
+        batch, batch_idx, _ = next(dataloader_iter)
+        # Move to device + apply precision conversions normally done by Lightning
+        # for the prefetch fetcher path.
+        batch = self.trainer.precision_plugin.convert_input(batch)
+        batch = self._on_before_batch_transfer(batch, dataloader_idx=0)
+        batch = self.trainer.strategy.batch_to_device(batch, dataloader_idx=0)
+
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):

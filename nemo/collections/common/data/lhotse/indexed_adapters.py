@@ -245,6 +245,128 @@ class IndexedTarSampleReader:
         return _split_json_audio_pair(name_a, bytes_a, name_b, bytes_b)
 
 
+class IndexedTarMemberReader:
+    """
+    Random access to a NeMo-style tar archive that stores **one regular member
+    per sample** (e.g. ``<cut_id>.flac`` per line of an external NeMo manifest).
+
+    Uses the same ``.idx`` format as :class:`IndexedJSONLReader` and
+    :class:`IndexedTarSampleReader`: little-endian uint64 byte offsets, with
+    a sentinel equal to the tar file size at the end. Each entry points at
+    one tar header, and the corresponding payload starts ``512`` bytes later.
+
+    Two access patterns:
+
+    * Positional: ``reader[idx]`` returns ``(member_name, payload_bytes)``.
+    * Name-keyed: ``reader.get(name)`` returns just the payload bytes. The
+      name → position map is built lazily on first use by walking the tar
+      headers (no payload reads), then cached for subsequent calls.
+    """
+
+    def __init__(
+        self,
+        tar_path: str | Path,
+        idx_path: str | Path | None = None,
+        auto_create_index: bool = True,
+    ):
+        self.data_path = str(tar_path)
+        resolved_idx = str(idx_path) if idx_path else self.data_path + ".idx"
+        if auto_create_index and not os.path.exists(resolved_idx):
+            create_tar_index(self.data_path, resolved_idx)
+        self.offsets, self._len = _load_index(self.data_path, resolved_idx)
+        self._fh = None
+        self._name_to_idx: dict[str, int] | None = None
+
+    def _ensure_open(self):
+        if self._fh is None:
+            self._fh = open(self.data_path, "rb")
+
+    def close(self):
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+
+    def __del__(self):
+        self.close()
+
+    def __getstate__(self):
+        s = self.__dict__.copy()
+        s["_fh"] = None  # file handles are not picklable
+        return s
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def __len__(self) -> int:
+        return self._len
+
+    def __getitem__(self, idx: int) -> tuple[str, bytes]:
+        idx = _resolve_idx(idx, self._len)
+        offset = int(self.offsets[idx])
+        self._ensure_open()
+        self._fh.seek(offset)
+        try:
+            name, data = _read_tar_member(self._fh)
+        except (EOFError, tarfile.TarError) as e:
+            raise type(e)(
+                f"{e} — reading sample {idx}/{self._len} at offset {offset} "
+                f"in {self.data_path}"
+            ) from e
+        return name, data
+
+    def _build_name_index(self) -> dict[str, int]:
+        """Walk the tar headers once to build a name → sample-index map.
+
+        Reads only the 512-byte tar headers (no payloads), so this is
+        relatively cheap even on remote storage. Done lazily on first
+        :meth:`get` call.
+
+        ``tar.add`` writes a PAX extended header (``@PaxHeader``) before any
+        member with a long path or extended attributes. We skip those and
+        record the *regular* file's name at each indexed offset.
+        """
+        name_to_idx: dict[str, int] = {}
+        self._ensure_open()
+        for i in range(self._len):
+            offset = int(self.offsets[i])
+            self._fh.seek(offset)
+            while True:
+                header = self._fh.read(512)
+                if len(header) < 512 or header == b"\0" * 512:
+                    break
+                info = tarfile.TarInfo.frombuf(
+                    header, tarfile.ENCODING, "surrogateescape"
+                )
+                if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
+                    name_to_idx[info.name] = i
+                    break
+                # Non-regular (PAX header, GNU long-name, etc.):
+                # skip its data + 512-byte padding and continue.
+                size_blocks = (info.size + 511) // 512 * 512
+                self._fh.seek(size_blocks, 1)
+        return name_to_idx
+
+    def get(self, name: str) -> bytes:
+        """Return the payload bytes of the tar member named ``name``."""
+        if self._name_to_idx is None:
+            self._name_to_idx = self._build_name_index()
+        try:
+            idx = self._name_to_idx[name]
+        except KeyError as e:
+            raise KeyError(
+                f"Tar {self.data_path} has no member named '{name}'. "
+                f"The .idx may be stale or the manifest is referencing a "
+                f"different tar."
+            ) from e
+        _, data = self[idx]
+        return data
+
+    def __contains__(self, name: str) -> bool:
+        if self._name_to_idx is None:
+            self._name_to_idx = self._build_name_index()
+        return name in self._name_to_idx
+
+
 def _read_tar_member(f):
     """Read the next regular-file tar member, skipping non-regular entries
     (PAX headers, GNU long-name headers, directory entries, etc.).

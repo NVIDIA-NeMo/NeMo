@@ -285,6 +285,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
+        "indexed": config.get("indexed", False),
         # Temperature for re-weighting datasets. 1 is a neutral value. Lower temperature over-samples smaller datasets, and vice versa.
         "reweight_temperature": config.get("reweight_temperature", None),
     }
@@ -348,6 +349,7 @@ def read_txt_jsonl_paths(config: DictConfig) -> tuple[CutSet, bool]:
             text_field=config.text_field,
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
         )
     )
     if not config.get("force_finite", False):
@@ -384,6 +386,7 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
             language=config.get("language"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
         )
     )
     if not config.get("force_finite", False):
@@ -405,6 +408,7 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             system_prompt=config.get("tags", {}).get("system_prompt"),
             context=config.get("tags", {}).get("context"),
             slice_length=config.get("slice_length"),
+            indexed=config.get("indexed", False),
         )
     )
     if not config.get("force_finite", False):
@@ -426,6 +430,7 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             slice_length=config.get("slice_length"),
+            indexed=config.get("indexed", False),
         )
     )
     if not config.get("force_finite", False):
@@ -444,6 +449,7 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that
@@ -751,6 +757,7 @@ def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
     # Extract shuffling options (CRITICAL for distributed training)
     shuffle_shards = config.get("shuffle", False)
     shard_seed = config.get("shard_seed", "trng")
+    indexed = config.get("indexed", False)
 
     # 3. Create Iterators for each file
     iterators = []
@@ -763,6 +770,7 @@ def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
             duration_field=duration_field,
             lang_field=lang_field,
             sampling_rate=sampling_rate,
+            indexed=indexed,
         )
         iterators.append(adapter)
 
@@ -1461,6 +1469,8 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 common_kwargs["shuffle_shards"] = config[key]
             else:
                 common_kwargs[key] = config[key]
+    indexed = config.get("indexed", False)
+    notar_kwargs_extra = {"indexed": indexed} if indexed else {}
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
     # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,
     # so lhotse has to look up the headers of audio files to fill it on-the-fly.
@@ -1470,6 +1480,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     metadata_only = config.get("metadata_only", False)
     force_finite = config.get("force_finite", False)
     notar_kwargs = {"metadata_only": metadata_only}
+    tar_kwargs_extra = {"indexed": indexed} if indexed else {}
     is_tarred = config.get("tarred_audio_filepaths") is not None
     if isinstance(config.manifest_filepath, (str, Path)):
         if is_tarred and not metadata_only:
@@ -1479,13 +1490,18 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     tar_paths=config.tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     slice_length=config.get("slice_length", None),
+                    **tar_kwargs_extra,
                     **common_kwargs,
                 )
             )
             if not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
         else:
-            cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **common_kwargs))
+            cuts = CutSet(
+                LazyNeMoIterator(
+                    config.manifest_filepath, **notar_kwargs, **notar_kwargs_extra, **common_kwargs
+                )
+            )
     else:
         # Format option 1:
         #   Assume it's [[path1], [path2], ...] (same for tarred_audio_filepaths).
@@ -1519,10 +1535,13 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     slice_length=config.get("slice_length", None),
+                    **tar_kwargs_extra,
                     **common_kwargs,
                 )
             else:
-                nemo_iter = LazyNeMoIterator(manifest_path, **notar_kwargs, **common_kwargs)
+                nemo_iter = LazyNeMoIterator(
+                    manifest_path, **notar_kwargs, **notar_kwargs_extra, **common_kwargs
+                )
             # Then, determine the weight or use one provided
             if isinstance(manifest_info, str) or len(manifest_info) == 1:
                 weight = len(nemo_iter)

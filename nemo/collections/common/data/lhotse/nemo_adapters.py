@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """Lhotse adapters for NeMo datasets including Parquet support."""
+import bisect
+import json
 import os
 import random
 import re
@@ -34,7 +36,13 @@ from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment
 from lhotse.audio.backend import LibsndfileBackend
 from lhotse.cut import Cut
 from lhotse.dataset.dataloading import resolve_seed
-from lhotse.lazy import LazyIteratorChain, LazyJsonlIterator
+from lhotse.lazy import (
+    IteratorNode,
+    LazyIteratorChain,
+    LazyJsonlIterator,
+    attach_graph_origin,
+    normalize_graph_token,
+)
 from lhotse.serialization import open_best
 from lhotse.utils import compute_num_samples, ifnone
 
@@ -43,7 +51,7 @@ from nemo.utils import logging
 from nemo.utils.data_utils import is_datastore_path
 
 
-class LazyNeMoIterator:
+class LazyNeMoIterator(IteratorNode):
     """
     ``LazyNeMoIterator`` reads a NeMo (non-tarred) JSON manifest and converts it on the fly to an ``Iterable[Cut]``.
     It's used to create a ``lhotse.CutSet``.
@@ -85,6 +93,24 @@ class LazyNeMoIterator:
         ...     "nemo_manifests/train.json",
         ...     extra_fields=[{"type": "text_sample", "name": "question", "path": "questions.txt"}],
         ... ))
+
+    Indexed mode (``indexed=True``)
+    -------------------------------
+
+    When the underlying manifest is uncompressed JSONL, set ``indexed=True`` to enable
+    O(1) random access and exact graph-token checkpointing through
+    :class:`lhotse.indexing.IndexedJsonlReader`. In indexed mode this iterator becomes
+    an indexed ``IteratorNode`` that can be combined with ``StatefulDataLoader`` for
+    bit-exact mid-epoch resume.
+
+    Indexed mode requires:
+
+    * the manifest path(s) to use ``.jsonl`` extension and be uncompressed;
+    * ``extra_fields`` to be unset (lookup-based fields are positional and cannot be
+      reproduced after a Feistel-permuted random access).
+
+    Sharded indexed inputs are composed via :class:`lhotse.lazy.LazyIteratorChain`,
+    which picks a Feistel cross-shard permutation for true item-level shuffling.
     """
 
     def __init__(
@@ -96,67 +122,125 @@ class LazyNeMoIterator:
         shuffle_shards: bool = False,
         shard_seed: int | Literal["randomized", "trng"] = "trng",
         extra_fields: list[dict[str, str]] | None = None,
+        indexed: bool = False,
     ) -> None:
         self.path = path
         self.shuffle_shards = shuffle_shards
         self.shard_seed = shard_seed
-        paths = expand_sharded_filepaths(path)
-
-        if len(paths) == 1:
-            self.source = LazyJsonlIterator(paths[0])
-        else:
-            self.source = LazyIteratorChain(
-                *(LazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
-            )
         self.text_field = text_field
         self.lang_field = lang_field
         self.metadata_only = metadata_only
         self.extra_fields = extra_fields
+        self.indexed = indexed
         validate_extra_fields(self.extra_fields)
+        paths = expand_sharded_filepaths(path)
+
+        if indexed:
+            if extra_fields:
+                raise ValueError(
+                    "LazyNeMoIterator(indexed=True) does not support 'extra_fields' because "
+                    "their values are positional/streaming and cannot be reconstructed under "
+                    "graph-token random access."
+                )
+            seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
+            indexed_sources = [_LazyIndexedJsonlDictNode(p) for p in paths]
+            if len(indexed_sources) == 1:
+                self.source = indexed_sources[0]
+            else:
+                self.source = LazyIteratorChain(
+                    *indexed_sources, shuffle_iters=shuffle_shards, seed=seed
+                )
+        else:
+            if len(paths) == 1:
+                self.source = LazyJsonlIterator(paths[0])
+            else:
+                self.source = LazyIteratorChain(
+                    *(LazyJsonlIterator(p) for p in paths),
+                    shuffle_iters=self.shuffle_shards,
+                    seed=self.shard_seed,
+                )
+
+    @property
+    def is_checkpointable(self) -> bool:
+        return self.indexed
+
+    @property
+    def is_indexed(self) -> bool:
+        return self.indexed
+
+    @property
+    def has_constant_time_access(self) -> bool:
+        return self.indexed
 
     def __iter__(self) -> Generator[Cut, None, None]:
         seed = resolve_seed(self.shard_seed)
         # Propagate the random seed
         extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
         for data in self.source:
+            graph_token = getattr(data, "_graph_origin", None) if self.indexed else None
             # filter out entries with valid "_skipme" values.
             if data.get("_skipme", False):
                 continue
-            audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
-            duration = data.pop("duration")
-            offset = data.pop("offset", None)
-            sampling_rate = data.pop("sampling_rate", None)
-            if sampling_rate is None:
-                sampling_rate = data.pop("sample_rate", None)
-            cut = self._create_cut(
-                audio_path=audio_path,
-                offset=offset,
-                duration=duration,
-                sampling_rate=sampling_rate,
-            )
-            # Note that start=0 and not start=offset because supervision's start if relative to the
-            # start of the cut; and cut.start is already set to offset
-            cut.supervisions.append(
-                SupervisionSegment(
-                    id=cut.id,
-                    recording_id=cut.recording_id,
-                    start=0,
-                    duration=cut.duration,
-                    channel=cut.channel,
-                    text=data.get(self.text_field),
-                    language=data.get(self.lang_field),
-                )
-            )
-            cut.custom = data
+            cut = self._build_cut_from_dict(data)
             for extra_field in extra_fields:
                 extra_field.attach_to(cut)
+            if graph_token is not None:
+                attach_graph_origin(cut, graph_token)
             yield cut
+
+    def __getitem__(self, token):
+        if not self.indexed:
+            raise NotImplementedError(
+                "LazyNeMoIterator only supports __getitem__ when constructed with indexed=True."
+            )
+        token = normalize_graph_token(token)
+        data = self.source[token]
+        cut = self._build_cut_from_dict(data)
+        return attach_graph_origin(cut, token)
 
     def __len__(self) -> int:
         return len(self.source)
 
     def __add__(self, other):
         return LazyIteratorChain(self, other)
+
+    def state_dict(self) -> dict:
+        if not self.indexed:
+            return {}
+        return {"source": self.source.state_dict()}
+
+    def load_state_dict(self, sd: dict) -> None:
+        if not self.indexed:
+            return
+        if "source" in sd:
+            self.source.load_state_dict(sd["source"])
+
+    def _build_cut_from_dict(self, data: dict) -> Cut:
+        # Note: ``data`` may be reused across calls in indexed mode (the reader returns
+        # a fresh dict each time, but we still avoid mutating the inner object).
+        data = dict(data)
+        audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
+        duration = data.pop("duration")
+        offset = data.pop("offset", None)
+        cut = self._create_cut(
+            audio_path=audio_path,
+            offset=offset,
+            duration=duration,
+            sampling_rate=data.pop("sampling_rate", None),
+        )
+        cut.supervisions.append(
+            SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.recording_id,
+                start=0,
+                duration=cut.duration,
+                channel=cut.channel,
+                text=data.get(self.text_field),
+                language=data.get(self.lang_field),
+            )
+        )
+        cut.custom = data
+        return cut
 
     def _create_cut(
         self,
@@ -216,7 +300,67 @@ class LazyNeMoIterator:
             return Recording.from_file(audio_path)
 
 
-class LazyNeMoTarredIterator:
+class _GraphOriginDict(dict):
+    """``dict`` subclass that can carry runtime attributes (e.g. ``_graph_origin``)."""
+
+    __slots__ = ("_graph_origin",)
+
+
+class _LazyIndexedJsonlDictNode(IteratorNode):
+    """
+    Internal helper: a graph-restorable indexed JSONL reader that yields raw dicts
+    (not Cuts). Built on top of :class:`lhotse.indexing.IndexedJsonlReader`.
+
+    Used as the source iterator for :class:`LazyNeMoIterator` (and other adapters)
+    when ``indexed=True``. Yielded items carry ``_graph_origin`` set to their
+    integer line index, which allows downstream nodes (e.g. ``LazyIteratorChain``,
+    ``LazyShuffler``) to compose graph tokens for exact restore.
+    """
+
+    is_checkpointable = True
+    is_indexed = True
+    has_constant_time_access = True
+
+    def __init__(self, path: str | Path) -> None:
+        from lhotse.indexing import IndexedJsonlReader
+
+        self.path = path
+        self._reader = IndexedJsonlReader(path)
+        self._position = 0
+        self._restored = False
+
+    def __getitem__(self, idx):
+        idx = int(normalize_graph_token(idx))
+        item = _GraphOriginDict(self._reader[idx])
+        return attach_graph_origin(item, idx)
+
+    def __len__(self) -> int:
+        return len(self._reader)
+
+    def __iter__(self):
+        start = self._position if self._restored else 0
+        self._restored = False
+        n = len(self._reader)
+        for i in range(start, n):
+            self._position = i + 1
+            item = _GraphOriginDict(self._reader[i])
+            attach_graph_origin(item, i)
+            yield item
+
+    def state_dict(self) -> dict:
+        return {"position": self._position}
+
+    def load_state_dict(self, sd: dict) -> None:
+        self._position = sd["position"]
+        self._restored = True
+
+
+# NeMo-tar indexed access is delegated to ``IndexedTarMemberReader`` from
+# ``indexed_adapters`` — the same canonical .idx format (uint64 LE offsets +
+# sentinel) used everywhere else in NeMo and lhotse for indexed access.
+
+
+class LazyNeMoTarredIterator(IteratorNode):
     r"""
     ``LazyNeMoTarredIterator`` reads a NeMo tarred JSON manifest and converts it on the fly to an ``Iterable[Cut]``.
     It's used to create a ``lhotse.CutSet``.
@@ -300,19 +444,27 @@ class LazyNeMoTarredIterator:
         skip_missing_manifest_entries: bool = False,
         extra_fields: list[dict[str, str]] | None = None,
         slice_length: int = None,
+        indexed: bool = False,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
+        self.indexed = indexed
         self.shard_id_to_manifest: dict[int, Iterable[dict]]
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
-            logging.warning(
-                f"You are using Lhotse dataloading for tarred audio with a non-sharded manifest. "
-                f"This will incur significant memory overhead. To prevent this, please shard file "
-                f"'{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py' "
-                f"WITHOUT '--no_shard_manifest'"
-            )
+            if not indexed:
+                logging.warning(
+                    f"You are using Lhotse dataloading for tarred audio with a non-sharded manifest. "
+                    f"This will incur significant memory overhead. To prevent this, please shard file "
+                    f"'{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py' "
+                    f"WITHOUT '--no_shard_manifest'"
+                )
             self.source = LazyJsonlIterator(self.paths[0])
-            self.shard_id_to_manifest = groupby("shard_id", self.source)
+            if indexed:
+                # In indexed mode we will not consume self.source for grouping — the per-shard
+                # IndexedJsonlReaders below take over, keyed by the position-derived shard_id 0.
+                self.shard_id_to_manifest = {0: self.source}
+            else:
+                self.shard_id_to_manifest = groupby("shard_id", self.source)
         else:
             json_pattern = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
             shard_ids = []
@@ -348,6 +500,74 @@ class LazyNeMoTarredIterator:
         self._validate()
         self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
 
+        if indexed:
+            self._init_indexed()
+
+    @property
+    def is_checkpointable(self) -> bool:
+        return self.indexed
+
+    @property
+    def is_indexed(self) -> bool:
+        return self.indexed
+
+    @property
+    def has_constant_time_access(self) -> bool:
+        return self.indexed
+
+    def _init_indexed(self) -> None:
+        """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
+        from lhotse.indexing import IndexedJsonlReader
+
+        from nemo.collections.common.data.lhotse.indexed_adapters import (
+            IndexedTarMemberReader,
+        )
+
+        if self.extra_fields:
+            raise ValueError(
+                "LazyNeMoTarredIterator(indexed=True) does not support 'extra_fields' "
+                "because their values are positional and cannot be reproduced under "
+                "graph-token random access."
+            )
+        if self.slice_length is not None:
+            raise ValueError(
+                "LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'."
+            )
+
+        # Order shards by their integer shard_id so that global indices are stable.
+        self._sorted_shard_ids = sorted(self.shard_id_to_tar_path.keys())
+        self._cuts_readers: dict[int, IndexedJsonlReader] = {}
+        # In USE_AIS_GET_BATCH mode we never open the tar files locally — audio is
+        # fetched lazily via URL/file AudioSource by AudioSamples (typically batched).
+        self._tar_readers: dict[int, IndexedTarMemberReader] = {}
+
+        # Map shard_id → manifest path (single or multi-file).
+        if len(self.paths) == 1:
+            shard_id_to_manifest_path = {sid: self.paths[0] for sid in self._sorted_shard_ids}
+        else:
+            json_pattern = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
+            shard_id_to_manifest_path = {}
+            for p in self.paths:
+                m = json_pattern.search(p)
+                assert m is not None
+                shard_id_to_manifest_path[int(m.group(1))] = p
+
+        cum = 0
+        cum_lens = [0]
+        for sid in self._sorted_shard_ids:
+            jsonl_path = shard_id_to_manifest_path[sid]
+            tar_path = self.shard_id_to_tar_path[sid]
+            self._cuts_readers[sid] = IndexedJsonlReader(jsonl_path)
+            if not self.use_ais_get_batch:
+                self._tar_readers[sid] = IndexedTarMemberReader(tar_path)
+            cum += len(self._cuts_readers[sid])
+            cum_lens.append(cum)
+        self._cum_lens = cum_lens
+        self._total_len = cum
+        self._position = 0
+        self._restored = False
+        self._offset_pattern = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
+
     def to_shards(self) -> List["LazyNeMoTarredIterator"]:
         """Convert this iterator to a list of separate iterators for each shard."""
         if len(self.paths) == 1:
@@ -368,6 +588,13 @@ class LazyNeMoTarredIterator:
             ]
 
     def _validate(self) -> None:
+        if self.indexed:
+            # Indexed mode keys shards by the tar path's shard_id and pairs them with
+            # the jsonl manifest of the same numeric id (see ``_init_indexed``); the
+            # streaming-time shard_id consistency check below would otherwise reject
+            # single-file inputs when the jsonl groups by a different shard_id field.
+            validate_extra_fields(self.extra_fields)
+            return
         shard_ids_tars = set(self.shard_id_to_tar_path)
         shard_ids_manifest = set(self.shard_id_to_manifest)
         assert shard_ids_tars == shard_ids_manifest, (
@@ -502,7 +729,184 @@ class LazyNeMoTarredIterator:
                             f"Cannot locate JSON entry for tar file '{tar_info.name}'"
                         ) from e
 
+    # ---------------------------------------------------------------------- indexed
+    def _resolve_global_idx(self, idx: int) -> tuple[int, int]:
+        if idx < 0:
+            idx += self._total_len
+        if idx < 0 or idx >= self._total_len:
+            raise IndexError(
+                f"index {idx} out of range for LazyNeMoTarredIterator with {self._total_len} cuts"
+            )
+        shard_pos = bisect.bisect_right(self._cum_lens, idx) - 1
+        sid = self._sorted_shard_ids[shard_pos]
+        return sid, idx - self._cum_lens[shard_pos]
+
+    def _build_indexed_cut(self, data: dict, audio_bytes: bytes, manifest_path: str, tar_path: str) -> Cut | None:
+        """Decode a single (manifest_entry, audio_bytes) pair into a Cut, mirroring the streaming path."""
+        if data.get("_skipme", False):
+            return None
+        try:
+            meta = soundfile.info(BytesIO(audio_bytes))
+        except Exception:
+            logging.warning(f"Skipped corrupted audio member referenced by '{data.get('audio_filepath')}' in {tar_path=}.")
+            return None
+        recording = Recording(
+            id=str(data["audio_filepath"]),
+            sources=[
+                AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)
+            ],
+            sampling_rate=int(meta.samplerate),
+            num_samples=meta.frames,
+            duration=meta.duration,
+        )
+        cut = make_cut_with_subset_inmemory_recording(
+            recording, offset=data.get("offset", 0.0), duration=data.get("duration")
+        )
+        cut.supervisions.append(
+            SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.recording_id,
+                start=0,
+                duration=cut.duration,
+                text=data.get(self.text_field),
+                language=data.get(self.lang_field),
+            )
+        )
+        cut.custom = _to_custom_attr_dict(data)
+        cut.manifest_origin = manifest_path
+        cut.tar_origin = tar_path
+        return cut
+
+    def _audio_member_name_from_entry(self, entry: dict) -> str:
+        af = entry["audio_filepath"]
+        m = self._offset_pattern.match(af)
+        if m is None:
+            return af
+        return m.group("stem") + ifnone(m.group("ext"), "")
+
+    def _build_indexed_url_cut(self, data: dict, manifest_path: str, tar_path: str) -> Cut | None:
+        """
+        AIS GetBatch counterpart of ``_build_indexed_cut``: produces a Cut backed
+        by a URL/file AudioSource (no audio bytes loaded), so that
+        ``AudioSamples(use_batch_loader=True)`` can fetch the entire minibatch in
+        a single AIS GetBatch request. Mirrors the streaming path in
+        ``_iter_batch_for_ais_get_batch``.
+        """
+        if data.get("_skipme", False):
+            return None
+        duration = data.get("duration")
+        if duration is None:
+            logging.warning(
+                f"Skipping '{data.get('audio_filepath')}' - missing duration in manifest"
+            )
+            return None
+        audio_filename = self._audio_member_name_from_entry(data)
+        audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
+        # Mirror the streaming path's convention: use type="url" since open_best()
+        # transparently handles both local paths and remote URLs (ais://, http(s)://, ...).
+        # AudioSamples' GetBatch loader inspects the URL scheme to dispatch to AIS.
+        source_type = "url" if "://" in tar_path else "file"
+        offset = data.get("offset", 0.0)
+        sampling_rate = data.get("sampling_rate", 16000)
+        recording = Recording(
+            id=audio_filename,
+            sources=[AudioSource(type=source_type, channels=[0], source=audio_url)],
+            sampling_rate=sampling_rate,
+            num_samples=compute_num_samples(duration, sampling_rate),
+            duration=duration,
+        )
+        cut = recording.to_cut()
+        if offset > 0:
+            cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+            cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+        cut.supervisions.append(
+            SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.recording_id,
+                start=0,
+                duration=cut.duration,
+                text=data.get(self.text_field),
+                language=data.get(self.lang_field),
+            )
+        )
+        cut.custom = _to_custom_attr_dict(data)
+        cut.manifest_origin = manifest_path
+        cut.tar_origin = tar_path
+        return cut
+
+    def __getitem__(self, token):
+        if not self.indexed:
+            raise NotImplementedError(
+                "LazyNeMoTarredIterator only supports __getitem__ when constructed with indexed=True."
+            )
+        idx = int(normalize_graph_token(token))
+        sid, local_idx = self._resolve_global_idx(idx)
+        data = self._cuts_readers[sid][local_idx]
+        manifest_path = self._cuts_readers[sid].path
+        tar_path = self.shard_id_to_tar_path[sid]
+        if self.use_ais_get_batch:
+            cut = self._build_indexed_url_cut(data, manifest_path, tar_path)
+        else:
+            member_name = self._audio_member_name_from_entry(data)
+            audio_bytes = self._tar_readers[sid].get(member_name)
+            cut = self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+        if cut is None:
+            raise RuntimeError(
+                f"Cut at global index {idx} (shard {sid}, local {local_idx}) is not decodable; "
+                f"cannot satisfy random-access __getitem__."
+            )
+        return attach_graph_origin(cut, idx)
+
+    def __len__(self) -> int:
+        if self.indexed:
+            return self._total_len
+        return len(self.source)
+
+    def state_dict(self) -> dict:
+        if not self.indexed:
+            return {}
+        return {"position": self._position, "epoch": self.epoch}
+
+    def load_state_dict(self, sd: dict) -> None:
+        if not self.indexed:
+            return
+        self._position = sd.get("position", 0)
+        self.epoch = sd.get("epoch", 0)
+        self._restored = True
+
+    def _iter_indexed(self) -> Generator[Cut, None, None]:
+        start = self._position if self._restored else 0
+        self._restored = False
+        n = self._total_len
+        for i in range(start, n):
+            self._position = i + 1
+            sid, local_idx = self._resolve_global_idx(i)
+            data = self._cuts_readers[sid][local_idx]
+            manifest_path = self._cuts_readers[sid].path
+            tar_path = self.shard_id_to_tar_path[sid]
+            if self.use_ais_get_batch:
+                cut = self._build_indexed_url_cut(data, manifest_path, tar_path)
+            else:
+                member_name = self._audio_member_name_from_entry(data)
+                try:
+                    audio_bytes = self._tar_readers[sid].get(member_name)
+                except KeyError:
+                    if self.skip_missing_manifest_entries:
+                        continue
+                    raise
+                cut = self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+            if cut is None:
+                continue
+            attach_graph_origin(cut, i)
+            yield cut
+        self.epoch += 1
+
+    # ---------------------------------------------------------------- streaming
     def __iter__(self) -> Generator[Cut, None, None]:
+        if self.indexed:
+            yield from self._iter_indexed()
+            return
+
         shard_ids = self.shard_ids
 
         seed = self._get_seed()
@@ -584,9 +988,6 @@ class LazyNeMoTarredIterator:
                 )
 
         self.epoch += 1
-
-    def __len__(self) -> int:
-        return len(self.source)
 
     def __add__(self, other):
         return LazyIteratorChain(self, other)
@@ -743,7 +1144,7 @@ def _to_custom_attr_dict(d: dict, _excluded_fields: set[str] = {"duration", "aud
     return {k: v for k, v in d.items() if k not in _excluded_fields}
 
 
-class LazyParquetIterator:
+class LazyParquetIterator(IteratorNode):
     """
     LazyParquetIterator reads a Parquet file (local or remote) and yields Lhotse Cut objects.
     It streams data using PyArrow's iter_batches to avoid loading the full file into memory.
@@ -755,6 +1156,13 @@ class LazyParquetIterator:
         duration_field (str): Name of the column containing duration (default: "duration").
         lang_field (str): Name of the column containing language (default: "lang").
         sampling_rate (int): Fallback sampling rate if not found in metadata (default: 16000).
+        indexed (bool): When True, enable O(1) random access via row-group lookup
+            and graph-token checkpointing. Requires the parquet file to expose
+            row-group statistics (the default for files written by pyarrow/pandas).
+
+    Indexed mode reads one row group at a time on demand and caches the most
+    recently used row group, so unshuffled or locality-friendly access patterns
+    avoid repeated decompression.
     """
 
     def __init__(
@@ -765,6 +1173,7 @@ class LazyParquetIterator:
         duration_field: str = "duration",
         lang_field: str = "lang",
         sampling_rate: int = 16000,
+        indexed: bool = False,
     ) -> None:
         # SAFETY CHECK: Ensure pyarrow is actually installed
         if not HAVE_PYARROW:
@@ -778,8 +1187,153 @@ class LazyParquetIterator:
         self.duration_field = duration_field
         self.lang_field = lang_field
         self.sampling_rate = sampling_rate
+        self.indexed = indexed
+        self._row_group_offsets: list[int] | None = None
+        self._cached_row_group_idx: int | None = None
+        self._cached_row_group: list[dict] | None = None
+        self._position = 0
+        self._restored = False
+        if indexed:
+            self._init_indexed()
+
+    @property
+    def is_checkpointable(self) -> bool:
+        return self.indexed
+
+    @property
+    def is_indexed(self) -> bool:
+        return self.indexed
+
+    @property
+    def has_constant_time_access(self) -> bool:
+        return self.indexed
+
+    def _init_indexed(self) -> None:
+        try:
+            parquet_file = pq.ParquetFile(self.path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to open Parquet file: {self.path}") from e
+        offsets = [0]
+        for i in range(parquet_file.num_row_groups):
+            offsets.append(offsets[-1] + parquet_file.metadata.row_group(i).num_rows)
+        self._row_group_offsets = offsets
+        self._num_row_groups = parquet_file.num_row_groups
+        self._total_rows = offsets[-1]
+        del parquet_file  # close handle; reopened lazily in workers
+
+    def _load_row_group(self, rg_idx: int) -> list[dict]:
+        if self._cached_row_group_idx == rg_idx and self._cached_row_group is not None:
+            return self._cached_row_group
+        parquet_file = pq.ParquetFile(self.path)
+        try:
+            df = parquet_file.read_row_group(rg_idx).to_pandas()
+        finally:
+            del parquet_file
+        rows = df.to_dict("records")
+        self._cached_row_group_idx = rg_idx
+        self._cached_row_group = rows
+        return rows
+
+    def _resolve_row_group(self, idx: int) -> tuple[int, int]:
+        # Find row group containing global ``idx`` via simple linear/bisect lookup.
+        offsets = self._row_group_offsets
+        # Linear scan is fine because num_row_groups is typically small.
+        for rg_idx in range(self._num_row_groups):
+            if idx < offsets[rg_idx + 1]:
+                return rg_idx, idx - offsets[rg_idx]
+        raise IndexError(f"index {idx} out of range for parquet file with {self._total_rows} rows")
+
+    def _build_cut_from_row(self, row: dict, fallback_idx: int) -> Cut | None:
+        audio_data = row.get(self.audio_field)
+        if isinstance(audio_data, dict) and 'bytes' in audio_data:
+            audio_bytes = audio_data['bytes']
+        elif isinstance(audio_data, bytes):
+            audio_bytes = audio_data
+        else:
+            logging.warning(
+                f"Skipping row {fallback_idx}: Audio column '{self.audio_field}' format unrecognized."
+            )
+            return None
+
+        text = row.get(self.text_field, "")
+        language = row.get(self.lang_field, None)
+        row_id = str(row.get('id', f"{Path(self.path).stem}_{fallback_idx}"))
+        try:
+            recording = Recording.from_bytes(data=audio_bytes, recording_id=row_id)
+        except (RuntimeError, ValueError, TypeError) as e:
+            logging.warning(f"Skipping row {row_id}: Failed to decode audio bytes. {e}")
+            return None
+        cut = recording.to_cut()
+        cut.supervisions.append(
+            SupervisionSegment(
+                id=row_id,
+                recording_id=row_id,
+                start=0.0,
+                duration=cut.duration,
+                channel=0,
+                text=text,
+                language=language,
+            )
+        )
+        cut.custom = {k: v for k, v in row.items() if k != self.audio_field}
+        return cut
+
+    def __getitem__(self, token):
+        if not self.indexed:
+            raise NotImplementedError(
+                "LazyParquetIterator only supports __getitem__ when constructed with indexed=True."
+            )
+        idx = int(normalize_graph_token(token))
+        if idx < 0:
+            idx += self._total_rows
+        if idx < 0 or idx >= self._total_rows:
+            raise IndexError(f"index {token} out of range for parquet file with {self._total_rows} rows")
+        rg_idx, local_idx = self._resolve_row_group(idx)
+        rows = self._load_row_group(rg_idx)
+        cut = self._build_cut_from_row(rows[local_idx], fallback_idx=idx)
+        if cut is None:
+            raise RuntimeError(
+                f"Row {idx} in {self.path} is not decodable; cannot satisfy random-access __getitem__."
+            )
+        return attach_graph_origin(cut, idx)
+
+    def __len__(self) -> int:
+        if self.indexed:
+            return self._total_rows
+        raise TypeError("LazyParquetIterator has unknown length unless constructed with indexed=True.")
+
+    def state_dict(self) -> dict:
+        if not self.indexed:
+            return {}
+        return {"position": self._position}
+
+    def load_state_dict(self, sd: dict) -> None:
+        if not self.indexed:
+            return
+        self._position = sd.get("position", 0)
+        self._restored = True
 
     def __iter__(self) -> Generator[Cut, None, None]:
+        if self.indexed:
+            yield from self._iter_indexed()
+        else:
+            yield from self._iter_streaming()
+
+    def _iter_indexed(self) -> Generator[Cut, None, None]:
+        start = self._position if self._restored else 0
+        self._restored = False
+        n = self._total_rows
+        for i in range(start, n):
+            self._position = i + 1
+            rg_idx, local_idx = self._resolve_row_group(i)
+            rows = self._load_row_group(rg_idx)
+            cut = self._build_cut_from_row(rows[local_idx], fallback_idx=i)
+            if cut is None:
+                continue
+            attach_graph_origin(cut, i)
+            yield cut
+
+    def _iter_streaming(self) -> Generator[Cut, None, None]:
         # Open Parquet file in streaming mode inside __iter__
         # This ensures each DataLoader worker gets its own file handle.
         try:
@@ -792,53 +1346,7 @@ class LazyParquetIterator:
             df = batch.to_pandas()
 
             for idx, row in df.iterrows():
-                # 1. Extract Audio Bytes
-                # Handle HuggingFace format: {'bytes': b'...', 'path': '...'} or raw bytes
-                audio_data = row.get(self.audio_field)
-                if isinstance(audio_data, dict) and 'bytes' in audio_data:
-                    audio_bytes = audio_data['bytes']
-                elif isinstance(audio_data, bytes):
-                    audio_bytes = audio_data
-                else:
-                    logging.warning(f"Skipping row {idx}: Audio column '{self.audio_field}' format unrecognized.")
+                cut = self._build_cut_from_row(row, fallback_idx=idx)
+                if cut is None:
                     continue
-
-                # 2. Extract Metadata
-                text = row.get(self.text_field, "")
-                language = row.get(self.lang_field, None)
-
-                # 3. Create Unique ID
-                # Use 'id' column if exists, else combine filename + index
-                row_id = str(row.get('id', f"{Path(self.path).stem}_{idx}"))
-
-                # 4. Create Lhotse Recording
-                try:
-                    recording = Recording.from_bytes(
-                        data=audio_bytes,
-                        recording_id=row_id,
-                    )
-                except (RuntimeError, ValueError, TypeError) as e:
-                    logging.warning(f"Skipping row {row_id}: Failed to decode audio bytes. {e}")
-                    continue
-
-                # 5. Create Cut
-                cut = recording.to_cut()
-
-                # Add Supervision (Transcript)
-                cut.supervisions.append(
-                    SupervisionSegment(
-                        id=row_id,
-                        recording_id=row_id,
-                        start=0.0,
-                        duration=cut.duration,
-                        channel=0,
-                        text=text,
-                        language=language,
-                    )
-                )
-
-                # Attach any extra metadata from the row to cut.custom
-                # (Exclude the heavy audio bytes to save RAM)
-                cut.custom = {k: v for k, v in row.items() if k != self.audio_field}
-
                 yield cut

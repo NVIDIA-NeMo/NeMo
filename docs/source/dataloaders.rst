@@ -884,6 +884,67 @@ Two equivalent ways:
    skips files that already have an up-to-date ``.idx``. Use ``--force`` to
    rebuild, ``--workers N`` for parallelism, ``--dry-run`` to preview.
 
+   Pass ``--indexes-root /path/to/mirror`` to write the sidecars to a
+   separate directory tree that mirrors the data files' layout instead of
+   placing them next to the data — see :ref:`lhotse-indexes-root` below.
+
+.. _lhotse-indexes-root:
+
+Storing ``.idx`` sidecars in a separate directory (``indexes_root``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, every ``.idx`` lives next to its data file
+(``cuts.jsonl`` ↔ ``cuts.jsonl.idx``). If your data sits on shared, slow,
+or read-only storage (NFS, S3, AIStore), you may want to keep the indexes
+on a fast local disk instead. Set ``indexes_root`` at the top of the
+dataloader config:
+
+.. code-block:: yaml
+
+    data:
+      train_ds:
+        indexed: true
+        use_stateful_dataloader: true
+        indexes_root: /scratch/idx     # mirror lives here
+        input_cfg:
+          - type: nemo_tarred
+            manifest_filepath: /shared/data/asr/manifest__OP_0..127_CL_.jsonl
+            tarred_audio_filepaths: ais://bucket/asr/audio__OP_0..127_CL_.tar
+
+Index lookups for each data file ``D`` resolve to
+``<indexes_root>/<D-with-scheme-stripped>.idx``. Examples::
+
+    /shared/data/asr/manifest_0.jsonl    -> /scratch/idx/shared/data/asr/manifest_0.jsonl.idx
+    ais://bucket/asr/audio_0.tar        -> /scratch/idx/bucket/asr/audio_0.tar.idx
+
+The setting cascades through ``read_dataset_config`` to every nested
+``input_cfg`` entry, so a single top-level value covers the whole pipeline.
+You can override it per-source on any entry that needs a different mirror.
+
+Two ways to populate the mirror:
+
+1. **Build the indexes there to begin with**::
+
+       python scripts/dataloading/build_indexes.py \
+           --indexes-root /scratch/idx path/to/input_cfg.yaml
+
+   The script reads each data file in place, computes the offsets, and
+   writes the ``.idx`` directly to the mirrored target.
+
+2. **Prefetch existing remote indexes** when sidecars already live next to
+   the data on shared/object storage and you just want a local copy::
+
+       python scripts/dataloading/prefetch_indexes.py \
+           --indexes-root /scratch/idx path/to/input_cfg.yaml
+
+   ``prefetch_indexes.py`` walks the same ``input_cfg``, locates every
+   sidecar at its natural location (via lhotse's ``open_best``, so
+   ``ais://`` / ``s3://`` / ``http://`` are all supported as sources),
+   and copies it into the local mirror. Use ``--source-indexes-root``
+   when the source sidecars themselves live under another mirror.
+
+Both scripts accept ``--force``, ``--workers N``, and ``--dry-run``.
+
 End-to-end YAML example
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1446,8 +1507,9 @@ options by what they control.
 **Sampling — fusion (multi-config).** ``multi_config``, ``sampler_fusion``,
 ``sampler_weights``.
 
-**Indexed / resumable.** ``indexed``, ``use_stateful_dataloader``. See
-:ref:`indexed-resumable-dataloading`.
+**Indexed / resumable.** ``indexed``, ``use_stateful_dataloader``,
+``indexes_root``. See :ref:`indexed-resumable-dataloading` and
+:ref:`lhotse-indexes-root`.
 
 **Mixing & weighting.** ``reweight_temperature``, ``max_open_streams``.
 

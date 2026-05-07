@@ -54,13 +54,14 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, Optional
 
 import click
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     create_tar_index as create_nemo_tar_index,
+    resolve_idx_path,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
 
@@ -83,9 +84,10 @@ JSONL = "jsonl"
 class IndexJob:
     path: str
     kind: str  # one of {JSONL, NEMO_TAR, WDS_TAR}
+    indexes_root: Optional[str] = None
 
     def idx_path(self) -> str:
-        return self.path + ".idx"
+        return resolve_idx_path(self.path, self.indexes_root)
 
 
 # --------------------------------------------------------------------------- #
@@ -156,44 +158,49 @@ _TRANSFORM_TYPES = frozenset({
 _NO_INDEX_TYPES = frozenset({"txt", "txt_pair", "parquet", "multi_speaker_simulator"})
 
 
-def _discover_keys(entry, jobs: list[IndexJob]) -> None:
+def _discover_keys(entry, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
     """
     Key-based dispatch: emit IndexJobs based on which underlying-source keys
     are present, regardless of ``type``. Used for transform types that
     delegate to ``read_cutset_from_config``, and as the inner step for
-    concrete types that name them directly.
+    concrete types that name them directly. Per-entry ``indexes_root``
+    overrides the inherited value when set.
     """
+    indexes_root = entry.get("indexes_root", indexes_root)
     if (cuts_path := entry.get("cuts_path")) is not None:
         for p in _expand_jsonl(cuts_path):
-            jobs.append(IndexJob(p, JSONL))
+            jobs.append(IndexJob(p, JSONL, indexes_root))
     if (shar_path := entry.get("shar_path")) is not None:
-        _discover_shar(shar_path, jobs)
+        _discover_shar(shar_path, jobs, indexes_root)
     if (mfp := entry.get("manifest_filepath")) is not None:
         for p in _expand_jsonl(mfp):
-            jobs.append(IndexJob(p, JSONL))
+            jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(entry.get("tarred_audio_filepaths")):
-            jobs.append(IndexJob(p, NEMO_TAR))
+            jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
     if (paths := entry.get("paths")) is not None:
         for p in _expand_jsonl(paths):
-            jobs.append(IndexJob(p, JSONL))
+            jobs.append(IndexJob(p, JSONL, indexes_root))
     if (sub := _resolve_input_cfg(entry.get("input_cfg"))) is not None:
-        discover(sub, jobs)
+        discover(sub, jobs, indexes_root)
 
 
-def discover(entry, jobs: list[IndexJob]) -> None:
+def discover(entry, jobs: list[IndexJob], indexes_root: Optional[str] = None) -> None:
     """Walk one entry of an ``input_cfg`` and append every required IndexJob."""
     if isinstance(entry, (list, ListConfig)):
         for sub in entry:
-            discover(sub, jobs)
+            discover(sub, jobs, indexes_root)
         return
     if not isinstance(entry, (dict, DictConfig)):
         return
+
+    # Per-entry override: a nested entry can carry its own ``indexes_root``.
+    indexes_root = entry.get("indexes_root", indexes_root)
 
     typ = entry.get("type")
     if typ is None:
         # Top-level wrapper (``input_cfg: [...]``) — recurse into every value.
         for v in entry.values():
-            discover(v, jobs)
+            discover(v, jobs, indexes_root)
         return
 
     if typ in _NO_INDEX_TYPES:
@@ -201,14 +208,14 @@ def discover(entry, jobs: list[IndexJob]) -> None:
 
     if typ == "group" or typ in _TRANSFORM_TYPES:
         # Group and transform passthroughs: dispatch by keys.
-        _discover_keys(entry, jobs)
+        _discover_keys(entry, jobs, indexes_root)
         return
 
     if typ in ("nemo", "nemo_tarred", "multimodal_conversation", "share_gpt"):
         for p in _expand_jsonl(entry.get("manifest_filepath")):
-            jobs.append(IndexJob(p, JSONL))
+            jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(entry.get("tarred_audio_filepaths")):
-            jobs.append(IndexJob(p, NEMO_TAR))
+            jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
         return
 
     if typ == "share_gpt_webdataset":
@@ -218,31 +225,31 @@ def discover(entry, jobs: list[IndexJob]) -> None:
             return
         for ext, kind in ((".tar", WDS_TAR), (".jsonl", JSONL)):
             for p in sorted(Path(data_dir).glob(f"*{ext}")):
-                jobs.append(IndexJob(str(p), kind))
+                jobs.append(IndexJob(str(p), kind, indexes_root))
         return
 
     if typ == "lhotse":
         if (cuts_path := entry.get("cuts_path")) is not None:
             for p in _expand_jsonl(cuts_path):
-                jobs.append(IndexJob(p, JSONL))
+                jobs.append(IndexJob(p, JSONL, indexes_root))
         if (shar_path := entry.get("shar_path")) is not None:
-            _discover_shar(shar_path, jobs)
+            _discover_shar(shar_path, jobs, indexes_root)
         return
 
     if typ == "lhotse_shar":
-        _discover_shar(entry.get("shar_path"), jobs)
+        _discover_shar(entry.get("shar_path"), jobs, indexes_root)
         return
 
     if typ == "txt_jsonl":
         for p in _expand_jsonl(entry.get("paths")):
-            jobs.append(IndexJob(p, JSONL))
+            jobs.append(IndexJob(p, JSONL, indexes_root))
         return
 
     # Unknown type — nothing to do.
     return
 
 
-def _discover_shar(shar_path, jobs: list[IndexJob]) -> None:
+def _discover_shar(shar_path, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
     """Index every uncompressed JSONL/tar shard inside one or more Shar dirs."""
     if shar_path is None:
         return
@@ -261,9 +268,9 @@ def _discover_shar(shar_path, jobs: list[IndexJob]) -> None:
             for raw in _flatten_path_spec(v):
                 for p in expand_sharded_filepaths(raw):
                     if p.endswith(".jsonl"):
-                        jobs.append(IndexJob(p, JSONL))
+                        jobs.append(IndexJob(p, JSONL, indexes_root))
                     elif p.endswith(".tar"):
-                        jobs.append(IndexJob(p, WDS_TAR))
+                        jobs.append(IndexJob(p, WDS_TAR, indexes_root))
         return
     else:
         return
@@ -274,9 +281,9 @@ def _discover_shar(shar_path, jobs: list[IndexJob]) -> None:
             continue
         for p in sorted(d.iterdir()):
             if p.suffix == ".jsonl":
-                jobs.append(IndexJob(str(p), JSONL))
+                jobs.append(IndexJob(str(p), JSONL, indexes_root))
             elif p.suffix == ".tar":
-                jobs.append(IndexJob(str(p), WDS_TAR))
+                jobs.append(IndexJob(str(p), WDS_TAR, indexes_root))
 
 
 # --------------------------------------------------------------------------- #
@@ -288,17 +295,21 @@ def _build_one(job: IndexJob) -> tuple[IndexJob, str]:
     """Run the right indexer for *job*. Returns (job, status)."""
     from lhotse.indexing import create_jsonl_index, create_tar_index as create_wds_tar_index
 
-    builders: dict[str, Callable[[str], object]] = {
-        JSONL: create_jsonl_index,
-        WDS_TAR: create_wds_tar_index,
-        NEMO_TAR: create_nemo_tar_index,
-    }
-    builder = builders[job.kind]
-    if job.kind == NEMO_TAR:
+    idx = job.idx_path()
+    # Ensure the parent directory exists for mirrored layouts.
+    idx_parent = Path(idx).parent
+    if not str(idx).startswith(("ais://", "s3://", "http://", "https://", "gs://")):
+        idx_parent.mkdir(parents=True, exist_ok=True)
+
+    if job.kind == JSONL:
+        create_jsonl_index(job.path, output_path=idx)
+    elif job.kind == WDS_TAR:
+        create_wds_tar_index(job.path, output_path=idx)
+    elif job.kind == NEMO_TAR:
         # NeMo's create_tar_index has a (tar_path, idx_path) signature.
-        builder(job.path, job.idx_path())
+        create_nemo_tar_index(job.path, idx)
     else:
-        builder(job.path)
+        raise ValueError(f"Unknown index kind: {job.kind!r}")
     return job, "built"
 
 
@@ -321,7 +332,23 @@ def _is_indexed(job: IndexJob) -> bool:
 @click.option("--force", is_flag=True, help="Rebuild .idx files even if they already exist.")
 @click.option("--workers", type=int, default=4, help="Number of parallel index builders.")
 @click.option("--dry-run", is_flag=True, help="List the jobs without writing anything.")
-def main(input_cfgs: tuple[str, ...], force: bool, workers: int, dry_run: bool):
+@click.option(
+    "--indexes-root",
+    type=str,
+    default=None,
+    help=(
+        "Write .idx sidecars to a mirror under this root (preserving the data files' "
+        "directory structure) instead of next to each data file. CLI value overrides "
+        "any 'indexes_root' present in the YAML."
+    ),
+)
+def main(
+    input_cfgs: tuple[str, ...],
+    force: bool,
+    workers: int,
+    dry_run: bool,
+    indexes_root: Optional[str],
+):
     """
     Build .idx sidecars for every JSONL/tar referenced by INPUT_CFGS.
 
@@ -332,13 +359,13 @@ def main(input_cfgs: tuple[str, ...], force: bool, workers: int, dry_run: bool):
     jobs: list[IndexJob] = []
     for cfg_path in input_cfgs:
         cfg = OmegaConf.load(cfg_path)
-        discover(cfg, jobs)
+        discover(cfg, jobs, indexes_root=indexes_root)
 
     # Deduplicate while preserving order.
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, Optional[str]]] = set()
     unique: list[IndexJob] = []
     for j in jobs:
-        key = (j.path, j.kind)
+        key = (j.path, j.kind, j.indexes_root)
         if key not in seen:
             seen.add(key)
             unique.append(j)
@@ -351,7 +378,7 @@ def main(input_cfgs: tuple[str, ...], force: bool, workers: int, dry_run: bool):
 
     if dry_run or not todo:
         for j in todo:
-            logging.info("  [%s] %s", j.kind, j.path)
+            logging.info("  [%s] %s -> %s", j.kind, j.path, j.idx_path())
         return
 
     failures: list[tuple[IndexJob, BaseException]] = []

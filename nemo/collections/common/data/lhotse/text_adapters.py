@@ -149,6 +149,7 @@ class LhotseTextJsonlAdapter(IteratorNode):
     shuffle_shards: bool = False
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
     indexed: bool = False
+    indexes_root: Optional[Pathlike] = None
 
     def __post_init__(self):
         self.paths = expand_sharded_filepaths(self.paths)
@@ -159,8 +160,10 @@ class LhotseTextJsonlAdapter(IteratorNode):
         if self.indexed:
             from lhotse.indexing import IndexedJsonlReader
 
+            from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
             for p in self.paths:
-                self._readers.append(IndexedJsonlReader(p))
+                self._readers.append(IndexedJsonlReader(p, index_path=resolve_idx_path(p, self.indexes_root)))
             cum = 0
             self._cum_lens.append(cum)
             for r in self._readers:
@@ -419,6 +422,7 @@ class NeMoSFTJsonlAdapter(IteratorNode):
     shuffle_shards: bool = False
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
     indexed: bool = False
+    indexes_root: Optional[Pathlike] = None
 
     def __post_init__(self):
         self.paths = expand_sharded_filepaths(self.paths)
@@ -429,8 +433,10 @@ class NeMoSFTJsonlAdapter(IteratorNode):
         if self.indexed:
             from lhotse.indexing import IndexedJsonlReader
 
+            from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
             for p in self.paths:
-                self._readers.append(IndexedJsonlReader(p))
+                self._readers.append(IndexedJsonlReader(p, index_path=resolve_idx_path(p, self.indexes_root)))
             cum = 0
             self._cum_lens.append(cum)
             for r in self._readers:
@@ -800,6 +806,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     context: str | None = None
     slice_length: int | None = None
     indexed: bool = False
+    indexes_root: Optional[Pathlike] = None
 
     def __post_init__(self):
         self.manifest_filepath = expand_sharded_filepaths(self.manifest_filepath)
@@ -833,17 +840,21 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     def _init_indexed(self) -> None:
         from lhotse.indexing import IndexedJsonlReader
 
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
         if self.slice_length is not None:
             raise ValueError(
                 "NeMoMultimodalConversationJsonlAdapter(indexed=True) does not support slice_length."
             )
         for p in self.manifest_filepath:
-            self._cuts_readers.append(IndexedJsonlReader(p))
+            self._cuts_readers.append(IndexedJsonlReader(p, index_path=resolve_idx_path(p, self.indexes_root)))
         if self.tarred_audio_filepaths is not None:
             from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
-                self._tar_readers.append(IndexedTarMemberReader(p))
+                self._tar_readers.append(
+                    IndexedTarMemberReader(p, idx_path=resolve_idx_path(p, self.indexes_root))
+                )
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:
@@ -1266,8 +1277,11 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
     slice_length: int | None = None
     indexed: bool = False
+    indexes_root: Optional[Pathlike] = None
 
     def __post_init__(self):
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
         self.manifest_filepath = expand_sharded_filepaths(self.manifest_filepath)
         if self.tarred_audio_filepaths is not None:
             self.tarred_audio_filepaths = expand_sharded_filepaths(self.tarred_audio_filepaths)
@@ -1275,7 +1289,9 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 self.tarred_audio_filepaths
             ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
-        self._has_index = all(Path(p + ".idx").exists() for p in self.manifest_filepath)
+        self._has_index = all(
+            Path(resolve_idx_path(p, self.indexes_root)).exists() for p in self.manifest_filepath
+        )
         self.epoch = 0
         self._cuts_readers: list = []
         self._tar_readers: list = []
@@ -1301,17 +1317,21 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     def _init_indexed(self) -> None:
         from lhotse.indexing import IndexedJsonlReader
 
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
         if self.slice_length is not None:
             raise ValueError(
                 "NeMoMultimodalConversationShareGPTJsonlAdapter(indexed=True) does not support slice_length."
             )
         for p in self.manifest_filepath:
-            self._cuts_readers.append(IndexedJsonlReader(p))
+            self._cuts_readers.append(IndexedJsonlReader(p, index_path=resolve_idx_path(p, self.indexes_root)))
         if self.tarred_audio_filepaths is not None:
             from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
-                self._tar_readers.append(IndexedTarMemberReader(p))
+                self._tar_readers.append(
+                    IndexedTarMemberReader(p, idx_path=resolve_idx_path(p, self.indexes_root))
+                )
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:
@@ -1585,9 +1605,12 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     shuffle_shards: bool = False
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
     indexed: bool = False
+    indexes_root: Optional[Pathlike] = None
 
     def __post_init__(self):
         import json as _json
+
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
 
         meta_path = Path(self.data_dir) / "wids-meta.json"
         if meta_path.exists():
@@ -1599,7 +1622,9 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
             if not self._shard_paths:
                 raise FileNotFoundError(f"No wids-meta.json and no .tar files found under {self.data_dir}")
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
-        self._has_index = all(Path(p + ".idx").exists() for p in self._shard_paths)
+        self._has_index = all(
+            Path(resolve_idx_path(p, self.indexes_root)).exists() for p in self._shard_paths
+        )
         self.epoch = 0
         self._tar_readers: list = []
         self._cum_lens: list[int] = []
@@ -1622,8 +1647,10 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         return self.indexed
 
     def _init_indexed(self) -> None:
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
         for p in self._shard_paths:
-            self._tar_readers.append(IndexedTarSampleReader(p))
+            self._tar_readers.append(IndexedTarSampleReader(p, idx_path=resolve_idx_path(p, self.indexes_root)))
         cum = 0
         self._cum_lens.append(cum)
         for r in self._tar_readers:
@@ -1726,11 +1753,13 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         self.epoch += 1
 
     def _iter_indexed(self):
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
         shard_paths = list(self._shard_paths)
         rng = self._get_rng()
         rng.shuffle(shard_paths)
         for tar_path in shard_paths:
-            reader = IndexedTarSampleReader(tar_path)
+            reader = IndexedTarSampleReader(tar_path, idx_path=resolve_idx_path(tar_path, self.indexes_root))
             for idx in LazyShuffledRange(len(reader), rng):
                 json_data, audio_bytes, audio_name = reader[idx]
                 yield self._yield_from_sample(json_data, audio_bytes, audio_name)

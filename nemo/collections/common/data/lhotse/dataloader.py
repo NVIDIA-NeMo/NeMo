@@ -262,6 +262,12 @@ class LhotseDataLoadingConfig:
     # ``True`` = require indexed reads (errors if .idx is missing).
     # ``False`` = streaming reads only.
     indexed: Optional[bool] = None
+    # When set, ``.idx`` sidecars are read from a mirror under this root that
+    # preserves the data files' directory structure (URL schemes are stripped,
+    # leading separators dropped). Use this to keep indexes on a fast local
+    # disk while the data lives on shared / object storage. Cascades through
+    # ``read_dataset_config`` to every nested ``input_cfg`` entry.
+    indexes_root: Optional[str] = None
     # When True, build the dataloader with ``torchdata.stateful_dataloader.StatefulDataLoader``
     # instead of ``torch.utils.data.DataLoader``. Combined with a checkpointable lhotse sampler
     # (DynamicBucketingSampler / DynamicCutSampler), this enables exact resume from the next batch

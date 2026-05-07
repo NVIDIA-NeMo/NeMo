@@ -286,6 +286,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
         "indexed": config.get("indexed", False),
+        "indexes_root": config.get("indexes_root", None),
         # Temperature for re-weighting datasets. 1 is a neutral value. Lower temperature over-samples smaller datasets, and vice versa.
         "reweight_temperature": config.get("reweight_temperature", None),
     }
@@ -350,6 +351,7 @@ def read_txt_jsonl_paths(config: DictConfig) -> tuple[CutSet, bool]:
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -387,6 +389,7 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -409,6 +412,7 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             context=config.get("tags", {}).get("context"),
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -431,6 +435,7 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             shard_seed=config.shard_seed,
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -450,6 +455,7 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that
@@ -721,7 +727,13 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         path = config.cuts_path
-        cuts = CutSet.from_file(path, indexed=config.get("indexed", None)).map(
+        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
+        indexes_root = config.get("indexes_root", None)
+        from_file_kwargs = {"indexed": config.get("indexed", None)}
+        if indexes_root is not None:
+            from_file_kwargs["index_path"] = resolve_idx_path(path, indexes_root)
+        cuts = CutSet.from_file(path, **from_file_kwargs).map(
             partial(resolve_relative_paths, manifest_path=path)
         )
     return cuts, is_tarred
@@ -1470,7 +1482,9 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
             else:
                 common_kwargs[key] = config[key]
     indexed = config.get("indexed", False)
-    notar_kwargs_extra = {"indexed": indexed} if indexed else {}
+    indexes_root = config.get("indexes_root", None)
+    indexed_extra = {"indexes_root": indexes_root} if (indexed and indexes_root is not None) else {}
+    notar_kwargs_extra = {"indexed": indexed, **indexed_extra} if indexed else {}
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
     # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,
     # so lhotse has to look up the headers of audio files to fill it on-the-fly.
@@ -1480,7 +1494,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     metadata_only = config.get("metadata_only", False)
     force_finite = config.get("force_finite", False)
     notar_kwargs = {"metadata_only": metadata_only}
-    tar_kwargs_extra = {"indexed": indexed} if indexed else {}
+    tar_kwargs_extra = {"indexed": indexed, **indexed_extra} if indexed else {}
     is_tarred = config.get("tarred_audio_filepaths") is not None
     if isinstance(config.manifest_filepath, (str, Path)):
         if is_tarred and not metadata_only:

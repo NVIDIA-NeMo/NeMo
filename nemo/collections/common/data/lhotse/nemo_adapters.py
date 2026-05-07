@@ -130,6 +130,7 @@ class LazyNeMoIterator(IteratorNode):
         shard_seed: int | Literal["randomized", "trng"] = "trng",
         extra_fields: list[dict[str, str]] | None = None,
         indexed: bool = False,
+        indexes_root: str | Path | None = None,
     ) -> None:
         self.path = path
         self.shuffle_shards = shuffle_shards
@@ -139,6 +140,7 @@ class LazyNeMoIterator(IteratorNode):
         self.metadata_only = metadata_only
         self.extra_fields = extra_fields
         self.indexed = indexed
+        self.indexes_root = indexes_root
         validate_extra_fields(self.extra_fields)
         paths = expand_sharded_filepaths(path)
 
@@ -149,9 +151,14 @@ class LazyNeMoIterator(IteratorNode):
                     "their values are positional/streaming and cannot be reconstructed under "
                     "graph-token random access."
                 )
+            from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+
             seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
             indexed_sources = [
-                LazyIndexedManifestIterator(p, decode=GraphOriginDict) for p in paths
+                LazyIndexedManifestIterator(
+                    p, index_path=resolve_idx_path(p, indexes_root), decode=GraphOriginDict
+                )
+                for p in paths
             ]
             if len(indexed_sources) == 1:
                 self.source = indexed_sources[0]
@@ -394,9 +401,11 @@ class LazyNeMoTarredIterator(IteratorNode):
         extra_fields: list[dict[str, str]] | None = None,
         slice_length: int = None,
         indexed: bool = False,
+        indexes_root: str | Path | None = None,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
         self.indexed = indexed
+        self.indexes_root = indexes_root
         self.shard_id_to_manifest: dict[int, Iterable[dict]]
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
@@ -470,6 +479,7 @@ class LazyNeMoTarredIterator(IteratorNode):
 
         from nemo.collections.common.data.lhotse.indexed_adapters import (
             IndexedTarMemberReader,
+            resolve_idx_path,
         )
 
         if self.extra_fields:
@@ -506,9 +516,13 @@ class LazyNeMoTarredIterator(IteratorNode):
         for sid in self._sorted_shard_ids:
             jsonl_path = shard_id_to_manifest_path[sid]
             tar_path = self.shard_id_to_tar_path[sid]
-            self._cuts_readers[sid] = IndexedJsonlReader(jsonl_path)
+            self._cuts_readers[sid] = IndexedJsonlReader(
+                jsonl_path, index_path=resolve_idx_path(jsonl_path, self.indexes_root)
+            )
             if not self.use_ais_get_batch:
-                self._tar_readers[sid] = IndexedTarMemberReader(tar_path)
+                self._tar_readers[sid] = IndexedTarMemberReader(
+                    tar_path, idx_path=resolve_idx_path(tar_path, self.indexes_root)
+                )
             cum += len(self._cuts_readers[sid])
             cum_lens.append(cum)
         self._cum_lens = cum_lens

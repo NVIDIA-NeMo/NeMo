@@ -18,7 +18,10 @@ from omegaconf import OmegaConf, DictConfig
 import numpy as np
 import librosa
 import time
+import threading
+import queue
 from transformers import DynamicCache
+import json
 import re
 import os
 import sys
@@ -45,6 +48,7 @@ os.environ.setdefault("NEMO_NLP_TMP", os.path.join(_default_cache, "nemo_nlp_tmp
 from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 
 from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
+from nemo.collections.speechlm2.parts.fusion import create_fusion_module
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.inference.model_wrappers.model_factory import create_model
@@ -172,16 +176,6 @@ class NemotronVoicechatInferenceWrapper:
 
         self.model_cfg = model_cfg
 
-        # RNNT EOU event log: timestamped file written whenever EOU or BOU fires
-        import datetime
-        _eou_log = model_cfg.get("rnnt_eou_log", None)
-        self._rnnt_eou_log_path = _eou_log
-        if _eou_log:
-            os.makedirs(os.path.dirname(os.path.abspath(_eou_log)), exist_ok=True)
-            with open(_eou_log, "w") as _f:
-                _f.write(f"# RNNT EOU/BOU event log — started {datetime.datetime.now().isoformat()}\n")
-                _f.write("# format: ISO-timestamp | event | audio_frame | t_sec | blank_cnt | nonblank_total | notes\n")
-
         self.model_path = model_cfg.get("model_path")
         if not self.model_path:
             raise ValueError("`model_cfg.model_path` must be provided.")
@@ -264,6 +258,11 @@ class NemotronVoicechatInferenceWrapper:
                     f"will be ignored (context is maintained incrementally by the codec cache)."
                 )
 
+        # RNNT loading strategy:
+        # use_separate_rnnt_ckpt=false (default) → prefer RNNT from combined checkpoint
+        # use_separate_rnnt_ckpt=true → always load RNNT from the separate .nemo file
+        self.use_separate_rnnt_ckpt = bool(model_cfg.get("use_separate_rnnt_ckpt", False))
+
         # Perception cache configuration
         self.use_perception_cache = bool(model_cfg.get("use_perception_cache", False))
         use_perception_cudagraph = bool(model_cfg.get("use_perception_cudagraph", False))
@@ -274,6 +273,7 @@ class NemotronVoicechatInferenceWrapper:
             )
         self.perception_cache_mgr: Optional[PerceptionCacheManager] = None
         self._use_perception_cudagraph = use_perception_cudagraph
+        self._pad_and_drop_preencoded = bool(model_cfg.get("pad_and_drop_preencoded", False))
 
         self._initialize_model()
 
@@ -390,13 +390,52 @@ class NemotronVoicechatInferenceWrapper:
 
         logging.info("Initializing model with hybrid loading strategy...")
 
-
         # Step 1: Load and merge configs
         cfg = self._load_and_merge_configs()
 
         # Step 2: DO NOT set pretrained_s2s_model - we'll load weights manually
         cfg.model.stt.model.pretrained_s2s_model = None
         cfg.model.speech_generation.model.pretrained_model = None
+
+        # Determine RNNT loading strategy:
+        # (a) Check if the combined checkpoint contains RNNT keys and config
+        # (b) Decide whether to use combined ckpt or separate .nemo for RNNT
+        rnnt_asr_path = self.model_cfg.get("pretrained_rnnt_asr", None)
+        rnnt_merge_info = None
+        ckpt_has_rnnt = False
+
+        safetensors_path = os.path.join(self.llm_checkpoint_path, "model.safetensors")
+        config_json_path = os.path.join(self.llm_checkpoint_path, "config.json")
+
+        if os.path.isfile(config_json_path):
+            import json as _json
+            with open(config_json_path, "r") as f:
+                ckpt_config = _json.load(f)
+            rnnt_merge_info = ckpt_config.get("_rnnt_merge_info", None)
+            if rnnt_merge_info and rnnt_merge_info.get("decoder_config") and rnnt_merge_info.get("joint_config"):
+                ckpt_has_rnnt = True
+                logging.info("Combined checkpoint contains RNNT decoder/joint config.")
+
+        use_rnnt_from_combined = ckpt_has_rnnt and not self.use_separate_rnnt_ckpt
+
+        if use_rnnt_from_combined:
+            logging.info("RNNT will be loaded from combined checkpoint (embedded weights + saved config).")
+            if rnnt_asr_path:
+                logging.info("  pretrained_rnnt_asr=%s is set but will be ignored (use_separate_rnnt_ckpt=false).", rnnt_asr_path)
+        elif rnnt_asr_path:
+            logging.info("RNNT will be loaded from separate .nemo checkpoint: %s", rnnt_asr_path)
+            OmegaConf.set_struct(cfg.model.stt.model, False)
+            cfg.model.stt.model.pretrained_rnnt_asr = rnnt_asr_path
+            OmegaConf.set_struct(cfg.model.stt.model, True)
+        else:
+            logging.info("No RNNT source configured. RNNT decoding will be disabled.")
+
+        # If loading RNNT from combined ckpt, prevent DuplexSTTModel.__init__
+        # from loading the .nemo file (the module structure will be set up after init).
+        if use_rnnt_from_combined:
+            OmegaConf.set_struct(cfg.model.stt.model, False)
+            cfg.model.stt.model.pretrained_rnnt_asr = None
+            OmegaConf.set_struct(cfg.model.stt.model, True)
 
         # Convert to dict for model initialization
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
@@ -407,6 +446,16 @@ class NemotronVoicechatInferenceWrapper:
         self.model = NemotronVoiceChat(cfg_dict)
         logging.info(f"Time taken to initialize NemotronVoiceChat: {time.time() - start_DuplexS2S_init} seconds")
         logging.info("  Model structure initialized")
+
+        # If using combined checkpoint for RNNT, set up modules from saved config
+        if use_rnnt_from_combined:
+            from nemo.collections.speechlm2.parts.pretrained import setup_rnnt_from_combined_checkpoint
+            tokenizer_dir = os.path.join(self.llm_checkpoint_path, "rnnt_tokenizer")
+            if not os.path.isdir(tokenizer_dir):
+                tokenizer_dir = None
+            setup_rnnt_from_combined_checkpoint(
+                self.model.stt_model, rnnt_merge_info, tokenizer_dir=tokenizer_dir,
+            )
 
         # Step 4: Load nano's checkpoint (LLM + perception)
         if self.llm_checkpoint_path is not None:
@@ -519,34 +568,25 @@ class NemotronVoicechatInferenceWrapper:
         self.model.to(self.device)
         self.model.eval()
 
-        # Optionally move TTS to a separate GPU to split memory load across devices.
-        # Config: s2s.tts_device_id=1 sends EarTTS to GPU 1, leaving STT/LLM on GPU 0.
-        tts_device_id = self.model_cfg.get("tts_device_id", None)
-        if tts_device_id is not None and hasattr(self.model, 'tts_model'):
-            self.tts_device = torch.device(f"cuda:{tts_device_id}")
-            self.model.tts_model.to(self.tts_device)
-            logging.info(f"TTS model moved to {self.tts_device} (STT/LLM stays on {self.device})")
-        else:
-            self.tts_device = self.device
-
         # Convert only the S2S components to the configured dtype, not the TTS model
         logging.info(f"Converting S2S components to {self.dtype} (keeping TTS in float32)...")
         if self.model.stt_model.llm is not None:
             self.model.stt_model.llm = self.model.stt_model.llm.to(self.dtype)
         self.model.stt_model.lm_head = self.model.stt_model.lm_head.to(self.dtype)
         self.model.stt_model.embed_tokens = self.model.stt_model.embed_tokens.to(self.dtype)
-        # When use_separate_asr_head=False, asr_head and embed_asr_tokens are absent.
-        # Alias them to lm_head/embed_tokens so downstream inference code works unchanged.
-        if not hasattr(self.model.stt_model, 'asr_head'):
-            self.model.stt_model.asr_head = self.model.stt_model.lm_head
-        if not hasattr(self.model.stt_model, 'embed_asr_tokens'):
-            self.model.stt_model.embed_asr_tokens = self.model.stt_model.embed_tokens
-        self.model.stt_model.asr_head = self.model.stt_model.asr_head.to(self.dtype)
-        self.model.stt_model.embed_asr_tokens = self.model.stt_model.embed_asr_tokens.to(self.dtype)
+        if getattr(self.model.stt_model, "asr_head", None) is not None:
+            self.model.stt_model.asr_head = self.model.stt_model.asr_head.to(self.dtype)
+            self.model.stt_model.embed_asr_tokens = self.model.stt_model.embed_asr_tokens.to(self.dtype)
         if self.model.stt_model.function_head is not None:
             self.model.stt_model.function_head = self.model.stt_model.function_head.to(self.dtype)
             logging.info("function_head converted to %s", self.dtype)
         #self.model.stt_model.perception = self.model.stt_model.perception.to(self.dtype)
+        if getattr(self.model.stt_model, "rnnt_decoder", None) is not None:
+            self.model.stt_model.rnnt_decoder = self.model.stt_model.rnnt_decoder.to(self.dtype)
+            logging.info("rnnt_decoder converted to %s", self.dtype)
+        if getattr(self.model.stt_model, "rnnt_joint", None) is not None:
+            self.model.stt_model.rnnt_joint = self.model.stt_model.rnnt_joint.to(self.dtype)
+            logging.info("rnnt_joint converted to %s", self.dtype)
         logging.info("S2S components converted, TTS kept in float32")
         logging.info("new update, perception also is kept in float32")
 
@@ -579,6 +619,58 @@ class NemotronVoicechatInferenceWrapper:
         logging.info(f"inference_user_pad_boost: {self.model.stt_model.cfg.get('inference_user_pad_boost', None)}")
         logging.info(f"inference_user_bos_boost: {self.model.stt_model.cfg.get('inference_user_bos_boost', None)}")
         logging.info(f"inference_user_eos_boost: {self.model.stt_model.cfg.get('inference_user_eos_boost', None)}")
+
+        # Create fusion module — mirrors training's create_fusion_module() call
+        # in duplex_stt_model.py so that each modality is combined with the same
+        # weights / method the LLM was trained with.
+        stt_cfg = self.model.stt_model.cfg
+        has_function_head = self.model.stt_model.function_head is not None
+        self._has_asr_head = getattr(self.model.stt_model, "asr_head", None) is not None
+        hidden_dim = self.model.stt_model.embed_tokens.weight.shape[1]
+        self.fusion_module = create_fusion_module(
+            fuse_method=stt_cfg.get("fuse_method", None),
+            hidden_dim=hidden_dim,
+            agent_text_weight=stt_cfg.get("duplex_text_channel_weight", 1.0),
+            user_audio_weight=stt_cfg.get("duplex_user_channel_weight", 1.0),
+            user_text_weight=stt_cfg.get("duplex_asr_text_weight", 1.0) if self._has_asr_head else 0.0,
+            function_weight=stt_cfg.get("duplex_function_channel_weight", 1.0) if has_function_head else 0.0,
+        )
+        self.fusion_module = self.fusion_module.to(device=self.device, dtype=self.dtype)
+        self.fusion_module.eval()
+        logging.info(
+            "Fusion module created: type=%s, agent_text_weight=%.3f, user_audio_weight=%.3f, "
+            "user_text_weight=%.3f, function_weight=%.3f, fuse_method=%s",
+            type(self.fusion_module).__name__,
+            stt_cfg.get("duplex_text_channel_weight", 1.0),
+            stt_cfg.get("duplex_user_channel_weight", 1.0),
+            stt_cfg.get("duplex_asr_text_weight", 1.0),
+            stt_cfg.get("duplex_function_channel_weight", 1.0) if has_function_head else 0.0,
+            stt_cfg.get("fuse_method", None),
+        )
+
+        # Resolve special token IDs for function calling
+        self._fc_sotc_id = None  # Start-Of-Tool-Call  <SPECIAL_20>
+        self._fc_eotc_id = None  # End-Of-Tool-Call    <SPECIAL_21>
+        self._fc_eotr_id = None  # End-Of-Tool-Response <SPECIAL_22>
+        self._fc_toolresp_open_ids = None   # <TOOLRESPONSE>
+        self._fc_toolresp_close_ids = None  # </TOOLRESPONSE>
+        if has_function_head:
+            try:
+                self._fc_sotc_id = self.tokenizer.text_to_ids("<SPECIAL_20>")[0]
+                self._fc_eotc_id = self.tokenizer.text_to_ids("<SPECIAL_21>")[0]
+                self._fc_toolresp_open_ids = self.tokenizer.text_to_ids("<TOOLRESPONSE>")
+                self._fc_toolresp_close_ids = self.tokenizer.text_to_ids("</TOOLRESPONSE>")
+                try:
+                    self._fc_eotr_id = self.tokenizer.text_to_ids("<SPECIAL_22>")[0]
+                except (IndexError, Exception):
+                    logging.info("FC: <SPECIAL_22> (EOTR) not in tokenizer, will use step limit for post-injection")
+                logging.info(
+                    "FC token IDs resolved: SOTC=%s, EOTC=%s, EOTR=%s, TOOLRESPONSE_OPEN=%s, TOOLRESPONSE_CLOSE=%s",
+                    self._fc_sotc_id, self._fc_eotc_id, self._fc_eotr_id,
+                    self._fc_toolresp_open_ids, self._fc_toolresp_close_ids,
+                )
+            except Exception as e:
+                logging.warning(f"Could not resolve FC special token IDs: {e}. FC injection disabled.")
 
         # Wrap model with appropriate interface (Native or vLLM)
         if self.use_vllm_llm:
@@ -627,9 +719,14 @@ class NemotronVoicechatInferenceWrapper:
                 top_p=self.top_p,
                 repetition_penalty=self.repetition_penalty,
                 temperature=self.temperature,
+                text_pad_id=stt.text_pad_id,
             )
 
             logging.info("VllmLLMModel interface created")
+            # vLLM LLM init (device_id=1) changes the CUDA default device in the main process;
+            # re-pin stt_model to cuda:0 so CUDAGraph capture uses the correct device.
+            self.model.stt_model.to(self.device)
+            logging.info(f"stt_model re-pinned to {self.device} after vLLM LLM init")
         else:
             logging.info("\nWrapping model with NativeModel interface...")
             self.model_llm_interface = create_model(
@@ -651,6 +748,88 @@ class NemotronVoicechatInferenceWrapper:
         else:
             logging.warning("Warning: TTS model not found in the model")
 
+        # Create silence embedding cache for async FC mode
+        self._silence_embedding_cache = None
+        self._last_user_audio_emb = None  # most recent real audio embedding for async fallback
+        self._fc_async_enabled = bool(self.model_cfg.get("fc_async_enabled", False))
+        self._fc_async_two_phase = bool(self.model_cfg.get("fc_async_two_phase", False))
+        self._fc_async_api_latency_sec = float(self.model_cfg.get("fc_async_api_latency_sec", 0.0))
+        # When False (default), async FC always feeds silence to the LLM — no real or cached audio.
+        # When True, real audio frames are used if available, falling back to last cached audio.
+        self._fc_async_use_real_audio = bool(self.model_cfg.get("fc_async_use_real_audio", False))
+        self._fc_convert_num_to_text = bool(self.model_cfg.get("fc_convert_num_to_text", False))
+        if self._fc_convert_num_to_text:
+            logging.info("[FC] Number-to-text conversion enabled for tool responses")
+        logging.info(
+            "[FC Config] fc_async_enabled=%s, fc_async_two_phase=%s, fc_async_use_real_audio=%s, has_function_head=%s, SOTC_id=%s",
+            self._fc_async_enabled, self._fc_async_two_phase, self._fc_async_use_real_audio, has_function_head, self._fc_sotc_id,
+        )
+        if self._fc_async_enabled and has_function_head:
+            self._create_silence_embedding_cache()
+
+        # Turn-taking source: "rnnt" (default) or "asr_head"
+        self._turn_taking_source = str(self.model_cfg.get("turn_taking_source", "rnnt")).lower()
+        # rnnt_eou_frames: number of consecutive 80 ms frames with NO new RNNT
+        # tokens (i.e. silence) before EOU is declared.  On EOU the agent BOS
+        # token is force-inserted so the agent starts speaking.
+        # Naming note: "EOU" is from the USER's perspective (user End-Of-Utterance
+        # = user stopped talking).  The resulting action is on the AGENT side
+        # (agent BOS = agent begins speaking).  Default 800 ms → 10 frames.
+        self._rnnt_eou_frames = int(self.model_cfg.get("rnnt_eou_frames", 10))
+        # rnnt_bou_frames: number of consecutive 80ms frames that must contain a
+        # new, non-unk RNNT token before BOU is declared.  Mirrors EOU patience:
+        # just as EOU waits for N silent frames before deciding the user stopped,
+        # BOU waits for N speech frames before deciding the user started.
+        # This prevents a single noise burst (one unk token, a breath, a click)
+        # from falsely interrupting the agent.
+        # Default 3 frames × 80ms = 240ms — close to Riva/NIM's ~200ms
+        # sustained-speech threshold for BOU.
+        self._rnnt_bou_frames = int(self.model_cfg.get("rnnt_bou_frames", 3))
+        # Counter for consecutive frames of real (non-unk) speech; used by BOU.
+        self._rnnt_consecutive_speech_frames = 0
+        # FC async interrupt: frames elapsed since user BOU before aborting the
+        # background tool-call thread.  Independent of rnnt_eou_frames so it can
+        # be tuned without affecting normal turn-taking.
+        # Default 240 ms → 240 / 80 = 3 frames.
+        _fc_interrupt_ms = int(self.model_cfg.get("rnnt_fc_interrupt_ms", 240))
+        self._rnnt_fc_interrupt_frames = max(1, _fc_interrupt_ms // 80)
+        self._rnnt_last_speech_frame = -1
+        self._rnnt_prev_num_tokens = 0
+        self._rnnt_bos_cooldown_until = -1
+        self._rnnt_eos_cooldown_until = -1
+        # Set to True by _maybe_apply_rnnt_turn_taking when agent EOS is inserted (BOU barge-in).
+        # Pipeline monitors this to fire quit_async_event (kill tool-call thread on agent EOU).
+        self._agent_eos_just_fired = False
+        # Build word-start token flag list (same pattern as NeMo's greedy_decoder.py).
+        # is_start_tokens[token_id] = True if the token begins a new word (▁ prefix).
+        # EOU is suppressed when the last RNNT token is a word-continuation subword —
+        # the user is likely mid-word and the pause is within a multi-subword sequence.
+        self._rnnt_is_start_tokens: list = []
+        _rnnt_vocab = getattr(getattr(self.model.stt_model, "rnnt_joint", None), "vocabulary", None)
+        if _rnnt_vocab is not None:
+            self._rnnt_is_start_tokens = [token.startswith("\u2581") for token in _rnnt_vocab]
+        # Find the unk token id so BOU can exclude noise-only frames.
+        # Unk tokens (<unk>, ⁇) are emitted when the RNNT sees audio it cannot
+        # recognize — typically noise or an out-of-vocabulary sound.  Counting
+        # only unk tokens toward BOU would be misleading, so we skip them.
+        self._rnnt_unk_id: Optional[int] = None
+        if _rnnt_vocab is not None:
+            for _idx, _tok in enumerate(_rnnt_vocab):
+                if _tok in ("<unk>", "\u2047"):  # \u2047 = ⁇, another common unk glyph
+                    self._rnnt_unk_id = _idx
+                    break
+        logging.info(
+            "[Turn-taking] RNNT is_start_tokens built: %d tokens (EOU word-boundary check %s)",
+            len(self._rnnt_is_start_tokens),
+            "enabled" if self._rnnt_is_start_tokens else "disabled (vocab unavailable)",
+        )
+        logging.info(
+            "[Turn-taking] source=%s, rnnt_eou_frames=%d, rnnt_bou_frames=%d, "
+            "rnnt_fc_interrupt_frames=%d (%d ms), rnnt_unk_id=%s",
+            self._turn_taking_source, self._rnnt_eou_frames, self._rnnt_bou_frames,
+            self._rnnt_fc_interrupt_frames, _fc_interrupt_ms, self._rnnt_unk_id,
+        )
+
         # Setup perception cache if enabled
         if self.use_perception_cache:
             self.perception_cache_mgr = PerceptionCacheManager(
@@ -658,17 +837,11 @@ class NemotronVoicechatInferenceWrapper:
                 device=self.device,
                 dtype=self.dtype,
                 use_cudagraph=self._use_perception_cudagraph,
+                pad_and_drop_preencoded=self._pad_and_drop_preencoded,
             )
             if not self.perception_cache_mgr.setup():
                 self.use_perception_cache = False
                 self.perception_cache_mgr = None
-
-        # Move RNNT decoder+joint to inference device (set via object.__setattr__, not auto-moved by .to())
-        stt = self.model.stt_model
-        if hasattr(stt, '_rnnt_decoder'):
-            stt._rnnt_decoder.to(self.device)
-            stt._rnnt_joint.to(self.device)
-            logging.info(f"RNNT decoder+joint moved to {self.device}")
 
     def _get_bos_embedding(self):
         """Get beginning of sequence embedding."""
@@ -678,9 +851,748 @@ class NemotronVoicechatInferenceWrapper:
 
     def _get_asr_bos_embedding(self) -> torch.Tensor:
         """Get ASR BOS embedding for AR decoding."""
+        if not self._has_asr_head:
+            hidden_dim = self.model.stt_model.embed_tokens.weight.shape[1]
+            return torch.zeros(1, hidden_dim, device=self.device, dtype=self.dtype)
         text_bos = torch.full((1,), fill_value=self.model.stt_model.text_pad_id, device=self.device)
         input_embeds = self.model.stt_model.embed_asr_tokens(text_bos)
         return input_embeds.to(dtype=self.dtype)
+
+    def _create_silence_embedding_cache(self):
+        """
+        Encode 1 second of silence through the perception encoder and cache the result.
+        During async FC mode, these embeddings are used in place of real user audio,
+        allowing text/function tokens to generate at full LLM speed without waiting
+        for 80ms audio frames.
+        """
+        logging.info("[FC Async] Creating silence embedding cache...")
+        sample_rate = SAMPLE_RATE
+        silence_audio = torch.zeros(1, sample_rate, device=self.device, dtype=torch.float32)
+        silence_len = torch.tensor([sample_rate], device=self.device, dtype=torch.long)
+
+        with torch.no_grad():
+            silence_encoded, silence_lens, _ = self.model.stt_model.perception(
+                input_signal=silence_audio,
+                input_signal_length=silence_len,
+                return_encoder_emb=True,
+            )
+
+        silence_encoded = silence_encoded.to(self.dtype)
+        num_frames = silence_encoded.shape[1]
+        self._silence_embedding_cache = silence_encoded[0, 0:1, :].clone()  # [1, 1, H] — single frame
+        logging.info(
+            "[FC Async] Silence embedding cached: shape=%s (1s → %d frames, using frame 0)",
+            list(self._silence_embedding_cache.shape), num_frames,
+        )
+
+    def _encode_realtime_audio_frame(self, realtime_audio: dict) -> torch.Tensor | None:
+        """Try to consume a real audio frame based on wall-clock gating.
+
+        In real-time mode, audio frames become available at 80ms intervals
+        (simulated via wall-clock time since the async loop started).  If a
+        new frame has "arrived", we encode it through perception and return
+        the embedding.  Otherwise return *None* so the caller uses silence.
+
+        Mutates *realtime_audio* in-place (advances pointer, updates buffer).
+        """
+        elapsed = time.time() - realtime_audio["wall_start"]
+        frames_released = int(elapsed / FRAME_SIZE_SEC)
+        consumed_so_far = realtime_audio["frames_consumed"]
+        next_frame = realtime_audio["next_audio_frame"]
+        total_frames = realtime_audio["total_audio_frames"]
+
+        if consumed_so_far >= frames_released or next_frame >= total_frames:
+            return None
+
+        slice_start = next_frame * FRAME_SIZE_SAMPLES
+        slice_end = slice_start + FRAME_SIZE_SAMPLES
+        new_audio = realtime_audio["audio_signal_tensor"][:, slice_start:slice_end]
+        if new_audio.shape[1] == 0:
+            return None
+
+        buf = realtime_audio["audio_buffer"]
+        fill = realtime_audio["buffer_fill_level"]
+        buf_size = realtime_audio["buffer_size_samples"]
+        buf, fill, current_buf = self._update_audio_buffer(buf, fill, new_audio, buf_size)
+        realtime_audio["audio_buffer"] = buf
+        realtime_audio["buffer_fill_level"] = fill
+
+        buf_len = torch.tensor([current_buf.shape[1]], dtype=torch.long, device=self.device)
+        with torch.no_grad():
+            source_encoded, _, _ = self.model.stt_model.perception(
+                input_signal=current_buf,
+                input_signal_length=buf_len,
+                return_encoder_emb=True,
+            )
+        source_encoded = source_encoded.to(self.dtype)
+        emb_idx = max(source_encoded.shape[1] - 2, 0)
+        user_audio_emb = source_encoded[:, emb_idx:emb_idx + 1, :]
+
+        realtime_audio["next_audio_frame"] = next_frame + 1
+        realtime_audio["frames_consumed"] += 1
+        return user_audio_emb
+
+    def _perception_background_worker(
+        self,
+        realtime_audio: dict,
+        emb_queue: queue.Queue,
+        stop_event: threading.Event,
+    ) -> None:
+        """Background thread: encode audio frames as they arrive (80ms gate)
+        and put embeddings into *emb_queue* without blocking the LLM loop.
+
+        Uses a dedicated CUDA stream so perception kernels can overlap with
+        LLM work happening in the vLLM engine process.
+        """
+        buf = realtime_audio["audio_buffer"].clone()
+        fill = realtime_audio["buffer_fill_level"]
+        buf_size = realtime_audio["buffer_size_samples"]
+        wall_start = realtime_audio["wall_start"]
+        next_frame = realtime_audio["next_audio_frame"]
+        total_frames = realtime_audio["total_audio_frames"]
+        audio_tensor = realtime_audio["audio_signal_tensor"]
+        consumed = realtime_audio["frames_consumed"]
+
+        perception_stream = torch.cuda.Stream(device=self.device)
+
+        while not stop_event.is_set():
+            elapsed = time.time() - wall_start
+            frames_released = int(elapsed / FRAME_SIZE_SEC)
+
+            if consumed >= frames_released or next_frame >= total_frames:
+                time.sleep(0.002)
+                continue
+
+            slice_start = next_frame * FRAME_SIZE_SAMPLES
+            slice_end = slice_start + FRAME_SIZE_SAMPLES
+            new_audio = audio_tensor[:, slice_start:slice_end]
+            if new_audio.shape[1] == 0:
+                next_frame += 1
+                consumed += 1
+                continue
+
+            buf, fill, current_buf = self._update_audio_buffer(
+                buf, fill, new_audio, buf_size
+            )
+            buf_len = torch.tensor(
+                [current_buf.shape[1]], dtype=torch.long, device=self.device
+            )
+
+            with torch.cuda.stream(perception_stream):
+                with torch.no_grad():
+                    source_encoded, _, _ = self.model.stt_model.perception(
+                        input_signal=current_buf,
+                        input_signal_length=buf_len,
+                        return_encoder_emb=True,
+                    )
+            perception_stream.synchronize()
+
+            source_encoded = source_encoded.to(self.dtype)
+            emb_idx = max(source_encoded.shape[1] - 2, 0)
+            user_audio_emb = source_encoded[:, emb_idx : emb_idx + 1, :]
+
+            emb_queue.put(user_audio_emb)
+            next_frame += 1
+            consumed += 1
+
+        realtime_audio["audio_buffer"] = buf
+        realtime_audio["buffer_fill_level"] = fill
+        realtime_audio["next_audio_frame"] = next_frame
+        realtime_audio["frames_consumed"] = consumed
+
+    def _perception_live_worker(
+        self,
+        live_audio_queue: "queue.Queue",
+        audio_buffer: torch.Tensor,
+        buffer_fill: int,
+        buffer_size_samples: int,
+        emb_queue: "queue.Queue",
+        stop_event: "threading.Event",
+    ) -> None:
+        """Background thread: encode live audio frames as they arrive from the
+        Triton execute() calls (one 80ms frame per queue entry) and put
+        ``(user_audio_emb, asr_emb_frame)`` tuples into *emb_queue*.
+
+        Unlike ``_perception_background_worker``, there is no wall-clock gate —
+        frames arrive exactly when Triton delivers them (every ~80ms in production).
+        """
+        perception_stream = torch.cuda.Stream(device=self.device)
+        # Keep the rolling buffer on GPU so _update_audio_buffer doesn't
+        # hit a device mismatch when new_audio arrives on self.device.
+        buf = audio_buffer.to(self.device, dtype=self.dtype)
+        fill = buffer_fill
+
+        while not stop_event.is_set():
+            try:
+                new_audio = live_audio_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if new_audio is None:
+                break  # sentinel
+
+            new_audio = new_audio.to(self.device, dtype=self.dtype)
+            buf, fill, current_buf = self._update_audio_buffer(buf, fill, new_audio, buffer_size_samples)
+            buf_len = torch.tensor([current_buf.shape[1]], dtype=torch.long, device=self.device)
+
+            with torch.cuda.stream(perception_stream):
+                with torch.no_grad():
+                    source_encoded, _, asr_emb = self.model.stt_model.perception(
+                        input_signal=current_buf,
+                        input_signal_length=buf_len,
+                        return_encoder_emb=True,
+                    )
+            perception_stream.synchronize()
+
+            source_encoded = source_encoded.to(self.dtype)
+            emb_idx = max(source_encoded.shape[1] - 2, 0)
+            user_audio_emb = source_encoded[:, emb_idx : emb_idx + 1, :]
+            # asr_emb: raw encoder output for RNNT (same slice)
+            if asr_emb is not None:
+                asr_emb = asr_emb.to(self.dtype)
+                asr_emb_frame = asr_emb[:, emb_idx : emb_idx + 1, :]
+            else:
+                asr_emb_frame = None
+
+            emb_queue.put((user_audio_emb, asr_emb_frame))
+
+    def _run_fc_async_steps(
+        self,
+        fc_state: dict,
+        gen_text: torch.Tensor,
+        gen_asr_text: torch.Tensor,
+        gen_function_text: torch.Tensor,
+        current_frame_idx: int,
+        dynamic_cache,
+        input_embeds_history: list,
+        tool_response_text: str | None,
+        max_async_steps: int = 2000,
+        realtime_audio: dict | None = None,
+        request_id: str | None = None,
+        tts_state: dict | None = None,
+        live_audio_queue: "queue.Queue | None" = None,
+        live_audio_buffer: torch.Tensor | None = None,
+        live_buffer_fill: int = 0,
+        live_buffer_size_samples: int = 0,
+        rnnt_partial_hypotheses=None,
+        tts_audio_output_queue: "queue.Queue | None" = None,
+        acknowledgement_tokens: "list | None" = None,
+        rnnt_text_queue: "queue.Queue | None" = None,
+        abort_event: "threading.Event | None" = None,
+        quit_async_event: "threading.Event | None" = None,
+    ) -> tuple[int, dict | None]:
+        """
+        Run LLM steps at full speed during function calling.
+
+        For the user-audio channel, the behaviour depends on *realtime_audio*:
+
+        * **None (default)** – every step uses the cached silence embedding
+          (original behaviour, fastest).
+        * **dict** – real-time mode.  Audio frames are gated by wall-clock
+          time so that a new frame becomes available every 80 ms, exactly
+          as it would arrive from a microphone.  When a frame is ready it
+          is encoded through the perception encoder and used; otherwise
+          the silence embedding is used.  The dict is mutated in-place to
+          track consumed frames and buffer state.
+
+        This is called when SOTC is detected in the function channel. It continues
+        running until:
+          - The full FC cycle completes (call generated → response injected → EOTR predicted)
+          - max_async_steps is reached (safety limit)
+
+        Args:
+            fc_state: Function calling state dict (mutated in-place)
+            gen_text: Agent text token buffer [B, T]
+            gen_asr_text: ASR text token buffer [B, T]
+            gen_function_text: Function channel token buffer [B, T]
+            current_frame_idx: The frame index where SOTC was detected
+            dynamic_cache: LLM KV cache (DynamicCache or None)
+            input_embeds_history: List of past input embeddings (no-cache mode)
+            tool_response_text: Tool response to inject after EOTC
+            max_async_steps: Safety limit on number of async steps
+            realtime_audio: Optional dict for real-time audio gating.
+                Required keys when provided:
+                  audio_signal_tensor  – [1, total_samples] full audio tensor
+                  next_audio_frame     – next frame index to consume (mutated)
+                  total_audio_frames   – total frames available
+                  audio_buffer         – [1, buf_size] sliding window (mutated)
+                  buffer_fill_level    – int, current fill (mutated)
+                  buffer_size_samples  – int, buffer capacity
+                  wall_start           – float, time.time() at async entry
+                  frames_consumed      – int, counter (mutated)
+
+        Returns:
+            (num_async_steps, dynamic_cache, tts_state, tts_audio_chunks, rnnt_partial_hypotheses):
+            Number of extra timeline positions consumed, the updated LLM cache,
+            the updated TTS state dict (or None), a list of TTS-generated
+            silence audio tensors (one per 80ms warmup tick), and the updated
+            RNNT partial hypotheses (or None if RNNT was not run).
+        """
+        if self._silence_embedding_cache is None:
+            logging.warning("[FC Async] No silence cache available, falling back to normal mode")
+            return 0, dynamic_cache, tts_state, [], rnnt_partial_hypotheses
+
+        pad_id = self.model.stt_model.text_pad_id
+        use_cache = dynamic_cache is not None
+        batch_size = gen_text.shape[0]
+        T_total = gen_text.shape[1]
+        silence_emb = self._silence_embedding_cache.expand(batch_size, 1, -1)  # [B, 1, H]
+        has_rnnt = getattr(self.model.stt_model, '_rnnt_decoder', None) is not None
+
+        # Determine fallback audio embedding for async FC steps where no real frame arrives.
+        # fc_async_use_real_audio=False (default): always silence — avoids frozen-audio artifacts.
+        # fc_async_use_real_audio=True: use last cached real audio frame if available.
+        if self._fc_async_use_real_audio and self._last_user_audio_emb is not None:
+            fallback_audio_emb = self._last_user_audio_emb.expand(batch_size, 1, -1)
+            logging.info("[FC Async] Using cached real audio embedding as fallback (instead of silence)")
+        else:
+            fallback_audio_emb = silence_emb
+            if not self._fc_async_use_real_audio:
+                logging.info("[FC Async] fc_async_use_real_audio=False — using silence for all FC frames")
+            else:
+                logging.info("[FC Async] No cached audio embedding, using silence")
+
+        async_steps = 0
+        t = current_frame_idx + 1  # start from next position after SOTC
+        rt_real_count = 0  # track how many real audio frames were used (for logging)
+
+        # Phase 2 re-entry: if tool_response_text is provided AND we are NOT in
+        # an active call (i.e. call was already generated in a previous invocation),
+        # pre-queue forced response tokens before the loop.
+        # When active=True, the model still needs to generate call tokens first;
+        # response will be queued at EOTC detection instead.
+        if (tool_response_text
+                and not fc_state.get("forced_function_tokens")
+                and not fc_state.get("active", False)):
+            import time as _time
+            response_tokens = self._build_fc_response_tokens(tool_response_text)
+            fc_state["forced_function_tokens"] = response_tokens
+            fc_state["injecting_response"] = True
+            fc_state.setdefault("tool_response_inject_start_wall", _time.time())
+            fc_state.setdefault("tool_response_inject_start_frame", current_frame_idx + 1)
+            fc_state["tool_response_num_tokens"] = len(response_tokens)
+            logging.info(
+                "[FC Async] Pre-queued %d response tokens for injection (phase 2 re-entry)",
+                len(response_tokens),
+            )
+
+        logging.info(
+            "[FC Async] Entering async loop at frame %d (SOTC detected at %d, realtime_audio=%s, live_audio=%s)",
+            t, current_frame_idx,
+            "ON" if realtime_audio is not None else "OFF",
+            "ON" if live_audio_queue is not None else "OFF",
+        )
+
+        _t_embed_total = 0.0
+        _t_perception_total = 0.0
+        _t_fusion_total = 0.0
+        _t_llm_total = 0.0
+        _t_tts_total = 0.0
+        _n_perception_calls = 0
+        _n_tts_warmup_calls = 0
+        _tts_silence_audio_chunks = []
+        _n_rnnt_steps = 0
+        _ack_idx = 0  # index into acknowledgement_tokens; advances each TTS step
+
+        # Start background perception thread so LLM never blocks on audio encoding.
+        # Two modes:
+        #  - realtime_audio (offline sim): wall-clock gated, reads from pre-loaded tensor
+        #  - live_audio_queue (Triton server): reads frames pushed by execute() calls
+        _percep_queue = None
+        _percep_stop = None
+        _percep_thread = None
+        if live_audio_queue is not None:
+            # Live mode: frames arrive from Triton execute() calls via live_audio_queue.
+            # The emb_queue entries are (user_audio_emb, asr_emb_frame) tuples.
+            _percep_queue = queue.Queue()
+            _percep_stop = threading.Event()
+            _percep_thread = threading.Thread(
+                target=self._perception_live_worker,
+                args=(
+                    live_audio_queue,
+                    live_audio_buffer if live_audio_buffer is not None
+                        else torch.zeros(1, live_buffer_size_samples, dtype=self.dtype),  # CPU — avoids inference tensor
+                    live_buffer_fill,
+                    live_buffer_size_samples,
+                    _percep_queue,
+                    _percep_stop,
+                ),
+                daemon=True,
+            )
+            _percep_thread.start()
+        elif realtime_audio is not None:
+            _percep_queue = queue.Queue()
+            _percep_stop = threading.Event()
+            _percep_thread = threading.Thread(
+                target=self._perception_background_worker,
+                args=(realtime_audio, _percep_queue, _percep_stop),
+                daemon=True,
+            )
+            _percep_thread.start()
+        # Track whether emb_queue entries are (emb, asr_emb) tuples (live mode) or plain tensors
+        _live_mode = live_audio_queue is not None
+
+        while async_steps < max_async_steps and t < T_total:
+            # Check for interrupt signal from the main thread (user spoke during FC).
+            if abort_event is not None and abort_event.is_set():
+                logging.info(
+                    "[FC Async] Abort event set — stopping async generation at step %d (frame %d)",
+                    async_steps, t,
+                )
+                break
+            if quit_async_event is not None and quit_async_event.is_set():
+                logging.info(
+                    "[FC Async] Quit event set — stopping async generation at step %d (frame %d)",
+                    async_steps, t,
+                )
+                break
+
+            _step_start = time.time()
+
+            agent_text_emb = self.model.stt_model.embed_tokens(
+                gen_text[:, t - 1]
+            ).unsqueeze(1).to(dtype=self.dtype)
+            if self._has_asr_head:
+                user_text_emb = self.model.stt_model.embed_asr_tokens(
+                    gen_asr_text[:, t - 1]
+                ).unsqueeze(1).to(dtype=self.dtype)
+            else:
+                user_text_emb = None
+            function_emb = self.model.stt_model.embed_tokens(
+                gen_function_text[:, t - 1]
+            ).unsqueeze(1).to(dtype=self.dtype)
+            _t_embed = time.time()
+            _t_embed_total += _t_embed - _step_start
+
+            # Non-blocking: pick up the latest perception embedding if available.
+            # In live mode, queue entries are (user_audio_emb, asr_emb_frame) tuples.
+            # In offline mode, queue entries are plain user_audio_emb tensors.
+            user_audio_emb = None
+            live_asr_emb_frame = None  # only populated in live mode
+            _got_real_audio_frame = False
+            if _percep_queue is not None:
+                latest = None
+                try:
+                    while True:
+                        latest = _percep_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                if latest is not None:
+                    if _live_mode:
+                        user_audio_emb, live_asr_emb_frame = latest
+                    else:
+                        user_audio_emb = latest
+                    rt_real_count += 1
+                    _n_perception_calls += 1
+                    _got_real_audio_frame = True
+            if user_audio_emb is None or not self._fc_async_use_real_audio:
+                user_audio_emb = fallback_audio_emb
+            else:
+                fallback_audio_emb = user_audio_emb.detach()
+            _t_percep = time.time()
+            _t_perception_total += _t_percep - _t_embed
+
+            fused_emb = self.fusion_module(
+                agent_text_embeds=agent_text_emb,
+                user_audio_embeds=user_audio_emb,
+                user_text_embeds=user_text_emb,
+                function_embeds=function_emb,
+            )
+            _t_fuse = time.time()
+            _t_fusion_total += _t_fuse - _t_percep
+
+            if self.use_vllm_llm:
+                ans = self.model_llm_interface(
+                    fused_emb,
+                    request_id=request_id or self.request_id,
+                    generated_tokens=gen_text,
+                    current_step=t,
+                )
+            elif use_cache:
+                ans = self.model_llm_interface(
+                    fused_emb,
+                    cache=dynamic_cache,
+                    generated_tokens=gen_text,
+                    current_step=t,
+                )
+                dynamic_cache = ans["cache"]
+            else:
+                input_embeds_history.append(fused_emb)
+                full_input_embeds = torch.cat(input_embeds_history, dim=1)
+                ans = self.model_llm_interface(
+                    full_input_embeds,
+                    cache=None,
+                    generated_tokens=gen_text,
+                    current_step=t,
+                )
+            _t_llm_total += time.time() - _t_fuse
+
+            # TTS KV-cache sync: run one TTS forward pass with PAD on EVERY async
+            # LLM step so that past_key_values stays aligned with frame_idx.
+            # Without this, the TTS KV cache only advances K times (once per 80ms
+            # real-audio tick) while frame_idx jumps N steps (all async LLM steps),
+            # leaving a gap of N-K that causes choppy audio after the FC completes.
+            # Codec decode (the expensive part) still only runs on 80ms ticks to
+            # produce the silence audio sent to the client.
+            if tts_state is not None:
+                _t_tts_start = time.time()
+                try:
+                    _tts_code = tts_state["code"]
+                    _tts_pkv = tts_state["past_key_values"]
+                    _tts_sw_mask = tts_state["subword_mask"]
+                    _tts_codec_cache = tts_state["codec_cache"]
+
+                    # Use acknowledgement token if available, otherwise pad.
+                    if acknowledgement_tokens and _ack_idx < len(acknowledgement_tokens):
+                        _tts_subword = torch.tensor(
+                            [[acknowledgement_tokens[_ack_idx]]], device=self.device, dtype=torch.long
+                        )
+                        _tts_sw_mask_val = torch.ones(1, 1, device=self.device, dtype=torch.bool)
+                    else:
+                        _tts_subword = torch.full(
+                            (1, 1), pad_id, device=self.device, dtype=torch.long
+                        )
+                        _tts_sw_mask_val = _tts_sw_mask[:, t].unsqueeze(-1) if t < _tts_sw_mask.shape[1] else torch.ones(1, 1, device=self.device, dtype=torch.bool)
+                    _ack_idx += 1
+
+                    _tts_inputs = {
+                        "current_subword_id": _tts_subword,
+                        "prev_subword_id": _tts_subword,
+                        "current_subword_mask": _tts_sw_mask_val,
+                        "prev_audio_tokens": _tts_code,
+                        "past_key_values": _tts_pkv,
+                        "guidance_enabled": True,
+                        "generation_config": self.generation_config,
+                        "ignore_eos_flag_stop": True,
+                    }
+                    if self.use_vllm_eartts:
+                        _tts_inputs["request_id"] = request_id or self.request_id
+
+                    _tts_code_new, _tts_pkv_new = self.model.tts_model.infer_codes_one_step(**_tts_inputs)
+
+                    tts_state["code"] = _tts_code_new
+                    tts_state["past_key_values"] = _tts_pkv_new
+                    _n_tts_warmup_calls += 1
+
+                    # Codec decode on EVERY async step to keep the codec streaming
+                    # cache aligned with the TTS code sequence.
+                    # Without this, the codec cache only advances K times (80ms ticks)
+                    # while TTS generates N codes, leaving the codec N-K steps behind
+                    # and causing choppy audio for the first few post-FC sentences.
+                    # Audio is only sent to the client on 80ms ticks.
+                    if _tts_codec_cache is not None:
+                        with fp32_precision(), torch.no_grad():
+                            _tts_new_codes = _tts_code_new.unsqueeze(0) if _tts_code_new.dim() == 2 else _tts_code_new
+                            if hasattr(self.model.tts_model, '_control_codes'):
+                                from nemo.collections.speechlm2.models.duplex_ear_tts import replace_control_speech_codes
+                                _tts_new_codes = replace_control_speech_codes(
+                                    _tts_new_codes,
+                                    self.model.tts_model._control_codes,
+                                    getattr(self.model.tts_model, 'codec_silence_tokens', None),
+                                )
+                            _tts_code_len = torch.tensor([1], dtype=torch.long, device=self.device)
+                            _tts_decoded_audio, _ = self.model.tts_model.audio_codec.decode(
+                                _tts_new_codes, _tts_code_len, cache=_tts_codec_cache,
+                            )
+                            _tts_chunk_cpu = _tts_decoded_audio.detach().cpu()
+                            _tts_silence_audio_chunks.append(_tts_chunk_cpu)
+                            if tts_audio_output_queue is not None:
+                                tts_audio_output_queue.put(_tts_chunk_cpu)
+                except Exception as _tts_exc:
+                    logging.warning("[FC Async] TTS warmup step failed: %s", _tts_exc)
+                _t_tts_total += time.time() - _t_tts_start
+
+            if ans.get("is_finished", False):
+                logging.warning(
+                    "[FC Async] vLLM sequence finished at step %d (frame %d), exiting async loop",
+                    async_steps, t,
+                )
+                break
+
+            predicted_token = ans["predicted_token"]
+            asr_predicted_token = ans["asr_predicted_token"]
+
+            gen_text[:, t] = predicted_token
+            gen_asr_text[:, t] = pad_id  # silence → no user speech
+            if "function_predicted_token" in ans:
+                gen_function_text[:, t] = ans["function_predicted_token"]
+
+            # Run FC state machine on the function channel output
+            func_tok_val = gen_function_text[:, t].item() if gen_function_text[:, t].dim() == 0 else gen_function_text[0, t].item()
+
+            # --- Forced injection phase ---
+            forced = fc_state.get("forced_function_tokens", [])
+            if forced:
+                override_id = forced.pop(0)
+                gen_function_text[:, t] = override_id
+                gen_text[:, t] = pad_id
+                fc_state["injecting_response"] = True
+            else:
+                if fc_state.get("injecting_response", False):
+                    fc_state["injecting_response"] = False
+                    logging.info(
+                        "[FC Async] Response injection complete at step %d (frame %d), "
+                        "EOTR was included in forced tokens — exiting async on next cycle",
+                        async_steps, t,
+                    )
+
+                # --- Natural token monitoring ---
+                func_tok_val = gen_function_text[0, t].item()
+                if func_tok_val == self._fc_sotc_id:
+                    fc_state["active"] = True
+                    fc_state["call_tokens"] = []
+                    logging.info(f"[FC Async] SOTC at async step {async_steps} (frame {t})")
+                elif func_tok_val == self._fc_eotc_id and fc_state.get("active", False):
+                    fc_state["active"] = False
+                    call_text = self.tokenizer.ids_to_text(fc_state.get("call_tokens", []))
+                    fc_state.setdefault("completed_calls", []).append(call_text)
+                    fc_state["eotc_async_step"] = async_steps
+                    fc_state["eotc_frame"] = t
+                    logging.info(f"[FC Async] EOTC at async step {async_steps} (frame {t}). Call: {call_text}")
+
+                    if tool_response_text:
+                        import time as _time
+                        api_latency = self._fc_async_api_latency_sec
+                        if api_latency > 0:
+                            fc_state["api_call_start_wall"] = _time.time()
+                            fc_state["api_call_start_frame"] = t + 1
+                            logging.info(
+                                "[FC Async] Simulating API call (%.0fms latency)...",
+                                api_latency * 1000,
+                            )
+                            _time.sleep(api_latency)
+                            fc_state["api_call_end_wall"] = _time.time()
+                            fc_state["api_call_end_frame"] = t + 1
+                            logging.info("[FC Async] API call complete")
+                        fc_state["tool_response_inject_start_wall"] = _time.time()
+                        fc_state["tool_response_inject_start_frame"] = t + 1
+                        response_tokens = self._build_fc_response_tokens(tool_response_text)
+                        fc_state["forced_function_tokens"] = response_tokens
+                        fc_state["tool_response_num_tokens"] = len(response_tokens)
+                        logging.info(f"[FC Async] Queued {len(response_tokens)} response tokens")
+                    elif self._fc_async_two_phase:
+                        fc_state["awaiting_response"] = True
+                        fc_state["last_call_text"] = call_text
+                        fc_state["phase1_end_t"] = t + 1
+                        logging.info(
+                            "[FC Async] Two-phase: Phase 1 complete (call generated). "
+                            "Exiting async to await tool execution."
+                        )
+                        async_steps += 1
+                        t += 1
+                        break
+                    else:
+                        logging.info("[FC Async] No tool_response_text, exiting async after EOTC")
+                        async_steps += 1
+                        t += 1
+                        break
+                elif fc_state.get("active", False) and func_tok_val != pad_id:
+                    fc_state.setdefault("call_tokens", []).append(func_tok_val)
+
+            # RNNT decode on live audio frames (Triton server mode).
+            # Turn-taking is intentionally skipped here: the main thread monitors
+            # the rnnt_text_queue and sets abort_event when it detects persistent
+            # user speech.  Calling _maybe_apply_rnnt_turn_taking inside the FC
+            # loop would insert EOS/BOS tokens into gen_text and disrupt the tool
+            # call generation even when the user is not speaking.
+            if _live_mode and _got_real_audio_frame and has_rnnt and live_asr_emb_frame is not None:
+                # live_asr_emb_frame may be [B,1,D] or [B,D] — normalise to [B,D]
+                _lf = live_asr_emb_frame.squeeze(1) if live_asr_emb_frame.dim() == 3 else live_asr_emb_frame
+                if rnnt_partial_hypotheses is None:
+                    rnnt_partial_hypotheses = self._rnnt_init_state(batch_size, self.device)
+                rnnt_partial_hypotheses, _rnnt_is_blank = self._rnnt_step(_lf, rnnt_partial_hypotheses)
+                if abort_event is None:
+                    self._apply_rnnt_turn_taking(t, gen_text, _rnnt_is_blank, rnnt_partial_hypotheses)
+                _n_rnnt_steps += 1
+
+            # Natural interrupt: the model's agent text head predicted a real
+            # token (non-PAD/BOS/EOS) while receiving real user audio.
+            # This means the model itself decided to stop FC and respond to
+            # the user's interrupt question — no heuristic threshold needed.
+            # Only fires on real audio frames (not silence/fallback) to avoid
+            # false triggers on background noise.
+            if _got_real_audio_frame:
+                _agent_tok_val = gen_text[0, t].item()
+                _bos_id = getattr(self.model.stt_model, "text_bos_id", pad_id)
+                _eos_id = getattr(self.model.stt_model, "text_eos_id", pad_id)
+                if _agent_tok_val not in (pad_id, _bos_id, _eos_id):
+                    logging.info(
+                        "[FC Async] Natural interrupt at async step %d (frame %d): "
+                        "agent text head predicted '%s' (id=%d) — breaking to answer user",
+                        async_steps, t,
+                        self.tokenizer.ids_to_text([_agent_tok_val]),
+                        _agent_tok_val,
+                    )
+                    fc_state["natural_interrupt"] = True
+                    async_steps += 1
+                    t += 1
+                    break
+
+            async_steps += 1
+            t += 1
+
+            # Exit conditions: FC cycle complete (no more forced tokens, not in active call,
+            # and not injecting response). EOTR is appended to forced tokens so the model
+            # has the full context when the main loop resumes.
+            no_forced = not fc_state.get("forced_function_tokens", [])
+            not_active = not fc_state.get("active", False)
+            not_injecting = not fc_state.get("injecting_response", False)
+            if no_forced and not_active and not_injecting:
+                if "tool_response_inject_start_wall" in fc_state:
+                    import time as _time
+                    fc_state["tool_response_inject_end_wall"] = _time.time()
+                    fc_state["tool_response_inject_end_frame"] = t
+                logging.info(
+                    "[FC Async] FC cycle complete after %d async steps (frame %d)",
+                    async_steps, t,
+                )
+                break
+
+        # Stop background perception thread
+        if _percep_thread is not None:
+            _percep_stop.set()
+            _percep_thread.join(timeout=2.0)
+            if _percep_thread.is_alive():
+                logging.warning("[FC Async] Perception thread did not stop in time")
+
+        if async_steps >= max_async_steps:
+            logging.warning(
+                "[FC Async] Hit max_async_steps=%d safety limit at frame %d",
+                max_async_steps, t,
+            )
+
+        rt_info = ""
+        if live_audio_queue is not None:
+            rt_info = (
+                f", live_audio: {rt_real_count} real frames / "
+                f"{async_steps} total steps ({rt_real_count / max(async_steps, 1) * 100:.1f}% real), "
+                f"RNNT steps: {_n_rnnt_steps}"
+            )
+        elif realtime_audio is not None:
+            rt_info = (
+                f", realtime_audio: {rt_real_count} real frames / "
+                f"{async_steps} total steps ({rt_real_count / max(async_steps, 1) * 100:.1f}% real)"
+            )
+        _t_total = _t_embed_total + _t_perception_total + _t_fusion_total + _t_llm_total + _t_tts_total
+        tts_info = ""
+        if _n_tts_warmup_calls > 0:
+            tts_info = f", TTS warmup: {_n_tts_warmup_calls} calls ({len(_tts_silence_audio_chunks)} audio chunks)"
+        logging.info("[FC Async] Exiting async loop: %d steps, resuming at frame %d%s%s", async_steps, t, rt_info, tts_info)
+        logging.info(
+            "[FC Async] Step timing breakdown (total %.3fs, %d steps):\n"
+            "    embed:      %.3fs (%.1f%%, %.1fms/step)\n"
+            "    perception: %.3fs (%.1f%%, %.1fms/step, %d encoder calls)\n"
+            "    fusion:     %.3fs (%.1f%%, %.1fms/step)\n"
+            "    LLM:        %.3fs (%.1f%%, %.1fms/step)\n"
+            "    TTS warmup: %.3fs (%.1f%%, %d calls, %.1fms/call)",
+            _t_total, async_steps,
+            _t_embed_total, 100 * _t_embed_total / max(_t_total, 1e-9), 1000 * _t_embed_total / max(async_steps, 1),
+            _t_perception_total, 100 * _t_perception_total / max(_t_total, 1e-9), 1000 * _t_perception_total / max(async_steps, 1), _n_perception_calls,
+            _t_fusion_total, 100 * _t_fusion_total / max(_t_total, 1e-9), 1000 * _t_fusion_total / max(async_steps, 1),
+            _t_llm_total, 100 * _t_llm_total / max(_t_total, 1e-9), 1000 * _t_llm_total / max(async_steps, 1),
+            _t_tts_total, 100 * _t_tts_total / max(_t_total, 1e-9), _n_tts_warmup_calls, 1000 * _t_tts_total / max(_n_tts_warmup_calls, 1),
+        )
+        return async_steps, dynamic_cache, tts_state, _tts_silence_audio_chunks, rnnt_partial_hypotheses
 
     def _prepare_system_prompt_embeddings(
         self,
@@ -708,42 +1620,56 @@ class NemotronVoicechatInferenceWrapper:
 
         # Step 1: Tokenize the prompt
         # Format: [bos] + text_tokens + [eos] (consistent with collate_system_prompt)
-        prompt_token_ids = (
+        single_prompt_token_ids = (
             [self.tokenizer.bos_id] +
             self.tokenizer.text_to_ids(system_prompt) +
             [self.tokenizer.eos_id]
         )
+        # Prompt repetition (arxiv 2512.14982): repeat the prompt twice during prefill so
+        # each token can attend to all others, improving recall of tool definitions across turns.
+        repeat_n = self.model_cfg.get("system_prompt_repeat_n", 2)
+        prompt_token_ids = single_prompt_token_ids * repeat_n
         prompt_tokens = torch.tensor(prompt_token_ids, dtype=torch.long, device=self.device).unsqueeze(0)  # [1, prompt_len]
         prompt_len = prompt_tokens.shape[1]
 
-        logging.info(f"   Prompt length: {prompt_len} tokens")
+        logging.info(f"   Prompt length: {prompt_len} tokens (repeated {repeat_n}x, single={len(single_prompt_token_ids)})")
+        # Debug: decode and log the full repeated prompt so the format can be verified in server logs
+        try:
+            decoded_prompt = self.tokenizer.ids_to_text(prompt_token_ids)
+            logging.info(f"   [DEBUG] Repeated prompt decoded: {decoded_prompt[:500]}{'...' if len(decoded_prompt) > 500 else ''}")
+        except Exception as e:
+            logging.warning(f"   [DEBUG] Could not decode repeated prompt: {e}")
 
-        # Step 2: Embed the prompt tokens (this acts as the "audio channel" for prompt positions)
-        prompt_embedded = self.model.stt_model.embed_tokens(prompt_tokens)  # [1, prompt_len, H]
-        prompt_embedded = prompt_embedded.to(dtype=self.dtype)
-
-        # Step 3: Add pad embeddings for text and ASR channels (for positions t > 0)
-        # In offline_inference, prompt positions use gen_text[:, t-1] = pad_id
+        # Step 2: Build per-channel embedding tensors and fuse them,
+        # mirroring how the training code combines modalities via fusion_module.
         pad_id = self.model.stt_model.text_pad_id
         pad_token = torch.full((1,), fill_value=pad_id, device=self.device, dtype=torch.long)
+
+        # User-audio channel: prompt token embeddings replace actual audio
+        user_audio_embeds = self.model.stt_model.embed_tokens(prompt_tokens).to(dtype=self.dtype)  # [1, T, H]
+
+        # Agent-text channel: text feedback = embed_tokens(pad_id) at every position
+        # (BOS also uses pad_id in this model, so position 0 is identical)
         pad_emb = self.model.stt_model.embed_tokens(pad_token).to(dtype=self.dtype)  # [1, H]
-        pad_asr_emb = self.model.stt_model.embed_asr_tokens(pad_token).to(dtype=self.dtype)  # [1, H]
+        agent_text_embeds = pad_emb.unsqueeze(0).expand(1, prompt_len, -1)  # [1, T, H]
 
-        # For positions t > 0, add pad embeddings (simulating gen_text[:, t-1] = pad_id)
+        # User-text / ASR channel: embed_asr_tokens(pad_id) at every position
+        if self._has_asr_head:
+            pad_asr_emb = self.model.stt_model.embed_asr_tokens(pad_token).to(dtype=self.dtype)
+            user_text_embeds = pad_asr_emb.unsqueeze(0).expand(1, prompt_len, -1)  # [1, T, H]
+        else:
+            user_text_embeds = None
+
+        # Function channel
         has_fc = self.model.stt_model.function_head is not None
-        if prompt_len > 1:
-            prompt_embedded[:, 1:, :] += pad_emb
-            prompt_embedded[:, 1:, :] += pad_asr_emb
-            if has_fc:
-                prompt_embedded[:, 1:, :] += pad_emb  # FC channel also uses pad at t > 0
+        function_embeds = pad_emb.unsqueeze(0).expand(1, prompt_len, -1) if has_fc else None
 
-        # Step 4: For position 0, add BOS embeddings
-        bos_emb = self._get_bos_embedding()  # [1, H]
-        asr_bos_emb = self._get_asr_bos_embedding()  # [1, H]
-        prompt_embedded[:, 0, :] += bos_emb.squeeze(0)
-        prompt_embedded[:, 0, :] += asr_bos_emb.squeeze(0)
-        if has_fc:
-            prompt_embedded[:, 0, :] += pad_emb.squeeze(0)  # FC channel uses pad at t=0
+        prompt_embedded = self.fusion_module(
+            agent_text_embeds=agent_text_embeds,
+            user_audio_embeds=user_audio_embeds,
+            user_text_embeds=user_text_embeds,
+            function_embeds=function_embeds,
+        )
 
         logging.info(f"   System prompt embeddings prepared: shape {prompt_embedded.shape}")
 
@@ -778,9 +1704,8 @@ class NemotronVoicechatInferenceWrapper:
             speaker_audio, speaker_sr = torchaudio.load(self.speaker_reference)
             speaker_audio = resample(speaker_audio, speaker_sr, self.model.tts_model.target_sample_rate)
 
-        tts_dev = getattr(self, 'tts_device', self.device)
-        speaker_audio = speaker_audio.to(tts_dev)
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=tts_dev).long()
+        speaker_audio = speaker_audio.to(self.device)
+        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long()
 
         #  init tts_model
         self.model.tts_model.set_init_inputs(
@@ -865,6 +1790,132 @@ class NemotronVoicechatInferenceWrapper:
         current_buffer = audio_buffer if buffer_fill_level == buffer_size_samples else audio_buffer[:, :buffer_fill_level]
         return audio_buffer, buffer_fill_level, current_buffer
 
+    @staticmethod
+    def _convert_nums_in_json(obj, _engine=[]):
+        """Recursively convert numeric values in a JSON-like object to spoken text."""
+        if not _engine:
+            import inflect
+            _engine.append(inflect.engine())
+        eng = _engine[0]
+
+        if isinstance(obj, dict):
+            return {k: NemotronVoicechatInferenceWrapper._convert_nums_in_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [NemotronVoicechatInferenceWrapper._convert_nums_in_json(item) for item in obj]
+        elif isinstance(obj, float):
+            try:
+                int_part = int(obj)
+                frac_str = str(obj).split(".")[1] if "." in str(obj) else ""
+                result = eng.number_to_words(int_part, andword="")
+                if frac_str:
+                    result += " point " + " ".join(eng.number_to_words(int(d)) for d in frac_str)
+                return result
+            except Exception:
+                return str(obj)
+        elif isinstance(obj, int):
+            try:
+                return eng.number_to_words(obj, andword="")
+            except Exception:
+                return str(obj)
+        return obj
+
+    def _convert_tool_response_nums_to_text(self, tool_response_text: str) -> str:
+        """Convert digit numbers in a TOOL_RESPONSE string to spoken text."""
+        import json
+        tag_pattern = re.compile(r'(<TOOL_RESPONSE>)(.*?)(</TOOL_RESPONSE>)', re.DOTALL)
+
+        def _replace(match):
+            open_tag, json_str, close_tag = match.group(1), match.group(2), match.group(3)
+            try:
+                parsed = json.loads(json_str)
+                converted = self._convert_nums_in_json(parsed)
+                return open_tag + json.dumps(converted) + close_tag
+            except (json.JSONDecodeError, TypeError):
+                return match.group(0)
+
+        result = tag_pattern.sub(_replace, tool_response_text)
+        if result != tool_response_text:
+            logging.info("[FC] Converted numbers to text in tool response")
+            logging.debug("[FC]   Before: %s", tool_response_text[:200])
+            logging.debug("[FC]   After:  %s", result[:200])
+        return result
+
+    def _build_fc_response_tokens(self, tool_response_text: str) -> list:
+        """Tokenize a tool response string.
+
+        The text is expected to already contain <TOOL_RESPONSE>...</TOOL_RESPONSE>
+        tags (matching the training format), so we tokenize it as-is without
+        adding extra wrapper tokens.
+        """
+        if not tool_response_text:
+            return []
+        if self._fc_convert_num_to_text:
+            tool_response_text = self._convert_tool_response_nums_to_text(tool_response_text)
+        return self.tokenizer.text_to_ids(tool_response_text)
+
+    def _apply_fc_state_machine(
+        self,
+        fc_state: dict,
+        function_predicted_token: torch.Tensor,
+        gen_text: torch.Tensor,
+        gen_function_text: torch.Tensor,
+        current_frame_idx: int,
+        frame_offset: int,
+        predicted_tokens: torch.Tensor,
+        function_predicted_tokens: torch.Tensor,
+        tool_response_text: str | None,
+    ) -> None:
+        """Reactive FC state machine: monitor function channel, inject tool responses.
+
+        Mutates *fc_state*, *gen_text*, *gen_function_text*, *predicted_tokens*,
+        and *function_predicted_tokens* in-place.
+
+        When fc_async_enabled is True, sets fc_state["trigger_async"] = True on
+        SOTC detection so the caller can hand off to _run_fc_async_steps().
+        """
+        if fc_state is None or self._fc_sotc_id is None:
+            return
+
+        pad_id = self.model.stt_model.text_pad_id
+        func_tok_val = function_predicted_token.item() if function_predicted_token.dim() == 0 else function_predicted_token[0].item()
+
+        # --- Phase 1: forced token injection (tool response being streamed) ---
+        forced = fc_state.get("forced_function_tokens", [])
+        if forced:
+            override_id = forced.pop(0)
+            gen_function_text[:, current_frame_idx] = override_id
+            function_predicted_tokens[:, frame_offset] = override_id
+
+            gen_text[:, current_frame_idx] = pad_id
+            predicted_tokens[:, frame_offset] = pad_id
+            fc_state["injecting_response"] = True
+            return
+
+        if fc_state.get("injecting_response", False):
+            fc_state["injecting_response"] = False
+
+        # --- Phase 2: monitor natural function head output ---
+        if func_tok_val == self._fc_sotc_id:
+            fc_state["active"] = True
+            fc_state["call_tokens"] = []
+            logging.info(f"FC: SOTC detected at frame {current_frame_idx}")
+            if self._fc_async_enabled:
+                fc_state["trigger_async"] = True
+        elif func_tok_val == self._fc_eotc_id and fc_state.get("active", False):
+            fc_state["active"] = False
+            call_text = self.tokenizer.ids_to_text(fc_state.get("call_tokens", []))
+            fc_state.setdefault("completed_calls", []).append(call_text)
+            logging.info(f"FC: EOTC detected at frame {current_frame_idx}. Call: {call_text}")
+
+            if tool_response_text:
+                response_tokens = self._build_fc_response_tokens(tool_response_text)
+                fc_state["forced_function_tokens"] = response_tokens
+                logging.info(
+                    f"FC: Queued {len(response_tokens)} response tokens for injection"
+                )
+        elif fc_state.get("active", False) and func_tok_val != pad_id:
+            fc_state.setdefault("call_tokens", []).append(func_tok_val)
+
     def infer_one_step(self,
                        audio_input,
                        num_frames_per_chunk,
@@ -882,7 +1933,9 @@ class NemotronVoicechatInferenceWrapper:
                        perception_cache: Optional[PerceptionCacheState] = None,
                        has_prompt: bool = False,
                        codec_cache=None,
-                       rnnt_state: Optional[dict] = None):
+                       rnnt_partial_hypotheses=None,
+                       fc_state: dict | None = None,
+                       tool_response_text: str | None = None):
 
         # Set up effective request ID for vLLM streaming
         effective_request_id = request_id or self.request_id
@@ -891,19 +1944,18 @@ class NemotronVoicechatInferenceWrapper:
         use_cache = dynamic_cache is not None
         batch_size = gen_text.shape[0]
 
-        predicted_tokens = torch.empty((batch_size, num_frames_per_chunk), dtype=gen_text.dtype, device=gen_text.device)
-        asr_predicted_tokens = torch.empty((batch_size, num_frames_per_chunk), dtype=gen_text.dtype, device=gen_text.device)
-        function_predicted_tokens = torch.empty((batch_size, num_frames_per_chunk), dtype=gen_text.dtype, device=gen_text.device)
+        pad_id = self.model.stt_model.text_pad_id
+        predicted_tokens = torch.full((batch_size, num_frames_per_chunk), pad_id, dtype=gen_text.dtype, device=gen_text.device)
+        asr_predicted_tokens = torch.full((batch_size, num_frames_per_chunk), pad_id, dtype=gen_text.dtype, device=gen_text.device)
+        function_predicted_tokens = torch.full((batch_size, num_frames_per_chunk), pad_id, dtype=gen_text.dtype, device=gen_text.device)
 
         # Do "perception" step outside the for-loop
         start_perception = time.time()
+        asr_emb = None
 
-        used_perception_cache = (self.use_perception_cache and perception_cache is not None and perception_cache.is_initialized())
-        encoder_emb_raw = None  # raw [B, T, 1024] for RNNT EOU/BOU
-
-        if used_perception_cache:
-            # Cache-aware perception
-            source_encoded, encoder_emb_raw, perception_cache = self.perception_cache_mgr.step(
+        if self.use_perception_cache and perception_cache is not None and perception_cache.is_initialized():
+            # Cache-aware perception (also returns raw encoder embeddings for RNNT)
+            source_encoded, perception_cache, asr_emb = self.perception_cache_mgr.step(
                 audio_input=audio_input,
                 frame_idx=frame_idx,
                 num_frames_per_chunk=num_frames_per_chunk,
@@ -912,7 +1964,7 @@ class NemotronVoicechatInferenceWrapper:
         else:
             # Standard perception (full buffer processing)
             buffer_len = torch.tensor([audio_input.shape[1]], dtype=torch.long, device=self.device)
-            source_encoded, _, encoder_emb_raw = self.model.stt_model.perception(
+            source_encoded, _, asr_emb = self.model.stt_model.perception(
                 input_signal=audio_input,
                 input_signal_length=buffer_len,
                 return_encoder_emb=True,
@@ -952,40 +2004,52 @@ class NemotronVoicechatInferenceWrapper:
             current_frame_index = min(current_frame_index, total_encoded_frames - 1)
             current_frame_embedding = source_encoded[:, current_frame_index:current_frame_index + 1, :]
 
-            current_input_emb = current_frame_embedding.clone()
-
             has_fc = gen_function_text is not None
 
+            # Build per-channel embeddings, then fuse — mirrors training's fusion_module usage
+            user_audio_emb = current_frame_embedding  # [B, 1, D]
+            self._last_user_audio_emb = user_audio_emb.detach()
+
             if current_frame_idx == 0 and not has_prompt:
-                # Only add BOS if there's no prompt (BOS is already in prompt's position 0)
-                current_input_emb += self._get_bos_embedding()
-                current_input_emb += self._get_asr_bos_embedding()
+                agent_text_emb = self._get_bos_embedding().unsqueeze(0)  # [1, 1, H]
+                user_text_emb = self._get_asr_bos_embedding().unsqueeze(0) if self._has_asr_head else None
                 if has_fc:
                     pad_id = self.model.stt_model.text_pad_id
                     fc_pad_token = torch.full((1,), fill_value=pad_id, device=self.device, dtype=torch.long)
-                    current_input_emb += self.model.stt_model.embed_tokens(fc_pad_token).to(dtype=self.dtype)
+                    function_emb = self.model.stt_model.embed_tokens(fc_pad_token).to(dtype=self.dtype).unsqueeze(0)
+                else:
+                    function_emb = None
             elif current_frame_idx == 0 and has_prompt:
-                # With prompt: first audio frame uses pad embedding (like offline_inference)
-                # gen_text[:, -1] from prompt positions is pad_id
                 pad_id = self.model.stt_model.text_pad_id
                 pad_token = torch.full((1,), fill_value=pad_id, device=self.device, dtype=torch.long)
-                pad_emb = self.model.stt_model.embed_tokens(pad_token).to(dtype=self.dtype)
-                pad_asr_emb = self.model.stt_model.embed_asr_tokens(pad_token).to(dtype=self.dtype)
-                current_input_emb += pad_emb
-                current_input_emb += pad_asr_emb
+                agent_text_emb = self.model.stt_model.embed_tokens(pad_token).to(dtype=self.dtype).unsqueeze(0)
+                if self._has_asr_head:
+                    user_text_emb = self.model.stt_model.embed_asr_tokens(pad_token).to(dtype=self.dtype).unsqueeze(0)
+                else:
+                    user_text_emb = None
                 if has_fc:
-                    current_input_emb += self.model.stt_model.embed_tokens(pad_token).to(dtype=self.dtype)
+                    function_emb = self.model.stt_model.embed_tokens(pad_token).to(dtype=self.dtype).unsqueeze(0)
+                else:
+                    function_emb = None
             else:
-                # t > 0: add embeddings from model's own predictions at t-1
-                _vocab = self.model.stt_model.embed_tokens.weight.shape[0]
-                last_token_emb = self.model.stt_model.embed_tokens(gen_text[:, current_frame_idx - 1].clamp(0, _vocab - 1))
-                current_input_emb += last_token_emb
-                _asr_vocab = self.model.stt_model.embed_asr_tokens.weight.shape[0]
-                last_asr_token_emb = self.model.stt_model.embed_asr_tokens(gen_asr_text[:, current_frame_idx - 1].clamp(0, _asr_vocab - 1))
-                current_input_emb += last_asr_token_emb
+                agent_text_emb = self.model.stt_model.embed_tokens(gen_text[:, current_frame_idx - 1]).unsqueeze(1)
+                if self._has_asr_head:
+                    user_text_emb = self.model.stt_model.embed_asr_tokens(gen_asr_text[:, current_frame_idx - 1]).unsqueeze(1)
+                else:
+                    user_text_emb = None
                 if has_fc:
-                    last_fc_token_emb = self.model.stt_model.embed_tokens(gen_function_text[:, current_frame_idx - 1].clamp(0, _vocab - 1))
-                    current_input_emb += last_fc_token_emb.to(dtype=self.dtype)
+                    function_emb = self.model.stt_model.embed_tokens(
+                        gen_function_text[:, current_frame_idx - 1]
+                    ).to(dtype=self.dtype).unsqueeze(1)
+                else:
+                    function_emb = None
+
+            current_input_emb = self.fusion_module(
+                agent_text_embeds=agent_text_emb,
+                user_audio_embeds=user_audio_emb,
+                user_text_embeds=user_text_emb,
+                function_embeds=function_emb,
+            )
 
             start_stt_model = time.time()
 
@@ -1026,59 +2090,52 @@ class NemotronVoicechatInferenceWrapper:
             gen_text[:, current_frame_idx] = predicted_token
             predicted_tokens[:, frame_offset] = predicted_token
 
-            # Clamp to embedding table size — GA FC checkpoint returns vLLM text tokens in
-            # the ASR slot (no real separate ASR head); RNNT provides turn-taking separately.
-            _asr_vocab = self.model.stt_model.embed_asr_tokens.weight.shape[0]
-            asr_predicted_token = asr_predicted_token.clamp(0, _asr_vocab - 1)
             gen_asr_text[:, current_frame_idx] = asr_predicted_token
             asr_predicted_tokens[:, frame_offset] = asr_predicted_token
 
             if "function_predicted_token" in ans:
-                _fc_vocab = self.model.stt_model.embed_tokens.weight.shape[0]
-                fc_token = ans["function_predicted_token"].clamp(0, _fc_vocab - 1)
-                function_predicted_tokens[:, frame_offset] = fc_token
+                function_predicted_tokens[:, frame_offset] = ans["function_predicted_token"]
                 if gen_function_text is not None:
-                    gen_function_text[:, current_frame_idx] = fc_token
+                    gen_function_text[:, current_frame_idx] = ans["function_predicted_token"]
 
-            # Apply forced turn taking based on ASR results
-            self._maybe_apply_forced_turn_taking(current_frame_idx, gen_text, gen_asr_text)
-            # Update predicted_tokens with any changes made by forced turn taking
+            # FC state machine: detect SOTC/EOTC on function channel, inject tool response
+            if fc_state is not None and gen_function_text is not None:
+                self._apply_fc_state_machine(
+                    fc_state=fc_state,
+                    function_predicted_token=gen_function_text[:, current_frame_idx],
+                    gen_text=gen_text,
+                    gen_function_text=gen_function_text,
+                    current_frame_idx=current_frame_idx,
+                    frame_offset=frame_offset,
+                    predicted_tokens=predicted_tokens,
+                    function_predicted_tokens=function_predicted_tokens,
+                    tool_response_text=tool_response_text,
+                )
+
+            # Apply forced turn-taking (source selectable: "rnnt" or "asr_head").
+            # Skip when FC is in progress — the model decides what to generate freely.
+            _fc_in_progress = (fc_state is not None and (
+                fc_state.get("active", False) or
+                fc_state.get("forced_function_tokens") or
+                fc_state.get("injecting_response", False)
+            ))
+            if not _fc_in_progress:
+                # LLM PAD-window primary: always runs when force_turn_taking=True
+                self._maybe_apply_forced_turn_taking(current_frame_idx, gen_text, gen_asr_text, rnnt_state=rnnt_partial_hypotheses)
+
             predicted_tokens[:, frame_offset] = gen_text[:, current_frame_idx]
 
-            # RNNT-based EOU/BOU turn-taking
-            if rnnt_state is not None and encoder_emb_raw is not None:
-                # encoder_emb_raw format depends on code path:
-                #   non-cache: perception.py returns [B, T, D] (transposed at source)
-                #   cache:     perception_cache.py returns [B, D, T] (channels-first, NOT transposed)
-                # Normalise to [B, T, D] so frame extraction is consistent.
-                rnnt_enc = encoder_emb_raw.transpose(1, 2) if used_perception_cache else encoder_emb_raw
-                emb_idx = frame_offset if used_perception_cache else current_frame_index
+            # RNNT-based EOU/BOU turn-taking (ga/eou approach: decode then turn-take same frame)
+            if rnnt_partial_hypotheses is not None and asr_emb is not None:
+                # asr_emb is always [B, T, D]: perception_cache.step() transposes internally
+                rnnt_enc = asr_emb
+                emb_idx = frame_offset if (self.use_perception_cache and perception_cache is not None and perception_cache.is_initialized()) else current_frame_index
                 emb_idx = min(emb_idx, rnnt_enc.shape[1] - 1)
                 rnnt_frame = rnnt_enc[:, emb_idx, :]  # [B, D]
-                tok_before = gen_text[0, current_frame_idx].item()
-                rnnt_state, rnnt_is_blank = self._rnnt_step(rnnt_frame, rnnt_state)
-                self._apply_rnnt_turn_taking(current_frame_idx, gen_text, rnnt_is_blank, rnnt_state)
-                tok_after = gen_text[0, current_frame_idx].item()
+                rnnt_partial_hypotheses, _rnnt_is_blank = self._rnnt_step(rnnt_frame, rnnt_partial_hypotheses)
+                if not _fc_in_progress:
+                    self._apply_rnnt_turn_taking(current_frame_idx, gen_text, _rnnt_is_blank, rnnt_partial_hypotheses)
                 predicted_tokens[:, frame_offset] = gen_text[:, current_frame_idx]
-                # Print when RNNT EOU/BOU actively changed the voicechat response token
-                if tok_after != tok_before:
-                    import datetime as _dt
-                    bos_id = self.model.stt_model.text_bos_id
-                    eos_id = self.model.stt_model.text_eos_id
-                    _evt = ("BOS→agent-start" if tok_after == bos_id else
-                            "EOS→agent-stop(barge-in)" if tok_after == eos_id else f"tok={tok_after}")
-                    _t_sec = round(current_frame_idx * 0.08, 2)
-                    _density_val = rnnt_state['rolling_density'][0].item()
-                    print(
-                        f"[RNNT-CTRL {_dt.datetime.now().isoformat()}] "
-                        f"frame={current_frame_idx} t={_t_sec}s "
-                        f"RNNT overrode LLM: llm_tok={tok_before} → {_evt} "
-                        f"(blank={rnnt_is_blank.item()}, "
-                        f"blank_cnt={rnnt_state['blank_count'][0].item()}, "
-                        f"nonblank_total={rnnt_state['nonblank_total'][0].item()}, "
-                        f"density={_density_val:.3f})",
-                        flush=True
-                    )
 
             if self.decode_audio:
                 current_subword_id = gen_text[:, current_frame_idx].unsqueeze(-1)
@@ -1098,14 +2155,11 @@ class NemotronVoicechatInferenceWrapper:
                     raise RuntimeError("generation_config is not initialized. Ensure TTS warmup ran successfully.")
 
                 start_tts_model = time.time()
-                # If TTS is on a different device, move tensors there and back.
-                tts_dev = getattr(self, 'tts_device', self.device)
-                tts_xdev = (tts_dev != self.device)
                 inputs = {
-                    "current_subword_id": current_subword_id.to(tts_dev),
-                    "prev_subword_id": prev_subword_id.to(tts_dev),
-                    "current_subword_mask": current_subword_mask.to(tts_dev),
-                    "prev_audio_tokens": code.to(tts_dev) if code is not None else None,
+                    "current_subword_id": current_subword_id,
+                    "prev_subword_id": prev_subword_id,
+                    "current_subword_mask": current_subword_mask,
+                    "prev_audio_tokens": code,
                     "past_key_values": past_key_values,
                     "guidance_enabled": True,
                     "generation_config": self.generation_config,
@@ -1117,10 +2171,6 @@ class NemotronVoicechatInferenceWrapper:
                 code, past_key_values = self.model.tts_model.infer_codes_one_step(
                         **inputs
                 )
-
-                # Move outputs back to main device if TTS was on a different device.
-                if tts_xdev:
-                    code = code.to(self.device)
 
                 torch.cuda.synchronize()
                 time_tts_model = time.time() - start_tts_model
@@ -1212,28 +2262,17 @@ class NemotronVoicechatInferenceWrapper:
             asr_predicted_toks_b = [tok for tok in asr_predicted_toks_b if tok != '<SPECIAL_12>']
             asr_predicted_text_strs.append(self.tokenizer.tokens_to_text(asr_predicted_toks_b))
 
-        # Decode FC tokens to strings (same tokenizer as agent text).
-        # function_predicted_tokens is initialized with torch.empty() so uninitialized frames
-        # may contain garbage values. Filter to valid vocab range before decoding to avoid
-        # OverflowError in ids_to_tokens on out-of-range integers.
-        fc_predicted_text_strs = []
-        if self.model.stt_model.function_head is not None:
-            _fc_vocab_size = self.model.stt_model.embed_tokens.weight.shape[0]
-            for fc_tok_ids_b in function_predicted_tokens:
-                fc_tok_ids_b = fc_tok_ids_b.tolist()
-                # Clamp to valid range: drop any garbage IDs from uninitialized frames
-                fc_tok_ids_b = [tid for tid in fc_tok_ids_b if 0 <= tid < _fc_vocab_size]
-                if not fc_tok_ids_b:
-                    fc_predicted_text_strs.append("")
-                    continue
-                fc_toks_b = self.tokenizer.ids_to_tokens(fc_tok_ids_b)
-                fc_toks_b = [tok for tok in fc_toks_b if tok != '<SPECIAL_12>']
-                fc_predicted_text_strs.append(self.tokenizer.tokens_to_text(fc_toks_b))
-
         logging.info(f'frame {frame_idx}: USER\'s asr_predicted_text_strs: {asr_predicted_text_strs}')
         logging.info(f'frame {frame_idx}: --------------------------------AGENT\'s predicted_text_strs: {predicted_text_strs}')
-        if fc_predicted_text_strs and any(s for s in fc_predicted_text_strs):
-            logging.info(f'frame {frame_idx}: FC predicted_text_strs: {fc_predicted_text_strs}')
+        if self.model.stt_model.function_head is not None:
+            fc_tok_ids = function_predicted_tokens[0].tolist()
+            pad_id = self.model.stt_model.text_pad_id
+            non_pad = [(i, t) for i, t in enumerate(fc_tok_ids) if t != pad_id]
+            if non_pad:
+                fc_tok_strs = self.tokenizer.ids_to_tokens([t for _, t in non_pad])
+                logging.info(f'frame {frame_idx}: FC_HEAD tokens (non-pad): {list(zip([i for i,_ in non_pad], fc_tok_strs))}')
+            else:
+                logging.info(f'frame {frame_idx}: FC_HEAD tokens: all pad')
 
         torch.cuda.synchronize()
 
@@ -1247,17 +2286,24 @@ class NemotronVoicechatInferenceWrapper:
             'decoded_audio_new': decoded_audio_new,
             'predicted_text_strs': predicted_text_strs,
             'asr_predicted_text_strs': asr_predicted_text_strs,
-            'fc_predicted_text_strs': fc_predicted_text_strs,
             'input_embeds_history': input_embeds_history + new_input_embeds if not use_cache else input_embeds_history,
             'dynamic_cache': dynamic_cache if use_cache else None,
             'past_key_values': past_key_values,
             'code': code,
             'perception_cache': perception_cache,
             'codec_cache': codec_cache,
-            'rnnt_state': rnnt_state,
+            'rnnt_partial_hypotheses': rnnt_partial_hypotheses,
         }
         if self.model.stt_model.function_head is not None:
             result['function_predicted_text_tokens'] = function_predicted_tokens
+            fc_text_strs = []
+            pad_id = self.model.stt_model.text_pad_id
+            for fc_tok_ids_b in function_predicted_tokens:
+                fc_ids = [t for t in fc_tok_ids_b.tolist() if t != pad_id]
+                fc_text_strs.append(self.tokenizer.ids_to_text(fc_ids) if fc_ids else "")
+            result['function_predicted_text_strs'] = fc_text_strs
+        if fc_state is not None:
+            result['fc_state'] = fc_state
         return result
 
     def abort_request(self, request_id: Optional[str]) -> bool:
@@ -1294,15 +2340,18 @@ class NemotronVoicechatInferenceWrapper:
         return success
 
 
-    def _maybe_apply_forced_turn_taking(self, t, gen_text, gen_asr):
-        """Apply forced turn-taking rules based on ASR channel tokens."""
+    def _maybe_apply_forced_turn_taking(self, t, gen_text, gen_asr, rnnt_state=None):
+        """Apply forced turn-taking rules based on ASR channel tokens.
+
+        First turn uses a shorter silence window (force_turn_taking_pad_window_first_turn)
+        so that a short utterance like "Hello" + pause still triggers an agent response.
+        """
         if not self.model_cfg.get("force_turn_taking", False):
             return
 
         threshold        = self.model_cfg.get("force_turn_taking_threshold", 40)
         pad_window_steps = self.model_cfg.get("force_turn_taking_pad_window", 25)
-        # Shorter silence window for the very first turn so "Hello" + pause triggers a response.
-        # Defaults to pad_window_steps (no change) if not set.
+        # Shorter window on the very first turn; falls back to pad_window_steps if unset.
         pad_window_first = self.model_cfg.get("force_turn_taking_pad_window_first_turn", pad_window_steps)
 
         bos_id      = self.model.stt_model.text_bos_id
@@ -1338,6 +2387,8 @@ class NemotronVoicechatInferenceWrapper:
             if has_pad_window:
                 if not (agent_text_window == bos_id).any():
                     gen_text[batch_idx, t] = bos_id
+                    if rnnt_state is not None and 'forced_bos' in rnnt_state:
+                        rnnt_state['forced_bos'][batch_idx] = True
                     logging.info(
                         f"Forced turn-taking at frame {t}: inserted agent BOS "
                         f"(pad_window={active_window}, first_turn={is_first_turn})"
@@ -1356,31 +2407,18 @@ class NemotronVoicechatInferenceWrapper:
             'pred_hidden':      None,
             'blank_count':      torch.zeros(B, dtype=torch.long, device=device),
             'nonblank_consec':  torch.zeros(B, dtype=torch.long, device=device),
-            # nonblank_total: cumulative non-blank frames since last reset. Resets on EOU,
-            # agent-speaking, or after long silence (to prevent noise accumulation).
-            # Unlike nonblank_consec, blanks mid-word don't reset it, so short words like
-            # "hello" still accumulate enough count to confirm real speech.
             'nonblank_total':   torch.zeros(B, dtype=torch.long, device=device),
-            # speech_confirmed: True when real user speech detected (not echo/noise).
-            # Set when nonblank_consec OR nonblank_total reaches the speech threshold.
             'speech_confirmed': torch.zeros(B, dtype=torch.bool, device=device),
-            # Persistent agent-speaking flag — not window-bounded.
             'agent_speaking':   torch.zeros(B, dtype=torch.bool, device=device),
-            # First turn: True until agent speaks for the first time. Uses lower thresholds
-            # so the user doesn't need to say many words before the agent responds.
             'first_turn':       torch.ones(B, dtype=torch.bool, device=device),
-            # rolling_density: exponential moving average of non-blank rate (0.0–1.0).
-            # Tracks how speech-dense this speaker is. Low density → accent/noise/sparse
-            # speech → adaptive lower min_speech_frames threshold.
             'rolling_density':  torch.zeros(B, dtype=torch.float32, device=device),
-            # post_eos_fired: True after post_eos_fallback fires once for the current agent turn.
-            # Prevents repeated post_eos triggers to silence. Resets when agent starts speaking.
             'post_eos_fired':   torch.zeros(B, dtype=torch.bool, device=device),
+            'forced_bos':       torch.zeros(B, dtype=torch.bool, device=device),
         }
 
     @torch.no_grad()
     def _rnnt_step(self, encoder_frame: torch.Tensor, rnnt_state: dict):
-        """Run one RNNT step. Returns (new_state, is_blank [B])."""
+        """Run one RNNT greedy decode step. Returns (new_state, is_blank [B])."""
         decoder  = getattr(self.model.stt_model, '_rnnt_decoder', None)
         joint    = getattr(self.model.stt_model, '_rnnt_joint', None)
         blank_id = getattr(self.model.stt_model, '_rnnt_blank_id', 1024)
@@ -1389,53 +2427,41 @@ class NemotronVoicechatInferenceWrapper:
             return rnnt_state, is_blank
 
         B = encoder_frame.shape[0]
-        f = encoder_frame.float().unsqueeze(1)  # [B, 1, 1024]
+        rnnt_dtype = next(joint.parameters()).dtype
+        f = encoder_frame.to(rnnt_dtype).unsqueeze(1)  # [B, 1, D]
 
         pred_out    = rnnt_state['pred_out']
         pred_hidden = rnnt_state['pred_hidden']
         if pred_out is None:
             pred_out, pred_hidden = decoder.predict(y=None, state=None, add_sos=True, batch_size=B)
-
-        # add_sos=True may return pred_out with T>1 (e.g. [B, 2, D]).
-        # The RNNT joint expects [B, 1, D] — keep only the last decoder step.
         if pred_out.dim() == 3 and pred_out.shape[1] > 1:
-            pred_out = pred_out[:, -1:, :]   # [B, 1, D]
+            pred_out = pred_out[:, -1:, :]
 
-        logits = joint.joint(f, pred_out)           # [B, 1, 1, V]
-        tokens = logits.squeeze(1).squeeze(1).argmax(-1)  # [B]
+        logits = joint.joint(f, pred_out)
+        tokens = logits.squeeze(1).squeeze(1).argmax(-1)
         is_blank = (tokens == blank_id)
 
-        new_pred_out    = pred_out
-        new_pred_hidden = pred_hidden
+        new_pred_out, new_pred_hidden = pred_out, pred_hidden
         if not is_blank.all():
             non_blank_tokens = torch.where(is_blank, torch.full_like(tokens, blank_id), tokens)
-            y = non_blank_tokens.unsqueeze(1)  # [B, 1]
+            y = non_blank_tokens.unsqueeze(1)
             try:
                 new_pred_out_cand, new_pred_hidden_cand = decoder.predict(
                     y=y, state=pred_hidden, add_sos=False, batch_size=B
                 )
                 if B == 1:
                     if not is_blank[0]:
-                        new_pred_out    = new_pred_out_cand
-                        new_pred_hidden = new_pred_hidden_cand
+                        new_pred_out, new_pred_hidden = new_pred_out_cand, new_pred_hidden_cand
                 else:
                     mask = is_blank.view(B, 1, 1).expand_as(pred_out)
-                    new_pred_out    = torch.where(mask, pred_out, new_pred_out_cand)
+                    new_pred_out = torch.where(mask, pred_out, new_pred_out_cand)
                     new_pred_hidden = new_pred_hidden_cand
             except Exception as _e:
-                # Decoder state update failed (e.g., hidden-state shape mismatch on first
-                # non-blank token). EOU blank/nonblank counting still works correctly;
-                # only the decoder conditioning is affected.
                 logging.warning(f"RNNT decoder update skipped: {_e}")
 
-        # EMA density: track fraction of non-blank frames (speaker-level, not reset on turns).
-        # Alpha=0.1 means ~10-frame (0.8s) effective window for density estimation.
-        # During agent speech, RNNT sees the agent's TTS audio — we want user density only,
-        # so only update density when agent is NOT speaking.
         density_alpha = 0.1
         is_speech_float = (~is_blank).float()
         if rnnt_state.get('agent_speaking') is not None and rnnt_state['agent_speaking'].any():
-            # Don't corrupt density estimate with agent's own TTS audio
             new_density = rnnt_state['rolling_density']
         else:
             new_density = density_alpha * is_speech_float + (1.0 - density_alpha) * rnnt_state['rolling_density']
@@ -1449,11 +2475,9 @@ class NemotronVoicechatInferenceWrapper:
             'nonblank_consec':  torch.where(is_blank,
                                             torch.zeros_like(rnnt_state['nonblank_consec']),
                                             rnnt_state['nonblank_consec'] + 1),
-            # nonblank_total increments on non-blank, holds on blank (reset by _apply_rnnt_turn_taking)
             'nonblank_total':   torch.where(is_blank,
                                             rnnt_state['nonblank_total'],
                                             rnnt_state['nonblank_total'] + 1),
-            # speech_confirmed, agent_speaking, and first_turn are managed in _apply_rnnt_turn_taking
             'speech_confirmed': rnnt_state['speech_confirmed'],
             'agent_speaking':   rnnt_state['agent_speaking'],
             'first_turn':       rnnt_state['first_turn'],
@@ -1463,18 +2487,20 @@ class NemotronVoicechatInferenceWrapper:
         return new_state, is_blank
 
     def _apply_rnnt_turn_taking(self, t: int, gen_text: torch.Tensor,
-                                 is_blank: torch.Tensor, rnnt_state: dict) -> None:
+                                is_blank: torch.Tensor, rnnt_state: dict) -> None:
         """Apply RNNT blank/non-blank counts to trigger agent BOS (EOU) or EOS (BOU)."""
-        if not self.model_cfg.get("rnnt_eou_enabled", False):
+        if not self.model_cfg.get("force_turn_taking", False):
             return
 
-        asr_eou          = int(self.model_cfg.get("asr_eou", 4))           # blank frames → EOU (N × 80ms silence)
-        asr_min_speech   = int(self.model_cfg.get("asr_min_speech_frames", 3))  # min speech frames before EOU can fire (noise guard)
-        user_bos_frames  = int(self.model_cfg.get("user_bos_frames",       # consecutive non-blank frames → barge-in
-                                self.model_cfg.get("asr_bou", 4)))
+        asr_eou         = int(self.model_cfg.get("rnnt_eou_frames",
+                              self.model_cfg.get("asr_eou", 15)))
+        asr_min_speech  = int(self.model_cfg.get("asr_min_speech_frames", 3))
+        user_bos_frames = int(self.model_cfg.get("user_bos_frames",
+                              self.model_cfg.get("asr_bou",
+                              self.model_cfg.get("rnnt_bou_frames", 4))))
         threshold = int(self.model_cfg.get("force_turn_taking_threshold", 40))
-        bos_id   = self.model.stt_model.text_bos_id
-        eos_id   = self.model.stt_model.text_eos_id
+        bos_id    = self.model.stt_model.text_bos_id
+        eos_id    = self.model.stt_model.text_eos_id
 
         B = gen_text.size(0)
         for b in range(B):
@@ -1486,43 +2512,47 @@ class NemotronVoicechatInferenceWrapper:
             nonblank_total   = rnnt_state['nonblank_total'][b].item()
             speech_confirmed = rnnt_state['speech_confirmed'][b].item()
             first_turn       = rnnt_state['first_turn'][b].item()
+            rolling_density  = rnnt_state['rolling_density'][b].item()
 
-            # First-turn thresholds: before agent ever speaks, use lower bar so a single
-            # short word like "hello" + brief pause triggers the response.
-            # After first turn: use normal (stricter) configured thresholds.
             if first_turn:
                 effective_min_speech = int(self.model_cfg.get("asr_min_speech_frames_first_turn", 2))
-                effective_eou        = int(self.model_cfg.get("asr_eou_first_turn", 2))
+                effective_eou        = int(self.model_cfg.get("asr_eou_first_turn", asr_eou))
             else:
                 effective_min_speech = asr_min_speech
                 effective_eou        = asr_eou
 
-            # Adaptive speech density: if this speaker produces sparse non-blank tokens
-            # (accent, noise, synthetic speech), lower effective_min_speech automatically.
-            # rolling_density is EMA of non-blank rate; values <density_threshold indicate
-            # a sparse-speech speaker who needs a lower confirmation threshold.
-            density_threshold  = float(self.model_cfg.get("density_speech_threshold", 0.15))
-            density_low_min    = int(self.model_cfg.get("density_low_min_speech", 1))
-            rolling_density    = rnnt_state['rolling_density'][b].item()
-            density_adapted    = False
+            density_threshold = float(self.model_cfg.get("density_speech_threshold", 0.15))
+            density_low_min   = int(self.model_cfg.get("density_low_min_speech", 1))
+            density_adapted   = False
             if not first_turn and rolling_density < density_threshold and rolling_density > 0.0:
                 effective_min_speech = density_low_min
                 density_adapted = True
 
-            # Sync persistent agent_speaking flag from BOS/EOS in the recent window.
-            # Also check gen_text[b, t] so that tokens placed at the current frame by
-            # _maybe_apply_forced_turn_taking (which runs before us) are adopted immediately
-            # rather than waiting one frame for t to enter the lookback window.
             agent_speaking = rnnt_state['agent_speaking'][b].item()
             current_tok = gen_text[b, t].item()
+
+            # Self-play suppression: block LLM-native BOS when agent finished speaking
+            # and user hasn't started. MUST run before the BOS-detection block below
+            # (which sets agent_speaking=True, making a post-detection check unreachable).
+            # Forced-turn-taking BOS is exempted via the 'forced_bos' flag set by
+            # _maybe_apply_forced_turn_taking. RNNT-EOU BOS is safe: it is injected
+            # internally (token was PAD at function entry) and returns before this path.
+            _forced_bos_flags = rnnt_state.get('forced_bos')
+            _is_forced_bos = (_forced_bos_flags is not None and _forced_bos_flags[b].item())
+            if _forced_bos_flags is not None:
+                rnnt_state['forced_bos'][b] = False  # consume flag each frame
+            if (not agent_speaking and not first_turn and not speech_confirmed
+                    and current_tok == bos_id and not _is_forced_bos):
+                gen_text[b, t] = self.model.stt_model.text_pad_id
+                logging.debug(f"RNNT self-play suppression t={t}: LLM BOS suppressed (no user speech)")
+                return
+
             if (agent_window == bos_id).any() or current_tok == bos_id:
                 agent_speaking = True
                 rnnt_state['agent_speaking'][b] = True
                 rnnt_state['first_turn'][b] = False
                 first_turn = False
                 if current_tok == bos_id:
-                    # LLM (force_turn_taking) just fired BOS — reset RNNT speech accumulator
-                    # so stale speech signal from before the BOS doesn't prematurely re-trigger EOU.
                     rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['nonblank_total'][b] = 0
                     speech_confirmed = False
@@ -1530,34 +2560,20 @@ class NemotronVoicechatInferenceWrapper:
             if (agent_window == eos_id).any() or current_tok == eos_id:
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
-                # Turn-boundary reset: clear accumulated signal from during agent speech.
-                # This is not echo suppression — it's a clean slate for the next user turn.
-                # Without this, nonblank_total from noise/signal during agent speech would
-                # immediately re-trigger EOU the moment the agent stops.
                 rnnt_state['speech_confirmed'][b] = False
                 rnnt_state['nonblank_total'][b] = 0
                 speech_confirmed = False
                 nonblank_total = 0
 
-            # Noise-accumulation guard: after long silence (10 × 80ms = 800ms) without
-            # confirmed speech, reset nonblank_total so isolated noise spikes don't
-            # slowly add up across minutes to falsely trigger speech_confirmed.
             noise_reset_frames = int(self.model_cfg.get("nonblank_reset_after_silence", 10))
             if blank_cnt >= noise_reset_frames and not speech_confirmed and not agent_speaking:
                 rnnt_state['nonblank_total'][b] = 0
                 nonblank_total = 0
 
-            # Confirm real user speech when (a) N consecutive non-blank frames (strict),
-            # OR (b) N total non-blank frames since last reset (catches short words where
-            # RNNT inserts blanks between phonemes, breaking the consecutive streak).
             if (nonblank_cnt >= effective_min_speech or nonblank_total >= effective_min_speech) and not agent_speaking:
                 rnnt_state['speech_confirmed'][b] = True
                 speech_confirmed = True
 
-            # First-turn timer fallback: if the user hasn't triggered EOU via RNNT after
-            # first_turn_fallback_frames (default 50 × 80ms = 4s), inject BOS anyway so
-            # the agent always responds on the first turn even if RNNT misses the speech.
-            # This is force_turn_taking scoped to first_turn only — safe alongside RNNT.
             first_turn_fallback = int(self.model_cfg.get("first_turn_fallback_frames", 50))
             if first_turn and t >= first_turn_fallback and speech_confirmed and not (agent_window == bos_id).any():
                 gen_text[b, t] = bos_id
@@ -1565,170 +2581,50 @@ class NemotronVoicechatInferenceWrapper:
                 rnnt_state['nonblank_total'][b] = 0
                 rnnt_state['agent_speaking'][b] = True
                 rnnt_state['first_turn'][b] = False
-                logging.info(
-                    f"RNNT first-turn fallback t={t}: agent BOS "
-                    f"(no EOU detected in {first_turn_fallback} frames)"
-                )
+                logging.info(f"RNNT first-turn fallback t={t}: agent BOS (no EOU in {first_turn_fallback} frames)")
                 return
 
-            # EOU: N blank frames after confirmed user speech → inject agent BOS.
-            # Safety-net: skip if LLM (force_turn_taking) already placed BOS this frame or in window.
+            # EOU: N blank frames after confirmed speech → inject agent BOS
             if blank_cnt >= effective_eou and speech_confirmed and not agent_speaking:
                 if not (agent_window == bos_id).any() and current_tok != bos_id:
-                    # CONFLICT CHECK: RNNT is about to overwrite a non-pad LLM token.
-                    # This happens when the LLM backbone already placed a speech/text token
-                    # at frame t while RNNT is trying to write BOS — the two disagree on
-                    # what should happen at this frame.
-                    existing_tok = gen_text[b, t].item()
-                    _pad_id = self.model.stt_model.text_pad_id
-                    if existing_tok != _pad_id and existing_tok != bos_id:
-                        import datetime
-                        _conflict_msg = (
-                            f"CONFLICT [RNNT-EOU overwrites LLM token] t={t} t_sec={t*0.08:.2f}: "
-                            f"LLM placed token={existing_tok} at frame {t}, "
-                            f"RNNT overwriting with BOS (blank_cnt={blank_cnt}, "
-                            f"nonblank_total={nonblank_total})"
-                        )
-                        logging.warning(_conflict_msg)
-                        if getattr(self, '_rnnt_eou_log_path', None):
-                            with open(self._rnnt_eou_log_path, 'a') as _lf:
-                                _lf.write(
-                                    f"{datetime.datetime.now().isoformat()} | CONFLICT_EOU_OVERWRITE | frame={t} | "
-                                    f"t_sec={t*0.08:.2f} | llm_token={existing_tok} | "
-                                    f"blank_cnt={blank_cnt} | nonblank_total={nonblank_total}\n"
-                                )
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     rnnt_state['first_turn'][b] = False
-                    _density_note = (
-                        f" [ADAPTIVE density={rolling_density:.3f}<{density_threshold} → min_speech={density_low_min}]"
-                        if density_adapted else ""
+                    logging.info(
+                        f"RNNT EOU t={t}: agent BOS (blank_cnt={blank_cnt}, "
+                        f"nonblank_total={nonblank_total}, density={rolling_density:.3f})"
                     )
-                    _msg = (
-                        f"RNNT EOU t={t}: agent BOS "
-                        f"(first_turn={first_turn}, blank_count={blank_cnt}, "
-                        f"nonblank_consec={nonblank_cnt}, nonblank_total={nonblank_total}, "
-                        f"density={rolling_density:.3f}){_density_note}"
-                    )
-                    logging.info(_msg)
-                    if getattr(self, '_rnnt_eou_log_path', None):
-                        import datetime
-                        with open(self._rnnt_eou_log_path, 'a') as _lf:
-                            _lf.write(
-                                f"{datetime.datetime.now().isoformat()} | EOU | frame={t} | "
-                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
-                                f"nonblank_total={nonblank_total} | first_turn={first_turn} | "
-                                f"density={rolling_density:.3f} | adapted={density_adapted}\n"
-                            )
                 else:
-                    # CONFLICT: RNNT EOU would fire but LLM backbone already placed BOS in
-                    # the lookback window (premature LLM BOS suppresses the RNNT EOU).
-                    # This is the primary failure mode when force_turn_taking fires at 0.72s
-                    # before the user finishes speaking.
-                    import datetime
-                    _llm_bos_offsets = (agent_window == bos_id).nonzero(as_tuple=True)[0].tolist()
-                    _llm_bos_frames = [lookback_start + off for off in _llm_bos_offsets]
-                    _conflict_msg = (
-                        f"CONFLICT [RNNT-EOU suppressed by LLM-BOS] t={t} t_sec={t*0.08:.2f}: "
-                        f"LLM already has BOS at frames {_llm_bos_frames} "
-                        f"(t_sec={[f*0.08 for f in _llm_bos_frames]}), "
-                        f"RNNT wanted EOU (blank_cnt={blank_cnt}, nonblank_total={nonblank_total})"
-                    )
-                    logging.warning(_conflict_msg)
-                    if getattr(self, '_rnnt_eou_log_path', None):
-                        with open(self._rnnt_eou_log_path, 'a') as _lf:
-                            _lf.write(
-                                f"{datetime.datetime.now().isoformat()} | CONFLICT_EOU_SUPPRESSED | frame={t} | "
-                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
-                                f"nonblank_total={nonblank_total} | "
-                                f"llm_bos_frames={_llm_bos_frames} | "
-                                f"llm_bos_t_sec={[round(f*0.08,2) for f in _llm_bos_frames]}\n"
-                            )
-                return  # EOU takes priority over user BOS interrupt
+                    logging.debug(f"RNNT EOU suppressed at t={t}: LLM already has BOS in window")
+                return
 
-            # Force-EOS: if the agent has been speaking for too long (blank_cnt >= threshold)
-            # with zero user speech detected (speech_confirmed=False), the LLM is generating
-            # indefinitely without natural EOS (common for zero-RNNT-detection speakers like
-            # Kevin/Edresson/Moshi whose audio produces 0 RNNT non-blank tokens). Inject EOS to
-            # stop the agent turn so that post_eos_fallback can then trigger a new BOS response.
-            # NOT triggered for control speakers: their barge-ins reset blank_cnt before threshold.
-            force_eos_frames = int(self.model_cfg.get("force_eos_after_frames", 0))  # 0=disabled
+            force_eos_frames = int(self.model_cfg.get("force_eos_after_frames", 0))
             if (force_eos_frames > 0 and agent_speaking and not speech_confirmed
                     and not first_turn and not (agent_window == eos_id).any()):
                 if blank_cnt >= force_eos_frames:
-                    import datetime as _dt_fef
                     gen_text[b, t] = eos_id
                     rnnt_state['agent_speaking'][b] = False
                     rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['nonblank_total'][b] = 0
-                    _fef_msg = (
-                        f"RNNT force-EOS t={t}: agent EOS injected "
-                        f"(agent speaking > {force_eos_frames} blank frames with no user speech, "
-                        f"blank_cnt={blank_cnt}, density={rolling_density:.3f})"
-                    )
-                    logging.info(_fef_msg)
-                    print(
-                        f"[RNNT-CTRL {_dt_fef.datetime.now().isoformat()}] "
-                        f"frame={t} t={t*0.08:.2f}s "
-                        f"FORCE-EOS: agent stopped (no user speech in {blank_cnt} blanks, "
-                        f"density={rolling_density:.3f})",
-                        flush=True
-                    )
-                    if getattr(self, '_rnnt_eou_log_path', None):
-                        with open(self._rnnt_eou_log_path, 'a') as _lf:
-                            _lf.write(
-                                f"{_dt_fef.datetime.now().isoformat()} | FORCE_EOS | frame={t} | "
-                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
-                                f"density={rolling_density:.3f} | adapted={density_adapted}\n"
-                            )
+                    self._agent_eos_just_fired = True
+                    logging.info(f"RNNT force-EOS t={t}: agent stopped (no user speech in {blank_cnt} blanks)")
                     return
 
-            # Post-EOS fallback: if agent finished speaking and blank_count accumulates past
-            # post_eos_fallback_frames without ANY confirmed user speech, inject BOS unconditionally.
-            # This handles speakers whose acoustic properties produce 0 RNNT non-blank tokens
-            # (e.g., heavy accent, synthetic speech) — Kratos can't detect them, so we fall back
-            # to a time-based response trigger. Only fires when speech_confirmed=False (if RNNT
-            # DID detect user speech, the normal EOU path above handles it).
-            post_eos_fallback = int(self.model_cfg.get("post_eos_fallback_frames", 0))  # 0=disabled
+            post_eos_fallback = int(self.model_cfg.get("post_eos_fallback_frames", 0))
             if (post_eos_fallback > 0 and not first_turn and not agent_speaking
                     and not speech_confirmed and not rnnt_state['post_eos_fired'][b]):
                 if blank_cnt >= post_eos_fallback:
-                    import datetime as _dt_pef
                     gen_text[b, t] = bos_id
                     rnnt_state['speech_confirmed'][b] = False
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     rnnt_state['first_turn'][b] = False
-                    rnnt_state['post_eos_fired'][b] = True  # fire at most once per agent turn
-                    _pef_msg = (
-                        f"RNNT post-EOS fallback t={t}: agent BOS "
-                        f"(blank_cnt={blank_cnt}>={post_eos_fallback}, "
-                        f"density={rolling_density:.3f}, speech_confirmed=False)"
-                    )
-                    logging.info(_pef_msg)
-                    print(
-                        f"[RNNT-CTRL {_dt_pef.datetime.now().isoformat()}] "
-                        f"frame={t} t={t*0.08:.2f}s "
-                        f"POST-EOS fallback: BOS injected (no speech detected in {blank_cnt} blanks, "
-                        f"density={rolling_density:.3f})",
-                        flush=True
-                    )
-                    if getattr(self, '_rnnt_eou_log_path', None):
-                        with open(self._rnnt_eou_log_path, 'a') as _lf:
-                            _lf.write(
-                                f"{_dt_pef.datetime.now().isoformat()} | POST_EOS_FALLBACK | frame={t} | "
-                                f"t_sec={t*0.08:.2f} | blank_cnt={blank_cnt} | "
-                                f"density={rolling_density:.3f} | adapted={density_adapted}\n"
-                            )
+                    rnnt_state['post_eos_fired'][b] = True
+                    logging.info(f"RNNT post-EOS fallback t={t}: BOS (blank_cnt={blank_cnt})")
                     return
 
-            # BOS suppression: after post_eos fired once and RNNT still detects no user speech,
-            # suppress any LLM-native BOS tokens that would start hallucinated self-play turns.
-            # post_eos already gave the agent one response; additional LLM-generated BOS tokens
-            # are a runaway conversation loop — overwrite with pad to stop generation.
-            # speech_confirmed=True bypasses suppression so barge-ins from real users still work.
             if (post_eos_fallback > 0 and not first_turn and not speech_confirmed
                     and rnnt_state['post_eos_fired'][b]):
                 _pad_id = self.model.stt_model.text_pad_id
@@ -1737,57 +2633,23 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['agent_speaking'][b] = False
                     return
 
-            # Barge-in: N consecutive non-blank frames while agent speaking → agent EOS.
-            # Safety-net: skip if LLM (force_turn_taking) already placed EOS this frame or in window.
+            # Barge-in: N consecutive non-blank frames while agent speaking → EOS
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any() and current_tok != eos_id:
-                    # CONFLICT CHECK: RNNT barge-in about to overwrite a non-pad LLM token.
-                    existing_tok = gen_text[b, t].item()
-                    _pad_id = self.model.stt_model.text_pad_id
-                    if existing_tok != _pad_id and existing_tok != eos_id:
-                        import datetime
-                        _conflict_msg = (
-                            f"CONFLICT [RNNT-barge-in overwrites LLM token] t={t} t_sec={t*0.08:.2f}: "
-                            f"LLM placed token={existing_tok}, RNNT overwriting with EOS "
-                            f"(nonblank_consec={nonblank_cnt})"
-                        )
-                        logging.warning(_conflict_msg)
-                        if getattr(self, '_rnnt_eou_log_path', None):
-                            with open(self._rnnt_eou_log_path, 'a') as _lf:
-                                _lf.write(
-                                    f"{datetime.datetime.now().isoformat()} | CONFLICT_BARGEIN_OVERWRITE | frame={t} | "
-                                    f"t_sec={t*0.08:.2f} | llm_token={existing_tok} | "
-                                    f"nonblank_consec={nonblank_cnt}\n"
-                                )
                     gen_text[b, t] = eos_id
                     rnnt_state['nonblank_consec'][b] = 0
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = False
+                    self._agent_eos_just_fired = True
                     logging.info(
-                        f"RNNT barge-in t={t}: agent EOS "
-                        f"(nonblank_consec={nonblank_cnt}, user_bos_frames={user_bos_frames})"
+                        f"RNNT barge-in t={t}: agent EOS (nonblank_consec={nonblank_cnt})"
                     )
-                else:
-                    # CONFLICT: barge-in EOS suppressed because LLM already placed EOS in window.
-                    import datetime
-                    _llm_eos_offsets = (agent_window == eos_id).nonzero(as_tuple=True)[0].tolist()
-                    _llm_eos_frames = [lookback_start + off for off in _llm_eos_offsets]
-                    _conflict_msg = (
-                        f"CONFLICT [RNNT-barge-in suppressed by LLM-EOS] t={t} t_sec={t*0.08:.2f}: "
-                        f"LLM already has EOS at frames {_llm_eos_frames}, "
-                        f"RNNT wanted barge-in EOS (nonblank_consec={nonblank_cnt})"
-                    )
-                    logging.warning(_conflict_msg)
-                    if getattr(self, '_rnnt_eou_log_path', None):
-                        with open(self._rnnt_eou_log_path, 'a') as _lf:
-                            _lf.write(
-                                f"{datetime.datetime.now().isoformat()} | CONFLICT_BARGEIN_SUPPRESSED | frame={t} | "
-                                f"t_sec={t*0.08:.2f} | nonblank_consec={nonblank_cnt} | "
-                                f"llm_eos_frames={_llm_eos_frames}\n"
-                            )
+
+    def _reset_rnnt_turn_taking_state(self):
+        self._agent_eos_just_fired = False
 
     @torch.no_grad()
-    def inference_realtime_streaming(self, audio_path: str, num_frames_per_chunk: int = None, request_id: Optional[str] = None, pad_audio_to_sec: Optional[float] = None, pad_silence_ratio: Optional[float] = None, pad_audio_by_sec: Optional[float] = None, system_prompt: Optional[str] = None):
+    def inference_realtime_streaming(self, audio_path: str, num_frames_per_chunk: int = None, request_id: Optional[str] = None, pad_audio_to_sec: Optional[float] = None, pad_silence_ratio: Optional[float] = None, pad_audio_by_sec: Optional[float] = None, system_prompt: Optional[str] = None, tool_executor_fn: Optional[callable] = None):
         """
         Perform realtime streaming inference simulating microphone capture.
 
@@ -1799,6 +2661,11 @@ class NemotronVoicechatInferenceWrapper:
             pad_silence_ratio: Optional ratio of original duration to append as silence (e.g. 0.2 = 20%)
             pad_audio_by_sec: Optional fixed number of extra seconds of silence to append
             system_prompt: Optional system prompt to provide context to the model
+            tool_executor_fn: Optional callable (str) -> str for two-phase async FC.
+                When fc_async_two_phase is enabled, this function is called with the
+                tool call text after EOTC. It should execute the tool and return the
+                response string. If None and two-phase is enabled, the async loop
+                exits at EOTC without response injection.
 
         Returns:
             Dictionary with 'text', 'tokens_text', 'tokens_audio', 'audio', 'audio_len', 'system_prompt'
@@ -1994,7 +2861,7 @@ class NemotronVoicechatInferenceWrapper:
                 past_key_values = None
                 logging.info(f"Time taken to batch prefill tts model: {time.time() - start_batch_prefill:.3f}s")
                 # Initialize subword_mask for vLLM path as well
-            subword_mask = torch.ones(1, total_frames, device=self.device, dtype=torch.bool)
+            subword_mask = torch.ones(1, timeline_capacity, device=self.device, dtype=torch.bool)
             logging.info(f"TTS initialized")
 
         # Initialize perception cache if enabled
@@ -2003,17 +2870,6 @@ class NemotronVoicechatInferenceWrapper:
             perception_cache = self.perception_cache_mgr.get_initial_state(batch_size=1)
             logging.info(f"Perception cache initialized")
 
-        # Initialize RNNT EOU/BOU state
-        rnnt_state = None
-        if hasattr(self.model.stt_model, '_rnnt_decoder') and self.model_cfg.get('rnnt_eou_enabled', False):
-            rnnt_state = self._rnnt_init_state(1, self.device)
-            logging.info(
-                f"RNNT EOU/BOU enabled: asr_eou={self.model_cfg.get('asr_eou',4)} frames "
-                f"({self.model_cfg.get('asr_eou',4)*80}ms silence→EOU), "
-                f"user_bos_frames={self.model_cfg.get('user_bos_frames', self.model_cfg.get('asr_bou',4))} frames "
-                f"({self.model_cfg.get('user_bos_frames', self.model_cfg.get('asr_bou',4))*80}ms speech→interrupt)"
-            )
-
         # Initialize codec streaming cache to remove clicking sounds and wasted inference computation
         codec_cache = None
         if self.decode_audio and self.use_codec_cache:
@@ -2021,18 +2877,38 @@ class NemotronVoicechatInferenceWrapper:
             codec_cache = CausalConv1dCache()
             logging.info(f"Codec streaming cache initialized")
 
-        gen_text = torch.full((1, total_frames), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
-        gen_asr_text = torch.full((1, total_frames), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
+        # When fc_async is enabled, extra timeline slots are needed for FC tokens
+        # that run ahead of the audio. Pre-allocate generous headroom.
+        fc_async_headroom = 2000 if (self._fc_async_enabled and self.model.stt_model.function_head is not None) else 0
+        timeline_capacity = total_frames + fc_async_headroom
+
+        gen_text = torch.full((1, timeline_capacity), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
+        gen_asr_text = torch.full((1, timeline_capacity), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
         has_function_head = self.model.stt_model.function_head is not None
         if has_function_head:
-            gen_function_text = torch.full((1, total_frames), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
+            gen_function_text = torch.full((1, timeline_capacity), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
 
         # initialize list to which we will append generated audio segments
         audio_segments = []
 
+        # Initialize RNNT state for user transcription
+        has_rnnt = getattr(self.model.stt_model, '_rnnt_decoder', None) is not None
+        rnnt_partial_hypotheses = self._rnnt_init_state(1, self.device) if has_rnnt else None
+
+        # FC async state: tracks the FC state machine across frames
+        fc_state = {"active": False} if has_function_head and self._fc_async_enabled else None
+        fc_total_async_steps = 0
+
         logging.info("\n" + "=" * 70)
         logging.info("STARTING FRAME-BY-FRAME PROCESSING")
         logging.info("=" * 70)
+        if has_rnnt:
+            logging.info("RNNT user transcription enabled")
+        if self._fc_async_enabled and has_function_head:
+            logging.info("FC async mode ENABLED — text will run at full LLM speed during tool calls")
+            if self._fc_async_two_phase:
+                logging.info("FC async two-phase ENABLED — will pause at EOTC for tool execution%s",
+                             " (tool_executor_fn provided)" if tool_executor_fn else " (no tool_executor_fn)")
 
         # frame_idx corresponds to index of the first frame passed to infer_one_step
         # (we need this distinction in the case that num_frames_per_chunk > 1)
@@ -2064,7 +2940,9 @@ class NemotronVoicechatInferenceWrapper:
                 perception_cache=perception_cache,
                 has_prompt=(prompt_len > 0),
                 codec_cache=codec_cache,
-                rnnt_state=rnnt_state,
+                rnnt_partial_hypotheses=rnnt_partial_hypotheses,
+                fc_state=fc_state,
+                tool_response_text=None,
             )
 
             # handle results from infer_one_step
@@ -2075,7 +2953,7 @@ class NemotronVoicechatInferenceWrapper:
             llm_cache = result['dynamic_cache']
             if self.use_perception_cache:
                 perception_cache = result.get('perception_cache', perception_cache)
-            rnnt_state = result.get('rnnt_state', rnnt_state)
+            rnnt_partial_hypotheses = result.get('rnnt_partial_hypotheses', rnnt_partial_hypotheses)
             if self.decode_audio:
                 audio_toks_buffer = result['audio_toks_buffer']
                 decoded_audio_new = result['decoded_audio_new']
@@ -2087,6 +2965,136 @@ class NemotronVoicechatInferenceWrapper:
                 codec_cache = result.get('codec_cache', codec_cache)
             else:
                 decoded_audio_new = None
+
+            # FC Async: if SOTC was detected in infer_one_step, run the async loop
+            if fc_state is not None and fc_state.pop("trigger_async", False):
+                sotc_frame = frame_idx + num_frames_per_chunk - 1  # frame where SOTC was detected
+                logging.info(
+                    "[FC Async] Triggered at frame %d — entering async loop",
+                    sotc_frame,
+                )
+                fc_wall_start = time.time()
+
+                # Build realtime audio context: during the async loop, new
+                # audio frames become available at the real-time rate (one
+                # per 80 ms of wall-clock time), simulating a live mic.
+                rt_audio_ctx = {
+                    "audio_signal_tensor": audio_signal_tensor,
+                    "next_audio_frame": frame_idx + num_frames_per_chunk,
+                    "total_audio_frames": total_frames,
+                    "audio_buffer": audio_buffer.clone(),
+                    "buffer_fill_level": buffer_fill_level,
+                    "buffer_size_samples": buffer_size_samples,
+                    "wall_start": fc_wall_start,
+                    "frames_consumed": 0,
+                }
+
+                # Phase 1: generate call tokens (SOTC → ... → EOTC) at full LLM speed
+                async_steps, llm_cache, _, _, _ = self._run_fc_async_steps(
+                    fc_state=fc_state,
+                    gen_text=gen_text,
+                    gen_asr_text=gen_asr_text,
+                    gen_function_text=gen_function_text,
+                    current_frame_idx=sotc_frame,
+                    dynamic_cache=llm_cache,
+                    input_embeds_history=input_embeds_history if not use_cache else [],
+                    tool_response_text=None,
+                    realtime_audio=rt_audio_ctx,
+                    request_id=stream_request_id,
+                )
+                fc_total_async_steps += async_steps
+                logging.info(
+                    "[FC Async] Phase 1 completed: %d steps (total async: %d)",
+                    async_steps, fc_total_async_steps,
+                )
+
+                # Phase 2 (two-phase mode): execute tool, then re-enter async to
+                # inject response tokens at full LLM speed
+                if fc_state.pop("awaiting_response", False):
+                    call_text = fc_state.get("last_call_text", "")
+                    phase2_start_t = fc_state.pop("phase1_end_t", sotc_frame + async_steps)
+                    tool_response = None
+
+                    if tool_executor_fn is not None:
+                        logging.info(
+                            "[FC Async] Phase 2: executing tool for call: %s", call_text
+                        )
+                        try:
+                            tool_response = tool_executor_fn(call_text)
+                            logging.info(
+                                "[FC Async] Phase 2: tool returned %d chars",
+                                len(tool_response) if tool_response else 0,
+                            )
+                        except Exception as e:
+                            logging.error(
+                                "[FC Async] Phase 2: tool_executor_fn raised %s: %s",
+                                type(e).__name__, e,
+                            )
+                    else:
+                        logging.info(
+                            "[FC Async] Phase 2: no tool_executor_fn provided, "
+                            "skipping response injection"
+                        )
+
+                    if tool_response:
+                        async_steps_p2, llm_cache, _, _, _ = self._run_fc_async_steps(
+                            fc_state=fc_state,
+                            gen_text=gen_text,
+                            gen_asr_text=gen_asr_text,
+                            gen_function_text=gen_function_text,
+                            current_frame_idx=phase2_start_t - 1,
+                            dynamic_cache=llm_cache,
+                            input_embeds_history=input_embeds_history if not use_cache else [],
+                            tool_response_text=tool_response,
+                            realtime_audio=rt_audio_ctx,
+                            request_id=stream_request_id,
+                        )
+                        fc_total_async_steps += async_steps_p2
+                        logging.info(
+                            "[FC Async] Phase 2 completed: %d steps (total async: %d)",
+                            async_steps_p2, fc_total_async_steps,
+                        )
+
+                fc_wall_elapsed = time.time() - fc_wall_start
+
+                # Adopt the audio buffer state that was updated by the async
+                # loop (it may have consumed real frames and shifted the
+                # sliding window forward).
+                rt_consumed = rt_audio_ctx["frames_consumed"]
+                if rt_consumed > 0:
+                    audio_buffer = rt_audio_ctx["audio_buffer"]
+                    buffer_fill_level = rt_audio_ctx["buffer_fill_level"]
+                    frame_idx += rt_consumed
+                    logging.info(
+                        "[FC Async] Consumed %d real audio frames during async "
+                        "(frame_idx advanced to %d)",
+                        rt_consumed, frame_idx,
+                    )
+
+                # Insert silence audio to reflect the real-time wait during FC.
+                # In deployment the user hears silence while the tool executes;
+                # we replicate that in the saved audio so playback is faithful.
+                if self.decode_audio:
+                    tts_rate = getattr(self, "target_sample_rate", TTS_SAMPLE_RATE)
+                    silence_samples = int(fc_wall_elapsed * tts_rate)
+                    if silence_samples > 0:
+                        silence_audio_chunk = torch.zeros(
+                            1, 1, silence_samples,
+                            device=self.device, dtype=torch.float32,
+                        )
+                        audio_segments.append(silence_audio_chunk)
+                        logging.info(
+                            "[FC Async] Inserted %.2fs (=%d samples @ %dHz) silence "
+                            "into audio output to reflect FC wall-clock time",
+                            fc_wall_elapsed, silence_samples, tts_rate,
+                        )
+
+                logging.info(
+                    "[FC Async] FC async done (wall=%.3fs, rt_audio=%d frames). "
+                    "Audio resumes at frame %d",
+                    fc_wall_elapsed, rt_consumed,
+                    frame_idx + num_frames_per_chunk,
+                )
 
             if frame_idx % 10 == 0 or frame_idx < 3 or gen_text[:, frame_idx].item() == self.model.stt_model.text_eos_id:
                 token_str = self.tokenizer.ids_to_text([gen_text[0, frame_idx].item()])
@@ -2104,21 +3112,23 @@ class NemotronVoicechatInferenceWrapper:
 
         # Prepare results
         elapsed_time = time.time() - start_time
+        # Effective timeline length = audio frames + any async FC steps that ran ahead
+        effective_total_frames = total_frames + fc_total_async_steps
+
         logging.info("\n" + "=" * 70)
         logging.info("STREAMING INFERENCE COMPLETED")
         logging.info("=" * 70)
         logging.info(f"Total time: {elapsed_time:.2f}s")
         logging.info(f"Audio duration: {total_duration:.2f}s")
         logging.info(f"RTF (Real-Time Factor): {elapsed_time / total_duration:.2f}x")
-        logging.info(f"Processed frames: {total_frames}")
+        logging.info(f"Processed frames: {total_frames} (audio) + {fc_total_async_steps} (async FC) = {effective_total_frames}")
 
-        # Trim to actual length
-        # TODO: this is currently redundant since we iterate over all frames in the while loop
-        gen_text = gen_text[:, :total_frames]
-        gen_asr_text = gen_asr_text[:, :total_frames]
+        # Trim to effective length (audio frames + async FC frames)
+        gen_text = gen_text[:, :effective_total_frames]
+        gen_asr_text = gen_asr_text[:, :effective_total_frames]
 
         # Decode text
-        lengths = torch.tensor([total_frames], dtype=torch.long, device=self.device)
+        lengths = torch.tensor([effective_total_frames], dtype=torch.long, device=self.device)
         text_output = tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.model.stt_model.text_pad_id, eval_text_turn_taking=True)
 
         # Decode ASR text
@@ -2131,9 +3141,12 @@ class NemotronVoicechatInferenceWrapper:
         logging.info(f"Generated text: {text_output[0]}")
         logging.info(f"Generated ASR text: {asr_text_output[0]}")
 
+        # Finalize RNNT transcript (rnnt_partial_hypotheses is now a step-state dict, no text extraction)
+        rnnt_asr_text = None
+
         # Decode function calling channel
         if has_function_head:
-            gen_function_text = gen_function_text[:, :total_frames]
+            gen_function_text = gen_function_text[:, :effective_total_frames]
             function_text_output = tokens_to_str(gen_function_text, lengths, tokenizer=self.tokenizer, pad_id=self.model.stt_model.text_pad_id, eval_text_turn_taking=False)
             function_text_output_raw = tokens_to_str_raw(gen_function_text, lengths, tokenizer=self.tokenizer, pad_id=self.model.stt_model.text_pad_id)
             logging.info(f"Generated function text: {function_text_output[0]}")
@@ -2148,6 +3161,7 @@ class NemotronVoicechatInferenceWrapper:
             "asr_text_raw": asr_text_output_raw,
             "asr_tokens": gen_asr_text,
             "system_prompt": system_prompt if system_prompt else "",
+            "rnnt_asr_text": rnnt_asr_text,
         }
         if has_function_head:
             ans["function_text"] = function_text_output
@@ -2259,6 +3273,15 @@ def main():
                        help="System prompt to provide context to the model. Can also be specified per-record in input JSON.")
     parser.add_argument("--tts_system_prompt", type=str, default=None,
                        help="System prompt for EARTTS model.")
+
+    # FC async mode
+    parser.add_argument("--fc_async_enabled", action="store_true",
+                       help="Enable async function calling: text tokens run at full LLM speed during "
+                            "tool calls using cached silence embeddings, decoupled from 80ms audio frames")
+    parser.add_argument("--fc_async_two_phase", action="store_true", default=False,
+                       help="Enable two-phase async FC: Phase 1 generates call tokens at LLM speed, "
+                            "pauses at EOTC for tool execution, then Phase 2 injects response at LLM "
+                            "speed. Requires --fc_async_enabled. Default: False (single-phase)")
     args = parser.parse_args()
 
     # Validate arguments: either audio_path OR input_json must be provided
@@ -2271,6 +3294,8 @@ def main():
         raise ValueError("Set at most one of: --pad_audio_to_sec, --pad_silence_ratio, --pad_audio_by_sec")
     if not math.isfinite(args.temperature) or args.temperature < 0.0:
         parser.error(f"--temperature must be a finite value >= 0.0, got {args.temperature}")
+    if args.fc_async_two_phase and not args.fc_async_enabled:
+        parser.error("--fc_async_two_phase requires --fc_async_enabled")
 
     try:
         import json
@@ -2300,6 +3325,8 @@ def main():
             "inference_user_pad_boost": args.inference_user_pad_boost,
             "inference_user_bos_boost": args.inference_user_bos_boost,
             "inference_user_eos_boost": args.inference_user_eos_boost,
+            "fc_async_enabled": bool(args.fc_async_enabled),
+            "fc_async_two_phase": bool(args.fc_async_two_phase),
         }
 
         # Pop GPU memory utilization values: first for LLM, second (or same) for TTS
@@ -2401,9 +3428,14 @@ def main():
                 pred_asr_text_raw = results['asr_text_raw'][0] if 'asr_text_raw' in results else ''
                 pred_text = results['text'][0] if 'text' in results else ''
                 pred_text_raw = results['text_raw'][0] if 'text_raw' in results else ''
+                rnnt_asr_text = results.get('rnnt_asr_text')
+                pred_rnnt_text = rnnt_asr_text[0] if rnnt_asr_text else ''
+
+                # Use RNNT transcript for WER if available, otherwise fall back to ASR head
+                wer_pred_text = pred_rnnt_text if pred_rnnt_text else pred_asr_text
 
                 try:
-                    cleaned_pred = clean_pred_text(pred_asr_text)
+                    cleaned_pred = clean_pred_text(wer_pred_text)
                     cleaned_gt = clean_pred_text(ground_truth_text)
                     if cleaned_gt.strip() and cleaned_pred.strip():
                         utterance_wer = wer(cleaned_gt, cleaned_pred)
@@ -2453,6 +3485,7 @@ def main():
                     'pred_audio': pred_audio_path,
                     'src_text': ground_truth_text,
                     'pred_src_text': pred_asr_text,
+                    'pred_src_text_rnnt': pred_rnnt_text,
                     'pred_text': pred_text,
                     'system_prompt': result_system_prompt,
                 }
@@ -2463,6 +3496,7 @@ def main():
                     'pred_audio': pred_audio_path,
                     'src_text': ground_truth_text,
                     'pred_src_text': pred_asr_text_raw,
+                    'pred_src_text_rnnt': pred_rnnt_text,
                     'pred_text': pred_text_raw,
                     'system_prompt': result_system_prompt,
                 }

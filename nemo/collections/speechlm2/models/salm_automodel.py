@@ -362,6 +362,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
+        # Counters consumed by TrainingStatsCallback. ``attention_mask`` is 1
+        # for every real LLM input position (text non-pad + audio frames
+        # post-perception) and 0 for padding, so its sum is exactly the
+        # "text non-pad + audio frames" definition.
+        self._last_batch_num_tokens = int(inputs["attention_mask"].long().sum().item())
+        self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
         forward_outputs = self(
             inputs["input_embeds"],
             attention_mask=inputs["attention_mask"],
@@ -792,7 +798,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         else:
             metrics = compute_brief_metrics(layer_loads, top_k=top_k)
 
-        self.log_dict(metrics, on_step=True)
+        # ``batch_size=1`` is required when training_step uses the
+        # ``dataloader_iter`` flavor: Lightning cannot infer the batch size
+        # from the closure, and these MoE metrics are model-internal
+        # aggregates (load fractions, top-k expert utilization), so the
+        # per-call batch_size is just a logging-aggregation hint, not a true
+        # sample count. Without it Lightning raises
+        # ``MisconfigurationException`` on the very first training step.
+        self.log_dict(metrics, on_step=True, batch_size=1)
 
     def _get_moe_dp_group(self):
         """Return the DP process group for MoE metrics all-reduce.

@@ -83,10 +83,15 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        self.ais_prefer_individual = os.environ.get("USE_AIS_INDIVIDUAL_GETS", "False").lower() == "true"
 
         # Try to use use_batch_loader if available (Lhotse >= 1.32.0)
         try:
-            self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=self.use_ais_get_batch)
+            self.load_audio = AudioSamples(
+                fault_tolerant=True,
+                use_batch_loader=self.use_ais_get_batch,
+                ais_prefer_individual=self.ais_prefer_individual,
+            )
         except TypeError:
             # Lhotse < 1.32.0 doesn't support use_batch_loader
             if self.use_ais_get_batch:

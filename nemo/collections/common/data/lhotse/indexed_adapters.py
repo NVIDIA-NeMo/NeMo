@@ -35,6 +35,138 @@ _TAR_ZERO_BLOCK = b'\0' * _TAR_BLOCK_SIZE
 _URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
 
 
+def _is_remote_path(path) -> bool:
+    """True if *path* is a URL/URI (s3://, ais://, http(s)://, gs://, …)."""
+    return bool(_URL_RE.match(str(path)))
+
+
+class _AISRangeReader:
+    """
+    Pseudo file-like object backed by AIStore HTTP byte-range reads.
+
+    Translates ``seek()`` + ``read(n)`` into ``Object.get_reader(byte_range=…)``
+    requests so the indexed-tar readers can do random access into ``s3://`` /
+    ``ais://`` archives the same way they would into a local file. Each
+    ``read()`` corresponds to one HTTP range request, which AIStore serves in
+    O(1); the index already tells us exactly which byte ranges we need (one
+    per tar member or sample), so the request count per training sample is
+    small and bounded.
+
+    The aistore SDK is imported lazily so ``indexed_adapters`` doesn't have to
+    take a hard dependency on it for local-only code paths.
+
+    Notes
+    -----
+    * ``seek()`` accepts whence ∈ {0, 1, 2}; for whence=2 the file size
+      already known via ``Object.props.size`` is used, so no extra HTTP call
+      is needed.
+    * The instance is **not** safe to share across threads — pickling support
+      drops the cached ``_obj`` so per-worker processes re-resolve the URL
+      after fork.
+    """
+
+    def __init__(self, url: str):
+        # Defer the aistore import — pure-local installs don't need it.
+        from aistore import Client  # noqa: F401  (presence-check only)
+
+        self._url = url
+        self._obj = None
+        self._size: Optional[int] = None
+        self._pos = 0
+
+    def _ensure_obj(self):
+        if self._obj is not None:
+            return
+        # Same client/env wiring as ``lhotse.serialization.AIStoreIOBackend``
+        # — import locally so build_indexes / training don't require lhotse
+        # for non-remote files.
+        from lhotse.serialization import get_aistore_client
+
+        client, _version = get_aistore_client()
+        self._obj = client.get_object_from_url(self._url)
+        self._size = int(self._obj.props.size)
+
+    @property
+    def size(self) -> int:
+        self._ensure_obj()
+        return self._size  # type: ignore[return-value]
+
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._pos = int(offset)
+        elif whence == 1:
+            self._pos += int(offset)
+        elif whence == 2:
+            self._pos = self.size + int(offset)
+        else:
+            raise ValueError(f"Unsupported whence: {whence}")
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+    def read(self, n: int = -1) -> bytes:
+        self._ensure_obj()
+        if self._pos >= self._size:
+            return b""
+        if n == 0:
+            return b""
+        if n < 0:
+            end_inclusive = self._size - 1
+        else:
+            end_inclusive = min(self._pos + n - 1, self._size - 1)
+        if end_inclusive < self._pos:
+            return b""
+        # AIStore expects the HTTP Range syntax: ``bytes=START-END`` with
+        # END inclusive. ``read_all()`` drains the entire response into bytes.
+        byte_range = f"bytes={self._pos}-{end_inclusive}"
+        reader = self._obj.get_reader(byte_range=byte_range)
+        data = reader.read_all()
+        self._pos += len(data)
+        return data
+
+    def close(self) -> None:
+        self._obj = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __getstate__(self):
+        # Drop the resolved AIStore Object handle so a forked DataLoader
+        # worker re-creates it lazily against the worker's own connection
+        # pool / HTTP session.
+        return {"_url": self._url, "_pos": 0, "_obj": None, "_size": None}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+
+def _open_data_path(path: str):
+    """
+    Return a seekable file-like for *path*, suitable for the indexed
+    tar readers' ``self._fh`` slot.
+
+    Local paths get a regular ``open(path, "rb")``. URL/URI paths return an
+    :class:`_AISRangeReader` that turns ``seek + read`` into AIStore HTTP
+    range requests. Other URL schemes (``http://``, ``gs://``, …) currently
+    fall through to ``_AISRangeReader`` as well — the aistore SDK is the only
+    seekable remote backend lhotse exposes today; if a future backend gains a
+    seekable wrapper, dispatch here.
+    """
+    if _is_remote_path(path):
+        return _AISRangeReader(str(path))
+    return open(path, "rb")
+
+
 def resolve_idx_path(data_path: str | Path, indexes_root: Optional[str | Path] = None) -> str:
     """
     Compute the ``.idx`` sidecar path for *data_path*.
@@ -143,16 +275,38 @@ def _load_index(data_path: str, idx_path: str | None = None):
     (appended if absent in the on-disk index).
 
     Validates that all sample offsets fall within the data file.
+
+    For remote ``data_path`` URIs (``s3://`` / ``ais://`` / ``http(s)://`` /
+    ``gs://``) ``os.path.getsize`` is not callable; we trust the size
+    sentinel that ``create_tar_index`` / ``create_jsonl_index`` recorded as
+    the last offset in the on-disk index. The same indexes are emitted for
+    local and remote sources, so the on-disk format is identical — only the
+    file-size cross-check is skipped.
     """
     if idx_path is None:
         idx_path = data_path + '.idx'
-    offsets = np.memmap(idx_path, dtype=np.dtype('<u8'), mode='r')
-    data_size = os.path.getsize(data_path)
-    if offsets[-1] == data_size:
+    # Use np.fromfile (resident memory) rather than np.memmap so that NeMo
+    # blends with tens of thousands of shards don't exhaust the kernel's
+    # ``vm.max_map_count`` budget (~65k by default) and subsequently raise
+    # ``OSError: [Errno 12] Cannot allocate memory``. Indexes are small
+    # (a uint64 per record + a sentinel; typically O(KB) per shard), so the
+    # resident-memory cost across an entire blend is in the hundreds of MB.
+    offsets = np.fromfile(idx_path, dtype=np.dtype('<u8'))
+    if _URL_RE.match(str(data_path)):
+        if offsets.shape[0] < 1:
+            raise ValueError(
+                f"Index for remote source {data_path} is empty; expected at "
+                f"least a size sentinel. Rebuild via build_indexes.py."
+            )
+        data_size = int(offsets[-1])
         num_samples = offsets.shape[0] - 1
     else:
-        num_samples = offsets.shape[0]
-        offsets = np.append(offsets, np.uint64(data_size))
+        data_size = os.path.getsize(data_path)
+        if offsets[-1] == data_size:
+            num_samples = offsets.shape[0] - 1
+        else:
+            num_samples = offsets.shape[0]
+            offsets = np.append(offsets, np.uint64(data_size))
     if num_samples > 0:
         max_offset = int(offsets[:num_samples].max())
         if max_offset >= data_size:
@@ -185,7 +339,7 @@ class IndexedJSONLReader:
         idx = _resolve_idx(idx, self._len)
         start = int(self.offsets[idx])
         end = int(self.offsets[idx + 1])
-        with open(self.data_path, 'rb') as f:
+        with _open_data_path(self.data_path) as f:
             f.seek(start)
             data = f.read(end - start)
         return json.loads(data.decode('utf-8'))
@@ -232,7 +386,7 @@ class IndexedTarSampleReader:
         # file size (which _load_index already handles).
         while self._len > 0:
             last = int(self.offsets[self._len - 1])
-            with open(self.data_path, 'rb') as f:
+            with _open_data_path(self.data_path) as f:
                 f.seek(last)
                 buf = f.read(_TAR_BLOCK_SIZE)
             if len(buf) < _TAR_BLOCK_SIZE or buf == _TAR_ZERO_BLOCK:
@@ -241,7 +395,7 @@ class IndexedTarSampleReader:
                 break
 
     def _check_offset_is_tar_header(self, offset: int, label: str = ""):
-        with open(self.data_path, 'rb') as f:
+        with _open_data_path(self.data_path) as f:
             f.seek(offset)
             buf = f.read(_TAR_BLOCK_SIZE)
         if len(buf) < _TAR_BLOCK_SIZE:
@@ -273,7 +427,7 @@ class IndexedTarSampleReader:
     def __getitem__(self, idx):
         idx = _resolve_idx(idx, self._len)
         offset = int(self.offsets[idx])
-        with open(self.data_path, 'rb') as f:
+        with _open_data_path(self.data_path) as f:
             f.seek(offset)
             try:
                 name_a, bytes_a = _read_tar_member(f)
@@ -329,7 +483,7 @@ class IndexedTarMemberReader:
 
     def _ensure_open(self):
         if self._fh is None:
-            self._fh = open(self.data_path, "rb")
+            self._fh = _open_data_path(self.data_path)
 
     def close(self):
         if self._fh is not None:
@@ -469,6 +623,35 @@ def create_index(jsonl_path, idx_path):
     os.replace(tmp_path, idx_path)
 
 
+class _CountingReader:
+    """
+    Minimal file-like wrapper that delegates everything to an inner stream
+    while counting the total number of bytes read. Used by
+    :func:`create_tar_index` to compute a tar file's size without calling
+    ``tell()`` — necessary because non-seekable remote streams (AIStore's
+    ``ObjectFileReader``, smart_open's S3 reader without seek support, …)
+    raise ``io.UnsupportedOperation`` on ``tell()`` even when sequential
+    reads succeed.
+    """
+
+    def __init__(self, fileobj):
+        self._f = fileobj
+        self.bytes_read = 0
+
+    def read(self, n=-1):
+        data = self._f.read(n)
+        self.bytes_read += len(data)
+        return data
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        # tarfile's ``r|`` (stream) mode falls back to read+discard when
+        # the fileobj is not seekable, which is exactly what we want.
+        return False
+
+
 def create_tar_index(tar_path, idx_path):
     """
     Creates a raw binary index file for a WebDataset tar archive.
@@ -476,25 +659,37 @@ def create_tar_index(tar_path, idx_path):
     followed by a sentinel equal to the tar file size.
     Format is identical to :func:`create_index`.
 
+    Reads ``tar_path`` via ``lhotse.serialization.open_best`` so the function
+    works for local files as well as ``s3://`` / ``ais://`` / ``http(s)://``
+    URIs. The tar is opened in streaming mode (``r|``) — remote backends are
+    not seekable — and the sentinel records the total bytes read through a
+    ``_CountingReader`` wrapper rather than ``os.path.getsize`` /
+    ``f.tell()``, both of which fail on non-seekable URI streams.
+
     Written atomically: data is staged in a per-process temp file next to
     ``idx_path`` and then ``os.replace()``-d into place, so concurrent writers
     can't observe a half-written ``.idx``.
     """
+    from lhotse.serialization import open_best
+
     offsets = []
     prev_stem = None
-    with tarfile.open(tar_path, 'r:') as tar:
-        for member in tar:
-            if not member.isreg():
-                continue
-            stem = Path(member.name).stem
-            if stem != prev_stem:
-                offsets.append(member.offset)
-                prev_stem = stem
+    with open_best(tar_path, "rb") as f:
+        counter = _CountingReader(f)
+        with tarfile.open(fileobj=counter, mode='r|') as tar:
+            for member in tar:
+                if not member.isreg():
+                    continue
+                stem = Path(member.name).stem
+                if stem != prev_stem:
+                    offsets.append(member.offset)
+                    prev_stem = stem
+        file_size = counter.bytes_read
     tmp_path = f"{idx_path}.tmp.{os.getpid()}"
-    with open(tmp_path, 'wb') as f:
+    with open(tmp_path, 'wb') as f_out:
         buf = bytearray()
         for off in offsets:
             buf.extend(struct.pack('<Q', off))
-        buf.extend(struct.pack('<Q', os.path.getsize(tar_path)))
-        f.write(buf)
+        buf.extend(struct.pack('<Q', file_size))
+        f_out.write(buf)
     os.replace(tmp_path, idx_path)

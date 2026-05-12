@@ -573,6 +573,37 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
 
+    # Map-style + StatefulDataLoader requires shard_seed to be a fixed integer:
+    #   * On the map path, cross-rank de-duplication is by ``rank/world_size``
+    #     index slicing (passed below to DynamicBucketingSampler/DynamicCutSampler),
+    #     NOT by per-rank seed differentiation. ``shard_seed="randomized"`` is
+    #     iterable-path machinery that injects worker-PID-derived seeding;
+    #     across resume boundaries the new process has a different PID, so the
+    #     freshly-initialised sampler RNG diverges from the saved snapshot.
+    #     ``StatefulDataLoader.load_state_dict`` overrides that init RNG state
+    #     in practice, but it's a footgun: any RNG draw before the first
+    #     ``__iter__`` (e.g. shuffle of shards in the parent process) is lost.
+    # If the user sets ``shard_seed="randomized"`` AND ``force_map_dataset=True``
+    # AND ``use_stateful_dataloader=True``, warn loudly and auto-overwrite with
+    # the fixed ``seed`` integer so resume semantics stay clean.
+    if (
+        getattr(config, "force_map_dataset", False)
+        and getattr(config, "use_stateful_dataloader", False)
+        and isinstance(config.get("shard_seed"), str)
+        and str(config.shard_seed).lower() == "randomized"
+    ):
+        fixed_seed = int(config.seed)
+        logging.warning(
+            "shard_seed=%r is incompatible with force_map_dataset=True + "
+            "use_stateful_dataloader=True (the map path doesn't need per-rank "
+            "seed differentiation; cross-rank de-dup is by index slicing). "
+            "Auto-overriding shard_seed -> %d (the value of `seed`) for "
+            "deterministic StatefulDataLoader resume. Pin shard_seed to an "
+            "integer in your YAML to silence this warning.",
+            config.shard_seed, fixed_seed,
+        )
+        config.shard_seed = fixed_seed
+
     _auto_detect_bucketing_and_validate_batch_size(config)
 
     # Apply channel selector

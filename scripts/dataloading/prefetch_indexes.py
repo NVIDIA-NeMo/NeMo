@@ -167,17 +167,29 @@ def main(
             logging.info("  %s  ->  %s", s, d)
         return
 
+    # Per-file success logging is suppressed (80k-400k sidecars would swamp
+    # stdout); failures are still logged inline, success emits a periodic
+    # progress heartbeat plus a final summary.
     failures: list[tuple[str, str, BaseException]] = []
+    total = len(todo)
+    log_every = max(1, min(5000, total // 20))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         futures = {ex.submit(_copy_idx, s, d): (s, d) for (s, d) in todo}
+        done = 0
         for fut in as_completed(futures):
+            done += 1
             s, d = futures[fut]
             try:
                 fut.result()
-                logging.info("  [ok]   %s  ->  %s", s, d)
             except BaseException as e:  # noqa: BLE001
                 failures.append((s, d, e))
                 logging.error("  [FAIL] %s  ->  %s: %s", s, d, e)
+                continue
+            if done % log_every == 0 or done == total:
+                logging.info(
+                    "  copied %d/%d (%.1f%%)  failures=%d",
+                    done, total, 100.0 * done / total, len(failures),
+                )
 
     if failures:
         logging.error("\n%d copy operation(s) failed:", len(failures))

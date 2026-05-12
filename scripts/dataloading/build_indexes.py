@@ -51,7 +51,7 @@ Examples::
 
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Optional
@@ -333,6 +333,18 @@ def _is_indexed(job: IndexJob) -> bool:
 @click.option("--workers", type=int, default=4, help="Number of parallel index builders.")
 @click.option("--dry-run", is_flag=True, help="List the jobs without writing anything.")
 @click.option(
+    "--executor",
+    type=click.Choice(["process", "thread"]),
+    default="process",
+    help=(
+        "Worker pool kind. ``process`` (default) gives true CPU-level parallelism by "
+        "running each indexer in its own interpreter — required for tar indexing where "
+        "tarfile.next() and the read-and-discard for data members hold the GIL and "
+        "would otherwise serialize all workers onto one core. ``thread`` is useful for "
+        "debugging or when indexing only JSONLs over a slow network."
+    ),
+)
+@click.option(
     "--indexes-root",
     type=str,
     default=None,
@@ -347,6 +359,7 @@ def main(
     force: bool,
     workers: int,
     dry_run: bool,
+    executor: str,
     indexes_root: Optional[str],
 ):
     """
@@ -381,17 +394,32 @@ def main(
             logging.info("  [%s] %s -> %s", j.kind, j.path, j.idx_path())
         return
 
+    # Per-file success logging is suppressed: building 80k-400k indexes would
+    # otherwise emit one log line per file, swamping the SLURM stdout buffer.
+    # Failures are still logged inline; success only emits a periodic
+    # "<built>/<total> processed" heartbeat (~every 5% of total or 5000 files,
+    # whichever is smaller) plus a final summary.
     failures: list[tuple[IndexJob, BaseException]] = []
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+    total = len(todo)
+    log_every = max(1, min(5000, total // 20))
+    pool_cls = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
+    with pool_cls(max_workers=max(1, workers)) as ex:
         futures = {ex.submit(_build_one, j): j for j in todo}
+        done = 0
         for fut in as_completed(futures):
+            done += 1
             j = futures[fut]
             try:
-                _, status = fut.result()
-                logging.info("  [%s] %s -> %s", status, j.kind, j.path)
+                _, _status = fut.result()
             except BaseException as e:  # noqa: BLE001 — surface any failure
                 failures.append((j, e))
                 logging.error("  [FAIL] %s %s: %s", j.kind, j.path, e)
+                continue
+            if done % log_every == 0 or done == total:
+                logging.info(
+                    "  built %d/%d (%.1f%%)  failures=%d",
+                    done, total, 100.0 * done / total, len(failures),
+                )
 
     if failures:
         logging.error("\n%d index build(s) failed:", len(failures))

@@ -326,6 +326,19 @@ def _build_dataloader(use_stateful_dataloader: bool, **kwargs) -> torch.utils.da
     return torch.utils.data.DataLoader(**kwargs)
 
 
+def _maybe_init_main_process_for_iterable(num_workers: int, global_rank: int, world_size: int, seed: int) -> None:
+    """When ``num_workers == 0`` the iterable-path sampler runs in the main training
+    process; PyTorch's DataLoader never invokes ``worker_init_fn`` in that case.
+    Call it eagerly so env vars (``RANK``/``WORLD_SIZE``/``LHOTSE_PROCESS_SEED``) and
+    the per-process random seed are set before any iterator is consumed — required so
+    ``get_worker_partition`` returns the correct DP-rank shard inside lhotse's lazy
+    indexed iterators (e.g. ``LazyShuffledRange``)."""
+    if num_workers == 0:
+        from lhotse.dataset.dataloading import worker_init_fn
+
+        worker_init_fn(0, rank=global_rank, world_size=world_size, seed=seed)
+
+
 def get_lhotse_dataloader_from_config(
     config: Union[dict, DictConfig],
     global_rank: int,
@@ -420,6 +433,7 @@ def get_lhotse_dataloader_from_single_config(
         # We use lhotse's own worker_init_fn which leverages information such as rank, world_size,
         # worker_id, etc. to set a different random seed for each (node, worker) combination.
         # This together with infinite datasets removes the need to split data across nodes/workers.
+        _maybe_init_main_process_for_iterable(config.num_workers, global_rank, world_size, config.seed)
         dloader_kwargs = dict(
             dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=config.seed),
@@ -546,6 +560,7 @@ def get_lhotse_dataloader_from_multi_config(
         # We use lhotse's own worker_init_fn which leverages information such as rank, world_size,
         # worker_id, etc. to set a different random seed for each (node, worker) combination.
         # This together with infinite datasets removes the need to split data across nodes/workers.
+        _maybe_init_main_process_for_iterable(shared_opts.num_workers, global_rank, world_size, shared_opts.seed)
         dloader_kwargs = dict(
             dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=shared_opts.seed),

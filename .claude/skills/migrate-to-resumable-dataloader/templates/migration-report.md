@@ -54,6 +54,28 @@ requires further user action.>
 
 - _(more)_
 
+## Dedup mode
+
+<One paragraph: which `force_map_dataset` value this config uses and why.>
+
+- **`force_map_dataset: true`** (safe default; over-sample-and-discard
+  inside `DynamicBucketingSampler`) — works for any source type. Costs
+  `W×` redundant sampler/manifest I/O per step.
+- **`force_map_dataset: false`** (iterable + worker partition; suitable
+  for indexed-only configs at high `world_size`) — sample indices are
+  partitioned across `(DP rank × DataLoader worker)` via
+  `LazyShuffledRange(shard_id, num_shards)`. Near-`W×` step-time
+  improvement at scale. Audit required: every source must be indexed
+  (`failure-modes.md §21`), every `LazyIteratorMultiplexer.seed` must
+  be a fixed integer (§22), `(world_size, num_workers)` invariant
+  across the chain (§23).
+
+If `false` was selected, list:
+- Sources confirmed indexed: <list>
+- Multiplexer seeds confirmed integer: <list>
+- World-size / num-workers commitment: `<W>` × `<NW>` for the entire
+  chain.
+
 ## Cross-cuts
 
 ### Data blend audit
@@ -136,8 +158,11 @@ See `pre-flight-checklist.md` next to this report. The TL;DR:
 ## References
 
 - `MIGRATION_GUIDE.md` (repo root): canonical migration walkthrough.
-- `references/option-reference.md`: every YAML field, every flag.
-- `references/conflict-matrix.md`: option pairs that conflict.
-- `references/failure-modes.md`: 18-entry failure-mode catalog.
-- `references/best-practices.md`: prioritised checklist.
+- `references/option-reference.md`: every YAML field, every flag, including
+  the iterable-mode partition concerns.
+- `references/conflict-matrix.md`: option pairs that conflict (includes
+  iterable-mode constraints: §20–§23).
+- `references/failure-modes.md`: 23-entry failure-mode catalog (§20–§23 cover iterable-mode partition concerns).
+- `references/best-practices.md`: prioritised checklist (tier 2 §5b covers
+  when to prefer `force_map_dataset: false`).
 - `references/aistore-vs-non-aistore.md`: workflow selection.

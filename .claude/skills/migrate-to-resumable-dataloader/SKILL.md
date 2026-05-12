@@ -8,10 +8,27 @@ argument-hint: '<config.yaml> [launcher.py] [blend.yaml] [--cluster=<name>]'
 
 The repo's resumable path (replacing the streaming/replay loader with O(1)
 checkpoint-restore via `torchdata.StatefulDataLoader` + `.idx` sidecars) has
-~15 distinct ways to silently corrupt or hard-fail. This skill runs every
+~20 distinct ways to silently corrupt or hard-fail. This skill runs every
 one of those checks against a concrete YAML, auto-patches what it can, and
 emits a teaching-style migration report so the user understands every
 decision and the user-only steps to run before launching.
+
+**Map-style vs iterable-style for indexed sources.** The resumable path supports
+two dedup modes:
+
+1. **`force_map_dataset: true`** (default; safest) — sampler runs in the main
+   GPU process and over-samples `world_size` batches per step, discards
+   `world_size - 1`. Works for any source type. Costs `W×` redundant
+   sampler/manifest I/O per step.
+2. **`force_map_dataset: false`** (optimization for indexed-only configs at
+   high `world_size`) — sampler runs co-located with the dataset inside CPU
+   worker subprocesses; sample indices are partitioned across
+   `(DP rank × DataLoader worker)` via `LazyShuffledRange(shard_id, num_shards)`
+   so each shard yields a disjoint slice. Resolved at iteration time via the
+   `LHOTSE_USE_WORKER_PARTITION` env-var signal that `worker_init_fn` sets.
+   Eliminates the `W×` redundant work; near-`W×` step-time improvement at
+   scale. **Requires all sources to be indexed** (or use other dedup
+   mechanisms — see `references/failure-modes.md` §20-§23).
 
 ## When to apply
 
@@ -214,13 +231,16 @@ launcher).
   sections of that doc.
 - **Cross-check against the actual code** at:
   - `lhotse_resumable/lhotse/serialization.py` (`open_best`, AIStore backend, MSC backend)
-  - `lhotse_resumable/lhotse/indexing.py` (`create_jsonl_index`, `create_tar_index`, `indexed_path_kind`, `IndexedJsonlReader`, `read_index`)
-  - `lhotse_resumable/lhotse/ais/batch_loader.py` (`AISBatchLoader`, `prefer_individual`, `_moss_attrs`)
+  - `lhotse_resumable/lhotse/indexing.py` (`create_jsonl_index`, `create_tar_index`, `indexed_path_kind`, `IndexedJsonlReader`, `read_index`, `LazyShuffledRange` with `(shard_id, num_shards)` partition)
+  - `lhotse_resumable/lhotse/lazy.py` (`LazyIndexedManifestIterator.__iter__` defers `LazyShuffledRange` construction to resolve partition at iter time; `LazyIteratorChain._iter_globally_shuffled` partitions the combined range; `LazyIteratorMultiplexer.__iter__` rejects `seed='randomized'` under multi-shard partition)
+  - `lhotse_resumable/lhotse/dataset/dataloading.py` (`worker_init_fn` sets the `LHOTSE_USE_WORKER_PARTITION` signal; `get_worker_partition()` returns the trivial `(0, 1)` when that signal is absent — keeps map-style mode unaffected even under torchrun)
+  - `lhotse_resumable/lhotse/ais/batch_loader.py` (`AISBatchLoader`, `force_individual`, byte-range `shar_ptr` fallback, `_moss_attrs`)
   - `lhotse_resumable/lhotse/dataset/input_strategies.py` (`AudioSamples`)
   - `NeMo_resumable/nemo/collections/common/data/lhotse/indexed_adapters.py` (`IndexedTarMemberReader`, `_AISRangeReader`, `_CountingReader`, `_open_data_path`, `_load_index`, `resolve_idx_path`)
-  - `NeMo_resumable/nemo/collections/common/data/lhotse/dataloader.py` (`get_lhotse_sampler_from_config`, `get_lhotse_dataloader_from_config`, `force_map_dataset` handling, the auto-overwrite of `shard_seed`)
+  - `NeMo_resumable/nemo/collections/common/data/lhotse/dataloader.py` (`get_lhotse_sampler_from_config`, `get_lhotse_dataloader_from_config`, `force_map_dataset` handling, the auto-overwrite of `shard_seed`, `_maybe_init_main_process_for_iterable` for `num_workers=0` eager `worker_init_fn` call)
   - `NeMo_resumable/nemo/collections/common/data/lhotse/nemo_adapters.py` (`LazyNeMoTarredIterator`, `_init_indexed`, `_iter_batch_for_ais_get_batch`, `USE_AIS_GET_BATCH` gate)
   - `NeMo_resumable/scripts/dataloading/build_indexes.py` and `prefetch_indexes.py`
+  - `lhotse_resumable/test/test_partition.py` (49 tests pinning every partition edge case: map-style regression, empty/tiny manifests, composition with shuffler/mapper/filter/repeater, multiplexer state-dict roundtrip, chain topology mismatch, etc.)
 - **Cross-check against today's debug docs** at:
   - `agent-debug-workspace/0909-summary.md`
   - `agent-debug-workspace/0909-multiling-failures.md`

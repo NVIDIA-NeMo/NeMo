@@ -52,6 +52,34 @@ real-world adoption pain. Apply these before sweeping any new recipe.
    asserts equal. Catches sampler/bucketer state-dict bugs that schema
    inspection of `meta.pt` (just confirming the keys exist) won't.
 
+5b. **Consider `force_map_dataset: false` for indexed-only configs at high
+   `world_size` (≥ 16-ish).** The default map-style path over-samples
+   `world_size` batches per step and discards `world_size - 1` — at 32 DP
+   ranks that's 32× redundant sampler/manifest I/O on the main GPU
+   process per step, and the 0909 profiling showed it nearly doubling
+   training step time. The iterable path co-locates the sampler with the
+   dataset inside CPU worker subprocesses and partitions sample indices
+   across `(DP rank × DataLoader worker)` via `LazyShuffledRange(shard_id,
+   num_shards)`. Single partition level, no double-counting; near-`W×`
+   step-time improvement at scale.
+
+   Preconditions before flipping:
+   - Every nested `input_cfg` source must be indexed (no plain
+     `LazyJsonlIterator` / `LazyManifestIterator` in the chain — see
+     `failure-modes.md §21`).
+   - Every `LazyIteratorMultiplexer.seed` is a fixed integer
+     (`shard_seed` typically pins this). `seed='randomized'` raises a
+     loud `ValueError` at iter time under multi-shard partition
+     (§22).
+   - `(world_size, num_workers)` invariant across the chain (§23).
+   - Validation still uses `force_map_dataset: true` (small, finite,
+     no perf benefit from partitioning).
+
+   The 0909 sweep flipped `0909-longform5pct.yaml` as a canary;
+   `force_map_dataset: true` remains the safe default for any config
+   that mixes indexed + non-indexed sources or that you haven't
+   profiled yet.
+
 6. **Pick exactly ONE checkpoint trigger** in
    `exp_manager.checkpoint_callback_params` — `every_n_train_steps`,
    `every_n_epochs`, OR `train_time_interval`. Lightning's
@@ -139,3 +167,18 @@ real-world adoption pain. Apply these before sweeping any new recipe.
   YAML says `indexes_root: /tmp/idx` and the prefetch script writes to
   `/tmp/idx2`, training silently can't find any index, falls back to
   building on first access (slow).
+
+- **Don't flip to `force_map_dataset: false` without auditing every
+  source in the chain.** A single non-indexed source (plain
+  `LazyJsonlIterator`, `LazyManifestIterator`, compressed Shar that
+  silently fell back, etc.) yields its full content on every rank under
+  iterable mode — silent data duplication that won't show up until you
+  inspect cut-ID coverage across ranks. See `failure-modes.md §21`. When
+  in doubt, keep `force_map_dataset: true`; the over-sample-and-discard
+  dedup works regardless of source type.
+
+- **Don't set `LHOTSE_USE_WORKER_PARTITION` manually.** It's a signal
+  set by `worker_init_fn` to indicate iterable-mode partition is active.
+  Setting it from outside (e.g. in a launcher script or `.env` file)
+  while running map-style mode would re-introduce the under-sampling bug
+  fixed by §20.

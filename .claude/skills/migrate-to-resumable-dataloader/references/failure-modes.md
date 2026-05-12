@@ -249,8 +249,8 @@ that data replicated. Confirmed for non-EN multilingual on IAD AIS as of
 
 **Fix (workaround)**: set `USE_AIS_INDIVIDUAL_GETS=true` to bypass MOSS
 GetBatch and use per-object `Object.get_reader(archive_config=...).read_all()`
-(slower but works). `lhotse_resumable/lhotse/ais/batch_loader.py:67, 218`
-implements `prefer_individual=True`.
+(slower but works). `lhotse_resumable/lhotse/ais/batch_loader.py` implements
+this via the `force_individual=True` ctor arg.
 
 **Fix (proper)**: replicate the missing data to AIS. Quick check from
 inside an iad container:
@@ -326,6 +326,108 @@ in steady state since the bucket buffer is normally well-stocked.
 
 **Cross-refs**: `option-reference.md` `data.train_ds.concurrent_bucketing`
 row; `best-practices.md` Tier 1.
+
+---
+
+## §20 — Iterable mode (`force_map_dataset: false`) silent under-sampling when partition signal missing
+
+**Signature**: silent. Step time looks normal but training runs through far
+fewer data points than expected; loss curves are wrong (each rank ends up
+training on a sliver of its already-sliced shard). Inspect with: take a
+fresh process under torchrun (so RANK/WORLD_SIZE are set), construct a
+`LazyIndexedManifestIterator(...)` directly without going through NeMo's
+dataloader (or with `worker_init_fn` somehow not running), and assert
+`len(list(iter(it))) == n`. Pre-fix this returned `n / world_size`.
+
+**Trigger**: previously (before the env-var signal was added), `LazyIndexedManifestIterator.__iter__`
+called `get_worker_partition()` which read RANK/WORLD_SIZE directly. Under
+torchrun, those env vars are set in the main process even in map-style mode
+— so the iterator applied partition even though the sampler was about to
+over-sample-and-discard, causing 1/world_size² effective coverage per rank.
+
+**Fix**: `worker_init_fn` now sets `LHOTSE_USE_WORKER_PARTITION=1`, and
+`get_worker_partition()` returns the trivial `(0, 1)` partition when that
+flag is absent. Map-style mode never calls `worker_init_fn`, so the flag
+stays unset and partition is bypassed. For iterable mode the NeMo dataloader
+passes `worker_init_fn` to the DataLoader (workers `num_workers>0`) or calls
+it eagerly via `_maybe_init_main_process_for_iterable()` (`num_workers=0`).
+
+**Cross-refs**: `lhotse_resumable/lhotse/dataset/dataloading.py:22` (constant
+definition), `:82` (set in `worker_init_fn`), `:139-170` (`get_worker_partition`
+checks the flag, returns `(0, 1)` if unset);
+`lhotse_resumable/test/test_partition.py::test_map_style_path_yields_all_items_under_torchrun`
+pins the regression.
+
+---
+
+## §21 — Iterable mode with non-indexed source in the chain → silent duplication
+
+**Signature**: silent. Each rank reads the non-indexed source(s) in full.
+Inspect with the bit-exact verification recipe (`MIGRATION_GUIDE.md §3`) on
+a config containing a mixed-indexed chain — items from the non-indexed
+source(s) show up on every rank.
+
+**Trigger**: `force_map_dataset: false` plus a `LazyIteratorChain` mixing
+`LazyIndexedManifestIterator` (indexed) with `LazyJsonlIterator` /
+`LazyManifestIterator` (non-indexed). The chain's `is_indexed` is `False`
+when any source is non-indexed, so the chain falls back to
+`_iter_sequential` which delegates to each source's `__iter__`. Indexed
+sources partition themselves; non-indexed ones don't.
+
+**Fix**: either (a) convert the non-indexed sources to indexed via
+`submit_build_indexes.py`; (b) split the non-indexed sources into a separate
+dataloader; (c) revert to `force_map_dataset: true` for this config — its
+over-sample-and-discard dedup works regardless of source type.
+
+**Cross-refs**: `lhotse_resumable/test/test_partition.py::test_chain_mixed_indexed_non_indexed_only_indexed_partitions`
+pins the documented behaviour.
+
+---
+
+## §22 — Iterable mode + `LazyIteratorMultiplexer(seed="randomized")`
+
+**Signature**: loud `ValueError: LazyIteratorMultiplexer cannot use
+seed='randomized' under multi-shard (DP rank x DataLoader worker)
+iteration: each shard would draw a different RNG state and pick a different
+source at the same step, causing the global weighted source distribution to
+drift across ranks. Use a fixed integer seed.` from
+`lhotse_resumable/lhotse/lazy.py:960-970`.
+
+**Trigger**: `force_map_dataset: false` and a multiplexer somewhere in the
+iteration graph has `seed='randomized'` (or unset and inheriting the
+default randomized seed propagation).
+
+**Fix**: pin the multiplexer's `seed` (or the top-level `shard_seed` that
+flows in) to a fixed integer. Map-style mode is unaffected since partition
+collapses to `(0, 1)` and the assertion never fires.
+
+**Cross-refs**: `lhotse_resumable/test/test_partition.py::test_multiplexer_rejects_randomized_seed_under_multishard`
+and `test_multiplexer_allows_randomized_seed_single_shard`.
+
+---
+
+## §23 — Iterable mode resume topology mismatch
+
+**Signature**: loud `ValueError: LazyShuffledRange state mismatch: expected
+n=…, seed=…, shard_id=…, num_shards=…; got … Resuming with a different
+DP/worker topology is not supported — drop dataloader state if the topology
+changed.` from `lhotse_resumable/lhotse/indexing.py:507-540`. For chains
+under global shuffle: `ValueError: LazyIteratorChain global-shuffle
+partition mismatch on resume: ...`.
+
+**Trigger**: a chunk saved with `(world_size=W1, num_workers=NW1)` is
+restored under `(world_size=W2, num_workers=NW2)` where
+`W1 * NW1 != W2 * NW2` or the rank/worker_id assignment differs. Common
+sources: launcher changed `--num-nodes` or `--num-workers` between chunks,
+or elastic-cluster behaviour silently re-shuffled ranks.
+
+**Fix**: keep `(world_size, num_workers)` invariant across the chain — same
+hard contract as map-style `StatefulDataLoader` (which raises analogously).
+If you must scale, restart from a converted HuggingFace checkpoint (no
+resume of dataloader state).
+
+**Cross-refs**: `lhotse_resumable/test/test_partition.py::test_chain_globally_shuffled_topology_mismatch_on_resume`
+and `test_indexed_manifest_iterator_partition_resume_topology_mismatch_raises`.
 
 ---
 

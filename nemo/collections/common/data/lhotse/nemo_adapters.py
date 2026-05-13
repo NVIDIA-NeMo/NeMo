@@ -35,7 +35,7 @@ from cytoolz import groupby
 from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment
 from lhotse.audio.backend import LibsndfileBackend
 from lhotse.cut import Cut
-from lhotse.dataset.dataloading import resolve_seed
+from lhotse.dataset.dataloading import PartitionedIndexedIterator, resolve_seed
 from lhotse.lazy import (
     GraphOriginDict,
     IteratorNode,
@@ -527,8 +527,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             cum_lens.append(cum)
         self._cum_lens = cum_lens
         self._total_len = cum
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
 
     def to_shards(self) -> List["LazyNeMoTarredIterator"]:
         """Convert this iterator to a list of separate iterators for each shard."""
@@ -829,24 +828,20 @@ class LazyNeMoTarredIterator(IteratorNode):
     def state_dict(self) -> dict:
         if not self.indexed:
             return {}
-        return {"position": self._position, "epoch": self.epoch}
+        return {**self._iter_state.state_dict(), "epoch": self.epoch}
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
+        self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
-        self._restored = True
 
     def _iter_indexed(self) -> Generator[Cut, None, None]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        for i in range(start, self._total_len):
-            self._position = i + 1
-            cut = self._decode_cut_at(i)
+        for global_idx in self._iter_state.iterate(self._total_len):
+            cut = self._decode_cut_at(global_idx)
             if cut is None:
                 continue
-            attach_graph_origin(cut, i)
+            attach_graph_origin(cut, global_idx)
             yield cut
         self.epoch += 1
 
@@ -1138,8 +1133,7 @@ class LazyParquetIterator(IteratorNode):
         self._row_group_offsets: list[int] | None = None
         self._cached_row_group_idx: int | None = None
         self._cached_row_group: list[dict] | None = None
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
         if indexed:
             self._init_indexed()
 
@@ -1252,13 +1246,12 @@ class LazyParquetIterator(IteratorNode):
     def state_dict(self) -> dict:
         if not self.indexed:
             return {}
-        return {"position": self._position}
+        return self._iter_state.state_dict()
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
-        self._restored = True
+        self._iter_state.load_state_dict(sd)
 
     def __iter__(self) -> Generator[Cut, None, None]:
         if self.indexed:
@@ -1267,17 +1260,13 @@ class LazyParquetIterator(IteratorNode):
             yield from self._iter_streaming()
 
     def _iter_indexed(self) -> Generator[Cut, None, None]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = self._total_rows
-        for i in range(start, n):
-            self._position = i + 1
-            rg_idx, local_idx = self._resolve_row_group(i)
+        for global_idx in self._iter_state.iterate(self._total_rows):
+            rg_idx, local_idx = self._resolve_row_group(global_idx)
             rows = self._load_row_group(rg_idx)
-            cut = self._build_cut_from_row(rows[local_idx], fallback_idx=i)
+            cut = self._build_cut_from_row(rows[local_idx], fallback_idx=global_idx)
             if cut is None:
                 continue
-            attach_graph_origin(cut, i)
+            attach_graph_origin(cut, global_idx)
             yield cut
 
     def _iter_streaming(self) -> Generator[Cut, None, None]:

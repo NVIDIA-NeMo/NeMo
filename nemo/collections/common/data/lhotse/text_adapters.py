@@ -28,17 +28,17 @@ from lhotse import AudioSource, CutSet, Recording
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset import AudioSamples
-from lhotse.dataset.dataloading import resolve_seed
+from lhotse.dataset.dataloading import PartitionedIndexedIterator, resolve_seed
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
 from lhotse.utils import Pathlike, compute_num_samples, is_valid_url
 
 from lhotse.lazy import IteratorNode, attach_graph_origin, normalize_graph_token
 
+from lhotse.indexing import IndexedJsonlReader
+
 from nemo.collections.common.data.lhotse.indexed_adapters import (
-    IndexedJSONLReader,
     IndexedTarSampleReader,
-    LazyShuffledRange,
     _split_json_audio_pair,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
@@ -155,8 +155,7 @@ class LhotseTextJsonlAdapter(IteratorNode):
         self.paths = expand_sharded_filepaths(self.paths)
         self._readers: list = []
         self._cum_lens: list[int] = []
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
             from lhotse.indexing import IndexedJsonlReader
 
@@ -214,13 +213,12 @@ class LhotseTextJsonlAdapter(IteratorNode):
         return attach_graph_origin(ex, idx)
 
     def state_dict(self) -> dict:
-        return {"position": self._position} if self.indexed else {}
+        return self._iter_state.state_dict() if self.indexed else {}
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
-        self._restored = True
+        self._iter_state.load_state_dict(sd)
 
     def __iter__(self) -> Iterator[TextExample]:
         if self.indexed:
@@ -229,16 +227,13 @@ class LhotseTextJsonlAdapter(IteratorNode):
             yield from self._iter_streaming()
 
     def _iter_indexed(self) -> Iterator[TextExample]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = self._cum_lens[-1] if self._cum_lens else 0
-        for i in range(start, n):
-            self._position = i + 1
-            shard_idx, local_idx = self._resolve(i)
+        total = self._cum_lens[-1] if self._cum_lens else 0
+        for global_idx in self._iter_state.iterate(total):
+            shard_idx, local_idx = self._resolve(global_idx)
             ex = self._data_to_example(self._readers[shard_idx][local_idx])
             if ex is None:
                 continue
-            attach_graph_origin(ex, i)
+            attach_graph_origin(ex, global_idx)
             yield ex
 
     def _iter_streaming(self) -> Iterator[TextExample]:
@@ -428,8 +423,7 @@ class NeMoSFTJsonlAdapter(IteratorNode):
         self.paths = expand_sharded_filepaths(self.paths)
         self._readers: list = []
         self._cum_lens: list[int] = []
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
             from lhotse.indexing import IndexedJsonlReader
 
@@ -477,13 +471,12 @@ class NeMoSFTJsonlAdapter(IteratorNode):
         return attach_graph_origin(ex, idx)
 
     def state_dict(self) -> dict:
-        return {"position": self._position} if self.indexed else {}
+        return self._iter_state.state_dict() if self.indexed else {}
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
-        self._restored = True
+        self._iter_state.load_state_dict(sd)
 
     def __iter__(self) -> Iterator[NeMoSFTExample]:
         if self.indexed:
@@ -492,14 +485,11 @@ class NeMoSFTJsonlAdapter(IteratorNode):
             yield from self._iter_streaming()
 
     def _iter_indexed(self) -> Iterator[NeMoSFTExample]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = self._cum_lens[-1] if self._cum_lens else 0
-        for i in range(start, n):
-            self._position = i + 1
-            shard_idx, local_idx = self._resolve(i)
+        total = self._cum_lens[-1] if self._cum_lens else 0
+        for global_idx in self._iter_state.iterate(total):
+            shard_idx, local_idx = self._resolve(global_idx)
             ex = NeMoSFTExample(self._readers[shard_idx][local_idx], language=self.language)
-            attach_graph_origin(ex, i)
+            attach_graph_origin(ex, global_idx)
             yield ex
 
     def _iter_streaming(self) -> Iterator[NeMoSFTExample]:
@@ -820,8 +810,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         self._tar_readers: list = []
         self._cum_lens: list[int] = []
         self._total_len = 0
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
             self._init_indexed()
 
@@ -878,14 +867,13 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         raise IndexError(idx)
 
     def state_dict(self) -> dict:
-        return {"position": self._position, "epoch": self.epoch} if self.indexed else {}
+        return {**self._iter_state.state_dict(), "epoch": self.epoch} if self.indexed else {}
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
+        self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
-        self._restored = True
 
     def __getitem__(self, token):
         if not self.indexed:
@@ -1017,12 +1005,8 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             yield from self._iter_jsonl()
 
     def _iter_indexed(self) -> Iterator[NeMoMultimodalConversation]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = self._total_len
-        for i in range(start, n):
-            self._position = i + 1
-            shard_idx, local_idx = self._resolve(i)
+        for global_idx in self._iter_state.iterate(self._total_len):
+            shard_idx, local_idx = self._resolve(global_idx)
             data = self._cuts_readers[shard_idx][local_idx]
             if self._tar_readers:
                 convo = self._build_conversation_tarred(
@@ -1036,7 +1020,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 )
             if convo is None:
                 continue
-            attach_graph_origin(convo, i)
+            attach_graph_origin(convo, global_idx)
             yield convo
         self.epoch += 1
 
@@ -1289,16 +1273,12 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 self.tarred_audio_filepaths
             ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
-        self._has_index = all(
-            Path(resolve_idx_path(p, self.indexes_root)).exists() for p in self.manifest_filepath
-        )
         self.epoch = 0
         self._cuts_readers: list = []
         self._tar_readers: list = []
         self._cum_lens: list[int] = []
         self._total_len = 0
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
             self._init_indexed()
 
@@ -1355,14 +1335,13 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         raise IndexError(idx)
 
     def state_dict(self) -> dict:
-        return {"position": self._position, "epoch": self.epoch} if self.indexed else {}
+        return {**self._iter_state.state_dict(), "epoch": self.epoch} if self.indexed else {}
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
+        self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
-        self._restored = True
 
     def _build_one(self, data: dict, shard_idx: int) -> NeMoMultimodalConversation:
         conversations = _transform_sharegpt(self.audio_placeholders, data)
@@ -1425,21 +1404,15 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             return
         if self.tarred_audio_filepaths is not None:
             yield from self._iter_tar()
-        elif self.shuffle_shards and self._has_index:
-            yield from self._iter_jsonl_indexed()
         else:
             yield from self._iter_jsonl()
 
     def _iter_indexed_node(self) -> Iterator[NeMoMultimodalConversation]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = self._total_len
-        for i in range(start, n):
-            self._position = i + 1
-            shard_idx, local_idx = self._resolve(i)
+        for global_idx in self._iter_state.iterate(self._total_len):
+            shard_idx, local_idx = self._resolve(global_idx)
             data = self._cuts_readers[shard_idx][local_idx]
             convo = self._build_one(data, shard_idx)
-            attach_graph_origin(convo, i)
+            attach_graph_origin(convo, global_idx)
             yield convo
         self.epoch += 1
 
@@ -1547,27 +1520,6 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 )
         self.epoch += 1
 
-    def _iter_jsonl_indexed(self):
-        paths = list(self.manifest_filepath)
-        rng = self._get_rng()
-        rng.shuffle(paths)
-        for path in paths:
-            reader = IndexedJSONLReader(path)
-            for idx in LazyShuffledRange(len(reader), rng):
-                data = reader[idx]
-                conversations = _transform_sharegpt(self.audio_placeholders, data)
-                yield NeMoMultimodalConversation(
-                    id=data.get("id", "missing-example-id"),
-                    turns=_create_sharegpt_turns(
-                        self.audio_locator_tag,
-                        conversations,
-                        lambda t, _p=path: self._resolve_cut_from_path(t, _p),
-                    ),
-                    token_equivalent_duration=self.token_equivalent_duration,
-                )
-        self.epoch += 1
-
-
 @dataclass
 class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     """
@@ -1622,15 +1574,11 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
             if not self._shard_paths:
                 raise FileNotFoundError(f"No wids-meta.json and no .tar files found under {self.data_dir}")
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
-        self._has_index = all(
-            Path(resolve_idx_path(p, self.indexes_root)).exists() for p in self._shard_paths
-        )
         self.epoch = 0
         self._tar_readers: list = []
         self._cum_lens: list[int] = []
         self._total_len = 0
-        self._position = 0
-        self._restored = False
+        self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
             self._init_indexed()
 
@@ -1674,14 +1622,13 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         raise IndexError(idx)
 
     def state_dict(self) -> dict:
-        return {"position": self._position, "epoch": self.epoch} if self.indexed else {}
+        return {**self._iter_state.state_dict(), "epoch": self.epoch} if self.indexed else {}
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
-        self._position = sd.get("position", 0)
+        self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
-        self._restored = True
 
     def __getitem__(self, token):
         if not self.indexed:
@@ -1698,21 +1645,14 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         if self.indexed:
             yield from self._iter_indexed_node()
             return
-        if self.shuffle_shards and self._has_index:
-            yield from self._iter_indexed()
-        else:
-            yield from self._iter_sequential()
+        yield from self._iter_sequential()
 
     def _iter_indexed_node(self) -> Iterator[NeMoMultimodalConversation]:
-        start = self._position if self._restored else 0
-        self._restored = False
-        n = self._total_len
-        for i in range(start, n):
-            self._position = i + 1
-            shard_idx, local_idx = self._resolve(i)
+        for global_idx in self._iter_state.iterate(self._total_len):
+            shard_idx, local_idx = self._resolve(global_idx)
             json_data, audio_bytes, audio_name = self._tar_readers[shard_idx][local_idx]
             convo = self._yield_from_sample(json_data, audio_bytes, audio_name)
-            attach_graph_origin(convo, i)
+            attach_graph_origin(convo, global_idx)
             yield convo
         self.epoch += 1
 
@@ -1751,20 +1691,6 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                     )
                     yield self._yield_from_sample(json_data, audio_bytes, audio_name)
         self.epoch += 1
-
-    def _iter_indexed(self):
-        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
-
-        shard_paths = list(self._shard_paths)
-        rng = self._get_rng()
-        rng.shuffle(shard_paths)
-        for tar_path in shard_paths:
-            reader = IndexedTarSampleReader(tar_path, idx_path=resolve_idx_path(tar_path, self.indexes_root))
-            for idx in LazyShuffledRange(len(reader), rng):
-                json_data, audio_bytes, audio_name = reader[idx]
-                yield self._yield_from_sample(json_data, audio_bytes, audio_name)
-        self.epoch += 1
-
 
 class TarIterator:
     """

@@ -13,7 +13,6 @@
 # limitations under the License.
 import json
 import os
-import random
 import re
 import struct
 import tarfile
@@ -22,8 +21,7 @@ from typing import NamedTuple, Optional
 
 import numpy as np
 
-# Knuth's multiplicative hash constant (golden-ratio derived, 32-bit).
-_KNUTH_HASH = 2654435761
+from lhotse.indexing import read_index
 
 # Tar block size + the all-zeros block that marks end-of-archive in tar.
 _TAR_BLOCK_SIZE = 512
@@ -207,72 +205,15 @@ def resolve_idx_path(data_path: str | Path, indexes_root: Optional[str | Path] =
     return str(Path(root_str) / (rel + ".idx"))
 
 
-class LazyShuffledRange:
+def _load_index(data_path: str, idx_path: Optional[str] = None):
     """
-    Generates a permutation of ``range(n)`` lazily using a Feistel cipher,
-    without materializing the full index list. Each element is computed on
-    the fly in O(1) time and the object itself uses O(1) memory regardless
-    of ``n``.
-
-    The technique is known as *cycle-walking* format-preserving encryption:
-    a Feistel network is a bijection on ``[0, 2^k)``, and repeatedly applying
-    it until the output falls within ``[0, n)`` restricts it to a bijection
-    on the desired domain.
-
-    Args:
-        n: Size of the range to permute.
-        rng: A ``random.Random`` instance used to derive round keys.
-        num_rounds: Number of Feistel rounds (more rounds = better uniformity,
-            6 is a good default for typical dataset sizes).
-    """
-
-    def __init__(self, n: int, rng: random.Random, num_rounds: int = 6):
-        self.n = n
-        if n <= 1:
-            return
-        bits = (n - 1).bit_length()
-        if bits < 2:
-            bits = 2
-        if bits % 2:
-            bits += 1
-        self._half = bits // 2
-        self._mask = (1 << self._half) - 1
-        self._num_rounds = num_rounds
-        self._keys = [rng.getrandbits(64) for _ in range(num_rounds)]
-
-    def _permute_one(self, x: int) -> int:
-        left = (x >> self._half) & self._mask
-        right = x & self._mask
-        for key in self._keys:
-            left, right = right, left ^ (((right * _KNUTH_HASH) ^ key) >> 32 & self._mask)
-        return (left << self._half) | right
-
-    def __len__(self) -> int:
-        return self.n
-
-    def __iter__(self):
-        n = self.n
-        if n <= 0:
-            return
-        if n == 1:
-            yield 0
-            return
-        for i in range(n):
-            x = i
-            while True:
-                x = self._permute_one(x)
-                if x < n:
-                    yield x
-                    break
-
-
-def _load_index(data_path: str, idx_path: str | None = None):
-    """
-    Load a memmap'd offset index for *data_path*.
+    Load an offset index for *data_path*, layering NeMo-specific validation
+    on top of :func:`lhotse.indexing.read_index`.
 
     Returns ``(offsets, num_samples)`` where ``offsets`` always has
     ``num_samples + 1`` entries — the last one being the data file size
-    (appended if absent in the on-disk index).
+    (appended if absent in the on-disk index, for legacy ``.idx`` files
+    written before the sentinel convention was added).
 
     Validates that all sample offsets fall within the data file.
 
@@ -285,13 +226,7 @@ def _load_index(data_path: str, idx_path: str | None = None):
     """
     if idx_path is None:
         idx_path = data_path + '.idx'
-    # Use np.fromfile (resident memory) rather than np.memmap so that NeMo
-    # blends with tens of thousands of shards don't exhaust the kernel's
-    # ``vm.max_map_count`` budget (~65k by default) and subsequently raise
-    # ``OSError: [Errno 12] Cannot allocate memory``. Indexes are small
-    # (a uint64 per record + a sentinel; typically O(KB) per shard), so the
-    # resident-memory cost across an entire blend is in the hundreds of MB.
-    offsets = np.fromfile(idx_path, dtype=np.dtype('<u8'))
+    offsets = read_index(idx_path)
     if _URL_RE.match(str(data_path)):
         if offsets.shape[0] < 1:
             raise ValueError(
@@ -327,24 +262,6 @@ def _resolve_idx(idx: int, length: int) -> int:
     return idx
 
 
-class IndexedJSONLReader:
-    def __init__(self, jsonl_path: Path | str, idx_path: Path | str | None = None):
-        self.data_path = str(jsonl_path)
-        self.offsets, self._len = _load_index(self.data_path, str(idx_path) if idx_path else None)
-
-    def __len__(self):
-        return self._len
-
-    def __getitem__(self, idx):
-        idx = _resolve_idx(idx, self._len)
-        start = int(self.offsets[idx])
-        end = int(self.offsets[idx + 1])
-        with _open_data_path(self.data_path) as f:
-            f.seek(start)
-            data = f.read(end - start)
-        return json.loads(data.decode('utf-8'))
-
-
 class TarSample(NamedTuple):
     """A single sample extracted from a WebDataset tar archive."""
 
@@ -365,8 +282,9 @@ def _split_json_audio_pair(name_a, bytes_a, name_b, bytes_b) -> TarSample:
 class IndexedTarSampleReader:
     """
     Random access to WebDataset tar samples (``N.json`` + ``N.<audio>``) via an index file.
-    Index format is identical to ``IndexedJSONLReader``: little-endian uint64 offsets,
-    optionally followed by a sentinel equal to the tar file size.
+    Index format is the same little-endian ``uint64`` offsets as
+    :class:`lhotse.indexing.IndexedJsonlReader`, optionally followed by a
+    sentinel equal to the tar file size.
     """
 
     def __init__(self, tar_path: str | Path, idx_path: str | Path | None = None):
@@ -454,8 +372,8 @@ class IndexedTarMemberReader:
     Random access to a NeMo-style tar archive that stores **one regular member
     per sample** (e.g. ``<cut_id>.flac`` per line of an external NeMo manifest).
 
-    Uses the same ``.idx`` format as :class:`IndexedJSONLReader` and
-    :class:`IndexedTarSampleReader`: little-endian uint64 byte offsets, with
+    Uses the same ``.idx`` format as :class:`lhotse.indexing.IndexedJsonlReader`
+    and :class:`IndexedTarSampleReader`: little-endian uint64 byte offsets, with
     a sentinel equal to the tar file size at the end. Each entry points at
     one tar header, and the corresponding payload starts ``512`` bytes later.
 
@@ -595,34 +513,6 @@ def _read_tar_member(f):
         return info.name, data
 
 
-def create_index(jsonl_path, idx_path):
-    """
-    Creates a raw binary index file compatible with Megatron-Energon (CrudeJsonlDataset).
-
-    Format: sequence of little-endian uint64 values
-    ``[Offset_0, Offset_1, ..., Offset_N, File_Size]``
-
-    Written atomically (tmp + ``os.replace``) so concurrent writers can't
-    observe a half-written ``.idx``.
-    """
-    # Flush the write buffer every 8 MiB to limit memory usage on large files.
-    flush_threshold = 8 * 1024 * 1024
-    tmp_path = f"{idx_path}.tmp.{os.getpid()}"
-    with open(jsonl_path, 'rb') as f_in, open(tmp_path, 'wb') as f_out:
-        current_offset = 0
-        write_buffer = bytearray()
-        write_buffer.extend(struct.pack('<Q', current_offset))
-        for line in f_in:
-            current_offset += len(line)
-            write_buffer.extend(struct.pack('<Q', current_offset))
-            if len(write_buffer) > flush_threshold:
-                f_out.write(write_buffer)
-                write_buffer.clear()
-        if write_buffer:
-            f_out.write(write_buffer)
-    os.replace(tmp_path, idx_path)
-
-
 class _CountingReader:
     """
     Minimal file-like wrapper that delegates everything to an inner stream
@@ -656,8 +546,9 @@ def create_tar_index(tar_path, idx_path):
     """
     Creates a raw binary index file for a WebDataset tar archive.
     Stores the byte offset of the first member of each sample (grouped by basename),
-    followed by a sentinel equal to the tar file size.
-    Format is identical to :func:`create_index`.
+    followed by a sentinel equal to the tar file size. On-disk format matches
+    :func:`lhotse.indexing.create_jsonl_index` and the other readers in this
+    module: a sequence of little-endian uint64 byte offsets.
 
     Reads ``tar_path`` via ``lhotse.serialization.open_best`` so the function
     works for local files as well as ``s3://`` / ``ais://`` / ``http(s)://``

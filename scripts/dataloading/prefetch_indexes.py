@@ -57,7 +57,7 @@ from typing import Optional
 import click
 from omegaconf import OmegaConf
 
-from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+from lhotse.indexing import index_file_path
 
 # Reuse the discovery + IndexJob machinery from build_indexes.py.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -151,8 +151,8 @@ def main(
 
     pairs: list[tuple[str, str]] = []
     for j in unique:
-        src = resolve_idx_path(j.path, source_indexes_root)
-        dst = resolve_idx_path(j.path, indexes_root)
+        src = index_file_path(j.path, source_indexes_root)
+        dst = index_file_path(j.path, indexes_root)
         pairs.append((src, dst))
 
     todo = pairs if force else [(s, d) for (s, d) in pairs if not _is_present(d)]

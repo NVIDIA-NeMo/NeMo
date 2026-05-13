@@ -90,18 +90,58 @@ class DataModule(LightningDataModule):
         return self._train_dl
 
     def state_dict(self) -> dict:
-        # Persist the train dataloader state when it's stateful (e.g. torchdata's StatefulDataLoader
-        # paired with a checkpointable lhotse sampler). This enables exact-batch resume.
-        if self._train_dl is not None and hasattr(self._train_dl, "state_dict"):
-            return {"train_dataloader": self._train_dl.state_dict()}
-        return {}
+        # Each DP rank has its own dataloader state (different cuts partition, different
+        # per-worker RNG positions). all_gather across the DP group so the rank-0 meta.pt
+        # that Lightning writes contains every rank's state, keyed by dp_rank.
+        if self._train_dl is None or not hasattr(self._train_dl, "state_dict"):
+            return {}
+        local_state = self._train_dl.state_dict()
+        rank = self._get_dp_rank()
+        world = self._get_world_size()
+        tagged = {"dp_rank": rank, "dp_world_size": world, "state": local_state}
+        if world <= 1 or not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            per_rank = [tagged]
+        else:
+            group = self._get_dp_group()
+            per_rank = [None] * world
+            torch.distributed.all_gather_object(per_rank, tagged, group=group)
+        return {"train_dataloader_per_rank": per_rank}
 
     def load_state_dict(self, state_dict: dict) -> None:
-        if "train_dataloader" not in state_dict:
+        # Mirrors state_dict: we expect a per-DP-rank list and consume the slot that
+        # matches our current (dp_rank, dp_world_size). Any other shape is a bug.
+        if not state_dict:
             return
+        if "train_dataloader_per_rank" not in state_dict:
+            raise RuntimeError(
+                "DataModule.load_state_dict: expected 'train_dataloader_per_rank' in "
+                f"state_dict, got keys {list(state_dict.keys())}."
+            )
+        per_rank = state_dict["train_dataloader_per_rank"]
+        rank = self._get_dp_rank()
+        world = self._get_world_size()
+        if not isinstance(per_rank, list) or len(per_rank) != world:
+            raise RuntimeError(
+                f"DataModule state has dp_world_size="
+                f"{len(per_rank) if isinstance(per_rank, list) else 'unknown'} but the "
+                f"current run has dp_world_size={world}."
+            )
+        entry = per_rank[rank]
+        if not isinstance(entry, dict) or "state" not in entry or "dp_rank" not in entry or "dp_world_size" not in entry:
+            raise RuntimeError(
+                f"Malformed per-rank dataloader state at index {rank}: expected keys "
+                f"{{'dp_rank', 'dp_world_size', 'state'}}, got "
+                f"{list(entry.keys()) if isinstance(entry, dict) else type(entry).__name__}."
+            )
+        saved_rank, saved_world = entry["dp_rank"], entry["dp_world_size"]
+        if saved_rank != rank or saved_world != world:
+            raise RuntimeError(
+                f"Dataloader state tagged (dp_rank={saved_rank}, dp_world_size={saved_world}) "
+                f"loaded on (dp_rank={rank}, dp_world_size={world})."
+            )
         dl = self.train_dataloader()
         if dl is not None and hasattr(dl, "load_state_dict"):
-            dl.load_state_dict(state_dict["train_dataloader"])
+            dl.load_state_dict(entry["state"])
 
     def val_dataloader(self):
         if "validation_ds" not in self.cfg:
@@ -207,3 +247,28 @@ class DataModule(LightningDataModule):
                 return torch.distributed.get_world_size()
         else:
             return 1  # 1 GPU
+
+    def _get_dp_group(self):
+        """Return the torch.distributed process group covering this rank's DP siblings.
+
+        Used by ``state_dict`` to gather per-rank dataloader state across DP only
+        (i.e. excluding CP / TP / PP / EP duplicates, which carry the same data
+        partition by construction). Returns ``None`` for the default world group,
+        which is correct for plain DDP and for single-process runs.
+        """
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return None
+        if (
+            hasattr(self.trainer, "model")
+            and hasattr(self.trainer.model, "device_mesh")
+            and (dm := self.trainer.model.device_mesh) is not None
+        ):
+            if "data_parallel" in dm.mesh_dim_names:  # Lightning's ModelParallelStrategy
+                return dm["data_parallel"].get_group()
+            if "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names:
+                # AutomodelParallelStrategy exposes a flattened "dp" submesh covering
+                # dp_replicate × dp_shard (see parallel.py docstring). Required —
+                # without it we can't restrict the all_gather to DP-only siblings and
+                # would over-gather across CP/TP/PP, producing incorrect per-rank entries.
+                return dm["dp"].get_group()
+        return None  # default = global DDP group

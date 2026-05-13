@@ -652,6 +652,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         shard_seed = config.get("shard_seed", "trng")
         metadata_only = config.get("metadata_only", False)
         force_finite = config.get("force_finite", False)
+        indexed = config.get("indexed", False)
+        indexes_root = config.get("indexes_root", None)
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
@@ -660,6 +662,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 shuffle_shards=True,
                 seed=shard_seed,
                 slice_length=config.get("slice_length", None),
+                indexed=indexed,
+                indexes_root=indexes_root,
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -676,6 +680,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         shuffle_shards=True,
                         seed=shard_seed,
                         slice_length=config.get("slice_length", None),
+                        indexed=indexed,
+                        indexes_root=indexes_root,
                     )
                     weight = len(cs)
                 else:
@@ -691,6 +697,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         shuffle_shards=True,
                         seed=shard_seed,
                         slice_length=config.get("slice_length", None),
+                        indexed=indexed,
+                        indexes_root=indexes_root,
                     )
                 cutsets.append(cs)
                 weights.append(weight)
@@ -715,6 +723,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 shuffle_shards=True,
                 seed=shard_seed,
                 slice_length=config.get("slice_length", None),
+                indexed=indexed,
+                indexes_root=indexes_root,
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -727,12 +737,12 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         path = config.cuts_path
-        from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+        from lhotse.indexing import index_file_path
 
         indexes_root = config.get("indexes_root", None)
         from_file_kwargs = {"indexed": config.get("indexed", None)}
         if indexes_root is not None:
-            from_file_kwargs["index_path"] = resolve_idx_path(path, indexes_root)
+            from_file_kwargs["index_path"] = index_file_path(path, indexes_root)
         cuts = CutSet.from_file(path, **from_file_kwargs).map(
             partial(resolve_relative_paths, manifest_path=path)
         )

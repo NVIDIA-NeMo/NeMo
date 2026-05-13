@@ -165,46 +165,6 @@ def _open_data_path(path: str):
     return open(path, "rb")
 
 
-def resolve_idx_path(data_path: str | Path, indexes_root: Optional[str | Path] = None) -> str:
-    """
-    Compute the ``.idx`` sidecar path for *data_path*.
-
-    When ``indexes_root`` is ``None`` (the default), return ``data_path + ".idx"``
-    so the sidecar lives next to the data file, matching the conventional
-    layout.
-
-    When ``indexes_root`` is set, return a path under that root that mirrors
-    the data file's directory structure. URL schemes are stripped (so the
-    bucket/key remains as the relative key); leading separators on local paths
-    are dropped. Examples::
-
-        /data/foo/bar.jsonl       + indexes_root=/cache/idx
-            -> /cache/idx/data/foo/bar.jsonl.idx
-        ais://bucket/key/m.jsonl  + indexes_root=/cache/idx
-            -> /cache/idx/bucket/key/m.jsonl.idx
-        s3://b/path/data.tar      + indexes_root=/cache/idx
-            -> /cache/idx/b/path/data.tar.idx
-
-    The indexes_root argument itself can be local or a URL — joining respects
-    URL semantics so e.g. mirroring into ``ais://cache/idx`` works the same way.
-    """
-    data_str = str(data_path)
-    if indexes_root is None:
-        return data_str + ".idx"
-
-    # Normalize the data path into a relative "key" by stripping a URL scheme,
-    # any leading slashes, and Windows-style drive letters (best-effort).
-    rel = _URL_RE.sub("", data_str).lstrip("/\\")
-    # Strip "C:" or "C:/" style drive prefixes.
-    if len(rel) >= 2 and rel[1] == ":":
-        rel = rel[2:].lstrip("/\\")
-
-    root_str = str(indexes_root).rstrip("/\\")
-    if _URL_RE.match(root_str):
-        return f"{root_str}/{rel}.idx"
-    return str(Path(root_str) / (rel + ".idx"))
-
-
 def _load_index(data_path: str, idx_path: Optional[str] = None):
     """
     Load an offset index for *data_path*, layering NeMo-specific validation

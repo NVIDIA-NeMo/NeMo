@@ -151,12 +151,12 @@ class LazyNeMoIterator(IteratorNode):
                     "their values are positional/streaming and cannot be reconstructed under "
                     "graph-token random access."
                 )
-            from nemo.collections.common.data.lhotse.indexed_adapters import resolve_idx_path
+            from lhotse.indexing import index_file_path
 
             seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
             indexed_sources = [
                 LazyIndexedManifestIterator(
-                    p, index_path=resolve_idx_path(p, indexes_root), decode=GraphOriginDict
+                    p, index_path=index_file_path(p, indexes_root), decode=GraphOriginDict
                 )
                 for p in paths
             ]
@@ -475,11 +475,10 @@ class LazyNeMoTarredIterator(IteratorNode):
 
     def _init_indexed(self) -> None:
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
-        from lhotse.indexing import IndexedJsonlReader
+        from lhotse.indexing import IndexedJsonlReader, index_file_path
 
         from nemo.collections.common.data.lhotse.indexed_adapters import (
             IndexedTarMemberReader,
-            resolve_idx_path,
         )
 
         if self.extra_fields:
@@ -517,11 +516,11 @@ class LazyNeMoTarredIterator(IteratorNode):
             jsonl_path = shard_id_to_manifest_path[sid]
             tar_path = self.shard_id_to_tar_path[sid]
             self._cuts_readers[sid] = IndexedJsonlReader(
-                jsonl_path, index_path=resolve_idx_path(jsonl_path, self.indexes_root)
+                jsonl_path, index_path=index_file_path(jsonl_path, self.indexes_root)
             )
             if not self.use_ais_get_batch:
                 self._tar_readers[sid] = IndexedTarMemberReader(
-                    tar_path, idx_path=resolve_idx_path(tar_path, self.indexes_root)
+                    tar_path, idx_path=index_file_path(tar_path, self.indexes_root)
                 )
             cum += len(self._cuts_readers[sid])
             cum_lens.append(cum)
@@ -530,7 +529,15 @@ class LazyNeMoTarredIterator(IteratorNode):
         self._iter_state = PartitionedIndexedIterator()
 
     def to_shards(self) -> List["LazyNeMoTarredIterator"]:
-        """Convert this iterator to a list of separate iterators for each shard."""
+        """Convert this iterator to a list of separate iterators for each shard.
+
+        Forwards every constructor knob (notably ``indexed``/``indexes_root``,
+        ``extra_fields``, ``slice_length``, ``skip_missing_manifest_entries``)
+        so per-shard sub-iterators behave identically to the parent. Dropping
+        these silently re-enters streaming mode, which a downstream caller
+        like ``mux(..., max_open_streams=N)`` won't notice until the bucketer
+        fails to checkpoint.
+        """
         if len(self.paths) == 1:
             # Cannot do that if the JSON manifest is a single file for all shards;
             # just return self.
@@ -544,6 +551,11 @@ class LazyNeMoTarredIterator(IteratorNode):
                     shard_seed=self.shard_seed,
                     text_field=self.text_field,
                     lang_field=self.lang_field,
+                    skip_missing_manifest_entries=self.skip_missing_manifest_entries,
+                    extra_fields=self.extra_fields,
+                    slice_length=self.slice_length,
+                    indexed=self.indexed,
+                    indexes_root=self.indexes_root,
                 )
                 for path, tarpath in zip(self.paths, self.shard_id_to_tar_path.values())
             ]

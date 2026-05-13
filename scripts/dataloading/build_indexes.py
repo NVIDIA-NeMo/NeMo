@@ -59,9 +59,10 @@ from typing import Callable, Iterable, Iterator, Optional
 import click
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from lhotse.indexing import index_file_path
+
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     create_tar_index as create_nemo_tar_index,
-    resolve_idx_path,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
 
@@ -86,8 +87,8 @@ class IndexJob:
     kind: str  # one of {JSONL, NEMO_TAR, WDS_TAR}
     indexes_root: Optional[str] = None
 
-    def idx_path(self) -> str:
-        return resolve_idx_path(self.path, self.indexes_root)
+    def idx_path(self):
+        return index_file_path(self.path, self.indexes_root)
 
 
 # --------------------------------------------------------------------------- #

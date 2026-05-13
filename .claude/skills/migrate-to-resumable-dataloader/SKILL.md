@@ -236,7 +236,8 @@ launcher).
   - `lhotse_resumable/lhotse/dataset/dataloading.py` (`worker_init_fn` sets the `LHOTSE_USE_WORKER_PARTITION` signal; `get_worker_partition()` returns the trivial `(0, 1)` when that signal is absent — keeps map-style mode unaffected even under torchrun)
   - `lhotse_resumable/lhotse/ais/batch_loader.py` (`AISBatchLoader`, `force_individual`, byte-range `shar_ptr` fallback, `_moss_attrs`)
   - `lhotse_resumable/lhotse/dataset/input_strategies.py` (`AudioSamples`)
-  - `NeMo_resumable/nemo/collections/common/data/lhotse/indexed_adapters.py` (`IndexedTarMemberReader`, `_AISRangeReader`, `_CountingReader`, `_open_data_path`, `_load_index`, `resolve_idx_path`)
+  - `NeMo_resumable/nemo/collections/common/data/lhotse/indexed_adapters.py` (`IndexedTarMemberReader`, `_AISRangeReader`, `_CountingReader`, `_open_data_path`, `_load_index`)
+  - `lhotse_resumable/lhotse/indexing.py` — `index_file_path(data_path, indexes_root=None)` is the canonical `.idx` path resolver.
   - `NeMo_resumable/nemo/collections/common/data/lhotse/dataloader.py` (`get_lhotse_sampler_from_config`, `get_lhotse_dataloader_from_config`, `force_map_dataset` handling, the auto-overwrite of `shard_seed`, `_maybe_init_main_process_for_iterable` for `num_workers=0` eager `worker_init_fn` call)
   - `NeMo_resumable/nemo/collections/common/data/lhotse/nemo_adapters.py` (`LazyNeMoTarredIterator`, `_init_indexed`, `_iter_batch_for_ais_get_batch`, `USE_AIS_GET_BATCH` gate)
   - `NeMo_resumable/scripts/dataloading/build_indexes.py` and `prefetch_indexes.py`

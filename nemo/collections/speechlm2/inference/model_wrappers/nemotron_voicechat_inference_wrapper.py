@@ -760,9 +760,11 @@ class NemotronVoicechatInferenceWrapper:
         self._fc_convert_num_to_text = bool(self.model_cfg.get("fc_convert_num_to_text", False))
         if self._fc_convert_num_to_text:
             logging.info("[FC] Number-to-text conversion enabled for tool responses")
+        # SOTC boost: add this value to SOTC logit when text head predicts <s> with P > 0.2
+        self._fc_sotc_boost = float(self.model_cfg.get("fc_sotc_boost", 0.0))
         logging.info(
-            "[FC Config] fc_async_enabled=%s, fc_async_two_phase=%s, fc_async_use_real_audio=%s, has_function_head=%s, SOTC_id=%s",
-            self._fc_async_enabled, self._fc_async_two_phase, self._fc_async_use_real_audio, has_function_head, self._fc_sotc_id,
+            "[FC Config] fc_async_enabled=%s, fc_async_two_phase=%s, fc_async_use_real_audio=%s, has_function_head=%s, SOTC_id=%s, sotc_boost=%.1f",
+            self._fc_async_enabled, self._fc_async_two_phase, self._fc_async_use_real_audio, has_function_head, self._fc_sotc_id, self._fc_sotc_boost,
         )
         if self._fc_async_enabled and has_function_head:
             self._create_silence_embedding_cache()
@@ -1412,7 +1414,7 @@ class NemotronVoicechatInferenceWrapper:
             predicted_token = ans["predicted_token"]
             asr_predicted_token = ans["asr_predicted_token"]
 
-            gen_text[:, t] = predicted_token
+            gen_text[:, t] = pad_id  # force PAD during FC async — prevents apology-token KV-cache contamination
             gen_asr_text[:, t] = pad_id  # silence → no user speech
             if "function_predicted_token" in ans:
                 gen_function_text[:, t] = ans["function_predicted_token"]
@@ -2112,15 +2114,19 @@ class NemotronVoicechatInferenceWrapper:
                     tool_response_text=tool_response_text,
                 )
 
-            # Apply forced turn-taking (source selectable: "rnnt" or "asr_head").
-            # Skip when FC is in progress — the model decides what to generate freely.
+            # Silence text channel while FC is active — prevents speech tokens from
+            # sub-steps after SOTC fires reaching the audio codec before FC async takes over.
             _fc_in_progress = (fc_state is not None and (
                 fc_state.get("active", False) or
                 fc_state.get("forced_function_tokens") or
                 fc_state.get("injecting_response", False)
             ))
+            if _fc_in_progress:
+                gen_text[:, current_frame_idx] = pad_id
+                predicted_tokens[:, frame_offset] = pad_id
+
+            # Apply forced turn-taking. Skip when FC is in progress.
             if not _fc_in_progress:
-                # LLM PAD-window primary: always runs when force_turn_taking=True
                 self._maybe_apply_forced_turn_taking(current_frame_idx, gen_text, gen_asr_text, rnnt_state=rnnt_partial_hypotheses)
 
             predicted_tokens[:, frame_offset] = gen_text[:, current_frame_idx]

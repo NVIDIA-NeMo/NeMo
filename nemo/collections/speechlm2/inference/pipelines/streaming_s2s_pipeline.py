@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Author: Harishchandra Dubey (hdubey@nvidia.com)
-# Change: pass rnnt_state from context to infer_one_step() for per-stream RNNT EOU turn-taking
 
 import os
 import time
@@ -152,7 +149,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 	# ------------------------------------------------------------------
 	# Output helpers
 	# ------------------------------------------------------------------
-	def log_output(self, frames: List[Frame], audio_wave: Tensor, ready_feats: List[bool], text_pieces: List[str], asr_text_pieces: List[str] = None, fc_text_pieces: List[str] = None):
+	def log_output(self, frames: List[Frame], audio_wave: Tensor, ready_feats: List[bool], text_pieces: List[str], asr_text_pieces: List[str] = None):
 		"""Append generated audio waveform and text to per-stream state."""
 		for idx, frame in enumerate(frames):
 			if not ready_feats[idx]:
@@ -166,7 +163,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				candidate = text_pieces[idx]
 				if isinstance(candidate, str) and candidate:
 					piece = candidate
-
+			
 			# Determine ASR text piece
 			asr_piece = None
 			if asr_text_pieces and idx < len(asr_text_pieces):
@@ -174,14 +171,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				if isinstance(candidate, str) and candidate:
 					asr_piece = candidate
 
-			# Determine FC text piece (function call tokens decoded per step)
-			fc_piece = None
-			if fc_text_pieces and idx < len(fc_text_pieces):
-				candidate = fc_text_pieces[idx]
-				if isinstance(candidate, str) and candidate:
-					fc_piece = candidate
-
-			state.update_state(sample_audio, output_text=piece, output_asr_text=asr_piece, output_function_text=fc_piece)
+			state.update_state(sample_audio, output_text=piece, output_asr_text=asr_piece)
 
 
 	def inner_generate_step(self, frames: List[Frame], buffers: List[Tensor], left_paddings: List[int], ready_feats: List[bool]):
@@ -247,7 +237,6 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			perception_cache=context.perception_cache,
 			has_prompt=has_prompt,
 			codec_cache=context.codec_cache,
-			rnnt_state=context.rnnt_state,
 		)
 
 		# Persist updated cache & clean finished streams
@@ -276,11 +265,8 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				# Note: We keep the state in _state_pool until finalization to save audio
 				# It will be cleaned up in close_session()
 		
-		# Log audio and attach text (agent, ASR, FC) to per-stream state
-		self.log_output(frames, result["decoded_audio_new"], ready_feats,
-						result["predicted_text_strs"],
-						result.get("asr_predicted_text_strs"),
-						result.get("fc_predicted_text_strs"))
+		# Log audio and attach text to state
+		self.log_output(frames, result["decoded_audio_new"], ready_feats, result["predicted_text_strs"], result.get("asr_predicted_text_strs"))
 
 	def prefill_for_new_stream(self, stream_id: int, system_prompt: str | None = None) -> bool:
 		"""Prepare the pipeline for a new stream by resetting context and prefilling the system prompt.

@@ -44,9 +44,6 @@ class S2SStreamingState:
 	# Accumulated ASR text output
 	output_asr_text_str: str = ""
 	output_asr_text_tokens: List[str] = field(default_factory=list)
-	# Accumulated function-call (FC) text output
-	output_function_text_str: str = ""
-	output_function_text_tokens: List[str] = field(default_factory=list)
 	# Accumulated words with timings
 	output_words: List[Word] = field(default_factory=list)
 	# Final token tensors saved from the context before it is destroyed.
@@ -69,14 +66,12 @@ class S2SStreamingState:
 			self.output_text_tokens.clear()
 			self.output_asr_text_str = ""
 			self.output_asr_text_tokens.clear()
-			self.output_function_text_str = ""
-			self.output_function_text_tokens.clear()
 			self.output_words.clear()
 			self.final_gen_text = None
 			self.final_gen_asr_text = None
 			self.final_total_frames = 0
 
-	def update_state(self, processed_frames: torch.Tensor, output_text_tokens: Any = None, output_text: str | None = None, output_asr_text: str | None = None, output_function_text: str | None = None) -> None:
+	def update_state(self, processed_frames: torch.Tensor, output_text_tokens: Any = None, output_text: str | None = None, output_asr_text: str | None = None) -> None:
 		"""Append new audio to the right of the buffer; token/text args are accepted for API compatibility."""
 		if processed_frames is None:
 			return
@@ -110,10 +105,6 @@ class S2SStreamingState:
 			self.output_asr_text_tokens.append(output_asr_text)
 			self.output_asr_text_str += output_asr_text
 
-		if isinstance(output_function_text, str) and output_function_text:
-			self.output_function_text_tokens.append(output_function_text)
-			self.output_function_text_str += output_function_text
-
 	@property
 	def speech_frames(self) -> List[torch.Tensor]:
 		"""Backward-compatible view for code expecting a list of chunks."""
@@ -126,10 +117,6 @@ class S2SStreamingState:
 	def get_output_asr_text(self) -> str:
 		"""Return accumulated ASR text as a single string."""
 		return self.output_asr_text_str
-
-	def get_output_function_text(self) -> str:
-		"""Return accumulated function-call text as a single string."""
-		return self.output_function_text_str
 
 	def get_output_words(self) -> List[Word]:
 		"""Return accumulated words with timings."""

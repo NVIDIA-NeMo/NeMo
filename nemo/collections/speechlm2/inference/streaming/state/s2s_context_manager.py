@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Author: Harishchandra Dubey (hdubey@nvidia.com)
-# Change: add rnnt_state field to StreamingRealtimeContext; init RNNT state per stream in S2SContextManager
 
 from dataclasses import dataclass
 from queue import Queue
@@ -43,7 +40,6 @@ class StreamingRealtimeContext:
 	subword_mask: Optional[torch.Tensor]
 	perception_cache: Optional["PerceptionCacheState"] = None
 	codec_cache: Optional[CausalConv1dCache] = None
-	rnnt_state: Optional[Dict[str, Any]] = None
 
 
 class S2SContextManager:
@@ -77,13 +73,6 @@ class S2SContextManager:
 		self.decode_audio = bool(getattr(self.s2s_model, "decode_audio", False))
 		self.use_perception_cache = bool(getattr(self.s2s_model, "use_perception_cache", False))
 		self.use_codec_cache = bool(getattr(self.s2s_model, "use_codec_cache", True))
-		model_cfg = getattr(self.s2s_model, "model_cfg", {})
-		stt = getattr(getattr(self.s2s_model, "model", None), "stt_model", None)
-		self.use_rnnt_eou = (
-			bool(model_cfg.get("rnnt_eou_enabled", False))
-			and stt is not None
-			and hasattr(stt, "_rnnt_decoder")
-		)
 
 		self.reset()
 
@@ -159,24 +148,6 @@ class S2SContextManager:
 			if mgr is not None:
 				perception_cache = mgr.get_initial_state(batch_size=1)
 
-		# Initialize RNNT EOU/BOU state if enabled
-		rnnt_state = None
-		if self.use_rnnt_eou:
-			import datetime as _dt
-			rnnt_state = self.s2s_model._rnnt_init_state(1, self.device)
-			_asr_eou = self.s2s_model.model_cfg.get('asr_eou', 4)
-			_msg = (
-				f"[RNNT-ACTIVE {_dt.datetime.now().isoformat()}] "
-				f"New stream: RNNT EOU controlling voicechat turn-taking "
-				f"(EOU after {_asr_eou} blank frames = {_asr_eou * 80}ms silence)"
-			)
-			print(_msg, flush=True)
-			logging.info(
-				f"RNNT EOU/BOU enabled for new stream: "
-				f"asr_eou={_asr_eou} frames "
-				f"({_asr_eou * 80}ms silence→EOU)"
-			)
-
 		return StreamingRealtimeContext(
 			frame_idx=0,
 			gen_text=gen_text,
@@ -190,7 +161,6 @@ class S2SContextManager:
 			subword_mask=subword_mask,
 			perception_cache=perception_cache,
 			codec_cache=codec_cache,
-			rnnt_state=rnnt_state,
 		)
 
 	def _ensure_slot(self, stream_id: int) -> int:
@@ -297,8 +267,6 @@ class S2SContextManager:
 			context.perception_cache = step_result["perception_cache"]
 		if "codec_cache" in step_result and step_result["codec_cache"] is not None:
 			context.codec_cache = step_result["codec_cache"]
-		if "rnnt_state" in step_result and step_result["rnnt_state"] is not None:
-			context.rnnt_state = step_result["rnnt_state"]
 
 	def reset_slots(self, stream_ids: List[int], eos_flags: List[bool]) -> None:
 		"""Release contexts for streams that signalled end-of-stream."""

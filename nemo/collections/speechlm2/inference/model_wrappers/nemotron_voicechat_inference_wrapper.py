@@ -1918,6 +1918,67 @@ class NemotronVoicechatInferenceWrapper:
         elif fc_state.get("active", False) and func_tok_val != pad_id:
             fc_state.setdefault("call_tokens", []).append(func_tok_val)
 
+    def _run_tts_reminder(
+        self,
+        reminder_tokens: list,
+        tts_state: dict,
+        tts_audio_output_queue: "queue.Queue | None" = None,
+        abort_event: "threading.Event | None" = None,
+        request_id: str | None = None,
+    ) -> None:
+        """Play reminder tokens through TTS only (no LLM steps) during tool API wait.
+
+        Feeds each token in reminder_tokens to EarTTS one step at a time, decodes audio,
+        and pushes chunks to tts_audio_output_queue so the client hears "still working"
+        audio instead of silence while the tool API call blocks.
+
+        Mutates tts_state in-place (code, past_key_values, codec_cache).
+        """
+        pad_id = self.model.stt_model.text_pad_id
+        for tok_id in reminder_tokens:
+            if abort_event is not None and abort_event.is_set():
+                break
+            try:
+                _tts_subword = torch.tensor([[tok_id]], device=self.device, dtype=torch.long)
+                _tts_sw_mask_val = torch.ones(1, 1, device=self.device, dtype=torch.bool)
+                _tts_inputs = {
+                    "current_subword_id": _tts_subword,
+                    "prev_subword_id": _tts_subword,
+                    "current_subword_mask": _tts_sw_mask_val,
+                    "prev_audio_tokens": tts_state["code"],
+                    "past_key_values": tts_state["past_key_values"],
+                    "guidance_enabled": True,
+                    "generation_config": self.generation_config,
+                    "ignore_eos_flag_stop": True,
+                }
+                if self.use_vllm_eartts:
+                    _tts_inputs["request_id"] = request_id or self.request_id
+                _tts_code_new, _tts_pkv_new = self.model.tts_model.infer_codes_one_step(**_tts_inputs)
+                tts_state["code"] = _tts_code_new
+                tts_state["past_key_values"] = _tts_pkv_new
+
+                _tts_codec_cache = tts_state.get("codec_cache")
+                if _tts_codec_cache is not None:
+                    with fp32_precision(), torch.no_grad():
+                        _tts_new_codes = _tts_code_new.unsqueeze(0) if _tts_code_new.dim() == 2 else _tts_code_new
+                        if hasattr(self.model.tts_model, '_control_codes'):
+                            from nemo.collections.speechlm2.models.duplex_ear_tts import replace_control_speech_codes
+                            _tts_new_codes = replace_control_speech_codes(
+                                _tts_new_codes,
+                                self.model.tts_model._control_codes,
+                                getattr(self.model.tts_model, 'codec_silence_tokens', None),
+                            )
+                        _tts_code_len = torch.tensor([1], dtype=torch.long, device=self.device)
+                        _decoded, _ = self.model.tts_model.audio_codec.decode(
+                            _tts_new_codes, _tts_code_len, cache=_tts_codec_cache,
+                        )
+                        _chunk_cpu = _decoded.detach().cpu()
+                        if tts_audio_output_queue is not None:
+                            tts_audio_output_queue.put(_chunk_cpu)
+            except Exception as _exc:
+                logging.warning("[FC Reminder] TTS step failed: %s", _exc)
+                break
+
     def infer_one_step(self,
                        audio_input,
                        num_frames_per_chunk,

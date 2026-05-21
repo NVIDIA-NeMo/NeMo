@@ -1,6 +1,3 @@
-# Runtime patches from Elena's NeMo (copied in by run_s2s_triton_server_hdubey.sh)
-nemo/collections/asr/inference/
-nemo/collections/speechlm2/inference/
 
 # log and data files
 *.model

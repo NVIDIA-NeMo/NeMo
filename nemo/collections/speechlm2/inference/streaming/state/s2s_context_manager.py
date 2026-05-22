@@ -40,6 +40,14 @@ class StreamingRealtimeContext:
 	subword_mask: Optional[torch.Tensor]
 	perception_cache: Optional["PerceptionCacheState"] = None
 	codec_cache: Optional[CausalConv1dCache] = None
+	rnnt_partial_hypotheses: Any = None
+	fc_state: Optional[Dict[str, Any]] = None
+	tool_response_text: Optional[str] = None
+	tool_response_queue: Optional[List[str]] = None
+	fc_timing: Optional[Dict[str, Any]] = None
+	rt_audio_signal: Optional[torch.Tensor] = None
+	rt_audio_total_frames: int = 0
+	rt_audio_buffer_size_samples: int = 0
 
 
 class S2SContextManager:
@@ -267,6 +275,8 @@ class S2SContextManager:
 			context.perception_cache = step_result["perception_cache"]
 		if "codec_cache" in step_result and step_result["codec_cache"] is not None:
 			context.codec_cache = step_result["codec_cache"]
+		if "rnnt_partial_hypotheses" in step_result:
+			context.rnnt_partial_hypotheses = step_result["rnnt_partial_hypotheses"]
 
 	def reset_slots(self, stream_ids: List[int], eos_flags: List[bool]) -> None:
 		"""Release contexts for streams that signalled end-of-stream."""

@@ -41,6 +41,27 @@ from nemo.collections.speechlm2.inference.streaming.framing.s2s_request_options 
 from nemo.collections.speechlm2.inference.utils.pipeline_utils import PipelineOutput
 from nemo.utils import logging
 
+import concurrent.futures
+import re
+
+
+def _parse_tool_name(call_text: str) -> str | None:
+	"""Extract tool name from '<TOOLCALL>[{"name": "tool_name", ...}]</TOOLCALL>'."""
+	m = re.search(r'"name"\s*:\s*"([^"]+)"', call_text)
+	return m.group(1) if m else None
+
+
+def _response_is_401(tool_response: str | None) -> bool:
+	"""Return True if the tool response signals a 401 / auth error."""
+	if not tool_response:
+		return False
+	try:
+		data = json.loads(tool_response)
+		err = str(data.get("error", ""))
+		return "401" in err or "unauthorized" in err.lower() or "authentication" in err.lower()
+	except Exception:
+		return "401" in tool_response
+
 
 class StreamingS2SPipeline(S2SPipelineInterface):
 	"""
@@ -258,6 +279,83 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				"FC reminder: enabled, %d messages loaded; sample[0]=%r",
 				len(self._fc_reminder_token_list), _sample_r,
 			)
+
+		# ------------------------------------------------------------------
+		# Per-tool on-hold messages (JSON: {tool_name: phrase}).
+		# Played at EOTC as Layer 1 reminder while the external API executes.
+		# ------------------------------------------------------------------
+		self._fc_on_hold_token_map: dict | None = None
+		_on_hold_path = getattr(s2s_cfg, "fc_on_hold_messages_path", None) or ""
+		if _on_hold_path and os.path.isfile(_on_hold_path):
+			with open(_on_hold_path) as _f:
+				_on_hold_data = json.load(_f)
+			self._fc_on_hold_token_map = {}
+			_stt_oh = self.s2s_model.model.stt_model
+			_bos_oh = getattr(_stt_oh, "text_bos_id", None)
+			_eos_oh = getattr(_stt_oh, "text_eos_id", None)
+			_pad_oh = getattr(_stt_oh, "text_pad_id", None)
+			for _tool_key, _oh_msg in _on_hold_data.items():
+				_ids = list(self.s2s_model.tokenizer.text_to_ids(_oh_msg))
+				if _bos_oh is not None:
+					_ids = [_bos_oh] + _ids
+				if _pad_oh is not None:
+					_ids += [_pad_oh] * 17
+				if _eos_oh is not None:
+					_ids += [_eos_oh]
+				self._fc_on_hold_token_map[_tool_key] = _ids
+			logging.info("FC on-hold: %d per-tool messages loaded from %s", len(self._fc_on_hold_token_map), _on_hold_path)
+
+		# ------------------------------------------------------------------
+		# Generic on-hold messages (JSON: list of phrases).
+		# Up to 2 played (with 1s gap) if API is still blocked after Layer 1.
+		# ------------------------------------------------------------------
+		self._fc_generic_on_hold_token_list: list | None = None
+		_generic_path = getattr(s2s_cfg, "fc_generic_on_hold_messages_path", None) or ""
+		if _generic_path and os.path.isfile(_generic_path):
+			with open(_generic_path) as _f:
+				_generic_data = json.load(_f)
+			self._fc_generic_on_hold_token_list = []
+			_stt_g = self.s2s_model.model.stt_model
+			_bos_g = getattr(_stt_g, "text_bos_id", None)
+			_eos_g = getattr(_stt_g, "text_eos_id", None)
+			_pad_g = getattr(_stt_g, "text_pad_id", None)
+			for _g_msg in _generic_data:
+				_ids = list(self.s2s_model.tokenizer.text_to_ids(_g_msg))
+				if _bos_g is not None:
+					_ids = [_bos_g] + _ids
+				if _pad_g is not None:
+					_ids += [_pad_g] * 17
+				if _eos_g is not None:
+					_ids += [_eos_g]
+				self._fc_generic_on_hold_token_list.append(_ids)
+			logging.info("FC generic on-hold: %d messages loaded from %s", len(self._fc_generic_on_hold_token_list), _generic_path)
+
+		# Pre-tokenize fixed phrases used for timeout and 401 errors.
+		_stt_sp = self.s2s_model.model.stt_model
+		_bos_sp = getattr(_stt_sp, "text_bos_id", None)
+		_eos_sp = getattr(_stt_sp, "text_eos_id", None)
+		_pad_sp = getattr(_stt_sp, "text_pad_id", None)
+
+		def _tok_special(msg: str) -> list:
+			_ids = list(self.s2s_model.tokenizer.text_to_ids(msg))
+			if _bos_sp is not None:
+				_ids = [_bos_sp] + _ids
+			if _pad_sp is not None:
+				_ids += [_pad_sp] * 17
+			if _eos_sp is not None:
+				_ids += [_eos_sp]
+			return _ids
+
+		self._fc_timeout_fallback_tokens: list = _tok_special(
+			"Please let me know how can I help?"
+		)
+		self._fc_401_error_tokens: list = _tok_special(
+			"I apologize, I am having difficulty in fulfilling your request as of now, please try again later."
+		)
+		self._fc_401_redirect_tokens: list = _tok_special(
+			"How can I help you?"
+		)
+		self._fc_tool_timeout_sec: float = float(getattr(s2s_cfg, "fc_tool_timeout_sec", 15.0))
 
 		# ------------------------------------------------------------------
 		# Non-blocking FC async state (per stream).
@@ -1331,6 +1429,9 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 					fc_convert, sotc_id, eotc_id, get_state_fn,
 					tts_audio_output_queue, acknowledgement_tokens, rnnt_text_queue,
 					abort_event, quit_async_event, reminder_tokens,
+					on_hold_token_map, generic_on_hold_token_list,
+					timeout_fallback_tokens, error_401_tokens, error_401_redirect_tokens,
+					tool_timeout_sec,
 				):
 					try:
 						import torch as _torch
@@ -1378,22 +1479,104 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 									sotc_text = s2s_model.tokenizer.ids_to_text([sotc_id])
 									eotc_text = s2s_model.tokenizer.ids_to_text([eotc_id])
 									fc_state_obj.output_function_text_str += f"{sotc_text}{call_text}{eotc_text}\n"
-								# Play reminder audio while the tool API call is executing.
-								# This fills the silence gap between Phase 1 (EOTC) and Phase 2
-								# (verbal response), so the user hears "Still working on that."
-								# instead of silence during slow API calls.
+								# ----------------------------------------------------------
+								# On-hold audio + timeout state machine
+								# Layer 1: per-tool reminder (JSON lookup)
+								# Layer 2: up to 2 generic messages (1s gap) if API slow
+								# Layer 3: timeout fallback if still blocked after Layer 2
+								# Error:   401 branch plays apology + redirect
+								# ----------------------------------------------------------
 								_tts_for_reminder = tts_out if tts_out is not None else tts_state
-								if (reminder_tokens and _tts_for_reminder is not None
-										and not (abort_event is not None and abort_event.is_set())):
-									logging.info("[FC Reminder] Playing reminder audio (%d tokens) before tool API call", len(reminder_tokens))
-									s2s_model._run_tts_reminder(
-										reminder_tokens=reminder_tokens,
-										tts_state=_tts_for_reminder,
-										tts_audio_output_queue=tts_audio_output_queue,
-										abort_event=abort_event,
-										request_id=request_id,
-									)
-								tool_response = execute_tool_fn(call_text)
+								_aborted = abort_event is not None and abort_event.is_set()
+
+								# Resolve per-tool reminder tokens
+								_tool_name = _parse_tool_name(call_text)
+								_reminder_tok = None
+								if on_hold_token_map:
+									_reminder_tok = (on_hold_token_map.get(_tool_name)
+													 or on_hold_token_map.get("default"))
+								if _reminder_tok is None:
+									_reminder_tok = reminder_tokens  # backward compat
+
+								# Output sample rate for computing audio playback duration
+								_OUTPUT_SAMPLE_RATE = getattr(self, "output_sample_rate", 22050)
+
+								def _play(tok):
+									"""Generate TTS audio and block until it has had time to play."""
+									if tok and _tts_for_reminder is not None and not (abort_event is not None and abort_event.is_set()):
+										_t0 = time.monotonic()
+										_n_samples = s2s_model._run_tts_reminder(
+											reminder_tokens=tok,
+											tts_state=_tts_for_reminder,
+											tts_audio_output_queue=tts_audio_output_queue,
+											abort_event=abort_event,
+											request_id=request_id,
+										)
+										# TTS generation is faster than real-time playback.
+										# Sleep for the remaining playback duration so the caller
+										# can treat _play() as blocking (audio finishes before returning).
+										_gen_time = time.monotonic() - _t0
+										_play_dur = _n_samples / _OUTPUT_SAMPLE_RATE if _n_samples > 0 else 0.0
+										_remaining = _play_dur - _gen_time
+										while _remaining > 0:
+											if abort_event is not None and abort_event.is_set():
+												break
+											time.sleep(min(0.05, _remaining))
+											_remaining -= 0.05
+
+								tool_response = None
+								if _tts_for_reminder is not None and not _aborted:
+									# Run tool in background so audio plays concurrently
+									with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
+										_fut = _exec.submit(execute_tool_fn, call_text)
+
+										# Layer 1 — per-tool reminder
+										if _reminder_tok:
+											logging.info("[FC Reminder] Layer 1: per-tool='%s' (%d tokens)", _tool_name, len(_reminder_tok))
+											_play(_reminder_tok)
+
+										# Layer 2 — generic messages (up to 2, with 1s gap between)
+										_generic_pool = (
+											random.sample(generic_on_hold_token_list, min(2, len(generic_on_hold_token_list)))
+											if generic_on_hold_token_list else []
+										)
+										_played_generic = 0
+										for _gen_tok in _generic_pool:
+											if _fut.done() or (abort_event is not None and abort_event.is_set()):
+												break
+											time.sleep(1.0)
+											if _fut.done():
+												break
+											logging.info("[FC Reminder] Layer 2: generic message %d/2", _played_generic + 1)
+											_play(_gen_tok)
+											_played_generic += 1
+
+										# Layer 3 — tool still running after all messages: wait silently
+										if not _fut.done():
+											logging.warning("[FC Reminder] Layer 3: tool still running after on-hold messages — waiting silently")
+
+										# Final wait — up to tool_timeout_sec after all messages
+										try:
+											tool_response = _fut.result(timeout=tool_timeout_sec)
+										except concurrent.futures.TimeoutError:
+											logging.warning("[FC Reminder] Tool timed out after %ss — using canned error response", tool_timeout_sec)
+											tool_response = json.dumps({
+												"error": "timeout",
+												"message": "I'm sorry, that's taking longer than expected.",
+											})
+								else:
+									tool_response = execute_tool_fn(call_text)
+
+								# 401 / auth error branch
+								if _response_is_401(tool_response):
+									logging.warning("[FC Reminder] 401 error in tool response — playing apology")
+									_play(error_401_tokens)
+									time.sleep(0.5)
+									_play(error_401_redirect_tokens)
+									tool_response = json.dumps({
+										"error": "401",
+										"message": "Authentication failed. Please try again later.",
+									})
 								if tool_response:
 									wrapped_response = f"<TOOL_RESPONSE>[{tool_response}]</TOOL_RESPONSE>"
 									fc_state_obj.output_function_text_str += f"[INJECTED_RESPONSE] {wrapped_response}\n"
@@ -1476,6 +1659,12 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 						reminder_tokens=(
 							random.choice(self._fc_reminder_token_list) if self._fc_reminder_token_list else None
 						),
+						on_hold_token_map=self._fc_on_hold_token_map,
+						generic_on_hold_token_list=self._fc_generic_on_hold_token_list,
+						timeout_fallback_tokens=self._fc_timeout_fallback_tokens,
+						error_401_tokens=self._fc_401_error_tokens,
+						error_401_redirect_tokens=self._fc_401_redirect_tokens,
+						tool_timeout_sec=self._fc_tool_timeout_sec,
 						rnnt_text_queue=_rnnt_text_queue,
 						abort_event=_abort_event,
 						quit_async_event=_quit_async_event,

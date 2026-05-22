@@ -249,6 +249,7 @@ class VllmLLMModel(ModelInterface):
         repetition_penalty: float = 1.0,
         temperature: float = 1.0,
         model_type: str = "llm",
+        text_pad_id: Optional[int] = None,
         device_id: Optional[int] = None,
         **sampling_kwargs
     ):
@@ -266,6 +267,8 @@ class VllmLLMModel(ModelInterface):
             special_token_ids: Set of special token IDs (for potential post-processing)
             top_p: Top-p sampling (currently vLLM uses greedy decoding)
             repetition_penalty: Repetition penalty (currently not used by vLLM engine)
+            text_pad_id: PAD token ID used as fallback when no tokens are generated.
+                         If None, attempts to extract from vLLM tokenizer or special_token_ids.
             temperature: Temperature for sampling. Applied in _sample_text_token, not in vLLM engine.
             model_type: Type of model for vLLM engine ("llm", "chatglm", etc.)
             **sampling_kwargs: Additional sampling parameters passed to vLLM engine.
@@ -280,6 +283,7 @@ class VllmLLMModel(ModelInterface):
         )
 
         import asyncio
+        import threading
         from nemo.collections.speechlm2.inference.vllm.streaming_llm_engine import LLMStreamingEngine
 
         self.model_path = model_path
@@ -303,7 +307,8 @@ class VllmLLMModel(ModelInterface):
                 )
 
         from nemo.collections.speechlm2.inference.vllm.streaming_llm_engine import create_engine
-        # Initialize the streaming engine
+        # device_id is passed to LLMStreamingEngine, which sets CUDA_VISIBLE_DEVICES
+        # inside initialize() right before AsyncLLM spawns its GPU workers.
         self.engine = create_engine(
             engine_type=model_type,
             model_path=engine_path,
@@ -317,19 +322,38 @@ class VllmLLMModel(ModelInterface):
         # Track request counter
         self._request_counter = 0
 
-        # Get or create event loop
+        # Lock to serialize run_until_complete calls across threads (e.g. the main
+        # Triton execute thread and the FC-async background thread introduced in
+        # streaming_s2s_pipeline.py both call the LLM concurrently without this).
+        self._loop_lock = threading.Lock()
+
+        # Get or create event loop for this thread
         try:
             self._loop = asyncio.get_event_loop()
+            if self._loop.is_closed():
+                raise RuntimeError("closed")
         except RuntimeError:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
 
         # Initialize engine immediately to avoid first-call latency
         logging.info("Initializing vLLM engine (this may take a moment)...")
-        self._loop.run_until_complete(self.engine.initialize())
+        self._run_async(self.engine.initialize())
 
         if self.engine.engine.tokenizer is not None and not self.special_token_ids:
             self.special_token_ids = self._get_special_token_ids_from_vllm_tokenizer(self.engine.engine.tokenizer)
+
+        if text_pad_id is not None:
+            self._text_pad_id = text_pad_id
+        elif self.engine.engine.tokenizer is not None:
+            try:
+                tid = self.engine.engine.tokenizer.convert_tokens_to_ids('<SPECIAL_12>')
+                self._text_pad_id = tid if isinstance(tid, int) else 0
+            except Exception:
+                self._text_pad_id = 0
+        else:
+            self._text_pad_id = 0
+        logging.info(f"text_pad_id resolved to: {self._text_pad_id}")
 
         logging.debug(f"Special token IDs: {self.special_token_ids}")
         logging.info("vLLM engine ready!")
@@ -399,9 +423,7 @@ class VllmLLMModel(ModelInterface):
                 - request_id: The request identifier
         """
         # Run async inference
-        result = self._loop.run_until_complete(
-            self._async_inference(input_embeds, request_id, **kwargs)
-        )
+        result = self._run_async(self._async_inference(input_embeds, request_id, **kwargs))
         return result
 
     async def _async_inference(
@@ -491,16 +513,31 @@ class VllmLLMModel(ModelInterface):
                 break
 
             text_token_ids.append(result.token_id)
-            asr_token_ids.append(result.custom_outputs.get("asr_tokens", torch.zeros(1, dtype=torch.long)))
+            if result.custom_outputs and "asr_tokens" in result.custom_outputs:
+                asr_token_ids.append(result.custom_outputs["asr_tokens"])
+            else:
+                asr_token_ids.append(0)
 
             if result.is_finished:
                 break
 
         assert len(text_token_ids) <= decode_steps, "Generated more tokens than input embeddings"
         # Handle case when no tokens were generated
-        is_finished = False
-        if text_token_ids:
-            is_finished = len(text_token_ids) < decode_steps or (result and result.is_finished)
+        if not text_token_ids:
+            pad_id = self._text_pad_id
+            logging.warning(
+                "[VLLMModel] No tokens generated for request %s at step %s, returning PAD",
+                request_id, current_step,
+            )
+            return {
+                "predicted_token": pad_id,
+                "asr_predicted_token": 0,
+                "cache": None,
+                "is_finished": True,
+                "request_id": request_id,
+            }
+
+        is_finished = len(text_token_ids) < decode_steps or (result and result.is_finished)
 
         text_logits = result.custom_outputs["text_logits"] if result else None
 
@@ -554,6 +591,16 @@ class VllmLLMModel(ModelInterface):
         """Get the device of the model."""
         return self._device
 
+    def _run_async(self, coro):
+        """Run a coroutine on the vLLM event loop, blocking until done.
+
+        Serialized with a lock so that the main Triton thread and the FC-async
+        background thread never call run_until_complete() simultaneously on the
+        same loop (which would raise 'This event loop is already running').
+        """
+        with self._loop_lock:
+            return self._loop.run_until_complete(coro)
+
     def abort_request(self, request_id: str) -> bool:
         """
         Abort a specific generation request.
@@ -564,9 +611,7 @@ class VllmLLMModel(ModelInterface):
         Returns:
             bool: True if abort was successful
         """
-        return self._loop.run_until_complete(
-            self.engine.abort_generation(request_id)
-        )
+        return self._run_async(self.engine.abort_generation(request_id))
 
     def restart_request(self, request_id: str) -> bool:
         """
@@ -583,9 +628,7 @@ class VllmLLMModel(ModelInterface):
             self.abort_request(request_id)
 
         # Start new generation
-        return self._loop.run_until_complete(
-            self.engine.start_generation(request_id=request_id)
-        )
+        return self._run_async(self.engine.start_generation(request_id=request_id))
 
     def get_request_status(self, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -601,7 +644,7 @@ class VllmLLMModel(ModelInterface):
 
     def shutdown(self):
         """Shutdown the vLLM engine and cleanup resources."""
-        self._loop.run_until_complete(self.engine.shutdown())
+        self._run_async(self.engine.shutdown())
 
     def __del__(self):
         """Cleanup on deletion."""
@@ -696,7 +739,7 @@ class VllmEARTTSModel(VllmLLMModel):
             request_id = 'tts_request_id_1'
 
         # Run async inference
-        result = self._loop.run_until_complete(
+        result = self._run_async(
             self._async_inference(input_dict, request_id, prompt_token_ids=prompt_token_ids)
         )
 
@@ -883,7 +926,10 @@ class NativeModel(ModelInterface):
         )
 
         # ASR tokens use greedy decoding (no sampling)
-        asr_predicted_token = result["asr_logits"][:, -1].argmax(dim=-1)
+        if "asr_logits" in result:
+            asr_predicted_token = result["asr_logits"][:, -1].argmax(dim=-1)
+        else:
+            asr_predicted_token = torch.full_like(predicted_token, fill_value=self.model.stt_model.text_pad_id)
 
         ans = {
             "predicted_token": predicted_token,

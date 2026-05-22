@@ -75,7 +75,7 @@ class LLMStreamingEngine:
         trust_remote_code: bool = True,
         dtype: str = "bfloat16",
         skip_tokenizer_init: bool = False,
-        device_id: Optional[int] = None,
+        device_id: int = None,
         **sampling_kwargs
     ):
         """
@@ -127,40 +127,40 @@ class LLMStreamingEngine:
 
         logging.info("Initializing vLLM engine...")
 
-        # Pin engine to specific GPU via CUDA_VISIBLE_DEVICES so spawned worker
-        # processes only see that device. Parent process CUDA state is unaffected.
-        _orig_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        # Pin this vLLM worker to the configured GPU via CUDA_VISIBLE_DEVICES.
+        # Must be set here (not in __init__) because workers spawn during from_vllm_config().
+        import os as _os
         if self.device_id is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
-            logging.info(f"Pinning vLLM engine to GPU {self.device_id}")
+            _os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
+            logging.info(f"[LLMStreamingEngine] Pinning vLLM to GPU {self.device_id} (CUDA_VISIBLE_DEVICES={self.device_id})")
 
-        try:
-            engine_args = AsyncEngineArgs(
-                model=self.model_path,
-                max_model_len=self.max_model_len,
-                max_num_batched_tokens=768,
-                gpu_memory_utilization=self.gpu_memory_utilization,
-                trust_remote_code=self.trust_remote_code,
-                mamba_ssm_cache_dtype="float32",
-                dtype=self.dtype,
-                skip_tokenizer_init=self.skip_tokenizer_init,
-                enable_prefix_caching=False
-            )
+        # Create engine arguments
 
-            vllm_config = engine_args.create_engine_config()
-            self.custom_input_specs = vllm_config.model_config.custom_input_specs
+        engine_args = AsyncEngineArgs(
+            model=self.model_path,
+            tokenizer=self.model_path,   # force local path, skip HF Hub lookup
+            max_model_len=self.max_model_len,
+            max_num_batched_tokens=768,
+            gpu_memory_utilization=self.gpu_memory_utilization,
+            trust_remote_code=self.trust_remote_code,
+            load_format="auto",
+            mamba_ssm_cache_dtype="float32",
+            dtype=self.dtype,
+            skip_tokenizer_init=self.skip_tokenizer_init,
+            enable_prefix_caching=False
+        )
 
-            self.engine = AsyncLLM.from_vllm_config(vllm_config)
+        # please custom input/output specs in model config file
+        # Create engine config and add custom input specs
+        vllm_config = engine_args.create_engine_config()
+        self.custom_input_specs = vllm_config.model_config.custom_input_specs
 
-            logging.info("Engine initialized with custom input specs:")
-            for spec in self.custom_input_specs:
-                logging.info(f"  - {spec}")
-        finally:
-            if self.device_id is not None:
-                if _orig_cuda_visible is None:
-                    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-                else:
-                    os.environ["CUDA_VISIBLE_DEVICES"] = _orig_cuda_visible
+        # Initialize the engine
+        self.engine = AsyncLLM.from_vllm_config(vllm_config)
+
+        logging.info("Engine initialized with custom input specs:")
+        for spec in self.custom_input_specs:
+            logging.info(f"  - {spec}")
 
     def _get_safe_prompt_tokens(self, length: int = 10) -> list[int]:
         """Generate safe prompt tokens that won't cause immediate EOS."""

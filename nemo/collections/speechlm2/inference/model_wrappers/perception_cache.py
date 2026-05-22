@@ -75,6 +75,10 @@ class PerceptionCUDAGraphState:
     static_encoded_len_first: Optional[torch.Tensor] = None
     static_encoded_len_subsequent: Optional[torch.Tensor] = None
 
+    # Raw encoder output before modality adapter (for RNNT decoding)
+    static_raw_encoded_first: Optional[torch.Tensor] = None
+    static_raw_encoded_subsequent: Optional[torch.Tensor] = None
+
     # Static cache output buffers - SEPARATE for first and subsequent graphs
     # (each graph writes to its own output tensors during replay)
     static_cache_channel_out_first: Optional[torch.Tensor] = None
@@ -83,10 +87,6 @@ class PerceptionCUDAGraphState:
     static_cache_channel_out_subsequent: Optional[torch.Tensor] = None
     static_cache_time_out_subsequent: Optional[torch.Tensor] = None
     static_cache_channel_len_out_subsequent: Optional[torch.Tensor] = None
-
-    # Raw encoder outputs [B, 1, 1024] before modality adapter — used for RNNT EOU/BOU
-    static_raw_encoder_first: Optional[torch.Tensor] = None
-    static_raw_encoder_subsequent: Optional[torch.Tensor] = None
 
     def is_captured(self) -> bool:
         """Check if graphs have been captured."""
@@ -101,11 +101,13 @@ class PerceptionCacheManager:
     when ``use_perception_cache=True``.
     """
 
-    def __init__(self, model, device: torch.device, dtype: torch.dtype, use_cudagraph: bool = False):
+    def __init__(self, model, device: torch.device, dtype: torch.dtype, use_cudagraph: bool = False,
+                 pad_and_drop_preencoded: bool = False):
         self.model = model
         self.device = device
         self.dtype = dtype
         self.use_cudagraph = use_cudagraph
+        self.pad_and_drop_preencoded = pad_and_drop_preencoded
 
         self.streaming_cfg = None
         self.preprocessor = None
@@ -272,10 +274,10 @@ class PerceptionCacheManager:
 
         state.static_encoded_first = encoded_chunk_first
         state.static_encoded_len_first = encoded_len_first
+        state.static_raw_encoded_first = encoded_first
         state.static_cache_channel_out_first = cache_channel_out_first
         state.static_cache_time_out_first = cache_time_out_first
         state.static_cache_channel_len_out_first = cache_channel_len_out_first
-        state.static_raw_encoder_first = encoded_first  # raw [B, 1, 1024] for RNNT
 
         # Capture graph for SUBSEQUENT chunks
         logging.info(f"   Capturing CUDA graph for subsequent chunks (mel_len={mel_len_subsequent})...")
@@ -309,10 +311,10 @@ class PerceptionCacheManager:
 
         state.static_encoded_subsequent = encoded_chunk_subsequent
         state.static_encoded_len_subsequent = encoded_len_subsequent
+        state.static_raw_encoded_subsequent = encoded_subsequent
         state.static_cache_channel_out_subsequent = cache_channel_out_subsequent
         state.static_cache_time_out_subsequent = cache_time_out_subsequent
         state.static_cache_channel_len_out_subsequent = cache_channel_len_out_subsequent
-        state.static_raw_encoder_subsequent = encoded_subsequent  # raw [B, 1, 1024] for RNNT
 
         self.cudagraph_state = state
         logging.info(f"   CUDA graphs captured successfully")
@@ -336,7 +338,7 @@ class PerceptionCacheManager:
         frame_idx: int,
         num_frames_per_chunk: int,
         perception_cache: PerceptionCacheState,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], PerceptionCacheState]:
+    ) -> Tuple[torch.Tensor, PerceptionCacheState]:
         """
         Perform cache-aware perception encoding for streaming inference.
 
@@ -376,7 +378,7 @@ class PerceptionCacheManager:
         audio_len = torch.tensor([audio_input.shape[1]], dtype=torch.long, device=self.device)
         _t_start_preprocessor = time.time()
         processed_signal, _ = self.preprocessor(
-            input_signal=audio_input,
+            input_signal=audio_input.to(torch.float32),
             length=audio_len,
         )
         logging.info(f"preprocessor time: {time.time() - _t_start_preprocessor:.3f}s")
@@ -417,18 +419,24 @@ class PerceptionCacheManager:
         start_time = time.time()
 
         encoded_chunks = []
-        encoder_emb_chunks = []  # raw [B, 1, 1024] before modality adapter, for RNNT EOU/BOU
+        raw_encoded_chunks = []
 
         for sub_step in range(num_sub_steps):
             sub_step_start_time = time.time()
+            raw_encoded = None
 
             sub_frame_idx = frame_idx + (sub_step * base_step_size)
             is_first_sub_step = (sub_frame_idx == 0)
 
             if is_first_sub_step:
-                cur_chunk_size = chunk_size_first
-                cur_pre_encode_cache_size = pre_encode_cache_size_first
-                drop_extra_pre_encoded = 0
+                if self.pad_and_drop_preencoded:
+                    cur_chunk_size = chunk_size
+                    cur_pre_encode_cache_size = pre_encode_cache_size
+                    drop_extra_pre_encoded = streaming_cfg.drop_extra_pre_encoded
+                else:
+                    cur_chunk_size = chunk_size_first
+                    cur_pre_encode_cache_size = pre_encode_cache_size_first
+                    drop_extra_pre_encoded = 0
 
                 mel_chunk = processed_signal[:, :, :cur_chunk_size]
 
@@ -476,7 +484,10 @@ class PerceptionCacheManager:
             if self.use_cudagraph and self.cudagraph_state is not None and self.cudagraph_state.is_captured():
                 graph_state = self.cudagraph_state
 
-                if is_first_sub_step:
+                # When pad_and_drop_preencoded, first chunk uses subsequent graph (same mel size)
+                use_first_graph = is_first_sub_step and not self.pad_and_drop_preencoded
+
+                if use_first_graph:
                     graph_state.static_mel_first.copy_(mel_chunk)
                 else:
                     graph_state.static_mel_subsequent.copy_(mel_chunk)
@@ -488,20 +499,20 @@ class PerceptionCacheManager:
                 if graph_state.static_cache_channel_len_in is not None and cache_last_channel_len is not None:
                     graph_state.static_cache_channel_len_in.copy_(cache_last_channel_len)
 
-                if is_first_sub_step:
+                if use_first_graph:
                     graph_state.graph_first.replay()
                     encoded_chunk = graph_state.static_encoded_first.clone()
+                    raw_encoded = graph_state.static_raw_encoded_first.clone().transpose(1, 2) if graph_state.static_raw_encoded_first is not None else None
                     cache_last_channel = graph_state.static_cache_channel_out_first.clone() if graph_state.static_cache_channel_out_first is not None else None
                     cache_last_time = graph_state.static_cache_time_out_first.clone() if graph_state.static_cache_time_out_first is not None else None
                     cache_last_channel_len = graph_state.static_cache_channel_len_out_first.clone() if graph_state.static_cache_channel_len_out_first is not None else None
-                    encoder_emb_chunk = graph_state.static_raw_encoder_first.clone() if graph_state.static_raw_encoder_first is not None else None
                 else:
                     graph_state.graph_subsequent.replay()
                     encoded_chunk = graph_state.static_encoded_subsequent.clone()
+                    raw_encoded = graph_state.static_raw_encoded_subsequent.clone().transpose(1, 2) if graph_state.static_raw_encoded_subsequent is not None else None
                     cache_last_channel = graph_state.static_cache_channel_out_subsequent.clone() if graph_state.static_cache_channel_out_subsequent is not None else None
                     cache_last_time = graph_state.static_cache_time_out_subsequent.clone() if graph_state.static_cache_time_out_subsequent is not None else None
                     cache_last_channel_len = graph_state.static_cache_channel_len_out_subsequent.clone() if graph_state.static_cache_channel_len_out_subsequent is not None else None
-                    encoder_emb_chunk = graph_state.static_raw_encoder_subsequent.clone() if graph_state.static_raw_encoder_subsequent is not None else None
 
             else:
                 (
@@ -520,31 +531,27 @@ class PerceptionCacheManager:
                     drop_extra_pre_encoded=drop_extra_pre_encoded,
                 )
 
+                raw_encoded = encoded.transpose(1, 2)
+
                 modality_adapter = perception.modality_adapter
                 encoded_adapted, _ = modality_adapter(audio_signal=encoded, length=encoded_len)
 
                 encoded_chunk = perception.proj(encoded_adapted.transpose(1, 2))
-                encoder_emb_chunk = encoded  # raw [B, 1, 1024] for RNNT
 
             torch.cuda.synchronize()
             logging.info(f"  Sub-step {sub_step}/{num_sub_steps} (sub_frame_idx={sub_frame_idx}, first={is_first_sub_step}): {time.time() - sub_step_start_time:.4f}s")
             encoded_chunks.append(encoded_chunk)
-            if encoder_emb_chunk is not None:
-                encoder_emb_chunks.append(encoder_emb_chunk)
+            if raw_encoded is not None:
+                raw_encoded_chunks.append(raw_encoded)
 
         if len(encoded_chunks) > 1:
             encoded_chunk = torch.cat(encoded_chunks, dim=1)
         else:
             encoded_chunk = encoded_chunks[0]
 
-        if len(encoder_emb_chunks) > 1:
-            # encoder_emb_chunks are [B, D, T] (channels-first from Conformer);
-            # concatenate along the time axis (dim=2) not the feature axis (dim=1).
-            encoder_emb = torch.cat(encoder_emb_chunks, dim=2)
-        elif encoder_emb_chunks:
-            encoder_emb = encoder_emb_chunks[0]
-        else:
-            encoder_emb = None
+        raw_encoder_emb = None
+        if raw_encoded_chunks:
+            raw_encoder_emb = torch.cat(raw_encoded_chunks, dim=1) if len(raw_encoded_chunks) > 1 else raw_encoded_chunks[0]
 
         torch.cuda.synchronize()
         logging.info(f"Time taken for encoder ({num_sub_steps} sub-steps): {time.time() - start_time}")
@@ -555,4 +562,4 @@ class PerceptionCacheManager:
             cache_last_channel_len=cache_last_channel_len,
         )
 
-        return encoded_chunk, encoder_emb, new_perception_cache
+        return encoded_chunk, new_perception_cache, raw_encoder_emb

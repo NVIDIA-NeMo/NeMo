@@ -60,6 +60,8 @@ def convert(outdir, config, model_path):
     _pretrained_tokenizer_name = None
     if hasattr(cfg.model, "tts_config") and hasattr(cfg.model.tts_config, "cas_config"):
         _pretrained_tokenizer_name = cfg.model.tts_config.cas_config.get("pretrained_tokenizer_name", None)
+        if _pretrained_tokenizer_name is not None:
+            del cfg.model.tts_config.cas_config.pretrained_tokenizer_name
 
     model = DuplexEARTTS(OmegaConf.to_container(cfg, resolve=True)).eval()
     # get subword encoder vocabs and config
@@ -226,7 +228,7 @@ def convert(outdir, config, model_path):
     flat_config["use_subword_flag_emb"] = cfg.model.tts_config.use_subword_flag_emb
     flat_config["use_bos_eos_emb"] = cfg.model.tts_config.use_bos_eos_emb
     flat_config["use_gated_fusion_for_text_audio"] = cfg.model.tts_config.use_gated_fusion_for_text_audio
-    flat_config["use_audio_prompt_frozen_projection"] = cfg.model.tts_config.use_audio_prompt_frozen_projection
+    flat_config["use_audio_prompt_frozen_projection"] = cfg.model.tts_config.get("use_audio_prompt_frozen_projection", False)
     # hardcode enabling guidance so emb is created and application
     # of cfg is captured into a cuda graph
     flat_config["enable_guidance"] = True

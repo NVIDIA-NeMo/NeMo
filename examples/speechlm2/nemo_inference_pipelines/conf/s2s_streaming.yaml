@@ -32,8 +32,8 @@ s2s:
   engine_type: ??? # Engine type: 'native' or 'vllm_llm' or 'vllm_eartts' or 'vllm_llm_vllm_eartts'
   vllm_llm_config:
     model_path: ${s2s.model_path}             # Inherits from s2s.model_path
-    max_model_len: 8192                       # Maximum sequence length for vLLM
-    gpu_memory_utilization: 0.45               # GPU memory utilization (0.0-1.0)
+    max_model_len: 12288                      # Maximum sequence length for vLLM
+    gpu_memory_utilization: 0.52               # GPU memory utilization (0.0-1.0)
     dtype: bfloat16                           # Data type for vLLM inference
     engine_path: null                         # Path to vLLM engine (null = auto-convert if needed)
     pretrained_llm: ${s2s.llm_checkpoint_path}  # Inherits from s2s.llm_checkpoint_path
@@ -42,7 +42,7 @@ s2s:
   vllm_tts_config:
     model_path: ${s2s.vllm_llm_config.model_path}             # Inherits from s2s.model_path
     max_model_len: ${s2s.vllm_llm_config.max_model_len}
-    gpu_memory_utilization: 0.45
+    gpu_memory_utilization: 0.23                               # EarTTS GPU memory
     dtype: float32                              # EarTTS requires float32 for proper audio quality (bfloat16 causes hallucinations)
     engine_path: null
     pretrained_llm: null
@@ -63,6 +63,7 @@ s2s:
   codec_token_history_size: 60                # Sliding-window buffer size; ignored when use_codec_cache is true
   use_perception_cache: true                  # Enable cache-aware streaming for perception encoder
   use_perception_cudagraph: true              # Enable CUDA graph-accelerated perception encoder
+  pad_and_drop_preencoded: false              # When true, first chunk uses subsequent-chunk sizes (zero-padded)
   use_codec_cache: true                       # Incremental codec decode to remove clicking sounds and wasted computation
                                               # (when true, codec_token_history_size is unused)
 
@@ -72,21 +73,15 @@ s2s:
   # non-deterministic mode was used in training.
   deterministic: false
 
-  # sampling parameters. if set all to 1.0, it will be greedy decoding.
-  top_p: 0.5
-  repetition_penalty: 1.1
-  temperature: 0.3
+  # sampling parameters. greedy decoding: temperature=0 (argmax), top_p=1.0, repetition_penalty=1.0.
+  top_p: 1.0
+  repetition_penalty: 1.0
+  temperature: 0.0
   force_turn_taking: true
   force_turn_taking_threshold: 40
   force_turn_taking_pad_window: 25
-
-  # RNNT-based EOU/BOU turn-taking (blank frame counting on ASR encoder)
-  # Each RNNT frame = 80ms of user audio (one encoder output per 80ms chunk)
-  rnnt_eou_enabled: false   # Enable RNNT blank-count turn-taking (overrides force_turn_taking for EOU)
-  asr_eou: 4                # Consecutive RNNT blank frames after speech → EOU → agent BOS (4 × 80ms = 320ms)
-  asr_bou: 4                # (legacy alias) Consecutive RNNT non-blank frames → user BOS → interrupt agent
-  user_bos_frames: 4        # Consecutive RNNT non-blank frames of user speech → interrupt agent EOS (4 × 80ms = 320ms)
-                            # Set to 2 for 160ms (more aggressive) or 4 for 320ms (more robust)
+  turn_taking_source: rnnt              # "rnnt" (default) or "asr_head"
+  rnnt_eou_frames: 15                   # RNNT silence frames for EOU (15 × 80ms = 1.2s)
 
   # Inference logit boosts (applied to model logits at inference time)
   inference_user_pad_boost: 0.8         # Boost ASR pad logit
@@ -94,8 +89,51 @@ s2s:
   inference_user_eos_boost: null         # Boost ASR EOS logit
 
   system_prompt: ???
+  augment_fc_system_prompt: true      # Auto-wrap tools-only FC system prompts with TOOLCALL instructions
+  fc_system_prompt_template: null      # Custom FC template (null = use built-in default)
   tts_system_prompt: null              # TTS system prompt - conditions TTS generation style
                                        # Requires a checkpoint trained with individual TTS prompts
+
+  # FC async mode: run text tokens at full LLM speed during tool calls
+  fc_async_enabled: false
+  # Two-phase: Phase 1 generates call tokens, pauses at EOTC for tool execution,
+  # then Phase 2 injects response tokens. Requires fc_async_enabled.
+  fc_async_two_phase: false
+  # Enable built-in tool executor (e.g. calculate_bmi) for two-phase FC.
+  # When false, Phase 2 skips tool execution (pre-provided tool_response_text still works).
+  enable_builtin_tools: false
+  # Random ACK phrase played at start of tool call (e.g. "Sure, give me just a moment.")
+  fc_random_ack_enabled: false
+  # Reminder phrase played between Phase 1 EOTC and tool API return (fills silence gap for slow APIs)
+  tool_reminder_enabled: false
+  # Per-tool on-hold messages (JSON: {tool_name: phrase}); null = disabled
+  fc_on_hold_messages_path: null
+  # Generic on-hold messages list (JSON array); up to 2 played with 1s gap if API still blocked
+  fc_generic_on_hold_messages_path: null
+  # Final wait (seconds) after all on-hold messages before using canned timeout response
+  fc_tool_timeout_sec: 15.0
+  # Max continuous agent speaking duration (seconds); forces EOS + "How can I help you?" if exceeded.
+  # 0 = disabled. Default 15s.
+  max_agent_response_sec: 15.0
+
+  # TTS hallucination prevention (Edresson's fix): force EOS after ratio × text_token_count frames.
+  # Prevents TTS from hallucinating when </s> is missing or delayed after long silence.
+  # 0.0 = disabled. Default 6.0 (TTS needs ~6 frames per text token on average).
+  tts_text_token_ratio_cap: 6.0
+  # Minimum text tokens in turn before ratio cap activates (avoids false triggers on short responses).
+  tts_text_token_min: 5
+
+  # Which ASR source to display in the UI: 'rnnt' (default) or 'asr_head'
+  # 'rnnt' uses the RNNT decoder for user transcription (more accurate)
+  # 'asr_head' uses the LLM's ASR head tokens (original behavior)
+  ui_asr_source: rnnt
+
+  # RNNT ASR checkpoint for user transcription (decoder+joint from a .nemo ASR checkpoint)
+  pretrained_rnnt_asr: null
+  # When false (default): prefer RNNT from combined checkpoint if available.
+  # When true: always load RNNT from the separate .nemo file (pretrained_rnnt_asr),
+  # even if the combined checkpoint has embedded RNNT weights.
+  use_separate_rnnt_ckpt: false
 
 
 

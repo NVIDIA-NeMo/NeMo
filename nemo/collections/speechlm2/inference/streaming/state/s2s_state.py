@@ -44,6 +44,8 @@ class S2SStreamingState:
 	# Accumulated ASR text output
 	output_asr_text_str: str = ""
 	output_asr_text_tokens: List[str] = field(default_factory=list)
+	# Accumulated function channel text output
+	output_function_text_str: str = ""
 	# Accumulated words with timings
 	output_words: List[Word] = field(default_factory=list)
 	# Final token tensors saved from the context before it is destroyed.
@@ -51,6 +53,10 @@ class S2SStreamingState:
 	final_gen_text: Optional[torch.Tensor] = None
 	final_gen_asr_text: Optional[torch.Tensor] = None
 	final_total_frames: int = 0
+	# RNNT user transcription (finalized at stream end)
+	final_rnnt_text: Optional[str] = None
+	# FC timing data (set from context at stream end)
+	fc_timing: Optional[Any] = None
 
 	def __post_init__(self) -> None:
 		"""Allocate tensors lazily based on provided metadata."""
@@ -66,6 +72,7 @@ class S2SStreamingState:
 			self.output_text_tokens.clear()
 			self.output_asr_text_str = ""
 			self.output_asr_text_tokens.clear()
+			self.output_function_text_str = ""
 			self.output_words.clear()
 			self.final_gen_text = None
 			self.final_gen_asr_text = None
@@ -117,6 +124,10 @@ class S2SStreamingState:
 	def get_output_asr_text(self) -> str:
 		"""Return accumulated ASR text as a single string."""
 		return self.output_asr_text_str
+
+	def get_output_function_text(self) -> str:
+		"""Return accumulated function channel text as a single string."""
+		return self.output_function_text_str
 
 	def get_output_words(self) -> List[Word]:
 		"""Return accumulated words with timings."""

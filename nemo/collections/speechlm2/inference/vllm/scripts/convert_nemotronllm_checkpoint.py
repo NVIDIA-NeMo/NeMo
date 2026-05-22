@@ -18,8 +18,6 @@ Convert NeMo STT checkpoint to HuggingFace format compatible with vLLM.
 This script extracts weights from a NeMo checkpoint that has the structure:
 - stt_model.llm.layers.*
 - stt_model.lm_head.*
-- stt_model.asr_head.*
-- stt_model.embed_asr_tokens.*
 - stt_model.embed_tokens.*
 
 And converts them to HuggingFace format that can be loaded by vLLM with the
@@ -116,9 +114,8 @@ def convert_nemo_to_hf_format(
         tensors_to_keep = [
             "stt_model.llm",
             "stt_model.lm_head",
-            "stt_model.asr_head",
-            "stt_model.embed_asr_tokens",
             "stt_model.embed_tokens",
+            "stt_model.function_head",
         ]
     
     # Load config to get pretrained_llm if not provided
@@ -162,7 +159,7 @@ def convert_nemo_to_hf_format(
               "dim": base_config.hidden_size
             }
         ],
-        "custom_outputs": ["text_logits", "asr_tokens", "asr_logits"]
+        "custom_outputs": ["text_logits", "function_tokens", "function_logits"]
     }
     base_config.update(custom_config)
 
@@ -174,11 +171,11 @@ def convert_nemo_to_hf_format(
     # Load checkpoint
     logging.info(f"Loading checkpoint from {checkpoint_path}")
     state_dict = load_checkpoint(checkpoint_path)
-
+    
     # Filter tensors
     logging.info(f"Filtering tensors to keep prefixes: {tensors_to_keep}")
     filtered_state_dict = filter_tensors(state_dict, tensors_to_keep)
-
+    
     if len(filtered_state_dict) == 0:
         raise ValueError(
             f"No tensors found with prefixes {tensors_to_keep}. "

@@ -230,6 +230,15 @@ class NemotronVoicechatInferenceWrapper:
         self.model_llm_interface = None
         self.tokenizer = None
 
+        # Max-response watchdog defaults — set properly after model loads.
+        # Must be defined early because _apply_rnnt_turn_taking is called during warmup.
+        self._max_agent_response_frames: int = 0
+        self._redirect_tokens_queue: list = []
+        self._max_response_redirect_tokens: list = []
+        # After tool-response injection completes, exempt the next agent BOS from
+        # self-play suppression so the post-TC verbal response is not silenced.
+        self._post_tc_bos_exempt: bool = False
+
         # vLLM configuration
         self.engine_type = model_cfg.get("engine_type", "native")
         self.use_vllm_llm = "vllm_llm" in self.engine_type.lower()
@@ -596,6 +605,24 @@ class NemotronVoicechatInferenceWrapper:
         #self.model.on_train_epoch_start()
         self.tokenizer = self.model.stt_model.tokenizer
 
+        # Pre-tokenize max-response redirect message now that tokenizer is ready.
+        if self._max_agent_response_frames > 0:
+            _stt_r = self.model.stt_model
+            _bos_r = getattr(_stt_r, "text_bos_id", None)
+            _eos_r = getattr(_stt_r, "text_eos_id", None)
+            _pad_r = getattr(_stt_r, "text_pad_id", None)
+            _ids_r = list(self.tokenizer.text_to_ids("How can I help you?"))
+            if _bos_r is not None:
+                _ids_r = [_bos_r] + _ids_r
+            if _pad_r is not None:
+                _ids_r += [_pad_r] * 17
+            if _eos_r is not None:
+                _ids_r += [_eos_r]
+            self._max_response_redirect_tokens = _ids_r
+            logging.info(
+                "[MaxResponse] Enabled: max %.1fs (%d frames), redirect=%d tokens",
+                _max_resp_sec, self._max_agent_response_frames, len(_ids_r),
+            )
 
         # allow overrides/additions from the self.model_cfg of nemotron_voicechat_inference_wrapper,
         # into the model cfg that is read from config.json of the model.
@@ -802,6 +829,11 @@ class NemotronVoicechatInferenceWrapper:
         # Set to True by _maybe_apply_rnnt_turn_taking when agent EOS is inserted (BOU barge-in).
         # Pipeline monitors this to fire quit_async_event (kill tool-call thread on agent EOU).
         self._agent_eos_just_fired = False
+        # Max agent response duration: force EOS after N frames of continuous agent speech.
+        # Then inject a redirect message ("How can I help you?") via the token queue.
+        # 15s / 80ms per frame = 187 frames. Set to 0 to disable.
+        _max_resp_sec = float(self.model_cfg.get("max_agent_response_sec", 15.0))
+        self._max_agent_response_frames = int(_max_resp_sec / 0.08) if _max_resp_sec > 0 else 0
         # Build word-start token flag list (same pattern as NeMo's greedy_decoder.py).
         # is_start_tokens[token_id] = True if the token begins a new word (▁ prefix).
         # EOU is suppressed when the last RNNT token is a word-continuation subword —
@@ -1925,7 +1957,7 @@ class NemotronVoicechatInferenceWrapper:
         tts_audio_output_queue: "queue.Queue | None" = None,
         abort_event: "threading.Event | None" = None,
         request_id: str | None = None,
-    ) -> None:
+    ) -> int:
         """Play reminder tokens through TTS only (no LLM steps) during tool API wait.
 
         Feeds each token in reminder_tokens to EarTTS one step at a time, decodes audio,
@@ -1933,8 +1965,10 @@ class NemotronVoicechatInferenceWrapper:
         audio instead of silence while the tool API call blocks.
 
         Mutates tts_state in-place (code, past_key_values, codec_cache).
+        Returns total audio samples generated so the caller can sleep for playback duration.
         """
         pad_id = self.model.stt_model.text_pad_id
+        total_samples = 0
         for tok_id in reminder_tokens:
             if abort_event is not None and abort_event.is_set():
                 break
@@ -1973,11 +2007,13 @@ class NemotronVoicechatInferenceWrapper:
                             _tts_new_codes, _tts_code_len, cache=_tts_codec_cache,
                         )
                         _chunk_cpu = _decoded.detach().cpu()
+                        total_samples += _chunk_cpu.shape[-1]
                         if tts_audio_output_queue is not None:
                             tts_audio_output_queue.put(_chunk_cpu)
             except Exception as _exc:
                 logging.warning("[FC Reminder] TTS step failed: %s", _exc)
                 break
+        return total_samples
 
     def infer_one_step(self,
                        audio_input,
@@ -2174,6 +2210,14 @@ class NemotronVoicechatInferenceWrapper:
                     function_predicted_tokens=function_predicted_tokens,
                     tool_response_text=tool_response_text,
                 )
+
+            # Detect when tool-response injection just finished so RNNT allows the post-TC BOS.
+            if fc_state is not None:
+                _injecting_now = bool(fc_state.get("forced_function_tokens")) or fc_state.get("injecting_response", False)
+                if not _injecting_now and fc_state.get("_was_injecting", False):
+                    self._post_tc_bos_exempt = True
+                    logging.info("[FC] Injection complete → post-TC BOS exempt enabled")
+                fc_state["_was_injecting"] = _injecting_now
 
             # Silence text channel while FC is active — prevents speech tokens from
             # sub-steps after SOTC fires reaching the audio codec before FC async takes over.
@@ -2571,6 +2615,19 @@ class NemotronVoicechatInferenceWrapper:
 
         B = gen_text.size(0)
         for b in range(B):
+            # Redirect token injection: when max response duration was exceeded,
+            # inject pre-tokenized "How can I help you?" tokens frame-by-frame.
+            # These run before normal RNNT logic so TTS picks up the injected token.
+            if self._redirect_tokens_queue:
+                next_tok = self._redirect_tokens_queue.pop(0)
+                gen_text[b, t] = next_tok
+                if next_tok == bos_id:
+                    rnnt_state['agent_speaking'][b] = True
+                elif next_tok == eos_id:
+                    rnnt_state['agent_speaking'][b] = False
+                    self._agent_eos_just_fired = True
+                continue  # skip normal RNNT logic this frame
+
             lookback_start = max(0, t - threshold)
             agent_window   = gen_text[b, lookback_start:t]
 
@@ -2610,9 +2667,14 @@ class NemotronVoicechatInferenceWrapper:
                 rnnt_state['forced_bos'][b] = False  # consume flag each frame
             if (not agent_speaking and not first_turn and not speech_confirmed
                     and current_tok == bos_id and not _is_forced_bos):
-                gen_text[b, t] = self.model.stt_model.text_pad_id
-                logging.debug(f"RNNT self-play suppression t={t}: LLM BOS suppressed (no user speech)")
-                return
+                if self._post_tc_bos_exempt:
+                    self._post_tc_bos_exempt = False
+                    logging.info(f"RNNT post-TC BOS exempt at t={t}: allowing agent BOS after tool call")
+                    # fall through — do not suppress
+                else:
+                    gen_text[b, t] = self.model.stt_model.text_pad_id
+                    logging.debug(f"RNNT self-play suppression t={t}: LLM BOS suppressed (no user speech)")
+                    return
 
             if (agent_window == bos_id).any() or current_tok == bos_id:
                 agent_speaking = True
@@ -2700,6 +2762,32 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['agent_speaking'][b] = False
                     return
 
+            # Max agent response duration: force EOS after too many continuous talking frames.
+            if (self._max_agent_response_frames > 0 and agent_speaking
+                    and current_tok != eos_id
+                    and not (agent_window == eos_id).any()):
+                _talking_key = '_agent_talking_frames'
+                if _talking_key not in rnnt_state:
+                    rnnt_state[_talking_key] = {}
+                _cnt = rnnt_state[_talking_key].get(b, 0) + 1
+                rnnt_state[_talking_key][b] = _cnt
+                if _cnt >= self._max_agent_response_frames:
+                    gen_text[b, t] = eos_id
+                    rnnt_state['agent_speaking'][b] = False
+                    rnnt_state[_talking_key][b] = 0
+                    self._agent_eos_just_fired = True
+                    if self._max_response_redirect_tokens:
+                        self._redirect_tokens_queue = list(self._max_response_redirect_tokens)
+                    logging.info(
+                        "[MaxResponse] Agent talking %d frames (>= max %d) → forced EOS + redirect queued",
+                        _cnt, self._max_agent_response_frames,
+                    )
+                    return
+            elif not agent_speaking:
+                _talking_key = '_agent_talking_frames'
+                if _talking_key in rnnt_state:
+                    rnnt_state[_talking_key][b] = 0
+
             # Barge-in: N consecutive non-blank frames while agent speaking → EOS
             if nonblank_cnt >= user_bos_frames and agent_speaking:
                 if not (agent_window == eos_id).any() and current_tok != eos_id:
@@ -2707,6 +2795,7 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['nonblank_consec'][b] = 0
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = False
+                    self._redirect_tokens_queue = []  # cancel pending redirect if user barges in
                     self._agent_eos_just_fired = True
                     logging.info(
                         f"RNNT barge-in t={t}: agent EOS (nonblank_consec={nonblank_cnt})"
@@ -2714,6 +2803,8 @@ class NemotronVoicechatInferenceWrapper:
 
     def _reset_rnnt_turn_taking_state(self):
         self._agent_eos_just_fired = False
+        self._redirect_tokens_queue = []
+        self._post_tc_bos_exempt = False
 
     @torch.no_grad()
     def inference_realtime_streaming(self, audio_path: str, num_frames_per_chunk: int = None, request_id: Optional[str] = None, pad_audio_to_sec: Optional[float] = None, pad_silence_ratio: Optional[float] = None, pad_audio_by_sec: Optional[float] = None, system_prompt: Optional[str] = None, tool_executor_fn: Optional[callable] = None):

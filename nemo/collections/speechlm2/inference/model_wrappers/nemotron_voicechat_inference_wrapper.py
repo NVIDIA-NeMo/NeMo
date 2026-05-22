@@ -2686,6 +2686,10 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['nonblank_total'][b] = 0
                     speech_confirmed = False
                     nonblank_total = 0
+                    # Reset token counter for the new agent turn.
+                    if '_turn_text_tokens' not in rnnt_state:
+                        rnnt_state['_turn_text_tokens'] = {}
+                    rnnt_state['_turn_text_tokens'][b] = 0
             if (agent_window == eos_id).any() or current_tok == eos_id:
                 agent_speaking = False
                 rnnt_state['agent_speaking'][b] = False
@@ -2787,6 +2791,36 @@ class NemotronVoicechatInferenceWrapper:
                 _talking_key = '_agent_talking_frames'
                 if _talking_key in rnnt_state:
                     rnnt_state[_talking_key][b] = 0
+
+            # TTS token-ratio cap (Edresson's fix): force EOS after ratio × text_token_count
+            # frames to prevent TTS hallucination when EOS is missing or delayed.
+            # Ratio and min_tokens are configurable; 0 ratio = disabled.
+            _tts_ratio = float(self.model_cfg.get("tts_text_token_ratio_cap", 6.0))
+            _tts_min_tokens = int(self.model_cfg.get("tts_text_token_min", 5))
+            if (_tts_ratio > 0 and agent_speaking
+                    and current_tok != eos_id
+                    and not (agent_window == eos_id).any()):
+                _pad_id_r = self.model.stt_model.text_pad_id
+                # Count non-PAD, non-BOS, non-EOS text tokens produced this turn.
+                if '_turn_text_tokens' not in rnnt_state:
+                    rnnt_state['_turn_text_tokens'] = {}
+                if current_tok not in (bos_id, eos_id, _pad_id_r):
+                    rnnt_state['_turn_text_tokens'][b] = rnnt_state['_turn_text_tokens'].get(b, 0) + 1
+                _txt_cnt = rnnt_state['_turn_text_tokens'].get(b, 0)
+                _talking_frames = rnnt_state.get('_agent_talking_frames', {}).get(b, 0)
+                if (_txt_cnt >= _tts_min_tokens
+                        and _talking_frames >= _tts_ratio * _txt_cnt):
+                    gen_text[b, t] = eos_id
+                    rnnt_state['agent_speaking'][b] = False
+                    rnnt_state['_turn_text_tokens'][b] = 0
+                    if '_agent_talking_frames' in rnnt_state:
+                        rnnt_state['_agent_talking_frames'][b] = 0
+                    self._agent_eos_just_fired = True
+                    logging.info(
+                        "[TTSRatioCap] Forced EOS: %d talking frames >= %.1f × %d text tokens",
+                        _talking_frames, _tts_ratio, _txt_cnt,
+                    )
+                    return
 
             # Barge-in: N consecutive non-blank frames while agent speaking → EOS
             if nonblank_cnt >= user_bos_frames and agent_speaking:

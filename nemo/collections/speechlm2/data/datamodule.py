@@ -16,6 +16,7 @@ from lightning import LightningDataModule
 from lightning.pytorch.utilities import CombinedLoader
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.tokenizers import TokenizerSpec
 
@@ -57,7 +58,7 @@ class DataModule(LightningDataModule):
             The data sampling is controlled by Lhotse samplers rather than the dataset.
     """
 
-    def __init__(self, cfg, tokenizer: TokenizerSpec, dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset = None) -> None:
+    def __init__(self, cfg, tokenizer: TokenizerSpec, dataset: torch.utils.data.Dataset) -> None:
         super().__init__()
         self.cfg = cfg
         with open_dict(self.cfg):
@@ -67,7 +68,6 @@ class DataModule(LightningDataModule):
                     getattr(self.cfg, k).force_map_dataset = True
         self.tokenizer = tokenizer
         self.dataset = dataset
-        self.val_dataset = val_dataset if val_dataset is not None else dataset
 
     def train_dataloader(self):
         if "train_ds" not in self.cfg:
@@ -76,7 +76,7 @@ class DataModule(LightningDataModule):
             config=self.cfg.train_ds,
             global_rank=self._get_dp_rank(),
             world_size=self._get_world_size(),
-            dataset=self.dataset,
+            dataset=FallbackDataset(self.dataset),
             tokenizer=self.tokenizer,
         )
 
@@ -121,7 +121,7 @@ class DataModule(LightningDataModule):
                 config=cfg,
                 global_rank=self._get_dp_rank(),
                 world_size=self._get_world_size(),
-                dataset=self.val_dataset,
+                dataset=self.dataset,
                 tokenizer=self.tokenizer,
             )
 

@@ -11,60 +11,62 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import multiprocessing as mp
 import os
-
+import datetime
 import torch
 from lightning.pytorch import Trainer
-from lightning.pytorch.callbacks import ModelCheckpoint
 from omegaconf import OmegaConf
 
-from nemo.collections.speechlm2 import DataModule, DuplexS2SDataset, DuplexSTTModel
+from nemo.collections.speechlm2 import DataModule, DuplexEARTTSDataset
+from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
+from nemo.collections.speechlm2.parts.pretrained import load_checkpoint, set_model_dict_for_partial_init
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
-
-# Set multiprocessing start method to 'spawn' for CUDA compatibility with DataLoader workers
-# This prevents "Cannot re-initialize CUDA in forked subprocess" errors
-try:
-    mp.set_start_method('spawn', force=True)
-except RuntimeError:
-    pass  # Start method already set
-
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-@hydra_runner(config_path="conf", config_name="s2s_duplex_stt")
+@hydra_runner(config_path="conf", config_name="duplex_eartts")
 def train(cfg):
     OmegaConf.resolve(cfg)
-    torch.distributed.init_process_group(backend="nccl")
+    torch.distributed.init_process_group(
+        backend="nccl", 
+        timeout=datetime.timedelta(seconds=int(cfg.trainer.strategy.get("timeout", 3600)))
+    )
     torch.set_float32_matmul_precision("medium")
     torch.backends.cudnn.allow_tf32 = True
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
-    # avoid using `=` in the checkpoint name
-    for callback in trainer.callbacks:
-        if isinstance(callback, ModelCheckpoint):
-            callback.CHECKPOINT_EQUALS_CHAR = "-"
-
     with trainer.init_module():
-        model = DuplexSTTModel(OmegaConf.to_container(cfg, resolve=True))
+        model = DuplexEARTTS(OmegaConf.to_container(cfg, resolve=True))
 
-    dataset = DuplexS2SDataset(
+        # load pretrained tts checkpoint if available
+        if model.cfg.get("pretrained_tts_model", None):
+            checkpoint_state = load_checkpoint(model.cfg.pretrained_tts_model)
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.tts_model.state_dict())
+            model.tts_model.load_state_dict(checkpoint_state, strict=True)
+
+        # load pretrained checkpoint and rescale the weights if needed
+        if model.cfg.get("pretrained_model", None):
+            model.restore_from_pretrained_checkpoint(model.cfg.pretrained_model)
+
+    dataset = DuplexEARTTSDataset(
         tokenizer=model.tokenizer,
         frame_length=cfg.data.frame_length,
         source_sample_rate=cfg.data.source_sample_rate,
         target_sample_rate=cfg.data.target_sample_rate,
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
-        aug_by_swap_role=cfg.data.get("aug_by_swap_role", False),
-        cfg=cfg.data,
-        model_cfg=cfg.model,
+        add_text_bos_and_eos_in_each_turn=cfg.data.get("add_text_bos_and_eos_in_each_turn", True),
+        add_audio_prompt=cfg.data.get("add_audio_prompt", True),
+        audio_prompt_duration=cfg.data.get("audio_prompt_duration", 3),
+        num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
+        add_system_prompt=cfg.model.get("use_system_prompt", False),
+        ignore_data_system_prompt=cfg.model.get("ignore_data_system_prompt", False)
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
-
     trainer.fit(model, datamodule)
 
 

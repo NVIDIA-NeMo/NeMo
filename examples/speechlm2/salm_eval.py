@@ -21,11 +21,12 @@ from lhotse import CutSet
 from lhotse.serialization import SequentialJsonlWriter
 from omegaconf import OmegaConf
 from transformers import GenerationConfig
+from whisper_normalizer.basic import BasicTextNormalizer
 from whisper_normalizer.english import EnglishTextNormalizer
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.common.data.lhotse.cutset import guess_parse_cutset
-from nemo.collections.speechlm2 import SALM
+from nemo.collections.speechlm2.models import SALM, SALMWithAsrDecoder
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -44,20 +45,24 @@ class SalmEvalConfig:
     max_new_tokens: int = 128
     output_manifest: Optional[str] = "generations.jsonl"
     verbose: bool = True
-    use_normalizer: bool = True
+    use_normalizer: Optional[str] = "english"  # "english", "basic", or "none" / "None"
     device: str = "cuda"
+    dtype: str = "bfloat16"
     extra_eos_tokens: Optional[list[str]] = None
     system_prompt: Optional[str] = None
+    user_prompt: Optional[str] = None
+    use_asr_decoder: bool = False  # set this to True if using SALMWithAsrDecoder
 
 
 @hydra_runner(config_name="SalmEvalConfig", schema=SalmEvalConfig)
 def main(cfg: SalmEvalConfig):
     logging.info(f'Hydra config:\n{OmegaConf.to_yaml(cfg)}')
 
-    with torch.device(cfg.device):
-        torch.set_default_dtype(torch.bfloat16)
-        model = SALM.from_pretrained(cfg.pretrained_name).eval().to(torch.bfloat16).to(cfg.device)
-        torch.set_default_dtype(torch.float32)
+    if cfg.use_asr_decoder:
+        model = SALMWithAsrDecoder.from_pretrained(cfg.pretrained_name)
+    else:
+        model = SALM.from_pretrained(cfg.pretrained_name)
+    model = model.eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
 
     cuts = guess_parse_cutset(cfg.inputs).sort_by_duration()
     dloader = torch.utils.data.DataLoader(
@@ -67,10 +72,9 @@ def main(cfg: SalmEvalConfig):
         batch_size=None,
     )
 
-    if cfg.use_normalizer:
-        normalizer = EnglishTextNormalizer()
-    else:
-        normalizer = lambda x: x
+    normalizer = {"english": EnglishTextNormalizer(), "basic": BasicTextNormalizer()}.get(
+        cfg.use_normalizer, lambda x: x
+    )
 
     eos_tokens = [model.text_eos_id]
     if cfg.extra_eos_tokens is not None:
@@ -79,9 +83,21 @@ def main(cfg: SalmEvalConfig):
             assert tid is not None, f"Token '{t}' is not in the model's vocabulary."
             eos_tokens.append(tid)
 
-    system_prompt = []
+    # Construct the prompt from ASR data of the form.
+    # Optional system prompt goes first.
+    prompt = []
     if cfg.system_prompt is not None:
-        system_prompt.append({"role": "system", "slots": {"message": cfg.system_prompt}})
+        prompt.append({"role": "system", "content": cfg.system_prompt})
+    # If no user prompt is provided, just use the audio placeholder.
+    content = model.audio_locator_tag
+    # Otherwise:
+    # * if user prompt already has audio placeholder, add it as-is,
+    # * if not, append audio placeholder at the end of user prompt
+    if cfg.user_prompt is not None:
+        content = cfg.user_prompt
+        if model.audio_locator_tag not in content:
+            content = f"{content} {model.audio_locator_tag}"
+    prompt.append({"role": "user", "content": content})
 
     refs = []
     hyps = []
@@ -90,16 +106,7 @@ def main(cfg: SalmEvalConfig):
     for batch_idx, batch in enumerate(dloader):
         ts = perf_counter()
         answer_ids = model.generate(
-            prompts=[
-                system_prompt
-                + [
-                    {
-                        "role": "user",
-                        "content": f"Repeat after me, typing in lowercase. {model.audio_locator_tag}",
-                    }
-                ]
-            ]
-            * len(batch["cuts"]),
+            prompts=[prompt] * len(batch["cuts"]),  # identical prompt for each example
             audios=batch["audios"].to(model.device, non_blocking=True),
             audio_lens=batch["audio_lens"].to(model.device, non_blocking=True),
             generation_config=GenerationConfig(
@@ -141,7 +148,7 @@ def main(cfg: SalmEvalConfig):
 
 
 def parse_hyp(answer: torch.Tensor, eos_tokens: list[int]):
-    end = (answer == torch.isin(answer, torch.tensor(eos_tokens))).nonzero(as_tuple=True)[0]
+    end = torch.isin(answer, torch.tensor(eos_tokens)).nonzero(as_tuple=True)[0]
     if end.numel() == 0:
         return answer
     end = end[0]

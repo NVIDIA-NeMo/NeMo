@@ -135,6 +135,96 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
 
 
+def setup_rnnt_from_combined_checkpoint(
+    model: torch.nn.Module,
+    rnnt_config: dict,
+    tokenizer_dir: str = None,
+):
+    """
+    Initialize RNNT decoder/joint module structure from config saved in a
+    combined checkpoint (produced by ``combine_s2s_rnnt_checkpoint.py``).
+
+    Unlike :func:`setup_rnnt_decoder_joint`, this does **not** load a ``.nemo``
+    file.  It recreates the modules from the saved decoder/joint OmegaConf dicts
+    and optionally restores the tokenizer from files on disk.  The actual
+    *weights* are expected to be loaded separately via ``load_state_dict`` from
+    the combined ``model.safetensors``.
+
+    Args:
+        model: The DuplexSTTModel instance.
+        rnnt_config: The ``_rnnt_merge_info`` dict from the combined checkpoint's
+            ``config.json``.  Must contain ``decoder_config`` and ``joint_config``.
+        tokenizer_dir: Path to the ``rnnt_tokenizer/`` directory saved by the
+            combine script.  If ``None``, tokenizer is set to ``None``.
+    """
+    decoder_cfg = rnnt_config.get("decoder_config")
+    joint_cfg = rnnt_config.get("joint_config")
+    if decoder_cfg is None or joint_cfg is None:
+        logging.warning(
+            "Combined checkpoint _rnnt_merge_info is missing decoder_config or "
+            "joint_config.  Cannot initialise RNNT modules from combined checkpoint."
+        )
+        model.rnnt_decoder = None
+        model.rnnt_joint = None
+        model.rnnt_tokenizer = None
+        return
+
+    decoder_cfg = OmegaConf.create(decoder_cfg)
+    joint_cfg = OmegaConf.create(joint_cfg)
+
+    decoder_cls_name = rnnt_config.get("decoder_class", "nemo.collections.asr.modules.rnnt.RNNTDecoder")
+    joint_cls_name = rnnt_config.get("joint_class", "nemo.collections.asr.modules.rnnt.RNNTJoint")
+
+    def _import_cls(fqn: str):
+        mod_path, cls_name = fqn.rsplit(".", 1)
+        import importlib
+        return getattr(importlib.import_module(mod_path), cls_name)
+
+    try:
+        decoder_cls = _import_cls(decoder_cls_name)
+        joint_cls = _import_cls(joint_cls_name)
+    except Exception as e:
+        logging.warning("Failed to import RNNT decoder/joint class (%s): %s", e, e)
+        model.rnnt_decoder = None
+        model.rnnt_joint = None
+        model.rnnt_tokenizer = None
+        return
+
+    model.rnnt_decoder = decoder_cls.from_config_dict(decoder_cfg)
+    model.rnnt_joint = joint_cls.from_config_dict(joint_cfg)
+    # Also expose underscore-prefixed aliases used by ga/eou turn-taking code
+    vocab = getattr(model.rnnt_joint, 'vocabulary', None)
+    blank_id = len(vocab) if vocab is not None else 1024
+    object.__setattr__(model, '_rnnt_decoder', model.rnnt_decoder)
+    object.__setattr__(model, '_rnnt_joint',   model.rnnt_joint)
+    object.__setattr__(model, '_rnnt_blank_id', blank_id)
+    logging.info(
+        "Initialised RNNT decoder (%s) and joint (%s) module structure from combined checkpoint config. blank_id=%d",
+        decoder_cls_name, joint_cls_name, blank_id,
+    )
+
+    model.rnnt_tokenizer = None
+    if tokenizer_dir and os.path.isdir(tokenizer_dir):
+        tok_cfg_path = os.path.join(tokenizer_dir, "tokenizer_config.json")
+        if os.path.isfile(tok_cfg_path):
+            import json as _json
+            with open(tok_cfg_path, "r") as f:
+                tok_cfg = _json.load(f)
+            try:
+                from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
+                import glob
+                sp_files = glob.glob(os.path.join(tokenizer_dir, "*.model"))
+                if sp_files:
+                    model.rnnt_tokenizer = SentencePieceTokenizer(model_path=sp_files[0])
+                    logging.info("Loaded RNNT SentencePiece tokenizer from: %s", sp_files[0])
+                else:
+                    logging.warning("No .model file found in %s, RNNT tokenizer not loaded.", tokenizer_dir)
+            except Exception as e:
+                logging.warning("Failed to load RNNT tokenizer from %s: %s", tokenizer_dir, e)
+        else:
+            logging.info("No tokenizer_config.json in %s, RNNT tokenizer not loaded.", tokenizer_dir)
+
+
 def set_model_dict_for_partial_init(
     pretrained_dict: Dict[str, torch.Tensor], model_dict: Dict[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:

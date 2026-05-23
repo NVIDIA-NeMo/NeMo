@@ -26,7 +26,7 @@ class BLEU:
     By default, uses Whisper's EnglishTextNormalizer on hypotheses and references.
     """
 
-    def __init__(self, normalize: bool = True, normalizer=None, verbose: bool = False):
+    def __init__(self, normalize: bool = True, normalizer=None, verbose: bool = True):
         self.verbose = verbose
         if normalize:
             if normalizer is None:
@@ -40,6 +40,8 @@ class BLEU:
         self._hyps = defaultdict(list)
 
     def reset(self):
+        self._refs.clear()
+        self._hyps.clear()
         return self
 
     def update(self, name: str, refs: list[str], hyps: list[str]) -> None:
@@ -55,13 +57,8 @@ class BLEU:
         for name in self._refs.keys():
             metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], [self._refs[name]]).score)
             corpus_metric[f"txt_bleu_{name}"] = metric
-        if corpus_metric:
-            corpus_metric["txt_bleu"] = torch.stack(list(corpus_metric.values())).mean()
-        else:
-            # No updates (e.g. no tool-response refs in any batch): return 0 so logging/sync_dist is valid
-            corpus_metric["txt_bleu"] = torch.tensor(0.0, dtype=torch.float32)
-        self._refs.clear()
-        self._hyps.clear()
+        corpus_metric["txt_bleu"] = torch.stack(list(corpus_metric.values())).mean()
+        self.reset()
         return corpus_metric
 
 

@@ -1,25 +1,61 @@
-from whisper_normalizer.english import EnglishTextNormalizer
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import glob
 import json
 import os
 import shutil
+import time
 from collections import defaultdict
 from typing import List, Optional
-import glob
-import time
 
-import torch
-import torchaudio
 import soundfile as sf
+import torch
+from whisper_normalizer.english import EnglishTextNormalizer
 
-from nemo.utils import logging
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.parts.metrics.mcq_evaluator import MCQEvaluator
+from nemo.utils import logging
+
+"""
+Utilities for logging evaluation results of SpeechLM2 collection models.
+
+This file provides helper functionality for saving audio outputs and structured
+metadata during evaluation or inference of Duplex speech-to-speech / TTS models.
+It is primarily responsible for:
+
+    - Writing predicted waveforms to disk.
+    - Merging user and model audio into multi-channel WAV files for analysis.
+    - Exporting metadata (reference text, predictions, ASR output) into JSONL format.
+    - Saving auxiliary debug artifacts such as:
+        * teacher-forced predictions,
+        * reference audio,
+        * trimmed outputs,
+        * end-of-utterance (EOU) probability signals.
+
+Unlike other files in this directory, which focus on metric evaluation, this module
+is dedicated to persisting model outputs — including predicted audio samples and
+their associated metadata — for later inspection and analysis.
+
+Key abstraction:
+    - `ResultsLogger`: A lightweight utility class that manages audio dumping
+      and metadata bookkeeping across inference batches.
+"""
 
 
 def safe_remove_path(path):
-    try:
-        shutil.rmtree(path)
-    except:
-        pass
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def get_rank():
@@ -54,22 +90,17 @@ class ResultsLogger:
         self.save_path = save_path
         self.audio_save_path = os.path.join(save_path, "pred_wavs")
         os.makedirs(self.audio_save_path, exist_ok=True)
-        # Separate folders for agent-only and user-only audio (matches old code behavior).
-        self.agent_audio_save_path = os.path.join(save_path, "agent")
-        self.user_audio_save_path = os.path.join(save_path, "user")
-        os.makedirs(self.agent_audio_save_path, exist_ok=True)
-        os.makedirs(self.user_audio_save_path, exist_ok=True)
         self.metadata_save_path = os.path.join(save_path, "metadatas")
         os.makedirs(self.metadata_save_path, exist_ok=True)
         self.cached_results = defaultdict(list)
         self.normalizer = EnglishTextNormalizer()
-        
+
         # Initialize MCQ evaluator with manifest directory in the same folder
         self.mcq_evaluator = None
         # Get the directory where this file is located
         current_file_dir = os.path.dirname(os.path.abspath(__file__))
         mcq_manifest_dir = os.path.join(current_file_dir, 'manifest_files')
-        
+
         if os.path.exists(mcq_manifest_dir):
             self.mcq_evaluator = MCQEvaluator(mcq_manifest_dir)
             logging.info(f"MCQ evaluator initialized with manifest directory: {mcq_manifest_dir}")
@@ -80,23 +111,41 @@ class ResultsLogger:
             )
 
     def reset(self):
-        metadata_files = os.listdir(self.metadata_save_path)
-        # for f in metadata_files:
-        #     open(os.path.join(self.metadata_save_path, f), 'w').close()
         self.cached_results = defaultdict(list)
+        metadata_files = os.listdir(self.metadata_save_path)
+        for f in metadata_files:
+            open(os.path.join(self.metadata_save_path, f), 'w').close()
+
+        # clean out any existing .wav predictions safely
+        try:
+            audio_files = os.listdir(self.audio_save_path)
+            for f in audio_files:
+                if f.lower().endswith(".wav"):
+                    try:
+                        os.remove(os.path.join(self.audio_save_path, f))
+                    except FileNotFoundError:
+                        pass  # already gone
+                    except Exception:
+                        logging.warning(f"Failed to remove audio file {f} during reset.", stack_info=False)
+        except FileNotFoundError:
+            # directory somehow missing: recreate it
+            os.makedirs(self.audio_save_path, exist_ok=True)
+
         return self
 
     @staticmethod
     def merge_and_save_audio(
-            out_audio_path: str, pred_audio: torch.Tensor, pred_audio_sr: int, user_audio: torch.Tensor,
-            user_audio_sr: int, agent_out_audio_path: Optional[str] = None, user_out_audio_path: Optional[str] = None
+        out_audio_path: str, pred_audio: torch.Tensor, pred_audio_sr: int, user_audio: torch.Tensor, user_audio_sr: int
     ) -> None:
+        # Handle case where user_audio might be None
         if user_audio is not None:
-            user_audio = torchaudio.functional.resample(user_audio.float(), user_audio_sr, pred_audio_sr)
+            user_audio = resample(user_audio.float(), user_audio_sr, pred_audio_sr)
             T1, T2 = pred_audio.shape[0], user_audio.shape[0]
             max_len = max(T1, T2)
             pred_audio_padded = torch.nn.functional.pad(pred_audio, (0, max_len - T1), mode='constant', value=0)
             user_audio_padded = torch.nn.functional.pad(user_audio, (0, max_len - T2), mode='constant', value=0)
+
+            # Combine audio in a multichannel audio
             combined_wav = torch.cat(
                 [
                     user_audio_padded.squeeze().unsqueeze(0).detach().cpu(),
@@ -104,27 +153,10 @@ class ResultsLogger:
                 ],
                 dim=0,
             ).squeeze()
-            if agent_out_audio_path is not None:
-                sf.write(
-                    agent_out_audio_path,
-                    pred_audio_padded.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
-                    pred_audio_sr,
-                )
-            if user_out_audio_path is not None:
-                sf.write(
-                    user_out_audio_path,
-                    user_audio_padded.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
-                    pred_audio_sr,
-                )
         else:
             combined_wav = pred_audio.unsqueeze(0).detach().cpu()
-            if agent_out_audio_path is not None:
-                sf.write(
-                    agent_out_audio_path,
-                    pred_audio.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
-                    pred_audio_sr,
-                )
 
+        # Save audio using soundfile
         os.makedirs(os.path.dirname(out_audio_path), exist_ok=True)
         sf.write(out_audio_path, combined_wav.numpy().astype('float32').T, pred_audio_sr)
         logging.info(f"Audio saved at: {out_audio_path}")
@@ -136,26 +168,26 @@ class ResultsLogger:
     ) -> List[dict]:
         """
         Merge two lists of turns chronologically based on start_time.
-        
+
         Args:
             turns_list_1: List of turn dicts with keys: start_time, duration, role, text
             turns_list_2: List of turn dicts with keys: start_time, duration, role, text
-                         OR predicted turns with keys: start_time, end_time, duration, text, 
+                         OR predicted turns with keys: start_time, end_time, duration, text,
                          token_ids, start_token_idx, end_token_idx, num_tokens, is_complete
-        
+
         Returns:
             List of turn dicts sorted by start_time, each with role and text
         """
         all_turns = []
-        
+
         if turns_list_1:
             all_turns.extend(turns_list_1)
         if turns_list_2:
             all_turns.extend(turns_list_2)
-        
+
         # Sort by start_time
         all_turns.sort(key=lambda x: x.get('start_time', 0))
-        
+
         # Extract role and text for each turn
         merged_turns = [
             {
@@ -164,39 +196,34 @@ class ResultsLogger:
             }
             for turn in all_turns
         ]
-        
+
         return merged_turns
 
     def update(
-            self,
-            name,
-            refs,
-            hyps,
-            asr_hyps,
-            samples_id,
-            pred_audio,
-            pred_audio_sr,
-            user_audio,
-            user_audio_sr,
-            src_refs: Optional[list[str]] = None,
-            src_hyps: Optional[list[str]] = None,
-            system_prompt=None,
-            system_prompt_supervision_0: Optional[list[str]] = None,
-            source_turns: Optional[List[List[dict]]] = None,
-            target_turns: Optional[List[List[dict]]] = None,
-            pred_turns: Optional[List[List[dict]]] = None,
-            function_channel_text: Optional[list[str]] = None,
-            function_channel_with_inserted_response: Optional[list[str]] = None,
-            target_function_channel: Optional[list[str]] = None,
-            function_call_positions: Optional[list[dict]] = None,
-            target_text_after_tool_response: Optional[list] = None,
-            audio_lens: Optional[torch.Tensor] = None,
-            # Optional fields used by NemotronVoiceChat (ignored here if provided).
-            eou_pred=None,
-            fps=None,
-            results=None,
-            tokenizer=None,
-            **kwargs,
+        self,
+        name: str,
+        refs: list[str],
+        hyps: list[str],
+        asr_hyps: list[str],
+        samples_id: list[str],
+        pred_audio: torch.Tensor,
+        pred_audio_sr: int,
+        user_audio: torch.Tensor,
+        user_audio_sr: int,
+        src_refs: Optional[list[str]] = None,
+        src_hyps: Optional[list[str]] = None,
+        system_prompt=None,
+        source_turns: Optional[List[List[dict]]] = None,
+        target_turns: Optional[List[List[dict]]] = None,
+        pred_turns: Optional[List[List[dict]]] = None,
+        target_audio: Optional[torch.Tensor] = None,
+        pred_audio_tf: Optional[torch.Tensor] = None,
+        pre_audio_trimmed: Optional[torch.Tensor] = None,
+        eou_pred: Optional[torch.Tensor] = None,
+        fps: Optional[float] = None,
+        results=None,
+        tokenizer=None,
+        reference_audio: Optional[torch.Tensor] = None,
     ):
         rank = get_rank()
 
@@ -205,95 +232,119 @@ class ResultsLogger:
             # Add rank info to audio filename to avoid conflicts
             if pred_audio is not None:
                 out_audio_path = os.path.join(self.audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
-                agent_out_audio_path = os.path.join(self.agent_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
-                user_out_audio_path = os.path.join(self.user_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
-
-                # Trim batch-padded audio to per-sample actual length (accounts for extra_decoding_seconds).
-                cur_user_audio = user_audio[i] if user_audio is not None else None
-                cur_pred_audio = pred_audio[i]
-                if audio_lens is not None and cur_user_audio is not None:
-                    actual_user_len = int(audio_lens[i].item())
-                    cur_user_audio = cur_user_audio[:actual_user_len]
-                    actual_pred_len = int(actual_user_len / user_audio_sr * pred_audio_sr)
-                    cur_pred_audio = cur_pred_audio[:actual_pred_len]
-
                 self.merge_and_save_audio(
                     out_audio_path,
-                    cur_pred_audio,
+                    pred_audio[i],
                     pred_audio_sr,
-                    cur_user_audio,
+                    user_audio[i] if user_audio is not None else None,
                     user_audio_sr,
-                    agent_out_audio_path=agent_out_audio_path,
-                    user_out_audio_path=user_out_audio_path,
                 )
 
+            # Save additional audio artifacts if provided (from upstream)
+            if pred_audio_tf is not None:
+                out_audio_path_tf = os.path.join(self.audio_save_path, f"{name}_{sample_id}_rank{rank}_tf.wav")
+                self.merge_and_save_audio(
+                    out_audio_path_tf,
+                    pred_audio_tf[i],
+                    pred_audio_sr,
+                    user_audio[i] if user_audio is not None else None,
+                    user_audio_sr,
+                )
+
+            if target_audio is not None:
+                out_audio_path_gt = os.path.join(self.audio_save_path, f"{name}_{sample_id}_rank{rank}_GT.wav")
+                self.merge_and_save_audio(
+                    out_audio_path_gt,
+                    target_audio[i],
+                    pred_audio_sr,
+                    user_audio[i] if user_audio is not None else None,
+                    user_audio_sr,
+                )
+
+            # Create a wav with eou prediction for debug purposes
+            if eou_pred is not None and fps is not None:
+                out_audio_path_eou = os.path.join(self.audio_save_path, f"{name}_{sample_id}_rank{rank}_eou.wav")
+                repeat_factor = int(pred_audio_sr / fps)
+                eou_pred_wav = (
+                    eou_pred[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)
+                )  # (B, T, repeat_factor)
+                eou_pred_wav = eou_pred_wav.view(1, -1)  # (B, T * repeat_factor)
+                eou_pred_wav = eou_pred_wav.float() * 0.8  # make 1 audible and keep 0 as total silence
+                sf.write(
+                    out_audio_path_eou,
+                    eou_pred_wav.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
+
+            if pre_audio_trimmed is not None:
+                out_audio_path_trimmed = os.path.join(
+                    self.audio_save_path, f"{name}_{sample_id}_rank{rank}_pred_trimmed.wav"
+                )
+                sf.write(
+                    out_audio_path_trimmed,
+                    pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
+
+            if reference_audio is not None:
+                out_audio_path_ref = os.path.join(
+                    self.audio_save_path, f"{name}_{sample_id}_rank{rank}_spk_reference.wav"
+                )
+                sf.write(
+                    out_audio_path_ref,
+                    reference_audio[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
+
+            # Build metadata dictionary
             out_dict = {
                 "id": sample_id,
                 "target_text": refs[i],
                 "pred_text": hyps[i],
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
-                "src_text": src_refs[i] if src_refs is not None else "",
-                "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
-                "system_prompt": system_prompt[i] if system_prompt is not None and system_prompt[i] is not None else "",
-                "system_prompt_supervision_0": (
-                    system_prompt_supervision_0[i]
-                    if system_prompt_supervision_0 is not None and system_prompt_supervision_0[i] is not None
-                    else ""
-                ),
-                "function_channel_text": function_channel_text[i] if function_channel_text is not None else "",
-                "function_channel_with_inserted_response": function_channel_with_inserted_response[i]
-                if function_channel_with_inserted_response is not None
-                else "",
-                "target_function_channel": target_function_channel[i] if target_function_channel is not None else "",
-                "function_call_positions": function_call_positions[i] if function_call_positions is not None else None,
-                "target_text_after_tool_response": (
-                    target_text_after_tool_response[i]
-                    if target_text_after_tool_response is not None
-                    and i < len(target_text_after_tool_response)
-                    else []
-                ),
-                "audio_path": os.path.relpath(out_audio_path, self.save_path) if pred_audio is not None else None,
             }
-            
-            # Log function channel prediction before saving
-            if function_channel_text is not None:
-                logging.info(f"[Function Channel] Sample {sample_id}: {function_channel_text[i]}")
-            
-            # Log target function channel (ground truth)
-            if target_function_channel is not None:
-                logging.info(f"[Target Function Channel] Sample {sample_id}: {target_function_channel[i]}")
+
+            # Add source text fields if provided (DuplexSTTModel)
+            if src_refs is not None:
+                out_dict["src_text"] = src_refs[i]
+            if src_hyps is not None:
+                out_dict["pred_src_text"] = src_hyps[i] if src_hyps[i] is not None else ""
+
+            # Add tokenizer results if provided (from upstream)
+            if results is not None:
+                if tokenizer is not None:
+                    out_dict['tokens_text'] = " ".join(tokenizer.ids_to_tokens(results['tokens_text'][i]))
+                else:
+                    out_dict['tokens_text'] = results['tokens_text'][i].tolist()
 
             # Add conversation turns only if there are multiple user turns (multi-turn conversation)
-            user_turns = source_turns[i] if source_turns is not None else None
-            has_multi_turn_conversation = user_turns is not None and len(user_turns) > 1
-            
-            if has_multi_turn_conversation and (target_turns is not None or pred_turns is not None):
-                conversation_turns = {}
-                
-                # Create ground truth conversation: source (user) + target (agent) turns
-                if target_turns is not None:
-                    conversation_turns["gt_conversation"] = self.merge_turns_chronologically(
-                        turns_list_1=user_turns,
-                        turns_list_2=target_turns[i],
-                    )
-                
-                # Create predicted conversation: source (user) + predicted (agent) turns
-                if pred_turns is not None:
-                    conversation_turns["pred_conversation"] = self.merge_turns_chronologically(
-                        turns_list_1=user_turns,
-                        turns_list_2=pred_turns[i],
-                    )
-                
-                out_dict["conversation_turns"] = conversation_turns
-            
+            if source_turns is not None:
+                user_turns = source_turns[i]
+                has_multi_turn_conversation = len(user_turns) > 1
+
+                if has_multi_turn_conversation and (target_turns is not None or pred_turns is not None):
+                    if system_prompt is not None:
+                        out_dict["system_prompt"] = system_prompt[i]
+
+                    conversation_turns = {}
+
+                    # Create ground truth conversation: source (user) + target (agent) turns
+                    if target_turns is not None:
+                        conversation_turns["gt_conversation"] = self.merge_turns_chronologically(
+                            turns_list_1=user_turns,
+                            turns_list_2=target_turns[i],
+                        )
+
+                    # Create predicted conversation: source (user) + predicted (agent) turns
+                    if pred_turns is not None:
+                        conversation_turns["pred_conversation"] = self.merge_turns_chronologically(
+                            turns_list_1=user_turns,
+                            turns_list_2=pred_turns[i],
+                        )
+
+                    out_dict["conversation_turns"] = conversation_turns
+
             self.cached_results[name].append(out_dict)
-
-            # Write per-rank metadata immediately (mirrors old code behavior).
-            rank_json_path = os.path.join(self.metadata_save_path, f"{name}_rank{rank}.json")
-            with open(rank_json_path, 'a+', encoding='utf-8') as fout:
-                fout.write(json.dumps(out_dict, ensure_ascii=False) + '\n')
-
-
 
     def _merge_rank_files(self, dataset_name: str) -> List[dict]:
         """
@@ -338,7 +389,9 @@ class ResultsLogger:
         # logging.info(f"Total merged results for {dataset_name}: {len(all_results)} items")
         return all_results
 
-    def compute_and_save(self, special_subset_names: Optional[List[str]] = None, mcq_subset_names: Optional[List[str]] = None):
+    def compute_and_save(
+        self, special_subset_names: Optional[List[str]] = None, mcq_subset_names: Optional[List[str]] = None
+    ):
         """
         Saves all cached results. Now supports distributed training:
         1. Each rank saves its own results with rank suffix
@@ -355,7 +408,7 @@ class ResultsLogger:
         """
         if special_subset_names is None:
             special_subset_names = ['web-qa', 'llama-qa', 'trivia-qa']
-        
+
         if mcq_subset_names is None:
             mcq_subset_names = ['openbookqa', 'mmsu']
 
@@ -424,24 +477,25 @@ class ResultsLogger:
 
                     metrics_results[name] = {'acc': torch.tensor(acc), 'empty_rate': torch.tensor(empty_rate)}
                     logging.info(
-                        f"Metrics for special subset '{name}': Accuracy={acc}, Empty Rate={empty_rate} (total samples: {total_count})")
-                
+                        f"Metrics for special subset '{name}': Accuracy={acc}, Empty Rate={empty_rate} (total samples: {total_count})"
+                    )
+
                 # Compute MCQ metrics for MCQ datasets
                 if name in mcq_subset_names and merged_results and self.mcq_evaluator:
                     try:
                         mcq_metrics = self.mcq_evaluator.evaluate(name, merged_results)
-                        
+
                         # Log empty rate info
                         empty_rate = mcq_metrics['empty_rate']
                         logging.info(
                             f"MCQ empty rate for '{name}': {empty_rate*100:.1f}% ({mcq_metrics['num_empty']}/{mcq_metrics['num_samples']})"
                         )
-                        
+
                         # Store only the accuracy metric for wandb logging
                         # Use the naming convention: [dataset name]_mcq_acc
                         metrics_results[name] = {
                             'mcq_acc': torch.tensor(mcq_metrics['acc']),
-                            'empty_rate': torch.tensor(empty_rate)
+                            'empty_rate': torch.tensor(empty_rate),
                         }
                         logging.info(
                             f"MCQ metrics for '{name}': Accuracy={mcq_metrics['acc']*100:.2f}% ({mcq_metrics['num_correct']}/{mcq_metrics['num_samples']})"

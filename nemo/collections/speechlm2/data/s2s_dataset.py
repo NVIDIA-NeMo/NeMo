@@ -11,451 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import json
-import re
 import random
+import re
+
 import torch
 import torch.utils.data
 import torchaudio
-from dataclasses import dataclass
-from typing import List, Tuple, Optional
-
 from lhotse import CutSet, MonoCut, Recording, Seconds, SupervisionSegment, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_vectors
 from lhotse.utils import ifnone
 
-from nemo.collections.common.tokenizers import TokenizerSpec
-from nemo.collections.speechlm2.data.utils import get_pad_id, collate_and_pad, collate_and_pad_1d, collate_and_pad_2d
-from nemo.collections.speechlm2.data.force_align import ForceAligner
-from nemo.utils import logging
 from nemo.collections.common.data.lhotse.text_adapters import Formattable
-import inflect
-
-_inflect = inflect.engine()
-
-_COMMA_RE    = re.compile(r"([0-9][0-9,]+[0-9])")
-_DECIMAL_RE  = re.compile(r"\b([0-9]+)\.([0-9]+)\b")
-_DOLLARS_RE  = re.compile(r"\$([0-9,]+(?:\.[0-9]+)?)")
-_ORDINAL_RE  = re.compile(r"\b([0-9]+)(st|nd|rd|th)\b", re.IGNORECASE)
-_NUMBER_RE   = re.compile(r"\b[0-9]+\b")
-
-# Roman numerals: only real standalone uppercase numerals
-_ROMAN_RE = re.compile(r"(?<![A-Z])[IVXLCDM]{2,}(?![A-Z])")
-
-_ROMAN = {"I":1,"V":5,"X":10,"L":50,"C":100,"D":500,"M":1000}
-
-# Regex pattern for timestamp tokens (compiled once at module level for efficiency)
-_TIMESTAMP_PATTERN = re.compile(r"<\|\d+\|>")
-
-# One-time log for strip_text_before_toolcall
-_logged_strip_toolcall_example = False
-# One-time log for normalize_toolcall_arguments (when debug_fc is True)
-_logged_normalize_toolcall_example = False
-
-# Default template for augmenting function-calling system prompts that only contain <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>.
-# Use {tools_content} as placeholder for the existing tools block.
-# Literal braces in the template are escaped ({{ }}) so .format(tools_content=...) does not interpret them.
-DEFAULT_FC_SYSTEM_PROMPT_TEMPLATE = """You can use the following tools to assist the user if required:
-{tools_content}
-
-If you decide to call any tool(s), use the following format:
-<TOOLCALL>[{{"name": "tool_name1", "arguments": "tool_args1"}}, {{"name": "tool_name2", "arguments": "tool_args2"}}]</TOOLCALL>
-
-The user will execute tool-calls and return responses from tool(s) in this format:
-<TOOL_RESPONSE>[{{"tool_response1"}}, {{"tool_response2"}}]</TOOL_RESPONSE>
-
-Based on the tool responses, you can call additional tools if needed, correct tool calls if any errors are found, or just respond to the user."""
-
-
-@dataclass
-class FunctionCallData:
-    """Stores function call metadata."""
-    tokens: torch.Tensor
-    length: torch.Tensor
-    time: float
-    step: int
-    raw_text: str
-
-
-@dataclass
-class FunctionCallingBatch:
-    """Stores batched function calling data."""
-    calls: List[torch.Tensor]
-    call_lengths: List[torch.Tensor]
-    call_times: List[float]
-    call_steps: List[int]
-    call_raw_text: List[str]
-    
-    responses: List[torch.Tensor]
-    response_lengths: List[torch.Tensor]
-    response_times: List[float]
-    response_steps: List[int]
-    response_raw_text: List[str]
-
-
-def _roman_to_int(s):
-    total = 0
-    prev = 0
-    for c in reversed(s):
-        val = _ROMAN[c]
-        total += -val if val < prev else val
-        prev = val
-    return total
-
-def _remove_commas(m):
-    return m.group(1).replace(",", "")
-
-
-def _expand_decimal(m):
-    return f"{_expand_number(int(m.group(1)))} point {_expand_digits(m.group(2))}"
-
-
-def _expand_digits(s):
-    return " ".join(_inflect.number_to_words(int(c)) for c in s)
-
-def _expand_dollars(m):
-    raw = m.group(1).replace(",", "")
-    parts = raw.split(".")
-
-    dollars = int(parts[0])
-    cents = int(parts[1]) if len(parts) > 1 else 0
-
-    out = []
-    if dollars:
-        out.append(f"{_expand_number(dollars)} {'dollar' if dollars == 1 else 'dollars'}")
-    if cents:
-        out.append(f"{_expand_number(cents)} {'cent' if cents == 1 else 'cents'}")
-    return " ".join(out) if out else "zero dollars"
-
-def _expand_ordinal(m):
-    n = int(m.group(1))
-    return _inflect.ordinal(_inflect.number_to_words(n))
-
-def _expand_roman(m):
-    return _inflect.number_to_words(_roman_to_int(m.group()))
-
-def _expand_number(num):
-    return _inflect.number_to_words(num, andword="")
-
-def normalize_numbers(text):
-    try:
-        text = re.sub(_COMMA_RE, _remove_commas, text)
-        text = re.sub(_ROMAN_RE, _expand_roman, text)
-        text = re.sub(_DOLLARS_RE, _expand_dollars, text)
-        text = re.sub(_DECIMAL_RE, _expand_decimal, text)
-        text = re.sub(_ORDINAL_RE, _expand_ordinal, text)
-        text = re.sub(_NUMBER_RE, lambda m: _expand_number(int(m.group())), text)
-        return text
-
-    except Exception:
-        return text   # fallback: return input unchanged
-
-
-# ===== Function Calling Helper Functions =====
-
-def _fc_system_prompt_needs_augment(prompt_text: str) -> bool:
-    """Return True if the function-calling system prompt is tools-only and should be wrapped with full instructions.
-    We only check for the instruction phrase; many FC datasets already have <TOOLCALL> in content but lack the preamble.
-    """
-    if not prompt_text or not prompt_text.strip():
-        return False
-    text = prompt_text.strip()
-    # Already has the full format if it contains the instruction preamble
-    if "If you decide to call any tool" in text:
-        return False
-    return True
-
-
-def _augment_fc_system_prompt(prompt_text: str, template: str) -> str:
-    """Wrap a tools-only system prompt with the full function-calling instruction template."""
-    return template.format(tools_content=prompt_text.strip())
-
-
-def _validate_time(input_time: float, cut_duration: float) -> float:
-    """Validate and clamp time to cut duration."""
-    if input_time > cut_duration + 0.16:
-        logging.info(f"{input_time} > {cut_duration} in cut")
-    return min(input_time, cut_duration)
-
-
-def _clean_text(text: str) -> str:
-    """Collapse consecutive whitespace (including newlines) into one space."""
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-
-# Regex to find <TOOLCALL>...</TOOLCALL> blocks for argument normalization
-_TOOLCALL_BLOCK_PATTERN = re.compile(r'<TOOLCALL>(.*?)</TOOLCALL>', re.DOTALL)
-
-
-def _strip_text_before_toolcall(text: str) -> str:
-    """Remove acknowledgement or any text before <TOOLCALL> in an assistant turn.
-
-    When an assistant turn contains <think>...</think> and/or free text followed by <TOOLCALL>,
-    we keep only from the first <TOOLCALL> to the end so the model sees only the
-    tool-call block. If <TOOLCALL> is not present, the text is returned unchanged.
-    """
-    idx = text.find("<TOOLCALL>")
-    if idx >= 0:
-        return text[idx:]
-    return text
-
-
-def _normalize_toolcall_arguments(text: str) -> str:
-    """Convert TOOLCALL content from raw-arguments format to no-escapes format.
-
-    When data was created with only:
-      "arguments": tool_call["function"]["arguments"]
-    the 'arguments' value is a JSON string (e.g. \"{\\\"key\\\": \\\"value\\\"}\").
-    This function parses that string so the stored format matches the try-block
-    format where arguments are parsed with json.loads before json.dumps (so
-    arguments are JSON objects, not escaped strings). Use this when loading
-    lhotse shar created from the raw-format jsonl so training sees the same
-    format as the no_escapes jsonl.
-    """
-    def replace_one(match):
-        inner = match.group(1).strip()
-        try:
-            arr = json.loads(inner)
-        except json.JSONDecodeError:
-            return match.group(0)
-        if not isinstance(arr, list):
-            return match.group(0)
-        normalized = []
-        for item in arr:
-            if not isinstance(item, dict):
-                normalized.append(item)
-                continue
-            args = item.get("arguments")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            normalized.append({**item, "arguments": args})
-        return "<TOOLCALL>" + json.dumps(normalized) + "</TOOLCALL>"
-
-    return _TOOLCALL_BLOCK_PATTERN.sub(replace_one, text)
-
-
-def _extract_instruction_text(
-    segment: SupervisionSegment, 
-    tokenizer: TokenizerSpec,
-    clean_text: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, str]:
-    """Extract and tokenize instruction text from system segment."""
-    output_text = _clean_text(segment.text) if clean_text else segment.text
-    target_text = torch.as_tensor(tokenizer.text_to_ids(output_text))
-    target_text_length = torch.as_tensor(len(target_text))
-    return target_text, target_text_length, segment.text
-
-
-def _process_function_segment(
-    supervision: SupervisionSegment,
-    tokenizer: TokenizerSpec,
-    frame_length: float,
-    target_sample_rate: int,
-    cut_duration: float,
-    debug_fc: bool = False,
-    clean_text: bool = False,
-    normalize_toolcall_arguments: bool = False,
-    strip_text_before_toolcall: bool = False,
-) -> FunctionCallData:
-    """Process a single function call or response supervision segment.
-    
-    This function handles both function calls and responses equally - it simply
-    tokenizes the text and computes timing information. The distinction between
-    calls and responses is made at the batch collection level based on segment order.
-    """
-    func_text = supervision.custom['function']
-    # Only strip text before <TOOLCALL> when segment contains <TOOLCALL> (agent turn); skip system and TOOL_RESPONSE.
-    if strip_text_before_toolcall and "<TOOLCALL>" in func_text:
-        global _logged_strip_toolcall_example
-        if not _logged_strip_toolcall_example:
-            before_strip = func_text
-            func_text = _strip_text_before_toolcall(func_text)
-            _logged_strip_toolcall_example = True
-            if before_strip != func_text:
-                logging.info("[FC] strip_text_before_toolcall example (one-time per process):")
-                logging.info(f"[FC]   BEFORE: {before_strip}")
-                logging.info(f"[FC]   AFTER:  {func_text}")
-            else:
-                logging.info("[FC] strip_text_before_toolcall: no change for this example (before == after)")
-        else:
-            func_text = _strip_text_before_toolcall(func_text)
-    # Only normalize TOOLCALL arguments when segment contains <TOOLCALL>; skip TOOL_RESPONSE segments.
-    if normalize_toolcall_arguments and "<TOOLCALL>" in func_text:
-        global _logged_normalize_toolcall_example
-        if not _logged_normalize_toolcall_example:
-            before_norm = func_text
-            func_text = _normalize_toolcall_arguments(func_text)
-            _logged_normalize_toolcall_example = True
-            if before_norm != func_text:
-                logging.info("[FC] normalize_toolcall_arguments example (one-time per process):")
-                logging.info(f"[FC]   BEFORE: {before_norm}")
-                logging.info(f"[FC]   AFTER:  {func_text}")
-            else:
-                logging.info("[FC] normalize_toolcall_arguments: no change for this example (before == after)")
-        else:
-            func_text = _normalize_toolcall_arguments(func_text)
-    func_text_clean = _clean_text(func_text) if clean_text else func_text
-    
-    # Check if _clean_text actually changed anything for function calling
-    if debug_fc and func_text != func_text_clean:
-        logging.info(f"[FC] _clean_text CHANGED the text:")
-        logging.info(f"[FC]   BEFORE: '{func_text}'")
-        logging.info(f"[FC]   AFTER:  '{func_text_clean}'")
-        logging.info(f"[FC]   DIFF: Removed {len(func_text) - len(func_text_clean)} characters")
-    elif debug_fc:
-        logging.debug(f"[FC] _clean_text: NO CHANGE (text already clean)")
-    
-    func_tokens = torch.as_tensor(tokenizer.text_to_ids(func_text_clean))
-    
-    func_start_time = _validate_time(supervision.start, cut_duration)
-    func_start_step = compute_num_frames(
-        duration=func_start_time,
-        frame_shift=frame_length,
-        sampling_rate=target_sample_rate
-    )
-    
-    if debug_fc:
-        logging.debug(f"[FC] Processing function segment: text='{func_text_clean[:50]}...', "
-                     f"tokens={len(func_tokens)}, start_time={func_start_time:.2f}s, step={func_start_step}")
-    
-    return FunctionCallData(
-        tokens=func_tokens,
-        length=torch.as_tensor(len(func_tokens)),
-        time=func_start_time,
-        step=func_start_step,
-        raw_text=func_text
-    )
-
-
-def _extract_function_calling_data(
-    segments: List[SupervisionSegment],
-    tokenizer: TokenizerSpec,
-    frame_length: float,
-    target_sample_rate: int,
-    cut_duration: float,
-    debug_fc: bool = False,
-    clean_text: bool = False,
-    normalize_toolcall_arguments: bool = False,
-    strip_text_before_toolcall: bool = False,
-) -> FunctionCallingBatch:
-    """
-    Extract function calls and responses from segments.
-    
-    Assumes segments alternate: [call, response, call, response, ...]
-    """
-    if debug_fc:
-        logging.info(f"[FC] Extracting function calling data from {len(segments)} segments")
-    
-    batch = FunctionCallingBatch(
-        calls=[], call_lengths=[], call_times=[], call_steps=[], call_raw_text=[],
-        responses=[], response_lengths=[], response_times=[], response_steps=[], response_raw_text=[]
-    )
-    
-    for i in range(0, len(segments), 2):
-        # Process function call (assistant turn): strip text before <TOOLCALL> when flag is True
-        call = _process_function_segment(
-            segments[i], tokenizer, frame_length, target_sample_rate, cut_duration,
-            debug_fc, clean_text, normalize_toolcall_arguments, strip_text_before_toolcall,
-        )
-        batch.calls.append(call.tokens)
-        batch.call_lengths.append(call.length)
-        batch.call_times.append(call.time)
-        batch.call_steps.append(call.step)
-        batch.call_raw_text.append(call.raw_text)
-        
-        # Process function response (user turn): 
-        if i + 1 < len(segments):
-            response = _process_function_segment(
-                segments[i + 1], tokenizer, frame_length, target_sample_rate, cut_duration,
-                debug_fc, clean_text, normalize_toolcall_arguments, False,
-            )
-            batch.responses.append(response.tokens)
-            batch.response_lengths.append(response.length)
-            batch.response_times.append(response.time)
-            batch.response_steps.append(response.step)
-            batch.response_raw_text.append(response.raw_text)
-        else:
-            # No response - add empty placeholders
-            batch.responses.append(torch.tensor([], dtype=torch.long))
-            batch.response_lengths.append(torch.as_tensor(0))
-            batch.response_times.append(0.0)
-            batch.response_steps.append(0)
-            batch.response_raw_text.append("")
-    
-    if debug_fc:
-        logging.info(f"[FC] Extracted {len(batch.calls)} function calls and {len(batch.responses)} responses")
-    
-    return batch
-
-
-def _is_function_calling_cut(cut: Cut) -> bool:
-    """Robustly detect if a cut contains function-calling supervision content."""
-    if getattr(cut, "s2s_duplex_function_calling", False):
-        return True
-    if len(cut.supervisions) <= 1:
-        return False
-    # Typical FC format: first supervision is system and later turns contain custom["function"].
-    if cut.supervisions[0].speaker != "system":
-        return False
-    for sup in cut.supervisions[1:]:
-        custom = getattr(sup, "custom", None) or {}
-        if (custom.get("function") or "").strip() != "":
-            return True
-    return False
-
-
-# Closing tags for TOOLRESPONSE (dataset uses <TOOL_RESPONSE>...</TOOL_RESPONSE> or <TOOLRESPONSE>...</TOOLRESPONSE>)
-_TOOLRESPONSE_CLOSING_TAGS = ("</TOOLRESPONSE>", "</TOOL_RESPONSE>")
-
-
-def _is_agent_toolcall(sup) -> bool:
-    """True if this supervision is an agent turn that is a TOOLCALL (not natural-language text)."""
-    custom = getattr(sup, "custom", None) or {}
-    raw = (custom.get("function") or getattr(sup, "text", None) or "").strip()
-    return raw.startswith("<TOOLCALL>")
-
-
-def _extract_target_text_after_tool_response(cut: Cut, output_roles: set) -> list:
-    """
-    Extract every assistant (output_roles) response that comes right after a
-    <TOOLRESPONSE>...</TOOLRESPONSE> / <TOOL_RESPONSE>...</TOOL_RESPONSE> turn,
-    and is actual natural-language text (not another TOOLCALL).
-
-    - TOOL_RESPONSE lives in user (or system) turns, not agent turns.
-    - Walk all supervisions in order. When a turn contains the closing tag, find
-      the next turn with speaker in output_roles (agent). If that agent turn is
-      a TOOLCALL, skip (don't add). If it is real text, append it to segments.
-    """
-    segments = []
-    supervisions = list(cut.supervisions)
-    for i, sup in enumerate(supervisions):
-        custom = getattr(sup, "custom", None) or {}
-        text = (custom.get("function") or getattr(sup, "text", None) or "").strip()
-        if not any(tag in text for tag in _TOOLRESPONSE_CLOSING_TAGS):
-            continue
-        # This turn is a TOOL_RESPONSE. Find the next agent turn.
-        for j in range(i + 1, len(supervisions)):
-            next_sup = supervisions[j]
-            if next_sup.speaker not in output_roles:
-                continue
-            # Next agent turn found.
-            if _is_agent_toolcall(next_sup):
-                break  # Agent sent another TOOLCALL, not a text response; don't add.
-            next_text = (
-                getattr(next_sup, "text", None)
-                or (getattr(next_sup, "custom", None) or {}).get("orig_text")
-                or ""
-            ).strip()
-            if next_text:
-                segments.append(next_text)
-            break
-
-    return segments
+from nemo.collections.common.tokenizers import TokenizerSpec
+from nemo.collections.speechlm2.data.force_align import ForceAligner
+from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.utils import logging
 
 
 class DuplexS2SDataset(torch.utils.data.Dataset):
@@ -488,43 +59,66 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         output_roles (list[str], optional):
             List of speaker roles (cut.supervisions[:].speaker) to consider as outputs. Defaults to ["agent"].
 
-        force_align_user_text (bool, optional):
-            If True, performs force alignment on user audio segments to generate word-level timestamps.
-            Only applies to supervision turns where speaker.role is "user". Defaults to False.
+        aug_by_swap_role (bool, optional):
+            Whether to augment data by swapping user/agent roles. Defaults to False.
+
+        include_turn_metadata (bool, optional):
+            Whether to include detailed turn metadata in the output. Defaults to False.
+
+        cfg (dict, optional):
+            Configuration dictionary containing dataset-specific settings (e.g., word_align_position).
+
+        model_cfg (dict, optional):
+            Model configuration dictionary containing settings like predict_user_text, force_align_user_text,
+            and force_align_device.
 
     Returns:
-        A dictionary with the following keys:
-            - source_audio: Tensor of source waveform samples [B, T]
-            - source_audio_lens: Tensor of source audio lengths [B]
-            - target_audio: Tensor of target waveform samples [B, T]
-            - target_audio_lens: Tensor of target audio lengths [B]
-            - target_tokens: Tensor of target text tokens [B, T], with special tokens (BOS/EOS/PAD)
-                at positions aligned with audio frames
-            - target_token_lens: Tensor of target token sequence lengths [B]
-            - source_tokens: Tensor of source text tokens [B, T], with special tokens (BOS/EOS/PAD)
-                at positions aligned with audio frames
-            - source_token_lens: Tensor of source token sequence lengths [B]
-            - target_texts: List of full target texts joined from output_roles supervisions [B]
-            - prompt_tokens: Tensor of prompt text tokens [B, T]
-            - prompt_token_lens: Tensor of prompt token sequence lengths [B]
-            - target_turn_texts: (Optional, if include_turn_metadata=True) List of lists of turn dictionaries [B]
-                Each turn dict contains: start_time, duration, role, text
-            - source_turn_texts: (Optional, if include_turn_metadata=True) List of lists of turn dictionaries [B]
-                Each turn dict contains: start_time, duration, role, text
-            - system_prompt: (Optional, if include_turn_metadata=True) List of system prompts [B]
+        A dictionary with the following top-level keys:
+            - audio_data: Dictionary containing audio and token data (None if no audio cuts present):
+                - sample_id: List of cut IDs [B]
+                - source_audio: Tensor of source waveform samples [B, T]
+                - source_audio_lens: Tensor of source audio lengths [B]
+                - target_audio: Tensor of target waveform samples [B, T]
+                - target_audio_lens: Tensor of target audio lengths [B]
+                - target_tokens: Tensor of target text tokens [B, T], with special tokens (BOS/EOS/PAD)
+                    at positions aligned with audio frames
+                - target_token_lens: Tensor of target token sequence lengths [B]
+                - source_tokens: Tensor of source text tokens [B, T], with special tokens (BOS/EOS/PAD)
+                    at positions aligned with audio frames
+                - source_token_lens: Tensor of source token sequence lengths [B]
+                - source_texts: List of source texts joined from input_roles supervisions [B]
+                - target_texts: List of target texts joined from output_roles supervisions [B]
+                - all_texts: List of all texts joined from all supervisions [B]
+                - target_first_turn_audio: Tensor of first turn target audio [B, T]
+                - target_first_turn_audio_lens: Tensor of first turn audio lengths [B]
+                - formatter: List of formatter names for each cut [B]
+                - aug_by_noise: List of boolean flags for noise augmentation [B]
+                - prompt_tokens: (Optional, if system prompts exist) Tensor of prompt text tokens [B, T]
+                - prompt_token_lens: (Optional, if system prompts exist) Tensor of prompt token sequence lengths [B]
+                - target_turn_texts: (Optional, if include_turn_metadata=True) List of lists of turn dictionaries [B]
+                    Each turn dict contains: start_time, duration, role, text
+                - source_turn_texts: (Optional, if include_turn_metadata=True) List of lists of turn dictionaries [B]
+                    Each turn dict contains: start_time, duration, role, text
+                - system_prompt: (Optional, if include_turn_metadata=True) List of system prompts [B]
+            - text_data: Dictionary containing text-only data (None if no text cuts present):
+                - text_tokens: Tensor of text tokens [B, T]
+                - text_token_lens: Tensor of text token sequence lengths [B]
 
     Notes:
         - The dataset ensures frame-level alignment between audio and text by inserting tokens at
           specific frame positions based on the timing of supervision segments.
         - PAD tokens (typically 0) are used to fill gaps where there's no text.
-        - BOS tokens mark the beginning of each speech segment.
-        - EOS tokens mark the end of each speech segment.
+        - For target tokens: BOS tokens mark the beginning of each speech segment.
+        - For source tokens: special BOS markers ('^' and regular BOS) are used to distinguish user and agent turns.
+        - EOS tokens mark the end of each speech segment (or interruption points).
         - Text tokens from each speaker are placed at frame positions corresponding to their
           timestamp in the original recording, preserving the temporal relationship.
-          This is a segment-level alignment only, not word-level alignment.
+          This is segment-level alignment by default.
         - When force_align_user_text is enabled, user audio segments are
           force-aligned using wav2vec2 to generate word-level timestamps, which are then
           converted to frame-level token positions for more precise alignment.
+        - Role swapping augmentation (when enabled) creates additional training examples by swapping
+          user and agent roles while adjusting audio channels accordingly.
     """
 
     def __init__(
@@ -539,8 +133,6 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         include_turn_metadata: bool = False,
         cfg: dict = None,
         model_cfg: dict = None,
-        force_align_user_text: bool = None,
-        early_interruption_prob: float = None,
     ):
         self.tokenizer = tokenizer
         self.frame_length = frame_length
@@ -553,518 +145,78 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
         self.word_align_position = cfg.get("word_align_position", "left") if cfg is not None else "left"
         self.predict_user_text = model_cfg.get("predict_user_text", False) if model_cfg is not None else False
-        # Force alignment settings: use explicit parameter if provided, otherwise fall back to config
-        if force_align_user_text is not None:
-            self.force_align_user_text = force_align_user_text
-        else:
-            self.force_align_user_text = model_cfg.get("force_align_user_text", False) if model_cfg is not None else False
+        self.force_align_user_text = model_cfg.get("force_align_user_text", False) if model_cfg is not None else None
         # Default to CPU for force alignment to avoid OOM during training/validation when main model is on GPU
         self.force_align_device = model_cfg.get("force_align_device", "cpu") if model_cfg is not None else "cpu"
 
-        if early_interruption_prob is not None:
-            self.early_interruption_prob = early_interruption_prob
-        else:
-            self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
-        self.fix_last_turn_eos = cfg.get("fix_last_turn_eos", False) if cfg is not None else False
-        self.fix_eos_placements = cfg.get("fix_eos_placements", False) if cfg is not None else False
-        
         self.cfg = cfg
         self.model_cfg = model_cfg
-        self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
-        self.debug_fc = model_cfg.get("debug_fc", False) if model_cfg is not None else False
-        self.fc_log = model_cfg.get("fc_log", False) if model_cfg is not None else False
-        self.clean_fc_text = model_cfg.get("clean_fc_text", False) if model_cfg is not None else False
-        self.clean_system_prompt = model_cfg.get("clean_system_prompt", False) if model_cfg is not None else False
-        # When True (default), normalize <TOOLCALL> content so "arguments" are parsed from JSON string
-        # to object (mimics the try-block conversion used in no_escapes jsonl). Set to false only if
-        # all lhotse shar are built from no_escapes jsonl and you want to avoid re-serialization.
-        _norm_fc = True
-        if model_cfg is not None and "normalize_fc_toolcall_arguments" in model_cfg:
-            _norm_fc = model_cfg["normalize_fc_toolcall_arguments"]
-        if cfg is not None and "normalize_fc_toolcall_arguments" in cfg:
-            _norm_fc = cfg["normalize_fc_toolcall_arguments"]
-        self.normalize_fc_toolcall_arguments = bool(_norm_fc)
-        # When True (default), strip acknowledgement/text before <TOOLCALL> in assistant turns only.
-        _strip_before = True
-        if model_cfg is not None and "strip_fc_text_before_toolcall" in model_cfg:
-            _strip_before = model_cfg["strip_fc_text_before_toolcall"]
-        if cfg is not None and "strip_fc_text_before_toolcall" in cfg:
-            _strip_before = cfg["strip_fc_text_before_toolcall"]
-        self.strip_fc_text_before_toolcall = bool(_strip_before)
-        # Augment function-calling system prompts that only have <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>
-        # with full instructions (TOOLCALL/TOOL_RESPONSE format). Check model_cfg then cfg.
-        self.augment_fc_system_prompt = (
-            model_cfg.get("augment_fc_system_prompt", False) if model_cfg is not None else False
-        ) or (cfg.get("augment_fc_system_prompt", False) if cfg is not None else False)
-        self.fc_system_prompt_template = None
-        if self.augment_fc_system_prompt:
-            self.fc_system_prompt_template = (
-                (model_cfg or {}).get("fc_system_prompt_template")
-                or (cfg or {}).get("fc_system_prompt_template")
-                or DEFAULT_FC_SYSTEM_PROMPT_TEMPLATE
-            )
-        # When system prompt + function-call content exceeds this token count, drop the batch (return minimal)
-        self.max_fc_total_tokens = (
-            (cfg or {}).get("max_fc_total_tokens")
-            or (model_cfg or {}).get("max_fc_total_tokens")
-        )
-        if self.max_fc_total_tokens is not None:
-            try:
-                self.max_fc_total_tokens = int(self.max_fc_total_tokens)
-            except Exception:
-                logging.warning(
-                    f"Invalid max_fc_total_tokens={self.max_fc_total_tokens!r}; disabling FC-token filtering."
-                )
-                self.max_fc_total_tokens = None
-        
-        # Set user tokens based on pretrained LLM type (consistent with duplex_stt_model.py)
-        if self.model_cfg is not None and 'Nemotron' in self.model_cfg.get('pretrained_llm', ''):
-            # user_bos_token = '<SPECIAL_13>'
-            # user_eos_token = '<SPECIAL_14>'
-            user_bos_token = '^'
-            user_eos_token = '$'
-        elif self.model_cfg is not None and 'Qwen2.5' in self.model_cfg.get('pretrained_llm', ''):
-            user_bos_token = '^'
-            user_eos_token = '$'
-        else:
-            user_bos_token = '^'
-            user_eos_token = '$'
-        
-        self.user_bos_id = self.tokenizer.text_to_ids(user_bos_token)[0]
-        self.user_eos_id = self.tokenizer.text_to_ids(user_eos_token)[0]
-        self.pad_id = get_pad_id(self.tokenizer)
 
-        # Initialize force aligner lazily (only when needed during training)
-        # This avoids loading the wav2vec2 model during validation
+        # Initialize force aligner if needed
         self.force_aligner = None
-        self._force_aligner_initialized = False
-        
+        if self.force_align_user_text:
+            self.force_aligner = ForceAligner(device=self.force_align_device, frame_length=self.frame_length)
+
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
-    def _save_audacity_labels(self, target_tokens, batch_idx, suffix, debug_dir, frame_length, bos_id, eos_id, pad_id):
-        """Save tokens as Audacity label track (.txt format).
-        
-        To use in Audacity:
-        1. Open the corresponding .wav file
-        2. File -> Import -> Labels
-        3. Select the _labels.txt file
-        """
-        import os
-        os.makedirs(debug_dir, exist_ok=True)
-        
-        tokens = target_tokens[batch_idx].cpu().tolist()
-        label_path = f"{debug_dir}/batch{batch_idx}_{suffix}_labels.txt"
-        
-        with open(label_path, 'w') as f:
-            for i, tok in enumerate(tokens):
-                if tok == pad_id:
-                    continue
-                if tok not in [bos_id, eos_id]:
-                    continue
-                start_time = i * frame_length
-                end_time = (i + 1) * frame_length
-                
-                if tok == bos_id:
-                    label = "BOS"
-                elif tok == eos_id:
-                    label = "EOS"
-                else:
-                    label = f"{tok}"
-                
-                f.write(f"{start_time:.4f}\t{end_time:.4f}\t{label}\n")
-        
-        print(f"Saved Audacity labels: {label_path}")
+    def _create_minimal_batch(self) -> dict:
+        """Create a minimal valid batch when all cuts are filtered out."""
+        # Create minimal tensors with batch size 1
+        device = torch.device('cpu')  # Default device
 
-    def _apply_early_interruption_augmentation(
-        self,
-        target_tokens: torch.Tensor,
-        target_audio: torch.Tensor,
-        target_token_lens: torch.Tensor,
-        target_audio_lens: torch.Tensor,
-        source_tokens: torch.Tensor,
-        source_audio: torch.Tensor,
-        source_token_lens: torch.Tensor,
-        source_audio_lens: torch.Tensor,
-        batch_idx: int,
-        identifier: str,
-    ) -> bool:
-        """Simulate early interruption by randomly truncating an agent turn with overlap.
-        
-        Creates a realistic interruption scenario where:
-        1. User starts interrupting at cutoff_pos (user BOS inserted in source_tokens)
-        2. Agent continues speaking for overlap_tokens (~1 second) 
-        3. Agent stops at cutoff_pos + overlap_tokens (agent EOS placed here)
-        
-        This creates an overlap period where both speakers are talking simultaneously.
-        
-        Returns:
-            bool: True if augmentation was successfully applied, False otherwise.
-        """
-        bos_id = self.tokenizer.bos
-        eos_id = self.tokenizer.eos
-        pad_id = self.pad_id
-
-        # Save 2-channel audio before modification
-        if self.model_cfg is not None and self.model_cfg.get("debug", False):
-            import torchaudio
-            import os
-            debug_dir = "/lustre/fsw/portfolios/llmservice/users/apasad/data/duplex/debug_topic_src_tgt"
-            os.makedirs(debug_dir, exist_ok=True)
-            if identifier is not None:
-                audio_identity = identifier
-            else:
-                audio_identity = random.randint(1, 1000)
-            
-            # Get actual lengths
-            src_len = source_audio_lens[batch_idx].item()
-            tgt_len = target_audio_lens[batch_idx].item()
-            max_len = max(src_len, tgt_len)
-            
-            # Create 2-channel audio: [source, target]
-            src_audio_before = source_audio[batch_idx, :max_len].clone().cpu()
-            tgt_audio_before = target_audio[batch_idx, :max_len].clone().cpu()
-            stereo_before = torch.stack([src_audio_before, tgt_audio_before], dim=0)  # (2, T)
-            
-            # Normalize to prevent clipping
-            if stereo_before.abs().max() > 0:
-                stereo_before = stereo_before / stereo_before.abs().max() * 0.9
-            
-            sample_rate = int(self.source_sample_rate)  # Assuming same for both
-            torchaudio.save(
-                f"{debug_dir}/batch{batch_idx}_BEFORE_{audio_identity}.wav",
-                stereo_before,
-                sample_rate
-            )
-            self._save_audacity_labels(target_tokens, batch_idx, f"BEFORE_target_{audio_identity}", debug_dir, self.frame_length, bos_id, eos_id, pad_id)
-            self._save_audacity_labels(source_tokens, batch_idx, f"BEFORE_source_{audio_identity}", debug_dir, self.frame_length, self.user_bos_id, self.user_eos_id, pad_id)
-
-        target_seq = target_tokens[batch_idx]
-
-        # Overlap period: ~1 second = 13 tokens (80ms per token)
-        overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 13) if self.cfg is not None else 13
-        
-        bos_positions = (target_seq == bos_id).nonzero(as_tuple=True)[0]
-        eos_positions = (target_seq == eos_id).nonzero(as_tuple=True)[0]
-        
-        if len(bos_positions) == 0 or len(eos_positions) == 0:
-            return False
-        
-        # Find all complete turns
-        turns = []
-        for bos_pos in bos_positions:
-            matching_eos = eos_positions[eos_positions > bos_pos]
-            if len(matching_eos) > 0:
-                eos_pos = matching_eos[0]
-                turn_tokens = target_seq[bos_pos+1:eos_pos]
-                non_pad_mask = turn_tokens != pad_id
-                all_non_pad_positions = (bos_pos + 1 + non_pad_mask.nonzero(as_tuple=True)[0]).tolist()
-                
-                # Filter out positions in the last overlap_tokens before eos to ensure overlap
-                # Only keep positions where there's at least overlap_tokens of content remaining
-                non_pad_positions = [pos for pos in all_non_pad_positions if (eos_pos - pos) > overlap_tokens]
-                
-                if len(non_pad_positions) > 0:
-                    turns.append({
-                        'bos_pos': bos_pos.item(),
-                        'eos_pos': eos_pos.item(),
-                        'non_pad_positions': non_pad_positions
-                    })
-        
-        if len(turns) == 0:
-            return False
-        
-        # Randomly select one turn and cutoff position
-        selected_turn = random.choice(turns)
-        cutoff_pos = random.choice(selected_turn['non_pad_positions'])
-        original_eos_pos = selected_turn['eos_pos']
-
-        if self.model_cfg is not None and self.model_cfg.get("debug", False):
-            print(f"batch_idx {batch_idx}, selected_turn: {selected_turn}")
-            # print(f"tokens: {target_tokens[batch_idx][selected_turn['non_pad_positions']]}")
-            # print(f"cutoff_pos: {cutoff_pos}")
-            # print(f"tokens from cutoff_pos to original_eos_pos: {target_tokens[batch_idx][cutoff_pos:original_eos_pos]}")
-            # print(f"original_eos_pos: {original_eos_pos}")
-            # print(f"overlap_tokens: {overlap_tokens}")
-        
-        # Agent stops at cutoff_pos + overlap_tokens to create overlap period
-        new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
-        frames_to_remove = original_eos_pos - cutoff_pos
-        if frames_to_remove <= 0:
-            return False
-        
-        # Update target_tokens: place eos at new_eos_pos, shift tail, pad at end
-        target_tokens[batch_idx, new_eos_pos] = eos_id
-        seq_len = target_tokens.shape[1]
-        cont_start_pos = original_eos_pos + overlap_tokens
-        tail_length = seq_len - (cont_start_pos + 1)
-        if tail_length > 0:
-            target_tokens[batch_idx, new_eos_pos+1:new_eos_pos+1+tail_length] = target_tokens[batch_idx, cont_start_pos+1:cont_start_pos+1+tail_length].clone()
-        target_tokens[batch_idx, -frames_to_remove:] = pad_id
-        target_token_lens[batch_idx] -= frames_to_remove
-
-        # Update source_tokens: shift tail (from cutoff_pos)
-        # src_frames_to_remove = original_eos_pos - cutoff_pos
-        source_seq_len = source_tokens.shape[1]
-        source_tail_length = source_seq_len - (original_eos_pos + 1)
-        if source_tail_length > 0:
-            source_tokens[batch_idx, cutoff_pos+1:cutoff_pos+1+source_tail_length] = source_tokens[batch_idx, original_eos_pos+1:original_eos_pos+1+source_tail_length].clone()
-        source_tokens[batch_idx, -frames_to_remove:] = pad_id
-        source_token_lens[batch_idx] -= frames_to_remove
-        
-        # Update audio: shift and pad with silence
-        old_target_len = target_audio_lens[batch_idx].item()
-        old_source_len = source_audio_lens[batch_idx].item()
-        if old_target_len != old_source_len:
-            logging.warning(f"old_target_len != old_source_len: {old_target_len} != {old_source_len}")
-        assert self.target_sample_rate == self.source_sample_rate, "This function assumes target and source sample rates are the same"
-        old_conv_audio_len = min(old_target_len, old_source_len)
-
-        new_eos_sample = min(int((new_eos_pos+1) * self.frame_length * self.target_sample_rate), old_conv_audio_len)
-        original_eos_sample = min(int((original_eos_pos+1) * self.frame_length * self.target_sample_rate), old_conv_audio_len)
-        cont_start_sample = min(int((cont_start_pos+1) * self.frame_length * self.target_sample_rate), old_conv_audio_len)
-        cutoff_sample = min(int((cutoff_pos+1) * self.frame_length * self.source_sample_rate), old_conv_audio_len)
-        
-        samples_to_remove = original_eos_sample - cutoff_sample
-        
-        # Update target audio: shift and pad with silence
-        tail_audio_length = old_conv_audio_len - cont_start_sample
-        if tail_audio_length > 0:
-            target_audio[batch_idx, new_eos_sample:new_eos_sample+tail_audio_length] = target_audio[batch_idx, cont_start_sample:old_conv_audio_len].clone()
-        
-        if new_eos_sample + tail_audio_length < target_audio.shape[1]:
-            target_audio[batch_idx, new_eos_sample+tail_audio_length:new_eos_sample+tail_audio_length+samples_to_remove] = 0
-        target_audio_lens[batch_idx] = old_conv_audio_len - samples_to_remove
-        
-        # Update source_audio: shift and pad with silence
-        source_tail_audio_length = old_conv_audio_len - original_eos_sample
-        if source_tail_audio_length > 0:
-            source_audio[batch_idx, cutoff_sample:cutoff_sample+source_tail_audio_length] = source_audio[batch_idx, original_eos_sample:old_conv_audio_len].clone()
-        
-        if cutoff_sample + source_tail_audio_length < source_audio.shape[1]:
-            source_audio[batch_idx, cutoff_sample+source_tail_audio_length:cutoff_sample+source_tail_audio_length+samples_to_remove] = 0
-        source_audio_lens[batch_idx] = old_conv_audio_len - samples_to_remove
-        
-        # Save 2-channel audio and target_tokens after modification
-        if self.model_cfg is not None and self.model_cfg.get("debug", False):
-            src_audio_after = source_audio[batch_idx, :source_audio_lens[batch_idx].item()].clone().cpu()
-            tgt_audio_after = target_audio[batch_idx, :target_audio_lens[batch_idx].item()].clone().cpu()
-            stereo_after = torch.stack([src_audio_after, tgt_audio_after], dim=0)  # (2, T)
-            
-            if stereo_after.abs().max() > 0:
-                stereo_after = stereo_after / stereo_after.abs().max() * 0.9
-            
-            torchaudio.save(
-                f"{debug_dir}/batch{batch_idx}_AFTER_{audio_identity}.wav",
-                stereo_after,
-                sample_rate
-            )
-            print(f"Saved debug audio to {debug_dir}/batch{batch_idx}_*.wav")
-            self._save_audacity_labels(target_tokens[:target_token_lens[batch_idx].item()], batch_idx, f"AFTER_{audio_identity}", debug_dir, self.frame_length)
-        return True
-
-    def _create_minimal_batch(
-        self,
-        minimal_batch_fc: bool = False,
-        fc_drop_info: dict | None = None,
-    ) -> dict:
-        """Create a minimal valid batch when all cuts are filtered out or FC sample is dropped.
-
-        Args:
-            minimal_batch_fc: If True, this minimal batch was created because the batch was dropped
-                due to FC (e.g. system+FC tokens > max_fc_total_tokens). Used for logging and metrics.
-            fc_drop_info: Optional dict when minimal_batch_fc=True, e.g.:
-                {"cut_id": str, "total_prompt_tokens": int, "max_fc_total_tokens": int, "reason": str}.
-                Used for debugging and tuning thresholds.
-        """
-        # Create minimal tensors with batch size 1.
-        # Keep source/target audio and token channels shape-consistent so placeholder batches
-        # do not trigger downstream shape drift.
-        duration_sec = 1.0
-        shared_audio_len = int(self.source_sample_rate * duration_sec)
-        # Keep a small safety margin (+1) for encoder/frame rounding so placeholder
-        # text channels are not shorter than encoded source length in minimal batches.
-        token_seq_len = max(
-            2,
-            compute_num_frames(
-                duration=duration_sec,
-                frame_shift=self.frame_length,
-                sampling_rate=self.source_sample_rate,
-            )
-            + 1,
-        )
-
-        source_audio = torch.zeros((1, shared_audio_len), dtype=torch.float32)
-        target_audio = torch.zeros((1, shared_audio_len), dtype=torch.float32)
-        target_tokens = torch.full((1, token_seq_len), self.pad_id, dtype=torch.long)
-        source_tokens = torch.full((1, token_seq_len), self.pad_id, dtype=torch.long)
-
-        # Flags so the model can take sync-only path and log reason (FC vs non-FC minimal batch).
-        out = {
-            "is_minimal_batch": True,
-            "minimal_batch_fc": minimal_batch_fc,
-            "minimal_batch_non_fc": not minimal_batch_fc,
+        return {
             "sample_id": ["empty_batch"],
-            "source_audio": source_audio,
-            "source_audio_lens": torch.tensor([shared_audio_len], dtype=torch.long),
+            "source_audio": torch.zeros((1, 1000), dtype=torch.float32),  # 1 second of silence at 16kHz
+            "source_audio_lens": torch.tensor([1000], dtype=torch.long),
             "agent_bos_vad": None,
-            "target_audio": target_audio,
-            "target_audio_lens": torch.tensor([shared_audio_len], dtype=torch.long),
-            "target_tokens": target_tokens,
-            "target_token_lens": torch.tensor([token_seq_len], dtype=torch.long),
-            "source_tokens": source_tokens,
-            "source_token_lens": torch.tensor([token_seq_len], dtype=torch.long),
+            "target_audio": torch.zeros((1, 22050), dtype=torch.float32),  # 1 second of silence at 22.05kHz
+            "target_audio_lens": torch.tensor([22050], dtype=torch.long),
+            "target_tokens": torch.full((1, 50), self.tokenizer.pad_id, dtype=torch.long),
+            "target_token_lens": torch.tensor([1], dtype=torch.long),
+            "source_tokens": torch.full((1, 50), self.tokenizer.pad_id, dtype=torch.long),
+            "source_token_lens": torch.tensor([1], dtype=torch.long),
             "source_texts": [""],
             "target_texts": [""],
             "all_texts": [""],
-            "target_first_turn_audio": target_audio.clone(),
-            "target_first_turn_audio_lens": torch.tensor([shared_audio_len], dtype=torch.long),
+            "target_first_turn_audio": torch.zeros((1, 22050), dtype=torch.float32),
+            "target_first_turn_audio_lens": torch.tensor([22050], dtype=torch.long),
             "formatter": ["s2s_duplex"],
-            "aug_by_noise": [True],
         }
-        if minimal_batch_fc:
-            if fc_drop_info is not None:
-                out["fc_drop_info"] = fc_drop_info
-            # Same keys as real FC batch so downstream/collation never sees missing keys; values are None/empty.
-            out["metadata"] = [{"audio_filepath": "empty_batch.wav"}]
-            tool_call_text = (
-                '<TOOLCALL>[{"name": "execute_program", "arguments": {"program_name": "DataAnalysis", '
-                '"arguments": ["dataset1", "dataset2"]}}]</TOOLCALL>'
-            )
-            tool_response_text = (
-                '<TOOL_RESPONSE>[{"status": "success", "message": "The program \'DataAnalysis\' has been successfully executed '
-                'with the arguments \'dataset1\' and \'dataset2\'. The output file \'AnalysisResult\' has been created."}]</TOOL_RESPONSE>'
-            )
-            call_ids = self.tokenizer.text_to_ids(tool_call_text) if self.tokenizer is not None else []
-            resp_ids = self.tokenizer.text_to_ids(tool_response_text) if self.tokenizer is not None else []
 
-            # One synthetic FC turn for minimal_fc batches to keep FC path schema-consistent.
-            # Keep time/step relationship consistent with normal extraction path:
-            # step ~= compute_num_frames(time, frame_length, sample_rate).
-            minimal_fc_step = 12
-            minimal_fc_time = minimal_fc_step * self.frame_length
-            out["num_turns"] = torch.tensor([1], dtype=torch.long)
-            out["function_calls"] = torch.as_tensor([[call_ids]], dtype=torch.long)
-            out["function_call_lengths"] = torch.tensor([[len(call_ids)]], dtype=torch.long)
-            out["function_call_times"] = torch.tensor([[minimal_fc_time]], dtype=torch.float)
-            out["function_call_steps"] = torch.tensor([[minimal_fc_step]], dtype=torch.long)
-            out["function_call_raw_text"] = [[tool_call_text]]
-            out["function_responses"] = torch.as_tensor([[resp_ids]], dtype=torch.long)
-            out["function_response_lengths"] = torch.tensor([[len(resp_ids)]], dtype=torch.long)
-            out["function_response_times"] = torch.tensor([[minimal_fc_time]], dtype=torch.float)
-            out["function_response_steps"] = torch.tensor([[minimal_fc_step]], dtype=torch.long)
-            out["function_response_raw_text"] = [[tool_response_text]]
-            # Optional keys present on real FC batch when prompt_tokens / include_turn_metadata are used.
-            # Keep a non-empty default system prompt for minimal FC batches to mimic real FC traffic.
-            default_minimal_fc_prompt = (
-                '<AVAILABLE_TOOLS>[{"name":"execute_program","description":"Execute a specific program with given arguments",'
-                '"parameters":{"type":"dict","properties":{"program_name":{"type":"string","description":"The name of the program to be executed"},'
-                '"arguments":{"type":"array","items":{"type":"string"},"description":"The arguments to be passed to the program"}},'
-                '"required":["program_name"]}},{"name":"generate_qr_code","description":"Generate a QR code for a given text",'
-                '"parameters":{"type":"dict","properties":{"text":{"type":"string","description":"The text to encode in the QR code"}},'
-                '"required":["text"]}}]</AVAILABLE_TOOLS>'
-            )
-            minimal_fc_prompt_text = default_minimal_fc_prompt
-            if self.model_cfg is not None:
-                minimal_fc_prompt_text = self.model_cfg.get("minimal_batch_fc_prompt_text", default_minimal_fc_prompt)
-
-            prompt_ids = []
-            if self.tokenizer is not None and minimal_fc_prompt_text:
-                bos = getattr(self.tokenizer, "bos", None)
-                eos = getattr(self.tokenizer, "eos", None)
-                if bos is not None:
-                    prompt_ids.append(int(bos))
-                prompt_ids.extend(self.tokenizer.text_to_ids(minimal_fc_prompt_text))
-                if eos is not None:
-                    prompt_ids.append(int(eos))
-            if len(prompt_ids) == 0:
-                out["prompt_tokens"] = torch.empty((1, 0), dtype=torch.long)
-                out["prompt_token_lens"] = torch.tensor([0], dtype=torch.long)
-            else:
-                out["prompt_tokens"] = torch.as_tensor([prompt_ids], dtype=torch.long)
-                out["prompt_token_lens"] = torch.tensor([len(prompt_ids)], dtype=torch.long)
-            # Keep turn metadata schema-compatible (list of dict turns) even for minimal FC batches.
-            # Using one empty placeholder turn avoids downstream key/index assumptions on turn dicts.
-            out["target_turn_texts"] = [[{
-                "start_time": 0.0,
-                "duration": 0.0,
-                "role": "assistant",
-                "text": "hello",
-            }]]
-            out["source_turn_texts"] = [[{
-                "start_time": 0.0,
-                "duration": 0.0,
-                "role": "user",
-                "text": "hello",
-            }]]
-            out["system_prompt"] = [minimal_fc_prompt_text]
-        return out
-
-    def _get_fc_cut_total_prompt_tokens(self, cut: Cut) -> int:
-        """Compute total token count for system prompt + all function-call/response segments.
-        Used to decide if we should drop the batch when over threshold.
-        """
-        if not _is_function_calling_cut(cut) or len(cut.supervisions) == 0:
-            return 0
-        total = 0
-        # System prompt (same logic as collate_system_prompt: BOS + text + EOS)
-        prompt_text = cut.supervisions[0].text if cut.supervisions[0].speaker == 'system' else ""
-        if prompt_text:
-            if self.augment_fc_system_prompt and self.fc_system_prompt_template and _fc_system_prompt_needs_augment(prompt_text):
-                prompt_text = _augment_fc_system_prompt(prompt_text, self.fc_system_prompt_template)
-            prompt_text_clean = _clean_text(prompt_text) if self.clean_system_prompt else prompt_text
-            total += 1 + len(self.tokenizer.text_to_ids(prompt_text_clean)) + 1
-        # All function-call and response segments.
-        # Even indices are calls: +2 for <SOTC>/<EOTC>.
-        # Odd indices are responses: +1 for <EOTR>.
-        function_segments = []
-        for sup in cut.supervisions[1:]:
-            custom = getattr(sup, "custom", None) or {}
-            seg_text = (custom.get("function") or sup.text or "").strip()
-            if seg_text:
-                function_segments.append(seg_text)
-        for idx, seg_text in enumerate(function_segments):
-            seg_clean = _clean_text(seg_text) if self.clean_fc_text else seg_text
-            total += len(self.tokenizer.text_to_ids(seg_clean))
-            if idx % 2 == 0:
-                total += 2
-            else:
-                total += 1
-        return total
+    def _has_valid_input_and_target(self, cut: Cut) -> bool:
+        has_input_text = any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)
+        has_target_audio = hasattr(cut, "target_audio") and cut.target_audio is not None
+        return has_input_text and has_target_audio
 
     def __getitem__(self, all_cuts: CutSet) -> dict:
-        # Check if this is a function calling batch
-        cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
-        is_function_calling_batch = len(cuts) > 0 and any(_is_function_calling_cut(c) for c in cuts)
-        
         # audio mini-batch
+        cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
         audio_data = None
-        early_interruption_stats = None
 
         if cuts and hasattr(cuts[0], 'formatter') and cuts[0].formatter == 'nemo_tarred_to_duplex':
             filtered_cuts = []
             skipped_cuts = []
             for cut in cuts:
-                if any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles):
+                if self._has_valid_input_and_target(cut):
                     filtered_cuts.append(cut)
                 else:
                     skipped_cuts.append(cut.id)
             if skipped_cuts:
-                logging.info(f"Skipped {len(skipped_cuts)} cuts with empty input text. Skipped cut ids: {', '.join(skipped_cuts)}")
+                logging.info(
+                    f"Skipped {len(skipped_cuts)} cuts with empty input text. Skipped cut ids: {', '.join(skipped_cuts)}"
+                )
             if not filtered_cuts:
-                logging.warning(f"All cuts were filtered out! Original batch size: {len(cuts)}. Returning minimal valid batch to continue training.")
-                return {
-                    "audio_data": self._create_minimal_batch(),
-                    "text_data": None,
-                    "early_interruption_stats": None,
-                }
+                logging.warning(
+                    f"All cuts were filtered out! Original batch size: {len(cuts)}. Returning minimal valid batch to continue training."
+                )
+                return self._create_minimal_batch()
             cuts = CutSet.from_cuts(filtered_cuts)
 
         if cuts:
             swapped_cuts = []
 
-            # Skip role swapping for function calling batches
-            if self.aug_by_swap_role and not is_function_calling_batch:
+            if self.aug_by_swap_role:
                 for cut in cuts:
                     total_turns = cut.custom.get('total_turns', len(cut.supervisions))
 
@@ -1078,158 +230,58 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             else:
                 all_cuts_combined = cuts
 
-            # For function calling: per-cut filtering by system+FC token length threshold.
-            # Keep valid cuts and only fall back to minimal batch when everything is filtered out.
-            if self.max_fc_total_tokens is not None:
-                kept_cuts = []
-                dropped_cuts = []
-                for cut in all_cuts_combined:
-                    if not _is_function_calling_cut(cut):
-                        kept_cuts.append(cut)
-                    else:
-                        total_tokens = self._get_fc_cut_total_prompt_tokens(cut)
-                        if total_tokens <= self.max_fc_total_tokens:
-                            kept_cuts.append(cut)
-                        else:
-                            dropped_cuts.append((cut.id, total_tokens))
-
-                if dropped_cuts and self.fc_log:
-                    preview = ", ".join(
-                        f"{cut_id}({tok_cnt}>{self.max_fc_total_tokens})" for cut_id, tok_cnt in dropped_cuts[:10]
-                    )
-                    logging.info(
-                        f"[FC] Filtered {len(dropped_cuts)} cuts over max_fc_total_tokens. Examples: {preview}"
-                    )
-
-                if len(kept_cuts) == 0:
-                    # Return same structure as normal path so batch["audio_data"] exists (minimal batch has no FC fields)
-                    return {
-                        "audio_data": self._create_minimal_batch(
-                            minimal_batch_fc=True,
-                            fc_drop_info={
-                                "cut_id": dropped_cuts[0][0] if dropped_cuts else "unknown",
-                                "total_prompt_tokens": int(dropped_cuts[0][1]) if dropped_cuts else -1,
-                                "max_fc_total_tokens": self.max_fc_total_tokens,
-                                "reason": "max_fc_total_tokens_all_filtered",
-                                "num_dropped_cuts": len(dropped_cuts),
-                            },
-                        ),
-                        "text_data": None,
-                        "early_interruption_stats": None,
-                    }
-
-                if len(kept_cuts) != len(all_cuts_combined):
-                    all_cuts_combined = CutSet.from_cuts(kept_cuts)
-
-            prompt_tokens, prompt_token_lens, prompt_texts = collate_system_prompt(
-                all_cuts_combined,
-                self.tokenizer,
-                self.pad_id,
-                debug_fc=self.debug_fc,
-                clean_text=self.clean_system_prompt,
-                augment_fc_system_prompt=self.augment_fc_system_prompt,
-                fc_system_prompt_template=self.fc_system_prompt_template,
-            )
+            prompt_tokens, prompt_token_lens = collate_system_prompt(all_cuts_combined, self.tokenizer)
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 all_cuts_combined.resample(self.target_sample_rate), recording_field="target_audio"
             )
-            target_tokens, target_token_lens, ei_flags = collate_token_channel(
+
+            target_tokens, target_token_lens = collate_token_channel(
                 all_cuts_combined,
                 self.tokenizer,
-                self.pad_id,
                 self.frame_length,
                 roles=self.output_roles,
                 bos_id=self.tokenizer.bos,
                 eos_id=self.tokenizer.eos,
                 remove_timestamps=True,
-                use_numbers_norm=self.use_numbers_norm,
-                early_interruption_flag_from_cfg=self.early_interruption_prob > 0,
-                skip_eos=self.fix_eos_placements,
             )
 
-            # Run force alignment if enabled
-            # NOTE: For validation, create a separate dataset instance with force_align_user_text=False
-            if self.force_align_user_text:
-                # Only create ForceAligner when first needed
-                if not self._force_aligner_initialized:
-                    logging.info(f"Initializing ForceAligner on device {self.force_align_device}")
-                    self.force_aligner = ForceAligner(device=self.force_align_device, frame_length=self.frame_length)
-                    self._force_aligner_initialized = True
-                logging.info(f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}")
-                all_cuts_combined = self.force_aligner.batch_force_align_user_audio(
-                    all_cuts_combined,
-                    source_sample_rate=self.source_sample_rate,
-                    input_roles=list(self.input_roles),
+            # Only run force alignment during training (when gradients are enabled)
+            if self.force_align_user_text and torch.is_grad_enabled():
+                logging.info(
+                    f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}"
                 )
-                
+                all_cuts_combined = self.force_aligner.batch_force_align_user_audio(
+                    all_cuts_combined, source_sample_rate=self.source_sample_rate
+                )
+
                 # Check if we have any cuts left after filtering
                 if len(all_cuts_combined) == 0:
-                    logging.warning("All cuts filtered out due to force alignment failures, returning minimal valid batch to continue training.")
-                    return {
-                        "audio_data": self._create_minimal_batch(),
-                        "text_data": None,
-                        "early_interruption_stats": None,
-                    }
+                    logging.warning(
+                        "All cuts filtered out due to force alignment failures, returning minimal valid batch to continue training."
+                    )
+                    return self._create_minimal_batch()
 
-            source_tokens, source_token_lens, _ = collate_token_channel(
-                all_cuts_combined, self.tokenizer, self.pad_id, self.frame_length,
+            source_tokens, source_token_lens = collate_token_channel(
+                all_cuts_combined,
+                self.tokenizer,
+                self.frame_length,
                 roles=self.input_roles,
-                bos_id=self.user_bos_id, 
-                eos_id=self.user_eos_id, 
-                word_align_position=self.word_align_position, 
-                remove_timestamps=not self.predict_user_text, 
-                user_bos_id=self.user_bos_id, 
-                agent_bos_id=self.tokenizer.bos,
-                agent_token_channel=target_tokens if self.fix_eos_placements else None,
-                agent_token_channel_lengths=target_token_lens if self.fix_eos_placements else None,
-                agent_eos_id=self.tokenizer.eos if self.fix_eos_placements else None,
+                bos_id=self.tokenizer.text_to_ids('^')[0],
+                eos_id=self.tokenizer.text_to_ids('$')[0],
+                word_align_position=self.word_align_position,
+                remove_timestamps=not self.predict_user_text,
             )
-            # Early interruption augmentation (skip for function calling batches to avoid position misalignment)
-            batch_early_interruption_total = 0
-            batch_early_interruption_attempted = 0
-            batch_early_interruption_successful = 0
-            if self.early_interruption_prob > 0 and torch.is_grad_enabled() and not is_function_calling_batch:
-                for batch_idx in range(target_tokens.shape[0]):
-                    batch_early_interruption_total += 1
-                    if ei_flags[batch_idx]:
-                        if random.random() < self.early_interruption_prob:
-                            batch_early_interruption_attempted += 1
-                            identifier_dirname = getattr(all_cuts_combined[batch_idx], 'shard_origin', None)
-                            identifier_cutname = all_cuts_combined[batch_idx].id
-                            identifier = f"{identifier_dirname}_{identifier_cutname}"
-                            if identifier is not None:
-                                identifier = '_'.join(str(identifier).split('/')[-4:])
-                            success = self._apply_early_interruption_augmentation(
-                                target_tokens, target_audio, target_token_lens, target_audio_lens,
-                                source_tokens, source_audio, source_token_lens, source_audio_lens,
-                                batch_idx, identifier
-                            )
-                            if success:
-                                batch_early_interruption_successful += 1
-            elif is_function_calling_batch and self.early_interruption_prob > 0:
-                logging.debug(f"Skipping early interruption for function calling batch to avoid position misalignment")
-            if self.fix_last_turn_eos:
-                fix_last_turn_eos(target_tokens, source_tokens, src_eos_id=self.user_eos_id, tgt_eos_id=self.tokenizer.eos, pad_id=self.pad_id)
 
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(
-                    all_cuts_combined.resample(self.target_sample_rate), roles=self.output_roles,
-                    recording_field="target_audio"
+                    all_cuts_combined.resample(self.target_sample_rate),
+                    roles=self.output_roles,
+                    recording_field="target_audio",
                 )
             except Exception as e:
                 target_first_turn_audio = None
                 target_first_turn_audio_lens = None
-
-            # if self.model_cfg is not None and self.model_cfg.get("debug", False):
-            #     print("source_tokens[0]:", source_tokens[0][:500]*(source_tokens[0][:500]!=self.pad_id))
-            #     print("target_tokens[0]:", target_tokens[0][:500]*(target_tokens[0][:500]!=self.pad_id))
-            #     print("cut.supervisions[0].duration:", int(cuts[0].supervisions[0].duration / 0.08))
-            #     # Find the indices of the first non-pad tokens in target_tokens[0]
-            #     first_non_pad_idx = (target_tokens[0] != self.pad_id).nonzero(as_tuple=True)[0][0].item() if (target_tokens[0] != self.pad_id).any() else None
-            #     print("First non-pad token index in target_tokens[0]:", first_non_pad_idx)
-            #     # print('Agent start timestamp: ', int(cuts[0].supervisions[1].start / 0.08))
-
 
             audio_data = {
                 "sample_id": [str(cut.id) for cut in all_cuts_combined],
@@ -1242,7 +294,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "source_tokens": source_tokens,
                 "source_token_lens": source_token_lens,
                 "source_texts": [
-                    " ".join(_strip_timestamps(s.text) for s in cut.supervisions if s.speaker in self.input_roles) for cut in all_cuts_combined
+                    " ".join(_strip_timestamps(s.text) for s in cut.supervisions if s.speaker in self.input_roles)
+                    for cut in all_cuts_combined
                 ],
                 "target_texts": [
                     " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles)
@@ -1254,22 +307,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 "target_first_turn_audio": target_first_turn_audio,
                 "target_first_turn_audio_lens": target_first_turn_audio_lens,
                 "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in all_cuts_combined],
-                "aug_by_noise": [getattr(cut, "aug_by_noise", True) for cut in all_cuts_combined]
+                "aug_by_noise": [getattr(cut, "aug_by_noise", True) for cut in all_cuts_combined],
             }
 
-            # Per-batch early interruption stats for logging (model accumulates for cumulative)
-            early_interruption_stats = {
-                "batch_total": batch_early_interruption_total,
-                "batch_attempted": batch_early_interruption_attempted,
-                "batch_successful": batch_early_interruption_successful,
-            }
-        
             if torch.sum(prompt_token_lens) > 0:
                 audio_data['prompt_tokens'] = prompt_tokens
                 audio_data['prompt_token_lens'] = prompt_token_lens
-            # Raw prompt string used to build prompt_tokens (typically supervision[0] for FC cuts).
-            audio_data["system_prompt_supervision_0"] = prompt_texts
-            
+
             # Optionally include detailed turn metadata for analysis
             if self.include_turn_metadata:
                 audio_data["target_turn_texts"] = [
@@ -1280,7 +324,8 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                             "role": s.speaker,
                             "text": s.text,
                         }
-                        for s in cut.supervisions if s.speaker in self.output_roles
+                        for s in cut.supervisions
+                        if s.speaker in self.output_roles
                     ]
                     for cut in all_cuts_combined
                 ]
@@ -1292,171 +337,13 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                             "role": s.speaker,
                             "text": s.text,
                         }
-                        for s in cut.supervisions if s.speaker in self.input_roles
+                        for s in cut.supervisions
+                        if s.speaker in self.input_roles
                     ]
                     for cut in all_cuts_combined
                 ]
-                audio_data["system_prompt"] = [
-                    cut.custom.get('system_prompt', '') for cut in all_cuts_combined
-                ]
-            
-            # ===== Function Calling Metadata Extraction =====
-            # Extract function calling data if this is a function calling batch
-            if is_function_calling_batch:
-                if self.debug_fc:
-                    logging.info(f"[FC] Processing function calling batch with {len(all_cuts_combined)} cuts")
-                
-                metadata = []
-                num_turns = []
-                # Separate storage for calls and responses
-                function_calls, function_call_lengths = [], []
-                function_call_times, function_call_steps = [], []
-                function_call_raw_text = []
-                function_responses, function_response_lengths = [], []
-                function_response_times, function_response_steps = [], []
-                function_response_raw_text = []
+                audio_data["system_prompt"] = [cut.custom.get('system_prompt', '') for cut in all_cuts_combined]
 
-                # Iterate over all cuts in batch to extract function calling metadata
-                for cut_id, cut in enumerate(all_cuts_combined):
-                    # Note: First supervision (system) is now handled by collate_system_prompt as prompt_tokens
-                    # We only extract function calls and responses here (supervisions[1:])
-                    num_turns.append(len(cut.supervisions) - 1)  # 1st supervision is system prompt
-                    metadata.append({'audio_filepath': cut.id + '.wav'})
-                    
-                    if self.debug_fc:
-                        logging.debug(f"[FC] Processing cut {cut_id}: {cut.id}, supervisions={len(cut.supervisions)}")
-                    
-                    # Validate first supervision is system (now extracted as system prompt)
-                    if cut.supervisions[0].speaker != 'system':
-                        logging.error(f"Assertion failed: cut.id={cut.id}, first supervision speaker='{cut.supervisions[0].speaker}', expected='system'")
-                        logging.error(f"Cut object: {cut}")
-                    
-                    assert cut.supervisions[0].speaker == 'system'
-                    
-                    # Extract function segments (if they exist) from supervisions[1:]
-                    if len(cut.supervisions) > 1 and 'function' in cut.supervisions[1].custom:
-                        function_segments = [
-                            sup
-                            for sup in cut.supervisions[1:]
-                            if (sup.custom.get("function") or "").strip() != ""
-                        ]
-                        if self.debug_fc:
-                            logging.debug(f"[FC] Cut {cut_id} has {len(function_segments)} function segments")
-                    else:
-                        function_segments = []
-                        if self.debug_fc:
-                            logging.debug(f"[FC] Cut {cut_id} has no function segments")
-                    
-                    # Extract function calls and responses separately using module-level helper
-                    if len(function_segments) > 0:
-                        fc_batch = _extract_function_calling_data(
-                            function_segments,
-                            self.tokenizer,
-                            self.frame_length,
-                            self.target_sample_rate,
-                            cut.duration,
-                            self.debug_fc,
-                            self.clean_fc_text,
-                            self.normalize_fc_toolcall_arguments,
-                            self.strip_fc_text_before_toolcall,
-                        )
-                        
-                        # Collate calls
-                        function_calls.append(collate_and_pad(fc_batch.calls, get_pad_id(self.tokenizer))[0])
-                        function_call_lengths.append(fc_batch.call_lengths)
-                        function_call_times.append(fc_batch.call_times)
-                        function_call_steps.append(fc_batch.call_steps)
-                        function_call_raw_text.append(fc_batch.call_raw_text)
-                        
-                        # Collate responses
-                        function_responses.append(collate_and_pad(fc_batch.responses, get_pad_id(self.tokenizer))[0])
-                        function_response_lengths.append(fc_batch.response_lengths)
-                        function_response_times.append(fc_batch.response_times)
-                        function_response_steps.append(fc_batch.response_steps)
-                        function_response_raw_text.append(fc_batch.response_raw_text)
-                    else:
-                        # No function segments in this cut (e.g., refusal-only samples in FC datasets):
-                        # append empty placeholders so batch size stays aligned with target_tokens.
-                        empty_calls = torch.empty((0, 0), dtype=torch.long)
-                        empty_lengths = torch.tensor([], dtype=torch.long)
-                        empty_times = torch.tensor([], dtype=torch.float)
-                        empty_steps = torch.tensor([], dtype=torch.long)
-                        
-                        function_calls.append(empty_calls)
-                        function_call_lengths.append(empty_lengths)
-                        function_call_times.append(empty_times)
-                        function_call_steps.append(empty_steps)
-                        function_call_raw_text.append([])
-                        
-                        function_responses.append(empty_calls)
-                        function_response_lengths.append(empty_lengths)
-                        function_response_times.append(empty_times)
-                        function_response_steps.append(empty_steps)
-                        function_response_raw_text.append([])
-                
-                # Collate function calling data if present
-                if len(function_calls) > 0:
-                    # Collate function calls
-                    function_calls = collate_and_pad_2d(function_calls, get_pad_id(self.tokenizer))  # [b, t, l]
-                    function_call_lengths = collate_and_pad_1d(function_call_lengths)  # [b, t]
-                    function_call_times = collate_and_pad_1d(function_call_times)  # [b, t]
-                    function_call_steps = collate_and_pad_1d(function_call_steps)  # [b, t]
-                    
-                    if self.debug_fc:
-                        logging.info(f"[FC] Collated function calls: shape={function_calls.shape}, "
-                                   f"lengths={function_call_lengths.shape}, steps={function_call_steps.shape}")
-                    
-                    # Collate function responses
-                    function_responses = collate_and_pad_2d(function_responses, get_pad_id(self.tokenizer))  # [b, t, l]
-                    function_response_lengths = collate_and_pad_1d(function_response_lengths)  # [b, t]
-                    function_response_times = collate_and_pad_1d(function_response_times)  # [b, t]
-                    function_response_steps = collate_and_pad_1d(function_response_steps)  # [b, t]
-                    
-                    if self.debug_fc:
-                        logging.info(f"[FC] Collated function responses: shape={function_responses.shape}, "
-                                   f"lengths={function_response_lengths.shape}, steps={function_response_steps.shape}")
-                else:
-                    if self.debug_fc:
-                        logging.info("[FC] No function calling data to collate")
-                    # No function calling data
-                    function_calls = None
-                    function_call_lengths = None
-                    function_call_times = None
-                    function_call_steps = None
-                    function_responses = None
-                    function_response_lengths = None
-                    function_response_times = None
-                    function_response_steps = None
-                
-                # Add function calling metadata to audio_data
-                # Note: System prompt (instructions) is now in prompt_tokens (handled by collate_system_prompt)
-                audio_data["metadata"] = metadata
-                audio_data["num_turns"] = torch.tensor(num_turns)
-                # Function calls (separate)
-                audio_data["function_calls"] = function_calls
-                audio_data["function_call_lengths"] = function_call_lengths
-                audio_data["function_call_times"] = function_call_times
-                audio_data["function_call_steps"] = function_call_steps
-                audio_data["function_call_raw_text"] = function_call_raw_text
-                # Function responses (separate)
-                audio_data["function_responses"] = function_responses
-                audio_data["function_response_lengths"] = function_response_lengths
-                audio_data["function_response_times"] = function_response_times
-                audio_data["function_response_steps"] = function_response_steps
-                audio_data["function_response_raw_text"] = function_response_raw_text
-
-                # Extract "assistant response after TOOLRESPONSE" per cut for BLEU-after-tool metric
-                audio_data["target_text_after_tool_response"] = [
-                    _extract_target_text_after_tool_response(cut, self.output_roles)
-                    for cut in all_cuts_combined
-                ]
-
-                
-                if self.debug_fc:
-                    logging.info(f"[FC] Function calling metadata added to batch: "
-                               f"num_cuts={len(metadata)}, has_calls={function_calls is not None}")
-                    logging.info(f"[FC] System prompt for function calling is in prompt_tokens (from collate_system_prompt)")
-                
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None
         if text_cuts:
@@ -1467,26 +354,25 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 text_tokens.append(text_ids)
                 text_token_lens.append(text_ids.shape[0])
 
-            text_tokens = collate_vectors(
-                text_tokens, padding_value=self.pad_id
-            )
+            text_tokens = collate_vectors(text_tokens, padding_value=get_pad_id(self.tokenizer))
             text_token_lens = torch.tensor(text_token_lens, dtype=torch.long)
             text_data = {
                 "text_tokens": text_tokens,
                 "text_token_lens": text_token_lens,
             }
+
         return {
             "audio_data": audio_data,
             "text_data": text_data,
-            "early_interruption_stats": early_interruption_stats,
         }
 
     def _create_role_swapped_cut(self, cut):
 
-        from lhotse import AudioSource
         from io import BytesIO
-        import soundfile as sf
+
         import numpy as np
+        import soundfile as sf
+        from lhotse import AudioSource
 
         swapped_supervisions = []
         for sup in cut.supervisions:
@@ -1508,7 +394,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 speaker=new_speaker,
                 gender=sup.gender,
                 custom=sup.custom,
-                alignment=sup.alignment
+                alignment=sup.alignment,
             )
             swapped_supervisions.append(swapped_sup)
 
@@ -1548,7 +434,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 speaker=sup.speaker,
                 gender=sup.gender,
                 custom=sup.custom,
-                alignment=sup.alignment
+                alignment=sup.alignment,
             )
             adjusted_supervisions.append(adjusted_sup)
 
@@ -1565,25 +451,24 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             if sup.speaker == 'User':
 
                 original_start = sup.start + first_remaining_start
-                agent_audio = cut.custom['target_audio'].to_cut().truncate(
-                    offset=original_start,
-                    duration=sup.duration
-                ).load_audio()
+                agent_audio = (
+                    cut.custom['target_audio']
+                    .to_cut()
+                    .truncate(offset=original_start, duration=sup.duration)
+                    .load_audio()
+                )
                 if len(agent_audio.shape) > 1:
                     agent_audio = agent_audio.squeeze()
                 actual_end = min(end_sample, start_sample + len(agent_audio))
-                new_source_audio[start_sample:actual_end] = agent_audio[:actual_end - start_sample]
+                new_source_audio[start_sample:actual_end] = agent_audio[: actual_end - start_sample]
 
             elif sup.speaker == 'Assistant':
                 original_start = sup.start + first_remaining_start
-                user_audio = cut.recording.to_cut().truncate(
-                    offset=original_start,
-                    duration=sup.duration
-                ).load_audio()
+                user_audio = cut.recording.to_cut().truncate(offset=original_start, duration=sup.duration).load_audio()
                 if len(user_audio.shape) > 1:
                     user_audio = user_audio.squeeze()
                 actual_end = min(end_sample, start_sample + len(user_audio))
-                new_target_audio[start_sample:actual_end] = user_audio[:actual_end - start_sample]
+                new_target_audio[start_sample:actual_end] = user_audio[: actual_end - start_sample]
 
         source_buffer = BytesIO()
         sf.write(source_buffer, new_source_audio, cut.sampling_rate, format='wav')
@@ -1594,11 +479,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             sampling_rate=cut.sampling_rate,
             num_samples=len(new_source_audio),
             duration=total_duration,
-            sources=[AudioSource(
-                type="memory",
-                channels=[0],
-                source=source_buffer.getvalue()
-            )]
+            sources=[AudioSource(type="memory", channels=[0], source=source_buffer.getvalue())],
         )
 
         target_buffer = BytesIO()
@@ -1610,11 +491,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
             sampling_rate=cut.sampling_rate,
             num_samples=len(new_target_audio),
             duration=total_duration,
-            sources=[AudioSource(
-                type="memory",
-                channels=[0],
-                source=target_buffer.getvalue()
-            )]
+            sources=[AudioSource(type="memory", channels=[0], source=target_buffer.getvalue())],
         )
 
         swapped_cut = MonoCut(
@@ -1629,30 +506,34 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 'total_turns': len(adjusted_supervisions),
                 'role_swapped': True,
                 'target_audio': new_target_recording,
-            }
+            },
         )
 
         return swapped_cut
 
 
 def collate_first_turn_audio(
-        cuts: CutSet,
-        roles: set[str],
-        recording_field: str = "target_audio",
+    cuts: CutSet,
+    roles: set[str],
+    recording_field: str = "target_audio",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     first_turn_audios = []
     first_turn_audios_lens = []
     for cut in cuts:
         # Find supervisions that match the specified roles
         matching_supervisions = [s for s in cut.supervisions if s.speaker in roles]
-        
+
         if not matching_supervisions:
             # Log warning and skip this cut if no matching supervisions found
-            logging.warning(f"No supervisions found with roles {roles} for cut {cut.id}. Available speakers: {[s.speaker for s in cut.supervisions]}")
+            logging.warning(
+                f"No supervisions found with roles {roles} for cut {cut.id}. Available speakers: {[s.speaker for s in cut.supervisions]}"
+            )
             continue
-            
+
         first_supervision = matching_supervisions[0]
-        truncated_audio = cut.truncate(offset=max(0, first_supervision.start), duration=first_supervision.duration).load_custom(recording_field)
+        truncated_audio = cut.truncate(
+            offset=max(0, first_supervision.start), duration=first_supervision.duration
+        ).load_custom(recording_field)
         first_turn_audios.append(truncated_audio.squeeze(0))
         first_turn_audios_lens.append(truncated_audio.shape[-1])
 
@@ -1667,192 +548,71 @@ def collate_first_turn_audio(
 def collate_token_channel(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
-    pad_id: int,
     frame_length: Seconds,
     roles: set[str],
     bos_id: int = None,
     eos_id: int = None,
     word_align_position: str = 'left',
     remove_timestamps: bool = False,
-    user_bos_id: int = None,
-    agent_bos_id: int = None,
-    use_numbers_norm: bool = False,
-    early_interruption_flag_from_cfg: bool = None,
-    skip_eos: bool = False,
-    agent_token_channel: torch.Tensor = None,
-    agent_token_channel_lengths: torch.Tensor = None,
-    agent_eos_id: int = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    pad_id = get_pad_id(tokenizer)
     tokens = [
         build_token_channel(
             c,
             tokenizer=tokenizer,
-            pad_id=pad_id,
             frame_length=frame_length,
             roles=roles,
+            pad_id=pad_id,
             bos_id=bos_id,
             eos_id=eos_id,
             word_align_position=word_align_position,
             remove_timestamps=remove_timestamps,
-            user_bos_id=user_bos_id,
-            agent_bos_id=agent_bos_id, 
-            use_numbers_norm=use_numbers_norm,
-            skip_eos=skip_eos,
-            cut_agent_token_channel=agent_token_channel[cut_idx] if agent_token_channel is not None else None,
-            cut_agent_token_channel_length=agent_token_channel_lengths[cut_idx] if agent_token_channel_lengths is not None else None,
-            agent_eos_id=agent_eos_id,
         )
-        for cut_idx, c in enumerate(cuts)
+        for c in cuts
     ]
-    ei_flags = [getattr(c, 'otf_interruption', early_interruption_flag_from_cfg) for c in cuts]
-
     token_lens = torch.tensor([len(tt) for tt in tokens])
     tokens = collate_vectors(tokens, padding_value=pad_id)
-    return tokens, token_lens, ei_flags
+    return tokens, token_lens
 
-def fix_last_turn_eos(target_tokens: torch.Tensor, source_tokens: torch.Tensor, src_eos_id: int, tgt_eos_id: int, pad_id: int):
-    """
-    Make sure that last agent turn, when it is the last turn, does not have an EOS.
-    Modifies target_tokens in-place.
-    This modification ensures that EOS solely functions as detecting start of user turn.
-
-    Args:
-        target_tokens: Tensor of shape (batch_size, max_seq_len)
-        source_tokens: Tensor of shape (batch_size, max_seq_len)
-        src_eos_id: EOS token id for source
-        tgt_eos_id: EOS token id for target
-        pad_id: Padding token id
-    """
-    assert target_tokens.shape == source_tokens.shape, "Mismatch between target and source token shapes"
-    
-    batch_size, seq_len = target_tokens.shape
-    device = target_tokens.device
-    
-    # Create position indices: (1 x seq_len)
-    positions = torch.arange(seq_len, device=device).unsqueeze(0)
-    
-    # Find last EOS position for each batch (use -1 as sentinel for "no EOS")
-    target_eos_mask = (target_tokens == tgt_eos_id)
-    source_eos_mask = (source_tokens == src_eos_id)
-    
-    # position index where EOS exists, -1 if none, return position index of last EOS for each batch
-    last_target_eos = torch.where(target_eos_mask, positions, -1).max(dim=1).values
-    last_source_eos = torch.where(source_eos_mask, positions, -1).max(dim=1).values
-    
-    # Condition: both have EOS AND target's last EOS > source's last EOS
-    should_fix = (last_target_eos >= 0) & (last_source_eos >= 0) & (last_target_eos > last_source_eos)
-    
-    if should_fix.any():
-        batch_indices = torch.where(should_fix)[0]
-        seq_indices = last_target_eos[should_fix]
-        target_tokens[batch_indices, seq_indices] = pad_id
-        logging.info(f"Removed EOS from last turn of target tokens for {should_fix.sum().item()} (of {batch_size}) samples.")
-    else:
-        logging.info(f"No EOS found in last turn of target tokens for {batch_size} samples.")
 
 def collate_system_prompt(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
-    pad_id: int,
-    debug_fc: bool = False,
-    clean_text: bool = False,
-    augment_fc_system_prompt: bool = False,
-    fc_system_prompt_template: Optional[str] = None,
-) -> tuple[torch.Tensor, torch.Tensor, list[str]]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Collate system prompts from cuts.
-    
-    For regular data: System prompt from cut.custom['system_prompt']
-    For function calling data: System prompt from cut.supervisions[0].text (speaker='system').
-    If augment_fc_system_prompt is True and the FC prompt is tools-only (e.g. only
-    <AVAILABLE_TOOLS>...</AVAILABLE_TOOLS>), it is wrapped with the full instruction template.
+    System prompts should be stored in cut.custom['system_prompt'].
     """
+    pad_id = get_pad_id(tokenizer)
     tokens = []
-    prompt_texts = []
-    for idx, c in enumerate(cuts):
-        prompt_text = None
-        source_type = None
-        
-        # Check if this is a function calling cut with system supervision
-        is_function_calling = getattr(c, "s2s_duplex_function_calling", False)
-        if is_function_calling and len(c.supervisions) > 0 and c.supervisions[0].speaker == 'system':
-            # Function calling: use system prompt from first supervision
-            # This contains tool descriptions like <AVAILABLE_TOOLS>[...]</AVAILABLE_TOOLS>
-            prompt_text = c.supervisions[0].text
-            source_type = "function_calling_supervision"
-            # Optionally augment tools-only prompts with full TOOLCALL/TOOL_RESPONSE instructions
-            if augment_fc_system_prompt and fc_system_prompt_template:
-                needs_augment = _fc_system_prompt_needs_augment(prompt_text)
-                if debug_fc and idx < 2:
-                    logging.info(
-                        f"[FC system prompt] Cut {idx}: augment_fc_system_prompt=True, needs_augment={needs_augment}, "
-                        f"len(prompt)={len(prompt_text)}"
-                    )
-                    logging.info(f"[FC system prompt] Cut {idx} BEFORE: {repr(prompt_text)}")
-                if needs_augment:
-                    prompt_text = _augment_fc_system_prompt(prompt_text, fc_system_prompt_template)
-                    if debug_fc and idx < 2:
-                        logging.info(
-                            f"[FC system prompt] Cut {idx} augmented (tools-only -> full format). "
-                            f"AFTER : {repr(prompt_text)}"
-                        )
-                elif debug_fc and idx < 2:
-                    logging.info(
-                        f"[FC system prompt] Cut {idx} not augmented (already contains 'If you decide to call any tool')"
-                    )
-        elif c.custom and c.custom.get("system_prompt", None):
-            # Regular data: use system prompt from custom field
+    for c in cuts:
+        # Check if system prompt exists in custom field
+        if c.custom and c.custom.get("system_prompt", None):
             prompt_text = c.custom["system_prompt"]
-            source_type = "custom_field"
-        
-        if prompt_text:
-            # Clean text (normalize whitespace)
-            prompt_text_clean = _clean_text(prompt_text) if clean_text else prompt_text
-            prompt_tokens = torch.as_tensor(
-                [tokenizer.bos] + tokenizer.text_to_ids(prompt_text_clean) + [tokenizer.eos],
-                dtype=torch.long
+            tokens.append(
+                torch.as_tensor(
+                    [tokenizer.bos] + tokenizer.text_to_ids(prompt_text) + [tokenizer.eos], dtype=torch.long
+                )
             )
-            tokens.append(prompt_tokens)
-            
-            if debug_fc and idx < 2:  # Log first 2 cuts
-                logging.info(f"[Dataset] Cut {idx} system prompt from {source_type}:")
-                logging.info(f"[Dataset]   Length: {len(prompt_tokens)} tokens")
-                logging.info(f"[Dataset]   Text (first 200 chars): {prompt_text_clean[:200]}...")
-            prompt_texts.append(prompt_text_clean)
         else:
             # No system prompt for this cut
             tokens.append(torch.as_tensor([], dtype=torch.long))
-            if debug_fc and idx < 2:
-                logging.info(f"[Dataset] Cut {idx} has no system prompt")
-            prompt_texts.append("")
-    
+
     token_lens = torch.tensor([len(tt) for tt in tokens])
     tokens = collate_vectors(tokens, padding_value=pad_id)
-    
-    if debug_fc:
-        logging.info(f"[Dataset] Collated system prompts: shape={tokens.shape}, lens={token_lens.tolist()[:5]}...")
-    
-    return tokens, token_lens, prompt_texts
+    return tokens, token_lens
+
 
 def build_token_channel(
-        cut: Cut,
-        tokenizer: TokenizerSpec,
-        pad_id: int,
-        frame_length: Seconds,
-        roles: set[str],
-        bos_id: int = None,
-        eos_id: int = None,
-        word_align_position: str = 'left',
-        remove_timestamps: bool = False,
-        user_bos_id: int = None,
-        agent_bos_id: int = None,
-        add_eos_for_interruption: bool = False,
-        use_numbers_norm: bool = False,
-        skip_eos: bool = False,
-        cut_agent_token_channel: torch.Tensor = None,
-        cut_agent_token_channel_length: torch.Tensor = None,
-        eos_offset_frames: int = 8,
-        agent_eos_id: int = None,
+    cut: Cut,
+    tokenizer: TokenizerSpec,
+    frame_length: Seconds,
+    roles: set[str],
+    pad_id: int = -1,
+    bos_id: int = None,
+    eos_id: int = None,
+    word_align_position: str = 'left',
+    remove_timestamps: bool = False,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -1860,32 +620,31 @@ def build_token_channel(
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
-    if cut_agent_token_channel is not None:
-        try:
-            assert cut_agent_token_channel_length.item() == total, "Mismatch between agent token and source token lengths"
-        except:
-            logging.error(f"Mismatch between agent token and source token lengths: {cut_agent_token_channel_length.item()} != {total}")
     for supervision in cut.supervisions:
-        
-        # if supervision.speaker in roles:
-        custom = getattr(supervision, 'custom', None)
-        if supervision.speaker in roles and (not custom or 'function' not in custom or custom['function'] == ''):
+        if supervision.speaker in roles:
+
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             if pos >= len(tokens):  # Changed from > to >= for robustness
                 logging.warning(
                     f"Ill-constructed example: the beginning offset of a supervision {pos} is larger than or equal to the example's length {len(tokens)}. {diagnostic}"
                 )
                 continue
-
             eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
             available_frames_for_text = eospos - pos
 
             text = supervision.text
-            if use_numbers_norm:
-                text = normalize_numbers(text)
 
             # Use different bos_id for user and agent
-            text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, pad_id, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps))
+            text_ids = torch.as_tensor(
+                [bos_id]
+                + _text_to_ids(
+                    text,
+                    tokenizer,
+                    available_frames_for_text=available_frames_for_text,
+                    word_align_position=word_align_position,
+                    remove_timestamps=remove_timestamps,
+                )
+            )
 
             if available_frames_for_text > 0 and len(text_ids) > available_frames_for_text:
                 # Truncate text_ids to fit before the eos position.
@@ -1908,41 +667,16 @@ def build_token_channel(
             except Exception as e:
                 raise RuntimeError(f"{tokens.shape=} {pos=} {endpos=} {text_ids.shape=} {diagnostic}") from e
 
-            if not skip_eos:
-                if cut_agent_token_channel is not None:
-                    assert agent_eos_id is not None, "Agent EOS ID is not set"
-                    user_bospos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
-                    agent_eospos = user_bospos + eos_offset_frames
-                    if agent_eospos < cut_agent_token_channel_length.item():
-                        cut_agent_token_channel[agent_eospos] = agent_eos_id
-                    else:
-                        logging.warning(f"Agent EOS position {agent_eospos} is out of bounds for agent token channel {cut_agent_token_channel.shape}")
-                # Place EOS token - critical for turn-taking behavior
-                if eospos < len(tokens) and eos_id is not None:
-                    # Normal case: place EOS at the intended position
-                    tokens[eospos] = eos_id
-                elif add_eos_for_interruption:
-                    # Interruption case: place EOS at the last valid position
-                    # This ensures the model learns to stop when interrupted by user
-                    if endpos < len(tokens):
-                        # Case 1: text finished, interrupted during sil/audio generation
-                        # Place EOS right after the last text token (or at sequence end if closer)
-                        actual_eos_pos = min(endpos, len(tokens) - 1)
-                        tokens[actual_eos_pos] = eos_id
-                    elif len(tokens) > 0:
-                        # Case 2: text truncated due to interruption
-                        # Place EOS at the very end of the sequence
-                        tokens[-1] = eos_id
-                    logging.warning(
-                        f"Supervision was likely interrupted: {eospos=} >= {len(tokens)=}. "
-                        f"Placed EOS at fallback position to ensure proper turn-taking training. {diagnostic}"
-                    )
+            # Place EOS token - critical for turn-taking behavior
+            if eospos < len(tokens) and eos_id is not None:
+                # Normal case: place EOS at the intended position
+                tokens[eospos] = eos_id
 
     return tokens
 
 
 def _strip_timestamps(
-        text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
+    text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
 ) -> str:
     """
     Strips timestamp tokens from text, e.g. turns:
@@ -1954,14 +688,19 @@ def _strip_timestamps(
     text = _TIMESTAMP_PATTERN.sub("", text)  # strip timestamp tokens if present
     return _SPACE_PATTERN.sub(" ", text).strip()  # strip multi-whitespaces
 
-def _text_to_ids(text: str, tokenizer: TokenizerSpec,
-                 pad_id: int,
-                 _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
-                 available_frames_for_text=None,
-                 word_align_position='left',
-                 remove_timestamps=False):
+
+def _text_to_ids(
+    text: str,
+    tokenizer: TokenizerSpec,
+    _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
+    available_frames_for_text=None,
+    word_align_position='left',
+    remove_timestamps=False,
+):
     if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
-        text_ids = _text_with_timestamps_to_ids(text, tokenizer, pad_id, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position)
+        text_ids = _text_with_timestamps_to_ids(
+            text, tokenizer, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position
+        )
     else:
         _TIMESTAMP_PATTERN = re.compile(_TIMESTAMP_PATTERN_STR)
         text = _TIMESTAMP_PATTERN.sub("", text)
@@ -1971,26 +710,31 @@ def _text_to_ids(text: str, tokenizer: TokenizerSpec,
     return text_ids
 
 
-def _text_with_timestamps_to_ids(text: str, tokenizer: TokenizerSpec,
-                                 pad_id: int,
-                                 _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
-                                 available_frames_for_text=None,
-                                 word_align_position='left') -> list[int]:
+def _text_with_timestamps_to_ids(
+    text: str,
+    tokenizer: TokenizerSpec,
+    _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
+    available_frames_for_text=None,
+    word_align_position='left',
+) -> list[int]:
     text_ids = []
-    text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(text, tokenizer, _TIMESTAMP_PATTERN_STR)
-    text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(text_ids, word_lens, start_times, end_times, available_frames_for_text, frame_rate=0.08, pad_id=pad_id, word_align_position=word_align_position)
-    
-    if random.random() < 0.1:
-        logging.info(f'text_ids_with_timestamps: {text_ids_with_timestamps}')
-        logging.info(f'text_ids: {text_ids}')
-        logging.info(f'start_times: {start_times}')
-        logging.info(f'end_times: {end_times}')
-        logging.info(f'word_lens: {word_lens}')
+    text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(
+        text, tokenizer, _TIMESTAMP_PATTERN_STR
+    )
+    text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(
+        text_ids,
+        word_lens,
+        start_times,
+        end_times,
+        available_frames_for_text,
+        frame_rate=0.08,
+        pad_id=get_pad_id(tokenizer),
+        word_align_position=word_align_position,
+    )
     return text_ids_with_timestamps
 
 
-def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec,
-                                 _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>"):
+def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>"):
     # Find all time tokens
     time_tokens = re.findall(_TIMESTAMP_PATTERN_STR, text)
     start_time = [int(time_tokens[i]) for i in range(0, len(time_tokens), 2)]
@@ -2010,8 +754,15 @@ def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec,
 
 
 def _expand_text_with_timestamps_and_word_lengths(
-        text_ids, word_lens, start_time, end_time, available_frames_for_text, frame_rate=0.08, pad_id=None, word_align_position='left'
-    ):    
+    text_ids,
+    word_lens,
+    start_time,
+    end_time,
+    available_frames_for_text,
+    frame_rate=0.08,
+    pad_id=None,
+    word_align_position='left',
+):
     """
     Expand word tokens according to start time tokens and word lengths for a batch of sequences.
 

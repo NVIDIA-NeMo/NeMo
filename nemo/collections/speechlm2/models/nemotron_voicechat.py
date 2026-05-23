@@ -35,12 +35,11 @@ from torch.distributed.tensor.parallel import (
 )
 from transformers import DynamicCache
 
-from nemo.collections.audio.parts.utils.resampling import resample
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
-from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
+from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str
-from nemo.collections.speechlm2.modules import EOUDecoder, EOUDecoderFromWav, TransformerARSpeechDecoder
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
@@ -198,10 +197,24 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         self.source_sample_rate = cfg.data.source_sample_rate
         self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
-        # Load Duplex STT model
-        self.stt_model = DuplexSTTModel(OmegaConf.to_container(self.cfg.stt, resolve=True))
+        # Load Duplex STT model — force onto cuda:1 when 2 GPUs are available so that
+        # the 18GB bf16 LLM + RNNT (~21GB total) fit on GPU1 (24.6GB free), leaving
+        # GPU0 (18.6GB free) for EarTTS (~9.6GB) below.
+        _stt_device = 'cuda:1' if torch.cuda.device_count() > 1 else 'cuda:0'
+        with torch.device(_stt_device):
+            self.stt_model = DuplexSTTModel(OmegaConf.to_container(self.cfg.stt, resolve=True))
 
         # Load Duplex TTS model
+        # delete old config name for old version compatibility
+        if (
+            hasattr(self.cfg, "speech_generation")
+            and hasattr(self.cfg.speech_generation, "model")
+            and hasattr(self.cfg.speech_generation.model, "tts_config")
+            and hasattr(self.cfg.speech_generation.model.tts_config, "cas_config")
+            and hasattr(self.cfg.speech_generation.model.tts_config.cas_config, "pretrained_tokenizer_name")
+        ):
+            del self.cfg.speech_generation.model.tts_config.cas_config.pretrained_tokenizer_name
+
         self.tts_model = DuplexEARTTS(OmegaConf.to_container(self.cfg.speech_generation, resolve=True))
         # reset silence tokens to avoid inference issues
         self.tts_model.codec_silence_tokens = self.tts_model.get_codec_silence_frame()
@@ -251,6 +264,28 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+        self._stt_device = None  # set in to() when model parallelism is active
+
+    def to(self, *args, **kwargs):
+        """Intercept Lightning's device placement to implement model parallelism.
+        With 2 GPUs: stt_model (LLM 18GB + RNNT 2.4GB) → cuda:1 (24.6GB free),
+        tts_model (EarTTS 9.6GB) → cuda:0 (18.6GB free, Lightning root device).
+        Without 2 GPUs: fall through to the normal move.
+        """
+        if torch.cuda.device_count() > 1:
+            # Check if the target looks like a CUDA device (Lightning's model_to_device call)
+            target = args[0] if args else kwargs.get('device', None)
+            if target is not None:
+                target_str = str(target)
+                if 'cuda' in target_str or target_str == '0':
+                    logging.info(
+                        "Model parallelism: tts_model → %s, stt_model → cuda:1", target_str
+                    )
+                    self.tts_model.to(target)
+                    self.stt_model.to('cuda:1')
+                    self._stt_device = torch.device('cuda:1')
+                    return self
+        return super().to(*args, **kwargs)
 
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
@@ -277,27 +312,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
     def on_validation_epoch_start(self) -> None:
         self.on_train_epoch_start()
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
-        # Use Parakeet-TDT model for transcription with timestamp support
-        scoring_asr_model = self.cfg.get('scoring_asr', 'nvidia/parakeet-tdt-1.1b')
-        if scoring_asr_model == 'stt_en_fastconformer_transducer_large':
-            # Upgrade to Parakeet-TDT model with timestamp support
-            scoring_asr_model = 'nvidia/parakeet-tdt-1.1b'
-        self.asr_bleu = ASRBLEU(scoring_asr_model).reset()
-
-        # Load separate Parakeet-TDT model for timestamp detection
-        import os
-        from nemo.collections.asr.models import ASRModel
-
-        # Check if it's a local .nemo file or HuggingFace model
-        if os.path.exists(scoring_asr_model) and scoring_asr_model.endswith('.nemo'):
-            # Local .nemo file - use restore_from
-            logging.info(f"Loading local ASR model for timestamps from: {scoring_asr_model}")
-            self.asr_timestamp_model = ASRModel.restore_from(restore_path=scoring_asr_model, map_location=self.device)
-        else:
-            # HuggingFace model - use from_pretrained
-            logging.info(f"Loading HuggingFace ASR model for timestamps: {scoring_asr_model}")
-            self.asr_timestamp_model = ASRModel.from_pretrained(model_name=scoring_asr_model)
-
+        self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.bleu = BLEU().reset()
 
     def on_validation_epoch_end(self, prefix="val") -> None:
@@ -307,9 +322,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         bleu = self.bleu.compute()
         for k, m in bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
-
-        # Combine per-rank files into one per dataset (ifeval_rank0.json + ifeval_rank1.json + ... -> ifeval.json)
-        self.results_logger.compute_and_save()
 
     def validation_step(self, batch: dict, batch_idx: int):
 
@@ -321,29 +333,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
             prompt_tokens = dataset_batch.get("prompt_tokens", None)
             prompt_token_lens = dataset_batch.get("prompt_token_lens", None)
-            function_calls = dataset_batch.get("function_calls", None)
-            function_call_lengths = dataset_batch.get("function_call_lengths", None)
-            function_call_steps = dataset_batch.get("function_call_steps", None)
-            function_responses = dataset_batch.get("function_responses", None)
-            function_response_lengths = dataset_batch.get("function_response_lengths", None)
-            function_response_steps = dataset_batch.get("function_response_steps", None)
-
-            # Calculate extra decoding steps by padding input with silence
-            extra_decoding_seconds = self.cfg.get("extra_decoding_seconds", 0.0)
-            input_pad_len = int(extra_decoding_seconds * self.source_sample_rate)
 
             results = self.offline_inference(
                 dataset_batch["source_audio"],
                 dataset_batch["source_audio_lens"],
                 prompt_tokens=prompt_tokens,
                 prompt_token_lens=prompt_token_lens,
-                input_pad_len=input_pad_len,
-                function_calls=function_calls,
-                function_call_lengths=function_call_lengths,
-                function_call_steps=function_call_steps,
-                function_responses=function_responses,
-                function_response_lengths=function_response_lengths,
-                function_response_steps=function_response_steps,
             )
 
             with fp32_precision():  # resample is fragile to bfloat16 default dtype
@@ -354,148 +349,16 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     pred_audio_lens=(results["audio_len"] / 22050 * 16000).to(torch.long),
                 )
 
-                # Add agent speech start timestamps using ASR model with timestamp detection
-                asr_hyps_with_timestamps = []
-
-                # Check if timestamp detection should be used
-                use_timestamps = self.cfg.get('use_asr_timestamps', True)
-
-                if use_timestamps and hasattr(self, 'asr_timestamp_model'):
-                    try:
-                        # Prepare audio batch for timestamp detection
-                        resampled_audio = resample(results["audio"], 22050, 16000)
-                        audio_list = []
-                        for i in range(len(asr_hyps)):
-                            audio_len = int((results["audio_len"][i] / 22050 * 16000).item())
-                            audio_list.append(resampled_audio[i, :audio_len].cpu())
-
-                        # Transcribe with timestamps
-                        timestamp_outputs = self.asr_timestamp_model.transcribe(
-                            audio_list,
-                            batch_size=len(audio_list),
-                            timestamps=True,
-                            verbose=False,
-                        )
-
-                        for i, asr_text in enumerate(asr_hyps):
-                            # Extract first word timestamp (speech onset)
-                            try:
-                                if hasattr(timestamp_outputs[i], 'timestamp') and timestamp_outputs[i].timestamp:
-                                    word_timestamps = timestamp_outputs[i].timestamp.get('word', [])
-                                    if word_timestamps and len(word_timestamps) > 0:
-                                        # First word's start time is the speech onset
-                                        # word_timestamps is a list of dicts: [{'word': 'one', 'start': 6.32, 'end': 6.4}, ...]
-                                        start_time = word_timestamps[0]['start']
-                                        # Add timestamp marker to beginning of ASR text
-                                        asr_text_with_ts = f"<|{start_time:.2f}|> {asr_text}" if asr_text else f"<|{start_time:.2f}|>"
-                                    else:
-                                        # No words detected (silence/empty)
-                                        asr_text_with_ts = asr_text
-                                else:
-                                    # Model doesn't support timestamps
-                                    asr_text_with_ts = asr_text
-                            except (AttributeError, IndexError, KeyError, TypeError) as e:
-                                # Fallback if timestamp extraction fails
-                                logging.debug(f"Timestamp extraction failed: {e}")
-                                asr_text_with_ts = asr_text
-
-                            asr_hyps_with_timestamps.append(asr_text_with_ts)
-
-                    except Exception as e:
-                        # If timestamp detection fails entirely, fall back to no timestamps
-                        logging.warning(f"Timestamp detection failed, using transcriptions without timestamps: {e}")
-                        asr_hyps_with_timestamps = asr_hyps
-                else:
-                    # Timestamp detection disabled or model not available
-                    asr_hyps_with_timestamps = asr_hyps
-
-                # Decode function channel tokens to text (same as DuplexSTTModel.validation_step)
-                function_channel_text = None
-                function_channel_with_inserted_response = None
-                function_call_positions = None
-                func_tokens_for_pred = results.get("tokens_function_pred", results.get("tokens_function", None))
-                if func_tokens_for_pred is not None:
-                    function_channel_text = tokens_to_str(
-                        func_tokens_for_pred,
-                        results["tokens_len"],
-                        tokenizer=self.stt_model.tokenizer,
-                        pad_id=self.stt_model.text_pad_id,
-                        user_bos_id=self.stt_model.user_bos_id,
-                        eval_text_turn_taking=False,
-                        sil_id=None
-                    )
-
-                    # Also decode full function channel (includes prefilled responses) for debugging
-                    if results.get("tokens_function") is not None:
-                        function_channel_with_inserted_response = tokens_to_str(
-                            results["tokens_function"],
-                            results["tokens_len"],
-                            tokenizer=self.stt_model.tokenizer,
-                            pad_id=self.stt_model.text_pad_id,
-                            user_bos_id=self.stt_model.user_bos_id,
-                            eval_text_turn_taking=False,
-                            sil_id=None
-                        )
-
-                    # Extract function call positions/timing
-                    function_call_positions = self.stt_model._extract_function_call_positions(
-                        func_tokens_for_pred,
-                        results["tokens_len"],
-                        results["tokens_text"]
-                    )
-
-                    # Log function channel predictions before saving
-                    logging.info(f"[Function Channel Predictions - {name}]:")
-                    for idx, fc_text in enumerate(function_channel_text):
-                        sample_id = dataset_batch['sample_id'][idx]
-                        logging.info(f"  Sample {sample_id}: {fc_text}")
-                        if function_call_positions is not None and idx < len(function_call_positions):
-                            pos_info = function_call_positions[idx]
-                            logging.info(f"    Timeline for sample {sample_id}:")
-                            if pos_info.get("user_speech_segments"):
-                                for i, seg in enumerate(pos_info["user_speech_segments"]):
-                                    logging.info(f"      User Speech {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}]")
-                            if pos_info.get("function_calls"):
-                                for i, call in enumerate(pos_info["function_calls"]):
-                                    logging.info(f"      Function Call {i+1}: pos [{call['start_pos']}:{call['end_pos']}]")
-                            if pos_info.get("agent_text_segments"):
-                                for i, seg in enumerate(pos_info["agent_text_segments"]):
-                                    logging.info(f"      Agent Response {i+1}: pos [{seg['start_pos']}:{seg['end_pos']}] - '{seg['text_preview']}'")
-
-                # Decode ground truth function channel (target)
-                target_function_channel = None
-                if function_calls is not None:
-                    B_fc = function_calls.shape[0]
-                    target_function_channel_list = []
-                    for b in range(B_fc):
-                        calls_for_batch = []
-                        if function_call_lengths is not None:
-                            num_calls = (function_call_lengths[b] > 0).sum().item()
-                            for t in range(num_calls):
-                                call_length = function_call_lengths[b, t].item()
-                                if call_length > 0:
-                                    call_tokens = function_calls[b, t, :call_length]
-                                    call_text = self.stt_model.tokenizer.ids_to_text(call_tokens.tolist())
-                                    calls_for_batch.append(call_text)
-                        target_text = "".join(calls_for_batch) if calls_for_batch else ""
-                        target_function_channel_list.append(target_text)
-                    target_function_channel = target_function_channel_list
-                    logging.info(f"[Target Function Channel - {name}]:")
-                    for idx, target_fc_text in enumerate(target_function_channel):
-                        sample_id = dataset_batch['sample_id'][idx]
-                        logging.info(f"  Sample {sample_id}: {target_fc_text}")
-
                 self.results_logger.update(
                     name=name,
                     refs=dataset_batch["target_texts"],
                     hyps=results["text"],
-                    asr_hyps=asr_hyps_with_timestamps,
+                    asr_hyps=asr_hyps,
                     samples_id=dataset_batch['sample_id'],
                     pred_audio=results["audio"],
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
-                    audio_lens=dataset_batch["source_audio_lens"] + input_pad_len,
                     eou_pred=(
                         results["gen_eou"]
                         if "gen_eou" in results
@@ -504,10 +367,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     fps=self.source_fps,
                     results=results if self.cfg.get("dump_tokens_text", False) else None,
                     tokenizer=self.stt_model.tokenizer,
-                    function_channel_text=function_channel_text,
-                    function_channel_with_inserted_response=function_channel_with_inserted_response,
-                    target_function_channel=target_function_channel,
-                    function_call_positions=function_call_positions,
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
@@ -532,12 +391,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         force_bos_positions=None,
         decode_audio: bool = True,
         incremental_audio_decoding: bool = False,
-        function_calls: torch.Tensor = None,
-        function_call_lengths: torch.Tensor = None,
-        function_responses: torch.Tensor = None,
-        function_response_lengths: torch.Tensor = None,
-        function_response_steps: torch.Tensor = None,
-        function_call_steps: torch.Tensor = None,
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction.
@@ -557,21 +410,20 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
         """
 
+        # With model parallelism, stt_model may be on a different device than the Lightning root device.
+        # Transfer input tensors to stt_model's device before calling STT methods.
+        stt_dev = self._stt_device if self._stt_device is not None else self.device
+        input_signal = input_signal.to(stt_dev)
+        input_signal_lens = input_signal_lens.to(stt_dev)
+        if prompt_tokens is not None:
+            prompt_tokens = prompt_tokens.to(stt_dev)
+        if prompt_token_lens is not None:
+            prompt_token_lens = prompt_token_lens.to(stt_dev)
+
         inference_state = self.stt_model._init_inference(
             input_signal, input_signal_lens, input_pad_len,
             force_bos_positions, prompt_tokens, prompt_token_lens
         )
-
-        if function_response_lengths is not None or function_call_lengths is not None:
-            inference_state = self.stt_model._expand_for_function_calling(
-                inference_state,
-                function_call_lengths=function_call_lengths,
-                function_responses=function_responses,
-                function_response_lengths=function_response_lengths,
-                function_response_steps=function_response_steps,
-                function_call_steps=function_call_steps,
-                prompt_token_lens=prompt_token_lens,
-            )
 
         ans, inference_state = self.stt_model._step_zero(inference_state)
 
@@ -617,16 +469,15 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Autoregressive loop
         for t in range(1, T):
             # do one step inference on Duplex STT model
-            _ = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
-            ans = _ if isinstance(_, dict) else ans
+            _  = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
 
             # do one step inference on Duplex TTS model
-            # current subword id is always seem
-            current_subword_id = inference_state["gen_text"][:, t].unsqueeze(-1)
+            # Transfer STT outputs (may be on cuda:1) to TTS device (self.device = cuda:0).
+            current_subword_id = inference_state["gen_text"][:, t].unsqueeze(-1).to(self.device)
             if t == 1:
                 prev_subword_id = first_context_subword_id
             else:
-                prev_subword_id = inference_state["gen_text"][:, t - 1].unsqueeze(-1)
+                prev_subword_id = inference_state["gen_text"][:, t - 1].unsqueeze(-1).to(self.device)
 
             # create subword_mask
             current_subword_mask = subword_mask[:, t].unsqueeze(-1)
@@ -662,6 +513,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             gen_codes = gen_codes[:, :inference_state["T_local"]]
 
         ans = self.stt_model._post_inference(inference_state, prompt_token_lens)
+        # Normalize all tensor results to the Lightning root device (cuda:0) so that
+        # downstream metric computation doesn't hit cross-device errors.
+        ans = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in ans.items()}
 
         if decode_audio:
             gen_codes = gen_codes[:, :inference_state["T_local"]]

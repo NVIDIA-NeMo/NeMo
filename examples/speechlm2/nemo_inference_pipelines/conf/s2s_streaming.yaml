@@ -87,6 +87,7 @@ s2s:
   inference_user_pad_boost: 0.8         # Boost ASR pad logit
   inference_user_bos_boost: null         # Boost ASR BOS logit
   inference_user_eos_boost: null         # Boost ASR EOS logit
+  inference_bos_boost: 0.0              # Suppress agent BOS (model's own start-of-turn). Default 0.0 = disabled. Override via S2S_INFERENCE_BOS_BOOST env var. Negative = suppress.
 
   system_prompt: ???
   augment_fc_system_prompt: true      # Auto-wrap tools-only FC system prompts with TOOLCALL instructions

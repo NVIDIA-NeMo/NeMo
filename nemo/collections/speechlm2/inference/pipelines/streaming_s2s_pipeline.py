@@ -764,7 +764,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			"sports": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB",
 			"entertainment": "CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtVnVHZ0pWVXlnQVAB",
 		}
-		n = min(int(args.get("n", 1)), 5)
+		n = min(int(args.get("n", 1)), 1)
 		if topic and topic in topic_map:
 			url = f"https://news.google.com/rss/topics/{topic_map[topic]}?hl=en-US&gl=US&ceid=US:en"
 		else:

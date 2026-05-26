@@ -746,7 +746,6 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				"authors": ", ".join(a.get("name", "") for a in (p.get("authors", []) or [])[:3]),
 				"summary": (p.get("summary", "") or "")[:300],
 				"upvotes": paper.get("numUpvotes", 0),
-				"url": f"https://huggingface.co/papers/{p.get('id', '')}",
 			})
 		except Exception as e:
 			return json.dumps({"error": f"HuggingFace papers API failed: {e}"})

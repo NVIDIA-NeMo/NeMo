@@ -314,16 +314,164 @@ def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfi
     return use_iterable_dataset
 
 
-def _build_dataloader(use_stateful_dataloader: bool, **kwargs) -> torch.utils.data.DataLoader:
+def _build_dataloader(
+    use_stateful_dataloader: bool,
+    *,
+    dp_rank: Optional[int] = None,
+    dp_world_size: Optional[int] = None,
+    dp_group: Optional[Any] = None,
+    **kwargs,
+) -> torch.utils.data.DataLoader:
     """
     Construct a DataLoader, optionally using ``torchdata.stateful_dataloader.StatefulDataLoader``
     so that resume picks up at the exact next batch via ``state_dict()`` / ``load_state_dict()``.
+
+    When ``dp_rank`` / ``dp_world_size`` are provided AND we're building a
+    stateful loader under multi-rank training, wrap ``StatefulDataLoader`` in
+    :class:`_PerRankStatefulDataLoader`. The wrapper all-gathers each rank's
+    local state at save time and scatters back the right entry at load time,
+    so Lightning's automatic ``FitLoop`` save-and-restore of
+    ``CombinedLoader._state_dicts()`` doesn't broadcast rank-0's iterator
+    state to every rank (which would corrupt per-shard partitioning — see
+    the 2026-05-14 post-mortem).
     """
     if use_stateful_dataloader:
         from torchdata.stateful_dataloader import StatefulDataLoader
 
+        if dp_world_size is not None and dp_world_size > 1:
+            return _PerRankStatefulDataLoader(
+                dp_rank=dp_rank if dp_rank is not None else 0,
+                dp_world_size=dp_world_size,
+                dp_group=dp_group,
+                **kwargs,
+            )
         return StatefulDataLoader(**kwargs)
     return torch.utils.data.DataLoader(**kwargs)
+
+
+class _PerRankStatefulDataLoader:
+    """``StatefulDataLoader`` whose ``state_dict`` is a per-rank list.
+
+    Why this exists: Lightning's ``FitLoop`` saves dataloader state via
+    ``CombinedLoader._state_dicts()`` → ``loader.state_dict()`` (collective
+    across ranks but only rank 0's return value is persisted to meta.pt),
+    then on resume calls ``loader.load_state_dict(state)`` on EVERY rank with
+    that single rank-0-only state. Per-shard partitioning (``shard_id =
+    dp_rank * num_workers + worker_id`` inside lhotse's
+    ``PartitionedIndexedIterator``) then desynchronises — rank 28 worker 0
+    loads rank 0 worker 0's ``shard_id=0`` while its own current shard_id is
+    112, the iterator's first ``iterate()`` call raises ValueError, and the
+    rest of the ranks get SIGTERMed via ``srun --kill-on-bad-exit=1``. (See
+    ``agent-debug-workspace/0909-en-only-id2-4node-postfix/DIAGNOSIS_ORD_vs_IAD.md``.)
+
+    The fix turns ``state_dict()`` into a per-rank gather and
+    ``load_state_dict(state)`` into a per-rank scatter. The serialised payload
+    on disk becomes a list of N tagged state dicts (one per DP rank); on
+    every rank, the wrapper picks ``per_rank[self._dp_rank]``. This works
+    whether the call comes from Lightning's automatic FitLoop path OR from
+    our DataModule.load_state_dict override, because both go through this
+    one method.
+
+    We delegate to a contained ``StatefulDataLoader`` rather than subclass
+    it: subclassing would inherit ``_Stateful`` via the runtime-checkable
+    Protocol AND every attribute Lightning's iterator-management code
+    introspects (``flattened``, ``persistent_workers``, etc.), which is what
+    we want; but it would also inherit ``__init__`` whose signature includes
+    parameters we don't want at this layer. Composition keeps the wrapper's
+    constructor clean and lets us forward attribute lookups via
+    ``__getattr__``.
+    """
+
+    def __init__(
+        self,
+        *,
+        dp_rank: int,
+        dp_world_size: int,
+        dp_group: Optional[Any] = None,
+        **kwargs,
+    ) -> None:
+        from torchdata.stateful_dataloader import StatefulDataLoader
+
+        self._dp_rank = int(dp_rank)
+        self._dp_world_size = int(dp_world_size)
+        self._dp_group = dp_group
+        self._inner = StatefulDataLoader(**kwargs)
+
+    def state_dict(self) -> dict:
+        local_state = self._inner.state_dict()
+        tagged = {
+            "dp_rank": self._dp_rank,
+            "dp_world_size": self._dp_world_size,
+            "state": local_state,
+        }
+        if self._dp_world_size <= 1 or not (
+            torch.distributed.is_available() and torch.distributed.is_initialized()
+        ):
+            per_rank = [tagged]
+        else:
+            per_rank: List[Optional[dict]] = [None] * self._dp_world_size
+            torch.distributed.all_gather_object(per_rank, tagged, group=self._dp_group)
+        return {"train_dataloader_per_rank": per_rank}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        if not state_dict:
+            return
+        # We exclusively support the per-rank wire format produced by our
+        # own ``state_dict()``. Anything else — a bare inner state, a
+        # rank-0-only StatefulDataLoader payload (the shape Lightning's
+        # FitLoop used to broadcast and silently corrupt resume), an old
+        # DataModule key — must fail loudly so any partial-rollforward or
+        # checkpoint-format mismatch is caught at load time rather than
+        # producing wrong data several minutes into training.
+        if "train_dataloader_per_rank" not in state_dict:
+            raise RuntimeError(
+                "PerRankStatefulDataLoader.load_state_dict: state must use "
+                "the per-rank wire format (top-level key "
+                "'train_dataloader_per_rank'); got keys "
+                f"{sorted(state_dict.keys())}. This dataloader only supports "
+                "states produced by its own state_dict()."
+            )
+        per_rank = state_dict["train_dataloader_per_rank"]
+        if not isinstance(per_rank, list) or len(per_rank) != self._dp_world_size:
+            raise RuntimeError(
+                f"PerRankStatefulDataLoader: state has dp_world_size="
+                f"{len(per_rank) if isinstance(per_rank, list) else 'unknown'} "
+                f"but the current run has dp_world_size={self._dp_world_size}."
+            )
+        entry = per_rank[self._dp_rank]
+        if (
+            not isinstance(entry, dict)
+            or "state" not in entry
+            or "dp_rank" not in entry
+            or "dp_world_size" not in entry
+        ):
+            raise RuntimeError(
+                f"PerRankStatefulDataLoader: malformed per-rank entry at index "
+                f"{self._dp_rank}: expected keys {{'dp_rank', 'dp_world_size', "
+                f"'state'}}, got {list(entry.keys()) if isinstance(entry, dict) else type(entry).__name__}."
+            )
+        saved_rank, saved_world = entry["dp_rank"], entry["dp_world_size"]
+        if saved_rank != self._dp_rank or saved_world != self._dp_world_size:
+            raise RuntimeError(
+                f"PerRankStatefulDataLoader: state tagged (dp_rank={saved_rank}, "
+                f"dp_world_size={saved_world}) loaded on (dp_rank={self._dp_rank}, "
+                f"dp_world_size={self._dp_world_size})."
+            )
+        self._inner.load_state_dict(entry["state"])
+
+    # Forward everything else to the inner StatefulDataLoader so Lightning's
+    # iterator-management, ``flattened``-discovery and friends keep working.
+    def __getattr__(self, name: str) -> Any:
+        # ``__getattr__`` only fires when normal attribute lookup fails, so the
+        # explicit attributes (``_inner``, ``_dp_rank``, ...) are reached
+        # directly without bouncing through here.
+        return getattr(self._inner, name)
+
+    def __iter__(self):
+        return iter(self._inner)
+
+    def __len__(self):
+        return len(self._inner)
 
 
 def _maybe_init_main_process_for_iterable(num_workers: int, global_rank: int, world_size: int, seed: int) -> None:
@@ -446,6 +594,8 @@ def get_lhotse_dataloader_from_single_config(
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
     dloader = _build_dataloader(
         use_stateful_dataloader=config.use_stateful_dataloader,
+        dp_rank=global_rank,
+        dp_world_size=world_size,
         **dloader_kwargs,
         batch_size=None,
         num_workers=config.num_workers,
@@ -579,6 +729,8 @@ def get_lhotse_dataloader_from_multi_config(
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
     dloader = _build_dataloader(
         use_stateful_dataloader=shared_opts.use_stateful_dataloader,
+        dp_rank=global_rank,
+        dp_world_size=world_size,
         **dloader_kwargs,
         batch_size=None,
         num_workers=shared_opts.num_workers,

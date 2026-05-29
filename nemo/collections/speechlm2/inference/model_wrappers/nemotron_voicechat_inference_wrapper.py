@@ -1465,8 +1465,8 @@ class NemotronVoicechatInferenceWrapper:
                 if fc_state.get("injecting_response", False):
                     fc_state["injecting_response"] = False
                     logging.info(
-                        "[FC Async] Response injection complete at step %d (frame %d), "
-                        "EOTR was included in forced tokens — exiting async on next cycle",
+                        "[FC Async] Forced TOOL_RESPONSE tokens drained at step %d (frame %d) "
+                        "— now awaiting model to predict EOTR on function channel",
                         async_steps, t,
                     )
 
@@ -1520,6 +1520,8 @@ class NemotronVoicechatInferenceWrapper:
                         async_steps += 1
                         t += 1
                         break
+                elif self._fc_eotr_id is not None and func_tok_val == self._fc_eotr_id:
+                    logging.info(f"[FC Async] EOTR predicted at async step {async_steps} (frame {t})")
                 elif fc_state.get("active", False) and func_tok_val != pad_id:
                     fc_state.setdefault("call_tokens", []).append(func_tok_val)
 

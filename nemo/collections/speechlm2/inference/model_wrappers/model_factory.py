@@ -362,7 +362,10 @@ class VllmLLMModel(ModelInterface):
     def _get_special_token_ids_from_vllm_tokenizer(tokenizer) -> Set[int]:
         """
         Extract special token IDs from a vLLM tokenizer.
-        Looks for: '<s>' (bos), '</s>' (eos), '<SPECIAL_12>' (pad).
+        Looks for: '<s>' (bos), '</s>' (eos), '<SPECIAL_12>' (pad),
+        '<SPECIAL_20>' (SOTC), '<SPECIAL_21>' (EOTC), '<SPECIAL_22>' (EOTR).
+        Protocol tokens (SOTC/EOTC/EOTR) are excluded from repetition penalty
+        so the FC channel can re-emit them across multiple tool-call turns.
 
         Args:
             tokenizer: A vLLM CachedTokenizer instance.
@@ -371,7 +374,7 @@ class VllmLLMModel(ModelInterface):
             Set of special token IDs.
         """
         special_ids = set()
-        for token in ('<s>', '</s>', '<SPECIAL_12>'):
+        for token in ('<s>', '</s>', '<SPECIAL_12>', '<SPECIAL_20>', '<SPECIAL_21>', '<SPECIAL_22>'):
             try:
                 tid = tokenizer.convert_tokens_to_ids(token)
                 if isinstance(tid, int):
@@ -834,10 +837,11 @@ class NativeModel(ModelInterface):
 
         Args:
             model: The DuplexS2SExternalSpeechDecoderModel instance
-            special_token_ids: Set of special token IDs (pad, eos, bos) that should bypass sampling.
+            special_token_ids: Set of special token IDs (pad, eos, bos, SOTC, EOTC, EOTR) that should bypass sampling.
                                These tokens will use greedy decoding and won't be penalized.
                                If None, will try to extract from model.tokenizer for tokens:
-                               '<s>' (bos), '</s>' (eos), '<SPECIAL_12>' (pad).
+                               '<s>' (bos), '</s>' (eos), '<SPECIAL_12>' (pad),
+                               '<SPECIAL_20>' (SOTC), '<SPECIAL_21>' (EOTC), '<SPECIAL_22>' (EOTR).
                                You can also manually provide: {tokenizer.pad_token_id, tokenizer.eos_token_id, tokenizer.bos_token_id}
             top_p: Top-p (nucleus) sampling threshold. 1.0 disables it (greedy). Default: 1.0
             repetition_penalty: Penalty for repeated tokens. 1.0 disables it. Default: 1.0
@@ -845,8 +849,8 @@ class NativeModel(ModelInterface):
             temperature: Temperature for sampling. 1.0 = no change, <1.0 = sharper, >1.0 = flatter.
                         0.0 = greedy (argmax). Default: 1.0
         """
-        # Default special token IDs: bos=1, eos=2, pad=12
-        DEFAULT_SPECIAL_TOKEN_IDS = {1, 2, 12}
+        # Default special token IDs: bos=1, eos=2, pad=12, SOTC=20, EOTC=21, EOTR=22
+        DEFAULT_SPECIAL_TOKEN_IDS = {1, 2, 12, 20, 21, 22}
 
         # Try to extract special token IDs from model if not provided
         if special_token_ids is None:

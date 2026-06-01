@@ -18,3 +18,4 @@ import nemo.agents.voice_agent.evaluation.scenarios.data.fastbite  # noqa: E402,
 import nemo.agents.voice_agent.evaluation.scenarios.data.qa  # noqa: E402, F401
 import nemo.agents.voice_agent.evaluation.scenarios.data.restaurant  # noqa: E402, F401
 import nemo.agents.voice_agent.evaluation.scenarios.data.simple_qa  # noqa: E402, F401
+import nemo.agents.voice_agent.evaluation.scenarios.data.thinker_talker_airline  # noqa: E402, F401

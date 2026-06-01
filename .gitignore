@@ -191,6 +191,7 @@ node_modules/
 .vite/
 bot_server.*
 eval_results/
+examples/voice_agent/evaluation/eval_results*/
 audio_logs/
 audio_logs_user/
 audio_logs_agent/

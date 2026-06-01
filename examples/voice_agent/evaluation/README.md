@@ -115,6 +115,7 @@ Current scnarios are relatively simple, usually contains no more than 3 tool cal
 | `customer_service` | 10 | `ResolveTicketTool` | TechCorp customer service — billing disputes, order delays, defective returns, plan upgrades, account access, warranty claims, subscription cancellations, wrong items, and service outages. |
 | `qa` | 10 | `SaveQuestionAnswerTool` | Single-turn Q&A — geography, math, science, history, literature, weather (uses `GetCityWeatherTool`), and general knowledge. |
 | `eva_airline` | 2 | bridge-pulled (no LLM summary tool) | SkyWay Airlines voice agent — flight changes, IRROPS, refunds, vouchers. Full 15-tool eva surface ported from [ServiceNow/eva](https://github.com/ServiceNow/eva/tree/0.1.3) (MIT). Action records are auto-aggregated by write tools and pulled by the bridge at end-of-scenario via the `get_scenario_summary` RTVI action — not emitted by an LLM-callable tool. Currently: `eva_airline__smoke` (auth + exit), `eva_airline__voluntary_date_change`. See [eva_airline domain notes](#eva_airline-domain-notes) below. |
+| `thinker_talker_airline` | 3 | post-run scorer | Prototype scenarios for the external Thinker/Talker airline example. The NeMo bridge drives fragmented multi-turn voice conversations; `score_thinker_talker_airline.py` scores end-to-end intent achievement and `call_thinker` rephrased-query accuracy when tool/query telemetry is available. |
 | *legacy (no domain)* | 4 | — | `fastbite`, `simple_qa_1`, `simple_qa_2`, `simple_qa_3` — original scenarios kept for backward compatibility. |
 
 Run `python run_evaluation.py --list` for the full list of scenario names, or `--list-domains` for just the domain summary.
@@ -167,6 +168,66 @@ python run_evaluation.py \
 **Tuning `max_duration`.** `EvaAirlineBaseScenario.max_duration = 900` (15 minutes) is the domain default; the `--duration` CLI flag overrides per run. Voice round-trips are slow (~30–40s/turn on a healthy run), so leave plenty of headroom. The closing protocol alone (confirm + ask anything else + goodbye) costs 3–4 turns after the work is done.
 
 **Known limitations.** Parakeet STT mis-recognizes spelled-out alphanumerics (homophones like "four" / "for", letter sequences sometimes collapsed into a single word). When a scenario fails, **compare the user-sim's text in `bot_logs_user/llm_context.json` against the agent-side STT output in `bot_logs_agent/llm_context.json`** to distinguish user-simulator prompt-following failures from voice-pipeline accuracy issues.
+
+### Thinker/Talker airline prototype
+
+This domain is for evaluating the Thinker/Talker airline example from the
+nemotron voice-agent repo with the NeMo voice-agent evaluator on this branch.
+The scenarios live in
+`examples/voice_agent/evaluation/data/thinker_talker_airline_cases.json`.
+They focus on fragmented, multi-turn inputs where the Talker must preserve
+context across pauses before calling its internal Thinker.
+
+Run a live prototype with the helper script:
+
+```bash
+# Terminal 1 - NeMo simulated user bot
+cd examples/voice_agent/evaluation
+./run_user_nemotron.sh
+
+# Terminal 2 - nemotron voice-agent booking backend
+cd /path/to/nemotron-voice-agent
+PYTHONPATH=src uv run python -m cascaded.agentic_airline.booking_server.server
+
+# Terminal 3 - nemotron voice-agent Thinker/Talker server
+cd /path/to/nemotron-voice-agent
+EXAMPLE_SELECTION=cascaded/thinker_talker TRANSPORT_SELECTION=websocket PIPELINE_TLS=false \
+  uv run python src/server.py --port 7860
+
+# Terminal 4 - NeMo bridge plus Thinker/Talker scorer
+cd /path/to/NeMo/examples/voice_agent/evaluation
+./run_thinker_talker_airline_eval.sh
+```
+
+The helper defaults to:
+
+- `USER_URL=ws://localhost:8766`
+- `AGENT_URL=ws://localhost:7860/api/ws?pipeline_mode=cascaded/thinker_talker`
+- `OUTPUT_DIR=examples/voice_agent/evaluation/eval_results_thinker_talker`
+
+You can also run only the bridge and score later:
+
+```bash
+python run_evaluation.py \
+  --user-url ws://localhost:8766 \
+  --agent-url "ws://localhost:7860/api/ws?pipeline_mode=cascaded/thinker_talker" \
+  --domain thinker_talker_airline \
+  --judge-url ""
+
+python score_thinker_talker_airline.py \
+  --session-dir eval_results/eval_YYYYMMDD_HHMMSS \
+  --write --pretty
+```
+
+Current learning from the prototype: the external Thinker/Talker `/api/ws`
+endpoint speaks the normal audio/RTVI session protocol, but it does not expose
+NeMo's `update_system_prompt`, `reset`, `get_context_history`, or
+`get_scenario_summary` actions. Because of that, the post-run scorer reports
+tool-result and `call_thinker.query` metrics as missing unless a compatible
+context or Thinker lifecycle trace is present in the scenario directory. The
+transcript-based intent score is still useful immediately, and full accuracy
+scoring becomes available after adding a small trace export/action on the
+Thinker/Talker side.
 
 ## Evaluation Methods
 

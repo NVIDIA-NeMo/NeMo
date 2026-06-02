@@ -114,7 +114,7 @@ Current scnarios are relatively simple, usually contains no more than 3 tool cal
 | `restaurant` | 11 | `PlaceOrderTool`, `JoinWaitListTool` / `DropWaitListTool` | Ordering food at pizza, burger, and deli restaurants, plus a waitlist join/drop scenario (demonstrates shared state across tools). |
 | `customer_service` | 10 | `ResolveTicketTool` | TechCorp customer service — billing disputes, order delays, defective returns, plan upgrades, account access, warranty claims, subscription cancellations, wrong items, and service outages. |
 | `qa` | 10 | `SaveQuestionAnswerTool` | Single-turn Q&A — geography, math, science, history, literature, weather (uses `GetCityWeatherTool`), and general knowledge. |
-| `eva_airline` | 2 | bridge-pulled (no LLM summary tool) | SkyWay Airlines voice agent — flight changes, IRROPS, refunds, vouchers. Full 15-tool eva surface ported from [ServiceNow/eva](https://github.com/ServiceNow/eva/tree/0.1.3) (MIT). Action records are auto-aggregated by write tools and pulled by the bridge at end-of-scenario via the `get_scenario_summary` RTVI action — not emitted by an LLM-callable tool. Currently: `eva_airline__smoke` (auth + exit), `eva_airline__voluntary_date_change`. See [eva_airline domain notes](#eva_airline-domain-notes) below. |
+| `eva_airline` | 50 | bridge-pulled (no LLM summary tool) | SkyWay Airlines voice agent — flight changes, IRROPS, refunds, vouchers. Full 15-tool eva surface ported from [ServiceNow/eva](https://github.com/ServiceNow/eva/tree/0.1.3) (MIT). Action records are auto-aggregated by write tools and pulled by the bridge at end-of-scenario via the `get_scenario_summary` RTVI action — not emitted by an LLM-callable tool. Includes 5 hand-authored seed scenarios and generated scenarios from the eva airline dataset. See [eva_airline domain notes](#eva_airline-domain-notes) below. |
 | `thinker_talker_airline` | 3 | post-run scorer | Prototype scenarios for the external Thinker/Talker airline example. The NeMo bridge drives fragmented multi-turn voice conversations; `score_thinker_talker_airline.py` scores end-to-end intent achievement and `call_thinker` rephrased-query accuracy when tool/query telemetry is available. |
 | *legacy (no domain)* | 4 | — | `fastbite`, `simple_qa_1`, `simple_qa_2`, `simple_qa_3` — original scenarios kept for backward compatibility. |
 
@@ -147,7 +147,7 @@ python run_evaluation.py \
     --judge-model <model-name>
 ```
 
-Or run the whole domain (5 scenarios; expect ~50 minutes at current pacing):
+Or run the whole domain (50 scenarios; expect a long multi-hour run at current voice pacing):
 
 ```bash
 python run_evaluation.py \

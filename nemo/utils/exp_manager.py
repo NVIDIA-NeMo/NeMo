@@ -1452,6 +1452,13 @@ class StatelessTimer(Timer):
         """_check_time_remaining"""
         super()._check_time_remaining(trainer)
         if trainer.should_stop:
+            before_flush = _describe_batch_progress(trainer)
+            logging.info(
+                "StatelessTimer deadline reached; saving last checkpoint "
+                f"global_step={getattr(trainer, 'global_step', None)} "
+                f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+                f"batch_progress_before_flush={before_flush}"
+            )
             # PTL's TrainingEpochLoop.advance() calls the on_train_batch_end hooks (which is where
             # Timer._check_time_remaining fires) BEFORE batch_progress.increment_completed(). The
             # current batch's optim step has already advanced global_step, so saving here would
@@ -1461,14 +1468,44 @@ class StatelessTimer(Timer):
             # global_step per wall-time resume. Flush the in-flight batch first to keep the
             # saved state self-consistent.
             _flush_in_flight_batch_progress(trainer)
+            after_flush = _describe_batch_progress(trainer)
             checkpoint_callback: Optional[NeMoModelCheckpoint] = trainer.checkpoint_callback
             if checkpoint_callback:
+                save_started = time.monotonic()
                 monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
                 checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+                logging.info(
+                    "StatelessTimer last checkpoint save finished "
+                    f"global_step={getattr(trainer, 'global_step', None)} "
+                    f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+                    f"batch_progress_after_flush={after_flush} "
+                    f"last_model_path={getattr(checkpoint_callback, 'last_model_path', None)} "
+                    f"save_duration_sec={time.monotonic() - save_started:.3f}"
+                )
+            else:
+                logging.warning("StatelessTimer deadline reached but trainer.checkpoint_callback is not configured")
             # Throw this exception to signal to Lightning to terminate gracefully.
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
+
+
+def _describe_batch_progress(trainer: lightning.pytorch.Trainer) -> Dict[str, Any]:
+    """Return a compact, log-friendly snapshot of Lightning's train batch progress."""
+    try:
+        batch_progress = trainer.fit_loop.epoch_loop.batch_progress
+    except AttributeError:
+        return {}
+
+    return {
+        "current_ready": getattr(batch_progress.current, "ready", None),
+        "current_processed": getattr(batch_progress.current, "processed", None),
+        "current_completed": getattr(batch_progress.current, "completed", None),
+        "total_ready": getattr(batch_progress.total, "ready", None),
+        "total_processed": getattr(batch_progress.total, "processed", None),
+        "total_completed": getattr(batch_progress.total, "completed", None),
+        "is_last_batch": getattr(batch_progress, "is_last_batch", None),
+    }
 
 
 def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
@@ -1485,6 +1522,44 @@ def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
         return
     if batch_progress.current.ready > batch_progress.current.completed:
         batch_progress.increment_completed()
+
+
+def _save_last_checkpoint_and_exit(trainer: lightning.pytorch.Trainer, reason: str) -> None:
+    """Save the last checkpoint for graceful shutdown and exit Lightning.
+
+    ``reason`` should describe the caller-visible shutdown trigger. The
+    checkpoint policy itself is unchanged: this only asks the configured
+    ``NeMoModelCheckpoint`` to update its existing ``*-last.ckpt`` target.
+    """
+    before_flush = _describe_batch_progress(trainer)
+    logging.info(
+        f"{reason}; saving last checkpoint "
+        f"global_step={getattr(trainer, 'global_step', None)} "
+        f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+        f"batch_progress_before_flush={before_flush}"
+    )
+    _flush_in_flight_batch_progress(trainer)
+    after_flush = _describe_batch_progress(trainer)
+
+    checkpoint_callback: Optional[NeMoModelCheckpoint] = getattr(trainer, "checkpoint_callback", None)
+    if checkpoint_callback:
+        save_started = time.monotonic()
+        monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
+        checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+        logging.info(
+            "Graceful shutdown last checkpoint save finished "
+            f"global_step={getattr(trainer, 'global_step', None)} "
+            f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+            f"batch_progress_after_flush={after_flush} "
+            f"last_model_path={getattr(checkpoint_callback, 'last_model_path', None)} "
+            f"save_duration_sec={time.monotonic() - save_started:.3f}"
+        )
+    else:
+        logging.warning(f"{reason}; trainer.checkpoint_callback is not configured")
+
+    from lightning.pytorch.utilities.exceptions import _TunerExitException
+
+    raise _TunerExitException()
 
 
 def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:
@@ -1504,8 +1579,31 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
     the training state before validation has run.
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize skip-validation bookkeeping."""
+        super().__init__(*args, **kwargs)
+        self._skip_resume_validation_once = False
+
+    def advance(self, data_fetcher) -> None:
+        """Skip restart validation without replaying an already-completed train batch."""
+        if self.restarting and super()._should_check_val_fx(data_fetcher):
+            logging.info("Skipping restart validation without replaying a completed training batch")
+            self._skip_resume_validation_once = True
+            self.restarting = False
+            return
+        return super().advance(data_fetcher)
+
+    def on_advance_end(self, data_fetcher) -> None:
+        """Clear the one-shot restart-validation skip after normal epoch-loop bookkeeping."""
+        try:
+            return super().on_advance_end(data_fetcher)
+        finally:
+            self._skip_resume_validation_once = False
+
     def _should_check_val_fx(self, data_fetcher) -> bool:
         """_should_check_val_fx"""
+        if self._skip_resume_validation_once:
+            return False
         if self.restarting:
             return False
         return super()._should_check_val_fx(data_fetcher)

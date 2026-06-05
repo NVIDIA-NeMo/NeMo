@@ -75,6 +75,22 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		self.s2s_model = s2s_model
 		self.device = self.s2s_model.device
 
+		# ----- TTS PAD-silence substitution: pipeline → wrapper wiring -----
+		# The wrapper needs a way to look up per-stream state (Option B —
+		# multi-stream-safe). We hand it our `get_or_create_state(stream_id)`
+		# as a callable; the wrapper stores it and uses it at the three TTS
+		# call sites to read/write the per-stream `agent_idle` flag.
+		#
+		# Without this wiring the wrapper falls back to its single instance
+		# attribute `_agent_idle` (preserves prior single-stream behavior).
+		# Wrapped in try/except + hasattr so the pipeline still works against
+		# older wrapper versions that don't have this method.
+		try:
+			if hasattr(self.s2s_model, "_set_streaming_state_getter"):
+				self.s2s_model._set_streaming_state_getter(self.get_or_create_state)
+		except Exception:
+			pass
+
 		# ------------------------------------------------------------------
 		# Streaming configuration
 		# ------------------------------------------------------------------
@@ -1473,6 +1489,7 @@ out center {limit};
 			rnnt_partial_hypotheses=context.rnnt_partial_hypotheses,
 			fc_state=context.fc_state,
 			tool_response_text=context.tool_response_text,
+			stream_id=stream_ids[0] if stream_ids else None,
 		)
 		step_wall_end = time.time()
 
@@ -1719,6 +1736,7 @@ out center {limit};
 									rnnt_text_queue=rnnt_text_queue,
 									abort_event=abort_event,
 									quit_async_event=quit_async_event,
+									stream_id=stream_id,
 									)
 
 							# Two-phase async FC: the first LLM run above generated the
@@ -1773,6 +1791,7 @@ out center {limit};
 											tts_audio_output_queue=tts_audio_output_queue,
 											abort_event=abort_event,
 											request_id=request_id,
+											stream_id=stream_id,
 										)
 										# TTS generation is faster than real-time playback.
 										# Sleep for the remaining playback duration so the caller
@@ -1866,6 +1885,7 @@ out center {limit};
 											rnnt_text_queue=rnnt_text_queue,
 											abort_event=abort_event,
 											quit_async_event=quit_async_event,
+											stream_id=stream_id,
 											)
 									tts_chunks = tts_chunks + tts_chunks_p2
 									async_steps += async_steps_p2
@@ -1990,6 +2010,7 @@ out center {limit};
 				request_id=request_id,
 				tts_state=_tts_state_for_async,
 				rnnt_partial_hypotheses=context.rnnt_partial_hypotheses,
+				stream_id=stream_id,
 			)
 			eotc_wall = time.time()
 			if updated_cache is not None:
@@ -2108,6 +2129,7 @@ out center {limit};
 						request_id=request_id,
 						tts_state=_tts_state_p2,
 						rnnt_partial_hypotheses=context.rnnt_partial_hypotheses,
+						stream_id=stream_ids[0] if stream_ids else None,
 					)
 					if updated_cache is not None:
 						context.dynamic_cache = updated_cache

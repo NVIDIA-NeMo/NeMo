@@ -179,10 +179,21 @@ def _discover_keys(entry, jobs: list[IndexJob], indexes_root: Optional[str]) -> 
         for p in _expand_tars(entry.get("tarred_audio_filepaths")):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
     if (paths := entry.get("paths")) is not None:
-        for p in _expand_jsonl(paths):
-            jobs.append(IndexJob(p, JSONL, indexes_root))
+        _discover_paths(paths, jobs, indexes_root)
     if (sub := _resolve_input_cfg(entry.get("input_cfg"))) is not None:
         discover(sub, jobs, indexes_root)
+
+
+def _discover_paths(paths, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
+    for p in _expand_jsonl(paths):
+        path = Path(p)
+        if path.is_dir():
+            for tar_path in sorted(path.rglob("*.tar")):
+                jobs.append(IndexJob(str(tar_path), NEMO_TAR, indexes_root))
+        elif path.suffix == ".tar":
+            jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
+        else:
+            jobs.append(IndexJob(p, JSONL, indexes_root))
 
 
 def discover(entry, jobs: list[IndexJob], indexes_root: Optional[str] = None) -> None:
@@ -241,9 +252,8 @@ def discover(entry, jobs: list[IndexJob], indexes_root: Optional[str] = None) ->
         _discover_shar(entry.get("shar_path"), jobs, indexes_root)
         return
 
-    if typ == "txt_jsonl":
-        for p in _expand_jsonl(entry.get("paths")):
-            jobs.append(IndexJob(p, JSONL, indexes_root))
+    if typ in ("txt_jsonl", "nemotron_text_converation"):
+        _discover_paths(entry.get("paths"), jobs, indexes_root)
         return
 
     # Unknown type — nothing to do.

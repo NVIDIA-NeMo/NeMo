@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import json
 import math
 import os
 import random
@@ -38,6 +39,7 @@ from lhotse.lazy import IteratorNode, attach_graph_origin, normalize_graph_token
 from lhotse.indexing import IndexedJsonlReader
 
 from nemo.collections.common.data.lhotse.indexed_adapters import (
+    IndexedTarMemberReader,
     IndexedTarSampleReader,
     _split_json_audio_pair,
 )
@@ -500,6 +502,221 @@ class NeMoSFTJsonlAdapter(IteratorNode):
         for path in paths:
             for data in load_jsonl(path):
                 yield NeMoSFTExample(data, language=self.language)
+
+
+def _normalize_nemotron_text_sender(sender: str, sample_id: str) -> str:
+    role = str(sender).lower()
+    if role in ("user", "human"):
+        return "user"
+    if role in ("assistant", "gpt", "model", "bot"):
+        return "assistant"
+    if role == "system":
+        return "system"
+    if role == "tool":
+        return "tool"
+    raise ValueError(f"Unsupported sender={sender!r} in Nemotron text conversation sample id={sample_id}")
+
+
+def _flatten_nemotron_text_fragments(fragments: list, sample_id: str) -> str:
+    values = []
+    for fragment in fragments:
+        if isinstance(fragment, str):
+            values.append(fragment)
+            continue
+        if not isinstance(fragment, dict):
+            raise ValueError(
+                f"Unsupported fragment type={type(fragment).__name__} in Nemotron text conversation sample id={sample_id}"
+            )
+        fragment_type = fragment.get("t")
+        if fragment_type not in (None, "text"):
+            raise ValueError(
+                f"Unsupported fragment t={fragment_type!r} in Nemotron text conversation sample id={sample_id}"
+            )
+        values.append(str(fragment.get("value", "")))
+    return "".join(values)
+
+
+def _transform_nemotron_text_conversation(data: dict, sample_id: str) -> "NeMoMultimodalConversation":
+    conversation = data.get("conversation")
+    if not isinstance(conversation, list):
+        raise ValueError(f"Nemotron text conversation sample id={sample_id} has no list-valued 'conversation' field")
+
+    turns = []
+    for turn in conversation:
+        if not isinstance(turn, dict):
+            raise ValueError(
+                f"Unsupported turn type={type(turn).__name__} in Nemotron text conversation sample id={sample_id}"
+            )
+        role = _normalize_nemotron_text_sender(turn.get("sender"), sample_id)
+        value = _flatten_nemotron_text_fragments(turn.get("fragments", []), sample_id)
+        turns.append(TextTurn(value=value, role=role))
+    return NeMoMultimodalConversation(
+        id=str(data.get("id") or sample_id),
+        turns=turns,
+        custom=data.get("custom"),
+    )
+
+
+@dataclass
+class NemotronTextConversationAdapter(IteratorNode):
+    """
+    Read Nemotron/Energon text-only conversation data.
+
+    Supported inputs are JSONL files and materialized tar directories whose JSON
+    rows contain ``conversation`` turns with ``sender`` and ``fragments`` fields.
+    """
+
+    paths: Union[Pathlike, list[Pathlike]]
+    shuffle_shards: bool = False
+    shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
+    indexed: bool = False
+    indexes_root: Optional[Pathlike] = None
+
+    def __post_init__(self):
+        paths = [self.paths] if isinstance(self.paths, (str, Path)) else list(self.paths)
+        self.paths = [str(p) for raw in paths for p in expand_sharded_filepaths(str(raw))]
+        self._readers: list = []
+        self._reader_kinds: list[str] = []
+        self._source_paths: list[str] = []
+        self._cum_lens: list[int] = []
+        self._iter_state = PartitionedIndexedIterator()
+        if self.indexed:
+            self._init_indexed()
+
+    @property
+    def is_checkpointable(self) -> bool:
+        return self.indexed
+
+    @property
+    def is_indexed(self) -> bool:
+        return self.indexed
+
+    @property
+    def has_constant_time_access(self) -> bool:
+        return self.indexed
+
+    def _init_indexed(self) -> None:
+        from lhotse.indexing import index_file_path
+
+        for p in self.paths:
+            path = Path(p)
+            if path.is_dir():
+                tar_paths = sorted(path.rglob("*.tar"))
+                if not tar_paths:
+                    raise FileNotFoundError(f"No .tar files found under Nemotron text conversation directory: {path}")
+                for tar_path in tar_paths:
+                    self._add_indexed_tar_reader(str(tar_path), index_file_path(str(tar_path), self.indexes_root))
+            elif path.suffix == ".tar":
+                self._add_indexed_tar_reader(p, index_file_path(p, self.indexes_root))
+            else:
+                self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
+                self._reader_kinds.append("jsonl")
+                self._source_paths.append(p)
+        cum = 0
+        self._cum_lens.append(cum)
+        for reader in self._readers:
+            cum += len(reader)
+            self._cum_lens.append(cum)
+
+    def _add_indexed_tar_reader(self, tar_path: str, idx_path: Pathlike) -> None:
+        self._readers.append(IndexedTarMemberReader(tar_path, idx_path=idx_path))
+        self._reader_kinds.append("tar")
+        self._source_paths.append(tar_path)
+
+    def __len__(self) -> int:
+        if not self.indexed:
+            raise TypeError("NemotronTextConversationAdapter has unknown length unless constructed with indexed=True.")
+        return self._cum_lens[-1] if self._cum_lens else 0
+
+    def _resolve(self, idx: int) -> tuple[int, int]:
+        if idx < 0:
+            idx += self._cum_lens[-1]
+        for shard_idx in range(len(self._readers)):
+            if idx < self._cum_lens[shard_idx + 1]:
+                return shard_idx, idx - self._cum_lens[shard_idx]
+        raise IndexError(idx)
+
+    def _data_to_conversation(
+        self, data: dict, source_path: Union[str, Path], local_idx: int
+    ) -> "NeMoMultimodalConversation":
+        sample_id = f"{Path(source_path).stem}-{local_idx:012d}"
+        return _transform_nemotron_text_conversation(data, sample_id)
+
+    def _reader_item_to_conversation(self, shard_idx: int, local_idx: int) -> "NeMoMultimodalConversation":
+        item = self._readers[shard_idx][local_idx]
+        source_path = self._source_paths[shard_idx]
+        if self._reader_kinds[shard_idx] == "tar":
+            name, payload = item
+            if not name.endswith(".json"):
+                raise RuntimeError(
+                    f"Index {local_idx} in {source_path} points to non-JSON tar member {name!r}; "
+                    "Nemotron text conversation tar shards are expected to contain JSON samples."
+                )
+            return _transform_nemotron_text_conversation(json.loads(payload), Path(name).stem)
+        return self._data_to_conversation(item, source_path, local_idx)
+
+    def __getitem__(self, token):
+        if not self.indexed:
+            raise NotImplementedError("NemotronTextConversationAdapter only supports __getitem__ when indexed=True.")
+        idx = int(normalize_graph_token(token))
+        shard_idx, local_idx = self._resolve(idx)
+        conversation = self._reader_item_to_conversation(shard_idx, local_idx)
+        return attach_graph_origin(conversation, idx)
+
+    def state_dict(self) -> dict:
+        return self._iter_state.state_dict() if self.indexed else {}
+
+    def load_state_dict(self, sd: dict) -> None:
+        if not self.indexed:
+            return
+        self._iter_state.load_state_dict(sd)
+
+    def __iter__(self) -> Iterator["NeMoMultimodalConversation"]:
+        if self.indexed:
+            yield from self._iter_indexed()
+            return
+        yield from self._iter_streaming()
+
+    def _iter_indexed(self) -> Iterator["NeMoMultimodalConversation"]:
+        total = self._cum_lens[-1] if self._cum_lens else 0
+        for global_idx in self._iter_state.iterate(total):
+            shard_idx, local_idx = self._resolve(global_idx)
+            conversation = self._reader_item_to_conversation(shard_idx, local_idx)
+            attach_graph_origin(conversation, global_idx)
+            yield conversation
+
+    def _iter_streaming(self) -> Iterator["NeMoMultimodalConversation"]:
+        paths = list(self.paths)
+        if self.shuffle_shards:
+            random.Random(resolve_seed(self.shard_seed)).shuffle(paths)
+        for path in paths:
+            yield from self._iter_path(Path(path))
+
+    def _iter_path(self, path: Path) -> Iterator["NeMoMultimodalConversation"]:
+        if path.is_dir():
+            tar_paths = sorted(path.rglob("*.tar"))
+            if not tar_paths:
+                raise FileNotFoundError(f"No .tar files found under Nemotron text conversation directory: {path}")
+            for tar_path in tar_paths:
+                yield from self._iter_tar(tar_path)
+        elif path.suffix == ".tar":
+            yield from self._iter_tar(path)
+        else:
+            yield from self._iter_jsonl(path)
+
+    def _iter_jsonl(self, path: Path) -> Iterator["NeMoMultimodalConversation"]:
+        for idx, data in enumerate(load_jsonl(path)):
+            sample_id = f"{path.stem}-{idx:012d}"
+            yield _transform_nemotron_text_conversation(data, sample_id)
+
+    def _iter_tar(self, path: Path) -> Iterator["NeMoMultimodalConversation"]:
+        with tarfile.open(path, "r:*") as tar:
+            for info in tar:
+                if not info.isfile() or not info.name.endswith(".json"):
+                    continue
+                data = json.load(tar.extractfile(info))
+                sample_id = Path(info.name).stem
+                yield _transform_nemotron_text_conversation(data, sample_id)
 
 
 """

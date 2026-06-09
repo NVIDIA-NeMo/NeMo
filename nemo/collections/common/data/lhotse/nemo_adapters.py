@@ -404,6 +404,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         indexes_root: str | Path | None = None,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
+        self._malformed_manifest_warning_keys: set[tuple[str, int]] = set()
         self.indexed = indexed
         self.indexes_root = indexes_root
         self.shard_id_to_manifest: dict[int, Iterable[dict]]
@@ -800,13 +801,28 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _decode_cut_at(self, idx: int) -> Cut | None:
         """Build the Cut for a global index in indexed mode (AIS or local).
 
-        Returns ``None`` if the audio member is missing and
-        ``skip_missing_manifest_entries`` is set, or if the entry has
-        ``_skipme=True`` / undecodable audio.
+        Returns ``None`` if the manifest entry/audio member is missing or
+        malformed and ``skip_missing_manifest_entries`` is set, or if the
+        entry has ``_skipme=True`` / undecodable audio.
         """
         sid, local_idx = self._resolve_global_idx(idx)
-        data = self._cuts_readers[sid][local_idx]
-        manifest_path = self._cuts_readers[sid].path
+        cuts_reader = self._cuts_readers[sid]
+        manifest_path = cuts_reader.path
+        try:
+            data = cuts_reader[local_idx]
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            if self.skip_missing_manifest_entries:
+                warning_key = (str(manifest_path), sid)
+                if warning_key not in self._malformed_manifest_warning_keys:
+                    self._malformed_manifest_warning_keys.add(warning_key)
+                    logging.warning(
+                        "Skipping malformed manifest entries in indexed Lhotse dataloader: "
+                        f"{manifest_path=} {sid=} first_local_idx={local_idx} first_global_idx={idx}. "
+                        "Further malformed entries for this manifest/shard will be skipped without additional "
+                        "warnings."
+                    )
+                return None
+            raise
         tar_path = self.shard_id_to_tar_path[sid]
         if self.use_ais_get_batch:
             return self._build_indexed_url_cut(data, manifest_path, tar_path)

@@ -241,16 +241,23 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # Source audio encoding.
         # Input audio: (B, T_samples)
         # Audio embeddings: (B, T, H)
-        from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
+        from nemo.collections.speechlm2.parts.cp_helpers import (
+            encode_audio_with_cp_distribution,
+            get_cp_mesh,
+            get_perception_fsdp_group,
+        )
 
+        device_mesh = getattr(self, "_device_mesh", None)
         spk_targets = batch.get("spk_targets", None)
-        cp_mesh, cp_size, _ = get_cp_mesh(getattr(self, "_device_mesh", None))
+        cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
+        fsdp_sync_group = get_perception_fsdp_group(device_mesh)
         # Encoder path by (PEE, spk_targets):
         # PEE=true  & spk_targets=None  : Inference mode, uses recursive encoding in PEE, NO chunking/CP.
         # PEE=true  & spk_targets!=None : Training mode, ``spk_targets`` injected into PEE with chunking/CP.
         # PEE=false & spk_targets=None  : Training/Inference mode, plain encoder with chunking/CP.
         # PEE=false & spk_targets!=None : Training/Inference mode, plain encoder with chunking/CP and
         #                                 the provided ``spk_targets`` is ignored (no-op).
+        dummy_audio_loss = None
         if self._uses_parallel_expert_encoder() and spk_targets is None:
             self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
             audio_embs, audio_emb_lens = self.perception(
@@ -258,7 +265,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             )
             audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         else:
-            audio_embs = encode_audio_with_cp_distribution(
+            audio_embs, dummy_audio_loss = encode_audio_with_cp_distribution(
                 self.perception,
                 batch["audios"],
                 batch["audio_lens"],
@@ -266,6 +273,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 sampling_rate=self.sampling_rate,
                 cp_mesh=cp_mesh,
                 spk_targets=spk_targets,
+                fsdp_sync_group=fsdp_sync_group,
+                return_dummy_loss=True,
             )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)

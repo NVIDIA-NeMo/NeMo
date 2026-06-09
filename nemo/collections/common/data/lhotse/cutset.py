@@ -51,6 +51,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoMultimodalConversationShareGPTJsonlAdapter,
     NeMoMultimodalConversationShareGPTWebdatasetAdapter,
     NeMoSFTJsonlAdapter,
+    NemotronTextConversationAdapter,
     TextTurn,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
@@ -386,6 +387,23 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
         NeMoSFTJsonlAdapter(
             paths=config.paths,
             language=config.get("language"),
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser("nemotron_text_converation")
+def read_nemotron_text_converation(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read Nemotron/Energon text-only conversation JSONL files or tar directories."""
+    cuts = CutSet(
+        NemotronTextConversationAdapter(
+            paths=config.paths,
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),

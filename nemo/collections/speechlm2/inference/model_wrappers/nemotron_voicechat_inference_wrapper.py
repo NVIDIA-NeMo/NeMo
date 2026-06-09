@@ -512,6 +512,10 @@ class NemotronVoicechatInferenceWrapper:
                 logging.warning(
                     f"[Env] Could not set inference_force_speech_silence_on_pad on model.cfg: {_e}"
                 )
+        # Disable RNNT self-play suppression — lets LLM-native BOS through so the
+        # agent can self-initiate a turn even if the user hasn't spoken.
+        self.model_cfg["rnnt_self_play_suppression"] = False
+
         # Initialize "agent idle" state. True at session start (no agent turn yet).
         # Updated in infer_one_step: BOS → False (turn open), EOS → True (agent idle).
         #
@@ -2965,7 +2969,8 @@ class NemotronVoicechatInferenceWrapper:
             if _forced_bos_flags is not None:
                 rnnt_state['forced_bos'][b] = False  # consume flag each frame
             if (not agent_speaking and not first_turn and not speech_confirmed
-                    and current_tok == bos_id and not _is_forced_bos):
+                    and current_tok == bos_id and not _is_forced_bos
+                    and self.model_cfg.get("rnnt_self_play_suppression", False)):
                 if self._post_tc_bos_exempt:
                     self._post_tc_bos_exempt = False
                     logging.info(f"RNNT post-TC BOS exempt at t={t}: allowing agent BOS after tool call")

@@ -2543,8 +2543,23 @@ class NemotronVoicechatInferenceWrapper:
                 # audio-end frame; the TTS is still rendering audio during that
                 # trail, so silencing would chop in-turn audio).
                 #
+                # Extended gate: also silence PAD when an open turn has run
+                # past its rendering budget (ratio × content tokens emitted
+                # since BOS). Env var S2S_TTS_PAD_TAIL_RATIO (default 3; 0=off).
+                _ratio = getattr(self, "_tts_pad_tail_ratio", None)
+                if _ratio is None:
+                    try:
+                        _ratio = float(os.environ.get("S2S_TTS_PAD_TAIL_RATIO", "3"))
+                    except ValueError:
+                        _ratio = 3.0
+                    self._tts_pad_tail_ratio = _ratio
+                _c = getattr(self, "_tts_in_turn_content", 0)
+                _p = getattr(self, "_tts_in_turn_pads", 0)
+                _tail_done = (_ratio > 0
+                              and not self._get_agent_idle(stream_id)
+                              and _p > _ratio * _c)
                 if (self.model.cfg.get('inference_force_speech_silence_on_pad', None)
-                        and self._get_agent_idle(stream_id)):
+                        and (self._get_agent_idle(stream_id) or _tail_done)):
                     silence_codes = self.model.tts_model.codec_silence_tokens.view(1, 1, -1).expand(code.shape)
                     code = torch.where(
                         current_subword_id.unsqueeze(-1) == self.model.tts_model.text_pad_id,
@@ -2570,8 +2585,17 @@ class NemotronVoicechatInferenceWrapper:
                     _csid_val = current_subword_id.flatten()[0].item()
                     if _csid_val == self.model.tts_model.text_bos_id:
                         self._set_agent_idle(False, stream_id)
+                        self._tts_in_turn_content = 0
+                        self._tts_in_turn_pads = 0
                     elif _csid_val == self.model.tts_model.text_eos_id:
                         self._set_agent_idle(True, stream_id)
+                        self._tts_in_turn_content = 0
+                        self._tts_in_turn_pads = 0
+                    elif _csid_val == self.model.tts_model.text_pad_id:
+                        self._tts_in_turn_pads = _p + 1
+                    else:
+                        self._tts_in_turn_content = _c + 1
+                        self._tts_in_turn_pads = 0
                 except Exception:
                     # Don't crash the inference loop on any state-update issue;
                     # worst case is a stale flag for one frame.

@@ -454,6 +454,7 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
         )
     )
     if not config.get("force_finite", False):

@@ -26,6 +26,7 @@ from typing import Iterator, Literal, Optional, Sequence, Union
 import numpy as np
 import torch
 from lhotse import AudioSource, CutSet, Recording
+from lhotse.audio import AudioLoadingError
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset import AudioSamples
@@ -1386,63 +1387,6 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         self.epoch += 1
 
 
-def _normalize_audio_placeholders(val: Union[str, list[str], None]) -> list[str]:
-    if val is None:
-        return ["<sound>", "<speech>"]
-    return [val] if isinstance(val, str) else list(val)
-
-
-def _transform_sharegpt(placeholders: list[str], data: dict, audio_path_fallback: str | None = None) -> list[dict]:
-    """Parse a ShareGPT dict into a flat list of ``{"type", "from", "value", ...}`` turn dicts."""
-    conversations = []
-    audio_path = data.get("sound") or data.get("ori_sound") or audio_path_fallback
-    for turn in data["conversations"]:
-        role = "user" if turn["from"].lower() in ("human", "user") else "assistant"
-        found = next((p for p in placeholders if p in turn["value"]), None)
-        if found:
-            parts = turn["value"].split(found)
-            if parts[0].strip():
-                conversations.append({"type": "text", "from": role.title(), "value": parts[0].strip()})
-            if not audio_path:
-                raise ValueError(
-                    f"Conversation turn contains audio placeholder '{found}' but no audio path "
-                    f"was found in 'sound', 'ori_sound' fields or fallback for sample id={data.get('id', '?')}"
-                )
-            conversations.append(
-                {
-                    "type": "audio",
-                    "from": role.title(),
-                    "value": audio_path,
-                    "duration": turn.get("duration", None),
-                    "offset": turn.get("offset", 0.0),
-                }
-            )
-            if len(parts) > 1 and parts[1].strip():
-                conversations.append({"type": "text", "from": role.title(), "value": parts[1].strip()})
-        else:
-            conversations.append({"type": "text", "from": role.title(), "value": turn["value"]})
-    return conversations
-
-
-def _create_sharegpt_turns(audio_locator_tag: str, conversations: list[dict], resolve_cut) -> list:
-    """Build ``TextTurn`` / ``AudioTurn`` objects.  *resolve_cut(turn_dict) -> Cut* supplies audio."""
-    turns = []
-    for t in conversations:
-        if t["type"] == "text":
-            turns.append(TextTurn(value=t["value"], role=t["from"].lower()))
-        else:
-            cut = resolve_cut(t)
-            turns.append(
-                AudioTurn(
-                    cut=cut,
-                    text=cut.supervisions[0].text if cut.supervisions else None,
-                    role=t["from"].lower(),
-                    audio_locator_tag=audio_locator_tag,
-                )
-            )
-    return turns
-
-
 @dataclass
 class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     """
@@ -1479,6 +1423,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     slice_length: int | None = None
     indexed: bool = False
     indexes_root: Optional[Pathlike] = None
+    skip_missing_manifest_entries: bool = False
 
     def __post_init__(self):
         from lhotse.indexing import index_file_path
@@ -1560,30 +1505,40 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
 
-    def _build_one(self, data: dict, shard_idx: int) -> NeMoMultimodalConversation:
-        conversations = _transform_sharegpt(self.audio_placeholders, data)
-        if self._tar_readers:
-            tar_reader = self._tar_readers[shard_idx]
-            tar_path = self.tarred_audio_filepaths[shard_idx]
+    def _build_one(self, data: dict, shard_idx: int) -> NeMoMultimodalConversation | None:
+        try:
+            conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
+            if self._tar_readers:
+                tar_reader = self._tar_readers[shard_idx]
+                tar_path = self.tarred_audio_filepaths[shard_idx]
+                return NeMoMultimodalConversation(
+                    id=data.get("id", "missing-example-id"),
+                    turns=_ShareGPTConversationParser.create_turns(
+                        self.audio_locator_tag,
+                        conversations,
+                        lambda t: self._resolve_cut_from_indexed_tar(t, tar_reader, tar_path),
+                    ),
+                    token_equivalent_duration=self.token_equivalent_duration,
+                )
+            manifest_path = self._cuts_readers[shard_idx].path
             return NeMoMultimodalConversation(
                 id=data.get("id", "missing-example-id"),
-                turns=_create_sharegpt_turns(
+                turns=_ShareGPTConversationParser.create_turns(
                     self.audio_locator_tag,
                     conversations,
-                    lambda t: self._resolve_cut_from_indexed_tar(t, tar_reader, tar_path),
+                    lambda t, _p=manifest_path: self._resolve_cut_from_path(t, _p),
                 ),
                 token_equivalent_duration=self.token_equivalent_duration,
             )
-        manifest_path = self._cuts_readers[shard_idx].path
-        return NeMoMultimodalConversation(
-            id=data.get("id", "missing-example-id"),
-            turns=_create_sharegpt_turns(
-                self.audio_locator_tag,
-                conversations,
-                lambda t, _p=manifest_path: self._resolve_cut_from_path(t, _p),
-            ),
-            token_equivalent_duration=self.token_equivalent_duration,
-        )
+        except _SHAREGPT_AUDIO_LOADING_ERRORS as e:
+            if not self.skip_missing_manifest_entries:
+                raise
+            logging.warning(
+                "Skipping ShareGPT sample due to audio loading failure: "
+                f"sample_id={data.get('id', 'missing-example-id')!r} shard_idx={shard_idx} "
+                f"error={type(e).__name__}: {e}"
+            )
+            return None
 
     def _resolve_cut_from_indexed_tar(self, turn, tar_reader, tar_path):
         import io as _io
@@ -1592,17 +1547,23 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         from lhotse import AudioSource as _AudioSource
         from lhotse import Recording as _Recording
 
-        audio_bytes = tar_reader.get(turn["value"])
+        audio_path = os.fspath(
+            _ShareGPTConversationParser.expect_one_audio_path(
+                turn["value"], sample_id=turn.get("id", "?"), context="audio turn value"
+            )
+        )
+        turn_for_id = {**turn, "value": audio_path}
+        audio_bytes = tar_reader.get(audio_path)
         meta = _sf.info(_io.BytesIO(audio_bytes))
         recording = _Recording(
-            id=turn["value"],
+            id=audio_path,
             sources=[_AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)],
             sampling_rate=int(meta.samplerate),
             num_samples=meta.frames,
             duration=meta.duration,
         )
         cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
-        return cut.with_id(self._make_cut_id(cut, turn))
+        return cut.with_id(self._make_cut_id(cut, turn_for_id))
 
     def __getitem__(self, token):
         if not self.indexed:
@@ -1613,6 +1574,10 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         shard_idx, local_idx = self._resolve(idx)
         data = self._cuts_readers[shard_idx][local_idx]
         convo = self._build_one(data, shard_idx)
+        if convo is None:
+            raise RuntimeError(
+                f"ShareGPT sample at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
+            )
         return attach_graph_origin(convo, idx)
 
     def __iter__(self) -> Iterator[NeMoMultimodalConversation]:
@@ -1629,6 +1594,8 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             shard_idx, local_idx = self._resolve(global_idx)
             data = self._cuts_readers[shard_idx][local_idx]
             convo = self._build_one(data, shard_idx)
+            if convo is None:
+                continue
             attach_graph_origin(convo, global_idx)
             yield convo
         self.epoch += 1
@@ -1644,14 +1611,22 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         return Path(turn['value']).stem
 
     def _resolve_cut_from_path(self, turn, manifest_path):
-        if is_valid_url(turn["value"]):
-            data = open_best(turn["value"], "rb").read()
-            cut = Recording.from_bytes(data, recording_id=turn["value"]).to_cut()
+        audio_path = os.fspath(
+            _ShareGPTConversationParser.expect_one_audio_path(
+                turn["value"], sample_id=turn.get("id", "?"), context="audio turn value"
+            )
+        )
+        turn_for_id = {**turn, "value": audio_path}
+        if is_valid_url(audio_path):
+            data = open_best(audio_path, "rb").read()
+            cut = Recording.from_bytes(data, recording_id=audio_path).to_cut()
         elif self.audio_root is not None:
-            cut = Recording.from_file(get_full_path(turn["value"], data_dir=self.audio_root)).to_cut()
+            cut = Recording.from_file(get_full_path(audio_path, data_dir=self.audio_root)).to_cut()
         else:
-            cut = Recording.from_file(get_full_path(turn["value"], manifest_path)).to_cut()
-        return cut.truncate(offset=turn["offset"], duration=turn["duration"]).with_id(self._make_cut_id(cut, turn))
+            cut = Recording.from_file(get_full_path(audio_path, manifest_path)).to_cut()
+        return cut.truncate(offset=turn["offset"], duration=turn["duration"]).with_id(
+            self._make_cut_id(cut, turn_for_id)
+        )
 
     def _iter_tar(self):
         # See NeMoMultimodalConversationJsonlAdapter._iter_tar for GetBatch-mode rationale.
@@ -1672,7 +1647,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             )
             cntr = 0
             for idx, data in enumerate(jsonl):
-                conversations = _transform_sharegpt(self.audio_placeholders, data)
+                conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
                 audio_turns = [t for t in conversations if t["type"] == "audio"]
                 cuts = []
                 for turn in audio_turns:
@@ -1707,7 +1682,9 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
 
                 yield NeMoMultimodalConversation(
                     id=data.get("id", "missing-example-id"),
-                    turns=_create_sharegpt_turns(self.audio_locator_tag, conversations, lambda t: cuts.popleft()),
+                    turns=_ShareGPTConversationParser.create_turns(
+                        self.audio_locator_tag, conversations, lambda t: cuts.popleft()
+                    ),
                     token_equivalent_duration=self.token_equivalent_duration,
                 )
                 cntr += 1
@@ -1725,17 +1702,27 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 jsonl_iter = list(jsonl_iter)
                 rng.shuffle(jsonl_iter)
             for data in jsonl_iter:
-                conversations = _transform_sharegpt(self.audio_placeholders, data)
-                yield NeMoMultimodalConversation(
-                    id=data.get("id", "missing-example-id"),
-                    turns=_create_sharegpt_turns(
-                        self.audio_locator_tag,
-                        conversations,
-                        lambda t, _p=path: self._resolve_cut_from_path(t, _p),
-                    ),
-                    token_equivalent_duration=self.token_equivalent_duration,
-                )
+                try:
+                    conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
+                    yield NeMoMultimodalConversation(
+                        id=data.get("id", "missing-example-id"),
+                        turns=_ShareGPTConversationParser.create_turns(
+                            self.audio_locator_tag,
+                            conversations,
+                            lambda t, _p=path: self._resolve_cut_from_path(t, _p),
+                        ),
+                        token_equivalent_duration=self.token_equivalent_duration,
+                    )
+                except _SHAREGPT_AUDIO_LOADING_ERRORS as e:
+                    if not self.skip_missing_manifest_entries:
+                        raise
+                    logging.warning(
+                        "Skipping ShareGPT sample due to audio loading failure: "
+                        f"sample_id={data.get('id', 'missing-example-id')!r} manifest_path={path} "
+                        f"error={type(e).__name__}: {e}"
+                    )
         self.epoch += 1
+
 
 @dataclass
 class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
@@ -1879,11 +1866,11 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     def _yield_from_sample(self, json_data, audio_bytes, audio_name):
         sample_id = Path(audio_name).stem
         recording = Recording.from_bytes(audio_bytes, recording_id=sample_id)
-        conversations = _transform_sharegpt(self.audio_placeholders, json_data, audio_name)
+        conversations = _ShareGPTConversationParser(self.audio_placeholders, json_data, audio_name).transform()
         base_cut = recording.to_cut()
         return NeMoMultimodalConversation(
             id=json_data.get("id", sample_id),
-            turns=_create_sharegpt_turns(
+            turns=_ShareGPTConversationParser.create_turns(
                 self.audio_locator_tag,
                 conversations,
                 lambda t: base_cut.truncate(offset=t.get("offset", 0.0), duration=t.get("duration")),
@@ -1908,6 +1895,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                     )
                     yield self._yield_from_sample(json_data, audio_bytes, audio_name)
         self.epoch += 1
+
 
 class TarIterator:
     """
@@ -2019,3 +2007,201 @@ class NeMoMultimodalConversationTarWriter:
             Path(self.output_dir).mkdir(exist_ok=True)
         self.manifest_writer = JsonlShardWriter(f"{self.output_dir}/manifest_{self.shard_idx}.jsonl", shard_size=None)
         self.tar_writer = AudioTarWriter(f"{self.output_dir}/audio_{self.shard_idx}.tar", shard_size=None)
+
+
+_SHAREGPT_AUDIO_LOADING_ERRORS = (AudioLoadingError, OSError)
+
+
+def _normalize_audio_placeholders(val: Union[str, list[str], None]) -> list[str]:
+    if val is None:
+        return ["<sound>", "<speech>"]
+    return [val] if isinstance(val, str) else list(val)
+
+
+class _ShareGPTConversationParser:
+    """Normalize ShareGPT multimodal records for the conversation adapters.
+
+    ShareGPT audio examples are intentionally loose: audio paths may be stored
+    in ``sound`` or ``ori_sound``, may be scalar or list-valued, and placement
+    in the text is expressed with placeholders such as ``<sound>``. This class
+    owns those conventions and emits the flat internal turn dictionaries shared
+    by the JSONL and WebDataset adapters.
+    """
+
+    def __init__(
+        self, placeholders: list[str], data: dict, audio_path_fallback: str | None = None
+    ) -> None:
+        self.placeholders = placeholders
+        self.data = data
+        self.sample_id = data.get("id", "?")
+        audio_path_value = data.get("sound") or data.get("ori_sound") or audio_path_fallback
+        self.audio_paths = self.normalize_audio_paths(
+            audio_path_value, sample_id=self.sample_id, field_name="sound"
+        )
+
+    def transform(self) -> list[dict]:
+        """Convert one raw ShareGPT sample into text/audio turn dictionaries.
+
+        User/human placeholders consume audio. Assistant turns are preserved as
+        text so literal tokens such as an HTML ``<audio>`` tag are not mistaken
+        for data references.
+        """
+        conversations = []
+        placeholder_count = self._placeholder_count()
+        if (
+            len(self.audio_paths) > 1
+            and placeholder_count > 1
+            and len(self.audio_paths) != placeholder_count
+        ):
+            raise ValueError(
+                f"ShareGPT sample id={self.sample_id} has {len(self.audio_paths)} audio paths but "
+                f"{placeholder_count} audio placeholders. Use one path for all placeholders, one path per "
+                f"placeholder, or a single placeholder for all paths."
+            )
+
+        audio_idx = 0
+        for turn in self.data["conversations"]:
+            role = self.role(turn)
+            remaining = turn["value"]
+            if not self.turn_can_consume_audio(turn):
+                conversations.append({"type": "text", "from": role.title(), "value": remaining.strip()})
+                continue
+
+            found_any = False
+            while True:
+                idx, found = self.find_next_audio_placeholder(remaining, self.placeholders)
+                if found is None:
+                    if remaining.strip() or not found_any:
+                        conversations.append({"type": "text", "from": role.title(), "value": remaining.strip()})
+                    break
+
+                found_any = True
+                prefix = remaining[:idx]
+                if prefix.strip():
+                    conversations.append({"type": "text", "from": role.title(), "value": prefix.strip()})
+                if not self.audio_paths:
+                    raise ValueError(
+                        f"Conversation turn contains audio placeholder '{found}' but no audio path was found in "
+                        f"'sound', 'ori_sound' fields or fallback for sample id={self.sample_id}"
+                    )
+
+                if len(self.audio_paths) > 1 and placeholder_count == 1:
+                    path_indexes = range(len(self.audio_paths))
+                elif len(self.audio_paths) > 1:
+                    path_indexes = [audio_idx]
+                    audio_idx += 1
+                else:
+                    path_indexes = [0]
+
+                for path_idx in path_indexes:
+                    audio_turn = {
+                        "type": "audio",
+                        "from": role.title(),
+                        "value": self.audio_paths[path_idx],
+                        "duration": self.audio_turn_field(turn, "duration", path_idx, self.sample_id),
+                        "offset": self.audio_turn_field(turn, "offset", path_idx, self.sample_id, default=0.0),
+                    }
+                    if "sampling_rate" in turn:
+                        audio_turn["sampling_rate"] = self.audio_turn_field(
+                            turn, "sampling_rate", path_idx, self.sample_id
+                        )
+                    conversations.append(audio_turn)
+                remaining = remaining[idx + len(found) :]
+        return conversations
+
+    def _placeholder_count(self) -> int:
+        return sum(
+            self.count_audio_placeholders(turn["value"], self.placeholders)
+            for turn in self.data["conversations"]
+            if self.turn_can_consume_audio(turn)
+        )
+
+    @staticmethod
+    def create_turns(audio_locator_tag: str, conversations: list[dict], resolve_cut) -> list:
+        """Build ``TextTurn`` / ``AudioTurn`` objects using ``resolve_cut(turn_dict)`` for audio."""
+        turns = []
+        for turn in conversations:
+            if turn["type"] == "text":
+                turns.append(TextTurn(value=turn["value"], role=turn["from"].lower()))
+            else:
+                cut = resolve_cut(turn)
+                turns.append(
+                    AudioTurn(
+                        cut=cut,
+                        text=cut.supervisions[0].text if cut.supervisions else None,
+                        role=turn["from"].lower(),
+                        audio_locator_tag=audio_locator_tag,
+                    )
+                )
+        return turns
+
+    @classmethod
+    def expect_one_audio_path(cls, value, sample_id: str, context: str) -> Pathlike:
+        paths = cls.normalize_audio_paths(value, sample_id=sample_id, field_name=context)
+        if len(paths) != 1:
+            raise ValueError(
+                f"ShareGPT sample id={sample_id} resolved one audio turn to {len(paths)} audio paths. "
+                f"Multiple paths must be expanded into separate audio turns before loading."
+            )
+        return paths[0]
+
+    @staticmethod
+    def normalize_audio_paths(value, sample_id: str, field_name: str) -> list[Pathlike]:
+        if value is None or value == "":
+            return []
+        if isinstance(value, (str, os.PathLike)):
+            return [value]
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            paths = list(value)
+            for idx, path in enumerate(paths):
+                if not isinstance(path, (str, os.PathLike)):
+                    raise ValueError(
+                        f"ShareGPT sample id={sample_id} has unsupported {field_name}[{idx}]={path!r}; "
+                        f"expected a string or os.PathLike audio path."
+                    )
+            return paths
+        raise ValueError(
+            f"ShareGPT sample id={sample_id} has unsupported {field_name}={value!r}; "
+            f"expected a string, os.PathLike, or a list of audio paths."
+        )
+
+    @staticmethod
+    def find_next_audio_placeholder(text: str, placeholders: list[str]) -> tuple[int, str] | tuple[None, None]:
+        matches = [(idx, placeholder) for placeholder in placeholders if (idx := text.find(placeholder)) >= 0]
+        if not matches:
+            return None, None
+        return min(matches, key=lambda item: item[0])
+
+    @classmethod
+    def count_audio_placeholders(cls, text: str, placeholders: list[str]) -> int:
+        count = 0
+        remaining = text
+        while True:
+            idx, placeholder = cls.find_next_audio_placeholder(remaining, placeholders)
+            if placeholder is None:
+                return count
+            count += 1
+            remaining = remaining[idx + len(placeholder) :]
+
+    @staticmethod
+    def role(turn: dict) -> str:
+        return "user" if turn["from"].lower() in ("human", "user") else "assistant"
+
+    @classmethod
+    def turn_can_consume_audio(cls, turn: dict) -> bool:
+        return cls.role(turn) == "user"
+
+    @staticmethod
+    def audio_turn_field(turn: dict, field_name: str, audio_idx: int, sample_id: str, default=None):
+        value = turn.get(field_name, default)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            values = list(value)
+            if len(values) == 1:
+                return values[0]
+            if audio_idx < len(values):
+                return values[audio_idx]
+            raise ValueError(
+                f"ShareGPT sample id={sample_id} has {len(values)} values for turn field {field_name!r}, "
+                f"but audio path index {audio_idx} was requested."
+            )
+        return value

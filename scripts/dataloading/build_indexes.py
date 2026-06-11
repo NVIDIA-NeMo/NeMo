@@ -49,6 +49,7 @@ Examples::
     python scripts/dataloading/build_indexes.py --force --workers 16 path/to/input_cfg.yaml
 """
 
+import json
 import logging
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -196,6 +197,39 @@ def _discover_paths(paths, jobs: list[IndexJob], indexes_root: Optional[str]) ->
             jobs.append(IndexJob(p, JSONL, indexes_root))
 
 
+def _discover_share_gpt_webdataset(data_dir, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
+    """
+    Match NeMoMultimodalConversationShareGPTWebdatasetAdapter shard discovery.
+
+    The adapter reads ``wids-meta.json`` when present; otherwise it recursively
+    scans ``data_dir`` for tar shards. Energon exports commonly place shards
+    under nested directories such as ``0/sharded_manifests/shard-0.tar``, so a
+    non-recursive glob silently misses every runtime-required tar index.
+    """
+    if data_dir is None:
+        return
+
+    for raw in _flatten_path_spec(data_dir):
+        root = Path(raw)
+        meta_path = root / "wids-meta.json"
+        if meta_path.is_file():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            for shard in meta.get("shardlist", []):
+                url = shard.get("url") if isinstance(shard, dict) else None
+                if url:
+                    jobs.append(IndexJob(str(root / url), WDS_TAR, indexes_root))
+        elif root.is_dir():
+            for tar_path in sorted(root.rglob("*.tar")):
+                jobs.append(IndexJob(str(tar_path), WDS_TAR, indexes_root))
+
+        # Preserve the previous behavior for optional root-level sidecar
+        # manifests without recursively indexing unrelated metadata files.
+        if root.is_dir():
+            for jsonl_path in sorted(root.glob("*.jsonl")):
+                jobs.append(IndexJob(str(jsonl_path), JSONL, indexes_root))
+
+
 def discover(entry, jobs: list[IndexJob], indexes_root: Optional[str] = None) -> None:
     """Walk one entry of an ``input_cfg`` and append every required IndexJob."""
     if isinstance(entry, (list, ListConfig)):
@@ -231,13 +265,8 @@ def discover(entry, jobs: list[IndexJob], indexes_root: Optional[str] = None) ->
         return
 
     if typ == "share_gpt_webdataset":
-        # Layout: data_dir/shard-N.tar [+ optional shard-N.tar.idx, manifest jsonl].
-        data_dir = entry.get("data_dir")
-        if data_dir is None:
-            return
-        for ext, kind in ((".tar", WDS_TAR), (".jsonl", JSONL)):
-            for p in sorted(Path(data_dir).glob(f"*{ext}")):
-                jobs.append(IndexJob(str(p), kind, indexes_root))
+        # Layout: data_dir/wids-meta.json or recursive **/*.tar.
+        _discover_share_gpt_webdataset(entry.get("data_dir"), jobs, indexes_root)
         return
 
     if typ == "lhotse":

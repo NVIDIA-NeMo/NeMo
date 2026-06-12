@@ -1190,8 +1190,7 @@ out center {limit};
 							break
 					if latest_rnnt_text is not None:
 						state = self.get_or_create_state(stream_id)
-						_committed_fc = self._rnnt_committed.get(stream_id, '') if hasattr(self, '_rnnt_committed') else ''
-						state.output_asr_text_str = (_committed_fc + ' ' + latest_rnnt_text).strip() if _committed_fc else latest_rnnt_text
+						state.output_asr_text_str = latest_rnnt_text.lstrip('. ')
 
 				del self._fc_async_bg[stream_id]
 
@@ -1453,8 +1452,7 @@ out center {limit};
 							break
 					if latest_rnnt_text is not None:
 						state = self.get_or_create_state(stream_id)
-						_committed_fc = self._rnnt_committed.get(stream_id, '') if hasattr(self, '_rnnt_committed') else ''
-						state.output_asr_text_str = (_committed_fc + ' ' + latest_rnnt_text).strip() if _committed_fc else latest_rnnt_text
+						state.output_asr_text_str = latest_rnnt_text.lstrip('. ')
 				return
 
 		# ---------------------------------------------------------------
@@ -1560,26 +1558,31 @@ out center {limit};
 					fc_state_obj = self.get_or_create_state(frame.stream_id)
 					fc_state_obj.output_function_text_str += fc_text_strs[idx]
 		# Stream user transcript per-frame: send each word as RNNT constructs it.
-		# Accumulate as one paragraph across turns; clear y_sequence on 800ms silence
-		# (10 consecutive blank frames × 80ms/frame) to start fresh for next turn.
+		# Clear y_sequence on agent BOS (deterministic turn boundary — agent starts speaking)
+		# or on 800ms silence (10 blank frames) as fallback when no agent response fires.
+		# BOS-based clear is required because TTS echo through the mic resets blank_count,
+		# preventing the silence-only trigger from ever firing between turns.
 		if use_rnnt and context.rnnt_partial_hypotheses is not None:
 			_rnnt_hyp = context.rnnt_partial_hypotheses
 			_y_seq = _rnnt_hyp.get('y_sequence', [])
 			_blank_t = _rnnt_hyp.get('blank_count')
 			_blanks = int(_blank_t[0].item()) if _blank_t is not None else 0
 
-			sid = stream_ids[0] if stream_ids else 0
-			if not hasattr(self, '_rnnt_committed'):
-				self._rnnt_committed = {}
-			_committed = self._rnnt_committed.get(sid, '')
-
-			_cur_text = self.s2s_model._rnnt_decode_text(_y_seq) if _y_seq else ''
-			if _cur_text:
-				_display = (_committed + ' ' + _cur_text).strip() if _committed else _cur_text
-				self.get_or_create_state(sid).output_asr_text_str = _display
-			if _blanks >= 10 and _y_seq:
+			if _y_seq:
+				_cur_text = self.s2s_model._rnnt_decode_text(_y_seq)
+				# Strip leading period/space tokens the RNNT emits as sentence-boundary markers
+				_cur_text = _cur_text.lstrip('. ')
 				if _cur_text:
-					self._rnnt_committed[sid] = (_committed + ' ' + _cur_text).strip() if _committed else _cur_text
+					self.get_or_create_state(stream_ids[0]).output_asr_text_str = _cur_text
+
+			# Detect agent BOS in this frame's predicted tokens
+			_pred_toks = result.get("predicted_text_tokens")
+			_bos_id = getattr(getattr(self.s2s_model.model, 'stt_model', None), 'text_bos_id', None)
+			_agent_bos_fired = (
+				_pred_toks is not None and _bos_id is not None and _pred_toks.numel() > 0
+				and int(_bos_id) in _pred_toks.reshape(-1).tolist()
+			)
+			if _agent_bos_fired or _blanks >= 10:
 				context.rnnt_partial_hypotheses['y_sequence'] = []
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
@@ -2846,8 +2849,6 @@ out center {limit};
 			self._abort_stream_request(stream_id)
 		self.bufferer.reset()
 		self.context_manager.reset()
-		if hasattr(self, '_rnnt_committed'):
-			self._rnnt_committed.clear()
 
 		super().reset_session() # clears state pool
 

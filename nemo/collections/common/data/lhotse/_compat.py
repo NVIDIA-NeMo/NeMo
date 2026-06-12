@@ -19,9 +19,20 @@ from typing import Any
 import torch
 from torch import distributed as dist
 
+__all__ = [
+    "GraphOriginDict",
+    "IteratorNode",
+    "LazyIndexedManifestIterator",
+    "PartitionedIndexedIterator",
+    "attach_graph_origin",
+    "normalize_graph_token",
+]
+
 try:
-    from lhotse.dataset.dataloading import PartitionedIndexedIterator
-except ImportError:
+    from lhotse.dataset import dataloading as _lhotse_dataloading
+
+    PartitionedIndexedIterator = _lhotse_dataloading.PartitionedIndexedIterator
+except (ImportError, AttributeError):
     LHOTSE_USE_WORKER_PARTITION = "LHOTSE_USE_WORKER_PARTITION"
 
     def _get_world_size() -> int:
@@ -124,14 +135,14 @@ except ImportError:
 
 
 try:
-    from lhotse.lazy import (
-        GraphOriginDict,
-        IteratorNode,
-        LazyIndexedManifestIterator,
-        attach_graph_origin,
-        normalize_graph_token,
-    )
-except ImportError:
+    from lhotse import lazy as _lhotse_lazy
+
+    GraphOriginDict = _lhotse_lazy.GraphOriginDict
+    IteratorNode = _lhotse_lazy.IteratorNode
+    LazyIndexedManifestIterator = _lhotse_lazy.LazyIndexedManifestIterator
+    attach_graph_origin = _lhotse_lazy.attach_graph_origin
+    normalize_graph_token = _lhotse_lazy.normalize_graph_token
+except (ImportError, AttributeError):
 
     class IteratorNode(Iterable):
         is_checkpointable = False
@@ -167,7 +178,8 @@ except ImportError:
             try:
                 setattr(item, "_graph_origin", token)
             except Exception:
-                pass
+                # Immutable extension objects may not accept ad-hoc metadata.
+                return item
         return item
 
     class LazyIndexedManifestIterator(IteratorNode):

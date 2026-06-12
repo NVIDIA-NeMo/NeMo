@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # pylint: disable=unused-import
+"""Compatibility shims for optional Lhotse indexed/resumable dataloading APIs.
+
+This module lets NeMo import with released Lhotse versions that do not expose
+those APIs yet, while delegating to the real implementations when a resumable
+Lhotse checkout is available.
+"""
 import os
 from collections.abc import Generator, Iterable
 from typing import Any

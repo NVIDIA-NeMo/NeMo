@@ -1549,24 +1549,14 @@ out center {limit};
 					fc_state_obj = self.get_or_create_state(frame.stream_id)
 					fc_state_obj.output_function_text_str += fc_text_strs[idx]
 		# rnnt_partial_hypotheses is now a step-state dict — no text extraction available
-		# Finalize user transcript after 800ms of silence (10 frames × 80ms).
-		# Only fires when the agent is not speaking, so barge-in doesn't trigger it.
-		# On finalization: decode y_sequence → write to output_asr_text_str and clear y_sequence
-		# so the next utterance starts fresh. Text stays on screen until next finalization.
+		# Decode RNNT y_sequence → output_asr_text_str for UI; covers both non-FC and post-FC-async paths
+		# because update_context (non-FC) and explicit assignment (FC async) both refresh context.rnnt_partial_hypotheses.
 		if use_rnnt and context.rnnt_partial_hypotheses is not None:
-			_rnnt_hyp = context.rnnt_partial_hypotheses
-			_y_seq = _rnnt_hyp.get('y_sequence', [])
-			_blank_t = _rnnt_hyp.get('blank_count')
-			_agent_spk = _rnnt_hyp.get('agent_speaking')
-			_blanks = int(_blank_t[0].item()) if _blank_t is not None else 0
-			_is_agent = bool(_agent_spk[0].item()) if _agent_spk is not None else False
-			# 800ms silence = 10 encoder frames at 80ms/frame
-			if _y_seq and not _is_agent and _blanks >= 10:
+			_y_seq = context.rnnt_partial_hypotheses.get('y_sequence', [])
+			if _y_seq:
 				_rnnt_text = self.s2s_model._rnnt_decode_text(_y_seq)
 				if _rnnt_text:
 					self.get_or_create_state(stream_ids[0]).output_asr_text_str = _rnnt_text
-				# Clear so next utterance accumulates fresh tokens
-				context.rnnt_partial_hypotheses['y_sequence'] = []
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None

@@ -1468,6 +1468,15 @@ out center {limit};
 		if left_pad > 0:
 			audio_buffer = audio_buffer[:, left_pad:]
 
+		# Auto-init RNNT state on first frame so transcript starts from turn 1.
+		# infer_one_step requires rnnt_partial_hypotheses to be non-None to run RNNT
+		# (guard at wrapper line 2474). Without this, RNNT never runs until an FC
+		# async step initializes it — causing the first user turn to be silent.
+		if (context.rnnt_partial_hypotheses is None
+				and getattr(self, 'ui_asr_source', None) == 'rnnt'
+				and getattr(getattr(self.s2s_model.model, 'stt_model', None), '_rnnt_decoder', None) is not None):
+			context.rnnt_partial_hypotheses = self.s2s_model._rnnt_init_state(1, self.s2s_model.device)
+
 		step_wall_start = time.time()
 		result = self.s2s_model.infer_one_step(
 			audio_input=audio_buffer,

@@ -20,6 +20,7 @@ import random
 import re
 import tarfile
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 from typing import Generator, Iterable, List, Literal
@@ -843,9 +844,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         idx = int(normalize_graph_token(token))
         cut = self._decode_cut_at(idx)
         if cut is None:
-            raise RuntimeError(
-                f"Cut at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
-            )
+            raise IndexError(f"Cut at global index {idx} is not decodable; cannot satisfy random-access __getitem__.")
         return attach_graph_origin(cut, idx)
 
     def __len__(self) -> int:
@@ -1179,25 +1178,21 @@ class LazyParquetIterator(IteratorNode):
 
     def _init_indexed(self) -> None:
         try:
-            parquet_file = pq.ParquetFile(self.path)
+            with closing(pq.ParquetFile(self.path)) as parquet_file:
+                offsets = [0]
+                for i in range(parquet_file.num_row_groups):
+                    offsets.append(offsets[-1] + parquet_file.metadata.row_group(i).num_rows)
+                self._row_group_offsets = offsets
+                self._num_row_groups = parquet_file.num_row_groups
+                self._total_rows = offsets[-1]
         except Exception as e:
             raise RuntimeError(f"Failed to open Parquet file: {self.path}") from e
-        offsets = [0]
-        for i in range(parquet_file.num_row_groups):
-            offsets.append(offsets[-1] + parquet_file.metadata.row_group(i).num_rows)
-        self._row_group_offsets = offsets
-        self._num_row_groups = parquet_file.num_row_groups
-        self._total_rows = offsets[-1]
-        del parquet_file  # close handle; reopened lazily in workers
 
     def _load_row_group(self, rg_idx: int) -> list[dict]:
         if self._cached_row_group_idx == rg_idx and self._cached_row_group is not None:
             return self._cached_row_group
-        parquet_file = pq.ParquetFile(self.path)
-        try:
+        with closing(pq.ParquetFile(self.path)) as parquet_file:
             df = parquet_file.read_row_group(rg_idx).to_pandas()
-        finally:
-            del parquet_file
         rows = df.to_dict("records")
         self._cached_row_group_idx = rg_idx
         self._cached_row_group = rows
@@ -1261,9 +1256,7 @@ class LazyParquetIterator(IteratorNode):
         rows = self._load_row_group(rg_idx)
         cut = self._build_cut_from_row(rows[local_idx], fallback_idx=idx)
         if cut is None:
-            raise RuntimeError(
-                f"Row {idx} in {self.path} is not decodable; cannot satisfy random-access __getitem__."
-            )
+            raise IndexError(f"Row {idx} in {self.path} is not decodable; cannot satisfy random-access __getitem__.")
         return attach_graph_origin(cut, idx)
 
     def __len__(self) -> int:

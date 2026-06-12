@@ -36,7 +36,6 @@ from pathlib import Path
 import pytest
 from lhotse import CutSet
 from lhotse.dataset.dataloading import LHOTSE_USE_WORKER_PARTITION
-from lhotse.serialization import save_to_jsonl
 from lhotse.testing.dummies import DummyManifest
 
 from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
@@ -72,8 +71,7 @@ def _collect_disjoint_per_rank(build_iter_for_rank, world_size: int) -> tuple[li
         # Disjointness against every prior rank.
         for prev in per_rank:
             assert set(prev).isdisjoint(ids), (
-                f"rank {rank} slice overlaps prior rank: "
-                f"{sorted(set(prev) & set(ids))}"
+                f"rank {rank} slice overlaps prior rank: " f"{sorted(set(prev) & set(ids))}"
             )
         per_rank.append(ids)
         union.update(ids)
@@ -97,8 +95,8 @@ def tmp_audio_root(tmp_path_factory) -> Path:
 def nemo_tarred_manifest(tmp_audio_root) -> tuple[Path, Path]:
     """20-utterance NeMo tarred manifest (single shard) as
     (manifest_filepath, tarred_audio_filepath)."""
-    from lhotse.shar.writers import TarWriter
     from lhotse.serialization import SequentialJsonlWriter
+    from lhotse.shar.writers import TarWriter
 
     cuts = DummyManifest(CutSet, begin_id=0, end_id=N_CUTS, with_data=True).save_audios(
         tmp_audio_root, progress_bar=False
@@ -158,8 +156,8 @@ def test_lazy_nemo_tarred_iterator_indexed_partition(nemo_tarred_manifest, world
 @pytest.fixture
 def parquet_manifest(tmp_audio_root) -> Path:
     """20-row parquet file: id + audio_bytes + text."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("pyarrow.parquet")
     import pandas as pd
 
     cuts = DummyManifest(CutSet, begin_id=0, end_id=N_CUTS, with_data=True).save_audios(
@@ -212,9 +210,7 @@ def text_jsonl(tmp_path) -> Path:
 @pytest.mark.parametrize("world_size", [1, 2, 4, 5])
 def test_lhotse_text_jsonl_adapter_indexed_partition(text_jsonl, world_size):
     def build():
-        it = text_adapters.LhotseTextJsonlAdapter(
-            paths=str(text_jsonl), language="en", indexed=True
-        )
+        it = text_adapters.LhotseTextJsonlAdapter(paths=str(text_jsonl), language="en", indexed=True)
         return [ex.text for ex in it]
 
     per_rank, union = _collect_disjoint_per_rank(build, world_size)
@@ -239,9 +235,7 @@ def sft_jsonl(tmp_path) -> Path:
 @pytest.mark.parametrize("world_size", [1, 2, 4, 5])
 def test_nemo_sft_jsonl_adapter_indexed_partition(sft_jsonl, world_size):
     def build():
-        it = text_adapters.NeMoSFTJsonlAdapter(
-            paths=str(sft_jsonl), language="en", indexed=True
-        )
+        it = text_adapters.NeMoSFTJsonlAdapter(paths=str(sft_jsonl), language="en", indexed=True)
         # NeMoSFTExample stores the raw dict in .data; key by "id".
         return [ex.data["id"] for ex in it]
 
@@ -291,9 +285,7 @@ def mm_conversation_jsonl(tmp_audio_root) -> Path:
 
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 5])
-def test_nemo_multimodal_conversation_jsonl_adapter_indexed_partition(
-    mm_conversation_jsonl, world_size
-):
+def test_nemo_multimodal_conversation_jsonl_adapter_indexed_partition(mm_conversation_jsonl, world_size):
     def build():
         it = text_adapters.NeMoMultimodalConversationJsonlAdapter(
             manifest_filepath=[str(mm_conversation_jsonl)],

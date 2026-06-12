@@ -51,13 +51,13 @@ import logging
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
 import click
-from omegaconf import OmegaConf
-
 from lhotse.indexing import index_file_path
+from omegaconf import OmegaConf
 
 # Reuse the discovery + IndexJob machinery from build_indexes.py.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -82,10 +82,8 @@ def _copy_idx(src: str, dst: str) -> None:
         Path(tmp).replace(dst)
     finally:
         # Clean up if rename never happened (exception path).
-        try:
+        with suppress(FileNotFoundError):
             Path(tmp).unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _is_present(local_idx: str) -> bool:
@@ -159,7 +157,9 @@ def main(
     skipped = len(pairs) - len(todo)
     logging.info(
         "Discovered %d sidecars (%d already present locally, %d to copy).",
-        len(pairs), skipped, len(todo),
+        len(pairs),
+        skipped,
+        len(todo),
     )
 
     if dry_run or not todo:
@@ -170,7 +170,7 @@ def main(
     # Per-file success logging is suppressed (80k-400k sidecars would swamp
     # stdout); failures are still logged inline, success emits a periodic
     # progress heartbeat plus a final summary.
-    failures: list[tuple[str, str, BaseException]] = []
+    failures: list[tuple[str, str, Exception]] = []
     total = len(todo)
     log_every = max(1, min(5000, total // 20))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
@@ -181,14 +181,17 @@ def main(
             s, d = futures[fut]
             try:
                 fut.result()
-            except BaseException as e:  # noqa: BLE001
+            except Exception as e:
                 failures.append((s, d, e))
                 logging.error("  [FAIL] %s  ->  %s: %s", s, d, e)
                 continue
             if done % log_every == 0 or done == total:
                 logging.info(
                     "  copied %d/%d (%.1f%%)  failures=%d",
-                    done, total, 100.0 * done / total, len(failures),
+                    done,
+                    total,
+                    100.0 * done / total,
+                    len(failures),
                 )
 
     if failures:

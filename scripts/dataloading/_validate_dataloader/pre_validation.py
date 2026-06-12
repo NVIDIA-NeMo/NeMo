@@ -26,7 +26,7 @@ check's ``PASS``/``WARN``/``FAIL`` status. Exit code is ``0`` iff no
 import json
 import logging
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -59,8 +59,10 @@ class PreValidationReport:
 
     def to_dict(self):
         return {
-            "checks": {c.check_id: {"status": c.status, "severity": c.severity, "detail": c.detail, **c.extra}
-                       for c in self.checks},
+            "checks": {
+                c.check_id: {"status": c.status, "severity": c.severity, "detail": c.detail, **c.extra}
+                for c in self.checks
+            },
             "summary": self.summary,
         }
 
@@ -112,8 +114,14 @@ def _check_seed_int(cfg: DictConfig):
     if isinstance(seed, int):
         return PASS, f"seed={seed}", {}
     if seed in _NON_INT_SEED_VALUES:
-        return FAIL, (f"train_ds.seed is {seed!r}; must be an integer for reproducibility across "
-                      "launches and determinism re-runs."), {}
+        return (
+            FAIL,
+            (
+                f"train_ds.seed is {seed!r}; must be an integer for reproducibility across "
+                "launches and determinism re-runs."
+            ),
+            {},
+        )
     return FAIL, f"train_ds.seed={seed!r} (type={type(seed).__name__}); must be int", {}
 
 
@@ -121,15 +129,24 @@ def _check_shard_seed_int(cfg: DictConfig):
     shard_seed = cfg.get("shard_seed", None)
     if isinstance(shard_seed, int):
         return PASS, f"shard_seed={shard_seed}", {}
-    return FAIL, (f"train_ds.shard_seed={shard_seed!r}; must be an integer. "
-                  "LazyIteratorMultiplexer raises under multi-shard + 'randomized'."), {}
+    return (
+        FAIL,
+        (
+            f"train_ds.shard_seed={shard_seed!r}; must be an integer. "
+            "LazyIteratorMultiplexer raises under multi-shard + 'randomized'."
+        ),
+        {},
+    )
 
 
 def _check_stateful_on(cfg: DictConfig):
     if cfg.get("use_stateful_dataloader", False) is True:
         return PASS, "", {}
-    return FAIL, ("use_stateful_dataloader is not True; resumability validation requires the "
-                  "StatefulDataLoader path."), {}
+    return (
+        FAIL,
+        ("use_stateful_dataloader is not True; resumability validation requires the " "StatefulDataLoader path."),
+        {},
+    )
 
 
 def _check_indexed_implies_root(cfg: DictConfig):
@@ -138,9 +155,15 @@ def _check_indexed_implies_root(cfg: DictConfig):
     if not indexed:
         return SKIP, "train_ds.indexed != True; check not applicable", {}
     if indexes_root in (None, "", "null"):
-        return FAIL, ("train_ds.indexed=True but indexes_root is unset. Without indexes_root, "
-                      "LazyIndexedSharIterator falls back to looking next to (typically remote) "
-                      "data files."), {}
+        return (
+            FAIL,
+            (
+                "train_ds.indexed=True but indexes_root is unset. Without indexes_root, "
+                "LazyIndexedSharIterator falls back to looking next to (typically remote) "
+                "data files."
+            ),
+            {},
+        )
     return PASS, f"indexes_root={indexes_root}", {}
 
 
@@ -152,8 +175,14 @@ def _check_indexes_root_exists(cfg: DictConfig):
     if p.exists():
         return PASS, f"{indexes_root} exists", {}
     # Locally on a developer laptop the path is typically cluster-specific; downgrade to WARN.
-    return WARN, (f"indexes_root={indexes_root!r} does not exist on this host. "
-                  "Expected on cluster; downgraded to WARN locally."), {}
+    return (
+        WARN,
+        (
+            f"indexes_root={indexes_root!r} does not exist on this host. "
+            "Expected on cluster; downgraded to WARN locally."
+        ),
+        {},
+    )
 
 
 def _check_idx_files_present(cfg: DictConfig):
@@ -222,14 +251,20 @@ def _check_constant_time_leaves(cfg: DictConfig):
     severity_status = FAIL if stateful else WARN
     if non_indexable or streaming:
         n = len(non_indexable) + len(streaming)
-        detail = (f"{n} leaf source(s) lack constant-time access "
-                  f"({len(non_indexable)} non-indexable type, {len(streaming)} streaming-mode). "
-                  "Resume falls back to O(N) replay; with force_map_dataset=False they also leak "
-                  "across ranks.")
-        return severity_status, detail, {
-            "non_indexable": non_indexable[:5],
-            "streaming": streaming[:5],
-        }
+        detail = (
+            f"{n} leaf source(s) lack constant-time access "
+            f"({len(non_indexable)} non-indexable type, {len(streaming)} streaming-mode). "
+            "Resume falls back to O(N) replay; with force_map_dataset=False they also leak "
+            "across ranks."
+        )
+        return (
+            severity_status,
+            detail,
+            {
+                "non_indexable": non_indexable[:5],
+                "streaming": streaming[:5],
+            },
+        )
     return PASS, "all leaf sources admit constant-time access", {}
 
 
@@ -258,9 +293,15 @@ def _check_mux_seed_not_randomized(cfg: DictConfig):
     shard_seed = cfg.get("shard_seed")
     if isinstance(shard_seed, int):
         return PASS, f"shard_seed={shard_seed}", {}
-    return FAIL, (f"force_map_dataset=False but shard_seed={shard_seed!r}. "
-                  "LazyIteratorMultiplexer raises ValueError under multi-shard with "
-                  "shard_seed='randomized'."), {}
+    return (
+        FAIL,
+        (
+            f"force_map_dataset=False but shard_seed={shard_seed!r}. "
+            "LazyIteratorMultiplexer raises ValueError under multi-shard with "
+            "shard_seed='randomized'."
+        ),
+        {},
+    )
 
 
 def _check_slice_length_vs_indexed(cfg: DictConfig):
@@ -271,9 +312,14 @@ def _check_slice_length_vs_indexed(cfg: DictConfig):
         if leaf.get("slice_length") is not None:
             offenders.append({"type": leaf.get("type"), "corpus": leaf.get("corpus")})
     if offenders:
-        return FAIL, (f"{len(offenders)} source(s) set slice_length with indexed=True. "
-                      "Lhotse rejects: \"'slice_length' is not supported with indexed=True\"."), \
-               {"examples": offenders[:5]}
+        return (
+            FAIL,
+            (
+                f"{len(offenders)} source(s) set slice_length with indexed=True. "
+                "Lhotse rejects: \"'slice_length' is not supported with indexed=True\"."
+            ),
+            {"examples": offenders[:5]},
+        )
     return PASS, "", {}
 
 
@@ -285,9 +331,14 @@ def _check_cut_map_fns_vs_indexed(cfg: DictConfig):
         if leaf.get("cut_map_fns"):
             offenders.append({"type": leaf.get("type"), "corpus": leaf.get("corpus")})
     if offenders:
-        return FAIL, (f"{len(offenders)} source(s) set cut_map_fns with indexed=True. "
-                      "Lhotse rejects: \"'cut_map_fns' is not supported with indexed=True\"."),\
-               {"examples": offenders[:5]}
+        return (
+            FAIL,
+            (
+                f"{len(offenders)} source(s) set cut_map_fns with indexed=True. "
+                "Lhotse rejects: \"'cut_map_fns' is not supported with indexed=True\"."
+            ),
+            {"examples": offenders[:5]},
+        )
     return PASS, "", {}
 
 
@@ -315,9 +366,14 @@ def _check_bucketer_buffer(cfg: DictConfig):
         return WARN, f"num_buckets={n_buckets}, bucket_buffer_size={buffer_size}", {}
     ratio = buffer_size / max(n_buckets, 1)
     if ratio < 10:
-        return WARN, (f"bucket_buffer_size={buffer_size} is < 10×num_buckets ({n_buckets}). "
-                      "Low buffers can cause BucketsDontHaveEnoughData mid-run."), \
-               {"ratio": ratio}
+        return (
+            WARN,
+            (
+                f"bucket_buffer_size={buffer_size} is < 10×num_buckets ({n_buckets}). "
+                "Low buffers can cause BucketsDontHaveEnoughData mid-run."
+            ),
+            {"ratio": ratio},
+        )
     return PASS, f"bucket_buffer_size={buffer_size}, num_buckets={n_buckets}, ratio={ratio:.1f}", {}
 
 
@@ -338,12 +394,20 @@ def _check_multi_config_flags(cfg: DictConfig):
     sub_cfgs = cfg.get("input_cfg") or []
     if not isinstance(sub_cfgs, (list, ListConfig)):
         return WARN, "multi_config=True but input_cfg is not a list", {}
-    missing = [i for i, sc in enumerate(sub_cfgs)
-               if isinstance(sc, (dict, DictConfig)) and (
-                   sc.get("indexed") is None or sc.get("indexes_root") is None)]
+    missing = [
+        i
+        for i, sc in enumerate(sub_cfgs)
+        if isinstance(sc, (dict, DictConfig)) and (sc.get("indexed") is None or sc.get("indexes_root") is None)
+    ]
     if missing:
-        return FAIL, (f"multi_config=True; {len(missing)} sub-config(s) missing indexed/indexes_root "
-                      "and top-level doesn't supply both."), {"indices": missing[:5]}
+        return (
+            FAIL,
+            (
+                f"multi_config=True; {len(missing)} sub-config(s) missing indexed/indexes_root "
+                "and top-level doesn't supply both."
+            ),
+            {"indices": missing[:5]},
+        )
     return PASS, "every sub-config sets indexed and indexes_root", {}
 
 
@@ -363,8 +427,11 @@ def _check_text_fields(cfg: DictConfig):
             if tf is not None and tf not in valid:
                 suspicious.append({"corpus": leaf.get("corpus"), "value": tf})
     if suspicious:
-        return WARN, f"{len(suspicious)} unusual text_field value(s); verify against shard 0", \
-               {"examples": suspicious[:5], "known_valid": sorted(valid)}
+        return (
+            WARN,
+            f"{len(suspicious)} unusual text_field value(s); verify against shard 0",
+            {"examples": suspicious[:5], "known_valid": sorted(valid)},
+        )
     return PASS, "text_field values match known-valid set", {}
 
 
@@ -380,8 +447,11 @@ def _check_world_size_divides_workers(cfg: DictConfig):
         return SKIP, "no leaf-shard counts derivable from config", {}
     min_shards = min(c["shards"] for c in counts)
     if min_shards < 8:  # arbitrary "small enough to worry about" heuristic
-        return WARN, f"smallest source has only {min_shards} shards; verify (num_ranks × num_workers) ≤ this", \
-               {"counts": counts[:10]}
+        return (
+            WARN,
+            f"smallest source has only {min_shards} shards; verify (num_ranks × num_workers) ≤ this",
+            {"counts": counts[:10]},
+        )
     return PASS, f"smallest source has {min_shards} shards", {"counts": counts[:10]}
 
 
@@ -416,22 +486,39 @@ _REGISTRY: list[tuple[str, str, Callable[[DictConfig], tuple[str, str, dict]]]] 
 
 
 # Types that read indexable underlying data.
-_LEAF_TYPES = frozenset({
-    "lhotse_shar", "nemo", "nemo_tarred", "multimodal_conversation", "share_gpt",
-})
+_LEAF_TYPES = frozenset(
+    {
+        "lhotse_shar",
+        "nemo",
+        "nemo_tarred",
+        "multimodal_conversation",
+        "share_gpt",
+    }
+)
 
 # Types that don't admit constant-time access at all.
-_STREAMING_ONLY_TYPES = frozenset({
-    "txt", "txt_pair", "parquet", "multi_speaker_simulator",
-})
+_STREAMING_ONLY_TYPES = frozenset(
+    {
+        "txt",
+        "txt_pair",
+        "parquet",
+        "multi_speaker_simulator",
+    }
+)
 
 # Transparent passthrough types — recurse into input_cfg.
-_TRANSFORM_TYPES = frozenset({
-    "lhotse_as_conversation", "sqa_as_conversation", "s2s_as_conversation",
-    "s2s_duplex_overlap_as_s2s_duplex", "s2s_duplex_reverse_role",
-    "lhotse_magpietts_data_as_continuation", "nemo_tarred_to_duplex",
-    "group",
-})
+_TRANSFORM_TYPES = frozenset(
+    {
+        "lhotse_as_conversation",
+        "sqa_as_conversation",
+        "s2s_as_conversation",
+        "s2s_duplex_overlap_as_s2s_duplex",
+        "s2s_duplex_reverse_role",
+        "lhotse_magpietts_data_as_continuation",
+        "nemo_tarred_to_duplex",
+        "group",
+    }
+)
 
 
 def _iter_leaf_nodes(cfg: DictConfig) -> Iterable[DictConfig]:
@@ -505,7 +592,7 @@ def _collect_leaf_paths(cfg: DictConfig) -> list[str]:
 def _leaf_to_paths(leaf: DictConfig) -> list[str]:
     """Resolve the shar/manifest paths inside ``leaf`` into flat strings."""
     paths: list[str] = []
-    if (shar := leaf.get("shar_path")):
+    if shar := leaf.get("shar_path"):
         if isinstance(shar, (dict, DictConfig)):
             for key in ("cuts", "recording"):
                 v = shar.get(key)
@@ -513,11 +600,11 @@ def _leaf_to_paths(leaf: DictConfig) -> list[str]:
                     paths.append(v)
         elif isinstance(shar, str):
             paths.append(shar)
-    if (mfp := leaf.get("manifest_filepath")):
+    if mfp := leaf.get("manifest_filepath"):
         paths.extend(_flatten_str(mfp))
-    if (taf := leaf.get("tarred_audio_filepaths")):
+    if taf := leaf.get("tarred_audio_filepaths"):
         paths.extend(_flatten_str(taf))
-    if (cuts := leaf.get("cuts_path")):
+    if cuts := leaf.get("cuts_path"):
         paths.extend(_flatten_str(cuts))
     return paths
 
@@ -525,6 +612,7 @@ def _leaf_to_paths(leaf: DictConfig) -> list[str]:
 def _count_shards(leaf: DictConfig) -> Optional[int]:
     """Best-effort shard count from a leaf's ``_OP_N..M_CL_`` patterns."""
     import re
+
     paths = _leaf_to_paths(leaf)
     if not paths:
         return None
@@ -565,6 +653,7 @@ def _try_load_yaml(path: str) -> Optional[Any]:
 
 def _isfinite(x: float) -> bool:
     import math
+
     return math.isfinite(x)
 
 
@@ -574,19 +663,33 @@ def _isfinite(x: float) -> bool:
 
 
 @click.command(help=__doc__)
-@click.option("--config", "config_path", required=True, type=click.Path(exists=True),
-              help="Training YAML containing data.train_ds.")
-@click.option("--data-blend-dir", default=None,
-              help="Substituted into ${data_blend_dir} in the config (optional locally).")
-@click.option("--section", default="train_ds", show_default=True,
-              help="Which data.* section to validate.")
-@click.option("--output-dir", default=None, type=click.Path(),
-              help="Write pre_validation.json under this directory.")
-@click.option("--ignore-fail", multiple=True, default=(),
-              help="Repeatable: check IDs whose FAIL outcome should be downgraded to WARN.")
+@click.option(
+    "--config",
+    "config_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Training YAML containing data.train_ds.",
+)
+@click.option(
+    "--data-blend-dir", default=None, help="Substituted into ${data_blend_dir} in the config (optional locally)."
+)
+@click.option("--section", default="train_ds", show_default=True, help="Which data.* section to validate.")
+@click.option("--output-dir", default=None, type=click.Path(), help="Write pre_validation.json under this directory.")
+@click.option(
+    "--ignore-fail",
+    multiple=True,
+    default=(),
+    help="Repeatable: check IDs whose FAIL outcome should be downgraded to WARN.",
+)
 @click.option("-v", "--verbose", is_flag=True, default=False, help="Verbose logs.")
-def cli(config_path: str, data_blend_dir: Optional[str], section: str, output_dir: Optional[str],
-        ignore_fail: tuple, verbose: bool) -> None:
+def cli(
+    config_path: str,
+    data_blend_dir: Optional[str],
+    section: str,
+    output_dir: Optional[str],
+    ignore_fail: tuple,
+    verbose: bool,
+) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="[%(asctime)s %(levelname)s] %(message)s",

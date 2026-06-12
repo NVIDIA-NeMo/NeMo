@@ -1591,7 +1591,7 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
             self._skip_resume_validation_once = True
             self.restarting = False
             return
-        return super().advance(data_fetcher)
+        super().advance(data_fetcher)
 
     def on_advance_end(self, data_fetcher) -> None:
         """Clear the one-shot restart-validation skip after normal epoch-loop bookkeeping."""

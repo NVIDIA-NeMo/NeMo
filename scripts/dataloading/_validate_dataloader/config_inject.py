@@ -17,7 +17,7 @@ OmegaConf node and every nested ``input_cfg``."""
 import logging
 from typing import Any
 
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig
 
 LOG = logging.getLogger(__name__)
 

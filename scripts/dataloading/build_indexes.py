@@ -55,18 +55,14 @@ import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Optional
+from typing import Optional
 
 import click
+from lhotse.indexing import index_file_path
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from lhotse.indexing import index_file_path
-
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_tar_index as create_nemo_tar_index,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
-
 
 # --------------------------------------------------------------------------- #
 # Tar layout taxonomy.
@@ -146,15 +142,17 @@ def _resolve_input_cfg(val) -> ListConfig | None:
 # ``read_cutset_from_config(config)`` and accept *any* underlying source's keys
 # (``cuts_path``, ``shar_path``, ``manifest_filepath`` [+ ``tarred_audio_filepaths``],
 # nested ``input_cfg``, …). Treat them as transparent passthroughs.
-_TRANSFORM_TYPES = frozenset({
-    "lhotse_as_conversation",
-    "sqa_as_conversation",
-    "s2s_as_conversation",
-    "s2s_duplex_overlap_as_s2s_duplex",
-    "s2s_duplex_reverse_role",
-    "lhotse_magpietts_data_as_continuation",
-    "nemo_tarred_to_duplex",
-})
+_TRANSFORM_TYPES = frozenset(
+    {
+        "lhotse_as_conversation",
+        "sqa_as_conversation",
+        "s2s_as_conversation",
+        "s2s_duplex_overlap_as_s2s_duplex",
+        "s2s_duplex_reverse_role",
+        "lhotse_magpietts_data_as_continuation",
+        "nemo_tarred_to_duplex",
+    }
+)
 
 # Types that index nothing on their own.
 _NO_INDEX_TYPES = frozenset({"txt", "txt_pair", "parquet", "multi_speaker_simulator"})
@@ -333,7 +331,8 @@ def _discover_shar(shar_path, jobs: list[IndexJob], indexes_root: Optional[str])
 
 def _build_one(job: IndexJob) -> tuple[IndexJob, str]:
     """Run the right indexer for *job*. Returns (job, status)."""
-    from lhotse.indexing import create_jsonl_index, create_tar_index as create_wds_tar_index
+    from lhotse.indexing import create_jsonl_index
+    from lhotse.indexing import create_tar_index as create_wds_tar_index
 
     idx = job.idx_path()
     # Ensure the parent directory exists for mirrored layouts.
@@ -426,8 +425,7 @@ def main(
     todo = unique if force else [j for j in unique if not _is_indexed(j)]
     skipped = len(unique) - len(todo)
 
-    logging.info("Discovered %d files (%d already indexed, %d to build).",
-                 len(unique), skipped, len(todo))
+    logging.info("Discovered %d files (%d already indexed, %d to build).", len(unique), skipped, len(todo))
 
     if dry_run or not todo:
         for j in todo:
@@ -439,7 +437,7 @@ def main(
     # Failures are still logged inline; success only emits a periodic
     # "<built>/<total> processed" heartbeat (~every 5% of total or 5000 files,
     # whichever is smaller) plus a final summary.
-    failures: list[tuple[IndexJob, BaseException]] = []
+    failures: list[tuple[IndexJob, Exception]] = []
     total = len(todo)
     log_every = max(1, min(5000, total // 20))
     pool_cls = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
@@ -451,14 +449,17 @@ def main(
             j = futures[fut]
             try:
                 _, _status = fut.result()
-            except BaseException as e:  # noqa: BLE001 — surface any failure
+            except Exception as e:  # surface worker failures but let interrupts/system exits propagate
                 failures.append((j, e))
                 logging.error("  [FAIL] %s %s: %s", j.kind, j.path, e)
                 continue
             if done % log_every == 0 or done == total:
                 logging.info(
                     "  built %d/%d (%.1f%%)  failures=%d",
-                    done, total, 100.0 * done / total, len(failures),
+                    done,
+                    total,
+                    100.0 * done / total,
+                    len(failures),
                 )
 
     if failures:

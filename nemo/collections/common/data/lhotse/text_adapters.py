@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import logging
 import json
+import logging
 import math
 import os
 import random
@@ -31,13 +31,11 @@ from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset import AudioSamples
 from lhotse.dataset.dataloading import PartitionedIndexedIterator, resolve_seed
+from lhotse.indexing import IndexedJsonlReader
+from lhotse.lazy import IteratorNode, attach_graph_origin, normalize_graph_token
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
 from lhotse.utils import Pathlike, compute_num_samples, is_valid_url
-
-from lhotse.lazy import IteratorNode, attach_graph_origin, normalize_graph_token
-
-from lhotse.indexing import IndexedJsonlReader
 
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedTarMemberReader,
@@ -160,9 +158,7 @@ class LhotseTextJsonlAdapter(IteratorNode):
         self._cum_lens: list[int] = []
         self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
-            from lhotse.indexing import IndexedJsonlReader
-
-            from lhotse.indexing import index_file_path
+            from lhotse.indexing import IndexedJsonlReader, index_file_path
 
             for p in self.paths:
                 self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
@@ -209,7 +205,7 @@ class LhotseTextJsonlAdapter(IteratorNode):
         shard_idx, local_idx = self._resolve(idx)
         ex = self._data_to_example(self._readers[shard_idx][local_idx])
         if ex is None:
-            raise RuntimeError(
+            raise IndexError(
                 f"Index {idx} in {self.paths[shard_idx]} has no '{self.text_field}' field; "
                 f"cannot satisfy random-access __getitem__."
             )
@@ -428,9 +424,7 @@ class NeMoSFTJsonlAdapter(IteratorNode):
         self._cum_lens: list[int] = []
         self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
-            from lhotse.indexing import IndexedJsonlReader
-
-            from lhotse.indexing import index_file_path
+            from lhotse.indexing import IndexedJsonlReader, index_file_path
 
             for p in self.paths:
                 self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
@@ -1045,23 +1039,17 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         return self.indexed
 
     def _init_indexed(self) -> None:
-        from lhotse.indexing import IndexedJsonlReader
-
-        from lhotse.indexing import index_file_path
+        from lhotse.indexing import IndexedJsonlReader, index_file_path
 
         if self.slice_length is not None:
-            raise ValueError(
-                "NeMoMultimodalConversationJsonlAdapter(indexed=True) does not support slice_length."
-            )
+            raise ValueError("NeMoMultimodalConversationJsonlAdapter(indexed=True) does not support slice_length.")
         for p in self.manifest_filepath:
             self._cuts_readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
         if self.tarred_audio_filepaths is not None:
             from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
-                self._tar_readers.append(
-                    IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root))
-                )
+                self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:
@@ -1108,11 +1096,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 tar_path=self.tarred_audio_filepaths[shard_idx],
             )
         else:
-            convo = self._build_conversation_local(
-                data, manifest_path=self._cuts_readers[shard_idx].path
-            )
+            convo = self._build_conversation_local(data, manifest_path=self._cuts_readers[shard_idx].path)
         if convo is None:
-            raise RuntimeError(
+            raise IndexError(
                 f"Conversation at index {idx} (shard {shard_idx}, local {local_idx}) "
                 f"could not be built; cannot satisfy random-access __getitem__."
             )
@@ -1152,9 +1138,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             custom=data.get("custom"),
         )
 
-    def _build_conversation_tarred(
-        self, data: dict, tar_reader, tar_path: str
-    ) -> NeMoMultimodalConversation | None:
+    def _build_conversation_tarred(self, data: dict, tar_reader, tar_path: str) -> NeMoMultimodalConversation | None:
         import io as _io
 
         import soundfile as _sf
@@ -1180,9 +1164,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 num_samples=meta.frames,
                 duration=meta.duration,
             )
-            cut = recording.to_cut().truncate(
-                offset=turn.get("offset", 0.0), duration=turn.get("duration")
-            )
+            cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
             cut = cut.with_id(self._make_cut_id(cut, turn))
             cuts.append(cut)
         cuts = deque(cuts)
@@ -1233,9 +1215,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                     tar_path=self.tarred_audio_filepaths[shard_idx],
                 )
             else:
-                convo = self._build_conversation_local(
-                    data, manifest_path=self._cuts_readers[shard_idx].path
-                )
+                convo = self._build_conversation_local(data, manifest_path=self._cuts_readers[shard_idx].path)
             if convo is None:
                 continue
             attach_graph_origin(convo, global_idx)
@@ -1457,9 +1437,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         return self.indexed
 
     def _init_indexed(self) -> None:
-        from lhotse.indexing import IndexedJsonlReader
-
-        from lhotse.indexing import index_file_path
+        from lhotse.indexing import IndexedJsonlReader, index_file_path
 
         if self.slice_length is not None:
             raise ValueError(
@@ -1471,9 +1449,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
-                self._tar_readers.append(
-                    IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root))
-                )
+                self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:
@@ -1575,7 +1551,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         data = self._cuts_readers[shard_idx][local_idx]
         convo = self._build_one(data, shard_idx)
         if convo is None:
-            raise RuntimeError(
+            raise IndexError(
                 f"ShareGPT sample at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
             )
         return attach_graph_origin(convo, idx)
@@ -2028,16 +2004,12 @@ class _ShareGPTConversationParser:
     by the JSONL and WebDataset adapters.
     """
 
-    def __init__(
-        self, placeholders: list[str], data: dict, audio_path_fallback: str | None = None
-    ) -> None:
+    def __init__(self, placeholders: list[str], data: dict, audio_path_fallback: str | None = None) -> None:
         self.placeholders = placeholders
         self.data = data
         self.sample_id = data.get("id", "?")
         audio_path_value = data.get("sound") or data.get("ori_sound") or audio_path_fallback
-        self.audio_paths = self.normalize_audio_paths(
-            audio_path_value, sample_id=self.sample_id, field_name="sound"
-        )
+        self.audio_paths = self.normalize_audio_paths(audio_path_value, sample_id=self.sample_id, field_name="sound")
 
     def transform(self) -> list[dict]:
         """Convert one raw ShareGPT sample into text/audio turn dictionaries.
@@ -2048,11 +2020,7 @@ class _ShareGPTConversationParser:
         """
         conversations = []
         placeholder_count = self._placeholder_count()
-        if (
-            len(self.audio_paths) > 1
-            and placeholder_count > 1
-            and len(self.audio_paths) != placeholder_count
-        ):
+        if len(self.audio_paths) > 1 and placeholder_count > 1 and len(self.audio_paths) != placeholder_count:
             raise ValueError(
                 f"ShareGPT sample id={self.sample_id} has {len(self.audio_paths)} audio paths but "
                 f"{placeholder_count} audio placeholders. Use one path for all placeholders, one path per "

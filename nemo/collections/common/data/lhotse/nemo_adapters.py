@@ -206,14 +206,14 @@ class LazyNeMoIterator(IteratorNode):
             yield cut
 
     def __getitem__(self, token):
-        if not self.indexed:
-            raise NotImplementedError(
-                "LazyNeMoIterator only supports __getitem__ when constructed with indexed=True."
-            )
         token = normalize_graph_token(token)
+        if self.extra_fields:
+            raise NotImplementedError(
+                "LazyNeMoIterator does not support __getitem__ when extra_fields are configured."
+            )
         data = self.source[token]
         cut = self._build_cut_from_dict(data)
-        return attach_graph_origin(cut, token)
+        return attach_graph_origin(cut, token) if self.indexed else cut
 
     def __len__(self) -> int:
         return len(self.source)
@@ -1158,11 +1158,13 @@ class LazyParquetIterator(IteratorNode):
         self.sampling_rate = sampling_rate
         self.indexed = indexed
         self._row_group_offsets: list[int] | None = None
+        self._num_row_groups: int | None = None
+        self._total_rows: int | None = None
         self._cached_row_group_idx: int | None = None
         self._cached_row_group: list[dict] | None = None
         self._iter_state = PartitionedIndexedIterator()
         if indexed:
-            self._init_indexed()
+            self._ensure_row_group_offsets()
 
     @property
     def is_checkpointable(self) -> bool:
@@ -1176,7 +1178,9 @@ class LazyParquetIterator(IteratorNode):
     def has_constant_time_access(self) -> bool:
         return self.indexed
 
-    def _init_indexed(self) -> None:
+    def _ensure_row_group_offsets(self) -> None:
+        if self._row_group_offsets is not None:
+            return
         try:
             with closing(pq.ParquetFile(self.path)) as parquet_file:
                 offsets = [0]
@@ -1243,10 +1247,7 @@ class LazyParquetIterator(IteratorNode):
         return cut
 
     def __getitem__(self, token):
-        if not self.indexed:
-            raise NotImplementedError(
-                "LazyParquetIterator only supports __getitem__ when constructed with indexed=True."
-            )
+        self._ensure_row_group_offsets()
         idx = int(normalize_graph_token(token))
         if idx < 0:
             idx += self._total_rows
@@ -1260,9 +1261,8 @@ class LazyParquetIterator(IteratorNode):
         return attach_graph_origin(cut, idx)
 
     def __len__(self) -> int:
-        if self.indexed:
-            return self._total_rows
-        raise TypeError("LazyParquetIterator has unknown length unless constructed with indexed=True.")
+        self._ensure_row_group_offsets()
+        return self._total_rows
 
     def state_dict(self) -> dict:
         if not self.indexed:

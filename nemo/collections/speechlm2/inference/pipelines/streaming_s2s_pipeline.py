@@ -75,6 +75,22 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		self.s2s_model = s2s_model
 		self.device = self.s2s_model.device
 
+		# ----- TTS PAD-silence substitution: pipeline → wrapper wiring -----
+		# The wrapper needs a way to look up per-stream state (Option B —
+		# multi-stream-safe). We hand it our `get_or_create_state(stream_id)`
+		# as a callable; the wrapper stores it and uses it at the three TTS
+		# call sites to read/write the per-stream `agent_idle` flag.
+		#
+		# Without this wiring the wrapper falls back to its single instance
+		# attribute `_agent_idle` (preserves prior single-stream behavior).
+		# Wrapped in try/except + hasattr so the pipeline still works against
+		# older wrapper versions that don't have this method.
+		try:
+			if hasattr(self.s2s_model, "_set_streaming_state_getter"):
+				self.s2s_model._set_streaming_state_getter(self.get_or_create_state)
+		except Exception:
+			pass
+
 		# ------------------------------------------------------------------
 		# Streaming configuration
 		# ------------------------------------------------------------------
@@ -160,33 +176,49 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		if sum(x is not None for x in [self.pad_audio_to_sec, self.pad_silence_ratio, self.pad_audio_by_sec]) > 1:
 			raise ValueError("Set at most one of: pad_audio_to_sec, pad_silence_ratio, pad_audio_by_sec")
 
+		# Trailing PAD count scales with phrase length so longer ACK / on-hold
+		# messages get proportionally more codec-drain time. Short phrases keep
+		# the floor. Shared across ACK, FC reminder, per-tool on-hold, and generic
+		# on-hold loops. Rate ~0.5 pad/char (1 pad per 2 chars); floor 17 matches
+		# the previous fixed value so short phrases see no change.
+		_FC_TRAILING_PAD_MIN = 17
+		_FC_TRAILING_PAD_PER_CHAR = 0.5
+
 		# ------------------------------------------------------------------
 		# FC async acknowledgement message.
 		# If set, the TTS generates this phrase during FC instead of silence,
 		# warming up the codec cache with real speech for smooth audio after FC.
 		# One message is randomly selected per FC call from the list below.
 		# ------------------------------------------------------------------
+		# Short, polite acknowledgement phrases — fill the TTS audio during the
+		# LLM's TOOLCALL emission (SOTC → EOTC). Designed to be warm and positive
+		# while staying noticeably shorter than per-tool on-hold variants
+		# (~20 vs ~50 chars). Lead-ins (Happy / My pleasure / Great / Lovely /
+		# Glad / Wonderful / Pleased) are intentionally disjoint from on-hold
+		# lead-ins (Let me / I'll / Looking / Getting / Checking / Pulling),
+		# so the two phases sound like distinct conversational moves rather
+		# than the same sentence repeated.
 		_FC_ACK_MESSAGES = [
-			"Sure, give me just a moment.",
-			"Of course, one moment please.",
-			"Let me check that for you.",
-			"Just a second, I'll look that up.",
-			"Sure, let me find that now.",
-			"One moment while I check.",
-			"Let me pull that up for you.",
-			"Just a moment, looking that up.",
-			"Sure, I'll get that right away.",
-			"One second, let me check.",
-			"Of course, let me look into that.",
-			"Sure, I'll find that for you.",
-			"Let me quickly check on that.",
-			"Just one moment while I look.",
-			"Absolutely, give me a second.",
-			"Sure thing, let me check.",
-			"Of course, just a moment.",
-			"Let me verify that for you.",
-			"Just a moment, checking now.",
-			"Sure, I'll look that up now.",
+			"Happy to help with that.",
+			"My pleasure to help.",
+			"Great question, looking now.",
+			"Lovely, on it now.",
+			"Glad you asked.",
+			"Happy to take a look.",
+			"Wonderful, looking now.",
+			"Happy to look into that.",
+			"Glad to help with that.",
+			"Happy to look that up.",
+			"Pleased to help out.",
+			"Great, happy to help.",
+			"Lovely question.",
+			"Glad to check.",
+			"Happy to check that.",
+			"Wonderful question.",
+			"Pleased to look into that.",
+			"Happy to assist.",
+			"Great, on it now.",
+			"Lovely, looking now.",
 		]
 		self._fc_ack_tokens: list | None = None
 		self._fc_ack_token_list: list | None = None
@@ -201,7 +233,6 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			_bos_id = getattr(_stt, "text_bos_id", None)
 			_eos_id = getattr(_stt, "text_eos_id", None)
 			_pad_id = getattr(_stt, "text_pad_id", None)
-			_trailing_pad_count = 17
 			try:
 				_bos_text = self.s2s_model.tokenizer.ids_to_text([_bos_id]) if _bos_id is not None else None
 				_eos_text = self.s2s_model.tokenizer.ids_to_text([_eos_id]) if _eos_id is not None else None
@@ -214,6 +245,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			self._fc_ack_token_list = []
 			for msg in _FC_ACK_MESSAGES:
 				_ack_ids = list(self.s2s_model.tokenizer.text_to_ids(msg))
+				_trailing_pad_count = max(_FC_TRAILING_PAD_MIN, math.ceil(_FC_TRAILING_PAD_PER_CHAR * len(msg)))
 				if _bos_id is not None:
 					_ack_ids = [_bos_id] + _ack_ids
 				if _pad_id is not None and _trailing_pad_count > 0:
@@ -260,10 +292,10 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			_bos_id_r = getattr(_stt_r, "text_bos_id", None)
 			_eos_id_r = getattr(_stt_r, "text_eos_id", None)
 			_pad_id_r = getattr(_stt_r, "text_pad_id", None)
-			_trailing_pad_r = 17
 			self._fc_reminder_token_list = []
 			for msg in _FC_REMINDER_MESSAGES:
 				_rem_ids = list(self.s2s_model.tokenizer.text_to_ids(msg))
+				_trailing_pad_r = max(_FC_TRAILING_PAD_MIN, math.ceil(_FC_TRAILING_PAD_PER_CHAR * len(msg)))
 				if _bos_id_r is not None:
 					_rem_ids = [_bos_id_r] + _rem_ids
 				if _pad_id_r is not None and _trailing_pad_r > 0:
@@ -294,15 +326,22 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			_bos_oh = getattr(_stt_oh, "text_bos_id", None)
 			_eos_oh = getattr(_stt_oh, "text_eos_id", None)
 			_pad_oh = getattr(_stt_oh, "text_pad_id", None)
-			for _tool_key, _oh_msg in _on_hold_data.items():
-				_ids = list(self.s2s_model.tokenizer.text_to_ids(_oh_msg))
-				if _bos_oh is not None:
-					_ids = [_bos_oh] + _ids
-				if _pad_oh is not None:
-					_ids += [_pad_oh] * 17
-				if _eos_oh is not None:
-					_ids += [_eos_oh]
-				self._fc_on_hold_token_map[_tool_key] = _ids
+			for _tool_key, _oh_value in _on_hold_data.items():
+				# Accept either a single string (back-compat) or a list of phrases.
+				# Stored uniformly as list-of-token-lists so the dispatcher can random.choice.
+				_msgs = [_oh_value] if isinstance(_oh_value, str) else list(_oh_value)
+				_tokenized_list = []
+				for _oh_msg in _msgs:
+					_ids = list(self.s2s_model.tokenizer.text_to_ids(_oh_msg))
+					_trailing_pad_count = max(_FC_TRAILING_PAD_MIN, math.ceil(_FC_TRAILING_PAD_PER_CHAR * len(_oh_msg)))
+					if _bos_oh is not None:
+						_ids = [_bos_oh] + _ids
+					if _pad_oh is not None:
+						_ids += [_pad_oh] * _trailing_pad_count
+					if _eos_oh is not None:
+						_ids += [_eos_oh]
+					_tokenized_list.append(_ids)
+				self._fc_on_hold_token_map[_tool_key] = _tokenized_list
 			logging.info("FC on-hold: %d per-tool messages loaded from %s", len(self._fc_on_hold_token_map), _on_hold_path)
 
 		# ------------------------------------------------------------------
@@ -321,10 +360,11 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			_pad_g = getattr(_stt_g, "text_pad_id", None)
 			for _g_msg in _generic_data:
 				_ids = list(self.s2s_model.tokenizer.text_to_ids(_g_msg))
+				_trailing_pad_count = max(_FC_TRAILING_PAD_MIN, math.ceil(_FC_TRAILING_PAD_PER_CHAR * len(_g_msg)))
 				if _bos_g is not None:
 					_ids = [_bos_g] + _ids
 				if _pad_g is not None:
-					_ids += [_pad_g] * 17
+					_ids += [_pad_g] * _trailing_pad_count
 				if _eos_g is not None:
 					_ids += [_eos_g]
 				self._fc_generic_on_hold_token_list.append(_ids)
@@ -380,6 +420,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		self.tool_registry["get_top_paper"] = self._tool_get_top_paper
 		self.tool_registry["get_top_news"] = self._tool_get_top_news
 		self.tool_registry["generate_random_number"] = self._tool_generate_random_number
+		self.tool_registry["find_nearby_restaurants"] = self._tool_find_nearby_restaurants
 		logging.info("Registered %d built-in tool(s): %s", len(self.tool_registry), list(self.tool_registry.keys()))
 
 	@staticmethod
@@ -404,6 +445,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		import urllib.request
 		import urllib.parse
 		CITY_COORDS = {
+			# US
 			"san francisco": (37.77, -122.42),
 			"santa clara": (37.35, -121.95),
 			"new york": (40.71, -74.01),
@@ -414,9 +456,177 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			"denver": (39.74, -104.99),
 			"miami": (25.76, -80.19),
 			"boston": (42.36, -71.06),
+			"washington": (38.91, -77.04),
+			"washington dc": (38.91, -77.04),
+			"dallas": (32.78, -96.80),
+			"houston": (29.76, -95.37),
+			"phoenix": (33.45, -112.07),
+			"atlanta": (33.75, -84.39),
+			"philadelphia": (39.95, -75.17),
+			"san diego": (32.72, -117.16),
+			"las vegas": (36.17, -115.14),
+			"portland": (45.52, -122.68),
+			"minneapolis": (44.98, -93.27),
+			"detroit": (42.33, -83.05),
+			"san jose": (37.34, -121.89),
+			# California — Bay Area / Silicon Valley
+			"oakland": (37.80, -122.27),
+			"berkeley": (37.87, -122.27),
+			"palo alto": (37.44, -122.14),
+			"mountain view": (37.39, -122.08),
+			"sunnyvale": (37.37, -122.04),
+			"cupertino": (37.32, -122.03),
+			"fremont": (37.55, -121.99),
+			"hayward": (37.67, -122.08),
+			"concord": (37.98, -122.03),
+			"san mateo": (37.56, -122.32),
+			"redwood city": (37.49, -122.24),
+			"menlo park": (37.45, -122.18),
+			# California — Southern / Central
+			"long beach": (33.77, -118.19),
+			"anaheim": (33.84, -117.91),
+			"santa monica": (34.02, -118.49),
+			"pasadena": (34.15, -118.14),
+			"burbank": (34.18, -118.31),
+			"glendale": (34.14, -118.25),
+			"hollywood": (34.10, -118.33),
+			"beverly hills": (34.07, -118.40),
+			"irvine": (33.68, -117.83),
+			"riverside": (33.95, -117.40),
+			"san bernardino": (34.11, -117.29),
+			"oxnard": (34.20, -119.18),
+			"ventura": (34.27, -119.23),
+			"santa barbara": (34.42, -119.70),
+			"bakersfield": (35.37, -119.02),
+			"fresno": (36.74, -119.78),
+			"stockton": (37.96, -121.29),
+			"modesto": (37.64, -120.99),
+			"monterey": (36.60, -121.89),
+			"santa cruz": (36.97, -122.03),
+			"napa": (38.30, -122.29),
+			"santa rosa": (38.44, -122.71),
+			"lake tahoe": (39.10, -120.04),
+			"honolulu": (21.31, -157.86),
+			"anchorage": (61.22, -149.90),
+			"sacramento": (38.58, -121.49),
+			"salt lake city": (40.76, -111.89),
+			"nashville": (36.16, -86.78),
+			"new orleans": (29.95, -90.07),
+			"charlotte": (35.23, -80.84),
+			"pittsburgh": (40.44, -79.99),
+			"saint louis": (38.63, -90.20),
+			"st louis": (38.63, -90.20),
+			"orlando": (28.54, -81.38),
+			"tampa": (27.95, -82.46),
+			"baltimore": (39.29, -76.61),
+			"indianapolis": (39.77, -86.16),
+			"kansas city": (39.10, -94.58),
+			"toronto": (43.65, -79.38),
+			"montreal": (45.50, -73.57),
+			"vancouver": (49.28, -123.12),
+			"mexico city": (19.43, -99.13),
+			# Europe
 			"london": (51.51, -0.13),
-			"tokyo": (35.68, 139.69),
 			"paris": (48.86, 2.35),
+			"berlin": (52.52, 13.40),
+			"madrid": (40.42, -3.70),
+			"rome": (41.90, 12.50),
+			"amsterdam": (52.37, 4.90),
+			"barcelona": (41.39, 2.17),
+			"vienna": (48.21, 16.37),
+			"moscow": (55.76, 37.62),
+			"istanbul": (41.01, 28.98),
+			"stockholm": (59.33, 18.07),
+			"dublin": (53.35, -6.26),
+			"zurich": (47.38, 8.54),
+			"brussels": (50.85, 4.35),
+			"munich": (48.14, 11.58),
+			"lisbon": (38.72, -9.14),
+			"copenhagen": (55.68, 12.57),
+			"warsaw": (52.23, 21.01),
+			"prague": (50.08, 14.44),
+			"athens": (37.98, 23.73),
+			"frankfurt": (50.11, 8.68),
+			"hamburg": (53.55, 9.99),
+			"milan": (45.46, 9.19),
+			"geneva": (46.20, 6.14),
+			"helsinki": (60.17, 24.94),
+			"oslo": (59.91, 10.75),
+			"budapest": (47.50, 19.04),
+			"edinburgh": (55.95, -3.19),
+			"manchester": (53.48, -2.24),
+			"birmingham": (52.49, -1.90),
+			"marseille": (43.30, 5.37),
+			"lyon": (45.76, 4.84),
+			"naples": (40.85, 14.27),
+			"florence": (43.77, 11.26),
+			"venice": (45.44, 12.32),
+			"reykjavik": (64.15, -21.94),
+			# Asia / ME / Oceania
+			"tokyo": (35.68, 139.69),
+			"beijing": (39.90, 116.41),
+			"shanghai": (31.23, 121.47),
+			"hong kong": (22.32, 114.17),
+			"singapore": (1.35, 103.82),
+			"seoul": (37.57, 126.98),
+			"bangkok": (13.76, 100.50),
+			"mumbai": (19.08, 72.88),
+			"delhi": (28.61, 77.21),
+			"new delhi": (28.61, 77.21),
+			"dubai": (25.20, 55.27),
+			"jakarta": (-6.21, 106.85),
+			"manila": (14.60, 120.98),
+			"taipei": (25.03, 121.57),
+			"kuala lumpur": (3.14, 101.69),
+			"ho chi minh city": (10.82, 106.63),
+			"saigon": (10.82, 106.63),
+			"hanoi": (21.03, 105.85),
+			"osaka": (34.69, 135.50),
+			"kyoto": (35.01, 135.77),
+			"shenzhen": (22.54, 114.06),
+			"guangzhou": (23.13, 113.26),
+			"riyadh": (24.71, 46.68),
+			"tel aviv": (32.08, 34.78),
+			"karachi": (24.86, 67.01),
+			"lahore": (31.55, 74.34),
+			"chennai": (13.08, 80.27),
+			"bangalore": (12.97, 77.59),
+			"bengaluru": (12.97, 77.59),
+			"kolkata": (22.57, 88.36),
+			"hyderabad": (17.39, 78.49),
+			"ahmedabad": (23.02, 72.57),
+			"pune": (18.52, 73.86),
+			"jaipur": (26.92, 75.79),
+			"lucknow": (26.85, 80.95),
+			"surat": (21.17, 72.83),
+			"kanpur": (26.45, 80.33),
+			"nagpur": (21.15, 79.09),
+			"indore": (22.72, 75.86),
+			"bhopal": (23.26, 77.41),
+			"patna": (25.59, 85.14),
+			"coimbatore": (11.02, 76.96),
+			"agra": (27.18, 78.01),
+			"visakhapatnam": (17.69, 83.22),
+			"vizag": (17.69, 83.22),
+			"kochi": (9.93, 76.27),
+			"goa": (15.30, 74.12),
+			"thiruvananthapuram": (8.52, 76.94),
+			"trivandrum": (8.52, 76.94),
+			"chandigarh": (30.73, 76.78),
+			"varanasi": (25.32, 82.99),
+			"doha": (25.29, 51.53),
+			"abu dhabi": (24.45, 54.38),
+			"kuwait city": (29.38, 47.99),
+			"sapporo": (43.07, 141.35),
+			"yokohama": (35.44, 139.64),
+			"busan": (35.18, 129.08),
+			"chengdu": (30.57, 104.07),
+			"hangzhou": (30.27, 120.16),
+			"wuhan": (30.59, 114.31),
+			"xi'an": (34.27, 108.95),
+			"sydney": (-33.87, 151.21),
+			"melbourne": (-37.81, 144.96),
+			"auckland": (-36.85, 174.76),
 		}
 		WMO_CODES = {
 			0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
@@ -442,7 +652,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 					coords = known_coords
 					break
 		if coords is None:
-			return json.dumps({"error": f"Unknown city '{city_raw}'. Supported: {', '.join(CITY_COORDS.keys())}"})
+			return json.dumps({"error": f"Unknown city '{city_raw}'. Try a major city in America, Europe, or Asia."})
 		lat, lon = coords
 		url = (
 			f"https://api.open-meteo.com/v1/forecast?"
@@ -552,7 +762,6 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				"authors": ", ".join(a.get("name", "") for a in (p.get("authors", []) or [])[:3]),
 				"summary": (p.get("summary", "") or "")[:300],
 				"upvotes": paper.get("numUpvotes", 0),
-				"url": f"https://huggingface.co/papers/{p.get('id', '')}",
 			})
 		except Exception as e:
 			return json.dumps({"error": f"HuggingFace papers API failed: {e}"})
@@ -570,7 +779,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			"sports": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB",
 			"entertainment": "CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtVnVHZ0pWVXlnQVAB",
 		}
-		n = min(int(args.get("n", 3)), 5)
+		n = min(int(args.get("n", 1)), 1)
 		if topic and topic in topic_map:
 			url = f"https://news.google.com/rss/topics/{topic_map[topic]}?hl=en-US&gl=US&ceid=US:en"
 		else:
@@ -605,6 +814,72 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			return json.dumps({"error": "min must be less than or equal to max"})
 		result = random.randint(min_val, max_val)
 		return json.dumps({"result": result, "min": min_val, "max": max_val})
+
+	@staticmethod
+	def _tool_find_nearby_restaurants(args: dict) -> str:
+		"""Find nearby restaurants using OpenStreetMap Nominatim + Overpass API (no API key)."""
+		import urllib.request, urllib.parse
+		city = args.get("city", "").strip()
+		cuisine = args.get("cuisine", "").strip()
+		limit = min(int(args.get("limit", 1)), 1)
+		if not city:
+			return json.dumps({"error": "city is required"})
+		# Step 1: geocode city → lat/lng via Nominatim
+		nominatim_url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode({
+			"q": city, "format": "json", "limit": 1,
+		})
+		req = urllib.request.Request(nominatim_url, headers={"User-Agent": "NvidiaVoiceChat/1.0"})
+		try:
+			with urllib.request.urlopen(req, timeout=8) as resp:
+				geo = json.loads(resp.read().decode())
+			if not geo:
+				return json.dumps({"error": f"Could not geocode city: {city}"})
+			lat, lng = float(geo[0]["lat"]), float(geo[0]["lon"])
+		except Exception as e:
+			return json.dumps({"error": f"Geocoding failed: {e}"})
+		# Step 2: query Overpass for restaurants within 3km
+		cuisine_filter = f'["cuisine"~"{cuisine}",i]' if cuisine else ""
+		overpass_query = f"""
+[out:json][timeout:10];
+(
+  node["amenity"="restaurant"]{cuisine_filter}(around:3000,{lat},{lng});
+  way["amenity"="restaurant"]{cuisine_filter}(around:3000,{lat},{lng});
+);
+out center {limit};
+""".strip()
+		overpass_url = "https://overpass-api.de/api/interpreter"
+		req2 = urllib.request.Request(
+			overpass_url,
+			data=overpass_query.encode(),
+			headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "NvidiaVoiceChat/1.0"},
+		)
+		try:
+			with urllib.request.urlopen(req2, timeout=15) as resp:
+				data = json.loads(resp.read().decode())
+			restaurants = []
+			for el in data.get("elements", []):
+				tags = el.get("tags", {})
+				name = tags.get("name", "").strip()
+				if not name:
+					continue
+				if el["type"] == "node":
+					rlat, rlng = el.get("lat"), el.get("lon")
+				else:
+					center = el.get("center", {})
+					rlat, rlng = center.get("lat"), center.get("lon")
+				addr_parts = [tags.get("addr:housenumber", ""), tags.get("addr:street", ""),
+							  tags.get("addr:city", "")]
+				address = " ".join(p for p in addr_parts if p).strip() or None
+				restaurants.append({
+					"name": name,
+					"address": address,
+					"cuisine": tags.get("cuisine"),
+					"lat": rlat,
+					"lng": rlng,
+				})
+			return json.dumps({"restaurants": restaurants, "city": city})
+		except Exception as e:
+			return json.dumps({"error": f"Overpass query failed: {e}"})
 
 	def _execute_tool_call(self, call_text: str) -> str | None:
 		"""Parse a tool call string and execute the function if registered.
@@ -1214,6 +1489,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			rnnt_partial_hypotheses=context.rnnt_partial_hypotheses,
 			fc_state=context.fc_state,
 			tool_response_text=context.tool_response_text,
+			stream_id=stream_ids[0] if stream_ids else None,
 		)
 		step_wall_end = time.time()
 
@@ -1266,6 +1542,13 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			frames, result["decoded_audio_new"], ready_feats, result["predicted_text_strs"],
 			None if use_rnnt else result.get("asr_predicted_text_strs"),
 		)
+		fc_text_strs = result.get("function_predicted_text_strs")
+		if fc_text_strs:
+			for idx, frame in enumerate(frames):
+				if ready_feats[idx] and idx < len(fc_text_strs) and fc_text_strs[idx]:
+					fc_state_obj = self.get_or_create_state(frame.stream_id)
+					fc_state_obj.output_function_text_str += fc_text_strs[idx]
+		# rnnt_partial_hypotheses is now a step-state dict — no text extraction available
 		# Decode RNNT y_sequence → output_asr_text_str for UI; covers both non-FC and post-FC-async paths
 		# because update_context (non-FC) and explicit assignment (FC async) both refresh context.rnnt_partial_hypotheses.
 		if use_rnnt and context.rnnt_partial_hypotheses is not None:
@@ -1274,15 +1557,6 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				_rnnt_text = self.s2s_model._rnnt_decode_text(_y_seq)
 				if _rnnt_text:
 					self.get_or_create_state(stream_ids[0]).output_asr_text_str = _rnnt_text
-		fc_text_strs = result.get("function_predicted_text_strs")
-		if fc_text_strs:
-			for idx, frame in enumerate(frames):
-				if ready_feats[idx] and idx < len(fc_text_strs) and fc_text_strs[idx]:
-					fc_state_obj = self.get_or_create_state(frame.stream_id)
-					fc_state_obj.output_function_text_str += fc_text_strs[idx]
-		# rnnt_partial_hypotheses is now a step-state dict — no text extraction available
-		if False:
-			pass
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None
@@ -1468,6 +1742,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 									rnnt_text_queue=rnnt_text_queue,
 									abort_event=abort_event,
 									quit_async_event=quit_async_event,
+									stream_id=stream_id,
 									)
 
 							# Two-phase async FC: the first LLM run above generated the
@@ -1497,12 +1772,15 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 								_tts_for_reminder = tts_out if tts_out is not None else tts_state
 								_aborted = abort_event is not None and abort_event.is_set()
 
-								# Resolve per-tool reminder tokens
+								# Resolve per-tool reminder tokens. Each entry in on_hold_token_map is
+								# now a list of tokenized variants; pick one at random per call.
 								_tool_name = _parse_tool_name(call_text)
 								_reminder_tok = None
 								if on_hold_token_map:
-									_reminder_tok = (on_hold_token_map.get(_tool_name)
-													 or on_hold_token_map.get("default"))
+									_options = (on_hold_token_map.get(_tool_name)
+											or on_hold_token_map.get("default"))
+									if _options:
+										_reminder_tok = random.choice(_options)
 								if _reminder_tok is None:
 									_reminder_tok = reminder_tokens  # backward compat
 
@@ -1519,6 +1797,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 											tts_audio_output_queue=tts_audio_output_queue,
 											abort_event=abort_event,
 											request_id=request_id,
+											stream_id=stream_id,
 										)
 										# TTS generation is faster than real-time playback.
 										# Sleep for the remaining playback duration so the caller
@@ -1612,6 +1891,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 											rnnt_text_queue=rnnt_text_queue,
 											abort_event=abort_event,
 											quit_async_event=quit_async_event,
+											stream_id=stream_id,
 											)
 									tts_chunks = tts_chunks + tts_chunks_p2
 									async_steps += async_steps_p2
@@ -1736,6 +2016,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				request_id=request_id,
 				tts_state=_tts_state_for_async,
 				rnnt_partial_hypotheses=context.rnnt_partial_hypotheses,
+				stream_id=stream_id,
 			)
 			eotc_wall = time.time()
 			if updated_cache is not None:
@@ -1854,6 +2135,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 						request_id=request_id,
 						tts_state=_tts_state_p2,
 						rnnt_partial_hypotheses=context.rnnt_partial_hypotheses,
+						stream_id=stream_ids[0] if stream_ids else None,
 					)
 					if updated_cache is not None:
 						context.dynamic_cache = updated_cache

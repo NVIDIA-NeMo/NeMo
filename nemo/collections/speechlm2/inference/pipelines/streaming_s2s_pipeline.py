@@ -1190,7 +1190,8 @@ out center {limit};
 							break
 					if latest_rnnt_text is not None:
 						state = self.get_or_create_state(stream_id)
-						state.output_asr_text_str = latest_rnnt_text
+						_committed_fc = self._rnnt_committed.get(stream_id, '') if hasattr(self, '_rnnt_committed') else ''
+						state.output_asr_text_str = (_committed_fc + ' ' + latest_rnnt_text).strip() if _committed_fc else latest_rnnt_text
 
 				del self._fc_async_bg[stream_id]
 
@@ -1452,7 +1453,8 @@ out center {limit};
 							break
 					if latest_rnnt_text is not None:
 						state = self.get_or_create_state(stream_id)
-						state.output_asr_text_str = latest_rnnt_text
+						_committed_fc = self._rnnt_committed.get(stream_id, '') if hasattr(self, '_rnnt_committed') else ''
+						state.output_asr_text_str = (_committed_fc + ' ' + latest_rnnt_text).strip() if _committed_fc else latest_rnnt_text
 				return
 
 		# ---------------------------------------------------------------

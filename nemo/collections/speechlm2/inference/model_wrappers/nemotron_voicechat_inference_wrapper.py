@@ -1656,6 +1656,17 @@ class NemotronVoicechatInferenceWrapper:
                 if abort_event is None:
                     self._apply_rnnt_turn_taking(t, gen_text, _rnnt_is_blank, rnnt_partial_hypotheses)
                 _n_rnnt_steps += 1
+                # Stream user transcript during FC: decode y_sequence and send to UI.
+                # Turn-taking is off during FC; this is display-only, no inference impact.
+                if rnnt_text_queue is not None:
+                    _fc_y_seq = rnnt_partial_hypotheses.get('y_sequence', [])
+                    if _fc_y_seq:
+                        _fc_text = self._rnnt_decode_text(_fc_y_seq)
+                        if _fc_text:
+                            try:
+                                rnnt_text_queue.put_nowait(_fc_text)
+                            except Exception:
+                                pass
 
             # Natural interrupt: the model's agent text head predicted a real
             # token (non-PAD/BOS/EOS) while receiving real user audio.

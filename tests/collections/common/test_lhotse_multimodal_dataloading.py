@@ -23,17 +23,13 @@ import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment, compute_num_samples
 from lhotse.audio import AudioLoadingError
+from lhotse.indexing import create_jsonl_index
 from lhotse.shar import JsonlShardWriter
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from lhotse.indexing import create_jsonl_index
-
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    IndexedTarSampleReader,
-    create_tar_index,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarSampleReader, create_tar_index
 from nemo.collections.common.data.lhotse.sampling import (
     DurationFilter,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -474,9 +470,7 @@ def test_multimodal_conversation_input_sharegpt_missing_audio_path_raises(tmp_pa
 
 
 @pytest.mark.parametrize("indexed", [False, True])
-def test_multimodal_conversation_input_sharegpt_missing_audio_path_skips_when_enabled(
-    tmp_path, caplog, indexed
-):
+def test_multimodal_conversation_input_sharegpt_missing_audio_path_skips_when_enabled(tmp_path, caplog, indexed):
     manifest_path = tmp_path / "sharegpt_skip_missing_audio_manifest.jsonl"
     dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "good_a.wav")
     dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(tmp_path / "good_b.wav")

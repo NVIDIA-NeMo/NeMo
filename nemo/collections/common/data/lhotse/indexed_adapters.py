@@ -21,7 +21,6 @@ from typing import NamedTuple, Optional
 
 import numpy as np
 
-from lhotse.indexing import read_index
 
 # Tar block size + the all-zeros block that marks end-of-archive in tar.
 _TAR_BLOCK_SIZE = 512
@@ -78,6 +77,8 @@ def _load_index(data_path: str, idx_path: Optional[str] = None):
     local and remote sources, so the on-disk format is identical — only the
     file-size cross-check is skipped.
     """
+    from lhotse.indexing import read_index
+
     if idx_path is None:
         idx_path = data_path + '.idx'
     offsets = read_index(idx_path)
@@ -284,10 +285,7 @@ class IndexedTarMemberReader:
         try:
             name, data = _read_tar_member(self._fh)
         except (EOFError, tarfile.TarError) as e:
-            raise type(e)(
-                f"{e} — reading sample {idx}/{self._len} at offset {offset} "
-                f"in {self.data_path}"
-            ) from e
+            raise type(e)(f"{e} — reading sample {idx}/{self._len} at offset {offset} " f"in {self.data_path}") from e
         return name, data
 
     def _build_name_index(self) -> dict[str, int]:
@@ -309,9 +307,7 @@ class IndexedTarMemberReader:
                 header = self._fh.read(_TAR_BLOCK_SIZE)
                 if len(header) < _TAR_BLOCK_SIZE or header == _TAR_ZERO_BLOCK:
                     break
-                info = tarfile.TarInfo.frombuf(
-                    header, tarfile.ENCODING, "surrogateescape"
-                )
+                info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
                 if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
                     name_to_idx[info.name] = i
                     break

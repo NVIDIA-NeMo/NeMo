@@ -67,31 +67,64 @@ PHASE_GROUNDTRUTH = "groundtruth"
 
 @click.command(help=__doc__)
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-@click.option("--data-blend-dir", default=None,
-              help="Substituted into ${data_blend_dir} in the config.")
+@click.option("--data-blend-dir", default=None, help="Substituted into ${data_blend_dir} in the config.")
 @click.option("--section", default="train_ds", show_default=True)
 @click.option("--output-dir", required=True, type=click.Path())
-@click.option("--phase", type=click.Choice([PHASE_BASELINE, PHASE_RESUMED, PHASE_GROUNDTRUTH]),
-              required=True)
-@click.option("--run-idx", type=int, default=0, show_default=True,
-              help="Which determinism re-run this is. Only used with --phase=baseline.")
-@click.option("--steps", type=int, default=200, show_default=True,
-              help="Batches to iterate. Ignored in groundtruth phase (iterates until exhaustion).")
-@click.option("--checkpoint-at", type=int, default=-1, show_default=True,
-              help="Step index at which to save state in baseline phase. -1 = don't save.")
-@click.option("--state-dir", default=None, type=click.Path(),
-              help="In --phase=resumed: directory containing state_rank_NNN.pt files.")
+@click.option("--phase", type=click.Choice([PHASE_BASELINE, PHASE_RESUMED, PHASE_GROUNDTRUTH]), required=True)
+@click.option(
+    "--run-idx",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Which determinism re-run this is. Only used with --phase=baseline.",
+)
+@click.option(
+    "--steps",
+    type=int,
+    default=200,
+    show_default=True,
+    help="Batches to iterate. Ignored in groundtruth phase (iterates until exhaustion).",
+)
+@click.option(
+    "--checkpoint-at",
+    type=int,
+    default=-1,
+    show_default=True,
+    help="Step index at which to save state in baseline phase. -1 = don't save.",
+)
+@click.option(
+    "--state-dir",
+    default=None,
+    type=click.Path(),
+    help="In --phase=resumed: directory containing state_rank_NNN.pt files.",
+)
 @click.option("--force-finite/--no-force-finite", default=True, show_default=True)
 @click.option("--metadata-only/--no-metadata-only", default=True, show_default=True)
-@click.option("--num-workers-override", type=int, default=None,
-              help="Override config.{section}.num_workers.")
-@click.option("--mode", type=click.Choice(["fast", "full"]), default="fast", show_default=True,
-              help="fast: CutIdDataset (default). full: stub-only in v1, raises.")
+@click.option("--num-workers-override", type=int, default=None, help="Override config.{section}.num_workers.")
+@click.option(
+    "--mode",
+    type=click.Choice(["fast", "full"]),
+    default="fast",
+    show_default=True,
+    help="fast: CutIdDataset (default). full: stub-only in v1, raises.",
+)
 @click.option("-v", "--verbose", is_flag=True, default=False)
-def cli(config_path: str, data_blend_dir: Optional[str], section: str, output_dir: str,
-        phase: str, run_idx: int, steps: int, checkpoint_at: int,
-        state_dir: Optional[str], force_finite: bool, metadata_only: bool,
-        num_workers_override: Optional[int], mode: str, verbose: bool) -> None:
+def cli(
+    config_path: str,
+    data_blend_dir: Optional[str],
+    section: str,
+    output_dir: str,
+    phase: str,
+    run_idx: int,
+    steps: int,
+    checkpoint_at: int,
+    state_dir: Optional[str],
+    force_finite: bool,
+    metadata_only: bool,
+    num_workers_override: Optional[int],
+    mode: str,
+    verbose: bool,
+) -> None:
     if mode == "full":
         raise click.ClickException("--mode=full is not implemented in v1; use --mode=fast.")
 
@@ -109,9 +142,7 @@ def cli(config_path: str, data_blend_dir: Optional[str], section: str, output_di
     )
 
     if phase == PHASE_GROUNDTRUTH and world_size != 1:
-        raise click.ClickException(
-            f"--phase=groundtruth requires nproc-per-node=1 (got world_size={world_size})"
-        )
+        raise click.ClickException(f"--phase=groundtruth requires nproc-per-node=1 (got world_size={world_size})")
 
     cfg = OmegaConf.load(config_path)
     if data_blend_dir is not None:
@@ -155,8 +186,7 @@ def cli(config_path: str, data_blend_dir: Optional[str], section: str, output_di
     else:
         out_path = phase_dir / f"rank_{rank:03d}.jsonl"
 
-    LOG.info("phase=%s run_idx=%d steps=%d checkpoint_at=%d -> %s",
-             phase, run_idx, steps, checkpoint_at, out_path)
+    LOG.info("phase=%s run_idx=%d steps=%d checkpoint_at=%d -> %s", phase, run_idx, steps, checkpoint_at, out_path)
 
     t_total_samples: list[float] = []
     t_first_batch_ms: Optional[float] = None
@@ -186,9 +216,13 @@ def cli(config_path: str, data_blend_dir: Optional[str], section: str, output_di
             fout.write(json.dumps(row) + "\n")
 
             if step % 50 == 0:
-                LOG.info("step=%d cuts=%d t_total=%.1fms (first cut: %s)",
-                         step, len(cut_ids), t_total_ms,
-                         cut_ids[0] if cut_ids else "<empty>")
+                LOG.info(
+                    "step=%d cuts=%d t_total=%.1fms (first cut: %s)",
+                    step,
+                    len(cut_ids),
+                    t_total_ms,
+                    cut_ids[0] if cut_ids else "<empty>",
+                )
 
             if phase == PHASE_BASELINE and step == checkpoint_at:
                 state_path = phase_dir / f"state_rank_{rank:03d}.pt"
@@ -273,26 +307,41 @@ def _load_state(dataloader, *, state_dir: Optional[str], rank: int) -> None:
     dataloader.load_state_dict(state)
 
 
-def _write_throughput_summary(out_path: Path, *, t_total_samples: list[float],
-                              t_first_batch_ms: Optional[float], num_workers: int) -> None:
+def _write_throughput_summary(
+    out_path: Path, *, t_total_samples: list[float], t_first_batch_ms: Optional[float], num_workers: int
+) -> None:
     if not t_total_samples:
-        out_path.write_text(json.dumps({
-            "p50_ms": None, "p95_ms": None, "mean_ms": None, "count": 0,
-            "t_first_batch_ms": t_first_batch_ms, "num_workers": num_workers,
-        }, indent=2))
+        out_path.write_text(
+            json.dumps(
+                {
+                    "p50_ms": None,
+                    "p95_ms": None,
+                    "mean_ms": None,
+                    "count": 0,
+                    "t_first_batch_ms": t_first_batch_ms,
+                    "num_workers": num_workers,
+                },
+                indent=2,
+            )
+        )
         return
     samples = sorted(t_total_samples)
     p50 = statistics.median(samples)
     p95 = samples[int(0.95 * (len(samples) - 1))]
     mean = statistics.fmean(samples)
-    out_path.write_text(json.dumps({
-        "p50_ms": round(p50, 3),
-        "p95_ms": round(p95, 3),
-        "mean_ms": round(mean, 3),
-        "count": len(samples),
-        "t_first_batch_ms": round(t_first_batch_ms, 3) if t_first_batch_ms else None,
-        "num_workers": int(num_workers),
-    }, indent=2))
+    out_path.write_text(
+        json.dumps(
+            {
+                "p50_ms": round(p50, 3),
+                "p95_ms": round(p95, 3),
+                "mean_ms": round(mean, 3),
+                "count": len(samples),
+                "t_first_batch_ms": round(t_first_batch_ms, 3) if t_first_batch_ms else None,
+                "num_workers": int(num_workers),
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

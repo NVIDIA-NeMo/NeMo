@@ -30,13 +30,17 @@ from lhotse.audio import AudioLoadingError
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset import AudioSamples
-from lhotse.dataset.dataloading import PartitionedIndexedIterator, resolve_seed
-from lhotse.indexing import IndexedJsonlReader
-from lhotse.lazy import IteratorNode, attach_graph_origin, normalize_graph_token
+from lhotse.dataset.dataloading import resolve_seed
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
 from lhotse.utils import Pathlike, compute_num_samples, is_valid_url
 
+from nemo.collections.common.data.lhotse._compat import (
+    IteratorNode,
+    PartitionedIndexedIterator,
+    attach_graph_origin,
+    normalize_graph_token,
+)
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedTarMemberReader,
     IndexedTarSampleReader,
@@ -591,7 +595,7 @@ class NemotronTextConversationAdapter(IteratorNode):
         return self.indexed
 
     def _init_indexed(self) -> None:
-        from lhotse.indexing import index_file_path
+        from lhotse.indexing import IndexedJsonlReader, index_file_path
 
         for p in self.paths:
             path = Path(p)
@@ -1406,8 +1410,6 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     skip_missing_manifest_entries: bool = False
 
     def __post_init__(self):
-        from lhotse.indexing import index_file_path
-
         self.manifest_filepath = expand_sharded_filepaths(self.manifest_filepath)
         if self.tarred_audio_filepaths is not None:
             self.tarred_audio_filepaths = expand_sharded_filepaths(self.tarred_audio_filepaths)
@@ -1741,8 +1743,6 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
 
     def __post_init__(self):
         import json as _json
-
-        from lhotse.indexing import index_file_path
 
         meta_path = Path(self.data_dir) / "wids-meta.json"
         if meta_path.exists():

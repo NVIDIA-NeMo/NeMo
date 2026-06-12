@@ -65,8 +65,9 @@ class ValidationReport:
 
     def to_dict(self):
         return {
-            "questions": {q.q_id: {"status": q.status, "tag": q.tag, "detail": q.detail, **q.extra}
-                          for q in self.questions},
+            "questions": {
+                q.q_id: {"status": q.status, "tag": q.tag, "detail": q.detail, **q.extra} for q in self.questions
+            },
             "throughput": self.throughput,
         }
 
@@ -88,11 +89,13 @@ def consolidate(output_dir: Path, *, checkpoint_at: int, num_determinism_runs: i
     questions.append(_q1_no_duplication(baseline))
     questions.append(_q2_no_skipping(baseline, output_dir / "groundtruth" / "cuts.jsonl"))
     questions.append(_q3_partition_correctness(baseline))
-    questions.append(_q4_exact_resume(
-        baseline,
-        _load_phase(output_dir / "resumed" / "run0"),
-        checkpoint_at=checkpoint_at,
-    ))
+    questions.append(
+        _q4_exact_resume(
+            baseline,
+            _load_phase(output_dir / "resumed" / "run0"),
+            checkpoint_at=checkpoint_at,
+        )
+    )
     if num_determinism_runs >= 2:
         run1 = _load_phase(output_dir / "baseline" / "run1")
         questions.append(_q5_determinism(baseline, run1))
@@ -129,13 +132,21 @@ def _q1_no_duplication(rows: list[dict]) -> QResult:
         else:
             dup_within_rank.append(cid)
     if dup_cross_rank:
-        return QResult("Q1", FAIL, tag="partition-rank-leak",
-                       detail=f"{len(dup_cross_rank)} cut.id(s) appeared on multiple ranks",
-                       extra={"examples": dup_cross_rank[:5]})
+        return QResult(
+            "Q1",
+            FAIL,
+            tag="partition-rank-leak",
+            detail=f"{len(dup_cross_rank)} cut.id(s) appeared on multiple ranks",
+            extra={"examples": dup_cross_rank[:5]},
+        )
     if dup_within_rank:
-        return QResult("Q1", FAIL, tag="partition-worker-leak",
-                       detail=f"{len(dup_within_rank)} cut.id(s) seen by multiple workers within one rank",
-                       extra={"examples": dup_within_rank[:5]})
+        return QResult(
+            "Q1",
+            FAIL,
+            tag="partition-worker-leak",
+            detail=f"{len(dup_within_rank)} cut.id(s) seen by multiple workers within one rank",
+            extra={"examples": dup_within_rank[:5]},
+        )
     return QResult("Q1", PASS, detail=f"{len(sightings)} distinct cuts, no duplicates")
 
 
@@ -156,16 +167,22 @@ def _q2_no_skipping(rows: list[dict], groundtruth_path: Path) -> QResult:
     missing = expected - yielded
     unexpected = yielded - expected
     if missing:
-        return QResult("Q2", FAIL, tag="skip",
-                       detail=f"{len(missing)} of {len(expected)} expected cut.id(s) never yielded",
-                       extra={"missing_examples": list(missing)[:5],
-                              "unexpected_count": len(unexpected)})
+        return QResult(
+            "Q2",
+            FAIL,
+            tag="skip",
+            detail=f"{len(missing)} of {len(expected)} expected cut.id(s) never yielded",
+            extra={"missing_examples": list(missing)[:5], "unexpected_count": len(unexpected)},
+        )
     if unexpected:
-        return QResult("Q2", FAIL, tag="id-collision",
-                       detail=f"{len(unexpected)} cut.id(s) yielded but not in ground truth",
-                       extra={"unexpected_examples": list(unexpected)[:5]})
-    return QResult("Q2", PASS,
-                   detail=f"yielded ({len(yielded)}) == ground truth ({len(expected)})")
+        return QResult(
+            "Q2",
+            FAIL,
+            tag="id-collision",
+            detail=f"{len(unexpected)} cut.id(s) yielded but not in ground truth",
+            extra={"unexpected_examples": list(unexpected)[:5]},
+        )
+    return QResult("Q2", PASS, detail=f"yielded ({len(yielded)}) == ground truth ({len(expected)})")
 
 
 def _q3_partition_correctness(rows: list[dict]) -> QResult:
@@ -187,11 +204,12 @@ def _q3_partition_correctness(rows: list[dict]) -> QResult:
     ratio = sum_distinct / max(len(grand_union), 1)
     tag = "partition-rank-leak"
     if ratio >= n_ranks - 0.5:
-        detail = (f"FULL BROADCAST: each cut.id appears on ~{ratio:.1f}/{n_ranks} ranks "
-                  f"(overlap={overlap})")
+        detail = f"FULL BROADCAST: each cut.id appears on ~{ratio:.1f}/{n_ranks} ranks " f"(overlap={overlap})"
     else:
-        detail = (f"PARTIAL OVERLAP: per-rank distinct sums to {sum_distinct} but |union|={len(grand_union)} "
-                  f"(overlap={overlap})")
+        detail = (
+            f"PARTIAL OVERLAP: per-rank distinct sums to {sum_distinct} but |union|={len(grand_union)} "
+            f"(overlap={overlap})"
+        )
     return QResult("Q3", FAIL, tag=tag, detail=detail)
 
 
@@ -224,31 +242,44 @@ def _q4_exact_resume(baseline: list[dict], resumed: list[dict], *, checkpoint_at
             continue
         overlap += 1
         if base_cuts != res_cuts:
-            divergences.append({
-                "rank": rank, "step": rstep, "baseline_step": base_step,
-                "only_in_baseline": list(base_cuts - res_cuts)[:3],
-                "only_in_resumed": list(res_cuts - base_cuts)[:3],
-            })
+            divergences.append(
+                {
+                    "rank": rank,
+                    "step": rstep,
+                    "baseline_step": base_step,
+                    "only_in_baseline": list(base_cuts - res_cuts)[:3],
+                    "only_in_resumed": list(res_cuts - base_cuts)[:3],
+                }
+            )
     # Cells in baseline-tail that the resumed run never reached.
-    for (rank, bstep) in base_by_key:
+    for rank, bstep in base_by_key:
         if bstep <= checkpoint_at:
             continue
         rstep = bstep - checkpoint_at - 1
         if (rank, rstep) not in res_by_key:
             extra_baseline_tail += 1
-    extras = {"overlap_cells": overlap, "extra_resumed_cells": extra_resumed,
-              "extra_baseline_tail_cells": extra_baseline_tail}
+    extras = {
+        "overlap_cells": overlap,
+        "extra_resumed_cells": extra_resumed,
+        "extra_baseline_tail_cells": extra_baseline_tail,
+    }
     if divergences:
-        return QResult("Q4", FAIL, tag="resume-rng-divergence",
-                       detail=f"{len(divergences)}/{overlap} overlapping cell(s) diverge after resume",
-                       extra={**extras, "examples": divergences[:5]})
+        return QResult(
+            "Q4",
+            FAIL,
+            tag="resume-rng-divergence",
+            detail=f"{len(divergences)}/{overlap} overlapping cell(s) diverge after resume",
+            extra={**extras, "examples": divergences[:5]},
+        )
     if overlap == 0:
-        return QResult("Q4", FAIL, tag="resume-length-mismatch",
-                       detail="zero overlap between resumed and baseline-tail windows",
-                       extra=extras)
-    return QResult("Q4", PASS,
-                   detail=f"{overlap} overlapping cell(s) match baseline tail bit-for-bit",
-                   extra=extras)
+        return QResult(
+            "Q4",
+            FAIL,
+            tag="resume-length-mismatch",
+            detail="zero overlap between resumed and baseline-tail windows",
+            extra=extras,
+        )
+    return QResult("Q4", PASS, detail=f"{overlap} overlapping cell(s) match baseline tail bit-for-bit", extra=extras)
 
 
 def _q5_determinism(run0: list[dict], run1: list[dict]) -> QResult:
@@ -260,20 +291,28 @@ def _q5_determinism(run0: list[dict], run1: list[dict]) -> QResult:
     if a.keys() != b.keys():
         only_a = list(a.keys() - b.keys())[:3]
         only_b = list(b.keys() - a.keys())[:3]
-        return QResult("Q5", FAIL, tag="non-determinism",
-                       detail="run0/run1 step coverage differs",
-                       extra={"only_in_run0": only_a, "only_in_run1": only_b})
+        return QResult(
+            "Q5",
+            FAIL,
+            tag="non-determinism",
+            detail="run0/run1 step coverage differs",
+            extra={"only_in_run0": only_a, "only_in_run1": only_b},
+        )
     divergences: list[dict] = []
     for k, va in a.items():
         vb = b[k]
         if va != vb:
-            divergences.append({"rank": k[0], "step": k[1],
-                                "only_run0": list(va - vb)[:3],
-                                "only_run1": list(vb - va)[:3]})
+            divergences.append(
+                {"rank": k[0], "step": k[1], "only_run0": list(va - vb)[:3], "only_run1": list(vb - va)[:3]}
+            )
     if divergences:
-        return QResult("Q5", FAIL, tag="non-determinism",
-                       detail=f"{len(divergences)} cell(s) differ between determinism runs",
-                       extra={"examples": divergences[:5]})
+        return QResult(
+            "Q5",
+            FAIL,
+            tag="non-determinism",
+            detail=f"{len(divergences)} cell(s) differ between determinism runs",
+            extra={"examples": divergences[:5]},
+        )
     return QResult("Q5", PASS, detail="run0 == run1 across all (rank, step) cells")
 
 
@@ -299,9 +338,7 @@ def _collect_throughput(run_dir: Path) -> dict:
         "p50_ms_median": p50,
         "p95_ms_max": p95,
         "batches_per_s_per_rank": (1000.0 / p50) if p50 else None,
-        "t_first_batch_ms_max": max(
-            (a.get("t_first_batch_ms") or 0) for a in aggregates
-        ) or None,
+        "t_first_batch_ms_max": max((a.get("t_first_batch_ms") or 0) for a in aggregates) or None,
     }
     if p50 and num_workers:
         out["t_gpu_min_for_overlap_ms"] = p50 / num_workers
@@ -333,12 +370,23 @@ def _load_phase(phase_dir: Path) -> list[dict]:
 
 
 @click.command(help=__doc__)
-@click.option("--output-dir", required=True, type=click.Path(exists=True),
-              help="Directory written by validate_dataloader.py.")
-@click.option("--checkpoint-at", type=int, default=0, show_default=True,
-              help="Step index at which the baseline saved state. Must match the baseline run.")
-@click.option("--num-determinism-runs", type=int, default=1, show_default=True,
-              help="If >= 2, compares baseline/run0 vs baseline/run1 for Q5.")
+@click.option(
+    "--output-dir", required=True, type=click.Path(exists=True), help="Directory written by validate_dataloader.py."
+)
+@click.option(
+    "--checkpoint-at",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Step index at which the baseline saved state. Must match the baseline run.",
+)
+@click.option(
+    "--num-determinism-runs",
+    type=int,
+    default=1,
+    show_default=True,
+    help="If >= 2, compares baseline/run0 vs baseline/run1 for Q5.",
+)
 @click.option("-v", "--verbose", is_flag=True, default=False)
 def cli(output_dir: str, checkpoint_at: int, num_determinism_runs: int, verbose: bool) -> None:
     logging.basicConfig(
@@ -356,9 +404,11 @@ def cli(output_dir: str, checkpoint_at: int, num_determinism_runs: int, verbose:
         print(f"{marker}  {q.q_id}{tag}: {q.detail}")
     if report.throughput.get("available"):
         t = report.throughput
-        print(f"\nthroughput: p50={t['p50_ms_median']:.1f}ms p95={t['p95_ms_max']:.1f}ms "
-              f"=> {t['batches_per_s_per_rank']:.2f} batches/s/rank "
-              f"(num_workers={t['num_workers']}, T_gpu_min={t.get('t_gpu_min_for_overlap_ms', 0):.1f}ms)")
+        print(
+            f"\nthroughput: p50={t['p50_ms_median']:.1f}ms p95={t['p95_ms_max']:.1f}ms "
+            f"=> {t['batches_per_s_per_rank']:.2f} batches/s/rank "
+            f"(num_workers={t['num_workers']}, T_gpu_min={t.get('t_gpu_min_for_overlap_ms', 0):.1f}ms)"
+        )
     else:
         print("\nthroughput: <not collected>")
     (out_dir / "validation_report.json").write_text(json.dumps(report.to_dict(), indent=2))

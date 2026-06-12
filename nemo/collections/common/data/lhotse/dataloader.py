@@ -40,7 +40,7 @@ from lhotse.dataset import (
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
 from lhotse.lazy import LazyFlattener
-from lhotse.utils import fastcopy, fix_random_seed
+from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.cutset import (

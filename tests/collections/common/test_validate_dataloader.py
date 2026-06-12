@@ -27,8 +27,9 @@ from omegaconf import OmegaConf
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "dataloading"))
 
-from _validate_dataloader import config_inject, consolidate as cons, pre_validation as pv  # noqa: E402
-
+from _validate_dataloader import config_inject
+from _validate_dataloader import consolidate as cons  # noqa: E402
+from _validate_dataloader import pre_validation as pv
 
 # --------------------------------------------------------------------------- #
 # config_inject
@@ -37,17 +38,20 @@ from _validate_dataloader import config_inject, consolidate as cons, pre_validat
 
 @pytest.mark.unit
 def test_config_inject_top_level_and_nested():
-    cfg = OmegaConf.create({
-        "input_cfg": [
-            {"type": "lhotse_as_conversation",
-             "input_cfg": [
-                 {"type": "lhotse_shar", "weight": 1.0},
-                 {"type": "nemo_tarred", "weight": 0.5},
-             ]},
-            {"type": "group",
-             "input_cfg": [{"type": "lhotse_shar", "weight": 0.3}]},
-        ],
-    })
+    cfg = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse_as_conversation",
+                    "input_cfg": [
+                        {"type": "lhotse_shar", "weight": 1.0},
+                        {"type": "nemo_tarred", "weight": 0.5},
+                    ],
+                },
+                {"type": "group", "input_cfg": [{"type": "lhotse_shar", "weight": 0.3}]},
+            ],
+        }
+    )
     config_inject.inject_validator_flags(cfg, force_finite=True, metadata_only=True)
     assert cfg["force_finite"] is True
     assert cfg["metadata_only"] is True
@@ -73,28 +77,36 @@ def test_config_inject_preserves_existing_explicit_value():
 
 
 def _base_cfg():
-    return OmegaConf.create({
-        "seed": 42,
-        "shard_seed": 42,
-        "use_stateful_dataloader": True,
-        "indexed": True,
-        "indexes_root": "/tmp/idx_does_not_exist_locally",
-        "use_bucketing": True,
-        "num_buckets": 20,
-        "bucket_buffer_size": 20000,
-        "force_map_dataset": False,
-        "text_field": "answer",
-        "input_cfg": [
-            {"type": "lhotse_as_conversation",
-             "input_cfg": [
-                 {"type": "lhotse_shar", "weight": 1.0, "corpus": "ami"},
-                 {"type": "nemo_tarred", "weight": 0.13, "corpus": "librilight",
-                  "text_field": "answer",
-                  "manifest_filepath": "s3://x/manifest__OP_0..15_CL_.jsonl",
-                  "tarred_audio_filepaths": "s3://x/audio__OP_0..15_CL_.tar"},
-             ]},
-        ],
-    })
+    return OmegaConf.create(
+        {
+            "seed": 42,
+            "shard_seed": 42,
+            "use_stateful_dataloader": True,
+            "indexed": True,
+            "indexes_root": "/tmp/idx_does_not_exist_locally",
+            "use_bucketing": True,
+            "num_buckets": 20,
+            "bucket_buffer_size": 20000,
+            "force_map_dataset": False,
+            "text_field": "answer",
+            "input_cfg": [
+                {
+                    "type": "lhotse_as_conversation",
+                    "input_cfg": [
+                        {"type": "lhotse_shar", "weight": 1.0, "corpus": "ami"},
+                        {
+                            "type": "nemo_tarred",
+                            "weight": 0.13,
+                            "corpus": "librilight",
+                            "text_field": "answer",
+                            "manifest_filepath": "s3://x/manifest__OP_0..15_CL_.jsonl",
+                            "tarred_audio_filepaths": "s3://x/audio__OP_0..15_CL_.tar",
+                        },
+                    ],
+                },
+            ],
+        }
+    )
 
 
 @pytest.mark.unit
@@ -215,21 +227,36 @@ def _write_jsonl(path: Path, rows: list[dict]):
 
 
 def _row(rank, step, cut_ids, *, worker_id=0):
-    return {"step": step, "rank": rank, "world_size": 2, "worker_id": worker_id,
-            "cut_ids": cut_ids, "batch_size": len(cut_ids), "t_total_ms": 1.0,
-            "t_first_batch_ms": None}
+    return {
+        "step": step,
+        "rank": rank,
+        "world_size": 2,
+        "worker_id": worker_id,
+        "cut_ids": cut_ids,
+        "batch_size": len(cut_ids),
+        "t_total_ms": 1.0,
+        "t_first_batch_ms": None,
+    }
 
 
 @pytest.mark.unit
 def test_consolidate_q1_q3_pass(tmp_path):
     """Two ranks, disjoint cuts, no duplication."""
     base = tmp_path / "baseline" / "run0"
-    _write_jsonl(base / "rank_000.jsonl", [
-        _row(0, 0, ["a", "b"]), _row(0, 1, ["c"]),
-    ])
-    _write_jsonl(base / "rank_001.jsonl", [
-        _row(1, 0, ["d", "e"]), _row(1, 1, ["f"]),
-    ])
+    _write_jsonl(
+        base / "rank_000.jsonl",
+        [
+            _row(0, 0, ["a", "b"]),
+            _row(0, 1, ["c"]),
+        ],
+    )
+    _write_jsonl(
+        base / "rank_001.jsonl",
+        [
+            _row(1, 0, ["d", "e"]),
+            _row(1, 1, ["f"]),
+        ],
+    )
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=1)
     q_by_id = {q.q_id: q for q in report.questions}
     assert q_by_id["Q1"].status == cons.PASS
@@ -273,8 +300,7 @@ def test_consolidate_q2_skip_without_groundtruth(tmp_path):
 def test_consolidate_q2_skip_detects_missing(tmp_path):
     base = tmp_path / "baseline" / "run0"
     _write_jsonl(base / "rank_000.jsonl", [_row(0, 0, ["a", "b"])])
-    _write_jsonl(tmp_path / "groundtruth" / "cuts.jsonl",
-                 [{"cut_ids": ["a", "b", "c"]}])
+    _write_jsonl(tmp_path / "groundtruth" / "cuts.jsonl", [{"cut_ids": ["a", "b", "c"]}])
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=1)
     q2 = next(q for q in report.questions if q.q_id == "Q2")
     assert q2.status == cons.FAIL
@@ -287,13 +313,22 @@ def test_consolidate_q4_resume_match(tmp_path):
     resumed[0] should match baseline[checkpoint_at + 1]."""
     base = tmp_path / "baseline" / "run0"
     res = tmp_path / "resumed" / "run0"
-    _write_jsonl(base / "rank_000.jsonl", [
-        _row(0, 0, ["a"]), _row(0, 1, ["b"]), _row(0, 2, ["c"]),
-    ])
+    _write_jsonl(
+        base / "rank_000.jsonl",
+        [
+            _row(0, 0, ["a"]),
+            _row(0, 1, ["b"]),
+            _row(0, 2, ["c"]),
+        ],
+    )
     # checkpoint_at=0 -> resumed[0] == baseline[1] == ["b"], resumed[1] == baseline[2] == ["c"]
-    _write_jsonl(res / "rank_000.jsonl", [
-        _row(0, 0, ["b"]), _row(0, 1, ["c"]),
-    ])
+    _write_jsonl(
+        res / "rank_000.jsonl",
+        [
+            _row(0, 0, ["b"]),
+            _row(0, 1, ["c"]),
+        ],
+    )
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=1)
     q4 = next(q for q in report.questions if q.q_id == "Q4")
     assert q4.status == cons.PASS
@@ -315,8 +350,7 @@ def test_consolidate_q4_resume_diverges(tmp_path):
 @pytest.mark.unit
 def test_consolidate_q5_determinism_match(tmp_path):
     for run in ("run0", "run1"):
-        _write_jsonl(tmp_path / "baseline" / run / "rank_000.jsonl",
-                     [_row(0, 0, ["a"]), _row(0, 1, ["b"])])
+        _write_jsonl(tmp_path / "baseline" / run / "rank_000.jsonl", [_row(0, 0, ["a"]), _row(0, 1, ["b"])])
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=2)
     q5 = next(q for q in report.questions if q.q_id == "Q5")
     assert q5.status == cons.PASS
@@ -324,10 +358,8 @@ def test_consolidate_q5_determinism_match(tmp_path):
 
 @pytest.mark.unit
 def test_consolidate_q5_determinism_diverges(tmp_path):
-    _write_jsonl(tmp_path / "baseline" / "run0" / "rank_000.jsonl",
-                 [_row(0, 0, ["a"])])
-    _write_jsonl(tmp_path / "baseline" / "run1" / "rank_000.jsonl",
-                 [_row(0, 0, ["DIFFERENT"])])
+    _write_jsonl(tmp_path / "baseline" / "run0" / "rank_000.jsonl", [_row(0, 0, ["a"])])
+    _write_jsonl(tmp_path / "baseline" / "run1" / "rank_000.jsonl", [_row(0, 0, ["DIFFERENT"])])
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=2)
     q5 = next(q for q in report.questions if q.q_id == "Q5")
     assert q5.status == cons.FAIL

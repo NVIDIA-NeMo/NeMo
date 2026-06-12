@@ -762,9 +762,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         from_file_kwargs = {"indexed": config.get("indexed", None)}
         if indexes_root is not None:
             from_file_kwargs["index_path"] = index_file_path(path, indexes_root)
-        cuts = CutSet.from_file(path, **from_file_kwargs).map(
-            partial(resolve_relative_paths, manifest_path=path)
-        )
+        cuts = CutSet.from_file(path, **from_file_kwargs).map(partial(resolve_relative_paths, manifest_path=path))
     return cuts, is_tarred
 
 
@@ -1541,9 +1539,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 cuts = cuts.repeat(preserve_id=True)
         else:
             cuts = CutSet(
-                LazyNeMoIterator(
-                    config.manifest_filepath, **notar_kwargs, **notar_kwargs_extra, **common_kwargs
-                )
+                LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **notar_kwargs_extra, **common_kwargs)
             )
     else:
         # Format option 1:
@@ -1582,9 +1578,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     **common_kwargs,
                 )
             else:
-                nemo_iter = LazyNeMoIterator(
-                    manifest_path, **notar_kwargs, **notar_kwargs_extra, **common_kwargs
-                )
+                nemo_iter = LazyNeMoIterator(manifest_path, **notar_kwargs, **notar_kwargs_extra, **common_kwargs)
             # Then, determine the weight or use one provided
             if isinstance(manifest_info, str) or len(manifest_info) == 1:
                 weight = len(nemo_iter)

@@ -76,9 +76,7 @@ class PreemptionCallback(Callback):
             self.private_rank = torch.distributed.get_rank()
             if self.private_rank == 0:
                 signal.signal(self.sig, master_handler)
-                logging.info(
-                    f"PreemptionCallback enabled on rank 0 for signal {getattr(self.sig, 'name', self.sig)}"
-                )
+                logging.info(f"PreemptionCallback enabled on rank 0 for signal {getattr(self.sig, 'name', self.sig)}")
             else:
                 signal.signal(self.sig, ignoring_handler)
 

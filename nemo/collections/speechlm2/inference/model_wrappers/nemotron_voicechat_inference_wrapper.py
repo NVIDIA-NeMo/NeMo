@@ -2970,7 +2970,7 @@ class NemotronVoicechatInferenceWrapper:
                 effective_eou        = asr_eou
 
             density_threshold = float(self.model_cfg.get("density_speech_threshold", 0.15))
-            density_low_min   = int(self.model_cfg.get("density_low_min_speech", 1))
+            density_low_min   = int(self.model_cfg.get("density_low_min_speech", 6))
             density_adapted   = False
             if not first_turn and rolling_density < density_threshold and rolling_density > 0.0:
                 effective_min_speech = density_low_min

@@ -1549,14 +1549,18 @@ out center {limit};
 					fc_state_obj = self.get_or_create_state(frame.stream_id)
 					fc_state_obj.output_function_text_str += fc_text_strs[idx]
 		# rnnt_partial_hypotheses is now a step-state dict — no text extraction available
-		# Decode RNNT y_sequence → output_asr_text_str for UI; covers both non-FC and post-FC-async paths
-		# because update_context (non-FC) and explicit assignment (FC async) both refresh context.rnnt_partial_hypotheses.
+		# Display transcript after 800ms user silence (10 blank frames × 80ms/frame).
+		# Purely blank-frame driven — independent of turn-taking, EOU, or agent state.
 		if use_rnnt and context.rnnt_partial_hypotheses is not None:
-			_y_seq = context.rnnt_partial_hypotheses.get('y_sequence', [])
-			if _y_seq:
+			_rnnt_hyp = context.rnnt_partial_hypotheses
+			_y_seq = _rnnt_hyp.get('y_sequence', [])
+			_blank_t = _rnnt_hyp.get('blank_count')
+			_blanks = int(_blank_t[0].item()) if _blank_t is not None else 0
+			if _y_seq and _blanks >= 10:
 				_rnnt_text = self.s2s_model._rnnt_decode_text(_y_seq)
 				if _rnnt_text:
 					self.get_or_create_state(stream_ids[0]).output_asr_text_str = _rnnt_text
+				context.rnnt_partial_hypotheses['y_sequence'] = []
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None

@@ -183,7 +183,7 @@ def get_subsegment_dict(subsegments_manifest_file: str, window: float, shift: fl
         for segment in segments:
             segment = segment.strip()
             dic = json.loads(segment)
-            audio, offset, duration, label = dic['audio_filepath'], dic['offset'], dic['duration'], dic['label']
+            audio, offset, duration = dic['audio_filepath'], dic['offset'], dic['duration']
             subsegments = get_subsegments_scriptable(offset=offset, window=window, shift=shift, duration=duration)
             if dic['uniq_id'] is not None:
                 uniq_id = dic['uniq_id']
@@ -432,7 +432,7 @@ def create_manifest(
         if rttm is not None:
             rttm = rttm.strip()
             labels = rttm_to_labels(rttm)
-            num_speakers = Counter([l.split()[-1] for l in labels]).keys().__len__()
+            num_speakers = Counter([label.split()[-1] for label in labels]).keys().__len__()
         else:
             num_speakers = None
 
@@ -554,3 +554,21 @@ def write_text(output_path: str, target_ctm: Dict[str, dict]):
             word = tgt.split(' ')[4]
             outfile.write(word + ' ')
         outfile.write('\n')
+
+
+def filepath_to_absolute(filepath: str | Path, base_path: Path) -> Path:
+    """
+    Return absolute path to an audio file.
+
+    Check if a file exists at `filepath`.
+    If not, assume that the path is relative to `base_path`.
+
+    Args:
+        filepath (str or Path): path to file
+        base_path (Path): base path to resolve relative path
+    """
+    filepath = Path(filepath).expanduser()
+
+    if not filepath.is_file() and not filepath.is_absolute():
+        filepath = (base_path / filepath).absolute()
+    return filepath

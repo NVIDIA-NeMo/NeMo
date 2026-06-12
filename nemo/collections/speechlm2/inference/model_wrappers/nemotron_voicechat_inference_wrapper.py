@@ -456,77 +456,6 @@ class NemotronVoicechatInferenceWrapper:
         logging.info(f"Time taken to initialize NemotronVoiceChat: {time.time() - start_DuplexS2S_init} seconds")
         logging.info("  Model structure initialized")
 
-        # =====================================================================
-        # TTS PAD-SILENCE SUBSTITUTION  (Option B — per-stream state)
-        # =====================================================================
-        # Bug fixed:
-        #   After a function-calling cycle ends, the LLM sometimes fails to
-        #   emit BOS on the agent text channel, leading to a long stretch of
-        #   PAD frames. During this gap the TTS codec sometimes hallucinates
-        #   "garbled syllables" / phantom speech instead of clean silence
-        #   (codec_cache contamination from prior ack#2 / Phase 2 activity).
-        #
-        # Fix:
-        #   At three TTS call sites in this wrapper, substitute the existing
-        #   `codec_silence_tokens` for the codec tokens TTS produces, whenever:
-        #     (a) text input was PAD, AND
-        #     (b) the agent is currently IDLE — see condition below.
-        #
-        # Why condition (b) matters:
-        #   PAD on the agent text channel does NOT always mean "silence in
-        #   audio". With Branch-B training (this checkpoint), the LLM emits
-        #   dense content tokens then a long PAD trail until EOS at the
-        #   audio-end frame. The TTS keeps rendering audio during that PAD
-        #   trail. Silencing those in-turn PADs would chop the audio. So we
-        #   only substitute when the agent is genuinely IDLE — no turn open
-        #   (session just started, or last non-PAD token was EOS).
-        #
-        # How the "agent_idle" flag is tracked:
-        #   - Per-stream:   S2SStreamingState.agent_idle (Option B, preferred)
-        #   - Per-wrapper:  self._agent_idle (fallback for older code paths)
-        #   - Helpers:      _get_agent_idle(stream_id), _set_agent_idle(...)
-        #                   _mark_agent_idle(stream_id)
-        #   - NOT touched by S2SStreamingState.cleanup_after_response() —
-        #     that method runs every Triton step, NOT just at session end.
-        #     Flipping the flag there caused in-turn silencing and audio cut-off
-        #     (regression discovered & fixed during the multi-stream refactor).
-        #
-        # Env var:
-        #   S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD=true → enables the feature.
-        #   When unset/false: substitution never fires, behaves like baseline.
-        #
-        # Mirrors the existing `inference_force_speech_silence_on_eos` block in
-        # `infer_one_step` (same mechanism, different trigger token — but EOS
-        # only fires for ONE frame per turn, so it doesn't trigger the long-run
-        # corruption risk this PAD version has).
-        # =====================================================================
-        _pad_silence_env = os.environ.get('S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD', '').lower()
-        if _pad_silence_env in ('true', '1', 'yes'):
-            try:
-                self.model.cfg['inference_force_speech_silence_on_pad'] = True
-                logging.info(
-                    "[Env] S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD=true → "
-                    "model.cfg.inference_force_speech_silence_on_pad=True"
-                )
-            except Exception as _e:
-                logging.warning(
-                    f"[Env] Could not set inference_force_speech_silence_on_pad on model.cfg: {_e}"
-                )
-        # Disable RNNT self-play suppression — lets LLM-native BOS through so the
-        # agent can self-initiate a turn even if the user hasn't spoken.
-        self.model_cfg["rnnt_self_play_suppression"] = False
-
-        # Initialize "agent idle" state. True at session start (no agent turn yet).
-        # Updated in infer_one_step: BOS → False (turn open), EOS → True (agent idle).
-        #
-        # This is the SINGLE-STREAM fallback. For proper multi-stream operation,
-        # the pipeline injects a per-stream lookup callable via:
-        #   self._set_streaming_state_getter(self.get_or_create_state)
-        # When set, the wrapper reads/writes streaming_state.agent_idle
-        # (per-stream) instead of self._agent_idle (per-wrapper).
-        self._agent_idle = True
-        self._streaming_state_getter = None   # set by pipeline if multi-stream support is needed
-
         # If using combined checkpoint for RNNT, set up modules from saved config
         if use_rnnt_from_combined:
             from nemo.collections.speechlm2.parts.pretrained import setup_rnnt_from_combined_checkpoint
@@ -893,6 +822,8 @@ class NemotronVoicechatInferenceWrapper:
         # Default 240 ms → 240 / 80 = 3 frames.
         _fc_interrupt_ms = int(self.model_cfg.get("rnnt_fc_interrupt_ms", 240))
         self._rnnt_fc_interrupt_frames = max(1, _fc_interrupt_ms // 80)
+        # Max non-blank tokens emitted per encoder frame; mirrors NeMo master label-looping default.
+        self._rnnt_max_symbols = int(self.model_cfg.get("rnnt_max_symbols", 10))
         self._rnnt_last_speech_frame = -1
         self._rnnt_prev_num_tokens = 0
         self._rnnt_bos_cooldown_until = -1
@@ -1185,7 +1116,6 @@ class NemotronVoicechatInferenceWrapper:
         rnnt_text_queue: "queue.Queue | None" = None,
         abort_event: "threading.Event | None" = None,
         quit_async_event: "threading.Event | None" = None,
-        stream_id: "int | None" = None,
     ) -> tuple[int, dict | None]:
         """
         Run LLM steps at full speed during function calling.
@@ -1345,19 +1275,6 @@ class NemotronVoicechatInferenceWrapper:
                     "[FC Async] Abort event set — stopping async generation at step %d (frame %d)",
                     async_steps, t,
                 )
-                # ----- TTS PAD-silence: Caveat 2 hook (implicit turn end) -----
-                # A mid-FC abort (typically user barging in) ends the agent's
-                # current "turn" (the FC cycle) WITHOUT a natural EOS landing on
-                # the agent text channel. Without this hook, `agent_idle`
-                # could remain False from the time BOS was emitted, and the
-                # subsequent silent frames after the abort would NOT get the
-                # PAD-silence substitution — leading back to the garbled-syllables
-                # symptom we are trying to prevent.
-                #
-                # `_mark_agent_idle(stream_id)` is idempotent and locked
-                # (S2SStreamingState.mark_agent_idle() acquires the per-instance
-                # _agent_idle_lock). Safe to call multiple times.
-                self._mark_agent_idle(stream_id)
                 break
             if quit_async_event is not None and quit_async_event.is_set():
                 logging.info(
@@ -1489,36 +1406,6 @@ class NemotronVoicechatInferenceWrapper:
 
                     _tts_code_new, _tts_pkv_new = self.model.tts_model.infer_codes_one_step(**_tts_inputs)
 
-                    # ====== TTS PAD-silence substitution — SITE 1 (FC async warmup) ======
-                    # This is the TTS warmup that runs once per async-loop step during
-                    # the FC cycle. The agent text channel is PAD throughout the FC
-                    # cycle (forced PAD on the agent channel — function tokens go to
-                    # the function channel instead).
-                    #
-                    # Substitute only when ALL THREE conditions are true:
-                    #   (a) cfg flag inference_force_speech_silence_on_pad is on
-                    #   (b) the stream is "agent idle" (no live agent verbal turn)
-                    #   (c) we are NOT mid-ack#1 — ack #1 tokens (BOS + content +
-                    #       trailing PAD + EOS) must render in full. Silencing the
-                    #       trailing PAD frames of ack #1 would chop the ack audio.
-                    #
-                    # Note on (c) timing: _ack_idx was already incremented above, so:
-                    #   _ack_idx <= len(acknowledgement_tokens)  → we just used an ack token
-                    #   _ack_idx >  len(acknowledgement_tokens)  → we used PAD fallback (post-ack)
-                    # `not acknowledgement_tokens` matches the truthy check at the consumer
-                    # (line ~1406) so both `None` and `[]` are handled as "no ack to play".
-                    _ack_done = (not acknowledgement_tokens
-                                 or _ack_idx > len(acknowledgement_tokens))
-                    if (self.model.cfg.get('inference_force_speech_silence_on_pad', None)
-                            and self._get_agent_idle(stream_id)
-                            and _ack_done):
-                        _pad_silence_codes = self.model.tts_model.codec_silence_tokens.view(1, 1, -1).expand(_tts_code_new.shape)
-                        _tts_code_new = torch.where(
-                            _tts_subword.unsqueeze(-1) == self.model.tts_model.text_pad_id,
-                            _pad_silence_codes,
-                            _tts_code_new,
-                        )
-
                     tts_state["code"] = _tts_code_new
                     tts_state["past_key_values"] = _tts_pkv_new
                     _n_tts_warmup_calls += 1
@@ -1580,8 +1467,8 @@ class NemotronVoicechatInferenceWrapper:
                 if fc_state.get("injecting_response", False):
                     fc_state["injecting_response"] = False
                     logging.info(
-                        "[FC Async] Forced TOOL_RESPONSE tokens drained at step %d (frame %d) "
-                        "— now awaiting model to predict EOTR on function channel",
+                        "[FC Async] Response injection complete at step %d (frame %d), "
+                        "EOTR was included in forced tokens — exiting async on next cycle",
                         async_steps, t,
                     )
 
@@ -1635,8 +1522,6 @@ class NemotronVoicechatInferenceWrapper:
                         async_steps += 1
                         t += 1
                         break
-                elif self._fc_eotr_id is not None and func_tok_val == self._fc_eotr_id:
-                    logging.info(f"[FC Async] EOTR predicted at async step {async_steps} (frame {t})")
                 elif fc_state.get("active", False) and func_tok_val != pad_id:
                     fc_state.setdefault("call_tokens", []).append(func_tok_val)
 
@@ -1991,104 +1876,6 @@ class NemotronVoicechatInferenceWrapper:
             logging.debug("[FC]   After:  %s", result[:200])
         return result
 
-    # ------------------------------------------------------------------
-    # TTS PAD-silence substitution: per-stream "agent idle" state
-    # (Option B — multi-stream-safe via S2SStreamingState).
-    #
-    # The pipeline calls `_set_streaming_state_getter(self.get_or_create_state)`
-    # once at __init__ time. From then on, the three TTS sites in this
-    # wrapper read/write the per-stream `agent_idle` flag through the
-    # helpers below — so two concurrent user sessions never share state.
-    #
-    # If the getter has not been installed (e.g. older pipeline), the
-    # helpers fall back to the wrapper-level `self._agent_idle` and the
-    # fix degrades gracefully to single-stream behavior instead of breaking.
-    # ------------------------------------------------------------------
-    def _set_streaming_state_getter(self, getter):
-        """Install a `callable(stream_id) -> S2SStreamingState | None` lookup.
-
-        Called once by the pipeline at wiring time. Example:
-            wrapper._set_streaming_state_getter(pipeline.get_or_create_state)
-        Storing the callable (not the dict) avoids tight coupling to the
-        pipeline's internal data structure.
-        """
-        self._streaming_state_getter = getter
-
-    def _get_agent_idle(self, stream_id=None):
-        """Read the per-stream `agent_idle` flag for the TTS substitution gate.
-
-        Returns True iff the agent is currently idle (no open turn — session
-        just started, or last non-PAD token on the agent text channel was
-        EOS / abort fired). In that state, PAD frames on the agent text
-        channel correspond to genuine silence (no turn is open, TTS has
-        nothing to render), so silencing them is safe.
-
-        Priority:
-          1. Locked read via S2SStreamingState.is_agent_idle() (Caveat 3
-             — guards against background FC-async thread writes racing with
-             main-thread reads).
-          2. Direct `state.agent_idle` attribute access (older state).
-          3. Wrapper-level `self._agent_idle` fallback (single-stream).
-        Returns True if nothing is set (safe default — silence is benign
-        when idle; we only need to avoid it within an open turn).
-        """
-        if stream_id is not None and self._streaming_state_getter is not None:
-            try:
-                st = self._streaming_state_getter(stream_id)
-                if st is not None:
-                    if hasattr(st, "is_agent_idle"):
-                        return st.is_agent_idle()
-                    if hasattr(st, "agent_idle"):
-                        return st.agent_idle
-            except Exception:
-                pass
-        return getattr(self, "_agent_idle", True)
-
-    def _set_agent_idle(self, value, stream_id=None):
-        """Write the per-stream `agent_idle` flag (also updates wrapper fallback).
-
-        `value=True`  → agent turn ended (will substitute silence on PAD)
-        `value=False` → agent turn opened (will NOT substitute — TTS may
-                        still be rendering audio for the in-turn PAD trail).
-
-        Always updates `self._agent_idle` first so single-stream callers
-        still see the change; then routes the write to the per-stream
-        S2SStreamingState via its locked helpers (`mark_agent_idle()` /
-        `mark_agent_active()`) — Caveat 3. Falls back to direct attribute
-        assignment for older state objects.
-        """
-        # Always update the wrapper-level fallback so single-stream usage works.
-        self._agent_idle = bool(value)
-        if stream_id is not None and self._streaming_state_getter is not None:
-            try:
-                st = self._streaming_state_getter(stream_id)
-                if st is not None:
-                    if value and hasattr(st, "mark_agent_idle"):
-                        st.mark_agent_idle()
-                    elif (not value) and hasattr(st, "mark_agent_active"):
-                        st.mark_agent_active()
-                    else:
-                        # Legacy / older state object — direct assignment.
-                        st.agent_idle = bool(value)
-            except Exception:
-                pass
-
-    def _mark_agent_idle(self, stream_id=None):
-        """Convenience hook for "implicit" turn endings (Caveat 2).
-
-        Use whenever an agent turn ends WITHOUT a natural EOS landing on
-        the agent text channel. Today that means:
-          - user barge-in interrupting agent speech
-          - abort_event firing during the FC async loop
-
-        Without this hook, `agent_idle` could stay False forever after
-        such an event, and subsequent silent PAD frames would NOT get the
-        substitution — bringing back the garbled-syllables bug.
-
-        Equivalent to `_set_agent_idle(True, stream_id)`.
-        """
-        self._set_agent_idle(True, stream_id)
-
     def _build_fc_response_tokens(self, tool_response_text: str) -> list:
         """Tokenize a tool response string.
 
@@ -2172,7 +1959,6 @@ class NemotronVoicechatInferenceWrapper:
         tts_audio_output_queue: "queue.Queue | None" = None,
         abort_event: "threading.Event | None" = None,
         request_id: str | None = None,
-        stream_id: "int | None" = None,
     ) -> int:
         """Play reminder tokens through TTS only (no LLM steps) during tool API wait.
 
@@ -2204,22 +1990,6 @@ class NemotronVoicechatInferenceWrapper:
                 if self.use_vllm_eartts:
                     _tts_inputs["request_id"] = request_id or self.request_id
                 _tts_code_new, _tts_pkv_new = self.model.tts_model.infer_codes_one_step(**_tts_inputs)
-
-                # ====== TTS PAD-silence substitution — SITE 2 (_run_tts_reminder) ======
-                # INTENTIONALLY NO SUBSTITUTION HERE.
-                #
-                # Why: this function renders a self-contained ack/reminder message
-                # whose token sequence is [BOS, content_tokens, PAD×17, EOS]. The
-                # trailing PADs are MID-UTTERANCE for the TTS — they give the TTS
-                # codec time to finish rendering the ack content (codec output is
-                # autoregressive; one text frame can produce multiple codec frames).
-                # If we substituted silence on these PADs, the tail of the ack
-                # audio would be chopped off and the user would hear something
-                # like "Looking up the wea—" instead of "Looking up the weather."
-                #
-                # Sites 1 (FC async warmup) and 3 (main loop) DO substitute on
-                # PAD frames because those PADs occur when the agent is idle,
-                # not mid-ack.
                 tts_state["code"] = _tts_code_new
                 tts_state["past_key_values"] = _tts_pkv_new
 
@@ -2266,8 +2036,7 @@ class NemotronVoicechatInferenceWrapper:
                        codec_cache=None,
                        rnnt_partial_hypotheses=None,
                        fc_state: dict | None = None,
-                       tool_response_text: str | None = None,
-                       stream_id: Optional[int] = None):
+                       tool_response_text: str | None = None):
 
         # Set up effective request ID for vLLM streaming
         effective_request_id = request_id or self.request_id
@@ -2535,76 +2304,6 @@ class NemotronVoicechatInferenceWrapper:
                         code,
                     )
 
-                # ====== TTS PAD-silence substitution — SITE 3 (main loop) ======
-                # This is the main per-frame TTS step (NOT the FC async warmup).
-                # The "post-FC silent gap" bug (Pune / NVDA) lives here: LLM emits
-                # PAD for many frames after EOTR; without substitution the TTS
-                # would hallucinate garbled syllables on those PAD inputs.
-                #
-                # Substitute only when AGENT IS IDLE (no open turn) — we MUST
-                # NOT silence PAD frames inside an open turn (Branch-B training:
-                # the LLM emits dense content then a PAD trail until EOS at the
-                # audio-end frame; the TTS is still rendering audio during that
-                # trail, so silencing would chop in-turn audio).
-                #
-                # Extended gate: also silence PAD when an open turn has run
-                # past its rendering budget (ratio × content tokens emitted
-                # since BOS). Env var S2S_TTS_PAD_TAIL_RATIO (default 3; 0=off).
-                _ratio = getattr(self, "_tts_pad_tail_ratio", None)
-                if _ratio is None:
-                    try:
-                        _ratio = float(os.environ.get("S2S_TTS_PAD_TAIL_RATIO", "3"))
-                    except ValueError:
-                        _ratio = 3.0
-                    self._tts_pad_tail_ratio = _ratio
-                _c = getattr(self, "_tts_in_turn_content", 0)
-                _p = getattr(self, "_tts_in_turn_pads", 0)
-                _tail_done = (_ratio > 0
-                              and not self._get_agent_idle(stream_id)
-                              and _p > _ratio * _c)
-                if (self.model.cfg.get('inference_force_speech_silence_on_pad', None)
-                        and (self._get_agent_idle(stream_id) or _tail_done)):
-                    silence_codes = self.model.tts_model.codec_silence_tokens.view(1, 1, -1).expand(code.shape)
-                    code = torch.where(
-                        current_subword_id.unsqueeze(-1) == self.model.tts_model.text_pad_id,
-                        silence_codes,
-                        code,
-                    )
-
-                # ----- Update the per-stream "agent idle" flag -----
-                # State machine:
-                #   BOS  → False (agent has started a turn — turn open)
-                #   EOS  → True  (agent has finished a turn — agent idle)
-                #   PAD or anything else → no change
-                #
-                # Caveat 4 — this ALSO handles FTT (Forced-Turn-Taking) injections.
-                # `_apply_rnnt_turn_taking` and `_maybe_apply_forced_turn_taking`
-                # both write BOS/EOS directly into gen_text BEFORE this point in
-                # the loop, so `current_subword_id` (read just above the TTS step)
-                # observes them transparently. The state flips correctly whether
-                # the BOS/EOS came from the LLM's natural prediction OR from FTT
-                # injecting it. Do not move this read earlier in the loop or
-                # Caveat 4 will silently break.
-                try:
-                    _csid_val = current_subword_id.flatten()[0].item()
-                    if _csid_val == self.model.tts_model.text_bos_id:
-                        self._set_agent_idle(False, stream_id)
-                        self._tts_in_turn_content = 0
-                        self._tts_in_turn_pads = 0
-                    elif _csid_val == self.model.tts_model.text_eos_id:
-                        self._set_agent_idle(True, stream_id)
-                        self._tts_in_turn_content = 0
-                        self._tts_in_turn_pads = 0
-                    elif _csid_val == self.model.tts_model.text_pad_id:
-                        self._tts_in_turn_pads = _p + 1
-                    else:
-                        self._tts_in_turn_content = _c + 1
-                        self._tts_in_turn_pads = 0
-                except Exception:
-                    # Don't crash the inference loop on any state-update issue;
-                    # worst case is a stale flag for one frame.
-                    pass
-
         # exit for-loop & do audio decoding non-autoregressively (if decode_audio is True)
         if self.decode_audio:
             samples_per_audio_output_frame = self._samples_per_audio_output_frame()
@@ -2828,6 +2527,7 @@ class NemotronVoicechatInferenceWrapper:
             'rolling_density':  torch.zeros(B, dtype=torch.float32, device=device),
             'post_eos_fired':   torch.zeros(B, dtype=torch.bool, device=device),
             'forced_bos':       torch.zeros(B, dtype=torch.bool, device=device),
+            'y_sequence':       [],  # non-blank token IDs emitted this turn, decoded for UI transcript
         }
 
     @torch.no_grad()
@@ -2853,25 +2553,36 @@ class NemotronVoicechatInferenceWrapper:
 
         logits = joint.joint(f, pred_out)
         tokens = logits.squeeze(1).squeeze(1).argmax(-1)
+        # Frame-level blank drives turn-taking counters (blank_count, nonblank_consec) — must stay as first prediction.
         is_blank = (tokens == blank_id)
 
-        new_pred_out, new_pred_hidden = pred_out, pred_hidden
-        if not is_blank.all():
-            non_blank_tokens = torch.where(is_blank, torch.full_like(tokens, blank_id), tokens)
-            y = non_blank_tokens.unsqueeze(1)
+        # Label loop: keep emitting tokens from this frame until blank or max_symbols, mirroring NeMo master.
+        # Predictor advances through every emission; is_blank above is NOT updated so turn-taking is unchanged.
+        _cur_pred_out, _cur_pred_hidden = pred_out, pred_hidden
+        _loop_tokens, _loop_is_blank = tokens, is_blank
+        _emitted: list = []
+        _symbols = 0
+        while not _loop_is_blank.all() and _symbols < self._rnnt_max_symbols:
+            if B == 1 and not _loop_is_blank[0]:
+                _emitted.append(_loop_tokens[0].item())
+            _y = torch.where(_loop_is_blank, torch.full_like(_loop_tokens, blank_id), _loop_tokens).unsqueeze(1)
             try:
-                new_pred_out_cand, new_pred_hidden_cand = decoder.predict(
-                    y=y, state=pred_hidden, add_sos=False, batch_size=B
-                )
+                _np_out, _np_hid = decoder.predict(y=_y, state=_cur_pred_hidden, add_sos=False, batch_size=B)
                 if B == 1:
-                    if not is_blank[0]:
-                        new_pred_out, new_pred_hidden = new_pred_out_cand, new_pred_hidden_cand
+                    if not _loop_is_blank[0]:
+                        _cur_pred_out, _cur_pred_hidden = _np_out, _np_hid
                 else:
-                    mask = is_blank.view(B, 1, 1).expand_as(pred_out)
-                    new_pred_out = torch.where(mask, pred_out, new_pred_out_cand)
-                    new_pred_hidden = new_pred_hidden_cand
+                    _mask = _loop_is_blank.view(B, 1, 1).expand_as(_cur_pred_out)
+                    _cur_pred_out = torch.where(_mask, _cur_pred_out, _np_out)
+                    _cur_pred_hidden = _np_hid
             except Exception as _e:
-                logging.warning(f"RNNT decoder update skipped: {_e}")
+                logging.warning(f"RNNT label loop predictor step skipped: {_e}")
+                break
+            _symbols += 1
+            _loop_logits = joint.joint(f, _cur_pred_out)
+            _loop_tokens = _loop_logits.squeeze(1).squeeze(1).argmax(-1)
+            _loop_is_blank = (_loop_tokens == blank_id)
+        new_pred_out, new_pred_hidden = _cur_pred_out, _cur_pred_hidden
 
         density_alpha = 0.1
         is_speech_float = (~is_blank).float()
@@ -2897,8 +2608,16 @@ class NemotronVoicechatInferenceWrapper:
             'first_turn':       rnnt_state['first_turn'],
             'rolling_density':  new_density,
             'post_eos_fired':   rnnt_state['post_eos_fired'],
+            'y_sequence':       rnnt_state.get('y_sequence', []) + _emitted,
         }
         return new_state, is_blank
+
+    def _rnnt_decode_text(self, y_sequence: list) -> str:
+        """Decode accumulated RNNT token IDs to text via rnnt_joint.vocabulary (SentencePiece, ▁=word boundary)."""
+        vocab = getattr(getattr(self.model.stt_model, 'rnnt_joint', None), 'vocabulary', None)
+        if not vocab or not y_sequence:
+            return ""
+        return "".join(vocab[t] for t in y_sequence if 0 <= t < len(vocab)).replace("▁", " ").strip()
 
     def _apply_rnnt_turn_taking(self, t: int, gen_text: torch.Tensor,
                                 is_blank: torch.Tensor, rnnt_state: dict) -> None:
@@ -2969,8 +2688,7 @@ class NemotronVoicechatInferenceWrapper:
             if _forced_bos_flags is not None:
                 rnnt_state['forced_bos'][b] = False  # consume flag each frame
             if (not agent_speaking and not first_turn and not speech_confirmed
-                    and current_tok == bos_id and not _is_forced_bos
-                    and self.model_cfg.get("rnnt_self_play_suppression", False)):
+                    and current_tok == bos_id and not _is_forced_bos):
                 if self._post_tc_bos_exempt:
                     self._post_tc_bos_exempt = False
                     logging.info(f"RNNT post-TC BOS exempt at t={t}: allowing agent BOS after tool call")

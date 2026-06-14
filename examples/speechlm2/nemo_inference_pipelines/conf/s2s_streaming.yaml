@@ -83,6 +83,13 @@ s2s:
   turn_taking_source: rnnt              # "rnnt" (default) or "asr_head"
   rnnt_eou_frames: 15                   # RNNT silence frames for EOU (15 × 80ms = 1.2s)
 
+  # RNNT punctuation logit biasing (display only — does not affect turn-taking)
+  # After the user says words and pauses, blank frames incrementally boost punct
+  # token logits inside the label loop so the model outputs natural sentence endings.
+  rnnt_punct_bias_enabled: true
+  rnnt_punct_bias_tokens: [".", ",", "?", "!"]
+  rnnt_punct_bias_increment: 2.5        # logit added per blank frame after words; reset on punct or new word
+
   # Inference logit boosts (applied to model logits at inference time)
   inference_user_pad_boost: 0.8         # Boost ASR pad logit
   inference_user_bos_boost: null         # Boost ASR BOS logit

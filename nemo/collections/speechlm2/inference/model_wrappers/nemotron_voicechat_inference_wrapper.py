@@ -924,6 +924,25 @@ class NemotronVoicechatInferenceWrapper:
                 if _tok in ("<unk>", "\u2047"):  # \u2047 = ⁇, another common unk glyph
                     self._rnnt_unk_id = _idx
                     break
+        # Punctuation logit biasing: after the user speaks some words, blank frames
+        # incrementally boost punct token logits inside the label loop so the RNNT
+        # outputs natural sentence boundaries (periods, commas, question marks).
+        # Applied ONLY in the inner label loop -- is_blank / turn-taking are untouched.
+        self._rnnt_punct_ids: list = []
+        self._rnnt_punct_ids_set: set = set()
+        self._rnnt_punct_bias_increment: float = float(
+            self.model_cfg.get("rnnt_punct_bias_increment", 2.5))
+        if self.model_cfg.get("rnnt_punct_bias_enabled", False) and _rnnt_vocab is not None:
+            for _pt in self.model_cfg.get("rnnt_punct_bias_tokens", [".", ",", "?", "!"]):
+                for _variant in [_pt, "▁" + _pt]:   # bare token and word-start form
+                    if _variant in _rnnt_vocab:
+                        _pid = _rnnt_vocab.index(_variant)
+                        if _pid not in self._rnnt_punct_ids_set:
+                            self._rnnt_punct_ids.append(_pid)
+                            self._rnnt_punct_ids_set.add(_pid)
+            logging.info("[RNNT] Punct bias enabled: tokens=%s IDs=%s increment=%.1f",
+                         self.model_cfg.get("rnnt_punct_bias_tokens"),
+                         self._rnnt_punct_ids, self._rnnt_punct_bias_increment)
         logging.info(
             "[Turn-taking] RNNT is_start_tokens built: %d tokens (EOU word-boundary check %s)",
             len(self._rnnt_is_start_tokens),
@@ -2841,6 +2860,8 @@ class NemotronVoicechatInferenceWrapper:
             'post_eos_fired':   torch.zeros(B, dtype=torch.bool, device=device),
             'forced_bos':       torch.zeros(B, dtype=torch.bool, device=device),
             'y_sequence':       [],
+            '_punct_word_acc':  [],    # non-punct token IDs decoded since last punct
+            '_punct_bias_val':  0.0,   # accumulated logit boost; increments each blank frame after words
         }
 
     @torch.no_grad()
@@ -2893,9 +2914,30 @@ class NemotronVoicechatInferenceWrapper:
                 break
             _symbols += 1
             _loop_logits = joint.joint(f, _cur_pred_out)
-            _loop_tokens = _loop_logits.squeeze(1).squeeze(1).argmax(-1)
+            _loop_scores = _loop_logits.squeeze(1).squeeze(1)
+            # Punct bias: boost punct token logits after words with no punctuation yet.
+            # Operates only in the label loop -- is_blank (turn-taking) is unaffected.
+            _pbv = rnnt_state.get('_punct_bias_val', 0.0)
+            if _pbv > 0.0 and self._rnnt_punct_ids:
+                for _pid in self._rnnt_punct_ids:
+                    _loop_scores[0, _pid] = _loop_scores[0, _pid] + _pbv
+            _loop_tokens = _loop_scores.argmax(-1)
             _loop_is_blank = (_loop_tokens == blank_id)
         new_pred_out, new_pred_hidden = _cur_pred_out, _cur_pred_hidden
+
+        # Update punctuation bias state based on what was emitted this frame.
+        _pw_acc = list(rnnt_state.get('_punct_word_acc', []))
+        _pb_val = float(rnnt_state.get('_punct_bias_val', 0.0))
+        if _emitted:
+            _emitted_punct    = [t for t in _emitted if t in self._rnnt_punct_ids_set]
+            _emitted_nonpunct = [t for t in _emitted if t not in self._rnnt_punct_ids_set]
+            if _emitted_punct:
+                _pw_acc, _pb_val = [], 0.0           # punct decoded — reset
+            elif _emitted_nonpunct:
+                _pw_acc.extend(_emitted_nonpunct)    # new words — add to buffer, reset bias
+                _pb_val = 0.0
+        elif _pw_acc:                                # blank frame after words — increment bias
+            _pb_val += self._rnnt_punct_bias_increment
 
         density_alpha = 0.1
         is_speech_float = (~is_blank).float()
@@ -2922,6 +2964,8 @@ class NemotronVoicechatInferenceWrapper:
             'rolling_density':  new_density,
             'post_eos_fired':   rnnt_state['post_eos_fired'],
             'y_sequence':       rnnt_state.get('y_sequence', []) + _emitted,
+            '_punct_word_acc':  _pw_acc,
+            '_punct_bias_val':  _pb_val,
         }
         # Carry forward dynamically-added fields (_turn_text_tokens, _agent_talking_frames,
         # forced_bos, etc.) that _apply_rnnt_turn_taking sets in-place but are absent from

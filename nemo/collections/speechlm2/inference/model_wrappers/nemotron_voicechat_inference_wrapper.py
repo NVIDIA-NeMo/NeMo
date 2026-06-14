@@ -2923,6 +2923,13 @@ class NemotronVoicechatInferenceWrapper:
             'post_eos_fired':   rnnt_state['post_eos_fired'],
             'y_sequence':       rnnt_state.get('y_sequence', []) + _emitted,
         }
+        # Carry forward dynamically-added fields (_turn_text_tokens, _agent_talking_frames,
+        # forced_bos, etc.) that _apply_rnnt_turn_taking sets in-place but are absent from
+        # the fixed schema above. Without this, MaxResponse and TTSRatioCap counters reset
+        # to 0 every frame and those safety caps never fire.
+        for _k in rnnt_state:
+            if _k not in new_state:
+                new_state[_k] = rnnt_state[_k]
         return new_state, is_blank
 
     def _rnnt_decode_text(self, y_sequence: list) -> str:

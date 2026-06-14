@@ -1568,7 +1568,15 @@ out center {limit};
 			_blank_t = _rnnt_hyp.get('blank_count')
 			_blanks = int(_blank_t[0].item()) if _blank_t is not None else 0
 
-			if _y_seq:
+			# 240ms speech-confirmation gate: suppress display for the first 2 frames
+			# of each new utterance so the RNNT has enough acoustic context before
+			# we show anything.  Turn-taking (blank_count, EOU) is unaffected — those
+			# live inside infer_one_step and never read _speech_display_frames.
+			_sdf = _rnnt_hyp.get('_speech_display_frames', 0)
+			_sdf = _sdf + 1 if _blanks == 0 else 0
+			context.rnnt_partial_hypotheses['_speech_display_frames'] = _sdf
+
+			if _y_seq and _sdf >= 3:
 				_cur_text = self.s2s_model._rnnt_decode_text(_y_seq)
 				# Strip leading period/space tokens the RNNT emits as sentence-boundary markers
 				_cur_text = _cur_text.lstrip('. ')
@@ -1584,10 +1592,9 @@ out center {limit};
 			)
 			if _agent_bos_fired or _blanks >= 10:
 				context.rnnt_partial_hypotheses['y_sequence'] = []
-				# Also reset punct bias state so accumulated bias from the
-				# previous user turn doesn't carry into the next turn.
 				context.rnnt_partial_hypotheses['_punct_word_acc'] = []
 				context.rnnt_partial_hypotheses['_punct_bias_val'] = 0.0
+				context.rnnt_partial_hypotheses['_speech_display_frames'] = 0
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None

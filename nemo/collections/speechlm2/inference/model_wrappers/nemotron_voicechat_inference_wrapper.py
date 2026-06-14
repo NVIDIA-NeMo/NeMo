@@ -2890,22 +2890,41 @@ class NemotronVoicechatInferenceWrapper:
         # Frame-level blank drives turn-taking counters (blank_count, nonblank_consec) — must stay as first prediction.
         is_blank = (tokens == blank_id)
 
-        # Label loop: keep emitting tokens from this frame until blank or max_symbols, mirroring NeMo master.
-        # Predictor advances through every emission; is_blank above is NOT updated so turn-taking is unchanged.
-        _cur_pred_out, _cur_pred_hidden = pred_out, pred_hidden
-        _loop_tokens, _loop_is_blank = tokens, is_blank
+        # Punct injection (display only, blank frames only):
+        # When the user has spoken some words and then pauses, incrementally boost
+        # punct logits on each blank frame.  We run this BEFORE the label loop and
+        # ONLY on blank frames so is_blank / turn-taking are never touched.
+        # On non-blank frames the label loop runs exactly as before — no bias.
         _emitted: list = []
+        _cur_pred_out, _cur_pred_hidden = pred_out, pred_hidden
+        if B == 1 and is_blank[0] and self._rnnt_punct_ids:
+            _pbv = float(rnnt_state.get('_punct_bias_val', 0.0))
+            if _pbv > 0.0:
+                _biased = logits.squeeze(1).squeeze(1).clone()
+                for _pid in self._rnnt_punct_ids:
+                    _biased[0, _pid] = _biased[0, _pid] + _pbv
+                _biased_tok = int(_biased.argmax(-1)[0].item())
+                if _biased_tok in self._rnnt_punct_ids_set:
+                    _emitted.append(_biased_tok)
+                    # Advance predictor through the punct token so state stays
+                    # consistent for the next frame.
+                    _y_p = torch.tensor([[_biased_tok]], dtype=torch.long,
+                                        device=encoder_frame.device)
+                    try:
+                        _np_out, _np_hid = decoder.predict(
+                            y=_y_p, state=_cur_pred_hidden, add_sos=False, batch_size=B)
+                        _cur_pred_out, _cur_pred_hidden = _np_out, _np_hid
+                    except Exception as _e:
+                        logging.warning(f"RNNT punct predictor step failed: {_e}")
+
+        # Label loop: keep emitting tokens from this frame until blank or max_symbols.
+        # Predictor advances through every emission; is_blank above is NOT updated so
+        # turn-taking is unchanged.  No punct bias here — blank frames skip this loop.
+        _loop_tokens, _loop_is_blank = tokens, is_blank
         _symbols = 0
-        # Local copy of bias so we can zero it after the first punct emission
-        # within this frame — prevents the same bias from firing repeatedly
-        # across multiple label-loop iterations in a single encoder step.
-        _pbv = float(rnnt_state.get('_punct_bias_val', 0.0))
         while not _loop_is_blank.all() and _symbols < self._rnnt_max_symbols:
             if B == 1 and not _loop_is_blank[0]:
-                _tok = _loop_tokens[0].item()
-                _emitted.append(_tok)
-                if _tok in self._rnnt_punct_ids_set:
-                    _pbv = 0.0   # consumed — no more punct bias this frame
+                _emitted.append(_loop_tokens[0].item())
             _y = torch.where(_loop_is_blank, torch.full_like(_loop_tokens, blank_id), _loop_tokens).unsqueeze(1)
             try:
                 _np_out, _np_hid = decoder.predict(y=_y, state=_cur_pred_hidden, add_sos=False, batch_size=B)
@@ -2921,13 +2940,7 @@ class NemotronVoicechatInferenceWrapper:
                 break
             _symbols += 1
             _loop_logits = joint.joint(f, _cur_pred_out)
-            _loop_scores = _loop_logits.squeeze(1).squeeze(1)
-            # Punct bias: boost punct token logits after words with no punctuation yet.
-            # Operates only in the label loop — is_blank (turn-taking) is unaffected.
-            if _pbv > 0.0 and self._rnnt_punct_ids:
-                for _pid in self._rnnt_punct_ids:
-                    _loop_scores[0, _pid] = _loop_scores[0, _pid] + _pbv
-            _loop_tokens = _loop_scores.argmax(-1)
+            _loop_tokens = _loop_logits.squeeze(1).squeeze(1).argmax(-1)
             _loop_is_blank = (_loop_tokens == blank_id)
         new_pred_out, new_pred_hidden = _cur_pred_out, _cur_pred_hidden
 

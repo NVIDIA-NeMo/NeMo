@@ -1584,6 +1584,10 @@ out center {limit};
 			)
 			if _agent_bos_fired or _blanks >= 10:
 				context.rnnt_partial_hypotheses['y_sequence'] = []
+				# Also reset punct bias state so accumulated bias from the
+				# previous user turn doesn't carry into the next turn.
+				context.rnnt_partial_hypotheses['_punct_word_acc'] = []
+				context.rnnt_partial_hypotheses['_punct_bias_val'] = 0.0
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None

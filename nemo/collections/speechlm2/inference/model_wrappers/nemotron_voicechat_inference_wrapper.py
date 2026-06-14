@@ -2896,9 +2896,16 @@ class NemotronVoicechatInferenceWrapper:
         _loop_tokens, _loop_is_blank = tokens, is_blank
         _emitted: list = []
         _symbols = 0
+        # Local copy of bias so we can zero it after the first punct emission
+        # within this frame — prevents the same bias from firing repeatedly
+        # across multiple label-loop iterations in a single encoder step.
+        _pbv = float(rnnt_state.get('_punct_bias_val', 0.0))
         while not _loop_is_blank.all() and _symbols < self._rnnt_max_symbols:
             if B == 1 and not _loop_is_blank[0]:
-                _emitted.append(_loop_tokens[0].item())
+                _tok = _loop_tokens[0].item()
+                _emitted.append(_tok)
+                if _tok in self._rnnt_punct_ids_set:
+                    _pbv = 0.0   # consumed — no more punct bias this frame
             _y = torch.where(_loop_is_blank, torch.full_like(_loop_tokens, blank_id), _loop_tokens).unsqueeze(1)
             try:
                 _np_out, _np_hid = decoder.predict(y=_y, state=_cur_pred_hidden, add_sos=False, batch_size=B)
@@ -2916,8 +2923,7 @@ class NemotronVoicechatInferenceWrapper:
             _loop_logits = joint.joint(f, _cur_pred_out)
             _loop_scores = _loop_logits.squeeze(1).squeeze(1)
             # Punct bias: boost punct token logits after words with no punctuation yet.
-            # Operates only in the label loop -- is_blank (turn-taking) is unaffected.
-            _pbv = rnnt_state.get('_punct_bias_val', 0.0)
+            # Operates only in the label loop — is_blank (turn-taking) is unaffected.
             if _pbv > 0.0 and self._rnnt_punct_ids:
                 for _pid in self._rnnt_punct_ids:
                     _loop_scores[0, _pid] = _loop_scores[0, _pid] + _pbv

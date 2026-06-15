@@ -1,461 +1,278 @@
 # Failure-mode catalog
 
-Every failure mode observed during the speechlm-2026h1 migration to indexed
-+ resumable dataloading. Each entry: **signature** (what you grep for in
-logs), **trigger** (the YAML/launcher condition that produces it),
-**fix**, and **see-also** pointers.
+Failure signatures, triggers, and fixes for indexed + resumable Lhotse
+migrations. These are generic patterns; verify exact file names and line numbers
+against the user's checkout before citing them in a report.
 
-## §1 — `.jsonl.gz` AMI shar in blend
+## §1 - Compressed JSONL, Shar cuts, or tar paths
 
-**Signature**: index build fails with
-`ValueError: <ctx> requires uncompressed JSONL or tar data, but got a compressed path: <file>.jsonl.gz`
-from `lhotse/indexing.py:130-135`.
+**Signature**: index build raises a `ValueError` saying the source requires
+uncompressed JSONL or tar data but received a compressed path such as
+`*.jsonl.gz` or `*.tar.gz`.
 
-**Trigger**: blend YAML references AMI's stock distribution (Lhotse Shar
-with `cuts.*.jsonl.gz`).
+**Trigger**: an indexed source points at compressed cuts, manifests, or tar
+files. Sidecar offsets require stable byte positions in seekable files.
 
-**Fix**: drop AMI from the blend until an uncompressed Shar export (or a
-`nemo_tarred` re-export) is available. The repo's
-`data_blends/iad/granary1p1-en-resumable.yaml` does exactly this — see its
-header comment.
+**Fix**: re-export or materialize the source in an uncompressed seekable format.
+For Shar-style data, export cuts as plain JSONL when sidecar indexing is needed.
 
-## §2 — `extra_fields` / `slice_length` on `nemo_tarred` entry
+## §2 - `extra_fields` or `slice_length` on indexed NeMo entries
 
-**Signature**:
-`RuntimeError: LazyNeMoTarredIterator(indexed=True) does not support 'extra_fields' because <ctx>` from `nemo_adapters.py:485-487`,
-or
-`RuntimeError: LazyNeMoIterator(indexed=True) does not support 'extra_fields'` from `nemo_adapters.py:148-152`.
+**Signature**: an indexed NeMo iterator raises that `extra_fields` is not
+supported, or data order diverges after slicing.
 
-**Trigger**: blend entry has `extra_fields:` block (typically attaching
-text-iter / text-sample / graph-token features to a `nemo` /
-`nemo_tarred`) or `slice_length: N`.
+**Trigger**: the source applies runtime field injection or slicing while also
+requesting indexed access.
 
-**Fix**: pre-process the manifest offline to materialize the extra fields
-into the manifest, then drop the `extra_fields` key. For `slice_length`,
-re-shard the audio to the target slice and drop the key.
+**Fix**: preprocess the manifest offline so the indexed source already contains
+all required fields and shard/slice layout. Drop `extra_fields` and
+`slice_length` from the indexed YAML entry.
 
-## §3 — `f.tell()` on AIStore `ObjectFileReader`
+## §3 - Remote object reader is not seekable
 
-**Signature**: `io.UnsupportedOperation: seek` on first read of an
-`ais://` / `s3://` tar source.
+**Signature**: `io.UnsupportedOperation: seek` or `tell` on first read of a
+remote URL source.
 
-**Trigger**: AIStore SDK's `ObjectFileReader` doesn't implement
-`tell()` / `seek()`. The indexer uses `_CountingReader` to accumulate bytes
-manually; if your code path bypasses that, this fires.
+**Trigger**: the code path uses a backend reader that does not implement the
+seek/tell operations required by indexing.
 
-**Fix**: ensure the `aistore` SDK is installed in the container so lhotse
-routes via `AIStoreIOBackend`. The indexer's `create_jsonl_index` /
-`create_tar_index` accumulate bytes via `len(line)` and `_CountingReader`
-in `lhotse/indexing.py`. `submit_build_indexes.py:227` does the SDK install
-preamble.
+**Fix**: ensure the remote-storage SDK is installed and that Lhotse routes the
+path through the intended seekable/range-capable backend. For AIStore, verify
+`aistore` is installed and `AIS_ENDPOINT` is set.
 
-## §4 — `os.path.getsize(s3://…)`
+## §4 - Stdlib filesystem operations on URLs
 
-**Signature**: `FileNotFoundError: [Errno 2] No such file or directory: 's3://...'`
+**Signature**: `FileNotFoundError` from `open("s3://...")` or
+`os.path.getsize("s3://...")`.
 
-**Trigger**: legacy code path computing index file size from disk for an
-`s3://` URL.
+**Trigger**: a URL path reaches code that assumes local filesystem semantics.
 
-**Fix**: `IndexedJsonlReader._load_index` / `IndexedTarMemberReader._load_index`
-now read the size sentinel from the `.idx` file itself for URL paths.
-Confirmed at `NeMo_resumable/nemo/collections/common/data/lhotse/indexed_adapters.py:269-294`
-(uses `np.fromfile` with `<u8` dtype; final entry is the file-size
-sentinel).
+**Fix**: route URL paths through the storage-aware reader and load index metadata
+from the `.idx` file rather than local `os.path` calls.
 
-## §5 — `open(s3://…)` in tar member readers
+## §5 - Too many memory maps for large shard counts
 
-**Signature**: `FileNotFoundError: [Errno 2] No such file or directory: 's3://...'`
-on first audio fetch.
+**Signature**: `OSError: [Errno 12] Cannot allocate memory` or system
+`vm.max_map_count` exhaustion during startup.
 
-**Trigger**: `IndexedTarMemberReader` calling stdlib `open()` instead of
-the AIS-aware reader on a remote tar.
+**Trigger**: one memory map per `.idx` file across a very large number of shards.
 
-**Fix**: `_open_data_path` at `indexed_adapters.py:159-166` returns
-`_AISRangeReader(str(path))` for any path with a `://` scheme. The
-`_AISRangeReader` translates `seek + read` into AIStore HTTP range requests.
+**Fix**: load sidecars into resident arrays or otherwise reduce mmap count. The
+sidecars are usually small enough that resident arrays are acceptable.
 
-## §6 — `np.memmap` exhausts `vm.max_map_count`
+## §6 - Line-delimited JSON with `.json` extension rejected
 
-**Signature**: `OSError: [Errno 12] Cannot allocate memory` during
-training startup, with 80k+ shards.
+**Signature**: index validation rejects a line-delimited JSON manifest with a
+`.json` suffix.
 
-**Trigger**: legacy `np.memmap` per `.idx` file. With
-`vm.max_map_count = 65530` (Linux default), 80k shards × 1 mmap each
-exceeds the limit.
+**Trigger**: extension filtering assumes only `.jsonl` is valid, while some NeMo
+manifests use `.json` for one-record-per-line JSON.
 
-**Fix**: switched to `np.fromfile` (resident array). Indexes are tiny
-(KB-scale per shard), so the memory cost is negligible. Confirmed at
-`indexed_adapters.py:288-294` ("Use np.fromfile (resident memory) rather
-than np.memmap so that NeMo blends with 80k+ shards don't exhaust
-vm.max_map_count").
+**Fix**: accept both `.jsonl` and line-delimited `.json` when the contents are
+newline-separated records.
 
-## §7 — Validation manifest with `.json` extension
+## §7 - Process pool OOM during index build
 
-**Signature**: `ValueError: <ctx> path is not indexable: <file>.json`
-from `validate_indexed_access`.
+**Signature**: `concurrent.futures.process.BrokenProcessPool` after partial
+index-build progress.
 
-**Trigger**: NeMo convention to ship some manifests as `.json` (one JSON
-object per line) rather than `.jsonl`. The first version of
-`indexed_path_kind` rejected `.json`.
+**Trigger**: too many workers parse large manifests or tar headers concurrently,
+exceeding available process memory.
 
-**Fix**: `lhotse/indexing.py:99-107` now accepts both `.jsonl` and
-`.json` since the indexer only relies on newline-separated records.
+**Fix**: reduce worker count, split the blend/source list across multiple index
+runs, or increase available memory.
 
-## §8 — ProcessPool OOM during indexing
+## §8 - GPU container hook runs during CPU-only index build
 
-**Signature**: `concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly`
-in the build-indexes log, often after several minutes of forward progress.
-
-**Trigger**: 95 workers on a 96-cpu node + huge S3 manifests + Granary 1.1
-audio tars. The forks each load a manifest + tar header into RAM; with
-176 GiB total and 95 workers, peak per-worker RAM crosses ~1.8 GiB and
-the kernel OOM-killer fires.
+**Signature**: container startup fails before Python runs, often around a GPU
+runtime hook such as `nvidia-container-cli`.
 
-**Fix**: drop to `--workers 48`, or split the blend across multiple
-build-indexes invocations. `submit_build_indexes.py:99-104` defaults
-`cpus_per_task=96`; the auto-effective worker count is `cpus_per_task - 1`
-= 95. Override with `--workers 48`.
+**Trigger**: a CPU-only index build uses a container/runtime setup that assumes
+GPU devices are present.
 
-## §9 — Container `nvidia-container-cli` missing on cpu partition
+**Fix**: use CPU-safe container settings for index builds, or bypass/disable GPU
+hooks when the runtime has no GPU access.
 
-**Signature**: enroot's `98-nvidia.sh` hook hard-fails container start;
-sbatch.log shows `nvidia-container-cli: command not found` or similar.
+## §9 - AIStore SDK response shape changed
 
-**Trigger**: NRT cluster's `cpu` / `cpu_interactive` / `cpu_datamover`
-partitions lack `nvidia-container-cli`. IAD's cpu partition has it.
+**Signature**: an AttributeError on fields returned by the AIStore batch API,
+often in an error or empty-content path.
 
-**Fix**: pass `--bypass-nvidia-hook` to `submit_build_indexes.py`
-(`:122-129, 240-245`). Sets `--export=ALL,NVIDIA_VISIBLE_DEVICES=void` on
-the sbatch line, which makes enroot's hook short-circuit.
+**Trigger**: code assumes one SDK response schema while the installed SDK returns
+another.
 
-## §10 — AIStore SDK `MossOut.bck` AttributeError
+**Fix**: normalize SDK response attributes at the boundary and use that helper at
+all consumer sites. Avoid raw direct field access in error-handling code.
 
-**Signature**:
-`AttributeError: 'MossOut' object has no attribute 'bck'` in the empty-
-content retry path of `AISBatchLoader.__call__`. Cascade:
-`Error collating conversations: 'MossOut' object has no attribute 'bck'`,
-then `FallbackDataset received None`, then
-`TypeError: 'NoneType' object is not subscriptable` in
-`salm_automodel.training_step`, then DeepEP's `'unspecified launch failure'`.
+## §10 - `shard_seed: "randomized"` with stateful dataloading
 
-**Trigger**: `aistore>=1.20` (we're on 1.23.0) renames the MossIn-shaped
-`info.bck/.provider/.obj_name/.archpath` → MossOut-shaped
-`info.bucket_name/.bucket_provider/.obj_name/.archpath`. Triggered when
-the underlying object is missing on AIS and the SDK returns 200 + empty
-body, kicking the retry path that then crashes on attribute access.
+**Signature**: usually silent. Resume is not bit-exact even though the dataloader
+snapshot appears to restore.
 
-**Fix**: `_moss_attrs` normalizer at
-`lhotse_resumable/lhotse/ais/batch_loader.py:81` returns a 4-tuple
-`(bck, provider, obj_name, archpath)` for both shapes. Every consumer site
-must use it; raw `info.bck` references are bugs.
+**Trigger**: randomized shard/sampler seed is re-derived at chunk startup while
+stateful sampler data is loaded from checkpoint.
 
-**See also**: `agent-debug-workspace/0909-multiling-failures.md` for the
-full causal chain (multilingual Granary 1.1 audio not on iad AIS → empty
-content → retry path crash).
+**Fix**: pin `shard_seed` to a fixed integer, typically matching the top-level
+training seed.
 
-## §11 — `shard_seed: "randomized"` + `force_map_dataset: true` + `use_stateful_dataloader: true`
+## §11 - Per-chunk seed rotation in launcher
 
-**Signature**: silent — no crash. Each fork re-derives a worker-PID-hashed
-seed at `worker_init_fn` time, but `StatefulDataLoader.load_state_dict`
-overrides the sampler state from the checkpoint. The mismatch produces
-non-bit-exact resume at the data level (within the saved snapshot
-window).
+**Signature**: silent model-level divergence across chunk boundaries. Data-order
+state may restore, but dropout, augmentation, and other model/global RNG draws do
+not match a continuous run.
 
-**Trigger**: `shard_seed: "randomized"` literal in YAML, paired with
-`force_map_dataset: true` + `use_stateful_dataloader: true`.
-
-**Fix**: pin `shard_seed: <int>` (typically equal to `seed`).
-**NeMo's `dataloader.py:556-572` now warns + auto-overwrites** with the
-`seed` integer, so this is a safety net; explicit pinning in YAML keeps
-the rationale visible.
+**Trigger**: the launcher chooses a different seed for each resumable chunk.
 
-## §12 — Per-chunk seed rotation in launcher
+**Fix**: use one invariant seed for the entire resumable chain. If the launcher
+computes seeds from run index, override that behavior for indexed + stateful
+runs.
 
-**Signature**: silent (and worse than §11). On each chunk, Lightning
-calls `pl.seed_everything(run_seed)`, re-seeding Python/numpy/torch global
-RNG with a different value. Dropout, aux-loss, model random-init RNG draws
-diverge across chunks. The data-iteration level is correct (StatefulDataLoader
-wins the seed race for sampler state); the model level is not.
-
-**Trigger**: `train_and_eval.py`'s `FIXED_SEEDS[seed_offset+i]` rotation
-(pre-fix), or any launcher that picks a fresh seed per chunk
-(`seed = randint(...)`, `seed = run_idx`, etc.).
+## §12 - No mid-chunk checkpoint trigger
 
-**Fix**: pin a single seed for the entire chain. `train_and_eval.py:925-952`
-now does this when `--enable-indexes-prefetch` is set:
-`invariant_seed = seed if seed is not None else FIXED_SEEDS[seed_offset]`,
-and all chunks use `invariant_seed`. For arbitrary launchers, grep for
-seed-per-chunk patterns and warn.
-
-**See also**: `agent-debug-workspace/0909-longform-failures.md` Cause A
-(the original investigation).
-
-## §13 — `every_n_epochs: 1` only, no `every_n_train_steps`
-
-**Signature**: visible — only `step=N.ckpt` (where N is one
-`limit_train_batches`-aligned boundary) on disk after many hours of
-compute, with the rest of the chain producing no new checkpoints.
+**Signature**: only epoch-boundary checkpoints exist; progress after the last
+boundary is lost when a chunk is preempted or reaches walltime.
 
-**Trigger**: `checkpoint_callback_params.every_n_train_steps: null` AND
-`every_n_epochs: 1`. With `limit_train_batches: 1000`, 1 epoch = 1000
-steps. If chunks get preempted at ~1h before reaching the next 1000-step
-boundary, NO save happens (the preemption callback's `step=N-last.ckpt` is
-the only fallback).
-
-**Fix**: add `every_n_train_steps: 50-250` (and/or
-`train_time_interval: "00:30:00"`). Lightning ORs the triggers, so all
-three can coexist.
-
-**See also**: `agent-debug-workspace/0909-longform-failures.md` Cause B.
-
-## §14 — `max_time_per_run` doesn't fire on external SIGTERM
-
-**Signature**: SLURM SIGTERM kills the job; no extra `step=N-last.ckpt`
-written; chunk progresses through 75–150 steps but loses them all on
-restart.
-
-**Trigger**: any external preemption (`svc-hwinf-cs-sched`, NODE_FAIL, QOS
-preemption, manual cancel). NeMo's `PreemptionCallback` fires only on its
-own internal timer (`max_time_per_run`).
-
-**Fix**: doesn't fix the root issue; mitigated by frequent step/time-based
-saves (§13). Set `max_time_per_run` to `<SLURM walltime - 10min>` to keep
-the internal-timer save before SLURM SIGKILLs the teardown.
-
-## §15 — `num_workers` mismatch on resume
-
-**Signature**: torchdata `StatefulDataLoader` raises a hard error at
-`load_state_dict` time, complaining the snapshot has different
-`num_workers`.
-
-**Trigger**: chain config changes `num_workers` between chunks (e.g. saved
-under `num_workers: 4`, restored with `num_workers: 8`).
-
-**Fix**: keep `num_workers` invariant across the chain. Same rule for
-`world_size` (= `num_nodes * devices_per_node`).
-
-## §16 — AIS MOSS GetBatch returns empty content for non-replicated data
-
-**Signature**: `_inject_data_into_manifest` retries with empty content; on
-old SDK shape (`info.bck`) crashes with §10 AttributeError. With the §10
-patch in place: `Error collating conversations: <object>/<archpath> from
-bucket <provider>://<bck> returned empty content` → `FallbackDataset
-received None` → `TypeError: 'NoneType' object is not subscriptable`.
-
-**Trigger**: data path is `s3://FLEURS/tarred/<lang>/...`,
-`s3://MCV/MCV4/.../<lang>/...`, etc., and the cluster's AIS doesn't have
-that data replicated. Confirmed for non-EN multilingual on IAD AIS as of
-2026-05-09.
-
-**Fix (workaround)**: set `USE_AIS_INDIVIDUAL_GETS=true` to bypass MOSS
-GetBatch and use per-object `Object.get_reader(archive_config=...).read_all()`
-(slower but works). `lhotse_resumable/lhotse/ais/batch_loader.py` implements
-this via the `force_individual=True` ctor arg.
-
-**Fix (proper)**: replicate the missing data to AIS. Quick check from
-inside an iad container:
-```python
-from aistore import Client
-import os
-c = Client(os.environ["AIS_ENDPOINT"])
-for url in ["s3://FLEURS/tarred/bg/audio_0.tar"]:
-    try:
-        print(url, c.get_object_from_url(url).head_v2().size)
-    except Exception as e:
-        print(url, "MISSING:", e)
-```
-
-**See also**: `agent-debug-workspace/0909-multiling-failures.md`.
-
-### Open investigation
-
-**Why does MOSS GetBatch return empty content for non-EN multilingual
-data?** Most likely answer: data not replicated to AIS. But worth
-confirming via the head_v2 probe above before adopting
-`USE_AIS_INDIVIDUAL_GETS` as the permanent workaround. If the data IS on
-AIS but unreadable for some other reason, a different fix is needed (and
-the lhotse fallback would benefit from raising an explicit
-`AISBatchLoaderError: object missing on AIS` instead of letting the
-empty-content path lead to a `TypeError` 6 frames down).
-
-## §17 — `indexes_root` mismatch between training YAML and prefetch script
-
-**Signature**: training startup fails with
-`FileNotFoundError: <path>/<manifest>.idx` or, in the indexed adapter,
-`ValueError: ... .idx file not found ...` from `IndexedJsonlReader._load_index`.
-
-**Trigger**: `data.train_ds.indexes_root: /tmp/idx` in YAML but
-`prefetch_indexes_to_ssd.sh` writes to `/scratch/idx`, or vice versa.
-
-**Fix**: keep both in sync. In `submit_build_indexes.py` the mirror
-defaults to `<workspace>/indexes_mirror/`; the prefetch script then pulls
-onto each node's `/tmp/idx` (the default is `/tmp/idx` per
-`prefetch_indexes_to_ssd.sh`). The training YAML's `indexes_root` must
-match the prefetch destination.
-
-## §19 — `concurrent_bucketing: true` (default) breaks resume bit-exactness
-
-**Signature**: silent. Loss curves and per-sample order across resume
-boundaries diverge from a single-run reference; no exception fires.
-Spot-check by saving `state_dict` mid-run, restoring in a fresh
-process, and asserting batches 0..K are bit-identical (the
-`MIGRATION_GUIDE.md` §3 recipe). Without the fix, you'll see byte-level
-mismatches starting from the very first restored batch.
-
-**Trigger**: any resumable training run with `force_map_dataset: true`
-and `use_stateful_dataloader: true` but `concurrent_bucketing` left at
-its default `True`.
-
-**Cause**: `DynamicBucketingSampler` spawns a daemon producer thread
-(`lhotse_resumable/lhotse/dataset/sampling/dynamic_bucketing.py:924-944`)
-that pre-pulls cuts from `self.cuts_iter` into per-bucket queues. The
-main thread is the one `StatefulDataLoader` checkpoints; the producer
-operates concurrently. At `state_dict` time, the saved cursor reflects
-the main thread's position, NOT the producer's pre-fetched cuts. On
-resume the producer is gone; its pre-fetched cuts are lost. The
-bucketing decisions and per-step batch composition diverge from the
-non-resumed run. As a side effect the same config is also not
-bit-reproducible between two fresh runs (producer scheduling is
-OS-dependent).
-
-**Fix**: set `concurrent_bucketing: false` in `data.train_ds`. NeMo
-falls through to the synchronous `_collect_cuts_in_buckets` path
-(same file, `:954-965`) which advances the iterator only from the
-main thread. Slight throughput hit during bucket warm-up; negligible
-in steady state since the bucket buffer is normally well-stocked.
-
-**Cross-refs**: `option-reference.md` `data.train_ds.concurrent_bucketing`
-row; `best-practices.md` Tier 1.
-
----
-
-## §20 — Iterable mode (`force_map_dataset: false`) silent under-sampling when partition signal missing
-
-**Signature**: silent. Step time looks normal but training runs through far
-fewer data points than expected; loss curves are wrong (each rank ends up
-training on a sliver of its already-sliced shard). Inspect with: take a
-fresh process under torchrun (so RANK/WORLD_SIZE are set), construct a
-`LazyIndexedManifestIterator(...)` directly without going through NeMo's
-dataloader (or with `worker_init_fn` somehow not running), and assert
-`len(list(iter(it))) == n`. Pre-fix this returned `n / world_size`.
-
-**Trigger**: previously (before the env-var signal was added), `LazyIndexedManifestIterator.__iter__`
-called `get_worker_partition()` which read RANK/WORLD_SIZE directly. Under
-torchrun, those env vars are set in the main process even in map-style mode
-— so the iterator applied partition even though the sampler was about to
-over-sample-and-discard, causing 1/world_size² effective coverage per rank.
-
-**Fix**: `worker_init_fn` now sets `LHOTSE_USE_WORKER_PARTITION=1`, and
-`get_worker_partition()` returns the trivial `(0, 1)` partition when that
-flag is absent. Map-style mode never calls `worker_init_fn`, so the flag
-stays unset and partition is bypassed. For iterable mode the NeMo dataloader
-passes `worker_init_fn` to the DataLoader (workers `num_workers>0`) or calls
-it eagerly via `_maybe_init_main_process_for_iterable()` (`num_workers=0`).
-
-**Cross-refs**: `lhotse_resumable/lhotse/dataset/dataloading.py:22` (constant
-definition), `:82` (set in `worker_init_fn`), `:139-170` (`get_worker_partition`
-checks the flag, returns `(0, 1)` if unset);
-`lhotse_resumable/test/test_partition.py::test_map_style_path_yields_all_items_under_torchrun`
-pins the regression.
-
----
-
-## §21 — Iterable mode with non-indexed source in the chain → silent duplication
-
-**Signature**: silent. Each rank reads the non-indexed source(s) in full.
-Inspect with the bit-exact verification recipe (`MIGRATION_GUIDE.md §3`) on
-a config containing a mixed-indexed chain — items from the non-indexed
-source(s) show up on every rank.
-
-**Trigger**: `force_map_dataset: false` plus a `LazyIteratorChain` mixing
-`LazyIndexedManifestIterator` (indexed) with `LazyJsonlIterator` /
-`LazyManifestIterator` (non-indexed). The chain's `is_indexed` is `False`
-when any source is non-indexed, so the chain falls back to
-`_iter_sequential` which delegates to each source's `__iter__`. Indexed
-sources partition themselves; non-indexed ones don't.
-
-**Fix**: either (a) convert the non-indexed sources to indexed via
-`submit_build_indexes.py`; (b) split the non-indexed sources into a separate
-dataloader; (c) revert to `force_map_dataset: true` for this config — its
-over-sample-and-discard dedup works regardless of source type.
-
-**Cross-refs**: `lhotse_resumable/test/test_partition.py::test_chain_mixed_indexed_non_indexed_only_indexed_partitions`
-pins the documented behaviour.
-
----
-
-## §22 — Iterable mode + `LazyIteratorMultiplexer(seed="randomized")`
-
-**Signature**: loud `ValueError: LazyIteratorMultiplexer cannot use
-seed='randomized' under multi-shard (DP rank x DataLoader worker)
-iteration: each shard would draw a different RNG state and pick a different
-source at the same step, causing the global weighted source distribution to
-drift across ranks. Use a fixed integer seed.` from
-`lhotse_resumable/lhotse/lazy.py:960-970`.
-
-**Trigger**: `force_map_dataset: false` and a multiplexer somewhere in the
-iteration graph has `seed='randomized'` (or unset and inheriting the
-default randomized seed propagation).
-
-**Fix**: pin the multiplexer's `seed` (or the top-level `shard_seed` that
-flows in) to a fixed integer. Map-style mode is unaffected since partition
-collapses to `(0, 1)` and the assertion never fires.
-
-**Cross-refs**: `lhotse_resumable/test/test_partition.py::test_multiplexer_rejects_randomized_seed_under_multishard`
-and `test_multiplexer_allows_randomized_seed_single_shard`.
-
----
-
-## §23 — Iterable mode resume topology mismatch
-
-**Signature**: loud `ValueError: LazyShuffledRange state mismatch: expected
-n=…, seed=…, shard_id=…, num_shards=…; got … Resuming with a different
-DP/worker topology is not supported — drop dataloader state if the topology
-changed.` from `lhotse_resumable/lhotse/indexing.py:507-540`. For chains
-under global shuffle: `ValueError: LazyIteratorChain global-shuffle
-partition mismatch on resume: ...`.
-
-**Trigger**: a chunk saved with `(world_size=W1, num_workers=NW1)` is
-restored under `(world_size=W2, num_workers=NW2)` where
-`W1 * NW1 != W2 * NW2` or the rank/worker_id assignment differs. Common
-sources: launcher changed `--num-nodes` or `--num-workers` between chunks,
-or elastic-cluster behaviour silently re-shuffled ranks.
-
-**Fix**: keep `(world_size, num_workers)` invariant across the chain — same
-hard contract as map-style `StatefulDataLoader` (which raises analogously).
-If you must scale, restart from a converted HuggingFace checkpoint (no
-resume of dataloader state).
-
-**Cross-refs**: `lhotse_resumable/test/test_partition.py::test_chain_globally_shuffled_topology_mismatch_on_resume`
-and `test_indexed_manifest_iterator_partition_resume_topology_mismatch_raises`.
-
----
-
-## §18 — `prefetch_indexes.py` PYTHONPATH
-
-**Signature**: `ImportError: cannot import name 'create_jsonl_index'` or
-`ModuleNotFoundError: No module named 'lhotse.indexing'` — the
-container's stock `lhotse` lacks the resumable extensions.
-
-**Trigger**: prefetch / build_indexes preamble doesn't prepend
-`lhotse_resumable/` and `NeMo_resumable/` to PYTHONPATH.
-
-**Fix**: `submit_build_indexes.py:225` does
-`export PYTHONPATH={lhotse_remote}:{code_dir}:$PYTHONPATH` before invoking
-`build_indexes.py`. Arbitrary launchers must do the same.
-
----
-
-## Cascading symptoms (NOT root causes)
-
-Distributed failures cascade — one bad rank's exception triggers a NCCL
-timeout 30 min later that kills the rest. When the loud error is one of:
-
-- `EPException what(): 'unspecified launch failure'` at `deep_ep.cpp:155`
-- `DeepEP timeout check failed: rank=X, thread=Y, value=…`
-- `Watchdog caught collective operation timeout: WorkNCCL(...)`
-
-…look upstream for the Python traceback that fired first. The DeepEP /
-NCCL chatter is cascade. The 0909-multiling chains had this exact
-pattern: `TypeError: 'NoneType' object is not subscriptable` (origin) →
-DeepEP `'unspecified launch failure'` (cascade).
+**Trigger**: checkpoint config relies only on long epoch boundaries or sparse
+validation events.
+
+**Fix**: add an appropriate step-based or time-based checkpoint trigger and keep
+resume-required checkpoints from being pruned prematurely.
+
+## §13 - Internal time guard does not catch external termination
+
+**Signature**: the runtime sends SIGTERM/SIGKILL and no final checkpoint is
+written.
+
+**Trigger**: external cancellation, node failure, preemption, or walltime signal
+bypasses the framework's graceful preemption callback.
+
+**Fix**: leave a walltime buffer for graceful stops and rely on frequent
+mid-chunk checkpoints as the primary mitigation.
+
+## §14 - Worker or world-size mismatch on resume
+
+**Signature**: `StatefulDataLoader` or indexed iterator state raises a mismatch
+error during `load_state_dict`, or restored data order is invalid.
+
+**Trigger**: chunk restores with different `num_workers`, world size, or
+rank/worker topology than the chunk that saved the checkpoint.
+
+**Fix**: keep topology invariant for a resumable chain. To change topology,
+restart from model weights without restoring dataloader state.
+
+## §15 - AIStore batch endpoint returns empty content
+
+**Signature**: batch collation receives empty content for one or more requested
+objects, often followed by a downstream `NoneType` or collation error.
+
+**Trigger**: object is not available through the batch endpoint, credentials are
+wrong, or batch and individual-object paths exercise different backend state.
+
+**Fix**: verify object availability through the exact access mode used by
+training. As a workaround, set `USE_AIS_INDIVIDUAL_GETS=true` and investigate
+backend replication/permission issues separately.
+
+## §16 - `indexes_root` points at missing node-local storage
+
+**Signature**: `FileNotFoundError` or `.idx file not found` from an indexed
+reader at startup.
+
+**Trigger**: YAML points at a node-local path such as `/tmp/idx`, but the launcher
+does not stage sidecars there before every chunk; or the staging destination does
+not match YAML.
+
+**Fix**: use a persistent shared mirror by default. If staging to node-local SSD,
+ensure the preamble runs before training in every chunk and the YAML path matches
+that destination exactly.
+
+## §17 - Concurrent bucketing breaks bit-exact resume
+
+**Signature**: silent data-order divergence across resume boundaries.
+
+**Trigger**: a background bucketing producer advances the source iterator outside
+the checkpointed main-thread state.
+
+**Fix**: set `concurrent_bucketing: false` for resumable training so only the
+checkpointed path advances the iterator.
+
+## §18 - Iterable mode partitions when partition signal is missing or wrong
+
+**Signature**: silent under-sampling or over-partitioning under distributed
+environment variables.
+
+**Trigger**: indexed iterators read rank/world environment directly instead of
+using a dataloader-worker partition signal.
+
+**Fix**: ensure partitioning is activated only by the intended worker init path.
+Map-style mode should see the trivial `(0, 1)` partition.
+
+## §19 - Iterable mode with non-indexed source in the chain
+
+**Signature**: non-indexed sources appear on every rank/worker while indexed
+sources are partitioned.
+
+**Trigger**: `force_map_dataset: false` with a chain that mixes indexed and
+non-indexed iterators.
+
+**Fix**: convert every source in the iterable chain to indexed access, or split
+or remove the non-indexed sources before launching training. Do not switch to
+map-style training to bypass this unless the user explicitly approves a
+temporary exception with the expected overhead.
+
+## §20 - Iterable mode with randomized multiplexer seed
+
+**Signature**: loud `ValueError` from the multiplexer, or silent source-weight
+drift if no guard exists.
+
+**Trigger**: each shard draws a different multiplexer RNG state and chooses a
+different source at the same logical step.
+
+**Fix**: pin multiplexer seed, usually through the top-level `shard_seed`.
+
+## §21 - Iterable resume topology mismatch
+
+**Signature**: indexed range or chain state reports `shard_id` / `num_shards` /
+`world_size` mismatch on restore.
+
+**Trigger**: a checkpoint saved under one distributed-worker topology is restored
+under another.
+
+**Fix**: keep `(world_size, num_workers)` invariant. To scale differently,
+restart without dataloader state.
+
+## §22 - Training left in map-style mode
+
+**Signature**: long startup or step-time overhead from repeated sampler/manifest
+work, especially at larger world sizes.
+
+**Trigger**: migrated training YAML keeps `data.train_ds.force_map_dataset: true`
+instead of enforcing iterable partitioning.
+
+**Fix**: set `data.train_ds.force_map_dataset: false` and make every source in
+the training iteration graph indexed and partition-compatible. If a source cannot
+yet be indexed, mark the migration not launch-ready unless the user explicitly
+approves a temporary map-style exception with the specific blocker and expected
+overhead.
+
+## §23 - Build/prefetch tool imports stock Lhotse/NeMo
+
+**Signature**: `ModuleNotFoundError`, missing `lhotse.indexing`, or import errors
+for indexed/resumable symbols.
+
+**Trigger**: build-index or prefetch command does not place the modified NeMo and
+Lhotse checkouts before stock packages on `PYTHONPATH`.
+
+**Fix**: set `PYTHONPATH` or install the correct packages so helper scripts and
+training use the same indexed/resumable implementation.
+
+## §23 - Distributed backend errors hide an earlier Python exception
+
+**Signature**: NCCL/watchdog/collective timeout or launcher-level distributed
+failure appears after one rank already logged a Python traceback.
+
+**Trigger**: one rank fails during data loading or collation; other ranks block
+in distributed work until the backend times out.
+
+**Fix**: inspect logs before the distributed timeout and identify the first
+Python exception. Treat later backend chatter as a cascade unless it is the first
+error in time.

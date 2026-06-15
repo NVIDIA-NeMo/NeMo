@@ -1,111 +1,92 @@
-# Option reference — every YAML/launcher field that interacts with the resumable path
+# Option reference - indexed + resumable Lhotse migration
 
-Field-by-field exhaustive reference. Required values, rationale, source code
-pointer, see-also link to MIGRATION_GUIDE.md and (when relevant) to the
-0909-debug docs that motivated the field.
+Field-by-field reference for YAML and launcher settings that interact with
+indexed access, `StatefulDataLoader`, distributed topology, and storage backend.
+Line numbers in local code may drift; verify against the checkout in front of
+you when producing a report.
 
-## `data.train_ds` — required for the indexed + resumable path
-
-| field | required value | purpose | see also |
-|---|---|---|---|
-| `indexed` | `true` | Routes every nested `input_cfg` source to its indexed adapter (`LazyNeMoTarredIterator(indexed=True)`, `IndexedJsonlReader`, etc.). Without this flag, the streaming/replay path is used. Defined in `LhotseDataLoadingConfig` (`NeMo_resumable/nemo/collections/common/data/lhotse/dataloader.py:261`). | MIGRATION_GUIDE.md "Step 2 — Flip two flags" |
-| `use_stateful_dataloader` | `true` | Swaps PyTorch `DataLoader` → `torchdata.StatefulDataLoader` so iterator state is checkpointed in `meta.pt` under `DataModule.train_dataloader` (3 keys: `_snapshot`, `_steps_since_snapshot`, `_iterator_finished`). Verified via `inspect_meta.py` against `step=2000.ckpt` / `step=3000.ckpt` / `step=N-last.ckpt` (see `agent-debug-workspace/nano-v3-1node-resumable-tests.md`). | `dataloader.py:272`, MIGRATION_GUIDE.md "Step 2" |
-| `force_map_dataset` | `true` (safe default) **OR** `false` (optimization for indexed-only configs at high `world_size`) | Two viable modes. **`true`**: sampler runs in the main GPU process; cross-rank dedup is over-sample-and-discard inside `DynamicBucketingSampler` (sampler generates `world_size` batches per step, picks `batches[rank]`, discards the rest). Works for any source type. Costs `W×` redundant sampler/manifest reads per step. **`false`**: sampler runs co-located with the dataset inside CPU worker subprocesses (`IterableDatasetWrapper`); sample indices are partitioned across `(DP rank × DataLoader worker)` via `LazyShuffledRange(shard_id, num_shards)`. Eliminates the `W×` redundant work — near-`W×` step-time improvement at scale. **Requires every source to be indexed** (lhotse-indexed JSONL, nemo_tarred with indexed mode, etc.); non-indexed sources mixed into the chain are NOT deduplicated and may be silently duplicated across ranks. The partition is gated by the `LHOTSE_USE_WORKER_PARTITION` env var that `worker_init_fn` sets (and `dataloader.py:_maybe_init_main_process_for_iterable` sets eagerly for the `num_workers=0` case). | `dataloader.py:247-279`, `lhotse_resumable/lhotse/indexing.py:396-571` (`LazyShuffledRange` with `(shard_id, num_shards)`; constructor L423, `state_dict` L497, `load_state_dict` L507 validates topology), `lhotse_resumable/lhotse/lazy.py:548+` (`LazyIndexedManifestIterator.__iter__` at L606), `failure-modes.md §20-§23` |
-| `indexes_root` | local SSD path (e.g. `/tmp/idx`) matching `prefetch_indexes.py` destination | Where the prefetched `.idx` mirror is read from at training time. Mirror tree preserves the data-file paths (`<indexes_root>/lustre/...` mirroring the blend's lustre paths). Resolved by `lhotse.indexing.index_file_path(data_path, indexes_root=...)` (canonical), at `lhotse_resumable/lhotse/indexing.py`. **Must match the prefetch script's destination**, otherwise manifests fail to find their `.idx` neighbors at training time. | MIGRATION_GUIDE.md "keep indexes on a separate fast disk" |
-| `seed` | a fixed integer, **invariant across chunks** | Controls Python/numpy/torch global RNG via `pl.seed_everything(seed)` at chunk start. **MUST NOT change on resume**, otherwise dropout / aux-loss / random-init diverge across chunks even though `StatefulDataLoader.load_state_dict` restores sampler state correctly. The 0909 longform chains (see `agent-debug-workspace/0909-longform-failures.md`) hit this exact silent-corruption bug because `train_and_eval.py` rotated `FIXED_SEEDS[seed_offset+i]` per chunk. Fixed in `train_and_eval.py:925-952` — when `--enable-indexes-prefetch` is set, all chunks use the same seed. | MIGRATION_GUIDE.md "Operational constraints" §1, `0909-longform-failures.md` Cause A |
-| `shard_seed` | a fixed integer (NOT `"randomized"`) under either `force_map_dataset` value | Sampler RNG for `DynamicBucketingSampler`. **Map path**: cross-rank dedup is by index slicing (`rank=global_rank, world_size=world_size` at `dataloader.py:680-681`); per-rank seed differentiation is unneeded, and `"randomized"` adds worker-PID-derived seeding that breaks across resume boundaries. NeMo's `dataloader.py:556-572` auto-overwrites `shard_seed: "randomized"` → `shard_seed: <seed>` with a warning when `force_map_dataset + use_stateful_dataloader` are both true. **Iterable path** (`force_map_dataset: false`): the multiplexer inside the sampler graph (`LazyIteratorMultiplexer`) requires all DP ranks to pick the same source at each multiplex step so the global weighted source distribution stays coherent. `seed='randomized'` would derive a different per-(rank, worker) seed and break this — `LazyIteratorMultiplexer.__iter__` (`lhotse_resumable/lhotse/lazy.py:960-970`) raises `ValueError` if `seed='randomized'` under multi-shard partition. Either mode: pin `shard_seed: <int>` explicitly in YAML. | `0909-summary.md` R2, `dataloader.py:543-572`, `failure-modes.md §22` |
-| `num_workers` | match between save and restore | `StatefulDataLoader` hard requirement: changing `num_workers` between save and restore raises a hard error from torchdata. Document the value in the YAML / launcher header. | MIGRATION_GUIDE.md "Operational constraints" §1 |
-| `concurrent_bucketing` | **`false`** when `force_map_dataset + use_stateful_dataloader` are both true | The default (`true`) spawns a `daemon=True` producer thread inside `DynamicBucketingSampler` (`lhotse_resumable/lhotse/dataset/sampling/dynamic_bucketing.py:924-944`) that pre-pulls cuts from the source iterator and fills per-bucket queues. The main thread (which `StatefulDataLoader` checkpoints) and the producer thread BOTH advance `self.cuts_iter`, so the cursor saved at `state_dict` time does NOT reflect the cuts the producer has already pre-fetched. On resume, the next-cut cursor is correct from the main thread's view but the producer's pre-fetched cuts are gone, so the bucketing/order across resume boundaries is nondeterministic. Also breaks single-run bit-exact reproducibility between two runs of the same config because the producer's scheduling is OS-thread-dependent. Set `concurrent_bucketing: false` in `data.train_ds` for any resumable run. | `lhotse_resumable/lhotse/dataset/sampling/dynamic_bucketing.py:924-944`, `failure-modes.md §<new>`, observed in `0909-multiling-*` (2026-05-11) |
-| `force_iterable_dataset` | unset (or `false`) | Mutually exclusive with `force_map_dataset: true`. `dataloader.py:278-280` asserts `not (force_map_dataset and force_iterable_dataset)`. | `dataloader.py:278-280` |
-| `force_finite` | unset / `false` (training only) | Setting this to `true` would cap the infinite-mux behavior that training requires. Only validation_ds needs `force_finite: true`. | MIGRATION_GUIDE.md "Operational constraints" §4 |
-| `extra_fields` (on any nested `nemo` / `nemo_tarred` / `multimodal_conversation`) | unset | `LazyNeMoTarredIterator(indexed=True)` raises `RuntimeError` if `extra_fields` is set (`nemo_adapters.py:485-487`: "LazyNeMoTarredIterator(indexed=True) does not support 'extra_fields'"). Same constraint on `LazyNeMoIterator` at `nemo_adapters.py:148-152`. Pre-process the manifest offline. | `nemo_adapters.py:148-152, 485-487` |
-| `slice_length` (on any nested `nemo` / `nemo_tarred`) | unset | Slicing rewrites cuts in a way that has no stable index. The dataloader still threads `slice_length` through (`dataloader.py:253-256`, `cutset.py:413, 436, 662, 678, 693, 717, 1506, 1551`), but the indexed reader does not honor it. Pre-process offline if needed. | MIGRATION_GUIDE.md "Prerequisites" §3 |
-| compressed `.jsonl.gz` / `.tar.gz` paths | reject | `lhotse.indexing.indexed_path_kind` returns `None` for any path matching `_is_compressed_path` (`lhotse_resumable/lhotse/indexing.py:88-110`); `validate_indexed_access` raises `ValueError("...requires uncompressed JSONL or tar...")`. Re-extract or re-export with `compress_jsonl=False` for Shar. | MIGRATION_GUIDE.md "Prerequisites" §1, `lhotse/indexing.py:88-110, 130-135` |
-| `pipe:` paths (`pipe:cmd \| cmd`) | reject | Pipe commands aren't seekable. `validate_indexed_access` raises `ValueError("...requires seekable data sources...")`. | `lhotse/indexing.py:126-128` |
-| `.json` extension on a JSONL manifest | accepted | NeMo ships many ASR/SLM manifests as `*.json` (one JSON object per line). `lhotse/indexing.py:99-107` accepts both `.json` and `.jsonl` since the indexer only relies on newline-separated records. (Pretty-printed multi-line JSON would produce a bogus index, but that's not a supported NeMo manifest layout.) | `lhotse/indexing.py:99-107` |
-
-## Iterable-mode partition — only when `force_map_dataset: false`
-
-These concerns only apply when you've opted into the iterable path for
-indexed sources. Skip this whole section if you've kept the default
-`force_map_dataset: true`.
-
-| concern | requirement | purpose | see also |
-|---|---|---|---|
-| `LHOTSE_USE_WORKER_PARTITION` env var | set automatically by `worker_init_fn`; never set manually | Signals to `get_worker_partition()` that worker-level partition is active. In iterable mode NeMo passes `worker_init_fn` to the DataLoader (workers `num_workers>0`) or calls it eagerly in `_maybe_init_main_process_for_iterable()` (`num_workers=0`). Map-style mode never calls `worker_init_fn`, so the signal stays unset and partition collapses to `(0, 1)` — this is what keeps the map-style path correct under torchrun (where RANK/WORLD_SIZE are already in env). | `lhotse_resumable/lhotse/dataset/dataloading.py:22` (constant), L82 (set in `worker_init_fn`), L139-170 (`get_worker_partition`), `failure-modes.md §20` |
-| All sources in the iteration graph are indexed | required | The partition is implemented in `LazyShuffledRange` and reaches `LazyIndexedManifestIterator` and `LazyIteratorChain._iter_globally_shuffled`. Non-indexed sources (plain `LazyJsonlIterator`, `LazyManifestIterator`) do NOT partition; they yield all items on every rank. If the chain mixes indexed + non-indexed sources, the non-indexed parts are duplicated across ranks — silently. Inspect every nested input_cfg entry to confirm it lands on an indexed adapter (`indexed: true` cascades, but compressed paths / `pipe:` paths / certain blends fall back to non-indexed). | `lhotse_resumable/lhotse/lazy.py` (`LazyShuffler` / `LazyMapper` / `LazyFilter` / `LazyRepeater` all delegate to the source's `__iter__`, so partition propagates), `failure-modes.md §21` |
-| `LazyIteratorMultiplexer.seed` | fixed integer (NOT `"randomized"`) | Under multi-shard partition, all ranks must pick the same source at each step (else the global weighted source distribution drifts across ranks). The multiplexer asserts this at iter time. Map-style mode is unaffected (partition is `(0, 1)` so the assertion never fires). | `lhotse_resumable/lhotse/lazy.py:960-970`, `failure-modes.md §22` |
-| Resume topology (DP rank × num_workers) | invariant between save and restore | `LazyShuffledRange.load_state_dict` validates `(n, seed, shard_id, num_shards)`; `LazyIteratorChain._iter_globally_shuffled` validates `(shard_id, num_shards)` against saved values. Topology mismatch raises a loud `ValueError`. The same hard contract as map-style `StatefulDataLoader` — but check fires earlier (at iterator level) and includes the worker dimension. | `lhotse_resumable/lhotse/indexing.py:497-540` (`LazyShuffledRange.state_dict` / `load_state_dict`), `failure-modes.md §23` |
-| `num_workers` | invariant; same as map-style | StatefulDataLoader contract. Additionally: `num_shards = world_size * num_workers`, so `num_workers` is part of the partition identity. Changing it would force a different shard assignment per rank. | MIGRATION_GUIDE.md "Operational constraints" §1 |
-| Mixed indexed/non-indexed chain | warn | Non-indexed sources in the chain are duplicated across ranks (see "All sources indexed" above). Either move them to a separate dataloader, convert them to indexed format, or revert to `force_map_dataset: true` for that config. | `failure-modes.md §21` |
-
-## `data.validation_ds` — finite map access required
+## `data.train_ds`
 
 | field | required value | purpose | see also |
 |---|---|---|---|
-| `indexed` | `true` (inherited from train_ds OR per-validation set) | Same as `data.train_ds.indexed`. | MIGRATION_GUIDE.md Step 2 |
-| `force_map_dataset` | `true` | Map-style finite access. | MIGRATION_GUIDE.md Step 2 |
-| `force_finite` | `true` | **Caps the infinite-mux behavior that training uses**. Without this, validation loops forever (the multiplexer never raises StopIteration). MIGRATION_GUIDE.md "Operational constraints" §4 calls this out explicitly. | MIGRATION_GUIDE.md "Operational constraints" §4 |
-| `use_stateful_dataloader` | `false` (or `true`, doesn't matter) | Validation never resumes from mid-eval; eval is run-to-completion. Either value works. | — |
-| `indexes_root` | same path as train_ds | Same — must match the prefetch destination. | — |
-| `seed` / `shard_seed` | same fixed integers as train_ds (or any fixed value) | Determinism for eval. Doesn't need to be invariant across chunks the way training does. | — |
+| `indexed` | `true` | Routes supported sources through indexed adapters such as `IndexedJsonlReader` and indexed NeMo-tar readers. Without it, streaming/replay behavior remains active. | `nemo.collections.common.data.lhotse.dataloader`, `lhotse.indexing` |
+| `use_stateful_dataloader` | `true` | Uses `torchdata.StatefulDataLoader` so dataloader iterator state can be saved in Lightning checkpoints. | NeMo Lhotse dataloader config |
+| `force_map_dataset` | `false` for training | Enforces iterable partitioning across data-parallel ranks and workers. Map-style training has too much sampler/manifest overhead; if a source cannot yet be indexed, report the migration as not launch-ready unless the user explicitly approves a temporary exception. | failure-modes §§18-22, conflict-matrix |
+| `indexes_root` | stable filesystem mirror, or node-local path populated before startup | Tells indexed readers where to find `.idx` sidecars. Prefer a persistent shared mirror. Use `/tmp/idx` only when the launcher stages indexes there before training. | failure-modes §16 |
+| `seed` | fixed integer, invariant across chunks | Lightning reseeds Python/NumPy/Torch at chunk start. Rotating this across resumable chunks breaks model-level bit-exactness even when sampler state restores correctly. | failure-modes §11 |
+| `shard_seed` | fixed integer, not `"randomized"` | Controls sampler/multiplexer RNG. Randomized shard seeds can diverge across resume and are invalid for multi-shard iterable partitioning. | conflict-matrix |
+| `num_workers` | invariant between save and restore | `StatefulDataLoader` and iterable partition state depend on worker topology. | failure-modes §14, §21 |
+| `concurrent_bucketing` | `false` for resumable training | Background bucketing producers can advance source iterators outside the checkpointed main-thread state. | failure-modes §17 |
+| `force_iterable_dataset` | unset or compatible with `force_map_dataset: false` | Do not enable mutually exclusive dataset modes. The training target is iterable partitioning through `force_map_dataset: false`. | conflict-matrix |
+| `force_finite` | unset/false for training | Training usually needs infinite or epoch-controlled iteration; finite mode is normally for validation. | validation section |
+| `extra_fields` on indexed NeMo entries | unset | Indexed NeMo adapters cannot preserve arbitrary runtime field rewrites. Preprocess manifests instead. | failure-modes §2 |
+| `slice_length` on indexed entries | unset | Slicing rewrites cut/audio access and has no stable index unless preprocessed. | failure-modes §2 |
+| compressed `.jsonl.gz` / `.tar.gz` paths | reject for indexed sidecars | Indexing requires seekable uncompressed JSONL/tar inputs. Re-export or unpack first. | failure-modes §1 |
+| `pipe:` paths | reject | Pipe commands are not seekable. Materialize data first. | `lhotse.indexing` |
 
-## `exp_manager` — Lightning resume contract
+## Training iterable partition (`force_map_dataset: false`)
 
-| field | required value | purpose | see also |
-|---|---|---|---|
-| `resume_if_exists` | `true` | Lightning auto-finds the latest `step=N-last.ckpt` and loads model + optimizer + dataloader state from DCP shards + `meta.pt`. Without this, every chunk starts from scratch. | MIGRATION_GUIDE.md "Lightning resume contract" |
-| `resume_ignore_no_checkpoint` | `true` | First chunk runs without prior ckpt; without this flag, the first run errors. | — |
-| `checkpoint_callback_params.every_n_train_steps` | small int (50–250 recommended) | Mid-chunk saves so external preemption (`svc-hwinf-cs-sched`, NODE_FAIL, etc.) doesn't waste 80–150 step progress. The 0909 longform chains (`0909-longform-failures.md` Cause B) accumulated **0** progress past `step=1000` because the only save trigger was `every_n_epochs: 1` and chunks averaged 75–150 steps after preemption. | `0909-longform-failures.md` Cause B |
-| `checkpoint_callback_params.train_time_interval` | `"00:30:00"` (suggested) | Belt-and-braces wall-clock save trigger. Lightning ORs the per-step and per-time triggers, so both can coexist. | best-practices.md §4 |
-| `checkpoint_callback_params.every_n_epochs` | `null` or `1` | If you keep `every_n_epochs: 1`, *also* set `every_n_train_steps`; do not rely on epochs alone. | — |
-| `checkpoint_callback_params.save_top_k` | `-1` (no pruning) | Prevents Lightning from deleting old checkpoints when `monitor` doesn't fire. With `every_n_train_steps + every_n_epochs` saves you want all of them on disk. | — |
-| `max_time_per_run` | `<SLURM walltime - 10min>` | NeMo's `PreemptionCallback` fires here, leaving a 10-minute buffer for the teardown tail. **Does NOT fire on external SIGTERM** (only on its own timer) — external cancels can still lose progress. Mitigated by frequent step/time-based saves. | debug-cluster-run §6(11) |
+This is the required training mode for efficient indexed/resumable runs. Do not
+ship a migrated training config in map-style mode. If an indexing blocker
+prevents iterable partitioning, mark the migration not launch-ready unless the
+user explicitly approves a temporary exception.
 
-## `trainer` — Lightning + parallelism
+| concern | requirement | purpose |
+|---|---|---|
+| Worker partition signal | Set only by NeMo/Lhotse worker init path | Prevents map-style mode from accidentally partitioning under `torchrun` environment variables. |
+| All sources indexed | required | Non-indexed sources do not partition and will be duplicated across ranks/workers. |
+| Multiplexer seed | fixed integer | All shards must pick the same source at each multiplexing step to preserve global weighted distribution. |
+| Resume topology | invariant `(world_size, num_workers)` | Saved iterator state validates topology on restore. |
 
-| field | constraint | purpose | see also |
-|---|---|---|---|
-| `devices` / `num_nodes` | match between save and restore | StatefulDataLoader is sensitive to `world_size`; changing it between save and restore raises a hard error. To scale a chain mid-flight you must restart from a converted HuggingFace checkpoint (no resume). | MIGRATION_GUIDE.md "Operational constraints" §1 |
-| `max_steps` | unchanged across chain | Chain semantics: each chunk advances `global_step`; `max_steps` is the chain target. Don't reduce it mid-chain or Lightning will think training is finished. | — |
-| `limit_train_batches` | usually `1000` | Defines an "epoch". With `every_n_epochs: 1` this is also the only save trigger if `every_n_train_steps` is unset. See `every_n_train_steps` above. | — |
+## `data.validation_ds`
 
-## Launcher contract — `train_and_eval.py` and equivalents
+| field | required value | purpose |
+|---|---|---|
+| `indexed` | `true` when validation sources need indexed access | Uses the same sidecar/index readers as training. |
+| `force_map_dataset` | `true` | Validation should be finite and deterministic; map-style access is simpler. |
+| `force_finite` | `true` | Prevents infinite validation loops when the training blend is infinite. |
+| `use_stateful_dataloader` | usually `false` | Validation is normally run to completion and not resumed mid-loop. |
+| `indexes_root` | same mirror as training unless intentionally separate | Validation readers need the same sidecars. |
+| `seed` / `shard_seed` | fixed integers | Keeps validation deterministic. |
 
-| concern | requirement | purpose | see also |
-|---|---|---|---|
-| Per-chunk seed | **invariant across all chunks of a chain** when `use_stateful_dataloader: true` | StatefulDataLoader contract: model RNG must be the same on resume so dropout/aux-loss/random-init are bit-exact across chunks. The 0909 longform chains hit this with `FIXED_SEEDS[0..9]` rotation. Fixed in `train_and_eval.py:925-952`: when `--enable-indexes-prefetch` is set, `seeds = [seed_or_default] * num_runs`. The skill should grep for any `FIXED_SEEDS[i]` / `seed = randint(...)` / `seed=run_idx` patterns in arbitrary launchers and warn. | `train_and_eval.py:925-952`, `0909-longform-failures.md` Cause A |
-| Indexes prefetch preamble | every chunk's container startup runs `prefetch_indexes.py` (or the equivalent rsync) onto each node's local SSD, populating `<indexes_root>` before `salm_train.py` starts | `train_and_eval.py:577-578` does this via `prefetch_indexes_to_ssd.sh`; if missing, training reads `.idx` files from lustre on every `__getitem__` call (slow; defeats the purpose). | `train_and_eval.py:577-578` |
-| `num_workers`, `world_size` | invariant across chain | Hard requirement of StatefulDataLoader (see above). Launcher should NOT change `--num-nodes` or `--num-workers` between chunks. | MIGRATION_GUIDE.md "Operational constraints" §1 |
-| `--bypass-nvidia-hook` for cpu partitions | required on clusters whose `cpu_partition` lacks `nvidia-container-cli` (e.g. NRT) | Without it, enroot's `98-nvidia.sh` hook hard-fails the container start on cpu partitions of those clusters. Sets `--export=ALL,NVIDIA_VISIBLE_DEVICES=void` on the sbatch line. Used by `submit_build_indexes.py:122-129, 240-245` and `train_and_eval.py`. | `submit_build_indexes.py:122-129` |
-| PYTHONPATH | must include both `lhotse_resumable/` and `NeMo_resumable/` | Without it, the in-container default `lhotse` / `nemo` are loaded and lack the resumable code. `submit_build_indexes.py:225` does this; arbitrary launchers must too. | `submit_build_indexes.py:225` |
+## Lightning / trainer settings
 
-## AIStore env vars
+| field | recommendation | purpose |
+|---|---|---|
+| `resume_if_exists` or equivalent | enabled for resumable chains | Ensures later chunks restore checkpointed model, optimizer, scheduler, and dataloader state. |
+| `resume_ignore_no_checkpoint` or equivalent | enabled for first chunk when supported | Allows chunk 1 to start without an existing checkpoint. |
+| Checkpoint cadence | frequent step- or time-based saves | External termination may bypass graceful preemption callbacks. Avoid losing an entire chunk. |
+| `save_top_k` / pruning policy | do not prune required resume checkpoints | Resume needs recent checkpoints and dataloader metadata. |
+| `max_time_per_run` / walltime guard | comfortably below runtime walltime | Internal graceful-stop callbacks need teardown time. |
+| `devices`, `num_nodes`, distributed topology | invariant across resume | Dataloader state is topology-sensitive. To scale differently, restart without dataloader state. |
+| `max_steps` | stable across chain | Later chunks continue global step accounting. |
 
-| env var | required when | purpose | see also |
-|---|---|---|---|
-| `USE_AIS_GET_BATCH` | training data is on `s3://`, `ais://`, or `http(s)://` AND the cluster has `AIS_ENDPOINT` | Skip eager `IndexedTarMemberReader` per shard; defer audio fetch to AIS at sample time via `AISBatchLoader`. Read at `nemo_adapters.py:459`. | aistore-vs-non-aistore.md |
-| `USE_AIS_INDIVIDUAL_GETS` | non-EN-replicated multilingual data on AIS, or any time MOSS GetBatch returns empty content | Routes through per-object `Object.get_reader(archive_config=...).read_all()` instead of MOSS GetBatch (the `force_individual` flag on `AISBatchLoader`). Slower but bypasses MOSS-side issues, and on `shar_ptr` sources falls back to per-object byte-range `get_reader` so non-gzipped lhotse-shar cuts work even when MOSS lacks byte-range support. `lhotse_resumable/lhotse/ais/batch_loader.py`. | failure-modes.md §16 |
-| `AIS_ENDPOINT` | always when AIStore in play | The AIS proxy URL. IAD: `http://asr.iad.oci.aistore.nvidia.com:51080`. Set in `cluster_configs/<cluster>.yaml` under `env_vars`. | `cluster_configs/iad.yaml:31` |
-| `aistore` SDK version | ≥ 1.17 | `lhotse_resumable/lhotse/ais/batch_loader.py:75` requires `aistore>=1.17.0`. As of 2026-05-10, latest is 1.23.0. The `_moss_attrs` normalizer at `batch_loader.py:81` handles both MossIn (≤1.18) and MossOut (≥1.20) attribute namings. | `lhotse_resumable/lhotse/ais/batch_loader.py:75-89` |
+## Launcher contract
+
+| concern | requirement | purpose |
+|---|---|---|
+| Per-chunk seed | invariant for all chunks in a resumable chain | Prevents model-level RNG divergence across resumes. |
+| Index mirror availability | `.idx` sidecars exist before training starts | Indexed readers fail or fall back to slow behavior when sidecars are missing. |
+| Optional index staging | YAML `indexes_root` matches the staged destination | Node-local paths such as `/tmp/idx` must be populated in every chunk. |
+| `num_workers`, `world_size` | unchanged between save and restore | Required by stateful dataloading and iterable partitioning. |
+| Python path / package selection | loads the NeMo and Lhotse versions with indexed/resumable support | Avoids accidentally using stock packages without the required code. |
+| Container/runtime hooks | compatible with available CPU/GPU runtime | CPU-only index builds may need different container settings than GPU training. |
+
+## AIStore environment
+
+| env var | required when | purpose |
+|---|---|---|
+| `AIS_ENDPOINT` | any `s3://` / `ais://` source is read through AIStore | Points Lhotse/AIS clients at the proxy. |
+| `USE_AIS_GET_BATCH` | remote tar/audio sources should be fetched lazily by batch | Avoids eager tar-reader construction for every remote shard. |
+| `USE_AIS_INDIVIDUAL_GETS` | batch endpoint is unavailable or returns empty content | Falls back to per-object reads. Slower but useful for backend-specific failures. |
+| `aistore` SDK | AIStore backend in builder/training container | Required by Lhotse AIStore access paths. |
 
 ## Index building
 
-| concern | requirement | purpose | see also |
-|---|---|---|---|
-| Uncompressed sources only | `.jsonl` / `.tar` (NOT `.jsonl.gz` / `.tar.gz`); Shar `cuts.*.jsonl` not `cuts.*.jsonl.gz` | See `lhotse/indexing.py:88-110, 130-135`. AMI's stock distribution as `.jsonl.gz` Shar fails — drop AMI from the blend until an uncompressed export is available. | `data_blends/iad/granary1p1-en-resumable.yaml` header comment, MIGRATION_GUIDE.md "Prerequisites" §1 |
-| No `extra_fields` | every `nemo` / `nemo_tarred` / `multimodal_conversation` entry must omit `extra_fields` | `LazyNeMoTarredIterator(indexed=True)` raises explicitly. | `nemo_adapters.py:485-487` |
-| No `slice_length` | every `nemo` / `nemo_tarred` entry must omit `slice_length` | Sliced cuts have no stable index. | dataloader.py:253-256 |
-| Workers | 95 (on 96-cpu node) for 80k–400k files; 48 if OOM | Tar parsing is GIL-bound (process executor required). 96-cpu / 95-worker / `--exclusive` is the sweet spot. ProcessPool OOM signature: `concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly`. Drop to 48 workers if 95 OOMs. | failure-modes.md §8 |
-| Time | ~90 min for 80k files; ~2-3 h for 360k files | `submit_build_indexes.py:131` defaults `time_min=04:00:00`. | submit_build_indexes.py:131 |
-| Mirror destination | lustre under `<workspace>/indexes_mirror/` (writable, fast enough for prefetch source); NOT S3 | `prefetch_indexes.py` then pulls onto each node's local SSD at `/tmp/idx` (or whatever `indexes_root` resolves to). | submit_build_indexes.py:88-92, prefetch_indexes.py |
-| `aistore` SDK in builder container | required if any source is `s3://` / `ais://` | `submit_build_indexes.py:227` does `pip install --quiet --disable-pip-version-check aistore`. Without it, lhotse falls back to smart_open's AWS S3 client and fails with `io.UnsupportedOperation: seek`. Pin the SDK version range to match the lhotse code (`aistore>=1.17`). | submit_build_indexes.py:218-227 |
-| Reusability | once per blend; reuse across experiments | Already-indexed files are skipped; `--force` to rebuild. Re-runs are safe. | build_indexes.py:386 |
-
-## Cluster info
-
-| concern | requirement | purpose | see also |
-|---|---|---|---|
-| `cluster_configs/<cluster>.yaml` must exist | always | `submit_build_indexes.py` and `train_and_eval.py` read SSH creds, partition, container, env_vars from it. | TEMPLATE.yaml |
-| `nvidia-container-cli` on cpu partitions | NRT lacks it (cpu / cpu_interactive / cpu_datamover); IAD has it | If absent, use `--bypass-nvidia-hook` (sets `--export=ALL,NVIDIA_VISIBLE_DEVICES=void`). | submit_build_indexes.py:122-129 |
-| `AIS_ENDPOINT` env var | required when AIStore is the audio backend | Set in `env_vars:` block of cluster config. IAD has it; lustre-only clusters (typically NRT) won't. | cluster_configs/iad.yaml:31 |
+| concern | recommendation | purpose |
+|---|---|---|
+| Source format | uncompressed, seekable JSONL/tar or supported Shar cuts | Sidecar offsets must map to stable byte positions. |
+| Workers | tune for memory and storage backend | Large manifests/tars plus many workers can OOM. Reduce workers or split blends. |
+| Mirror destination | persistent shared filesystem when available | Reuse sidecars across runs and avoid per-launch rebuilds. |
+| Remote sources | verify credentials/backend before building | Indexing remote data exercises storage credentials and byte-range access. |
+| Reusability | build once per source path set | Existing sidecars can be reused while source contents and paths are unchanged. |

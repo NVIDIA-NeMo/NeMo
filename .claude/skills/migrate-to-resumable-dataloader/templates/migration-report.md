@@ -1,117 +1,98 @@
-# Migration report — `<config-stem>`
+# Migration report - `<config-stem>`
 
 - **Generated**: <YYYY-MM-DD HH:MM>
 - **Source YAML**: `<path/to/source-config.yaml>`
 - **Patched YAML**: `<path/to/source-config-resumable.yaml>`
 - **Source blend** (if inspected): `<path/to/blend.yaml>`
 - **Patched blend** (if emitted): `<path/to/blend-resumable.yaml>`
-- **Launcher** (if inspected): `<path/to/launcher.py>` (or "skipped — no launcher provided")
-- **Cluster**: `<cluster>` (AIStore: yes/no)
+- **Launcher** (if inspected): `<path/to/launcher>` (or "skipped - no launcher provided")
+- **Storage workflow**: <filesystem-only | AIStore/remote | mixed | unknown>
 
 ## Summary
 
-<One paragraph: what was changed, severity counts (e.g. "1 fatal, 4 errors,
-3 warnings, 2 notes"), whether the patched YAML is ready-to-launch or
-requires further user action.>
+<One paragraph: what changed, severity counts, whether the patched YAML is ready
+to launch, and what manual work remains.>
 
 ## Findings
 
 ### Fatal (must fix; auto-patching not possible)
 
-- _none_  — OR —
-- **`<field-path>`** (`<file>:<line>`): <one-paragraph explanation>
+- _none_ - OR -
+- **`<field-or-path>`** (`<file>:<line>`): <explanation>
   - **Current**: `<value>`
   - **Recommended**: `<value>` (or "manual rewrite")
-  - **Why fatal**: <reason auto-patch isn't possible>
-  - **References**: [option-reference §X], [failure-modes §Y]
+  - **Why fatal**: <reason auto-patch is unsafe or impossible>
+  - **References**: <reference file/section>
 
 ### Errors (auto-patched; review the diff)
 
 - **`data.train_ds.indexed`** (`<file>:<line>`): <description>
-  - **Was**: `false` → **now**: `true`
-  - **Why**: <one paragraph>
-  - **References**: [option-reference §train_ds.indexed]
+  - **Was**: `false` -> **now**: `true`
+  - **Why**: <rationale>
+  - **References**: <reference file/section>
 
-- _(more)_
+### Warnings (review manually)
 
-### Warnings (auto-patched OR commented inline; verify intent)
+- **`<field-or-path>`** (`<file>:<line>`): <description>
+  - **Current**: `<value>`
+  - **Recommended**: `<value>`
+  - **Why**: <rationale>
+  - **References**: <reference file/section>
 
-- **`data.train_ds.shard_seed`** (`<file>:<line>`): <description>
-  - **Was**: `"randomized"` → **now**: `42`
-  - **Why**: NeMo `dataloader.py` would auto-overwrite at runtime with a
-    `WARNING` log; pinning at the YAML layer makes intent obvious to
-    reviewers and avoids the runtime warning.
-  - **References**: [conflict-matrix row 3], [failure-modes §11]
+### Notes (informational)
 
-- _(more)_
+- **`<field-or-path>`** (`<file>:<line>`): <description>
 
-### Notes (informational; no patch)
+## Dedup Mode
 
-- **`data.validation_ds.use_stateful_dataloader`** (`<file>:<line>`):
-  Not strictly required for validation (eval doesn't checkpoint), but
-  setting it `false` matches the working 1-node smoke recipe. No change
-  needed.
+<One paragraph: confirm training uses `force_map_dataset: false`; if not, mark
+the migration not launch-ready and list the blocker or explicit user exception.>
 
-- _(more)_
+- **Training target**: `force_map_dataset: false`. This enforces iterable
+  partitioning and avoids map-style sampler/manifest overhead.
+- **Validation/test target**: `force_map_dataset: true` unless intentionally
+  testing iterable behavior; finite deterministic validation is simpler in
+  map-style mode.
+- **Blocker/exception**: if training still uses `force_map_dataset: true`, mark
+  the migration not launch-ready unless the user explicitly approved an
+  exception; list the unindexed source or runtime blocker, expected overhead, and
+  work needed to move back to iterable training.
 
-## Dedup mode
+For training iterable mode, list:
 
-<One paragraph: which `force_map_dataset` value this config uses and why.>
-
-- **`force_map_dataset: true`** (safe default; over-sample-and-discard
-  inside `DynamicBucketingSampler`) — works for any source type. Costs
-  `W×` redundant sampler/manifest I/O per step.
-- **`force_map_dataset: false`** (iterable + worker partition; suitable
-  for indexed-only configs at high `world_size`) — sample indices are
-  partitioned across `(DP rank × DataLoader worker)` via
-  `LazyShuffledRange(shard_id, num_shards)`. Near-`W×` step-time
-  improvement at scale. Audit required: every source must be indexed
-  (`failure-modes.md §21`), every `LazyIteratorMultiplexer.seed` must
-  be a fixed integer (§22), `(world_size, num_workers)` invariant
-  across the chain (§23).
-
-If `false` was selected, list:
 - Sources confirmed indexed: <list>
 - Multiplexer seeds confirmed integer: <list>
-- World-size / num-workers commitment: `<W>` × `<NW>` for the entire
-  chain.
+- World-size / num-workers commitment: `<W>` x `<NW>` for the full chain
 
-## Cross-cuts
+## Data Blend Audit
 
-### Data blend audit
+<List unindexable entries such as compressed manifests/tars, `pipe:` paths,
+unsupported `extra_fields`, `slice_length`, or mixed indexed/non-indexed chains.>
 
-<Drop in `references/failure-modes.md` §1 / §2 callouts: blend entries with
-`.jsonl.gz`, `.tar.gz`, `extra_fields`, `slice_length`. List the entries
-that were removed from the patched blend and the per-entry rationale.>
-
-| corpus | reason for exclusion | upstream fix |
+| entry | reason | upstream fix |
 |---|---|---|
-| ami | `cuts: *.jsonl.gz` (compressed Lhotse Shar) | re-export with `compress_jsonl=False` OR convert to `nemo_tarred` |
-| _(more)_ | _(more)_ | _(more)_ |
+| `<source>` | compressed cuts/manifests | re-export as uncompressed seekable files |
+| `<source>` | unsupported `extra_fields` | preprocess fields into the manifest |
 
-### Launcher review
+## Launcher Review
 
-<If launcher script provided: list grep findings. Otherwise: "skipped".>
+<If launcher was inspected, list findings. Otherwise write "skipped".>
 
-- **Per-chunk seed rotation**: <not detected | DETECTED at `<file>:<line>` —
-  the launcher pulls from a FIXED_SEEDS-like array; this MUST be pinned
-  to a single value when the resumable path is on. See
-  `failure-modes.md §12`. Manual fix required.>
-- **Prefetch preamble wired**: <yes / NO — `--enable-indexes-prefetch`
-  flag not set; manual addition needed. See `option-reference.md §launcher
-  flags`.>
-- **`--bypass-nvidia-hook`**: <not needed | needed for `<cluster>` cpu
-  partition — see `failure-modes.md §9`>
+- **Per-chunk seed rotation**: <not detected | detected at file:line; must pin one seed>
+- **Index access wired**: <persistent mirror | node-local staging | missing>
+- **AIStore batch audio fetch**: <needed and enabled | not needed | missing>
+- **Topology invariance**: <verified | not verifiable | violated>
+- **Python path/package selection**: <verified | not verifiable | missing>
 
-### AIStore vs lustre
+## Storage Workflow
 
-<One paragraph: which workflow this migration follows (per
-`aistore-vs-non-aistore.md` decision tree), and any cross-cluster
-caveats.>
+<One paragraph: filesystem-only vs AIStore/remote workflow, whether manifests and
+indexes are local/shared filesystem paths, and whether any prefetch/staging is
+required.>
 
-## Patched output diff
+## Patched Output Diff
 
-### `<config>.yaml` → `<config>-resumable.yaml`
+### `<config>.yaml` -> `<config>-resumable.yaml`
 
 ```diff
 -  data.train_ds:
@@ -121,48 +102,40 @@ caveats.>
 +  data.train_ds:
 +    indexed: true
 +    use_stateful_dataloader: true
-+    force_map_dataset: true
-+    indexes_root: /tmp/idx
-+    shard_seed: 42  # NOTE: pinned for StatefulDataLoader resume; see
-+                    # MIGRATION_GUIDE.md §"Operational constraints"
++    force_map_dataset: false
++    indexes_root: /shared/fs/.../indexes_mirror
++    shard_seed: 42
 ```
 
 _(full diff inline)_
 
-### `<blend>.yaml` → `<blend>-resumable.yaml`
+### `<blend>.yaml` -> `<blend>-resumable.yaml`
 
 ```diff
--  - corpus: ami
+-  - type: lhotse_shar
 -    shar_path:
--      cuts: s3://AMI/lhotse_shar/cuts._OP_*_CL_.jsonl.gz
--    type: lhotse_shar
--    weight: 0.2
-+  # AMI dropped — Lhotse Shar `cuts.*.jsonl.gz` cannot be indexed
-+  # (uncompressed sources only). Re-export with `compress_jsonl=False`
-+  # or convert to `nemo_tarred` to re-include.
+-      cuts: s3://bucket/path/cuts.0.jsonl.gz
++  # Source excluded: compressed Shar cuts cannot be indexed.
++  # Re-export with uncompressed cuts or convert to another seekable format.
 ```
 
 _(full diff inline)_
 
-## Pre-flight checklist
-
-See `pre-flight-checklist.md` next to this report. The TL;DR:
+## Pre-flight Checklist
 
 1. Build indexes via the generated `build-indexes-cmd.sh`.
-2. Run the `MIGRATION_GUIDE.md §3` bit-exact verification once on this
-   recipe.
-3. Confirm `aistore` SDK present in the container (AIStore workflow only).
-4. 1-node single-chunk → 1-node multi-chunk → full N-node smoke ladder.
-5. Submit the real run.
+2. Run a bit-exact dataloader resume check on the migrated config.
+3. Confirm storage SDKs and environment variables required by the selected
+   workflow.
+4. Confirm `indexes_root` exists and is populated from every node/container that
+   will train.
+5. Run single-node single-chunk, single-node resume, then full-topology smoke.
+6. Submit the real run.
 
 ## References
 
-- `MIGRATION_GUIDE.md` (repo root): canonical migration walkthrough.
-- `references/option-reference.md`: every YAML field, every flag, including
-  the iterable-mode partition concerns.
-- `references/conflict-matrix.md`: option pairs that conflict (includes
-  iterable-mode constraints: §20–§23).
-- `references/failure-modes.md`: 23-entry failure-mode catalog (§20–§23 cover iterable-mode partition concerns).
-- `references/best-practices.md`: prioritised checklist (tier 2 §5b covers
-  when to prefer `force_map_dataset: false`).
-- `references/aistore-vs-non-aistore.md`: workflow selection.
+- `references/option-reference.md`
+- `references/conflict-matrix.md`
+- `references/failure-modes.md`
+- `references/best-practices.md`
+- `references/aistore-vs-non-aistore.md`

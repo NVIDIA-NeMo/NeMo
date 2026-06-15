@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from io import BytesIO
 from pathlib import Path
-from typing import Generator, Iterable, List, Literal
+from typing import Generator, Iterable, List, Literal, Union
 
 try:
     import pyarrow.parquet as pq
@@ -57,6 +57,8 @@ from nemo.utils.data_utils import is_datastore_path
 # suffixes. We use this pattern in both indexed and streaming code paths to
 # recover the actual tar member name (offsets share a single member).
 _OFFSET_PATTERN = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
+ShardKey = Union[int, tuple[int, int]]
+
 
 
 class LazyNeMoIterator(IteratorNode):
@@ -405,10 +407,11 @@ class LazyNeMoTarredIterator(IteratorNode):
         indexes_root: str | Path | None = None,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
-        self._malformed_manifest_warning_keys: set[tuple[str, int]] = set()
+        self._malformed_manifest_warning_keys: set[tuple[str, ShardKey]] = set()
         self.indexed = indexed
         self.indexes_root = indexes_root
-        self.shard_id_to_manifest: dict[int, Iterable[dict]]
+        self.shard_id_to_manifest: dict[ShardKey, Iterable[dict]]
+        self._shard_key_to_manifest_path: dict[ShardKey, str] = {}
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
             if not indexed:
@@ -427,28 +430,19 @@ class LazyNeMoTarredIterator(IteratorNode):
                 self.shard_id_to_manifest = groupby("shard_id", self.source)
         else:
             json_pattern = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
-            shard_ids = []
-            for p in self.paths:
-                m = json_pattern.search(p)
-                assert m is not None, (
-                    f"Cannot determine shard_id from manifest input specified: "
-                    f"we searched with regex '{json_pattern.pattern}' in input '{p}'"
-                )
-                shard_ids.append(int(m.group(1)))
-            self.shard_id_to_manifest = {sid: LazyJsonlIterator(p) for sid, p in zip(shard_ids, self.paths)}
+            shard_keys, _ = _extract_unique_shard_keys(self.paths, json_pattern, path_kind="manifest")
+            self._shard_key_to_manifest_path = {key: path for key, path in zip(shard_keys, self.paths)}
+            self.shard_id_to_manifest = {
+                key: LazyJsonlIterator(path) for key, path in self._shard_key_to_manifest_path.items()
+            }
             self.source = LazyIteratorChain(*self.shard_id_to_manifest.values())
 
         self.tar_paths = expand_sharded_filepaths(tar_paths)
         tar_pattern = re.compile(r"audio[^/]*_(\d+)[^/]*\.tar")
-        shard_ids = []
-        for p in self.tar_paths:
-            m = tar_pattern.search(p)
-            assert m is not None, (
-                f"Cannot determine shard_id from tar input specifier: "
-                f"we searched with regex '{tar_pattern.pattern}' in input '{p}'"
-            )
-            shard_ids.append(int(m.group(1)))
-        self.shard_id_to_tar_path = dict(zip(shard_ids, self.tar_paths))
+        shard_keys, _ = _extract_unique_shard_keys(self.tar_paths, tar_pattern, path_kind="tar")
+        self.shard_id_to_tar_path: dict[ShardKey, str] = {
+            key: path for key, path in zip(shard_keys, self.tar_paths)
+        }
 
         self.shuffle_shards = shuffle_shards
         self.shard_seed = shard_seed
@@ -494,23 +488,21 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'."
             )
 
-        # Order shards by their integer shard_id so that global indices are stable.
-        self._sorted_shard_ids = sorted(self.shard_id_to_tar_path.keys())
-        self._cuts_readers: dict[int, IndexedJsonlReader] = {}
+        # Order shards by stable shard key so global indices are reproducible.
+        # Multi-bucket NeMo specs may expand to paths such as
+        # bucket_1/audio_0.tar and bucket_2/audio_0.tar; the occurrence suffix in
+        # ShardKey prevents those duplicate numeric shard ids from overwriting.
+        self._sorted_shard_ids: list[ShardKey] = sorted(self.shard_id_to_tar_path.keys())
+        self._cuts_readers: dict[ShardKey, IndexedJsonlReader] = {}
         # In USE_AIS_GET_BATCH mode we never open the tar files locally — audio is
         # fetched lazily via URL/file AudioSource by AudioSamples (typically batched).
-        self._tar_readers: dict[int, IndexedTarMemberReader] = {}
+        self._tar_readers: dict[ShardKey, IndexedTarMemberReader] = {}
 
-        # Map shard_id → manifest path (single or multi-file).
+        # Map shard key → manifest path (single or multi-file).
         if len(self.paths) == 1:
             shard_id_to_manifest_path = {sid: self.paths[0] for sid in self._sorted_shard_ids}
         else:
-            json_pattern = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
-            shard_id_to_manifest_path = {}
-            for p in self.paths:
-                m = json_pattern.search(p)
-                assert m is not None
-                shard_id_to_manifest_path[int(m.group(1))] = p
+            shard_id_to_manifest_path = self._shard_key_to_manifest_path
 
         cum = 0
         cum_lens = [0]
@@ -564,10 +556,10 @@ class LazyNeMoTarredIterator(IteratorNode):
 
     def _validate(self) -> None:
         if self.indexed:
-            # Indexed mode keys shards by the tar path's shard_id and pairs them with
-            # the jsonl manifest of the same numeric id (see ``_init_indexed``); the
-            # streaming-time shard_id consistency check below would otherwise reject
-            # single-file inputs when the jsonl groups by a different shard_id field.
+            # Indexed mode pairs tar and manifest paths by stable shard key in
+            # ``_init_indexed``. The streaming-time shard_id consistency check below
+            # would otherwise reject single-file inputs when the jsonl groups by a
+            # different shard_id field.
             validate_extra_fields(self.extra_fields)
             return
         shard_ids_tars = set(self.shard_id_to_tar_path)
@@ -585,7 +577,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return resolve_seed(self.shard_seed) + self.epoch
 
     @property
-    def shard_ids(self) -> List[int]:
+    def shard_ids(self) -> List[ShardKey]:
         return sorted(self.shard_id_to_manifest.keys())
 
     def _iter_batch_for_ais_get_batch(
@@ -705,7 +697,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                         ) from e
 
     # ---------------------------------------------------------------------- indexed
-    def _resolve_global_idx(self, idx: int) -> tuple[int, int]:
+    def _resolve_global_idx(self, idx: int) -> tuple[ShardKey, int]:
         if idx < 0:
             idx += self._total_len
         if idx < 0 or idx >= self._total_len:
@@ -891,7 +883,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         # NeMo tarred manifests can have multiple JSONL entries pointing at the
         # same audio member with -subN audio_filepath suffixes (per-offset cuts).
         for sid in shard_ids:
-            manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
+            manifest_path = self._shard_key_to_manifest_path[sid] if len(self.paths) > 1 else self.paths[0]
 
             def basename(d: dict) -> str:
                 return (
@@ -1307,3 +1299,43 @@ class LazyParquetIterator(IteratorNode):
                 if cut is None:
                     continue
                 yield cut
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_unique_shard_keys(
+    paths: list[str], pattern: re.Pattern, *, path_kind: str
+) -> tuple[list[ShardKey], list[int]]:
+    """Extract shard ids while preserving duplicate ids from expanded paths.
+
+    NeMo tarred dataset specs may contain multiple independent path dimensions,
+    e.g. ``bucket_OP_1..8_CL_/audio__OP_0..127_CL_.tar``. After expansion,
+    every bucket contains numeric tar shard ids ``0..127``. Keying readers only
+    by that numeric id silently overwrites all but the last bucket, shrinking the
+    effective dataset and causing extreme oversampling of the remaining shards.
+
+    When numeric ids are unique, keep the historical ``int`` keys. When a
+    numeric id repeats, key each occurrence as ``(shard_id, occurrence)`` so
+    manifest and tar paths remain paired one-to-one across all expanded files.
+    The raw ids are returned for callers that need the original parsed values.
+    """
+    raw_ids = []
+    for path in paths:
+        match = pattern.search(path)
+        assert match is not None, (
+            f"Cannot determine shard_id from {path_kind} input specifier: "
+            f"we searched with regex '{pattern.pattern}' in input '{path}'"
+        )
+        raw_ids.append(int(match.group(1)))
+    if len(set(raw_ids)) == len(raw_ids):
+        return raw_ids, raw_ids
+    occurrences: dict[int, int] = {}
+    keys: list[ShardKey] = []
+    for shard_id in raw_ids:
+        occurrence = occurrences.get(shard_id, 0)
+        occurrences[shard_id] = occurrence + 1
+        keys.append((shard_id, occurrence))
+    return keys, raw_ids

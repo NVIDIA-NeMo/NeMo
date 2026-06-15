@@ -148,6 +148,91 @@ def test_lazy_nemo_tarred_iterator_indexed_partition(nemo_tarred_manifest, world
     assert sum(len(r) for r in per_rank) == N_CUTS
 
 
+@pytest.fixture
+def nemo_tarred_duplicate_bucket_manifest(tmp_audio_root) -> tuple[list[Path], list[Path]]:
+    """Two bucket dirs that both contain manifest_0.jsonl/audios_0.tar.
+
+    Indexed LazyNeMoTarredIterator used to key both paths by numeric shard id 0,
+    silently overwriting the first bucket. The expected dataset size is 2*N_CUTS.
+    """
+    from lhotse.serialization import SequentialJsonlWriter
+    from lhotse.shar.writers import TarWriter
+
+    root = tmp_audio_root / "tarred_duplicate_buckets"
+    root.mkdir(exist_ok=True)
+    manifest_paths: list[Path] = []
+    tar_paths: list[Path] = []
+    for bucket_idx in range(2):
+        cuts = DummyManifest(
+            CutSet,
+            begin_id=bucket_idx * N_CUTS,
+            end_id=(bucket_idx + 1) * N_CUTS,
+            with_data=True,
+        ).save_audios(tmp_audio_root / f"bucket_audio_{bucket_idx}", progress_bar=False)
+        bucket = root / f"bucket_{bucket_idx}"
+        bucket.mkdir(exist_ok=True)
+        manifest_path = bucket / "manifest_0.jsonl"
+        tar_path = bucket / "audios_0.tar"
+        with (
+            TarWriter(str(tar_path), shard_size=None) as tar_writer,
+            SequentialJsonlWriter(manifest_path) as mft_writer,
+        ):
+            for cut in cuts:
+                src = cut.recording.sources[0].source
+                name = Path(src).name
+                with open(src, "rb") as f:
+                    tar_writer.write(name, BytesIO(f.read()))
+                mft_writer.write(
+                    {
+                        "audio_filepath": name,
+                        "text": "irrelevant",
+                        "duration": cut.duration,
+                        "lang": "en",
+                        "shard_id": 0,
+                        "cut_id": cut.id,
+                    }
+                )
+        manifest_paths.append(manifest_path)
+        tar_paths.append(tar_path)
+    return manifest_paths, tar_paths
+
+
+@pytest.mark.parametrize("world_size", [1, 2, 4, 5])
+def test_lazy_nemo_tarred_iterator_indexed_preserves_duplicate_bucket_shard_ids(
+    nemo_tarred_duplicate_bucket_manifest, world_size
+):
+    manifest_paths, tar_paths = nemo_tarred_duplicate_bucket_manifest
+
+    def build():
+        it = nemo_adapters.LazyNeMoTarredIterator(
+            manifest_path=[str(path) for path in manifest_paths],
+            tar_paths=[str(path) for path in tar_paths],
+            indexed=True,
+        )
+        assert len(it) == 2 * N_CUTS
+        assert len(it.shard_id_to_tar_path) == 2
+        return [cut.custom["cut_id"] for cut in it]
+
+    per_rank, union = _collect_disjoint_per_rank(build, world_size)
+    assert len(union) == 2 * N_CUTS, f"missing {2 * N_CUTS - len(union)} items at world_size={world_size}"
+    assert sum(len(r) for r in per_rank) == 2 * N_CUTS
+
+
+def test_lazy_nemo_tarred_iterator_streaming_preserves_duplicate_bucket_shard_ids(
+    nemo_tarred_duplicate_bucket_manifest,
+):
+    manifest_paths, tar_paths = nemo_tarred_duplicate_bucket_manifest
+    it = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=[str(path) for path in manifest_paths],
+        tar_paths=[str(path) for path in tar_paths],
+        indexed=False,
+    )
+
+    ids = [cut.custom["cut_id"] for cut in it]
+    assert len(ids) == 2 * N_CUTS
+    assert len(set(ids)) == 2 * N_CUTS
+
+
 # ---------------------------------------------------------------------------
 # 2. LazyParquetIterator
 # ---------------------------------------------------------------------------

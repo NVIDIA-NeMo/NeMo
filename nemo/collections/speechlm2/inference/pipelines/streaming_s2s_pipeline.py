@@ -1568,15 +1568,21 @@ out center {limit};
 			_blank_t = _rnnt_hyp.get('blank_count')
 			_blanks = int(_blank_t[0].item()) if _blank_t is not None else 0
 
-			# 240ms speech-confirmation gate: suppress display for the first 2 frames
-			# of each new utterance so the RNNT has enough acoustic context before
-			# we show anything.  Turn-taking (blank_count, EOU) is unaffected — those
-			# live inside infer_one_step and never read _speech_display_frames.
+			# 240ms speech-confirmation gate: suppress display until 3 non-blank frames
+			# have been seen in this utterance.  Counter only increments on non-blank
+			# frames and is NOT reset by mid-sentence pauses — only by turn boundary
+			# (BOS or 10 blanks below).  This prevents short words like "hi" from being
+			# swallowed when the user pauses briefly before continuing.
 			_sdf = _rnnt_hyp.get('_speech_display_frames', 0)
-			_sdf = _sdf + 1 if _blanks == 0 else 0
+			_speech_ok = _rnnt_hyp.get('_speech_confirmed', False)
+			if _blanks == 0 and not _speech_ok:  # non-blank, not yet confirmed
+				_sdf += 1
+				if _sdf >= 3:
+					_speech_ok = True
 			context.rnnt_partial_hypotheses['_speech_display_frames'] = _sdf
+			context.rnnt_partial_hypotheses['_speech_confirmed'] = _speech_ok
 
-			if _y_seq and _sdf >= 3:
+			if _y_seq and _speech_ok:
 				_cur_text = self.s2s_model._rnnt_decode_text(_y_seq)
 				# Strip leading period/space tokens the RNNT emits as sentence-boundary markers
 				_cur_text = _cur_text.lstrip('. ')
@@ -1595,6 +1601,7 @@ out center {limit};
 				context.rnnt_partial_hypotheses['_punct_word_acc'] = []
 				context.rnnt_partial_hypotheses['_punct_bias_val'] = 0.0
 				context.rnnt_partial_hypotheses['_speech_display_frames'] = 0
+				context.rnnt_partial_hypotheses['_speech_confirmed'] = False
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None

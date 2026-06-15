@@ -1596,7 +1596,11 @@ out center {limit};
 				_pred_toks is not None and _bos_id is not None and _pred_toks.numel() > 0
 				and int(_bos_id) in _pred_toks.reshape(-1).tolist()
 			)
-			if _agent_bos_fired or _blanks >= 10:
+			# Clear y_sequence on BOS (definitive turn boundary) OR on 800ms silence
+			# BEFORE speech has been confirmed (pre-speech silence fallback).
+			# Do NOT clear mid-speech (_speech_ok=True): that would drop short words
+			# like "hi" when the user pauses briefly before continuing.
+			if _agent_bos_fired or (_blanks >= 10 and not _speech_ok):
 				context.rnnt_partial_hypotheses['y_sequence'] = []
 				context.rnnt_partial_hypotheses['_punct_word_acc'] = []
 				context.rnnt_partial_hypotheses['_punct_bias_val'] = 0.0

@@ -1597,10 +1597,11 @@ out center {limit};
 				and int(_bos_id) in _pred_toks.reshape(-1).tolist()
 			)
 			# Clear y_sequence on BOS (definitive turn boundary) OR on 800ms silence
-			# BEFORE speech has been confirmed (pre-speech silence fallback).
-			# Do NOT clear mid-speech (_speech_ok=True): that would drop short words
-			# like "hi" when the user pauses briefly before continuing.
-			if _agent_bos_fired or (_blanks >= 10 and not _speech_ok):
+			# when the user has said NOTHING in this turn (_sdf==0).  Once any non-blank
+			# frame was seen (even a short "hi"), only BOS should clear — otherwise the
+			# 10-blank fallback fires during a natural inter-phrase pause and wipes the
+			# partial transcript before _speech_ok reaches True, losing the last turn.
+			if _agent_bos_fired or (_blanks >= 10 and _sdf == 0):
 				context.rnnt_partial_hypotheses['y_sequence'] = []
 				context.rnnt_partial_hypotheses['_punct_word_acc'] = []
 				context.rnnt_partial_hypotheses['_punct_bias_val'] = 0.0

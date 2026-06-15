@@ -932,6 +932,8 @@ class NemotronVoicechatInferenceWrapper:
         self._rnnt_punct_ids_set: set = set()
         self._rnnt_punct_bias_increment: float = float(
             self.model_cfg.get("rnnt_punct_bias_increment", 2.5))
+        self._rnnt_punct_bias_min_blanks: int = int(
+            self.model_cfg.get("rnnt_punct_bias_min_blanks", 5))
         if self.model_cfg.get("rnnt_punct_bias_enabled", False) and _rnnt_vocab is not None:
             for _pt in self.model_cfg.get("rnnt_punct_bias_tokens", [".", ",", "?", "!"]):
                 for _variant in [_pt, "▁" + _pt]:   # bare token and word-start form
@@ -940,9 +942,10 @@ class NemotronVoicechatInferenceWrapper:
                         if _pid not in self._rnnt_punct_ids_set:
                             self._rnnt_punct_ids.append(_pid)
                             self._rnnt_punct_ids_set.add(_pid)
-            logging.info("[RNNT] Punct bias enabled: tokens=%s IDs=%s increment=%.1f",
+            logging.info("[RNNT] Punct bias enabled: tokens=%s IDs=%s increment=%.1f min_blanks=%d",
                          self.model_cfg.get("rnnt_punct_bias_tokens"),
-                         self._rnnt_punct_ids, self._rnnt_punct_bias_increment)
+                         self._rnnt_punct_ids, self._rnnt_punct_bias_increment,
+                         self._rnnt_punct_bias_min_blanks)
         logging.info(
             "[Turn-taking] RNNT is_start_tokens built: %d tokens (EOU word-boundary check %s)",
             len(self._rnnt_is_start_tokens),
@@ -2955,8 +2958,14 @@ class NemotronVoicechatInferenceWrapper:
             elif _emitted_nonpunct:
                 _pw_acc.extend(_emitted_nonpunct)    # new words — add to buffer, reset bias
                 _pb_val = 0.0
-        elif _pw_acc:                                # blank frame after words — increment bias
-            _pb_val += self._rnnt_punct_bias_increment
+        elif _pw_acc:                                # blank frame after words
+            # Only accumulate bias after min_blanks consecutive silence frames
+            # (default 5 × 80ms = 400ms) so brief mid-sentence pauses don't
+            # trigger punctuation injection.  blank_count in new_state already
+            # reflects the current frame's updated consecutive-blank count.
+            _blank_consec = int(new_state['blank_count'][0].item()) if B == 1 else 0
+            if _blank_consec >= self._rnnt_punct_bias_min_blanks:
+                _pb_val += self._rnnt_punct_bias_increment
 
         density_alpha = 0.1
         is_speech_float = (~is_blank).float()

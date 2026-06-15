@@ -1582,13 +1582,6 @@ out center {limit};
 			context.rnnt_partial_hypotheses['_speech_display_frames'] = _sdf
 			context.rnnt_partial_hypotheses['_speech_confirmed'] = _speech_ok
 
-			if _y_seq and _speech_ok:
-				_cur_text = self.s2s_model._rnnt_decode_text(_y_seq)
-				# Strip leading period/space tokens the RNNT emits as sentence-boundary markers
-				_cur_text = _cur_text.lstrip('. ')
-				if _cur_text:
-					self.get_or_create_state(stream_ids[0]).output_asr_text_str = _cur_text
-
 			# Detect agent BOS in this frame's predicted tokens
 			_pred_toks = result.get("predicted_text_tokens")
 			_bos_id = getattr(getattr(self.s2s_model.model, 'stt_model', None), 'text_bos_id', None)
@@ -1596,6 +1589,19 @@ out center {limit};
 				_pred_toks is not None and _bos_id is not None and _pred_toks.numel() > 0
 				and int(_bos_id) in _pred_toks.reshape(-1).tolist()
 			)
+
+			# On agent BOS: capture final ASR text from y_sequence (which now includes any
+			# punct token injected by _rnnt_step this frame) and send it once to the UI.
+			# We read context.rnnt_partial_hypotheses['y_sequence'] (post-step) rather than
+			# _y_seq (pre-step) so punct fired this frame is included in the final text.
+			if _agent_bos_fired and _speech_ok:
+				_final_y_seq = context.rnnt_partial_hypotheses.get('y_sequence', [])
+				if _final_y_seq:
+					_final_text = self.s2s_model._rnnt_decode_text(_final_y_seq)
+					_final_text = _final_text.lstrip('. ')
+					if _final_text:
+						self.get_or_create_state(stream_ids[0]).output_asr_text_str = _final_text
+
 			# Clear y_sequence on BOS (definitive turn boundary) OR on 800ms silence
 			# when the user has said NOTHING in this turn (_sdf==0).  Once any non-blank
 			# frame was seen (even a short "hi"), only BOS should clear — otherwise the

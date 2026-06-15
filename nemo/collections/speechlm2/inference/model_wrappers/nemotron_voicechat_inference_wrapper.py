@@ -2961,9 +2961,10 @@ class NemotronVoicechatInferenceWrapper:
         elif _pw_acc:                                # blank frame after words
             # Only accumulate bias after min_blanks consecutive silence frames
             # (default 5 × 80ms = 400ms) so brief mid-sentence pauses don't
-            # trigger punctuation injection.  blank_count in new_state already
-            # reflects the current frame's updated consecutive-blank count.
-            _blank_consec = int(new_state['blank_count'][0].item()) if B == 1 else 0
+            # trigger punctuation injection.  new_state isn't built yet here,
+            # so derive current blank_count from rnnt_state + 1 (this frame is blank).
+            _old_bc = rnnt_state.get('blank_count')
+            _blank_consec = (int(_old_bc[0].item()) + 1) if (B == 1 and _old_bc is not None) else 0
             if _blank_consec >= self._rnnt_punct_bias_min_blanks:
                 _pb_val += self._rnnt_punct_bias_increment
 

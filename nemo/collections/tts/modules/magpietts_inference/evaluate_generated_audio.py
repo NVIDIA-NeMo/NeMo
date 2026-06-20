@@ -68,6 +68,8 @@ FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'wer',
     'pred_context_ssim',
+    'pred_gt_esim',
+    'pred_gt_ems',
     'pred_text',
     'gt_audio_text',
     'gt_text',
@@ -229,7 +231,13 @@ def compute_utmosv2_scores(audio_dir, device):
 
 
 def load_evaluation_models(
-    sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", asr_model_type="nemo", device="cuda"
+    sv_model_type="titanet",
+    asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
+    device="cuda",
+    with_emotion_metrics=False,
+    emotion_model_size="small",
+    emotion_cache_dir=None,
 ):
     """Load ASR and speaker verification models used for evaluation.
 
@@ -247,6 +255,7 @@ def load_evaluation_models(
         'whisper_model': None,
         'whisper_processor': None,
         'feature_extractor': None,
+        'emotion_model': None,
     }
 
     if asr_model_type == "nemo":
@@ -273,7 +282,41 @@ def load_evaluation_models(
         )
     models['sv_model_alternate'] = models['sv_model_alternate'].to(device).eval()
 
+    if with_emotion_metrics:
+        logging.info("Loading emotion encoder for ESIM/EMS metrics...")
+        try:
+            from nemo.collections.tts.metrics.emotion_encoder import EmpathicInsightVoice
+
+            models['emotion_model'] = EmpathicInsightVoice.from_pretrained(
+                size=emotion_model_size,
+                device=device,
+                mlp_device=device,
+                cache_dir=emotion_cache_dir,
+                cache_classifiers=True,
+                load_all_classifiers=False,
+                top_k_emotions=1,
+            ).eval()
+        except Exception as e:
+            logging.warning(f"Emotion encoder could not be loaded: {e}. ESIM/EMS metrics will be set to NaN.")
+
     return models
+
+
+def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path, embedding_type="score_vector"):
+    """Compute ground-truth to predicted emotion similarity and top-emotion match."""
+    if emotion_model is None or gt_audio_path is None or pred_audio_path is None:
+        return float('NaN'), float('NaN')
+
+    try:
+        result = emotion_model.compare_emotion_pair(
+            audio_path_a=gt_audio_path,
+            audio_path_b=pred_audio_path,
+            embedding_type=embedding_type,
+        )
+        return float(result["emotion_similarity"]), float(result["top_emotion_match"])
+    except Exception as e:
+        logging.warning(f"Could not compute ESIM/EMS for {gt_audio_path} and {pred_audio_path}: {e}")
+        return float('NaN'), float('NaN')
 
 
 def classify_eou_batched(
@@ -305,6 +348,10 @@ def evaluate_dir(
     asr_model_name="stt_en_conformer_transducer_large",
     asr_model_type="nemo",
     with_utmosv2=True,
+    with_emotion_metrics=False,
+    emotion_model_size="small",
+    emotion_embedding_type="score_vector",
+    emotion_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -337,12 +384,21 @@ def evaluate_dir(
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
 
     # 2. Load models
-    models = load_evaluation_models(sv_model_type, asr_model_name, asr_model_type, device)
+    models = load_evaluation_models(
+        sv_model_type=sv_model_type,
+        asr_model_name=asr_model_name,
+        asr_model_type=asr_model_type,
+        device=device,
+        with_emotion_metrics=with_emotion_metrics,
+        emotion_model_size=emotion_model_size,
+        emotion_cache_dir=emotion_cache_dir,
+    )
 
     asr_model = models['asr_model']
     feature_extractor = models['feature_extractor']
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
+    emotion_model = models['emotion_model']
 
     # 3. EoU classifier (support for English only)
     if language == "en":
@@ -426,6 +482,16 @@ def evaluate_dir(
             katakana_cer = word_error_rate_detail(hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True)[
                 0
             ]
+
+        pred_gt_esim = float('NaN')
+        pred_gt_ems = float('NaN')
+        if with_emotion_metrics:
+            pred_gt_esim, pred_gt_ems = compute_emotion_pair_metrics(
+                emotion_model,
+                gt_audio_filepath,
+                pred_audio_filepath,
+                embedding_type=emotion_embedding_type,
+            )
 
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
@@ -512,35 +578,38 @@ def evaluate_dir(
             eou_trailing = float('nan')
             eou_rms_ratio = float('nan')
 
-        filewise_metrics.append(
-            {
-                'gt_text': gt_text,
-                'pred_text': pred_text,
-                'gt_audio_text': gt_audio_text,
-                'detailed_cer': detailed_cer,
-                'detailed_wer': detailed_wer,
-                'cer': detailed_cer[0],
-                'wer': detailed_wer[0],
-                'katakana_cer': katakana_cer,
-                'gt_katakana': gt_katakana,
-                'pred_katakana': pred_katakana,
-                'pred_gt_ssim': pred_gt_ssim,
-                'pred_context_ssim': pred_context_ssim,
-                'gt_context_ssim': gt_context_ssim,
-                'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
-                'pred_context_ssim_alternate': pred_context_ssim_alternate,
-                'gt_context_ssim_alternate': gt_context_ssim_alternate,
-                'gt_audio_filepath': gt_audio_filepath,
-                'pred_audio_filepath': pred_audio_filepath,
-                'context_audio_filepath': context_audio_filepath,
-                'utmosv2': utmosv2_score,
-                'eou_type': eou_type,
-                'eou_trailing_duration': eou_trailing,
-                'eou_trail_rms_ratio': eou_rms_ratio,
-                'total_gen_audio_seconds': file_duration,
-                'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
-            }
-        )
+        metric_row = {
+            'gt_text': gt_text,
+            'pred_text': pred_text,
+            'gt_audio_text': gt_audio_text,
+            'detailed_cer': detailed_cer,
+            'detailed_wer': detailed_wer,
+            'cer': detailed_cer[0],
+            'wer': detailed_wer[0],
+            'katakana_cer': katakana_cer,
+            'gt_katakana': gt_katakana,
+            'pred_katakana': pred_katakana,
+            'pred_gt_ssim': pred_gt_ssim,
+            'pred_context_ssim': pred_context_ssim,
+            'gt_context_ssim': gt_context_ssim,
+            'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
+            'pred_context_ssim_alternate': pred_context_ssim_alternate,
+            'gt_context_ssim_alternate': gt_context_ssim_alternate,
+            'gt_audio_filepath': gt_audio_filepath,
+            'pred_audio_filepath': pred_audio_filepath,
+            'context_audio_filepath': context_audio_filepath,
+            'utmosv2': utmosv2_score,
+            'eou_type': eou_type,
+            'eou_trailing_duration': eou_trailing,
+            'eou_trail_rms_ratio': eou_rms_ratio,
+            'total_gen_audio_seconds': file_duration,
+            'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
+        }
+        if with_emotion_metrics:
+            metric_row['pred_gt_esim'] = pred_gt_esim
+            metric_row['pred_gt_ems'] = pred_gt_ems
+
+        filewise_metrics.append(metric_row)
 
     return filewise_metrics
 
@@ -556,6 +625,10 @@ def evaluate(
     with_utmosv2=True,
     with_fcd=True,
     codec_model_path=None,
+    with_emotion_metrics=False,
+    emotion_model_size="small",
+    emotion_embedding_type="head_concat",
+    emotion_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -592,6 +665,10 @@ def evaluate(
         asr_model_name=asr_model_name,
         asr_model_type=asr_model_type,
         with_utmosv2=with_utmosv2,
+        with_emotion_metrics=with_emotion_metrics,
+        emotion_model_size=emotion_model_size,
+        emotion_embedding_type=emotion_embedding_type,
+        emotion_cache_dir=emotion_cache_dir,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
@@ -694,6 +771,9 @@ def compute_global_metrics(
         sum(m['pred_context_ssim_alternate'] for m in filewise_metrics) / n
     )
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(m['gt_context_ssim_alternate'] for m in filewise_metrics) / n
+    if 'pred_gt_esim' in filewise_metrics[0]:
+        avg_metrics['esim_pred_gt_avg'] = sum(m['pred_gt_esim'] for m in filewise_metrics) / n
+        avg_metrics['ems_pred_gt_avg'] = sum(m['pred_gt_ems'] for m in filewise_metrics) / n
 
     # Cumulative WER/CER on ground-truth audio transcriptions (if available)
     gt_audio_texts = [m['gt_audio_text'] for m in filewise_metrics]
@@ -747,6 +827,15 @@ def main():
     parser.add_argument('--generated_audio_dir', type=str, default=None)
     parser.add_argument('--language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
+    parser.add_argument('--with_emotion_metrics', action='store_true')
+    parser.add_argument('--emotion_model_size', type=str, default="small", choices=["small", "large"])
+    parser.add_argument(
+        '--emotion_embedding_type',
+        type=str,
+        default="score_vector",
+        choices=["head_concat", "head_mean", "score_vector"],
+    )
+    parser.add_argument('--emotion_cache_dir', type=str, default=None)
     args = parser.parse_args()
 
     if args.evalset is not None:
@@ -762,6 +851,10 @@ def main():
         args.language,
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
+        with_emotion_metrics=args.with_emotion_metrics,
+        emotion_model_size=args.emotion_model_size,
+        emotion_embedding_type=args.emotion_embedding_type,
+        emotion_cache_dir=args.emotion_cache_dir,
     )
 
 

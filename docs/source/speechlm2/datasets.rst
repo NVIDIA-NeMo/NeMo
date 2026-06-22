@@ -292,6 +292,7 @@ The DataModule class in the speechlm2 collection manages dataset loading, prepar
     )
 
 The DataModule takes care of:
+
 1. Setting up proper data parallel ranks for dataloaders
 2. Instantiating the dataloaders with configuration from YAML
 3. Managing multiple datasets for validation/testing

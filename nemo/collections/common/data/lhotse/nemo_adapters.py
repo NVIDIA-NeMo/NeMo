@@ -460,9 +460,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         self.tar_paths = expand_sharded_filepaths(tar_paths)
         tar_pattern = re.compile(r"audio[^/]*_(\d+)[^/]*\.tar")
         shard_keys, _ = _extract_unique_shard_keys(self.tar_paths, tar_pattern, path_kind="tar")
-        self.shard_id_to_tar_path: dict[ShardKey, str] = {
-            key: path for key, path in zip(shard_keys, self.tar_paths)
-        }
+        self.shard_id_to_tar_path: dict[ShardKey, str] = {key: path for key, path in zip(shard_keys, self.tar_paths)}
 
         self.shuffle_shards = shuffle_shards
         self.shard_seed = shard_seed

@@ -1,4 +1,17 @@
 #!/usr/bin/env python
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Analyze resumable Lhotse dataloader progress stored in a checkpoint.
 
 This tool answers two operational questions for indexed/resumable
@@ -221,6 +234,7 @@ def collect_dataset_specs(
         )
     return specs
 
+
 def extract_progress(payload: Any) -> tuple[list[LeafProgress], list[str]]:
     """Extract per-leaf dataloader progress from a loaded checkpoint payload.
 
@@ -240,14 +254,10 @@ def extract_progress(payload: Any) -> tuple[list[LeafProgress], list[str]]:
                 rank = entry.get("dp_rank", idx)
                 rank = rank if isinstance(rank, int) else idx
                 inner_state = entry.get("state", entry)
-                for sampler_path, sampler_state in _find_sampler_states(
-                    inner_state, f"{state_path}[{idx}].state"
-                ):
+                for sampler_path, sampler_state in _find_sampler_states(inner_state, f"{state_path}[{idx}].state"):
                     worker = _worker_from_path(sampler_path)
                     progress.extend(
-                        _collect_leaves_from_sampler(
-                            sampler_state, rank=rank, worker=worker, path=sampler_path
-                        )
+                        _collect_leaves_from_sampler(sampler_state, rank=rank, worker=worker, path=sampler_path)
                     )
     else:
         notes.append(f"no {STATEFUL_KEY!r} payload found; scanning for raw sampler_state entries")
@@ -258,6 +268,7 @@ def extract_progress(payload: Any) -> tuple[list[LeafProgress], list[str]]:
     if removed:
         notes.append(f"deduplicated {removed} duplicate leaf progress state(s)")
     return progress, notes
+
 
 def summarize(progress: list[LeafProgress], specs: list[DatasetSpec]) -> list[SummaryRow]:
     """Combine checkpoint progress and dataset specs into report rows.
@@ -334,6 +345,7 @@ def summarize(progress: list[LeafProgress], specs: list[DatasetSpec]) -> list[Su
         )
     return rows
 
+
 def load_checkpoint_payload(path: Path, *, allow_full_load: bool, max_full_load_mb: int) -> tuple[Any, Path]:
     """Load the smallest checkpoint payload that contains dataloader state.
 
@@ -361,6 +373,7 @@ def load_checkpoint_payload(path: Path, *, allow_full_load: bool, max_full_load_
     detail = "\n".join(errors[-10:])
     raise RuntimeError(f"Could not find dataloader state for {path}.\n{detail}")
 
+
 def load_config(path: Path | None, checkpoint: Path) -> tuple[dict[str, Any] | None, Path | None, list[str]]:
     """Load an explicit or nearby training config used to annotate the report."""
     notes = []
@@ -385,6 +398,7 @@ def load_config(path: Path | None, checkpoint: Path) -> tuple[dict[str, Any] | N
     else:
         notes.append(f"config not found or invalid: {path}")
     return None, None, notes
+
 
 def markdown_table(rows: list[SummaryRow]) -> str:
     """Render summary rows as a compact Markdown table for logs/stdout."""
@@ -425,6 +439,7 @@ def markdown_table(rows: list[SummaryRow]) -> str:
         lines.append("| " + " | ".join(values) + " |")
     return "\n".join(lines) + "\n"
 
+
 def write_outputs(summary: dict[str, Any], rows: list[SummaryRow], args: argparse.Namespace) -> None:
     """Write requested JSON, Markdown, and CSV artifacts."""
     output_dir = Path(args.output_dir) if args.output_dir else None
@@ -457,6 +472,7 @@ def write_outputs(summary: dict[str, Any], rows: list[SummaryRow], args: argpars
             for row in rows:
                 writer.writerow(asdict(row))
 
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI flags for local or cluster-submitted analysis runs."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -475,6 +491,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-full-load-mb", type=int, default=512, help="Safety cap for non-meta checkpoint files.")
     parser.add_argument("--print-table", action="store_true", help="Print Markdown table to stdout.")
     return parser.parse_args()
+
 
 def main() -> int:
     """CLI entrypoint for loading inputs, computing rows, and writing outputs."""
@@ -542,9 +559,11 @@ def _load_yaml(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+
 def _load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def _safe_float(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
@@ -556,6 +575,7 @@ def _safe_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
 def _get_path(data: Any, dotted: str) -> Any:
     cur = data
     for part in dotted.split("."):
@@ -563,6 +583,7 @@ def _get_path(data: Any, dotted: str) -> Any:
             return None
         cur = cur.get(part)
     return cur
+
 
 def _normalize_weight_vector(weights: list[float], temperature: float = 1.0) -> list[float]:
     if not weights:
@@ -573,9 +594,11 @@ def _normalize_weight_vector(weights: list[float], temperature: float = 1.0) -> 
         return [1.0 / len(weights)] * len(weights)
     return [w / total for w in scaled]
 
+
 def _strip_url_scheme(path: str) -> str:
     match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://(.+)$", path)
     return match.group(1) if match else path.lstrip("/")
+
 
 def _index_path_for(data_path: str, indexes_root: str | None) -> Path | None:
     if not indexes_root:
@@ -584,16 +607,13 @@ def _index_path_for(data_path: str, indexes_root: str | None) -> Path | None:
         return Path(data_path + ".idx")
     return Path(indexes_root) / (_strip_url_scheme(data_path) + ".idx")
 
+
 def _indexed_file_size(idx_path: Path) -> int | None:
     parent = str(idx_path.parent)
     entries = INDEX_DIR_CACHE.get(parent)
     if entries is None and parent not in INDEX_DIR_CACHE:
         try:
-            entries = {
-                entry.name: entry.stat().st_size
-                for entry in os.scandir(idx_path.parent)
-                if entry.is_file()
-            }
+            entries = {entry.name: entry.stat().st_size for entry in os.scandir(idx_path.parent) if entry.is_file()}
         except FileNotFoundError:
             INDEX_DIR_CACHE[parent] = None
             return None
@@ -601,6 +621,7 @@ def _indexed_file_size(idx_path: Path) -> int | None:
     if entries is None:
         return None
     return entries.get(idx_path.name)
+
 
 def _fallback_brace_expand(path: str) -> list[str]:
     match = BRACE_RANGE_PATTERN.search(path)
@@ -624,6 +645,7 @@ def _fallback_brace_expand(path: str) -> list[str]:
         expanded.extend(_fallback_brace_expand(path[: match.start()] + repl + path[match.end() :]))
     return expanded
 
+
 def _expand_op_path(path: str) -> list[str]:
     # Match NeMo expand_sharded_filepaths(): _OP_/_CL_ are aliases for brace ranges.
     sharded = path
@@ -637,6 +659,7 @@ def _expand_op_path(path: str) -> list[str]:
         return list(braceexpand.braceexpand(sharded, escape=False))
     except ImportError:
         return _fallback_brace_expand(sharded)
+
 
 def _flatten_path_values(value: Any) -> list[str]:
     if value is None:
@@ -660,6 +683,7 @@ def _flatten_path_values(value: Any) -> list[str]:
         return out
     return []
 
+
 def _count_indexed_items(paths: list[str], indexes_root: str | None) -> tuple[int | None, list[str]]:
     total = 0
     missing: list[str] = []
@@ -681,6 +705,7 @@ def _count_indexed_items(paths: list[str], indexes_root: str | None) -> tuple[in
             any_count = True
     return (total if any_count else None), missing
 
+
 def _resolve_ref(ref: str, *, data_blend_dir: str | None, current_dir: Path | None) -> Path:
     text = ref
     if data_blend_dir:
@@ -693,14 +718,17 @@ def _resolve_ref(ref: str, *, data_blend_dir: str | None, current_dir: Path | No
         return current_dir / path
     return Path.cwd() / path
 
+
 def _looks_like_yaml_ref(value: Any) -> bool:
     return isinstance(value, str) and value.endswith((".yaml", ".yml"))
+
 
 def _load_ref_if_yaml(value: Any, *, data_blend_dir: str | None, current_dir: Path | None) -> tuple[Any, Path | None]:
     if not _looks_like_yaml_ref(value):
         return value, current_dir
     path = _resolve_ref(value, data_blend_dir=data_blend_dir, current_dir=current_dir)
     return _load_yaml(path), path.parent
+
 
 def _source_path_groups_for_item(item: dict[str, Any]) -> list[list[str]]:
     groups: list[list[str]] = []
@@ -730,9 +758,11 @@ def _source_path_groups_for_item(item: dict[str, Any]) -> list[list[str]]:
             groups.append(paths)
     return groups
 
+
 def _source_paths_for_item(item: dict[str, Any]) -> list[str]:
     groups = _source_path_groups_for_item(item)
     return groups[0] if groups else []
+
 
 def _dataset_name(item: dict[str, Any], source_path: str | None, fallback_index: int) -> str:
     pieces = []
@@ -746,6 +776,7 @@ def _dataset_name(item: dict[str, Any], source_path: str | None, fallback_index:
         return source_path
     return f"source-{fallback_index}"
 
+
 def _temperature_list(train_ds: dict[str, Any]) -> list[float] | None:
     value = train_ds.get("reweight_temperature")
     if value is None:
@@ -756,6 +787,7 @@ def _temperature_list(train_ds: dict[str, Any]) -> list[float] | None:
         return [float(v) for v in value]
     return None
 
+
 def _iter_children(obj: Any, path: str = "$") -> Iterable[tuple[str, Any]]:
     if isinstance(obj, dict):
         for key, value in obj.items():
@@ -763,6 +795,7 @@ def _iter_children(obj: Any, path: str = "$") -> Iterable[tuple[str, Any]]:
     elif isinstance(obj, list):
         for idx, value in enumerate(obj):
             yield f"{path}[{idx}]", value
+
 
 def _find_stateful_payloads(obj: Any, path: str = "$") -> list[tuple[str, list[Any]]]:
     found: list[tuple[str, list[Any]]] = []
@@ -776,6 +809,7 @@ def _find_stateful_payloads(obj: Any, path: str = "$") -> list[tuple[str, list[A
         for child_path, child in _iter_children(obj, path):
             found.extend(_find_stateful_payloads(child, child_path))
     return found
+
 
 def _find_sampler_states(obj: Any, path: str = "$") -> list[tuple[str, dict[str, Any]]]:
     found: list[tuple[str, dict[str, Any]]] = []
@@ -794,11 +828,13 @@ def _find_sampler_states(obj: Any, path: str = "$") -> list[tuple[str, dict[str,
             found.extend(_find_sampler_states(child, child_path))
     return found
 
+
 def _worker_from_path(path: str) -> str | None:
     match = re.search(r"worker[_-]?(\d+)", path)
     if match:
         return match.group(1)
     return None
+
 
 def _state_total_len(state: dict[str, Any]) -> int | None:
     range_state = state.get("range")
@@ -808,6 +844,7 @@ def _state_total_len(state: dict[str, Any]) -> int | None:
             return n
     n = state.get("total_len") or state.get("_total_len") or state.get("n")
     return int(n) if isinstance(n, int) and n >= 0 else None
+
 
 def _leaf_from_state(
     source_index: int,
@@ -840,6 +877,7 @@ def _leaf_from_state(
         state_path=path,
     )
 
+
 def _collect_leaf_states(tree: Any, *, rank: int | None, worker: str | None, path: str = "$") -> list[LeafProgress]:
     leaves: list[LeafProgress] = []
 
@@ -868,6 +906,7 @@ def _collect_leaf_states(tree: Any, *, rank: int | None, worker: str | None, pat
     walk(tree, path)
     return leaves
 
+
 def _collect_leaves_from_sampler(
     sampler_state: dict[str, Any], *, rank: int | None, worker: str | None, path: str
 ) -> list[LeafProgress]:
@@ -895,6 +934,7 @@ def _collect_leaves_from_sampler(
             leaf.source_index = idx
     return leaves
 
+
 def _deduplicate_progress(progress: list[LeafProgress]) -> tuple[list[LeafProgress], int]:
     deduped: list[LeafProgress] = []
     seen: set[tuple[Any, ...]] = set()
@@ -906,12 +946,14 @@ def _deduplicate_progress(progress: list[LeafProgress]) -> tuple[list[LeafProgre
         deduped.append(leaf)
     return deduped, len(progress) - len(deduped)
 
+
 def _shard_len(total_len: int, shard_id: int | None, num_shards: int | None) -> int | None:
     if shard_id is None or num_shards is None or num_shards <= 0:
         return None
     if total_len <= shard_id:
         return 0
     return (total_len - shard_id + num_shards - 1) // num_shards
+
 
 def _consumed_items(leaf: LeafProgress, total_len: int | None) -> int | None:
     total = leaf.total_len if leaf.total_len is not None else total_len
@@ -923,6 +965,7 @@ def _consumed_items(leaf: LeafProgress, total_len: int | None) -> int | None:
     if shard_len is None:
         return leaf.position if leaf.epoch == 0 else None
     return leaf.epoch * shard_len + leaf.position
+
 
 def _eval_step_candidates(path: Path) -> list[Path]:
     match = EVAL_STEP_PATTERN.fullmatch(path.name)
@@ -936,6 +979,7 @@ def _eval_step_candidates(path: Path) -> list[Path]:
         ckpt_dir / f"step-{step}.ckpt",
         ckpt_dir / f"step-{step}-last.ckpt",
     ]
+
 
 def _checkpoint_metadata_candidates(path: Path) -> list[Path]:
     candidates: list[Path] = []
@@ -962,6 +1006,7 @@ def _checkpoint_metadata_candidates(path: Path) -> list[Path]:
             deduped.append(candidate)
     return deduped
 
+
 def _torch_load(path: Path) -> Any:
     import torch
 
@@ -969,6 +1014,7 @@ def _torch_load(path: Path) -> Any:
         return torch.load(path, map_location="cpu", weights_only=False)
     except TypeError:
         return torch.load(path, map_location="cpu")
+
 
 def _auto_config_candidates(checkpoint: Path) -> list[Path]:
     candidates = []
@@ -997,8 +1043,10 @@ def _auto_config_candidates(checkpoint: Path) -> list[Path]:
             deduped.append(candidate)
     return deduped
 
+
 def _fmt_pct(value: float | None) -> str:
     return "" if value is None else f"{value:.2f}%"
+
 
 def _fmt_float(value: float | None) -> str:
     return "" if value is None else f"{value:.6g}"

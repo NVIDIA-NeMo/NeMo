@@ -60,6 +60,20 @@ _OFFSET_PATTERN = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
 ShardKey = Union[int, tuple[int, int]]
 
 
+_MALFORMED_INDEXED_MANIFEST_WARNING_KEYS: set[tuple[str, str]] = set()
+
+
+def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: str | Path) -> None:
+    key = (str(path), type(ex).__name__)
+    if key in _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS:
+        return
+    _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS.add(key)
+    logging.warning(
+        "Skipping malformed indexed NeMo manifest records; "
+        f"first occurrence path={path!r} idx={idx} error={type(ex).__name__}: {ex}. "
+        "Further records with the same path/error type are suppressed in this worker."
+    )
+
 
 class LazyNeMoIterator(IteratorNode):
     """
@@ -134,6 +148,7 @@ class LazyNeMoIterator(IteratorNode):
         extra_fields: list[dict[str, str]] | None = None,
         indexed: bool = False,
         indexes_root: str | Path | None = None,
+        skip_missing_manifest_entries: bool = False,
     ) -> None:
         self.path = path
         self.shuffle_shards = shuffle_shards
@@ -144,6 +159,7 @@ class LazyNeMoIterator(IteratorNode):
         self.extra_fields = extra_fields
         self.indexed = indexed
         self.indexes_root = indexes_root
+        self.skip_missing_manifest_entries = skip_missing_manifest_entries
         validate_extra_fields(self.extra_fields)
         paths = expand_sharded_filepaths(path)
 
@@ -159,7 +175,11 @@ class LazyNeMoIterator(IteratorNode):
             seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
             indexed_sources = [
                 LazyIndexedManifestIterator(
-                    p, index_path=index_file_path(p, indexes_root), decode=GraphOriginDict
+                    p,
+                    index_path=index_file_path(p, indexes_root),
+                    decode=GraphOriginDict,
+                    skip_decode_errors=skip_missing_manifest_entries,
+                    decode_error_callback=_warn_malformed_indexed_manifest_record,
                 )
                 for p in paths
             ]

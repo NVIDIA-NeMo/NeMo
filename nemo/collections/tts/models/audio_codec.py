@@ -248,6 +248,15 @@ class AudioCodecModel(ModelPT):
         self.clip_grad_norm = cfg.get("clip_grad_norm", None)
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
 
+        self.freeze_encoder = cfg.get("freeze_encoder", False)
+        self.disc_lr_overrides = cfg.get("disc_lr_overrides", None)
+
+    def _freeze_encoder(self):
+        for p in self.audio_encoder.parameters():
+            p.requires_grad = False
+        self.audio_encoder.eval()
+        logging.info("Encoder frozen: excluded from generator optimizer.")
+
     @property
     def dtype(self):
         return next(self.parameters()).dtype
@@ -956,15 +965,34 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
+        if self.freeze_encoder:
+            self._freeze_encoder()
+            encoder_params = []
+        else:
+            encoder_params = list(self.audio_encoder.parameters())
+
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
-        self.gen_params = list(
-            itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
-        )
+        self.gen_params = list(itertools.chain(encoder_params, self.audio_decoder.parameters(), vq_params, se_params))
         optim_g = instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:
             optim_d = None
+        elif self.disc_lr_overrides:
+            base_lr = optim_config.lr
+            param_groups = []
+            self.disc_params = []
+            for name, sub in zip(self.discriminator.discriminator_names, self.discriminator.discriminators):
+                sub_params = list(sub.parameters())
+                self.disc_params += sub_params
+                lr = float(self.disc_lr_overrides.get(name, base_lr))
+                param_groups.append({"params": sub_params, "lr": lr})
+                logging.info(f"Discriminator '{name}' LR = {lr}")
+            # Hydra instantiate mishandles params= list of param-group dicts; build Adam directly.
+            disc_optim_kwargs = OmegaConf.to_container(optim_config, resolve=True)
+            disc_optim_kwargs.pop("_target_", None)
+            disc_optim_kwargs.pop("lr", None)
+            optim_d = torch.optim.Adam(param_groups, **disc_optim_kwargs)
         else:
             self.disc_params = list(self.discriminator.parameters())
             optim_d = instantiate(optim_config, params=self.disc_params)

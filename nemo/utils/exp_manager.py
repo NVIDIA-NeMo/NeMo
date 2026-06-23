@@ -20,6 +20,7 @@ import sys
 import time
 import warnings
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -1564,9 +1565,23 @@ def _save_last_checkpoint_and_exit(trainer: lightning.pytorch.Trainer, reason: s
 
 def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:
     """configure_no_restart_validation_training_loop"""
-    if type(trainer.fit_loop.epoch_loop) != _TrainingEpochLoop:
+    if type(trainer.fit_loop.epoch_loop) is not _TrainingEpochLoop:
         warnings.warn("Detected custom epoch loop. Skipping no validation on restart support.", UserWarning)
         return
+
+    fit_loop = trainer.fit_loop
+    if not getattr(fit_loop, "_nemo_restart_loader_state_cache_installed", False):
+        original_load_combined_loader_states = fit_loop._load_combined_loader_states
+
+        def _load_combined_loader_states_with_cache() -> None:
+            states = getattr(fit_loop, "_combined_loader_states_to_load", None)
+            if getattr(fit_loop, "restarting", False) and states:
+                fit_loop._nemo_restart_combined_loader_states = deepcopy(states)
+            original_load_combined_loader_states()
+
+        fit_loop._load_combined_loader_states = _load_combined_loader_states_with_cache
+        fit_loop._nemo_restart_loader_state_cache_installed = True
+
     # Pass trainer object to avoid trainer getting overwritten as None
     loop = SkipResumeTrainingValidationLoop(trainer, trainer.min_steps, trainer.max_steps)
     trainer.fit_loop.epoch_loop = loop
@@ -1588,10 +1603,22 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
         """Skip restart validation without replaying an already-completed train batch."""
         if self.restarting and super()._should_check_val_fx(data_fetcher):
             logging.info("Skipping restart validation without replaying a completed training batch")
+            self._reload_unconsumed_restart_dataloader_state()
             self._skip_resume_validation_once = True
             self.restarting = False
             return
         super().advance(data_fetcher)
+
+    def _reload_unconsumed_restart_dataloader_state(self) -> None:
+        """Reapply the checkpoint dataloader cursor after skipping restart validation."""
+        fit_loop = self.trainer.fit_loop
+        states = getattr(fit_loop, "_nemo_restart_combined_loader_states", None)
+        combined_loader = getattr(fit_loop, "_combined_loader", None)
+        if not states or combined_loader is None or not hasattr(combined_loader, "_load_state_dicts"):
+            return
+
+        combined_loader._load_state_dicts(deepcopy(states))
+        fit_loop._nemo_restart_combined_loader_states = None
 
     def on_advance_end(self, data_fetcher) -> None:
         """Clear the one-shot restart-validation skip after normal epoch-loop bookkeeping."""

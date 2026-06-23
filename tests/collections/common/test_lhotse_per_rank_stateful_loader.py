@@ -28,8 +28,9 @@ import sys
 import types
 
 import pytest
+import torch
 
-from nemo.collections.common.data.lhotse.dataloader import _PerRankStatefulDataLoader
+from nemo.collections.common.data.lhotse.dataloader import _build_dataloader, _PerRankStatefulDataLoader
 
 
 class _StubStatefulDataLoader:
@@ -68,15 +69,55 @@ def _patch_stateful_loader(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchdata.stateful_dataloader", fake_module)
 
 
-def _new_wrapper(dp_rank: int, dp_world_size: int) -> _PerRankStatefulDataLoader:
+def _new_wrapper(dp_rank: int, dp_world_size: int, dp_group=None) -> _PerRankStatefulDataLoader:
     return _PerRankStatefulDataLoader(
         dp_rank=dp_rank,
         dp_world_size=dp_world_size,
+        dp_group=dp_group,
         # the stub ignores constructor kwargs, but we pass something
         # representative so the call signature mirrors real usage.
         dataset=object(),
         num_workers=4,
     )
+
+
+def test_build_dataloader_forwards_dp_group():
+    dp_group = object()
+
+    dl = _build_dataloader(
+        use_stateful_dataloader=True,
+        dp_rank=1,
+        dp_world_size=2,
+        dp_group=dp_group,
+        dataset=object(),
+        batch_size=None,
+        num_workers=0,
+    )
+
+    assert isinstance(dl, _PerRankStatefulDataLoader)
+    assert dl._dp_group is dp_group
+
+
+def test_state_dict_all_gather_uses_dp_group(monkeypatch):
+    dp_group = object()
+    dl = _new_wrapper(dp_rank=1, dp_world_size=2, dp_group=dp_group)
+    dl._inner._state = {"position": 43, "shard_id": 1}
+    calls = []
+
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+
+    def fake_all_gather_object(per_rank, tagged, group=None):
+        calls.append(group)
+        per_rank[0] = {"dp_rank": 0, "dp_world_size": 2, "state": {"position": 42, "shard_id": 0}}
+        per_rank[1] = tagged
+
+    monkeypatch.setattr(torch.distributed, "all_gather_object", fake_all_gather_object)
+
+    sd = dl.state_dict()
+
+    assert calls == [dp_group]
+    assert sd["train_dataloader_per_rank"][1]["state"] == {"position": 43, "shard_id": 1}
 
 
 def test_state_dict_single_rank_wraps_with_per_rank_list():

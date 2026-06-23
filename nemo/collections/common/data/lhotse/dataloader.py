@@ -404,9 +404,7 @@ class _PerRankStatefulDataLoader:
             "dp_world_size": self._dp_world_size,
             "state": local_state,
         }
-        if self._dp_world_size <= 1 or not (
-            torch.distributed.is_available() and torch.distributed.is_initialized()
-        ):
+        if self._dp_world_size <= 1 or not (torch.distributed.is_available() and torch.distributed.is_initialized()):
             per_rank = [tagged]
         else:
             per_rank: List[Optional[dict]] = [None] * self._dp_world_size
@@ -493,6 +491,7 @@ def get_lhotse_dataloader_from_config(
     world_size: int,
     dataset: torch.utils.data.Dataset,
     tokenizer=None,
+    dp_group: Optional[Any] = None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloader.
@@ -526,10 +525,16 @@ def get_lhotse_dataloader_from_config(
             world_size=world_size,
             dataset=dataset,
             tokenizer=tokenizer,
+            dp_group=dp_group,
         )
     else:
         return get_lhotse_dataloader_from_single_config(
-            config=config, global_rank=global_rank, world_size=world_size, dataset=dataset, tokenizer=tokenizer
+            config=config,
+            global_rank=global_rank,
+            world_size=world_size,
+            dataset=dataset,
+            tokenizer=tokenizer,
+            dp_group=dp_group,
         )
 
 
@@ -539,6 +544,7 @@ def get_lhotse_dataloader_from_single_config(
     world_size: int,
     dataset: torch.utils.data.Dataset,
     tokenizer=None,
+    dp_group: Optional[Any] = None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloader.
@@ -596,6 +602,7 @@ def get_lhotse_dataloader_from_single_config(
         use_stateful_dataloader=config.use_stateful_dataloader,
         dp_rank=global_rank,
         dp_world_size=world_size,
+        dp_group=dp_group,
         **dloader_kwargs,
         batch_size=None,
         num_workers=config.num_workers,
@@ -611,6 +618,7 @@ def get_lhotse_dataloader_from_multi_config(
     world_size: int,
     dataset: torch.utils.data.Dataset,
     tokenizer=None,
+    dp_group: Optional[Any] = None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloder.
@@ -731,6 +739,7 @@ def get_lhotse_dataloader_from_multi_config(
         use_stateful_dataloader=shared_opts.use_stateful_dataloader,
         dp_rank=global_rank,
         dp_world_size=world_size,
+        dp_group=dp_group,
         **dloader_kwargs,
         batch_size=None,
         num_workers=shared_opts.num_workers,
@@ -773,7 +782,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             "Auto-overriding shard_seed -> %d (the value of `seed`) for "
             "deterministic StatefulDataLoader resume. Pin shard_seed to an "
             "integer in your YAML to silence this warning.",
-            config.shard_seed, fixed_seed,
+            config.shard_seed,
+            fixed_seed,
         )
         config.shard_seed = fixed_seed
 

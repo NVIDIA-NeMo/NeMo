@@ -83,6 +83,7 @@ class DataModule(LightningDataModule):
                     world_size=self._get_world_size(),
                     dataset=FallbackDataset(self.dataset),
                     tokenizer=self.tokenizer,
+                    dp_group=self._get_dp_group(),
                 )
             else:
                 source = None
@@ -93,9 +94,10 @@ class DataModule(LightningDataModule):
     #
     # Per-rank dataloader state is now produced and consumed by
     # ``_PerRankStatefulDataLoader`` (in
-    # ``nemo.collections.common.data.lhotse.dataloader``). The wrapper's
-    # ``state_dict`` all-gathers across DP ranks and its ``load_state_dict``
-    # picks the entry matching the current rank. Lightning's ``FitLoop``
+    # ``nemo.collections.common.data.lhotse.dataloader``). ``DataModule``
+    # passes a DP-only process group into that wrapper so ``state_dict``
+    # all-gathers only across DP ranks; ``load_state_dict`` picks the entry
+    # matching the current DP rank. Lightning's ``FitLoop``
     # already round-trips ``CombinedLoader._state_dicts()`` through
     # ``loader.state_dict()`` / ``loader.load_state_dict()`` on every rank,
     # so the wrapper alone is sufficient to keep per-rank shard partitioning
@@ -149,13 +151,19 @@ class DataModule(LightningDataModule):
             with open_dict(cfg):
                 cfg.force_finite = True
                 cfg.force_map_dataset = True
-            return get_lhotse_dataloader_from_config(
-                config=cfg,
-                global_rank=self._get_dp_rank(),
-                world_size=self._get_world_size(),
-                dataset=self.dataset,
-                tokenizer=self.tokenizer,
-            )
+            mesh = self._get_device_mesh()
+            if is_dp_source_rank(mesh):
+                source = get_lhotse_dataloader_from_config(
+                    config=cfg,
+                    global_rank=self._get_dp_rank(),
+                    world_size=self._get_world_size(),
+                    dataset=self.dataset,
+                    tokenizer=self.tokenizer,
+                    dp_group=self._get_dp_group(),
+                )
+            else:
+                source = None
+            return BroadcastingDataLoader(source=source, device_mesh=mesh)
 
         # Multiple validation/test dataloaders.
         # Config looks like:
@@ -177,6 +185,13 @@ class DataModule(LightningDataModule):
             dloaders[name] = self._build_test_dataloader(item)
         return CombinedLoader(dloaders, mode="max_size")
 
+    def _get_device_mesh(self):
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return None
+        if hasattr(self.trainer, "model") and hasattr(self.trainer.model, "device_mesh"):
+            return self.trainer.model.device_mesh
+        return None
+
     def _get_dp_rank(self):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             if (
@@ -189,9 +204,14 @@ class DataModule(LightningDataModule):
                 elif (
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
-                    dp_rank = (
-                        dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size() + dm["dp_shard"].get_local_rank()
-                    )
+                    try:
+                        dp_rank = dm["dp"].get_local_rank()
+                    except (KeyError, RuntimeError, ValueError):
+                        # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                        dp_rank = (
+                            dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size()
+                            + dm["dp_shard"].get_local_rank()
+                        )
                 return dp_rank
             else:
                 return torch.distributed.get_rank()  # plain ol' DDP
@@ -210,7 +230,11 @@ class DataModule(LightningDataModule):
                 elif (
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
-                    dp_size = dm["dp_replicate", "dp_shard"].size()
+                    try:
+                        dp_size = dm["dp"].size()
+                    except (KeyError, RuntimeError, ValueError):
+                        # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                        dp_size = dm["dp_replicate", "dp_shard"].size()
                 return dp_size
             else:  # plain ol' DDP
                 return torch.distributed.get_world_size()
@@ -220,10 +244,11 @@ class DataModule(LightningDataModule):
     def _get_dp_group(self):
         """Return the torch.distributed process group covering this rank's DP siblings.
 
-        Used by ``state_dict`` to gather per-rank dataloader state across DP only
-        (i.e. excluding CP / TP / PP / EP duplicates, which carry the same data
-        partition by construction). Returns ``None`` for the default world group,
-        which is correct for plain DDP and for single-process runs.
+        Passed to ``_PerRankStatefulDataLoader`` so dataloader state is
+        gathered across DP ranks only, excluding CP/TP/PP/EP duplicates that
+        receive batches via ``BroadcastingDataLoader``. Returns ``None`` for
+        plain DDP and single-process runs, where the default world group is the
+        DP group.
         """
         if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
             return None
@@ -235,9 +260,9 @@ class DataModule(LightningDataModule):
             if "data_parallel" in dm.mesh_dim_names:  # Lightning's ModelParallelStrategy
                 return dm["data_parallel"].get_group()
             if "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names:
-                # AutomodelParallelStrategy exposes a flattened "dp" submesh covering
-                # dp_replicate × dp_shard (see parallel.py docstring). Required —
-                # without it we can't restrict the all_gather to DP-only siblings and
-                # would over-gather across CP/TP/PP, producing incorrect per-rank entries.
-                return dm["dp"].get_group()
+                try:
+                    return dm["dp"].get_group()
+                except (KeyError, RuntimeError, ValueError):
+                    # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                    return dm["dp_replicate", "dp_shard"].get_group()
         return None  # default = global DDP group

@@ -238,9 +238,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         targets are injected into a ``ParallelExpertEncoder``. Otherwise, the
         encoder runs its embedded Sortformer to predict diarization.
         """
-        # Source audio encoding.
-        # Input audio: (B, T_samples)
-        # Audio embeddings: (B, T, H)
         from nemo.collections.speechlm2.parts.cp_helpers import (
             encode_audio_with_cp_distribution,
             get_cp_mesh,
@@ -251,6 +248,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         spk_targets = batch.get("spk_targets", None)
         cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
+
+        # Source audio encoding.
+        # Input audio: (B, T_samples)
+        # Audio embeddings: (B, T, H)
         # Encoder path by (PEE, spk_targets):
         # PEE=true  & spk_targets=None  : Inference mode, uses recursive encoding in PEE, NO chunking/CP.
         # PEE=true  & spk_targets!=None : Training mode, ``spk_targets`` injected into PEE with chunking/CP.
@@ -285,15 +286,18 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if self.cfg.get("packed_sequences", False):
             from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
 
-            return prepare_packed_llm_inputs(
+            ans = prepare_packed_llm_inputs(
                 input_ids=batch["input_ids"],
                 text_embs=text_embs,
                 audio_embs=audio_embs,
                 target_ids=target_ids_full,
                 padding_id=self.text_pad_id,
                 placeholder_id=self.audio_locator_tag_id,
-                device_mesh=getattr(self, "_device_mesh", None),
+                device_mesh=device_mesh,
             )
+            if dummy_audio_loss is not None:
+                ans["dummy_audio_loss"] = dummy_audio_loss
+            return ans
 
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
@@ -318,12 +322,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
 
-        return {
+        ans = {
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
             "llm_kwargs": {},
         }
+        if dummy_audio_loss is not None:
+            ans["dummy_audio_loss"] = dummy_audio_loss
+        return ans
 
     def on_fit_start(self) -> None:
         """Configure the MoE aux-loss backward scaler to cancel FSDP's gradient
@@ -365,18 +372,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # ``_DataLoaderIterDataFetcher`` (no prefetch) which is required for
         # bit-identical checkpoint resumption. See ``read_batch`` docstring.
         batch, batch_idx = read_batch(dataloader_iter, self)
+        return self._training_step_batch(batch, batch_idx)
+
+    def _training_step_batch(self, batch: dict, batch_idx: int):
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
-        # Counters consumed by TrainingStatsCallback. ``attention_mask`` is 1
-        # for every real LLM input position (text non-pad + audio frames
-        # post-perception) and 0 for padding, so its sum is exactly the
-        # "text non-pad + audio frames" definition.
-        self._last_batch_num_tokens = int(inputs["attention_mask"].long().sum().item())
-        self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
+        self._record_training_stats(batch, inputs)
         forward_outputs = self(
             inputs["input_embeds"],
             attention_mask=inputs["attention_mask"],
@@ -408,6 +413,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 ignore_index=-100,
             )
             loss = loss_sum * dp_size / num_frames_global
+        if (dummy_audio_loss := inputs.get("dummy_audio_loss")) is not None:
+            loss = loss + dummy_audio_loss
 
         # Latent speaker supervision loss (auxiliary, optional).
         if self.lss_loss is not None and num_frames > 0:
@@ -439,10 +446,29 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "target_to_input_ratio": num_frames / (B * T),
             "padding_ratio": (batch["input_ids"] != self.text_pad_id).long().sum() / batch["input_ids"].numel(),
         }
-        self.log("loss", loss_display, on_step=True, prog_bar=True)
-        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log("loss", loss_display, on_step=True, prog_bar=True, batch_size=B)
+        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
+
+    def _record_training_stats(self, batch: dict, inputs: dict) -> None:
+        # Counters consumed by TrainingStatsCallback. In BSHD, the attention mask
+        # counts every real LLM input position. In THD, packed input metadata must
+        # come from pre-CP sequence lengths so CP/TP-local tensor shapes do not
+        # over- or under-count the global batch.
+        if inputs["attention_mask"] is not None:
+            num_tokens = inputs["attention_mask"].long().sum()
+        else:
+            num_tokens = inputs["num_tokens"]
+        num_examples = inputs.get("num_examples", batch["input_ids"].shape[0])
+        if torch.is_tensor(num_tokens):
+            num_tokens = num_tokens.detach().cpu().item()
+        if torch.is_tensor(num_examples):
+            num_examples = num_examples.detach().cpu().item()
+        self._last_batch_num_tokens = int(num_tokens)
+        self._last_batch_num_examples = int(num_examples)
 
     def on_validation_epoch_start(self) -> None:
         self._partial_val_loss_sums = defaultdict(list)

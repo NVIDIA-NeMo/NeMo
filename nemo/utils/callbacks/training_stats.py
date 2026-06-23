@@ -130,16 +130,17 @@ class TrainingStatsCallback(Callback):
             # audio frame contribution is lost. Better than zero.
             local_tokens, local_examples = self._fallback_counts(batch, pl_module)
 
-        # All-reduce across DP ranks so every rank holds the same
-        # cumulative value (required for state_dict consistency across
-        # ranks on save).
+        # All-reduce across DP ranks so every rank holds the same cumulative
+        # value (required for state_dict consistency across ranks on save).
+        # Under CP/TP, batch broadcasting gives model-parallel ranks duplicate
+        # data, so reducing over the full world would over-count.
         if dist.is_available() and dist.is_initialized():
             buf = torch.tensor(
                 [local_tokens, local_examples],
                 dtype=torch.long,
                 device=pl_module.device,
             )
-            dist.all_reduce(buf, op=dist.ReduceOp.SUM)
+            dist.all_reduce(buf, op=dist.ReduceOp.SUM, group=self._get_dp_group(pl_module))
             global_tokens, global_examples = buf.tolist()
         else:
             global_tokens, global_examples = local_tokens, local_examples
@@ -185,3 +186,40 @@ class TrainingStatsCallback(Callback):
             n_tokens = int((ids != pad_id).long().sum().item())
         n_examples = int(ids.shape[0])
         return n_tokens, n_examples
+
+    @staticmethod
+    def _get_dp_group(pl_module: LightningModule):
+        """Return a DP-only process group when model parallelism is active.
+
+        ``None`` intentionally means the default world group, which is correct
+        for plain DDP and single-process runs.
+        """
+        device_mesh = getattr(pl_module, "_device_mesh", None)
+        if device_mesh is None:
+            trainer = getattr(pl_module, "trainer", None)
+            trainer_model = getattr(trainer, "model", None)
+            device_mesh = getattr(trainer_model, "device_mesh", None)
+        if device_mesh is None:
+            return None
+
+        names = device_mesh.mesh_dim_names or ()
+        if "data_parallel" in names:
+            return device_mesh["data_parallel"].get_group()
+
+        try:
+            from nemo_automodel.components.distributed.mesh_utils import get_flat_mesh
+
+            return get_flat_mesh(device_mesh, "dp").get_group()
+        except (ImportError, KeyError, RuntimeError, ValueError):
+            pass
+
+        try:
+            return device_mesh["dp"].get_group()
+        except (KeyError, RuntimeError, ValueError):
+            pass
+
+        if "dp_shard" in names and "dp_replicate" in names:
+            return device_mesh["dp_replicate", "dp_shard"].get_group()
+        if "dp_shard" in names:
+            return device_mesh["dp_shard"].get_group()
+        return None

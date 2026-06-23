@@ -186,9 +186,7 @@ class LazyNeMoIterator(IteratorNode):
             if len(indexed_sources) == 1:
                 self.source = indexed_sources[0]
             else:
-                self.source = LazyIteratorChain(
-                    *indexed_sources, shuffle_iters=shuffle_shards, seed=seed
-                )
+                self.source = LazyIteratorChain(*indexed_sources, shuffle_iters=shuffle_shards, seed=seed)
         else:
             if len(paths) == 1:
                 self.source = LazyJsonlIterator(paths[0])
@@ -261,11 +259,14 @@ class LazyNeMoIterator(IteratorNode):
         audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
         duration = data.pop("duration")
         offset = data.pop("offset", None)
+        sampling_rate = data.pop("sampling_rate", None)
+        if sampling_rate is None:
+            sampling_rate = data.pop("sample_rate", None)
         cut = self._create_cut(
             audio_path=audio_path,
             offset=offset,
             duration=duration,
-            sampling_rate=data.pop("sampling_rate", None),
+            sampling_rate=sampling_rate,
         )
         cut.supervisions.append(
             SupervisionSegment(
@@ -491,9 +492,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
         from lhotse.indexing import IndexedJsonlReader, index_file_path
 
-        from nemo.collections.common.data.lhotse.indexed_adapters import (
-            IndexedTarMemberReader,
-        )
+        from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
         if self.extra_fields:
             raise ValueError(
@@ -502,9 +501,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "graph-token random access."
             )
         if self.slice_length is not None:
-            raise ValueError(
-                "LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'."
-            )
+            raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
 
         # Order shards by stable shard key so global indices are reproducible.
         # Multi-bucket NeMo specs may expand to paths such as
@@ -719,9 +716,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         if idx < 0:
             idx += self._total_len
         if idx < 0 or idx >= self._total_len:
-            raise IndexError(
-                f"index {idx} out of range for LazyNeMoTarredIterator with {self._total_len} cuts"
-            )
+            raise IndexError(f"index {idx} out of range for LazyNeMoTarredIterator with {self._total_len} cuts")
         shard_pos = bisect.bisect_right(self._cum_lens, idx) - 1
         sid = self._sorted_shard_ids[shard_pos]
         return sid, idx - self._cum_lens[shard_pos]
@@ -733,9 +728,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             return af
         return m.group("stem") + ifnone(m.group("ext"), "")
 
-    def _attach_supervision_and_metadata(
-        self, cut: Cut, data: dict, manifest_path: str, tar_path: str
-    ) -> Cut:
+    def _attach_supervision_and_metadata(self, cut: Cut, data: dict, manifest_path: str, tar_path: str) -> Cut:
         cut.supervisions.append(
             SupervisionSegment(
                 id=cut.id,
@@ -758,13 +751,13 @@ class LazyNeMoTarredIterator(IteratorNode):
         try:
             meta = soundfile.info(BytesIO(audio_bytes))
         except Exception:
-            logging.warning(f"Skipped corrupted audio member referenced by '{data.get('audio_filepath')}' in {tar_path=}.")
+            logging.warning(
+                f"Skipped corrupted audio member referenced by '{data.get('audio_filepath')}' in {tar_path=}."
+            )
             return None
         recording = Recording(
             id=str(data["audio_filepath"]),
-            sources=[
-                AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)
-            ],
+            sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)],
             sampling_rate=int(meta.samplerate),
             num_samples=meta.frames,
             duration=meta.duration,
@@ -785,9 +778,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             return None
         duration = data.get("duration")
         if duration is None:
-            logging.warning(
-                f"Skipping '{data.get('audio_filepath')}' - missing duration in manifest"
-            )
+            logging.warning(f"Skipping '{data.get('audio_filepath')}' - missing duration in manifest")
             return None
         audio_filename = self._audio_member_name_from_entry(data)
         audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
@@ -1228,9 +1219,7 @@ class LazyParquetIterator(IteratorNode):
         elif isinstance(audio_data, bytes):
             audio_bytes = audio_data
         else:
-            logging.warning(
-                f"Skipping row {fallback_idx}: Audio column '{self.audio_field}' format unrecognized."
-            )
+            logging.warning(f"Skipping row {fallback_idx}: Audio column '{self.audio_field}' format unrecognized.")
             return None
 
         text = row.get(self.text_field, "")

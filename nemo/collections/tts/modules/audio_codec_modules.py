@@ -15,7 +15,7 @@
 import math
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -963,24 +963,29 @@ class PeriodDiscriminator(NeuralModule):
 
     Args:
         period: Spacing between audio sample inputs.
+        channels: Output channels for each conv layer (5 values). Input to the first layer is 1.
         lrelu_slope: Slope to use for activation. Leaky relu with slope of 0.1 or 0.2 is recommended for the
            stability of the feature matching loss.
     """
 
-    def __init__(self, period, lrelu_slope=0.1):
+    def __init__(
+        self,
+        period,
+        channels: Sequence[int] = (32, 128, 512, 1024, 1024),
+        lrelu_slope=0.1,
+    ):
         super().__init__()
         self.period = period
         self.activation = nn.LeakyReLU(lrelu_slope)
+        in_channels = [1] + list(channels[:-1])
+        strides = [(3, 1), (3, 1), (3, 1), (3, 1), (1, 1)]
         self.conv_layers = nn.ModuleList(
             [
-                Conv2dNorm(1, 32, kernel_size=(5, 1), stride=(3, 1)),
-                Conv2dNorm(32, 128, kernel_size=(5, 1), stride=(3, 1)),
-                Conv2dNorm(128, 512, kernel_size=(5, 1), stride=(3, 1)),
-                Conv2dNorm(512, 1024, kernel_size=(5, 1), stride=(3, 1)),
-                Conv2dNorm(1024, 1024, kernel_size=(5, 1), stride=(1, 1)),
+                Conv2dNorm(in_ch, out_ch, kernel_size=(5, 1), stride=stride)
+                for in_ch, out_ch, stride in zip(in_channels, channels, strides)
             ]
         )
-        self.conv_post = Conv2dNorm(1024, 1, kernel_size=(3, 1))
+        self.conv_post = Conv2dNorm(channels[-1], 1, kernel_size=(3, 1))
 
     @property
     def input_types(self):
@@ -1029,10 +1034,15 @@ class MultiPeriodDiscriminator(NeuralModule):
     The periods are expected to be increasing prime numbers in order to maximize coverage and minimize overlap
     """
 
-    def __init__(self, periods: Iterable[int] = (2, 3, 5, 7, 11), lrelu_slope=0.1):
+    def __init__(
+        self,
+        periods: Iterable[int] = (2, 3, 5, 7, 11),
+        channels: Sequence[int] = (32, 128, 512, 1024, 1024),
+        lrelu_slope=0.1,
+    ):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [PeriodDiscriminator(period=period, lrelu_slope=lrelu_slope) for period in periods]
+            [PeriodDiscriminator(period=period, channels=channels, lrelu_slope=lrelu_slope) for period in periods]
         )
 
     @property
@@ -1138,14 +1148,15 @@ class MultiBandDiscriminatorSTFT(NeuralModule):
             The floats are in the range [0, 1] representing the fraction of all stft bands.
             For example for n_fft=1024, the stft output has 513 dimensions.
             For band input [(0, 0.25), (0.25, 1.0)] it would use stft dimensions [0 through 127] and [128 through 512].
+        filters: Number of filters to use in each band's DiscriminatorSTFT.
     """
 
-    def __init__(self, resolution: Tuple[int], stft_bands: Iterable[Tuple[int]]):
+    def __init__(self, resolution: Tuple[int], stft_bands: Iterable[Tuple[int]], filters: int = 32):
         super().__init__()
 
         self.n_fft, self.hop_length, self.win_length = resolution
         self.register_buffer("window", torch.hann_window(self.win_length, periodic=False))
-        self.discriminators = nn.ModuleList([DiscriminatorSTFT() for _ in stft_bands])
+        self.discriminators = nn.ModuleList([DiscriminatorSTFT(filters=filters) for _ in stft_bands])
         n_stft = self.n_fft // 2 + 1
         self.stft_bands = [(int(band[0] * n_stft), int(band[1] * n_stft)) for band in stft_bands]
 
@@ -1205,12 +1216,21 @@ class MultiResolutionDiscriminatorSTFT(NeuralModule):
             The floats are in the range [0, 1] representing the fraction of all stft bands.
             For example for n_fft=1024, the stft output has 513 dimensions.
             For band input [(0, 0.25), (0.25, 1.0)] it would use stft dimensions [0 through 127] and [128 through 512].
+        filters: Number of filters to use in each band's DiscriminatorSTFT.
     """
 
-    def __init__(self, resolutions: Iterable[Tuple[int]], stft_bands: Iterable[Tuple[int]]):
+    def __init__(
+        self,
+        resolutions: Iterable[Tuple[int]],
+        stft_bands: Iterable[Tuple[int]],
+        filters: int = 32,
+    ):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [MultiBandDiscriminatorSTFT(resolution=resolution, stft_bands=stft_bands) for resolution in resolutions]
+            [
+                MultiBandDiscriminatorSTFT(resolution=resolution, stft_bands=stft_bands, filters=filters)
+                for resolution in resolutions
+            ]
         )
 
     @property

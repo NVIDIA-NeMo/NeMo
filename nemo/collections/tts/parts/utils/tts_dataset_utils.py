@@ -49,7 +49,8 @@ except (ImportError, ModuleNotFoundError):
 
 
 DEFAULT_PHONEMIZER_LANGUAGE_MAP = {
-    "en": "en-us",
+    # phonemizer does not accept "en"; "en-gb" matches `espeak-ng -v en --ipa -q`.
+    "en": "en-gb",
     "de": "de",
     "es": "es",
     "fr": "fr-fr",
@@ -176,7 +177,8 @@ def _phonemize_with_espeak(text: str, language: str, phonemizer_language_map: Op
         language=phonemizer_language,
         backend="espeak",
         strip=True,
-        preserve_punctuation=True,
+        preserve_punctuation=False,
+        with_stress=True,
         language_switch="remove-flags",
         words_mismatch="ignore",
         njobs=1,
@@ -233,6 +235,7 @@ def tokenize_text_with_phoneme_spans(
     partial_phoneme_text_prob: float = 0.0,
     partial_phoneme_word_prob: float = 0.0,
     phonemizer_language_map: Optional[Dict[str, str]] = None,
+    ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> List[int]:
@@ -253,11 +256,14 @@ def tokenize_text_with_phoneme_spans(
         raise ValueError("`text_phoneme_token_offset` is required when `enable_phoneme_text_input=True`.")
 
     text_for_tokens = text_str
+    explicit_phoneme_spans = has_phoneme_text_spans(text_for_tokens, bop_marker=bop_marker, eop_marker=eop_marker)
+    skip_partial_phonemization = language in (ignore_phoneme_languages or [])
     if (
         dataset_type == 'train'
         and partial_phoneme_text_prob > 0.0
         and random.random() < partial_phoneme_text_prob
-        and not has_phoneme_text_spans(text_for_tokens, bop_marker=bop_marker, eop_marker=eop_marker)
+        and not explicit_phoneme_spans
+        and not skip_partial_phonemization
     ):
         text_for_tokens = partially_phonemize_text(
             text=text_for_tokens,
@@ -729,6 +735,7 @@ def chunk_and_tokenize_text_by_sentence(
     partial_phoneme_text_prob: float = 0.0,
     partial_phoneme_word_prob: float = 0.0,
     phonemizer_language_map: Optional[Dict[str, str]] = None,
+    ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
@@ -770,6 +777,7 @@ def chunk_and_tokenize_text_by_sentence(
             partial_phoneme_text_prob=partial_phoneme_text_prob,
             partial_phoneme_word_prob=partial_phoneme_word_prob,
             phonemizer_language_map=phonemizer_language_map,
+            ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
         )
@@ -928,6 +936,7 @@ def chunk_text_for_inference(
     partial_phoneme_text_prob: float = 0.0,
     partial_phoneme_word_prob: float = 0.0,
     phonemizer_language_map: Optional[Dict[str, str]] = None,
+    ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
@@ -990,6 +999,7 @@ def chunk_text_for_inference(
             partial_phoneme_text_prob=partial_phoneme_text_prob,
             partial_phoneme_word_prob=partial_phoneme_word_prob,
             phonemizer_language_map=phonemizer_language_map,
+            ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
         )
@@ -1007,6 +1017,7 @@ def chunk_text_for_inference(
             partial_phoneme_text_prob=partial_phoneme_text_prob,
             partial_phoneme_word_prob=partial_phoneme_word_prob,
             phonemizer_language_map=phonemizer_language_map,
+            ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
         )

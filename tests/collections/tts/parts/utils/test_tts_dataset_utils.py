@@ -534,6 +534,31 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_training_augmentation_skips_ignored_language(self, monkeypatch):
+        monkeypatch.setattr(
+            tts_dataset_utils,
+            "_phonemize_with_espeak",
+            lambda text, language, phonemizer_language_map: "ab",
+        )
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="hello",
+            language="vi",
+            tokenizer_name="english_phoneme",
+            dataset_type="train",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+            partial_phoneme_text_prob=1.0,
+            partial_phoneme_word_prob=1.0,
+            ignore_phoneme_languages=["vi"],
+        )
+
+        assert tokens == [ord(char) for char in "hello"]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_cas_vocab_accepts_expanded_mixed_text_ids(self):
         subword_id_to_char_ids, char_vocab = build_vocabs(
             subword_vocab={"a": 0, "b": 1},

@@ -2195,6 +2195,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             partial_phoneme_text_prob=0.0,
             partial_phoneme_word_prob=self.partial_phoneme_word_prob,
             phonemizer_language_map=self.phonemizer_language_map,
+            ignore_phoneme_languages=self.ignore_phoneme_languages,
             bop_marker=self.phoneme_text_bop_marker,
             eop_marker=self.phoneme_text_eop_marker,
         ) + [self.eos_id]

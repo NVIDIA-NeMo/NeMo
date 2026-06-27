@@ -429,7 +429,7 @@ class TestPhonemeTextInput:
     def test_disabled_mixed_tokenization_uses_text_tokenizer_only(self):
         text_tokenizer = _FakeTextTokenizer()
         phoneme_tokenizer = _FakePhonemeTokenizer()
-        text = "Hi <bop>/ab/<eop>."
+        text = "Hi <bop>ab<eop>."
 
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=text_tokenizer,
@@ -451,7 +451,7 @@ class TestPhonemeTextInput:
 
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=_FakeTextTokenizer(),
-            text_str="Hi <bop>/ab/<eop>!",
+            text_str="Hi <bop>ab<eop>!",
             language="en",
             tokenizer_name="english_phoneme",
             enable_phoneme_text_input=True,
@@ -464,7 +464,7 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_unwrapped_phoneme_span_uses_same_offset_ids(self):
+    def test_phoneme_span_body_uses_offset_ids(self):
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=_FakeTextTokenizer(),
             text_str="<bop>ab<eop>",
@@ -483,7 +483,7 @@ class TestPhonemeTextInput:
         with pytest.raises(ValueError, match="without a matching"):
             tokenize_text_with_phoneme_spans(
                 text_tokenizer=_FakeTextTokenizer(),
-                text_str="Hi <bop>/ab/",
+                text_str="Hi <bop>ab",
                 language="en",
                 tokenizer_name="english_phoneme",
                 enable_phoneme_text_input=True,
@@ -506,7 +506,7 @@ class TestPhonemeTextInput:
             partial_phoneme_word_prob=1.0,
         )
 
-        assert text == "<bop>/HI HOW/<eop>"
+        assert text == "<bop>HI HOW<eop>"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -539,22 +539,22 @@ class TestPhonemeTextInput:
             subword_vocab={"a": 0, "b": 1},
             subword_padding_idx=7,
             special_vocab={
-                "<TEXT_PHONEME_0>": 2,
-                "<TEXT_PHONEME_1>": 3,
-                "<BOS>": 4,
-                "<EOS>": 5,
-                "<CFG_UNK>": 6,
+                "<BOS>": 2,
+                "<EOS>": 3,
+                "<CFG_UNK>": 4,
+                "<TEXT_PHONEME_0>": 5,
+                "<TEXT_PHONEME_1>": 6,
             },
         )
 
-        assert subword_id_to_char_ids[2] == (char_vocab["<TEXT_PHONEME_0>"],)
-        assert subword_id_to_char_ids[3] == (char_vocab["<TEXT_PHONEME_1>"],)
+        assert subword_id_to_char_ids[5] == (char_vocab["<TEXT_PHONEME_0>"],)
+        assert subword_id_to_char_ids[6] == (char_vocab["<TEXT_PHONEME_1>"],)
         assert max(subword_id_to_char_ids) == 7
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_chunk_text_for_inference_does_not_split_mixed_span(self):
-        text = "one two three <bop>/ab/<eop>. four five."
+        text = "one two three <bop>ab<eop>. four five."
         eos_id = 999
 
         tokens, lens, texts = chunk_text_for_inference(

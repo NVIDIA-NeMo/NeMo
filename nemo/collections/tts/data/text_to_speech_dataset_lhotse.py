@@ -250,11 +250,10 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     raise ValueError("`phoneme_tokenizer_config` is required when `enable_phoneme_text_input=True`.")
                 self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
             base_text_vocab_size = len(self.text_tokenizer.tokens)
-            if self.text_phoneme_token_offset is None:
-                self.text_phoneme_token_offset = base_text_vocab_size
-            text_phoneme_vocab_size = self.phoneme_tokenizer.vocab_size if self.enable_phoneme_text_input else 0
-            self.bos_id = base_text_vocab_size + text_phoneme_vocab_size
+            self.bos_id = base_text_vocab_size
             self.eos_id = self.bos_id + 1
+            if self.text_phoneme_token_offset is None:
+                self.text_phoneme_token_offset = self.eos_id + 2
             self.pad_id = self.text_tokenizer.pad
 
         # initialize the phoneme tokenizer once per dataset/worker when config is available.

@@ -355,19 +355,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.phonemizer_language_map = cfg.get('phonemizer_language_map', {})
         self.phoneme_text_bop_marker = cfg.get('phoneme_text_bop_marker', '<bop>')
         self.phoneme_text_eop_marker = cfg.get('phoneme_text_eop_marker', '<eop>')
+        self.bos_id = num_tokens_tokenizer
+        self.eos_id = num_tokens_tokenizer + 1
+        self.cfg_unk_token_id = num_tokens_tokenizer + 2
         self.text_phoneme_token_offset = None
         self.text_phoneme_vocab_size = 0
         if self.enable_phoneme_text_input:
             if self.phoneme_tokenizer is None:
                 raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
-            self.text_phoneme_token_offset = num_tokens_tokenizer
+            self.text_phoneme_token_offset = self.cfg_unk_token_id + 1
             self.text_phoneme_vocab_size = self.phoneme_tokenizer.vocab_size
 
         num_tokens = num_tokens_tokenizer + self.text_phoneme_vocab_size + 3  # +3 for BOS, EOS, CFG_UNK
         self.text_vocab_size = num_tokens
-        self.bos_id = num_tokens - 3
-        self.eos_id = num_tokens - 2
-        self.cfg_unk_token_id = num_tokens - 1
 
         self.pad_context_text_to_max_duration = False
         self.add_language_to_context_text = cfg.get('add_language_to_context_text', False)

@@ -122,13 +122,6 @@ def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str
     return bop_marker in text or eop_marker in text
 
 
-def _strip_phoneme_span_slashes(phoneme_text: str) -> str:
-    phoneme_text = phoneme_text.strip()
-    if len(phoneme_text) >= 2 and phoneme_text[0] == "/" and phoneme_text[-1] == "/":
-        return phoneme_text[1:-1].strip()
-    return phoneme_text
-
-
 def _split_text_and_phoneme_spans(
     text: str,
     bop_marker: str = "<bop>",
@@ -158,7 +151,7 @@ def _split_text_and_phoneme_spans(
         if eop_idx == -1:
             raise ValueError(f"Found `{bop_marker}` without a matching `{eop_marker}` in text: {text}")
 
-        segments.append(("phoneme", _strip_phoneme_span_slashes(text[span_start:eop_idx])))
+        segments.append(("phoneme", text[span_start:eop_idx].strip()))
         cursor = eop_idx + len(eop_marker)
 
     return [(kind, segment) for kind, segment in segments if segment]
@@ -221,7 +214,7 @@ def partially_phonemize_text(
     for start, end in coalesced_spans:
         output_parts.append(text[cursor:start])
         ipa_text = _phonemize_with_espeak(text[start:end], language, phonemizer_language_map)
-        output_parts.append(f"{bop_marker}/{ipa_text}/{eop_marker}")
+        output_parts.append(f"{bop_marker}{ipa_text}{eop_marker}")
         cursor = end
     output_parts.append(text[cursor:])
 

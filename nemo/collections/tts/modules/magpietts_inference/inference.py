@@ -721,6 +721,13 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             context_duration_min=context_duration_min,
             context_duration_max=context_duration_max,
             ignore_phoneme_languages=self.model.cfg.get('ignore_phoneme_languages', []),
+            enable_phoneme_text_input=self.model.enable_phoneme_text_input,
+            text_phoneme_token_offset=self.model.text_phoneme_token_offset,
+            partial_phoneme_text_prob=0.0,
+            partial_phoneme_word_prob=self.model.partial_phoneme_word_prob,
+            phonemizer_language_map=self.model.phonemizer_language_map,
+            phoneme_text_bop_marker=self.model.phoneme_text_bop_marker,
+            phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,
             add_language_to_context_text=self.model.add_language_to_context_text,
             default_tokenizer_name=self.config.default_tokenizer_name,
         )

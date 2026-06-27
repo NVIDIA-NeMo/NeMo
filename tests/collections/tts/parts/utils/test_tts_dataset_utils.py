@@ -19,19 +19,41 @@ import numpy as np
 import pytest
 import torch
 
+import nemo.collections.tts.parts.utils.tts_dataset_utils as tts_dataset_utils
+from nemo.collections.tts.modules.magpietts_modules import build_vocabs
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,
     _get_sentence_separators_for_language,
     chunk_and_tokenize_text_by_sentence,
+    chunk_text_for_inference,
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
     get_tokenizer_for_language,
     load_audio,
     normalize_volume,
+    partially_phonemize_text,
     split_by_sentence,
     stack_tensors,
+    tokenize_text_with_phoneme_spans,
 )
+
+
+class _FakeTextTokenizer:
+    def encode(self, text: str, tokenizer_name: str):
+        return [ord(char) for char in text]
+
+
+class _FakePhonemeTokenizer:
+    vocab_size = 4
+
+    def __init__(self):
+        self.seen_text = []
+
+    def encode(self, text: str):
+        self.seen_text.append(text)
+        vocab = {"a": 1, "b": 2, "c": 3}
+        return [vocab[char] for char in text if char in vocab]
 
 
 class TestTTSDatasetUtils:
@@ -399,6 +421,160 @@ class TestChunkTextForInference:
         # Empty text should still return something valid
         assert len(tokens) == 1
         assert tokens[0][-1].item() == eos_id
+
+
+class TestPhonemeTextInput:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_disabled_mixed_tokenization_uses_text_tokenizer_only(self):
+        text_tokenizer = _FakeTextTokenizer()
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+        text = "Hi <bop>/ab/<eop>."
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=False,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [ord(char) for char in text]
+        assert phoneme_tokenizer.seen_text == []
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_mixed_tokenization_interleaves_text_and_offset_phoneme_ids(self):
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="Hi <bop>/ab/<eop>!",
+            language="en",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [ord("H"), ord("i"), ord(" "), 101, 102, ord("!")]
+        assert phoneme_tokenizer.seen_text == ["ab"]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_unwrapped_phoneme_span_uses_same_offset_ids(self):
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="<bop>ab<eop>",
+            language="en",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [101, 102]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_unmatched_phoneme_span_raises(self):
+        with pytest.raises(ValueError, match="without a matching"):
+            tokenize_text_with_phoneme_spans(
+                text_tokenizer=_FakeTextTokenizer(),
+                text_str="Hi <bop>/ab/",
+                language="en",
+                tokenizer_name="english_phoneme",
+                enable_phoneme_text_input=True,
+                phoneme_tokenizer=_FakePhonemeTokenizer(),
+                text_phoneme_token_offset=100,
+            )
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_coalesces_selected_words(self, monkeypatch):
+        monkeypatch.setattr(
+            tts_dataset_utils,
+            "_phonemize_with_espeak",
+            lambda text, language, phonemizer_language_map: text.upper(),
+        )
+
+        text = partially_phonemize_text(
+            text="hi how",
+            language="en",
+            partial_phoneme_word_prob=1.0,
+        )
+
+        assert text == "<bop>/HI HOW/<eop>"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_training_augmentation_then_tokenization_uses_no_marker_ids(self, monkeypatch):
+        monkeypatch.setattr(
+            tts_dataset_utils,
+            "_phonemize_with_espeak",
+            lambda text, language, phonemizer_language_map: "ab",
+        )
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="hello",
+            language="en",
+            tokenizer_name="english_phoneme",
+            dataset_type="train",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+            partial_phoneme_text_prob=1.0,
+            partial_phoneme_word_prob=1.0,
+        )
+
+        assert tokens == [101, 102]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_cas_vocab_accepts_expanded_mixed_text_ids(self):
+        subword_id_to_char_ids, char_vocab = build_vocabs(
+            subword_vocab={"a": 0, "b": 1},
+            subword_padding_idx=7,
+            special_vocab={
+                "<TEXT_PHONEME_0>": 2,
+                "<TEXT_PHONEME_1>": 3,
+                "<BOS>": 4,
+                "<EOS>": 5,
+                "<CFG_UNK>": 6,
+            },
+        )
+
+        assert subword_id_to_char_ids[2] == (char_vocab["<TEXT_PHONEME_0>"],)
+        assert subword_id_to_char_ids[3] == (char_vocab["<TEXT_PHONEME_1>"],)
+        assert max(subword_id_to_char_ids) == 7
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_text_for_inference_does_not_split_mixed_span(self):
+        text = "one two three <bop>/ab/<eop>. four five."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=_FakeTextTokenizer(),
+            eos_token_id=eos_id,
+            language_thresholds=LanguageThresholds(thresholds={"en": 1}),
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+        )
+
+        assert len(tokens) == 1
+        assert lens == [tokens[0].shape[0]]
+        assert texts == [text]
+        assert tokens[0][-1].item() == eos_id
+        assert 101 in tokens[0].tolist()
+        assert 102 in tokens[0].tolist()
 
 
 class TestSentenceSplitting:

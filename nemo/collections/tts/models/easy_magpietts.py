@@ -119,7 +119,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.phoneme_loss_weight = cfg.get('phoneme_loss_weight', 1.0)
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
         self.local_transformer_loss_scale = cfg.get('local_transformer_loss_scale', 1.0)
-        self.phoneme_as_text_prob = cfg.get('phoneme_as_text_prob', 0.0)
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
@@ -1378,8 +1377,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,
             ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
-            phoneme_as_text_prob=self.phoneme_as_text_prob if dataset_type == 'train' else 0.0,
-            pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            partial_phoneme_text_prob=self.partial_phoneme_text_prob if dataset_type == 'train' else 0.0,
+            partial_phoneme_word_prob=self.partial_phoneme_word_prob,
+            phonemizer_language_map=self.phonemizer_language_map,
+            phoneme_text_bop_marker=self.phoneme_text_bop_marker,
+            phoneme_text_eop_marker=self.phoneme_text_eop_marker,
         )
         dataset.load_16khz_audio = False
         dataset.tokenizer_config = (
@@ -1410,8 +1414,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             tokenizer_config=self.cfg.text_tokenizers,
             phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
             ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
-            phoneme_as_text_prob=self.phoneme_as_text_prob if mode == 'train' else 0.0,
-            pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            partial_phoneme_text_prob=self.partial_phoneme_text_prob if mode == 'train' else 0.0,
+            partial_phoneme_word_prob=self.partial_phoneme_word_prob,
+            phonemizer_language_map=self.phonemizer_language_map,
+            phoneme_text_bop_marker=self.phoneme_text_bop_marker,
+            phoneme_text_eop_marker=self.phoneme_text_eop_marker,
             add_language_to_context_text=self.add_language_to_context_text,
         )
 

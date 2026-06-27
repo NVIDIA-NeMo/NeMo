@@ -38,7 +38,6 @@ from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
-from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -47,6 +46,19 @@ try:
 except (ImportError, ModuleNotFoundError):
     Normalizer = None
     PYNINI_AVAILABLE = False
+
+
+DEFAULT_PHONEMIZER_LANGUAGE_MAP = {
+    "en": "en-us",
+    "de": "de",
+    "es": "es",
+    "fr": "fr-fr",
+    "it": "it",
+    "vi": "vi",
+    "zh": "cmn",
+    "hi": "hi",
+    "ja": "ja",
+}
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -101,67 +113,178 @@ def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
     return volume_level * (audio / np.max(np.abs(audio)))
 
 
-def setup_pronunciation_control_g2p(pronunciation_control_g2p_config):
-    """Instantiate per-language G2P modules used for pronunciation-control text augmentation.
-
-    Args:
-        pronunciation_control_g2p_config: Optional mapping from language code to Hydra config for the G2P module
-            that should be used when pronunciation-control augmentation is sampled.
-
-    Returns:
-        A dictionary mapping language code to the instantiated G2P module. Returns an empty dictionary when no
-        pronunciation-control config is provided.
-    """
-    g2p_modules = {}
-    if pronunciation_control_g2p_config is None:
-        return g2p_modules
-
-    for language in pronunciation_control_g2p_config:
-        g2p_modules[language] = safe_instantiate(pronunciation_control_g2p_config[language])
-
-    return g2p_modules
+def _validate_probability(name: str, value: float):
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
 
 
-def tokenize_text_with_pronunciation_control(
+def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
+    return bop_marker in text or eop_marker in text
+
+
+def _strip_phoneme_span_slashes(phoneme_text: str) -> str:
+    phoneme_text = phoneme_text.strip()
+    if len(phoneme_text) >= 2 and phoneme_text[0] == "/" and phoneme_text[-1] == "/":
+        return phoneme_text[1:-1].strip()
+    return phoneme_text
+
+
+def _split_text_and_phoneme_spans(
+    text: str,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> List[Tuple[str, str]]:
+    """Split mixed text into ("text"|"phoneme", segment) tuples."""
+    segments = []
+    cursor = 0
+
+    while cursor < len(text):
+        bop_idx = text.find(bop_marker, cursor)
+        if bop_idx == -1:
+            if eop_marker in text[cursor:]:
+                raise ValueError(f"Found `{eop_marker}` without a matching `{bop_marker}` in text: {text}")
+            segments.append(("text", text[cursor:]))
+            break
+
+        eop_before_bop_idx = text.find(eop_marker, cursor, bop_idx)
+        if eop_before_bop_idx != -1:
+            raise ValueError(f"Found `{eop_marker}` without a matching `{bop_marker}` in text: {text}")
+
+        if bop_idx > cursor:
+            segments.append(("text", text[cursor:bop_idx]))
+
+        span_start = bop_idx + len(bop_marker)
+        eop_idx = text.find(eop_marker, span_start)
+        if eop_idx == -1:
+            raise ValueError(f"Found `{bop_marker}` without a matching `{eop_marker}` in text: {text}")
+
+        segments.append(("phoneme", _strip_phoneme_span_slashes(text[span_start:eop_idx])))
+        cursor = eop_idx + len(eop_marker)
+
+    return [(kind, segment) for kind, segment in segments if segment]
+
+
+def _phonemize_with_espeak(text: str, language: str, phonemizer_language_map: Optional[Dict[str, str]] = None) -> str:
+    try:
+        from phonemizer import phonemize  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise ImportError(
+            "`phonemizer` is required when `partial_phoneme_text_prob > 0`. "
+            "Install it and ensure the espeak-ng backend is available."
+        ) from e
+
+    language_map = dict(DEFAULT_PHONEMIZER_LANGUAGE_MAP)
+    if phonemizer_language_map:
+        language_map.update(dict(phonemizer_language_map))
+    phonemizer_language = language_map.get(language, language)
+
+    phonemized = phonemize(
+        [text],
+        language=phonemizer_language,
+        backend="espeak",
+        strip=True,
+        preserve_punctuation=True,
+        language_switch="remove-flags",
+        words_mismatch="ignore",
+        njobs=1,
+    )
+    return phonemized[0] if isinstance(phonemized, list) else str(phonemized)
+
+
+def partially_phonemize_text(
+    text: str,
+    language: str,
+    partial_phoneme_word_prob: float,
+    phonemizer_language_map: Optional[Dict[str, str]] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> str:
+    """Replace sampled word spans with espeak IPA wrapped in user-facing markers."""
+    _validate_probability("partial_phoneme_word_prob", partial_phoneme_word_prob)
+    if partial_phoneme_word_prob == 0.0 or not text:
+        return text
+
+    word_spans = list(re.finditer(r"\b[\w'-]+\b", text, flags=re.UNICODE))
+    selected_spans = [match.span() for match in word_spans if random.random() < partial_phoneme_word_prob]
+    if not selected_spans:
+        return text
+
+    coalesced_spans = []
+    for start, end in selected_spans:
+        if coalesced_spans and text[coalesced_spans[-1][1] : start].isspace():
+            coalesced_spans[-1] = (coalesced_spans[-1][0], end)
+        else:
+            coalesced_spans.append((start, end))
+
+    output_parts = []
+    cursor = 0
+    for start, end in coalesced_spans:
+        output_parts.append(text[cursor:start])
+        ipa_text = _phonemize_with_espeak(text[start:end], language, phonemizer_language_map)
+        output_parts.append(f"{bop_marker}/{ipa_text}/{eop_marker}")
+        cursor = end
+    output_parts.append(text[cursor:])
+
+    return ''.join(output_parts)
+
+
+def tokenize_text_with_phoneme_spans(
     text_tokenizer,
     text_str: str,
     language: str,
     tokenizer_name: str,
-    dataset_type: str,
-    phoneme_as_text_prob: float,
-    pronunciation_control_g2p: Optional[Dict],
+    dataset_type: str = 'test',
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    partial_phoneme_text_prob: float = 0.0,
+    partial_phoneme_word_prob: float = 0.0,
+    phonemizer_language_map: Optional[Dict[str, str]] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> List[int]:
-    """Tokenize text, optionally replacing it with G2P output for pronunciation-control training.
+    """Tokenize regular text with optional inline IPA spans marked by ``<bop>...<eop>``.
 
-    Pronunciation control is only applied for training samples, when ``phoneme_as_text_prob`` is sampled, and when a
-    G2P module is available for the sample language. Otherwise the original text is tokenized.
-
-    Args:
-        text_tokenizer: Aggregated TTS tokenizer used to encode either original text or G2P text.
-        text_str: Input text from the dataset sample.
-        language: Language code for selecting the pronunciation-control G2P module.
-        tokenizer_name: Name of the tokenizer inside ``text_tokenizer`` to use for encoding.
-        dataset_type: Dataset split/type. Pronunciation-control augmentation is restricted to ``"train"``.
-        phoneme_as_text_prob: Probability of replacing the text with G2P output for eligible training samples.
-        pronunciation_control_g2p: Optional mapping from language code to instantiated G2P module.
-
-    Returns:
-        Encoded token ids for either ``text_str`` or the sampled pronunciation-control G2P text.
+    Span markers are syntax only and are not emitted as token IDs. IPA span IDs are encoded with the phoneme tokenizer
+    and shifted by ``text_phoneme_token_offset`` so they live in the text-channel vocabulary.
     """
-    use_pronunciation_control = (
-        dataset_type == 'train'
-        and phoneme_as_text_prob > 0.0
-        and random.random() < phoneme_as_text_prob
-        and pronunciation_control_g2p is not None
-        and language in pronunciation_control_g2p
-    )
-    if not use_pronunciation_control:
+    _validate_probability("partial_phoneme_text_prob", partial_phoneme_text_prob)
+    _validate_probability("partial_phoneme_word_prob", partial_phoneme_word_prob)
+
+    if not enable_phoneme_text_input:
         return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
 
-    g2p_module = pronunciation_control_g2p[language]
-    g2p_text = g2p_module(text_str)
-    text_for_tokens = ''.join(g2p_text) if isinstance(g2p_text, list) else str(g2p_text)
-    return text_tokenizer.encode(text=text_for_tokens, tokenizer_name=tokenizer_name)
+    if phoneme_tokenizer is None:
+        raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
+    if text_phoneme_token_offset is None:
+        raise ValueError("`text_phoneme_token_offset` is required when `enable_phoneme_text_input=True`.")
+
+    text_for_tokens = text_str
+    if (
+        dataset_type == 'train'
+        and partial_phoneme_text_prob > 0.0
+        and random.random() < partial_phoneme_text_prob
+        and not has_phoneme_text_spans(text_for_tokens, bop_marker=bop_marker, eop_marker=eop_marker)
+    ):
+        text_for_tokens = partially_phonemize_text(
+            text=text_for_tokens,
+            language=language,
+            partial_phoneme_word_prob=partial_phoneme_word_prob,
+            phonemizer_language_map=phonemizer_language_map,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
+
+    token_ids = []
+    for segment_type, segment in _split_text_and_phoneme_spans(
+        text_for_tokens, bop_marker=bop_marker, eop_marker=eop_marker
+    ):
+        if segment_type == "text":
+            token_ids.extend(text_tokenizer.encode(text=segment, tokenizer_name=tokenizer_name))
+        else:
+            token_ids.extend(text_phoneme_token_offset + token_id for token_id in phoneme_tokenizer.encode(segment))
+
+    return token_ids
 
 
 class BetaBinomialInterpolator:
@@ -607,6 +730,14 @@ def chunk_and_tokenize_text_by_sentence(
     text_tokenizer: Any,
     eos_token_id: int,
     language: str = "en",
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    partial_phoneme_text_prob: float = 0.0,
+    partial_phoneme_word_prob: float = 0.0,
+    phonemizer_language_map: Optional[Dict[str, str]] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Tokenize text split by sentences, adding EOS token after each sentence.
@@ -634,7 +765,21 @@ def chunk_and_tokenize_text_by_sentence(
 
     for sentence in split_sentences:
         chunked_text.append(sentence)
-        tokens = text_tokenizer.encode(text=sentence, tokenizer_name=tokenizer_name)
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=sentence,
+            language=language,
+            tokenizer_name=tokenizer_name,
+            dataset_type='test',
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            partial_phoneme_text_prob=partial_phoneme_text_prob,
+            partial_phoneme_word_prob=partial_phoneme_word_prob,
+            phonemizer_language_map=phonemizer_language_map,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
         tokens = tokens + [eos_token_id]
         tokens = torch.tensor(tokens, dtype=torch.int32)
         tokens_len = tokens.shape[0]
@@ -784,6 +929,14 @@ def chunk_text_for_inference(
     text_tokenizer: Any,
     eos_token_id: int,
     language_thresholds: Optional[LanguageThresholds] = None,
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    partial_phoneme_text_prob: float = 0.0,
+    partial_phoneme_word_prob: float = 0.0,
+    phonemizer_language_map: Optional[Dict[str, str]] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Unified text chunking for inference: returns single chunk if below threshold,
@@ -827,7 +980,8 @@ def chunk_text_for_inference(
         language_thresholds = DEFAULT_LANGUAGE_THRESHOLDS
 
     # Check if text exceeds threshold for this language
-    should_split = language_thresholds.exceeds_threshold(text, language)
+    has_explicit_phoneme_spans = has_phoneme_text_spans(text, bop_marker=bop_marker, eop_marker=eop_marker)
+    should_split = language_thresholds.exceeds_threshold(text, language) and not has_explicit_phoneme_spans
 
     if should_split:
         # Long text: split by sentences
@@ -837,10 +991,32 @@ def chunk_text_for_inference(
             text_tokenizer=text_tokenizer,
             eos_token_id=eos_token_id,
             language=language,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            partial_phoneme_text_prob=partial_phoneme_text_prob,
+            partial_phoneme_word_prob=partial_phoneme_word_prob,
+            phonemizer_language_map=phonemizer_language_map,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
         )
     else:
         # Short text: return as single chunk
-        tokens = text_tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=text,
+            language=language,
+            tokenizer_name=tokenizer_name,
+            dataset_type='test',
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            partial_phoneme_text_prob=partial_phoneme_text_prob,
+            partial_phoneme_word_prob=partial_phoneme_word_prob,
+            phonemizer_language_map=phonemizer_language_map,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
         tokens = tokens + [eos_token_id]
         tokens_tensor = torch.tensor(tokens, dtype=torch.int32)
         tokens_len = tokens_tensor.shape[0]

@@ -32,9 +32,8 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
     normalize_volume,
-    setup_pronunciation_control_g2p,
     stack_tensors,
-    tokenize_text_with_pronunciation_control,
+    tokenize_text_with_phoneme_spans,
 )
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
@@ -183,8 +182,13 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         text_context_remapping_prob: float = 0.0,
         phoneme_tokenizer_config: DictConfig = None,
         ignore_phoneme_languages: List[str] = None,
-        phoneme_as_text_prob: float = 0.0,
-        pronunciation_control_g2p: Optional[DictConfig] = None,
+        enable_phoneme_text_input: bool = False,
+        text_phoneme_token_offset: int = None,
+        partial_phoneme_text_prob: float = 0.0,
+        partial_phoneme_word_prob: float = 0.5,
+        phonemizer_language_map: Dict[str, str] = None,
+        phoneme_text_bop_marker: str = "<bop>",
+        phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
     ):
         super().__init__()
@@ -207,13 +211,17 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.tokenizer_config = tokenizer_config
         self.text_tokenizer = None
         self.phoneme_tokenizer = None
-        self.pronunciation_control_g2p = None
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
         self.phoneme_tokenizer_config = phoneme_tokenizer_config
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
-        self.phoneme_as_text_prob = phoneme_as_text_prob
-        self.pronunciation_control_g2p_config = pronunciation_control_g2p
+        self.enable_phoneme_text_input = enable_phoneme_text_input
+        self.text_phoneme_token_offset = text_phoneme_token_offset
+        self.partial_phoneme_text_prob = partial_phoneme_text_prob
+        self.partial_phoneme_word_prob = partial_phoneme_word_prob
+        self.phonemizer_language_map = phonemizer_language_map or {}
+        self.phoneme_text_bop_marker = phoneme_text_bop_marker
+        self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
@@ -237,19 +245,21 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 all_tokenizers_config=self.tokenizer_config,
                 mode=self.dataset_type,
             )
-            self.bos_id = len(self.text_tokenizer.tokens)
+            if self.enable_phoneme_text_input and self.phoneme_tokenizer is None:
+                if self.phoneme_tokenizer_config is None:
+                    raise ValueError("`phoneme_tokenizer_config` is required when `enable_phoneme_text_input=True`.")
+                self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
+            base_text_vocab_size = len(self.text_tokenizer.tokens)
+            if self.text_phoneme_token_offset is None:
+                self.text_phoneme_token_offset = base_text_vocab_size
+            text_phoneme_vocab_size = self.phoneme_tokenizer.vocab_size if self.enable_phoneme_text_input else 0
+            self.bos_id = base_text_vocab_size + text_phoneme_vocab_size
             self.eos_id = self.bos_id + 1
             self.pad_id = self.text_tokenizer.pad
 
         # initialize the phoneme tokenizer once per dataset/worker when config is available.
         if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
             self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
-        if (
-            self.pronunciation_control_g2p is None
-            and self.pronunciation_control_g2p_config is not None
-            and self.phoneme_as_text_prob > 0.0
-        ):
-            self.pronunciation_control_g2p = setup_pronunciation_control_g2p(self.pronunciation_control_g2p_config)
 
         # define list to store batched information
         dataset_name_list = []
@@ -469,14 +479,20 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 tokenizer_name = random.choice(cut.tokenizer_names)
             else:
                 tokenizer_name = "english_phoneme"  # Default to english phoneme tokenizer
-            tokens = tokenize_text_with_pronunciation_control(
+            tokens = tokenize_text_with_phoneme_spans(
                 text_tokenizer=self.text_tokenizer,
                 text_str=text_str,
                 language=language,
                 tokenizer_name=tokenizer_name,
                 dataset_type=self.dataset_type,
-                phoneme_as_text_prob=self.phoneme_as_text_prob,
-                pronunciation_control_g2p=self.pronunciation_control_g2p,
+                enable_phoneme_text_input=self.enable_phoneme_text_input,
+                phoneme_tokenizer=self.phoneme_tokenizer,
+                text_phoneme_token_offset=self.text_phoneme_token_offset,
+                partial_phoneme_text_prob=self.partial_phoneme_text_prob,
+                partial_phoneme_word_prob=self.partial_phoneme_word_prob,
+                phonemizer_language_map=self.phonemizer_language_map,
+                bop_marker=self.phoneme_text_bop_marker,
+                eop_marker=self.phoneme_text_eop_marker,
             )
             tokens = tokens + [self.eos_id]  # Not adding BOS id
             tokens = torch.tensor(tokens, dtype=torch.int32)

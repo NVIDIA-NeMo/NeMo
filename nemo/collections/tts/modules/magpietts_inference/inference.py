@@ -725,6 +725,8 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             text_phoneme_token_offset=self.model.text_phoneme_token_offset,
             partial_phoneme_text_prob=0.0,
             partial_phoneme_word_prob=self.model.partial_phoneme_word_prob,
+            partial_phoneme_word_prob_min=self.model.partial_phoneme_word_prob_min,
+            partial_phoneme_word_prob_max=self.model.partial_phoneme_word_prob_max,
             phonemizer_language_map=self.model.phonemizer_language_map,
             phoneme_text_bop_marker=self.model.phoneme_text_bop_marker,
             phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,

@@ -559,6 +559,39 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_training_augmentation_samples_word_probability_range(self, monkeypatch):
+        sampled_ranges = []
+        monkeypatch.setattr(
+            tts_dataset_utils,
+            "_phonemize_with_espeak",
+            lambda text, language, phonemizer_language_map: "ab",
+        )
+
+        def fake_uniform(min_value, max_value):
+            sampled_ranges.append((min_value, max_value))
+            return 1.0
+
+        monkeypatch.setattr(tts_dataset_utils.random, "uniform", fake_uniform)
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="hello",
+            language="en",
+            tokenizer_name="english_phoneme",
+            dataset_type="train",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+            partial_phoneme_text_prob=1.0,
+            partial_phoneme_word_prob_min=0.25,
+            partial_phoneme_word_prob_max=0.75,
+        )
+
+        assert sampled_ranges == [(0.25, 0.75)]
+        assert tokens == [101, 102]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_cas_vocab_accepts_expanded_mixed_text_ids(self):
         subword_id_to_char_ids, char_vocab = build_vocabs(
             subword_vocab={"a": 0, "b": 1},

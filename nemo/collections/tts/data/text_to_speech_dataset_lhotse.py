@@ -186,6 +186,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         text_phoneme_token_offset: int = None,
         partial_phoneme_text_prob: float = 0.0,
         partial_phoneme_word_prob: float = 0.5,
+        partial_phoneme_word_prob_min: float = None,
+        partial_phoneme_word_prob_max: float = None,
         phonemizer_language_map: Dict[str, str] = None,
         phoneme_text_bop_marker: str = "<bop>",
         phoneme_text_eop_marker: str = "<eop>",
@@ -219,6 +221,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.text_phoneme_token_offset = text_phoneme_token_offset
         self.partial_phoneme_text_prob = partial_phoneme_text_prob
         self.partial_phoneme_word_prob = partial_phoneme_word_prob
+        self.partial_phoneme_word_prob_min = partial_phoneme_word_prob_min
+        self.partial_phoneme_word_prob_max = partial_phoneme_word_prob_max
         self.phonemizer_language_map = phonemizer_language_map or {}
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
@@ -489,6 +493,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 text_phoneme_token_offset=self.text_phoneme_token_offset,
                 partial_phoneme_text_prob=self.partial_phoneme_text_prob,
                 partial_phoneme_word_prob=self.partial_phoneme_word_prob,
+                partial_phoneme_word_prob_min=self.partial_phoneme_word_prob_min,
+                partial_phoneme_word_prob_max=self.partial_phoneme_word_prob_max,
                 phonemizer_language_map=self.phonemizer_language_map,
                 ignore_phoneme_languages=self.ignore_phoneme_languages,
                 bop_marker=self.phoneme_text_bop_marker,

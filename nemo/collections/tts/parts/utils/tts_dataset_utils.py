@@ -119,6 +119,14 @@ def _validate_probability(name: str, value: float):
         raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
 
 
+def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:
+    _validate_probability(f"{name}_min", min_value)
+    _validate_probability(f"{name}_max", max_value)
+    if min_value > max_value:
+        raise ValueError(f"`{name}_min` must be <= `{name}_max`, received {min_value} > {max_value}")
+    return random.uniform(min_value, max_value)
+
+
 def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
     return bop_marker in text or eop_marker in text
 
@@ -234,6 +242,8 @@ def tokenize_text_with_phoneme_spans(
     text_phoneme_token_offset: Optional[int] = None,
     partial_phoneme_text_prob: float = 0.0,
     partial_phoneme_word_prob: float = 0.0,
+    partial_phoneme_word_prob_min: Optional[float] = None,
+    partial_phoneme_word_prob_max: Optional[float] = None,
     phonemizer_language_map: Optional[Dict[str, str]] = None,
     ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
@@ -246,6 +256,10 @@ def tokenize_text_with_phoneme_spans(
     """
     _validate_probability("partial_phoneme_text_prob", partial_phoneme_text_prob)
     _validate_probability("partial_phoneme_word_prob", partial_phoneme_word_prob)
+    if partial_phoneme_word_prob_min is None:
+        partial_phoneme_word_prob_min = partial_phoneme_word_prob
+    if partial_phoneme_word_prob_max is None:
+        partial_phoneme_word_prob_max = partial_phoneme_word_prob
 
     if not enable_phoneme_text_input:
         return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
@@ -265,10 +279,13 @@ def tokenize_text_with_phoneme_spans(
         and not explicit_phoneme_spans
         and not skip_partial_phonemization
     ):
+        sampled_word_prob = _sample_probability_range(
+            "partial_phoneme_word_prob", partial_phoneme_word_prob_min, partial_phoneme_word_prob_max
+        )
         text_for_tokens = partially_phonemize_text(
             text=text_for_tokens,
             language=language,
-            partial_phoneme_word_prob=partial_phoneme_word_prob,
+            partial_phoneme_word_prob=sampled_word_prob,
             phonemizer_language_map=phonemizer_language_map,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
@@ -734,6 +751,8 @@ def chunk_and_tokenize_text_by_sentence(
     text_phoneme_token_offset: Optional[int] = None,
     partial_phoneme_text_prob: float = 0.0,
     partial_phoneme_word_prob: float = 0.0,
+    partial_phoneme_word_prob_min: Optional[float] = None,
+    partial_phoneme_word_prob_max: Optional[float] = None,
     phonemizer_language_map: Optional[Dict[str, str]] = None,
     ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
@@ -776,6 +795,8 @@ def chunk_and_tokenize_text_by_sentence(
             text_phoneme_token_offset=text_phoneme_token_offset,
             partial_phoneme_text_prob=partial_phoneme_text_prob,
             partial_phoneme_word_prob=partial_phoneme_word_prob,
+            partial_phoneme_word_prob_min=partial_phoneme_word_prob_min,
+            partial_phoneme_word_prob_max=partial_phoneme_word_prob_max,
             phonemizer_language_map=phonemizer_language_map,
             ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
@@ -935,6 +956,8 @@ def chunk_text_for_inference(
     text_phoneme_token_offset: Optional[int] = None,
     partial_phoneme_text_prob: float = 0.0,
     partial_phoneme_word_prob: float = 0.0,
+    partial_phoneme_word_prob_min: Optional[float] = None,
+    partial_phoneme_word_prob_max: Optional[float] = None,
     phonemizer_language_map: Optional[Dict[str, str]] = None,
     ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
@@ -998,6 +1021,8 @@ def chunk_text_for_inference(
             text_phoneme_token_offset=text_phoneme_token_offset,
             partial_phoneme_text_prob=partial_phoneme_text_prob,
             partial_phoneme_word_prob=partial_phoneme_word_prob,
+            partial_phoneme_word_prob_min=partial_phoneme_word_prob_min,
+            partial_phoneme_word_prob_max=partial_phoneme_word_prob_max,
             phonemizer_language_map=phonemizer_language_map,
             ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
@@ -1016,6 +1041,8 @@ def chunk_text_for_inference(
             text_phoneme_token_offset=text_phoneme_token_offset,
             partial_phoneme_text_prob=partial_phoneme_text_prob,
             partial_phoneme_word_prob=partial_phoneme_word_prob,
+            partial_phoneme_word_prob_min=partial_phoneme_word_prob_min,
+            partial_phoneme_word_prob_max=partial_phoneme_word_prob_max,
             phonemizer_language_map=phonemizer_language_map,
             ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,

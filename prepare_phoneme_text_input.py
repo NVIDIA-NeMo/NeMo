@@ -34,6 +34,7 @@ DEFAULT_PHONEMIZER_LANGUAGE_MAP = {
     "nl": "nl",
     "pl": "pl",
     "pt": "pt",
+    "pt-BR": "pt",
     "ar-AE": "ar",
     "ar-MSA": "ar",
     "ar-SA": "ar",

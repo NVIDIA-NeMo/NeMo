@@ -179,31 +179,41 @@ def _split_text_and_phoneme_spans(
     return [(kind, segment) for kind, segment in segments if segment]
 
 
-def _phonemize_with_espeak(text: str, language: str, phonemizer_language_map: Optional[Dict[str, str]] = None) -> str:
+@functools.lru_cache(maxsize=None)
+def _get_espeak_backend(phonemizer_language: str):
+    """Construct and cache (once per worker process and language) an espeak phonemizer backend.
+
+    The top-level ``phonemizer.phonemize`` helper instantiates a brand new ``EspeakBackend`` (which
+    ``dlopen``s libespeak-ng) on *every* call. When partial phonemization is enabled this happens
+    once per selected word span, for many utterances, across every dataloader worker — which is both
+    slow and a steady source of host-memory growth (espeak-ng is known to leak across repeated
+    backend creation). Reusing a single cached backend per language removes both problems.
+    """
     try:
-        from phonemizer import phonemize  # type: ignore[import-not-found]
+        from phonemizer.backend import EspeakBackend  # type: ignore[import-not-found]
     except ImportError as e:
         raise ImportError(
             "`phonemizer` is required when `partial_phoneme_text_prob > 0`. "
             "Install it and ensure the espeak-ng backend is available."
         ) from e
 
+    return EspeakBackend(
+        phonemizer_language,
+        preserve_punctuation=False,
+        with_stress=True,
+        language_switch="remove-flags",
+        words_mismatch="ignore",
+    )
+
+
+def _phonemize_with_espeak(text: str, language: str, phonemizer_language_map: Optional[Dict[str, str]] = None) -> str:
     language_map = dict(DEFAULT_PHONEMIZER_LANGUAGE_MAP)
     if phonemizer_language_map:
         language_map.update(dict(phonemizer_language_map))
     phonemizer_language = language_map.get(language, language)
 
-    phonemized = phonemize(
-        [text],
-        language=phonemizer_language,
-        backend="espeak",
-        strip=True,
-        preserve_punctuation=False,
-        with_stress=True,
-        language_switch="remove-flags",
-        words_mismatch="ignore",
-        njobs=1,
-    )
+    backend = _get_espeak_backend(phonemizer_language)
+    phonemized = backend.phonemize([text], strip=True, njobs=1)
     return phonemized[0] if isinstance(phonemized, list) else str(phonemized)
 
 
@@ -236,8 +246,20 @@ def partially_phonemize_text(
     cursor = 0
     for start, end in coalesced_spans:
         output_parts.append(text[cursor:start])
-        ipa_text = _phonemize_with_espeak(text[start:end], language, phonemizer_language_map)
-        output_parts.append(f"{bop_marker}{ipa_text}{eop_marker}")
+        span_text = text[start:end]
+        try:
+            ipa_text = _phonemize_with_espeak(span_text, language, phonemizer_language_map)
+            output_parts.append(f"{bop_marker}{ipa_text}{eop_marker}")
+        except Exception:
+            # Never let a phonemizer failure (error, missing voice, etc.) take down the dataloader
+            # worker. Fall back to the original grapheme text for this span and keep training.
+            logging.warning(
+                "Phonemization failed for language=%s span=%r; using original text instead.\n%s",
+                language,
+                span_text,
+                traceback.format_exc(),
+            )
+            output_parts.append(span_text)
         cursor = end
     output_parts.append(text[cursor:])
 

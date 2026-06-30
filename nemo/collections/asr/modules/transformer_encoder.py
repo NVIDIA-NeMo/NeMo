@@ -497,13 +497,18 @@ class TransformerEncoder(nn.Module):
             )
 
         if not bypass_pre_encode:
-            if isinstance(self.pre_encode, FeatureStacking):
+            # Unwrap activation-checkpointing (CheckpointWrapper) and match by name: both
+            # the wrapper and duplicate module copies defeat isinstance(FeatureStacking).
+            pre_encode_module = getattr(self.pre_encode, "_checkpoint_wrapped_module", self.pre_encode)
+            is_feature_stacking = type(pre_encode_module).__name__ == "FeatureStacking"
+            if is_feature_stacking:
+                # FeatureStacking takes raw (B, C, T) and transposes internally.
                 x, length = self.pre_encode(audio_signal, length)
             else:
                 x = torch.transpose(audio_signal, 1, 2)
-            if isinstance(self.pre_encode, nn.Linear):
+            if isinstance(pre_encode_module, nn.Linear):
                 x = self.pre_encode(x)
-            elif not isinstance(self.pre_encode, FeatureStacking):
+            elif not is_feature_stacking:
                 x, length = self.pre_encode(x=x, lengths=length)
             length = length.to(torch.int64)
         else:

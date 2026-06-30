@@ -73,19 +73,19 @@ s2s:
   # non-deterministic mode was used in training.
   deterministic: false
 
-  # sampling parameters. greedy decoding: temperature=0 (argmax), top_p=1.0, repetition_penalty=1.0.
+  # sampling parameters. greedy decoding: temperature=0 (argmax), top_p=1.0.
   top_p: 1.0
-  repetition_penalty: 1.0
+  repetition_penalty: 1.2
   temperature: 0.0
   force_turn_taking: true
   force_turn_taking_threshold: 40
-  force_turn_taking_pad_window: 25
+  force_turn_taking_pad_window: 38      # PAD frames → forced BOS non-first-turn (38 × 80ms = 3.0s)
   turn_taking_source: rnnt              # "rnnt" (default) or "asr_head"
-  rnnt_eou_frames: 15                   # RNNT silence frames for EOU (15 × 80ms = 1.2s); overridden by S2S_RNNT_EOU_FRAMES
-  rnnt_bou_frames: 3                    # RNNT speech frames for BOU / barge-in (3 × 80ms = 240ms); overridden by S2S_RNNT_BOU_FRAMES
-  force_turn_taking_pad_window_first_turn: 10  # PAD-window for forced BOS on the very first user turn; overridden by S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN
-  asr_eou_first_turn: 15               # EOU silence threshold for first user turn (same as rnnt_eou_frames by default)
-  asr_min_speech_frames_first_turn: 2  # Min speech frames before EOU is armed on first turn (shorter than subsequent turns)
+  rnnt_eou_frames: 40                   # RNNT silence frames for EOU (40 × 80ms = 3.2s)
+  rnnt_bou_frames: 40                   # RNNT speech frames for BOU / barge-in (40 × 80ms = 3.2s)
+  force_turn_taking_pad_window_first_turn: 10  # PAD-window for forced BOS on the very first user turn
+  asr_eou_first_turn: 40               # EOU silence threshold for first user turn (matches rnnt_eou_frames)
+  asr_min_speech_frames_first_turn: 2  # Min speech frames before EOU is armed on first turn
 
   # RNNT punctuation logit biasing (display only — does not affect turn-taking)
   # After the user says words and pauses, blank frames incrementally boost punct

@@ -2713,6 +2713,7 @@ class NemotronVoicechatInferenceWrapper:
             asr_predicted_toks_b = [tok for tok in asr_predicted_toks_b if tok != '<SPECIAL_12>']
             asr_predicted_text_strs.append(self.tokenizer.tokens_to_text(asr_predicted_toks_b))
 
+        logging.info(f'frame {frame_idx}: USER\'s asr_predicted_text_strs: {asr_predicted_text_strs}')
         logging.info(f'frame {frame_idx}: --------------------------------AGENT\'s predicted_text_strs: {predicted_text_strs}')
         if self.model.stt_model.function_head is not None:
             fc_tok_ids = function_predicted_tokens[0].tolist()

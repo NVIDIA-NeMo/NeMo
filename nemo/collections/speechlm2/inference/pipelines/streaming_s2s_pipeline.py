@@ -1557,66 +1557,32 @@ out center {limit};
 				if ready_feats[idx] and idx < len(fc_text_strs) and fc_text_strs[idx]:
 					fc_state_obj = self.get_or_create_state(frame.stream_id)
 					fc_state_obj.output_function_text_str += fc_text_strs[idx]
-		# Stream user transcript per-frame: send each word as RNNT constructs it.
-		# Clear y_sequence on agent BOS (deterministic turn boundary — agent starts speaking)
-		# or on 800ms silence (10 blank frames) as fallback when no agent response fires.
-		# BOS-based clear is required because TTS echo through the mic resets blank_count,
-		# preventing the silence-only trigger from ever firing between turns.
 		if use_rnnt and context.rnnt_partial_hypotheses is not None:
 			_rnnt_hyp = context.rnnt_partial_hypotheses
-			_y_seq = _rnnt_hyp.get('y_sequence', [])
 			_blank_t = _rnnt_hyp.get('blank_count')
 			_blanks = int(_blank_t[0].item()) if _blank_t is not None else 0
 
-			# 240ms speech-confirmation gate: suppress display until 3 non-blank frames
-			# have been seen in this utterance.  Counter only increments on non-blank
-			# frames and is NOT reset by mid-sentence pauses — only by turn boundary
-			# (BOS or 10 blanks below).  This prevents short words like "hi" from being
-			# swallowed when the user pauses briefly before continuing.
-			_sdf = _rnnt_hyp.get('_speech_display_frames', 0)
-			_speech_ok = _rnnt_hyp.get('_speech_confirmed', False)
-			if _blanks == 0 and not _speech_ok:  # non-blank, not yet confirmed
-				_sdf += 1
-				if _sdf >= 3:
-					_speech_ok = True
-			context.rnnt_partial_hypotheses['_speech_display_frames'] = _sdf
-			context.rnnt_partial_hypotheses['_speech_confirmed'] = _speech_ok
-
-			# Detect agent BOS in this frame's predicted tokens
-			_pred_toks = result.get("predicted_text_tokens")
-			_bos_id = getattr(getattr(self.s2s_model.model, 'stt_model', None), 'text_bos_id', None)
-			_agent_bos_fired = (
-				_pred_toks is not None and _bos_id is not None and _pred_toks.numel() > 0
-				and int(_bos_id) in _pred_toks.reshape(-1).tolist()
-			)
-
-			# Update ASR display text using post-step y_sequence (so punct injected this
-			# frame is included). Send during silence frames so punct is captured as soon
-			# as it fires — before agent BOS.  Also send at BOS as a safety net for turns
-			# where the user speaks and agent responds before any silence punct threshold.
-			# Server-side dedup (_last_sent_asr_text) prevents re-sending identical text.
+			# Write full accumulated ASR text each frame.
 			_post_y_seq = context.rnnt_partial_hypotheses.get('y_sequence', [])
-			_update_asr = (
-				_post_y_seq and _speech_ok
-				and (_blanks > 0 or _agent_bos_fired)  # silence frame OR BOS
-			)
-			if _update_asr:
+			if _post_y_seq:
 				_asr_text = self.s2s_model._rnnt_decode_text(_post_y_seq)
-				_asr_text = _asr_text.lstrip('. ')
-				if _asr_text:
-					self.get_or_create_state(stream_ids[0]).output_asr_text_str = _asr_text
+				_has_word = any(c.isalpha() for c in _asr_text)
+				if _asr_text and _has_word:
+					if _asr_text != getattr(self.get_or_create_state(stream_ids[0]), '_last_sent_asr_text', None):
+						self.get_or_create_state(stream_ids[0]).output_asr_text_str = _asr_text
+						self.get_or_create_state(stream_ids[0])._last_sent_asr_text = _asr_text
 
-			# Clear y_sequence on BOS (definitive turn boundary) OR on 800ms silence
-			# when the user has said NOTHING in this turn (_sdf==0).  Once any non-blank
-			# frame was seen (even a short "hi"), only BOS should clear — otherwise the
-			# 10-blank fallback fires during a natural inter-phrase pause and wipes the
-			# partial transcript before _speech_ok reaches True, losing the last turn.
-			if _agent_bos_fired or (_blanks >= 10 and _sdf == 0):
+			# Clear y_sequence on 800ms silence (10 blank frames × 80ms).
+			# Also clear output_asr_text_str so infer_streaming.py detects the shrink
+			# and reset predictor state so the next turn's first token is not influenced
+			# by the previous turn's final punct context.
+			if _blanks >= 10:
+				self.get_or_create_state(stream_ids[0]).output_asr_text_str = ""
 				context.rnnt_partial_hypotheses['y_sequence'] = []
 				context.rnnt_partial_hypotheses['_punct_word_acc'] = []
 				context.rnnt_partial_hypotheses['_punct_bias_val'] = 0.0
-				context.rnnt_partial_hypotheses['_speech_display_frames'] = 0
-				context.rnnt_partial_hypotheses['_speech_confirmed'] = False
+				context.rnnt_partial_hypotheses['pred_out'] = None
+				context.rnnt_partial_hypotheses['pred_hidden'] = None
 
 		# FC Sync: if EOTC was detected in non-async mode, execute tool and queue response
 		if (context.fc_state is not None

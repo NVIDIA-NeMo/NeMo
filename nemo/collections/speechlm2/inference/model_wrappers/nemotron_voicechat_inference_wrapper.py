@@ -930,11 +930,12 @@ class NemotronVoicechatInferenceWrapper:
         # Applied ONLY in the inner label loop -- is_blank / turn-taking are untouched.
         self._rnnt_punct_ids: list = []
         self._rnnt_punct_ids_set: set = set()
-        self._rnnt_punct_bias_increment: float = float(
-            self.model_cfg.get("rnnt_punct_bias_increment", 2.5))
+        self._rnnt_punct_bias_increments: dict = {}   # token_id -> per-token logit increment
         self._rnnt_punct_bias_min_blanks: int = int(
             self.model_cfg.get("rnnt_punct_bias_min_blanks", 5))
         if self.model_cfg.get("rnnt_punct_bias_enabled", False) and _rnnt_vocab is not None:
+            _inc_cfg = self.model_cfg.get("rnnt_punct_bias_increments", None)
+            _inc_default = float(self.model_cfg.get("rnnt_punct_bias_increment", 2.5))
             for _pt in self.model_cfg.get("rnnt_punct_bias_tokens", [".", ",", "?", "!"]):
                 for _variant in [_pt, "▁" + _pt]:   # bare token and word-start form
                     if _variant in _rnnt_vocab:
@@ -942,9 +943,11 @@ class NemotronVoicechatInferenceWrapper:
                         if _pid not in self._rnnt_punct_ids_set:
                             self._rnnt_punct_ids.append(_pid)
                             self._rnnt_punct_ids_set.add(_pid)
-            logging.info("[RNNT] Punct bias enabled: tokens=%s IDs=%s increment=%.1f min_blanks=%d",
+                            _pt_inc = float(_inc_cfg[_pt]) if (_inc_cfg and _pt in _inc_cfg) else _inc_default
+                            self._rnnt_punct_bias_increments[_pid] = _pt_inc
+            logging.info("[RNNT] Punct bias enabled: tokens=%s IDs=%s increments=%s min_blanks=%d",
                          self.model_cfg.get("rnnt_punct_bias_tokens"),
-                         self._rnnt_punct_ids, self._rnnt_punct_bias_increment,
+                         self._rnnt_punct_ids, self._rnnt_punct_bias_increments,
                          self._rnnt_punct_bias_min_blanks)
         logging.info(
             "[Turn-taking] RNNT is_start_tokens built: %d tokens (EOU word-boundary check %s)",
@@ -2859,6 +2862,7 @@ class NemotronVoicechatInferenceWrapper:
             'speech_confirmed': torch.zeros(B, dtype=torch.bool, device=device),
             'agent_speaking':   torch.zeros(B, dtype=torch.bool, device=device),
             'first_turn':       torch.ones(B, dtype=torch.bool, device=device),
+            'user_first_turn':  torch.ones(B, dtype=torch.bool, device=device),
             'rolling_density':  torch.zeros(B, dtype=torch.float32, device=device),
             'post_eos_fired':   torch.zeros(B, dtype=torch.bool, device=device),
             'forced_bos':       torch.zeros(B, dtype=torch.bool, device=device),
@@ -2905,7 +2909,7 @@ class NemotronVoicechatInferenceWrapper:
             if _pbv > 0.0:
                 _biased = logits.squeeze(1).squeeze(1).clone()
                 for _pid in self._rnnt_punct_ids:
-                    _biased[0, _pid] = _biased[0, _pid] + _pbv
+                    _biased[0, _pid] = _biased[0, _pid] + _pbv * self._rnnt_punct_bias_increments.get(_pid, 1.0)
                 _biased_tok = int(_biased.argmax(-1)[0].item())
                 if _biased_tok in self._rnnt_punct_ids_set:
                     _emitted.append(_biased_tok)
@@ -2966,7 +2970,7 @@ class NemotronVoicechatInferenceWrapper:
             _old_bc = rnnt_state.get('blank_count')
             _blank_consec = (int(_old_bc[0].item()) + 1) if (B == 1 and _old_bc is not None) else 0
             if _blank_consec >= self._rnnt_punct_bias_min_blanks:
-                _pb_val += self._rnnt_punct_bias_increment
+                _pb_val += 1.0  # counts qualifying blank frames; per-token increment applied at boost time
 
         density_alpha = 0.1
         is_speech_float = (~is_blank).float()
@@ -2990,6 +2994,7 @@ class NemotronVoicechatInferenceWrapper:
             'speech_confirmed': rnnt_state['speech_confirmed'],
             'agent_speaking':   rnnt_state['agent_speaking'],
             'first_turn':       rnnt_state['first_turn'],
+            'user_first_turn':  rnnt_state.get('user_first_turn', rnnt_state['first_turn']),
             'rolling_density':  new_density,
             'post_eos_fired':   rnnt_state['post_eos_fired'],
             'y_sequence':       rnnt_state.get('y_sequence', []) + _emitted,
@@ -3052,13 +3057,17 @@ class NemotronVoicechatInferenceWrapper:
             speech_confirmed = rnnt_state['speech_confirmed'][b].item()
             first_turn       = rnnt_state['first_turn'][b].item()
             rolling_density  = rnnt_state['rolling_density'][b].item()
+            # user_first_turn: True until user's first EOU fires; unaffected by model BOS.
+            # Keeps asr_min_speech_frames_first_turn active for the user's actual first
+            # question rather than flipping after the model's greeting BOS.
+            # EOU silence threshold is the same for all user turns (asr_eou).
+            user_first_turn  = rnnt_state.get('user_first_turn', rnnt_state['first_turn'])[b].item()
 
-            if first_turn:
+            if user_first_turn:
                 effective_min_speech = int(self.model_cfg.get("asr_min_speech_frames_first_turn", 2))
-                effective_eou        = int(self.model_cfg.get("asr_eou_first_turn", asr_eou))
             else:
                 effective_min_speech = asr_min_speech
-                effective_eou        = asr_eou
+            effective_eou = int(self.model_cfg.get("asr_eou_first_turn", asr_eou)) if user_first_turn else asr_eou
 
             density_threshold = float(self.model_cfg.get("density_speech_threshold", 0.15))
             density_low_min   = int(self.model_cfg.get("density_low_min_speech", 6))
@@ -3130,6 +3139,8 @@ class NemotronVoicechatInferenceWrapper:
                 rnnt_state['nonblank_total'][b] = 0
                 rnnt_state['agent_speaking'][b] = True
                 rnnt_state['first_turn'][b] = False
+                if 'user_first_turn' in rnnt_state:
+                    rnnt_state['user_first_turn'][b] = False
                 logging.info(f"RNNT first-turn fallback t={t}: agent BOS (no EOU in {first_turn_fallback} frames)")
                 return
 
@@ -3141,9 +3152,11 @@ class NemotronVoicechatInferenceWrapper:
                     rnnt_state['nonblank_total'][b] = 0
                     rnnt_state['agent_speaking'][b] = True
                     rnnt_state['first_turn'][b] = False
+                    if 'user_first_turn' in rnnt_state:
+                        rnnt_state['user_first_turn'][b] = False
                     logging.info(
                         f"RNNT EOU t={t}: agent BOS (blank_cnt={blank_cnt}, "
-                        f"nonblank_total={nonblank_total}, density={rolling_density:.3f})"
+                        f"nonblank_total={nonblank_total}, density={rolling_density:.3f}, user_first_turn→False)"
                     )
                 else:
                     logging.debug(f"RNNT EOU suppressed at t={t}: LLM already has BOS in window")

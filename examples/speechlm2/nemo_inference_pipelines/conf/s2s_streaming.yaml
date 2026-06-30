@@ -123,12 +123,12 @@ s2s:
   fc_tool_timeout_sec: 15.0
   # Max continuous agent speaking duration (seconds); forces EOS + "How can I help you?" if exceeded.
   # 0 = disabled. Default 15s.
-  max_agent_response_sec: 15.0
+  max_agent_response_sec: 0
 
   # TTS hallucination prevention (Edresson's fix): force EOS after ratio × text_token_count frames.
   # Prevents TTS from hallucinating when </s> is missing or delayed after long silence.
   # 0.0 = disabled. Default 6.0 (TTS needs ~6 frames per text token on average).
-  tts_text_token_ratio_cap: 6.0
+  tts_text_token_ratio_cap: 8.0
   # Minimum text tokens in turn before ratio cap activates (avoids false triggers on short responses).
   tts_text_token_min: 5
 

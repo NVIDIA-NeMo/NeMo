@@ -2713,6 +2713,7 @@ class NemotronVoicechatInferenceWrapper:
             asr_predicted_toks_b = [tok for tok in asr_predicted_toks_b if tok != '<SPECIAL_12>']
             asr_predicted_text_strs.append(self.tokenizer.tokens_to_text(asr_predicted_toks_b))
 
+        logging.info(f'frame {frame_idx}: --------------------------------AGENT\'s predicted_text_strs: {predicted_text_strs}')
         if self.model.stt_model.function_head is not None:
             fc_tok_ids = function_predicted_tokens[0].tolist()
             pad_id = self.model.stt_model.text_pad_id
@@ -2720,6 +2721,8 @@ class NemotronVoicechatInferenceWrapper:
             if non_pad:
                 fc_tok_strs = self.tokenizer.ids_to_tokens([t for _, t in non_pad])
                 logging.info(f'frame {frame_idx}: FC_HEAD tokens (non-pad): {list(zip([i for i,_ in non_pad], fc_tok_strs))}')
+            else:
+                logging.info(f'frame {frame_idx}: FC_HEAD tokens: all pad')
 
         torch.cuda.synchronize()
 

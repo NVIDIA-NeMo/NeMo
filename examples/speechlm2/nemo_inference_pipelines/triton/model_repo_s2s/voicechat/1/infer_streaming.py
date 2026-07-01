@@ -76,7 +76,8 @@ class TritonPythonModel:
             "s2s.rnnt_bou_frames":               ("S2S_RNNT_BOU_FRAMES", 3),    # speech frames → BOU/barge-in (3×80ms=240ms)
             "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 240),  # ms of speech to interrupt FC async
             "s2s.use_separate_rnnt_ckpt":        ("S2S_USE_SEPARATE_RNNT_CKPT", False),  # True→use real .nemo RNNT, False→use combined ckpt fake RNNT
-            "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 10),
+            "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 46),  # 10 + 36 warm-up frames (12 chunks × 3 frames × 80ms = 2.88s)
+            "s2s.asr_eou_first_turn":                    ("S2S_ASR_EOU_FIRST_TURN", 51),               # 15 + 36 warm-up frames
             "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 2),
             "s2s.fc_random_ack_enabled":         ("S2S_FC_RANDOM_ACK_ENABLED", False),
             "s2s.tool_reminder_enabled":         ("S2S_TOOL_REMINDER_ENABLED", False),
@@ -124,6 +125,8 @@ class TritonPythonModel:
         # Track text positions to return only incremental updates
         self.text_positions = {}  # stream_id -> last_text_length
         self.asr_text_positions = {}  # stream_id -> last_asr_text_length
+        # asr_pending_nl and asr_nl_emitted removed — \n now emitted inline after terminal punct
+        self.asr_blank_counter = {} # stream_id -> int: frames since last new ASR char
         self.function_text_positions = {}  # stream_id -> last_function_text_length
 
     def initialize(self, args):
@@ -338,9 +341,38 @@ class TritonPythonModel:
             incremental_text = full_text[last_position:]
             self.text_positions[stream_id] = len(full_text)
             
-            # Send full ASR text each frame so RNNT revisions display correctly.
-            # The UI replaces the current-turn hypothesis rather than appending deltas.
-            incremental_asr_text = full_asr_text
+            # Option C delta tracking: mirror the agent-text position approach.
+            # asr_text_positions tracks how many chars have been sent to the UI.
+            # When the accumulated text grows, send only the new chars (delta).
+            # When it shrinks (utterance cleared on 800ms silence), the pipeline
+            # has reset output_asr_text_str to ""; detect via position > len(text)
+            # and send "\n" as the utterance separator (once).
+            # Line breaks: emit "\n" inline immediately after terminal punct (. or ?)
+            # only when it is the last character of the new delta — avoids false breaks
+            # on abbreviations like "Dr." mid-sentence. Utterance-clear always emits " ".
+            if stream_id not in self.asr_text_positions:
+                self.asr_text_positions[stream_id] = 0
+            last_asr_pos = self.asr_text_positions[stream_id]
+
+            if len(full_asr_text) < last_asr_pos:
+                # Accumulated text shrank — utterance cleared (800ms silence).
+                # Always emit a space so next word doesn't run into previous text.
+                incremental_asr_text = " "
+                self.asr_text_positions[stream_id] = len(full_asr_text)
+                self.asr_blank_counter[stream_id] = 0
+            else:
+                new_chars = full_asr_text[last_asr_pos:]
+                self.asr_text_positions[stream_id] = len(full_asr_text)
+                incremental_asr_text = ""
+
+                if new_chars:
+                    # Emit "\n" only when the LAST char of the delta is terminal punct.
+                    # Mid-string punct (e.g. "Dr. Smith") does not trigger a line break.
+                    last_char = new_chars[-1]
+                    if last_char == '.' or last_char == '?':
+                        incremental_asr_text = new_chars + "\n"
+                    else:
+                        incremental_asr_text = new_chars
 
             if stream_id not in self.function_text_positions:
                 self.function_text_positions[stream_id] = 0
@@ -354,12 +386,9 @@ class TritonPythonModel:
             
             if frame.is_last:
                 self.pipeline.delete_state(stream_id)
-                if stream_id in self.text_positions:
-                    del self.text_positions[stream_id]
-                if stream_id in self.asr_text_positions:
-                    del self.asr_text_positions[stream_id]
-                if stream_id in self.function_text_positions:
-                    del self.function_text_positions[stream_id]
+                for _d in (self.text_positions, self.asr_text_positions,
+                           self.asr_blank_counter, self.function_text_positions):
+                    _d.pop(stream_id, None)
         _t_extract_done = time.time()
         
         logging.info(f"get_generations breakdown: generate_step={(_t_generate_step_done - _t_generate_step)*1000:.2f}ms, "

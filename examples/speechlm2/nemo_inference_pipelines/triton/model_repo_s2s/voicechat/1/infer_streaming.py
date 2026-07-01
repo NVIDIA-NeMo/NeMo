@@ -73,7 +73,7 @@ class TritonPythonModel:
             "s2s.force_turn_taking_threshold":   ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
             "s2s.turn_taking_source":            ("S2S_TURN_TAKING_SOURCE", "rnnt"),
             "s2s.rnnt_eou_frames":               ("S2S_RNNT_EOU_FRAMES", 40),   # blank frames → EOU (40×80ms=3.2s)
-            "s2s.rnnt_bou_frames":               ("S2S_RNNT_BOU_FRAMES", 3),    # speech frames → BOU/barge-in (3×80ms=240ms)
+            "s2s.rnnt_bou_frames":               ("S2S_RNNT_BOU_FRAMES", 40),   # speech frames → BOU/barge-in (40×80ms=3.2s)
             "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 240),  # ms of speech to interrupt FC async
             "s2s.use_separate_rnnt_ckpt":        ("S2S_USE_SEPARATE_RNNT_CKPT", False),  # True→use real .nemo RNNT, False→use combined ckpt fake RNNT
             "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 10),
@@ -83,7 +83,7 @@ class TritonPythonModel:
             "s2s.fc_on_hold_messages_path":      ("S2S_FC_ON_HOLD_MESSAGES_PATH", None),
             "s2s.fc_generic_on_hold_messages_path": ("S2S_FC_GENERIC_ON_HOLD_MESSAGES_PATH", None),
             "s2s.fc_tool_timeout_sec":           ("S2S_FC_TOOL_TIMEOUT_SEC", 15.0),
-            "s2s.repetition_penalty":            ("S2S_REPETITION_PENALTY", 1.0),
+            "s2s.repetition_penalty":            ("S2S_REPETITION_PENALTY", 1.2),
             "s2s.temperature":                   ("S2S_TEMPERATURE", 0.0),
             "s2s.top_p":                         ("S2S_TOP_P", 1.0),
             "s2s.inference_bos_boost":           ("S2S_INFERENCE_BOS_BOOST", 0.0),

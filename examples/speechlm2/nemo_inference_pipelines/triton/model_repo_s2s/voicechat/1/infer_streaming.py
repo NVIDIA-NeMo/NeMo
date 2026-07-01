@@ -69,7 +69,7 @@ class TritonPythonModel:
             "s2s.fc_convert_num_to_text":   ("S2S_FC_CONVERT_NUM_TO_TEXT", True),
             "s2s.enable_builtin_tools":   ("S2S_ENABLE_BUILTIN_TOOLS", False),
             "s2s.force_turn_taking":             ("S2S_FORCE_TURN_TAKING", False),
-            "s2s.force_turn_taking_pad_window":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 25),
+            "s2s.force_turn_taking_pad_window":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 38),
             "s2s.force_turn_taking_threshold":   ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
             "s2s.turn_taking_source":            ("S2S_TURN_TAKING_SOURCE", "rnnt"),
             "s2s.rnnt_eou_frames":               ("S2S_RNNT_EOU_FRAMES", 40),   # blank frames → EOU (40×80ms=3.2s)
@@ -87,8 +87,8 @@ class TritonPythonModel:
             "s2s.temperature":                   ("S2S_TEMPERATURE", 0.0),
             "s2s.top_p":                         ("S2S_TOP_P", 1.0),
             "s2s.inference_bos_boost":           ("S2S_INFERENCE_BOS_BOOST", 0.0),
-            "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.08),
-            "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 5.6),
+            "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.24),
+            "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 2.0),
         }
         for cfg_key, (env_var, default) in env_overrides.items():
             val = os.environ.get(env_var)

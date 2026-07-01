@@ -72,12 +72,11 @@ class TritonPythonModel:
             "s2s.force_turn_taking_pad_window":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 25),
             "s2s.force_turn_taking_threshold":   ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
             "s2s.turn_taking_source":            ("S2S_TURN_TAKING_SOURCE", "rnnt"),
-            "s2s.rnnt_eou_frames":               ("S2S_RNNT_EOU_FRAMES", 15),   # blank frames → EOU (15×80ms=1.2s)
+            "s2s.rnnt_eou_frames":               ("S2S_RNNT_EOU_FRAMES", 40),   # blank frames → EOU (40×80ms=3.2s)
             "s2s.rnnt_bou_frames":               ("S2S_RNNT_BOU_FRAMES", 3),    # speech frames → BOU/barge-in (3×80ms=240ms)
             "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 240),  # ms of speech to interrupt FC async
             "s2s.use_separate_rnnt_ckpt":        ("S2S_USE_SEPARATE_RNNT_CKPT", False),  # True→use real .nemo RNNT, False→use combined ckpt fake RNNT
-            "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 46),  # 10 + 36 warm-up frames (12 chunks × 3 frames × 80ms = 2.88s)
-            "s2s.asr_eou_first_turn":                    ("S2S_ASR_EOU_FIRST_TURN", 51),               # 15 + 36 warm-up frames
+            "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 10),
             "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 2),
             "s2s.fc_random_ack_enabled":         ("S2S_FC_RANDOM_ACK_ENABLED", False),
             "s2s.tool_reminder_enabled":         ("S2S_TOOL_REMINDER_ENABLED", False),

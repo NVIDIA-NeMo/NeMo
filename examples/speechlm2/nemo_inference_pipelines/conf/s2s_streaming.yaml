@@ -92,7 +92,11 @@ s2s:
   # token logits inside the label loop so the model outputs natural sentence endings.
   rnnt_punct_bias_enabled: true
   rnnt_punct_bias_tokens: [".", ",", "?", "!"]
-  rnnt_punct_bias_increment: 1.5        # logit added per blank frame after words; reset on punct or new word
+  rnnt_punct_bias_increments:
+    ".": 2.0
+    "?": 2.0
+    ",": 1.5
+    "!": 1.5
   rnnt_punct_bias_min_blanks: 5         # min consecutive blank frames before bias starts (5 × 80ms = 400ms)
 
   # Inference logit boosts (applied to model logits at inference time)

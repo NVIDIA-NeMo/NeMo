@@ -22,6 +22,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INIT_POINTER_VALUE,
     NON_EXISTENT_LABEL_VALUE,
     BatchedBeamHyps,
+    export_batched_beam_hyps_to_cpu_lists,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 
@@ -63,6 +64,19 @@ def assert_hyps_timestamps_equal(
     """
     Asserts that two sequences of timestamp values are approximately equal.
     """
+    if isinstance(actual, torch.Tensor):
+        actual = actual.cpu().tolist()
+    assert_nested_lists_approx(actual, expected, rel_tol, abs_tol)
+
+
+def assert_hyps_durations_equal(
+    actual: Union[List[int], torch.Tensor], expected: list[int], rel_tol: float = 1e-4, abs_tol: float = 1e-4
+):
+    """
+    Asserts that two sequences of token duration values are approximately equal.
+    """
+    if actual is None:
+        raise AssertionError("Expected token durations, got None")
     if isinstance(actual, torch.Tensor):
         actual = actual.cpu().tolist()
     assert_nested_lists_approx(actual, expected, rel_tol, abs_tol)
@@ -885,6 +899,10 @@ class TestConvertToHypotheses:
             [[0, 2, 3, 0], [3, 7, 7, 0], [3, 4, 7, 0]],
             [[3, 4, 6, 0], [4, 4, 4, 0], [2, 3, 5, 0]],
         ]
+        assert hyps.token_durations.tolist() == [
+            [[0, 2, 1, 0], [3, 4, 0, 0], [3, 1, 3, 0]],
+            [[3, 1, 2, 0], [4, 0, 0, 0], [2, 1, 2, 0]],
+        ]
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
@@ -980,8 +998,10 @@ class TestConvertToHypotheses:
         assert_hyps_sequence_equal(hypotheses[0].y_sequence, [0, 3, 7])
         assert_hyps_sequence_equal(hypotheses[1].y_sequence, [9])
 
-        assert_hyps_timestamps_equal(hypotheses[0].timestamp, [0, 2, 3])
-        assert_hyps_timestamps_equal(hypotheses[1].timestamp, [6])
+        assert_hyps_timestamps_equal(hypotheses[0].timestamp, [0, 0, 2])
+        assert_hyps_timestamps_equal(hypotheses[1].timestamp, [4])
+        assert_hyps_durations_equal(hypotheses[0].token_duration, [0, 2, 1])
+        assert_hyps_durations_equal(hypotheses[1].token_duration, [2])
 
         assert hypotheses[0].score == pytest.approx(0.4)
         assert hypotheses[1].score == pytest.approx(0.6)
@@ -1031,12 +1051,18 @@ class TestConvertToHypotheses:
         assert_hyps_sequence_equal(hypotheses[1].n_best_hypotheses[1].y_sequence, [5])
         assert_hyps_sequence_equal(hypotheses[1].n_best_hypotheses[2].y_sequence, [2, 6, 10])
 
-        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[0].timestamp, [0, 2, 3])
-        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[1].timestamp, [7])
-        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[2].timestamp, [7])
-        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[0].timestamp, [6])
+        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[0].timestamp, [0, 0, 2])
+        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[1].timestamp, [3])
+        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[2].timestamp, [4])
+        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[0].timestamp, [4])
         assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[1].timestamp, [4])
-        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[2].timestamp, [2, 3, 5])
+        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[2].timestamp, [0, 2, 3])
+        assert_hyps_durations_equal(hypotheses[0].n_best_hypotheses[0].token_duration, [0, 2, 1])
+        assert_hyps_durations_equal(hypotheses[0].n_best_hypotheses[1].token_duration, [4])
+        assert_hyps_durations_equal(hypotheses[0].n_best_hypotheses[2].token_duration, [3])
+        assert_hyps_durations_equal(hypotheses[1].n_best_hypotheses[0].token_duration, [2])
+        assert_hyps_durations_equal(hypotheses[1].n_best_hypotheses[1].token_duration, [0])
+        assert_hyps_durations_equal(hypotheses[1].n_best_hypotheses[2].token_duration, [2, 1, 2])
 
         assert hypotheses[0].n_best_hypotheses[0].score == pytest.approx(0.4)
         assert hypotheses[0].n_best_hypotheses[1].score == pytest.approx(0.35)
@@ -1204,3 +1230,72 @@ class TestConvertToHypotheses:
         assert hypotheses[1].n_best_hypotheses[0].score == pytest.approx(0.6)
         assert hypotheses[1].n_best_hypotheses[1].score == pytest.approx(0.55)
         assert hypotheses[1].n_best_hypotheses[2].score == pytest.approx(0.4)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_to_hyps_list_with_step_confidence(self, device: torch.device):
+        blank_index = 1024
+        hyps = BatchedBeamHyps(
+            batch_size=1,
+            beam_size=1,
+            init_length=4,
+            device=device,
+            blank_index=blank_index,
+            with_step_confidence=True,
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[5]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.9]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[blank_index]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.5]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[2]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.8]], device=device),
+        )
+        hypotheses = hyps.to_hyps_list(score_norm=False)
+        assert hypotheses[0].non_blank_step_confidence_precomputed == pytest.approx([0.9, 0.8])
+        assert hypotheses[0].y_sequence.tolist() == [5, 2]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_export_batched_beam_hyps_to_cpu_lists_with_step_confidence(self, device: torch.device):
+        blank_index = 1024
+        hyps = BatchedBeamHyps(
+            batch_size=1,
+            beam_size=1,
+            init_length=4,
+            device=device,
+            blank_index=blank_index,
+            with_step_confidence=True,
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[5]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.9]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[blank_index]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.5]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[2]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.8]], device=device),
+        )
+        tokens, timestamps, confidences, root_ptrs = export_batched_beam_hyps_to_cpu_lists(hyps)
+        assert tokens == [[[5, 2]]]
+        assert confidences[0][0] == pytest.approx([0.9, 0.8])
+        assert root_ptrs == [[0]]

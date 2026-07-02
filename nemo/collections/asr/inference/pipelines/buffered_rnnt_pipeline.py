@@ -706,7 +706,14 @@ class BufferedRNNTPipeline(BasePipeline):
                 request_is_last = torch.tensor(
                     [request.is_last for request in requests_to_process], dtype=torch.bool, device=self.device
                 )
-                enc_lens_dec = enc_lens - tokens_per_left_padding_tensor
+                encs_to_process = encs[request_ids_to_process][:, :, self.tokens_per_left_padding :]
+                # For the last chunk of a request, enc_lens_dec is left untrimmed (see below), so it can reflect
+                # more valid encoder frames than the request's window actually has room for once left padding is
+                # sliced off (e.g. when right_padding_size is much larger than chunk_size). Clamp it to the actual
+                # post-left-padding tensor length so it never exceeds `encs_to_process`'s time dimension, which
+                # would otherwise let an out-of-bounds time index reach the decoder for that request.
+                max_post_left_padding_len = encs_to_process.shape[-1]
+                enc_lens_dec = torch.clamp(enc_lens - tokens_per_left_padding_tensor, max=max_post_left_padding_len)
                 enc_lens_dec_trimmed = torch.where(
                     request_is_last,
                     enc_lens_dec,
@@ -714,7 +721,7 @@ class BufferedRNNTPipeline(BasePipeline):
                 )
                 self.stateful_transcribe_step(
                     requests_to_process,
-                    encs[request_ids_to_process][:, :, self.tokens_per_left_padding :],
+                    encs_to_process,
                     enc_lens_dec_trimmed,
                     enc_lens_dec,
                     ready_state_ids,

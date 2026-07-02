@@ -243,6 +243,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				_bos_id, _bos_text, _eos_id, _eos_text,
 			)
 			self._fc_ack_token_list = []
+			self._fc_ack_text_list: list[str] = []   # parallel: raw text for logging/UI
 			for msg in _FC_ACK_MESSAGES:
 				_ack_ids = list(self.s2s_model.tokenizer.text_to_ids(msg))
 				_trailing_pad_count = max(_FC_TRAILING_PAD_MIN, math.ceil(_FC_TRAILING_PAD_PER_CHAR * len(msg)))
@@ -253,6 +254,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				if _eos_id is not None:
 					_ack_ids = _ack_ids + [_eos_id]
 				self._fc_ack_token_list.append(_ack_ids)
+				self._fc_ack_text_list.append(msg)
 			self._fc_ack_tokens = self._fc_ack_token_list[0]
 			try:
 				_sample_text = self.s2s_model.tokenizer.ids_to_text(self._fc_ack_token_list[0])
@@ -293,6 +295,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			_eos_id_r = getattr(_stt_r, "text_eos_id", None)
 			_pad_id_r = getattr(_stt_r, "text_pad_id", None)
 			self._fc_reminder_token_list = []
+			self._fc_reminder_text_list: list[str] = []   # parallel: raw text for logging/UI
 			for msg in _FC_REMINDER_MESSAGES:
 				_rem_ids = list(self.s2s_model.tokenizer.text_to_ids(msg))
 				_trailing_pad_r = max(_FC_TRAILING_PAD_MIN, math.ceil(_FC_TRAILING_PAD_PER_CHAR * len(msg)))
@@ -303,6 +306,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 				if _eos_id_r is not None:
 					_rem_ids = _rem_ids + [_eos_id_r]
 				self._fc_reminder_token_list.append(_rem_ids)
+				self._fc_reminder_text_list.append(msg)
 			try:
 				_sample_r = self.s2s_model.tokenizer.ids_to_text(self._fc_reminder_token_list[0])
 			except Exception:
@@ -407,6 +411,78 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		self._fc_async_bg: dict = {}  # stream_id → bg-state dict
 
 		super().__init__()
+
+	# ------------------------------------------------------------------
+	# FC ack / reminder — pick a random phrase from the pool, log which one
+	# was chosen, and (optionally) notify the UI over HTTP so the browser can
+	# display it. Model outputs are NOT modified — this is a pure side-channel
+	# (env var S2S_UI_CALLBACK_URL, e.g. "http://localhost:8998/ack_event").
+	# The token list and text list are populated in parallel at init time.
+	# ------------------------------------------------------------------
+	def _post_ui_event(self, kind: str, text: str, phase: str = "initial"):
+		"""Fire-and-forget POST to the UI-server callback. Runs in a background
+		thread so a slow or missing UI server never blocks FC playback.
+
+		`phase` tells the server how to order this ack relative to the fccall
+		WS byte for the current FC cycle:
+		  "initial" — fires at fc_async spawn (BEFORE fccall byte is sent).
+		              Server buffers this until fccall byte goes out.
+		  "layer1" / "layer2" — fire AFTER fccall byte is sent (Layer 1 per-tool
+		              reminder or Layer 2 generic on-hold). Server sends immediately.
+
+		SSL cert verification is disabled because the UI server usually runs with
+		a self-signed or internally-signed cert (NVIDIA-signed in demo setups),
+		and this is a localhost/internal-network callback — not a public URL.
+		"""
+		import os
+		url = os.environ.get("S2S_UI_CALLBACK_URL")
+		if not url:
+			return
+		import threading
+		def _send():
+			try:
+				import urllib.request, ssl, json as _json
+				req = urllib.request.Request(
+					url,
+					data=_json.dumps({"kind": kind, "text": text, "phase": phase}).encode("utf-8"),
+					headers={"Content-Type": "application/json"},
+					method="POST",
+				)
+				# Disable cert verification for the internal callback.
+				_ctx = ssl.create_default_context()
+				_ctx.check_hostname = False
+				_ctx.verify_mode = ssl.CERT_NONE
+				urllib.request.urlopen(req, timeout=1.0, context=_ctx).read()
+			except Exception as _e:
+				# Log at WARNING so failures are visible in the server log while
+				# debugging.  Never re-raise — FC playback must never be affected.
+				logging.warning("[UI-Callback] %s post to %s failed: %r", kind, url, _e)
+		threading.Thread(target=_send, daemon=True).start()
+
+	def _pick_and_log_ack(self):
+		if not self._fc_ack_token_list:
+			return None
+		_idx = random.randrange(len(self._fc_ack_token_list))
+		_text = self._fc_ack_text_list[_idx] if _idx < len(self._fc_ack_text_list) else "(text unavailable)"
+		logging.info("[FC-Ack-Chosen] idx=%d/%d text=%r", _idx, len(self._fc_ack_token_list), _text)
+		# Initial ack — must be ordered AFTER the fccall byte on the WS.
+		# Server buffers this and releases it once the corresponding fccall byte is sent.
+		self._post_ui_event("ack", _text, phase="initial")
+		return self._fc_ack_token_list[_idx]
+
+	def _pick_and_log_reminder(self):
+		if not self._fc_reminder_token_list:
+			return None
+		_idx = random.randrange(len(self._fc_reminder_token_list))
+		_text = self._fc_reminder_text_list[_idx] if _idx < len(self._fc_reminder_text_list) else "(text unavailable)"
+		logging.info("[FC-Reminder-Chosen] idx=%d/%d text=%r", _idx, len(self._fc_reminder_token_list), _text)
+		# NOTE: We intentionally do NOT post the reminder to the UI. The reminder
+		# from _fc_reminder_token_list is a hardcoded generic layer-1 phrase, but
+		# what the user actually HEARS during a long tool call is usually a
+		# per-tool on-hold message from on_hold_messages.json (chosen deeper in
+		# the FC async loop, not here). Emitting this reminder to the UI would
+		# display text that doesn't match the audio. Ack posts remain.
+		return self._fc_reminder_token_list[_idx]
 
 	# ------------------------------------------------------------------
 	# Built-in tool executor (used in async FC when enable_builtin_tools=True)
@@ -1846,6 +1922,17 @@ out center {limit};
 										# Layer 1 — per-tool reminder
 										if _reminder_tok:
 											logging.info("[FC Reminder] Layer 1: per-tool='%s' (%d tokens)", _tool_name, len(_reminder_tok))
+											# Decode chosen tokens back to text and post to UI so the
+											# browser can display the reminder inline (same channel as
+											# the initial ack).  Model output is NOT modified.
+											# phase="layer1" — fires AFTER fccall byte was sent, no
+											# server buffering needed.
+											try:
+												_l1_text = s2s_model.tokenizer.ids_to_text(_reminder_tok).replace("</s>", "").replace("<s>", "").strip()
+												if _l1_text:
+													self._post_ui_event("ack", _l1_text, phase="layer1")
+											except Exception as _e:
+												logging.debug("[UI-Callback] Layer 1 decode failed: %r", _e)
 											_play(_reminder_tok)
 
 										# Layer 2 — generic messages (up to 2, with 1s gap between)
@@ -1861,6 +1948,12 @@ out center {limit};
 											if _fut.done():
 												break
 											logging.info("[FC Reminder] Layer 2: generic message %d/2", _played_generic + 1)
+											try:
+												_l2_text = s2s_model.tokenizer.ids_to_text(_gen_tok).replace("</s>", "").replace("<s>", "").strip()
+												if _l2_text:
+													self._post_ui_event("ack", _l2_text, phase="layer2")
+											except Exception as _e:
+												logging.debug("[UI-Callback] Layer 2 decode failed: %r", _e)
 											_play(_gen_tok)
 											_played_generic += 1
 
@@ -1968,10 +2061,10 @@ out center {limit};
 						get_state_fn=_get_state_fn,
 						tts_audio_output_queue=_tts_audio_output_queue,
 						acknowledgement_tokens=(
-							random.choice(self._fc_ack_token_list) if self._fc_ack_token_list else None
+							self._pick_and_log_ack() if self._fc_ack_token_list else None
 						),
 						reminder_tokens=(
-							random.choice(self._fc_reminder_token_list) if self._fc_reminder_token_list else None
+							self._pick_and_log_reminder() if self._fc_reminder_token_list else None
 						),
 						on_hold_token_map=self._fc_on_hold_token_map,
 						generic_on_hold_token_list=self._fc_generic_on_hold_token_list,

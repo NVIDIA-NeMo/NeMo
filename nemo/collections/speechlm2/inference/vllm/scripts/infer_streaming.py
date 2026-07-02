@@ -82,7 +82,7 @@ class TritonPythonModel:
             "s2s.fc_generic_on_hold_messages_path": ("S2S_FC_GENERIC_ON_HOLD_MESSAGES_PATH", None),
             "s2s.fc_tool_timeout_sec":           ("S2S_FC_TOOL_TIMEOUT_SEC", 15.0),
             "s2s.max_agent_response_sec":        ("S2S_MAX_AGENT_RESPONSE_SEC", 15.0),
-            "s2s.tts_text_token_ratio_cap":      ("S2S_TTS_TEXT_TOKEN_RATIO_CAP", 6.0),
+            "s2s.tts_text_token_ratio_cap":      ("S2S_TTS_TEXT_TOKEN_RATIO_CAP", 8.0),
             "s2s.tts_text_token_min":            ("S2S_TTS_TEXT_TOKEN_MIN", 5),
             "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.08),
             "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 5.6),
@@ -98,8 +98,12 @@ class TritonPythonModel:
                 elif default is not None and isinstance(default, int):
                     val = int(val)
                 OmegaConf.update(cfg, cfg_key, val, force_add=True)
-            elif default is not None:
-                OmegaConf.update(cfg, cfg_key, default, force_add=True)
+            else:
+                # Env var unset — keep YAML value if present; otherwise fall back
+                # to the code default. Precedence: env > yaml > code default.
+                yaml_val = OmegaConf.select(cfg, cfg_key, default=None)
+                if yaml_val is None and default is not None:
+                    OmegaConf.update(cfg, cfg_key, default, force_add=True)
 
     def load_model(self, config_path: str):
         """Load the S2S pipeline from a YAML config file.

@@ -859,6 +859,98 @@ def cut_to_conversation(
     )
 
 
+def sample_preference_to_conversation(
+    cut: Cut,
+    audio_locator_tag: str,
+    token_equivalent_duration: float,
+    weights: dict | None = None,
+    seed: int = 42,
+    fallback_text_field: str = "pnc_text",
+) -> NeMoMultimodalConversation:
+    """Sample one instruction from a cut's ``preference_instructions`` and build a conversation.
+
+    Granary-v2 manifests carry a ``preference_instructions`` list on ``cut.custom``, where each
+    element is ``{"prompt": <user turn>, "target": <assistant target>, "tags": {"type": <task>,
+    "target_lang": <lang>}}``. For each cut we draw ONE instruction according to per-task
+    ``weights`` and construct ``[user:prompt] -> [user:audio] -> [assistant:target]`` (the prompt
+    turn is omitted when the instruction has no prompt).
+
+    The RNG is seeded deterministically from ``(seed, cut.id)`` so the choice is a pure function
+    of the cut. This is required for reproducibility under indexed/random-access + resumable
+    dataloading (the ``.map`` transform must return the same result whenever the same cut is read).
+    Consequence: a given utterance always trains its one sampled task; the task mix across the
+    corpus still follows ``weights`` because each utterance is assigned independently.
+
+    ``weights`` may reference any of the task ``type`` strings; it is renormalized per cut over the
+    instruction types actually present (types with weight 0 or absent are excluded). If a cut has no
+    usable instruction, we fall back to plain transcription using ``cut.custom[fallback_text_field]``.
+    """
+    if isinstance(cut, NeMoMultimodalConversation):
+        return cut
+
+    if weights is not None and not isinstance(weights, dict):
+        # Accept OmegaConf DictConfig etc.
+        weights = OmegaConf.to_container(weights, resolve=True)
+
+    custom = cut.custom or {}
+    instructions = custom.get("preference_instructions") or []
+
+    def _type_of(instr: dict) -> str | None:
+        return (instr.get("tags") or {}).get("type")
+
+    candidates = [
+        instr
+        for instr in instructions
+        if instr.get("target")
+        and (weights is None or weights.get(_type_of(instr), 0.0) > 0.0)
+    ]
+
+    rng = random.Random(f"{seed}:{cut.id}")
+    if candidates:
+        if weights is None:
+            chosen = rng.choice(candidates)
+        else:
+            w = [float(weights.get(_type_of(instr), 0.0)) for instr in candidates]
+            chosen = rng.choices(candidates, weights=w, k=1)[0]
+        prompt = chosen.get("prompt")
+        target = chosen["target"]
+        target_lang = (chosen.get("tags") or {}).get("target_lang")
+        chosen_type = _type_of(chosen)
+    else:
+        # Fallback: plain transcription (no preference instructions available/selected).
+        prompt = None
+        target = custom.get(fallback_text_field)
+        if not target:
+            target = cut.supervisions[0].text if cut.supervisions else None
+        target_lang = custom.get("target_lang") or custom.get("source_lang")
+        chosen_type = "fallback"
+
+    # Keep supervision text/language consistent with the sampled target (used by some
+    # length/metrics code paths). Safe no-op if the cut has no supervisions.
+    if cut.supervisions:
+        cut.supervisions[0].text = target
+        if target_lang is not None:
+            cut.supervisions[0].language = target_lang
+
+    turns = [
+        AudioTurn(cut=cut, role="user", audio_locator_tag=audio_locator_tag, text=target),
+        TextTurn(value=target, role="assistant"),
+    ]
+    if prompt:
+        turns = [TextTurn(value=prompt, role="user")] + turns
+    if hasattr(cut, "system_prompt"):
+        turns = [TextTurn(value=cut.system_prompt, role="system")] + turns
+
+    new_custom = dict(custom)
+    new_custom["_pref_type"] = chosen_type
+    return NeMoMultimodalConversation(
+        id=cut.id,
+        turns=turns,
+        token_equivalent_duration=token_equivalent_duration,
+        custom=new_custom,
+    )
+
+
 @data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
 def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     """
@@ -1245,13 +1337,27 @@ def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
     # We need to attach them before cuts are converted to conversations.
     if (extra_tags := config.get("tags")) is not None:
         cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
-    cuts = cuts.map(
-        partial(
-            cut_to_conversation,
-            audio_locator_tag=config.audio_locator_tag,
-            token_equivalent_duration=config.token_equivalent_duration,
+    # Optional: sample one task from each cut's `preference_instructions` list
+    # (Granary-v2 packed manifests) instead of the default single-target conversion.
+    if (pref_cfg := config.get("preference_sampling")) is not None:
+        cuts = cuts.map(
+            partial(
+                sample_preference_to_conversation,
+                audio_locator_tag=config.audio_locator_tag,
+                token_equivalent_duration=config.token_equivalent_duration,
+                weights=pref_cfg.get("weights"),
+                seed=pref_cfg.get("seed", 42),
+                fallback_text_field=pref_cfg.get("fallback_text_field", "pnc_text"),
+            )
         )
-    )
+    else:
+        cuts = cuts.map(
+            partial(
+                cut_to_conversation,
+                audio_locator_tag=config.audio_locator_tag,
+                token_equivalent_duration=config.token_equivalent_duration,
+            )
+        )
     return cuts, is_tarred
 
 

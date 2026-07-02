@@ -68,6 +68,16 @@ Streaming models trained with limited right context for real-time inference with
 * Simulation script: ``examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py``
 * Supports multiple look-aheads with ``att_context_size`` lists
 
+**CUDA graphs for the streaming encoder step (inference):** the steady-state streaming step has
+static shapes, so it can be captured once into a CUDA graph and replayed with a single kernel
+launch per chunk instead of ~10^3 launches, which substantially reduces per-step latency for
+low-latency streaming. For the covered non-autocast configurations the graph path is expected to
+preserve eager execution semantics (unit tests assert exact equality against eager); non-uniform
+steps (first/last chunk) automatically fall back to eager. Enable with
+``asr_model.encoder.set_streaming_cuda_graphs(True)`` or ``use_cuda_graphs=true`` in the
+simulation script above (see
+:class:`~nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs.CudaGraphsStreamingEncoderStep`).
+
 Configs: ``examples/asr/conf/fastconformer/cache_aware_streaming/``
 
 .. _RNNT-Prompt_model:

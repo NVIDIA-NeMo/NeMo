@@ -750,17 +750,23 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # Match training channel sum: text + audio profile-token/silence input.
             combined_emb = text_emb + audio_emb
 
-            if self.cfg.get("condition_on_user_speech", False):
-                combined_emb = combined_emb + user_audio_channel_embedding
+            user_audio_cond_emb = None
+            if self.cfg.get("condition_on_user_speech", False) and user_audio_channel_embedding is not None:
+                user_audio_cond_emb = user_audio_channel_embedding.to(
+                    device=combined_emb.device,
+                    dtype=combined_emb.dtype,
+                )
+                combined_emb = combined_emb + user_audio_cond_emb
 
             # -----------------------
             # CFG handling
             # -----------------------
             if state.config.use_cfg:
-                # Match regular streaming inference:
-                # conditional branch = text + audio
-                # unconditional branch = audio only
-                inputs_embeds = torch.cat([combined_emb, audio_emb], dim=0)
+                # Match CFG training: user-audio conditioning is preserved in the unconditional branch.
+                unconditional_emb = audio_emb
+                if user_audio_cond_emb is not None:
+                    unconditional_emb = unconditional_emb + user_audio_cond_emb
+                inputs_embeds = torch.cat([combined_emb, unconditional_emb], dim=0)
             else:
                 inputs_embeds = combined_emb
 
@@ -1883,13 +1889,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             next_input = next_input + audio_emb
 
+        user_audio_cond_emb = None
         if user_audio_channel_embedding is not None:
-            user_audio_channel_embedding = user_audio_channel_embedding.unsqueeze(1)
-
-            next_input = next_input + user_audio_channel_embedding.to(
+            user_audio_cond_emb = user_audio_channel_embedding.unsqueeze(1).to(
                 device=next_input.device,
                 dtype=next_input.dtype,
             )
+            next_input = next_input + user_audio_cond_emb
 
         # --- Handle CFG ---
         if state.config.use_cfg:
@@ -1905,6 +1911,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if needs_audio.any():
                 audio_mask = needs_audio.view(batch_size, 1, 1).float()
                 next_input_unconditional = next_input_unconditional * (1 - audio_mask) + audio_emb * audio_mask
+
+            if user_audio_cond_emb is not None:
+                # CFG dropout in training keeps the user-audio channel, so inference should too.
+                next_input_unconditional = next_input_unconditional + user_audio_cond_emb
 
             next_input = torch.cat([next_input, next_input_unconditional], dim=0)
 

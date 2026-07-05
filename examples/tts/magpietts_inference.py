@@ -778,7 +778,7 @@ def run_inference_and_evaluation(
 
             sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
-                json.dump(sorted_filewise, f, indent=4)
+                json.dump(sorted_filewise, f, indent=4, ensure_ascii=False)
 
             if is_multiturn_user_audio:
                 _save_grouped_multiturn_filewise_metrics(

@@ -760,6 +760,18 @@ class SaveRestoreConnector:
         try:
             # Use torch's default weights_only handling so TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD is honored.
             return torch.load(model_weights, map_location=map_location)
+        except TypeError as e:
+            if str(e) != "'tuple' object is not callable":
+                logging.error(f"Failed to load checkpoint: {e}")
+                raise e
+
+            # Some checkpoints hit PyTorch's weights-only unpickler before legacy pickle loading is tried.
+            logging.warning("Retrying checkpoint load with weights_only=False after weights-only load failed.")
+            try:
+                return torch.load(model_weights, map_location=map_location, weights_only=False)
+            except Exception as fallback_e:
+                logging.error(f"Failed to load checkpoint: {fallback_e}")
+                raise fallback_e
         except Exception as e:
             logging.error(f"Failed to load checkpoint: {e}")
             raise e

@@ -485,6 +485,12 @@ def process_single_manifest(cfg: AlignmentConfig, model, buffered_chunk_params, 
 
         if cfg.clean_text:
             manifest_lines_batch = clean_text(manifest_lines_batch)
+
+        if not cfg.align_using_pred_text:
+            gt_text_batch = [line.get('text', '') for line in manifest_lines_batch]
+        else:
+            gt_text_batch = None
+
         (
             log_probs_batch,
             y_batch,
@@ -498,6 +504,7 @@ def process_single_manifest(cfg: AlignmentConfig, model, buffered_chunk_params, 
             segment_separators=cfg.additional_segment_grouping_separator,
             align_using_pred_text=cfg.align_using_pred_text,
             audio_filepath_parts_in_utt_id=cfg.audio_filepath_parts_in_utt_id,
+            gt_text_batch=gt_text_batch,
             output_timestep_duration=output_timestep_duration,
             simulate_cache_aware_streaming=cfg.simulate_cache_aware_streaming,
             use_buffered_chunked_streaming=cfg.use_buffered_chunked_streaming,

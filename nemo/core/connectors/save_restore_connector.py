@@ -15,6 +15,7 @@
 from __future__ import annotations  # necessary for lazy types evaluation
 
 import os
+import pickle
 import shutil
 import tarfile
 import tempfile
@@ -37,6 +38,15 @@ from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import inject_model_parallel_rank
 from nemo.utils.msc_utils import import_multistorageclient, is_multistorageclient_url
 from nemo.utils.tar_utils import is_safe_tar_member, safe_extract
+
+
+class _PurePythonPickleModule:
+    Unpickler = pickle._Unpickler
+    Pickler = pickle._Pickler
+    load = pickle.load
+    loads = pickle.loads
+    dump = pickle.dump
+    dumps = pickle.dumps
 
 
 class SaveRestoreConnector:
@@ -761,14 +771,18 @@ class SaveRestoreConnector:
             # Use torch's default weights_only handling so TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD is honored.
             return torch.load(model_weights, map_location=map_location)
         except TypeError as e:
-            if str(e) != "'tuple' object is not callable":
+            if str(e) not in {"'tuple' object is not callable", "'str' object is not callable"}:
                 logging.error(f"Failed to load checkpoint: {e}")
                 raise e
 
-            # Some checkpoints hit PyTorch's weights-only unpickler before legacy pickle loading is tried.
-            logging.warning("Retrying checkpoint load with weights_only=False after weights-only load failed.")
+            logging.warning("Retrying checkpoint load with the pure Python pickle unpickler.")
             try:
-                return torch.load(model_weights, map_location=map_location, weights_only=False)
+                return torch.load(
+                    model_weights,
+                    map_location=map_location,
+                    weights_only=False,
+                    pickle_module=_PurePythonPickleModule,
+                )
             except Exception as fallback_e:
                 logging.error(f"Failed to load checkpoint: {fallback_e}")
                 raise fallback_e

@@ -251,10 +251,13 @@ def run_inference_and_evaluation(
         else:
             language = eval_config.language
 
+        tokenizer_names = meta.get('tokenizer_names', None)
+
         dataset_meta_for_dl = {
             "manifest_path": meta["manifest_path"],
             "audio_dir": meta["audio_dir"],
             "language": language,
+            "tokenizer_names": tokenizer_names,
         }
 
         # Setup output directories

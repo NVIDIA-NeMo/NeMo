@@ -131,7 +131,6 @@ class MagpieInferenceConfig(BaseInferenceConfig):
         parts.extend(
             [
                 f"LT_{self.use_local_transformer}",
-                f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
                 self._format_layer_list(self.maskgit_fixed_schedule),
                 f"EOS_{self.model_inference_parameters.eos_detection_method}",
                 f"IgnoreFST_{self.model_inference_parameters.ignore_finished_sentence_tracking}",

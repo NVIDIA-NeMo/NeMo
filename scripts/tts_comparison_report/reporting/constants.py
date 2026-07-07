@@ -18,13 +18,27 @@ _ROOT: Path = Path(__file__).parent.parent
 
 # Benchmark names supported by the comparison report pipeline.
 SUPPORTED_BENCHMARK_NAMES: list[str] = [
+    "ar_MSA_King_ASR_sa_diacritics",
+    "ar_MSA_King_ASR_sa_no_diacritics",
+    "ar_MSA_King_ASR_uae_diacritics",
+    "ar_MSA_King_ASR_uae_no_diacritics",
+    "de_DE_cmltts",
+    "es_ES_cmltts",
+    "fr_FR_cmltts",
+    "hi_IN_AI4bharat",
+    "it_IT_cmltts",
+    "ja_JP_jvs_jsut",
+    "ko_KR_F5I9N7A1",
     "libritts_seen",
     "libritts_test_clean",
+    "pt_BR_cmltts",
     "riva_hard_digits",
     "riva_hard_letters",
     "riva_hard_money",
     "riva_hard_short",
     "vctk",
+    "vi_VN_vivos",
+    "zh_CN_mscenespeech",
 ]
 
 # Default width of tqdm progress bars in terminal columns.

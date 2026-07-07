@@ -705,7 +705,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             dataset_meta=dataset_meta,
             sample_rate=self.model.sample_rate,
             min_duration=0.5,
-            max_duration=20,
+            max_duration=25,
             codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
             bos_id=getattr(self.model, "bos_id", None),
             eos_id=self.model.eos_id,

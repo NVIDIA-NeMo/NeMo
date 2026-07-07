@@ -60,13 +60,10 @@ RUN <<"EOF" bash -ex
 apt-get update
 apt-get install -y \
     curl \
-    git \
-    libsox3
+    git
 apt-get clean
 EOF
-# NOTE: removed libsndfile1 and only kept libsox3
-# soundfile ships with its own version of libsndfile1
-# lhotse only links into libsox3 and not the rest of sox; removed sox and libsox-fmt-all and only kept libsox3
+# NOTE: removed libsndfile1. Soundfile ships with its own version of libsndfile1
 
 RUN <<"EOF" bash -ex
 curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh

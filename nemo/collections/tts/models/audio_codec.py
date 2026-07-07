@@ -39,7 +39,11 @@ from nemo.collections.tts.losses.audio_codec_loss import (
     SISDRLoss,
     TimeDomainLoss,
 )
-from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder, default_precision
+from nemo.collections.tts.modules.audio_codec_modules import (
+    GroupFiniteScalarQuantizer,
+    ResNetSpeakerEncoder,
+    default_precision,
+)
 from nemo.collections.tts.modules.common import GaussianDropout
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
@@ -107,6 +111,9 @@ class AudioCodecModel(ModelPT):
                 self.vector_quantizer_has_commit_loss = False
                 logging.info('Vector quantizer does not support commit loss.')
 
+            self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
+            if self.codebook_dropout_rate and not isinstance(self.vector_quantizer, GroupFiniteScalarQuantizer):
+                raise ValueError("Codebook dropout only supported for GroupFiniteScalarQuantizer")
         else:
             logging.warning('Vector quantizer will not be used.')
             self.vector_quantizer = None
@@ -428,6 +435,7 @@ class AudioCodecModel(ModelPT):
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
             "sample_rate": NeuralType(tuple(), IntType(), optional=True),
+            "num_codebooks": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
@@ -435,7 +443,11 @@ class AudioCodecModel(ModelPT):
         },
     )
     def encode(
-        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+        self,
+        audio: torch.Tensor,
+        audio_len: torch.Tensor,
+        sample_rate: Optional[int] = None,
+        num_codebooks: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert input time-domain audio signal into a discrete representation (tokens).
 
@@ -443,6 +455,8 @@ class AudioCodecModel(ModelPT):
             audio: input time-domain signal, shape `(batch, number of samples)`
             audio_len: valid length for each example in the batch, shape `(batch size,)`
             sample_rate: sample rate of input audio (int)
+            num_codebooks: number of codebooks to use for reconstructing audio.
+                Using fewer codebooks will only be accurate for codecs trained with FSQ codebook dropout.
 
         Returns:
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
@@ -450,6 +464,10 @@ class AudioCodecModel(ModelPT):
         """
         # Apply encoder to obtain a continuous vector for each frame
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+
+        if num_codebooks:
+            encoded = self._dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks)
+
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
         return tokens, encoded_len
@@ -550,6 +568,45 @@ class AudioCodecModel(ModelPT):
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
         return audio, audio_len
 
+    def _dropout_codebooks(self, encoded, num_codebooks):
+        """Dropout encoder output so that only 'num_codebooks' are left as decoder_input.
+        This is done for FSQ by setting all embedding values in dimensions above (num_codebooks * codebook_dim) to 0.
+
+        Args:
+            encoded: encoder output (B, D, T)
+            num_codebooks: number of codebooks to keep. This can be an integer, or a 3-D tensor compatible with the
+                dimensions of the encoder output
+
+        Returns:
+            Encoder output with all codebooks above index 'num_codebooks' masked out
+        """
+        batch_size, embed_dim, num_frames = encoded.shape
+        emb_unmask_dim = self.vector_quantizer.codebook_dim_per_group * num_codebooks
+        # [B, D, T]
+        embed_indices = (
+            torch.arange(start=0, end=embed_dim, device=encoded.device)
+            .unsqueeze(0)
+            .unsqueeze(2)
+            .repeat(batch_size, 1, num_frames)
+        )
+        codebook_mask = embed_indices < emb_unmask_dim
+        out = encoded * codebook_mask
+        return out
+
+    def _dropout_random_codebooks(self, encoded):
+        """Dropout a random number of codebooks for each batch element"""
+        batch_size = encoded.shape[0]
+        # [B]
+        apply_dropout = torch.rand(size=[batch_size], device=encoded.device) < self.codebook_dropout_rate
+        # Select random integers in range (1, num_codebooks - 1)
+        num_codebooks_unmasked = torch.randint(
+            low=1, high=self.num_codebooks, size=[batch_size], device=encoded.device
+        )
+        num_codebooks_unmasked = torch.where(apply_dropout, num_codebooks_unmasked, self.num_codebooks)
+        num_codebooks_unmasked = rearrange(num_codebooks_unmasked, 'B -> B 1 1')
+        out = self._dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks_unmasked)
+        return out
+
     def _process_batch(self, batch):
         # [B, T_audio]
         audio = batch.get("audio")
@@ -577,6 +634,9 @@ class AudioCodecModel(ModelPT):
             encoded = encoded.to(encoded.dtype)  # make sure encoded is converted to the right dtype
         else:
             commit_loss = 0.0
+
+        if self.training and self.codebook_dropout_rate:
+            encoded = self._dropout_random_codebooks(encoded)
 
         # [B, T]
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)

@@ -232,7 +232,7 @@ class SLMEncoder(NeuralModule):
         if self.resample is not None:
             audio = self.resample(audio)
 
-        audio = torch.nn.functional.pad(audio, (0, self.padding))
+        audio = torch.nn.functional.pad(audio, (0, self.padding)).float()
         feats = self.feature_extractor(audio.cpu(), sampling_rate=self.slm_sr, return_tensors="pt").data[
             'input_features'
         ]
@@ -243,6 +243,7 @@ class SLMEncoder(NeuralModule):
             slm_emb = out.hidden_states[self.hidden_layer] / self.scaling_factor
 
         slm_emb = rearrange(slm_emb, 'B T D -> B D T')
+        slm_emb = slm_emb.to(audio.dtype)
 
         return slm_emb
 

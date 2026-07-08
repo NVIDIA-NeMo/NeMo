@@ -936,59 +936,20 @@ class DefaultTextProcessor(TextProcessor):
         return text
 
 
-class IdentityNormalizeTextProcessor(TextProcessor):
-    """Language-specific WER text processor that uses default punctuation/casing cleanup.
-
-    This class intentionally relies on ``DefaultTextProcessor`` for punctuation removal so foreign
-    punctuation is handled by the shared logic that keeps spaces and alphanumeric characters only.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.default_processor = DefaultTextProcessor()
-
-    def normalize_text(self, text: str) -> str:
-        return text
-
-    def process_text_for_wer(self, text: str) -> str:
-        return self.default_processor.process_text_for_wer(text)
-
-
-class NoSpaceTextProcessor(IdentityNormalizeTextProcessor):
+class NoSpaceTextProcessor(TextProcessor):
     """WER text processor for languages where ASR/tokenization spaces should be ignored."""
 
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
     def process_text_for_wer(self, text: str) -> str:
-        text = super().process_text_for_wer(text)
+        text = self.default_processor.process_text_for_wer(text)
         text = text.replace(" ", "")
         return text
-
-
-class ArabicTextProcessor(TextProcessor):
-    """Arabic WER text processor."""
-
-    def __init__(self):
-        super().__init__()
-        self.default_processor = DefaultTextProcessor()
-
-    def normalize_text(self, text: str) -> str:
-        return text
-
-    def process_text_for_wer(self, text: str) -> str:
-        return self.default_processor.process_text_for_wer(text)
-
-
-class HindiTextProcessor(TextProcessor):
-    """Hindi WER text processor."""
-
-    def __init__(self):
-        super().__init__()
-        self.default_processor = DefaultTextProcessor()
-
-    def normalize_text(self, text: str) -> str:
-        return text
-
-    def process_text_for_wer(self, text: str) -> str:
-        return self.default_processor.process_text_for_wer(text)
 
 
 _PYOPENJTALK = None
@@ -1027,22 +988,6 @@ class JapaneseTextProcessor(NoSpaceTextProcessor):
 def text_to_katakana(text: str) -> str:
     """Convert Japanese text to Katakana using the Japanese text processor."""
     return JapaneseTextProcessor().text_to_katakana(text)
-
-
-class ChineseTextProcessor(TextProcessor):
-    """Chinese WER text processor."""
-
-    def __init__(self):
-        super().__init__()
-        self.default_processor = DefaultTextProcessor()
-
-    def normalize_text(self, text: str) -> str:
-        return text
-
-    def process_text_for_wer(self, text: str) -> str:
-        text = self.default_processor.process_text_for_wer(text)
-        text = text.replace(" ", "")
-        return text
 
 
 class EnglishTextProcessor(TextProcessor):
@@ -1084,14 +1029,8 @@ def get_text_processor(language: str) -> TextProcessor:
     language = (language or "").replace("_", "-").lower().split("-")[0]
     if language == "en":
         return EnglishTextProcessor()
-    if language == "ar":
-        return ArabicTextProcessor()
-    if language == "hi":
-        return HindiTextProcessor()
-    if language == "ja":
-        return JapaneseTextProcessor()
-    if language == "zh":
-        return ChineseTextProcessor()
+    if language in {"ja", "zh"}:
+        return JapaneseTextProcessor() if language == "ja" else NoSpaceTextProcessor()
     else:
         logging.info(f"Text processing not implemented for language {language}; using default processor")
         return DefaultTextProcessor()

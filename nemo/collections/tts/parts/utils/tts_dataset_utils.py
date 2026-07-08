@@ -936,6 +936,115 @@ class DefaultTextProcessor(TextProcessor):
         return text
 
 
+class IdentityNormalizeTextProcessor(TextProcessor):
+    """Language-specific WER text processor that uses default punctuation/casing cleanup.
+
+    This class intentionally relies on ``DefaultTextProcessor`` for punctuation removal so foreign
+    punctuation is handled by the shared logic that keeps spaces and alphanumeric characters only.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        return self.default_processor.process_text_for_wer(text)
+
+
+class NoSpaceTextProcessor(IdentityNormalizeTextProcessor):
+    """WER text processor for languages where ASR/tokenization spaces should be ignored."""
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = super().process_text_for_wer(text)
+        text = text.replace(" ", "")
+        return text
+
+
+class ArabicTextProcessor(TextProcessor):
+    """Arabic WER text processor."""
+
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        return self.default_processor.process_text_for_wer(text)
+
+
+class HindiTextProcessor(TextProcessor):
+    """Hindi WER text processor."""
+
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        return self.default_processor.process_text_for_wer(text)
+
+
+_PYOPENJTALK = None
+
+
+class JapaneseTextProcessor(NoSpaceTextProcessor):
+    """Japanese WER text processor with optional Katakana reading conversion."""
+
+    def text_to_katakana(self, text: str) -> str:
+        """Convert Japanese text to its Katakana reading via pyopenjtalk (lazy-imported).
+
+        Used for an additional, reading-based Japanese CER metric that is robust to
+        kanji/kana spelling variation between the reference and the ASR hypothesis.
+        Returns "" on empty input or if pyopenjtalk is unavailable/fails.
+        """
+        global _PYOPENJTALK
+        if not text:
+            return ""
+        if _PYOPENJTALK is None:
+            try:
+                import pyopenjtalk
+
+                _PYOPENJTALK = pyopenjtalk
+            except Exception as e:  # noqa: BLE001
+                logging.warning(f"pyopenjtalk not available; skipping katakana CER: {e}")
+                _PYOPENJTALK = False
+        if _PYOPENJTALK is False:
+            return ""
+        try:
+            return _PYOPENJTALK.g2p(text, kana=True).strip()
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"pyopenjtalk failed for '{text[:40]}': {e}")
+            return ""
+
+
+def text_to_katakana(text: str) -> str:
+    """Convert Japanese text to Katakana using the Japanese text processor."""
+    return JapaneseTextProcessor().text_to_katakana(text)
+
+
+class ChineseTextProcessor(TextProcessor):
+    """Chinese WER text processor."""
+
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = self.default_processor.process_text_for_wer(text)
+        text = text.replace(" ", "")
+        return text
+
+
 class EnglishTextProcessor(TextProcessor):
     """English text processing, which catches some edge cases not covered by normal text normalization.
 
@@ -972,8 +1081,17 @@ class EnglishTextProcessor(TextProcessor):
 
 
 def get_text_processor(language: str) -> TextProcessor:
+    language = (language or "").replace("_", "-").lower().split("-")[0]
     if language == "en":
         return EnglishTextProcessor()
+    if language == "ar":
+        return ArabicTextProcessor()
+    if language == "hi":
+        return HindiTextProcessor()
+    if language == "ja":
+        return JapaneseTextProcessor()
+    if language == "zh":
+        return ChineseTextProcessor()
     else:
         logging.info(f"Text processing not implemented for language {language}; using default processor")
         return DefaultTextProcessor()

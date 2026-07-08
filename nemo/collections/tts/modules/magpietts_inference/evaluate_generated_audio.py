@@ -40,6 +40,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     NemoTranscriberWithPrompt,
     WhisperTranscriber,
     get_text_processor,
+    text_to_katakana,
 )
 from nemo.utils import logging
 
@@ -65,6 +66,7 @@ FILEWISE_METRICS_TO_SAVE = [
     'pred_katakana',
     'pred_context_ssim',
     'pred_text',
+    'gt_audio_text',
     'gt_text',
     'gt_audio_filepath',
     'pred_audio_filepath',
@@ -170,37 +172,6 @@ def read_manifest(manifest_path):
             line = line.strip()
             records.append(json.loads(line))
     return records
-
-
-
-_PYOPENJTALK = None
-
-
-def text_to_katakana(text: str) -> str:
-    """Convert Japanese text to its Katakana reading via pyopenjtalk (lazy-imported).
-
-    Used for an additional, reading-based Japanese CER metric that is robust to
-    kanji/kana spelling variation between the reference and the ASR hypothesis.
-    Returns "" on empty input or if pyopenjtalk is unavailable/fails.
-    """
-    global _PYOPENJTALK
-    if not text:
-        return ""
-    if _PYOPENJTALK is None:
-        try:
-            import pyopenjtalk
-
-            _PYOPENJTALK = pyopenjtalk
-        except Exception as e:  # noqa: BLE001
-            logging.warning(f"pyopenjtalk not available; skipping katakana CER: {e}")
-            _PYOPENJTALK = False
-    if _PYOPENJTALK is False:
-        return ""
-    try:
-        return _PYOPENJTALK.g2p(text, kana=True).strip()
-    except Exception as e:  # noqa: BLE001
-        logging.warning(f"pyopenjtalk failed for '{text[:40]}': {e}")
-        return ""
 
 
 def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_seconds: float) -> np.ndarray:
@@ -446,7 +417,7 @@ def evaluate_dir(
         # kanji/kana spelling differences between reference and ASR hypothesis.
         gt_katakana = pred_katakana = None
         katakana_cer = None
-        if language == "ja":
+        if (language or "").replace("_", "-").lower().split("-")[0] == "ja":
             gt_katakana = text_to_katakana(gt_text)
             pred_katakana = text_to_katakana(pred_text)
             katakana_cer = word_error_rate_detail(

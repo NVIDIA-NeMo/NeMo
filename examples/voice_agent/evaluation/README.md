@@ -115,7 +115,6 @@ Current scnarios are relatively simple, usually contains no more than 3 tool cal
 | `customer_service` | 10 | `ResolveTicketTool` | TechCorp customer service — billing disputes, order delays, defective returns, plan upgrades, account access, warranty claims, subscription cancellations, wrong items, and service outages. |
 | `qa` | 10 | `SaveQuestionAnswerTool` | Single-turn Q&A — geography, math, science, history, literature, weather (uses `GetCityWeatherTool`), and general knowledge. |
 | `eva_airline` | 50 | bridge-pulled (no LLM summary tool) | SkyWay Airlines voice agent — flight changes, IRROPS, refunds, vouchers. Full 15-tool eva surface ported from [ServiceNow/eva](https://github.com/ServiceNow/eva/tree/0.1.3) (MIT). Action records are auto-aggregated by write tools and pulled by the bridge at end-of-scenario via the `get_scenario_summary` RTVI action — not emitted by an LLM-callable tool. Includes 5 hand-authored seed scenarios and generated scenarios from the eva airline dataset. See [eva_airline domain notes](#eva_airline-domain-notes) below. |
-| `frontend_backend_airline` | 3 | post-run scorer | Prototype scenarios for the external Frontend/Backend airline example. The NeMo bridge drives fragmented multi-turn voice conversations; `score_frontend_backend_airline.py` scores end-to-end intent achievement and `call_backend` rephrased-query accuracy when tool/query telemetry is available. |
 | *legacy (no domain)* | 4 | — | `fastbite`, `simple_qa_1`, `simple_qa_2`, `simple_qa_3` — original scenarios kept for backward compatibility. |
 
 Run `python run_evaluation.py --list` for the full list of scenario names, or `--list-domains` for just the domain summary.
@@ -192,66 +191,6 @@ response artifact.
 For large stateful scenarios, returning only `db_hash` from
 `get_scenario_summary` is supported. This avoids sending large databases over
 the WebSocket while preserving deterministic DB-state matching.
-
-### Frontend/Backend airline prototype
-
-This domain is for evaluating the Frontend/Backend airline example from the
-nemotron voice-agent repo with the NeMo voice-agent evaluator on this branch.
-The scenarios live in
-`examples/voice_agent/evaluation/data/frontend_backend_airline_cases.json`.
-They focus on fragmented, multi-turn inputs where the frontend must preserve
-context across pauses before calling its internal backend.
-
-Run a live prototype with the helper script:
-
-```bash
-# Terminal 1 - NeMo simulated user bot
-cd examples/voice_agent/evaluation
-./run_user_nemotron.sh
-
-# Terminal 2 - nemotron voice-agent booking backend
-cd /path/to/nemotron-voice-agent
-PYTHONPATH=src uv run python3 -m examples.frontend_backend_agent.airline.database.server
-
-# Terminal 3 - nemotron voice-agent Frontend/Backend server
-cd /path/to/nemotron-voice-agent
-EXAMPLE_SELECTION=frontend-backend-agent TRANSPORT_SELECTION=websocket PIPELINE_TLS=false \
-  uv run python3 src/server.py --port 7860
-
-# Terminal 4 - NeMo bridge plus Frontend/Backend scorer
-cd /path/to/NeMo/examples/voice_agent/evaluation
-./run_frontend_backend_airline_eval.sh
-```
-
-The helper defaults to:
-
-- `USER_URL=ws://localhost:8766`
-- `AGENT_URL=ws://localhost:7860/api/ws?pipeline_mode=frontend-backend-agent`
-- `OUTPUT_DIR=examples/voice_agent/evaluation/eval_results_frontend_backend`
-
-You can also run only the bridge and score later:
-
-```bash
-python run_evaluation.py \
-  --user-url ws://localhost:8766 \
-  --agent-url "ws://localhost:7860/api/ws?pipeline_mode=frontend-backend-agent" \
-  --domain frontend_backend_airline \
-  --judge-url ""
-
-python score_frontend_backend_airline.py \
-  --session-dir eval_results/eval_YYYYMMDD_HHMMSS \
-  --write --pretty
-```
-
-Current learning from the prototype: the external Frontend/Backend `/api/ws`
-endpoint speaks the normal audio/RTVI session protocol, but it does not expose
-NeMo's `update_system_prompt`, `reset`, `get_context_history`, or
-`get_scenario_summary` actions. Because of that, the post-run scorer reports
-tool-result and `call_backend.query` metrics as missing unless a compatible
-context or backend lifecycle trace is present in the scenario directory. The
-transcript-based intent score is still useful immediately, and full accuracy
-scoring becomes available after adding a small trace export/action on the
-Frontend/Backend side.
 
 ## Evaluation Methods
 

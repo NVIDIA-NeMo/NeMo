@@ -128,7 +128,9 @@ class AggregateTokenizer(TokenizerSpec):
     def text_to_ids_var_bpe(self, text: str, lang_id: int, case_insensitive: bool = True) -> VarBPERepresentation:
         """Converts text to token Var-BPE representation"""
         tokenizer = self.tokenizers_dict[lang_id]
-        token_ids_var_bpe: VarBPERepresentation = tokenizer.text_to_ids_var_bpe(case_insensitive=case_insensitive)
+        token_ids_var_bpe: VarBPERepresentation = tokenizer.text_to_ids_var_bpe(
+            text=text, case_insensitive=case_insensitive
+        )
         token_offset = self.token_id_offset[lang_id]
         for i, token_ids in enumerate(token_ids_var_bpe.token_ids_with_merges):
             token_ids[:] = [t + token_offset for t in token_ids]

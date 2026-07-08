@@ -14,7 +14,6 @@
 
 import os
 import re
-from typing import List, Union
 
 import numpy as np
 from kaldialign import align
@@ -26,9 +25,9 @@ from nemo.utils import logging
 
 
 def merge_alignment_with_ws_hyps(
-    candidate: Union[np.ndarray, rnnt_utils.Hypothesis],
+    candidate: np.ndarray | rnnt_utils.Hypothesis,
     asr_model,
-    cb_results: List[WSHyp],
+    cb_results: list[WSHyp],
     decoder_type: str = "ctc",
     intersection_threshold: float = 30.0,
     blank_idx: int = 0,
@@ -151,8 +150,8 @@ def merge_alignment_with_ws_hyps(
 
 def compute_fscore(
     recognition_results_manifest: str,
-    key_words_list: List = None,
-    key_words_field: str = None,
+    key_words_list: list | None = None,
+    key_words_field: str | None = None,
     eps: str = "<eps>",
     print_stats: bool = False,
 ) -> tuple[float, float, float]:

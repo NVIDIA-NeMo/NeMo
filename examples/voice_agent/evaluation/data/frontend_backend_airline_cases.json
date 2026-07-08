@@ -1,7 +1,7 @@
 {
   "cases": [
     {
-      "name": "thinker_talker_airline__fragmented_booking_window_seat",
+      "name": "frontend_backend_airline__fragmented_booking_window_seat",
       "description": "New-booking flow where route, date, selected flight, passenger name, confirmation, and window-seat preference arrive across separate turns.",
       "max_duration": 480,
       "user": {
@@ -51,7 +51,7 @@
       }
     },
     {
-      "name": "thinker_talker_airline__fragmented_search_price_sort",
+      "name": "frontend_backend_airline__fragmented_search_price_sort",
       "description": "Flight-search flow where destination/date/sorting details arrive after the initial request.",
       "max_duration": 360,
       "user": {
@@ -95,7 +95,7 @@
       }
     },
     {
-      "name": "thinker_talker_airline__fragmented_pnr_status",
+      "name": "frontend_backend_airline__fragmented_pnr_status",
       "description": "PNR-status flow where the record locator is split across two turns.",
       "max_duration": 300,
       "user": {

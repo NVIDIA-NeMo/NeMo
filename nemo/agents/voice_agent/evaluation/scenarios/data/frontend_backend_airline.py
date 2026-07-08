@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Thinker/Talker airline scenarios for the voice-agent evaluator.
+"""Frontend/Backend airline scenarios for the voice-agent evaluator.
 
 These scenarios are intentionally data-driven so new fragmented-turn cases can
-be added by editing ``data/thinker_talker_airline_cases.json`` without adding a
+be added by editing ``data/frontend_backend_airline_cases.json`` without adding a
 new Python class each time.
 """
 
@@ -31,9 +31,9 @@ from nemo.agents.voice_agent.evaluation.scenarios.classes import Actions, Person
 
 
 @cache
-def load_thinker_talker_airline_cases() -> list[dict[str, Any]]:
-    """Load the data-driven Thinker/Talker airline case catalog."""
-    path = get_eval_data_root() / "thinker_talker_airline_cases.json"
+def load_frontend_backend_airline_cases() -> list[dict[str, Any]]:
+    """Load the data-driven Frontend/Backend airline case catalog."""
+    path = get_eval_data_root() / "frontend_backend_airline_cases.json"
     payload = json.loads(path.read_text())
     cases = payload.get("cases", [])
     if not isinstance(cases, list) or not cases:
@@ -41,11 +41,11 @@ def load_thinker_talker_airline_cases() -> list[dict[str, Any]]:
     return cases
 
 
-class ThinkerTalkerAirlineBaseScenario(Scenario):
-    """Base scenario for testing an external Thinker/Talker voice agent.
+class FrontendBackendAirlineBaseScenario(Scenario):
+    """Base scenario for testing an external Frontend/Backend voice agent.
 
     The NeMo evaluator still owns the simulated-user side and the audio bridge.
-    The agent-under-test is expected to be the Thinker/Talker WebSocket endpoint
+    The agent-under-test is expected to be the Frontend/Backend WebSocket endpoint
     from the nemotron voice-agent repo. That external endpoint currently does
     not expose NeMo's evaluation summary actions, so these scenarios leave
     ``reference_answer`` unset and rely on the post-run scorer for task and
@@ -58,7 +58,7 @@ class ThinkerTalkerAirlineBaseScenario(Scenario):
 
     @property
     def description(self) -> str:
-        return str(self.case.get("description", "Thinker/Talker airline evaluation scenario."))
+        return str(self.case.get("description", "Frontend/Backend airline evaluation scenario."))
 
     @property
     def user_persona(self) -> Persona:
@@ -94,7 +94,7 @@ class ThinkerTalkerAirlineBaseScenario(Scenario):
     def agent_persona(self) -> Persona:
         return Persona(
             role="airline voice agent",
-            name="Thinker/Talker",
+            name="Frontend/Backend",
             background=(
                 "You are an airline voice agent that can search flights, create new bookings, "
                 "and check PNR status. You are being evaluated through a live audio bridge."
@@ -129,7 +129,7 @@ class ThinkerTalkerAirlineBaseScenario(Scenario):
 
     @property
     def agent_resources(self) -> Resources:
-        # The external Thinker/Talker endpoint owns its tool schema. This field is
+        # The external Frontend/Backend endpoint owns its tool schema. This field is
         # useful when running the same scenario against a NeMo-compatible bot but
         # is ignored by the current external /api/ws endpoint.
         return Resources()
@@ -141,22 +141,22 @@ def _class_name_from_case_name(name: str) -> str:
 
 def _register_data_driven_cases() -> None:
     seen: set[str] = set()
-    for case in load_thinker_talker_airline_cases():
+    for case in load_frontend_backend_airline_cases():
         name = str(case.get("name") or "").strip()
         if not name:
-            raise ValueError("Every Thinker/Talker airline case must define a non-empty name")
+            raise ValueError("Every Frontend/Backend airline case must define a non-empty name")
         if name in seen:
-            raise ValueError(f"Duplicate Thinker/Talker airline case name: {name}")
+            raise ValueError(f"Duplicate Frontend/Backend airline case name: {name}")
         seen.add(name)
         attrs = {
             "name": name,
             "case": case,
-            "max_duration": int(case.get("max_duration") or ThinkerTalkerAirlineBaseScenario.max_duration),
+            "max_duration": int(case.get("max_duration") or FrontendBackendAirlineBaseScenario.max_duration),
             "__module__": __name__,
         }
-        register_eval_scenario(type(_class_name_from_case_name(name), (ThinkerTalkerAirlineBaseScenario,), attrs))
+        register_eval_scenario(type(_class_name_from_case_name(name), (FrontendBackendAirlineBaseScenario,), attrs))
 
 
 _register_data_driven_cases()
 
-__all__ = ["ThinkerTalkerAirlineBaseScenario", "load_thinker_talker_airline_cases"]
+__all__ = ["FrontendBackendAirlineBaseScenario", "load_frontend_backend_airline_cases"]

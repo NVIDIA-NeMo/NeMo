@@ -46,7 +46,7 @@ def test_judge_scenario_uses_available_evidence_without_reference(monkeypatch):
 
     result = judge.judge_scenario(
         conversation=[{"role": "user", "text": "I need to change my flight."}],
-        agent_context_history=[{"role": "assistant", "tool_calls": [{"function": {"name": "call_thinker"}}]}],
+        agent_context_history=[{"role": "assistant", "tool_calls": [{"function": {"name": "call_backend"}}]}],
         user_context_history=[{"role": "user", "content": "I need to change my flight."}],
         nl_assertions=["The agent routed the request to an internal task handler."],
     )

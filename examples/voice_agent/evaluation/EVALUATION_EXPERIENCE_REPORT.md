@@ -26,8 +26,8 @@ expects.
 
 ## General Evaluator Compatibility Changes
 
-The branch includes evaluator changes that are not specific to Thinker/Talker.
-Thinker/Talker is the motivating external/cascaded-agent example, but the
+The branch includes evaluator changes that are not specific to Frontend/Backend.
+Frontend/Backend is the motivating external/cascaded-agent example, but the
 changes are intended to make the evaluator easier to use with any agent that can
 expose compatible RTVI state.
 
@@ -53,7 +53,7 @@ Added compatibility support:
   by unsupported payload fields.
 
 This is the part we should discuss with the evaluator team as broadly useful.
-The Thinker/Talker files then serve as one prototype consumer of the generic
+The Frontend/Backend files then serve as one prototype consumer of the generic
 contract.
 
 ## Runs Completed

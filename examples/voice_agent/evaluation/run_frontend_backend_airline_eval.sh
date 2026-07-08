@@ -6,8 +6,8 @@ VOICE_AGENT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NEMO_ROOT="$(cd "${VOICE_AGENT_DIR}/../.." && pwd)"
 
 USER_URL="${USER_URL:-ws://localhost:8766}"
-AGENT_URL="${AGENT_URL:-ws://localhost:7860/api/ws?pipeline_mode=cascaded/thinker_talker}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/eval_results_thinker_talker}"
+AGENT_URL="${AGENT_URL:-ws://localhost:7860/api/ws?pipeline_mode=frontend-backend-agent}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/eval_results_frontend_backend}"
 PYTHON_BIN="${PYTHON_BIN:-${VOICE_AGENT_DIR}/.venv/bin/python3}"
 
 export PYTHONPATH="${NEMO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -22,7 +22,7 @@ find "${OUTPUT_DIR}" -maxdepth 1 -type d -name 'eval_*' -print | sort > "${befor
 "${PYTHON_BIN}" "${SCRIPT_DIR}/run_evaluation.py" \
   --user-url "${USER_URL}" \
   --agent-url "${AGENT_URL}" \
-  --domain thinker_talker_airline \
+  --domain frontend_backend_airline \
   --judge-url "" \
   --output-dir "${OUTPUT_DIR}" \
   "$@"
@@ -40,9 +40,9 @@ if [[ -z "${session_dir}" ]]; then
   exit 1
 fi
 
-"${PYTHON_BIN}" "${SCRIPT_DIR}/score_thinker_talker_airline.py" \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/score_frontend_backend_airline.py" \
   --session-dir "${session_dir}" \
   --write \
   --pretty
 
-echo "Thinker/Talker airline evaluation results: ${session_dir}"
+echo "Frontend/Backend airline evaluation results: ${session_dir}"

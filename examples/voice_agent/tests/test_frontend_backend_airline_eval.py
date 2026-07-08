@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline checks for the Thinker/Talker airline evaluator prototype."""
+"""Offline checks for the Frontend/Backend airline evaluator prototype."""
 
 from __future__ import annotations
 
@@ -36,11 +36,11 @@ def _load_module(module_name: str, path: Path):
 
 
 def _load_scorer_module():
-    path = nemo_root / "examples" / "voice_agent" / "evaluation" / "score_thinker_talker_airline.py"
-    return _load_module("score_thinker_talker_airline", path)
+    path = nemo_root / "examples" / "voice_agent" / "evaluation" / "score_frontend_backend_airline.py"
+    return _load_module("score_frontend_backend_airline", path)
 
 
-def _load_thinker_talker_scenario_module():
+def _load_frontend_backend_scenario_module():
     # The scenario dataclasses only need NoiseConfig for typing/defaults.
     # Importing the full voice-agent utils package also imports live
     # ASR/diarization runtime dependencies, which are not needed here.
@@ -81,7 +81,7 @@ def _load_thinker_talker_scenario_module():
     )
 
     scenario_module = _load_module(
-        "nemo.agents.voice_agent.evaluation.scenarios.data.thinker_talker_airline",
+        "nemo.agents.voice_agent.evaluation.scenarios.data.frontend_backend_airline",
         nemo_root
         / "nemo"
         / "agents"
@@ -89,12 +89,12 @@ def _load_thinker_talker_scenario_module():
         / "evaluation"
         / "scenarios"
         / "data"
-        / "thinker_talker_airline.py",
+        / "frontend_backend_airline.py",
     )
     return scenarios_module, scenario_module
 
 
-scenarios, thinker_talker_airline = _load_thinker_talker_scenario_module()
+scenarios, frontend_backend_airline = _load_frontend_backend_scenario_module()
 
 
 def _write_json(path: Path, payload) -> None:
@@ -102,14 +102,14 @@ def _write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload))
 
 
-def test_thinker_talker_airline_scenarios_are_registered():
-    cases = thinker_talker_airline.load_thinker_talker_airline_cases()
+def test_frontend_backend_airline_scenarios_are_registered():
+    cases = frontend_backend_airline.load_frontend_backend_airline_cases()
     names = {case["name"] for case in cases}
 
     registered = set(scenarios.list_eval_scenarios())
     assert names <= registered
 
-    scenario = scenarios.get_eval_scenario("thinker_talker_airline__fragmented_booking_window_seat")
+    scenario = scenarios.get_eval_scenario("frontend_backend_airline__fragmented_booking_window_seat")
     assert scenario is not None
     assert scenario.reference_answer is None
     assert "window seat" in scenario.get_user_prompt().lower()
@@ -119,8 +119,8 @@ def test_scorer_passes_with_transcript_tool_results_and_query(tmp_path):
     scorer = _load_scorer_module()
     case = next(
         case
-        for case in thinker_talker_airline.load_thinker_talker_airline_cases()
-        if case["name"] == "thinker_talker_airline__fragmented_booking_window_seat"
+        for case in frontend_backend_airline.load_frontend_backend_airline_cases()
+        if case["name"] == "frontend_backend_airline__fragmented_booking_window_seat"
     )
     scenario_dir = tmp_path / case["name"]
 
@@ -145,7 +145,7 @@ def test_scorer_passes_with_transcript_tool_results_and_query(tmp_path):
                 "tool_calls": [
                     {
                         "function": {
-                            "name": "call_thinker",
+                            "name": "call_backend",
                             "arguments": json.dumps(
                                 {
                                     "query": (
@@ -160,12 +160,12 @@ def test_scorer_passes_with_transcript_tool_results_and_query(tmp_path):
             },
             {
                 "role": "tool",
-                "name": "call_thinker",
+                "name": "call_backend",
                 "content": json.dumps({"type": "tool_result", "tool": "flight_search", "status": "success"}),
             },
             {
                 "role": "tool",
-                "name": "call_thinker",
+                "name": "call_backend",
                 "content": json.dumps({"type": "tool_result", "tool": "booking", "status": "success"}),
             },
         ],
@@ -174,15 +174,15 @@ def test_scorer_passes_with_transcript_tool_results_and_query(tmp_path):
     result = scorer.score_scenario(case, scenario_dir)
     assert result["intent_achievement"]["pass"] is True
     assert result["intent_achievement"]["tool_result_pass"] is True
-    assert result["rephrased_query_to_thinker"]["pass"] is True
+    assert result["rephrased_query_to_backend"]["pass"] is True
 
 
 def test_scorer_reports_missing_tool_trace_as_partial_evidence(tmp_path):
     scorer = _load_scorer_module()
     case = next(
         case
-        for case in thinker_talker_airline.load_thinker_talker_airline_cases()
-        if case["name"] == "thinker_talker_airline__fragmented_search_price_sort"
+        for case in frontend_backend_airline.load_frontend_backend_airline_cases()
+        if case["name"] == "frontend_backend_airline__fragmented_search_price_sort"
     )
     scenario_dir = tmp_path / case["name"]
 
@@ -201,4 +201,4 @@ def test_scorer_reports_missing_tool_trace_as_partial_evidence(tmp_path):
     assert result["intent_achievement"]["observable_pass"] is True
     assert result["intent_achievement"]["pass"] is False
     assert result["intent_achievement"]["tool_result_pass"] is None
-    assert result["rephrased_query_to_thinker"]["pass"] is None
+    assert result["rephrased_query_to_backend"]["pass"] is None

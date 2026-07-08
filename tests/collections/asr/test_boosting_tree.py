@@ -23,11 +23,41 @@ from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
     GPUBoostingTreeModel,
 )
 from nemo.collections.asr.parts.context_biasing.context_graph_universal import ContextGraph
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenWithLength, VarBPERepresentation
 
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
     DEVICES.append(torch.device("cuda"))
+
+
+def _case_variant_var_bpe_representation():
+    return VarBPERepresentation(
+        canonical_lengths=[1, 1],
+        token_ids_with_merges=[
+            [TokenWithLength(token_id=1), TokenWithLength(token_id=3)],
+            [
+                TokenWithLength(token_id=2),
+                TokenWithLength(token_id=4),
+                TokenWithLength(token_id=5, length=2),
+                TokenWithLength(token_id=6, length=2),
+            ],
+        ],
+    )
+
+
+class _RecordingVarBPETokenizer:
+    vocab_size = 7
+
+    def __init__(self):
+        self.var_bpe_calls = []
+
+    def text_to_ids(self, text):
+        raise AssertionError(f"Unexpected default tokenization for {text}")
+
+    def text_to_ids_var_bpe(self, text, case_insensitive=True):
+        self.var_bpe_calls.append((text, case_insensitive))
+        return _case_variant_var_bpe_representation()
 
 
 @pytest.fixture(scope="module")
@@ -83,6 +113,106 @@ class TestGPUBoostingTreeModel:
         assert round(context_graph.root.next[1].next[2].next[3].node_score, 2) == 4.79
         assert round(context_graph.root.next[1].next[2].next[4].node_score, 2) == 4.79
         assert round(context_graph.root.next[3].node_score, 2) == 1.0
+
+    @pytest.mark.unit
+    def test_building_context_graph_from_var_bpe(self):
+        """Test var-BPE graph aliases for case variants and merged tokens."""
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build_from_var_bpe(
+            token_ids=[_case_variant_var_bpe_representation()],
+            phrases=["ab"],
+            scores=[0.0],
+            uniform_weights=False,
+            var_bpe_scoring_temp=0.0,
+        )
+
+        first_node = context_graph.root.next[1]
+        final_node = first_node.next[2]
+
+        assert context_graph.num_nodes == 2
+        assert context_graph.root.next[3] is first_node
+        assert first_node.next[4] is final_node
+        assert context_graph.root.next[5] is final_node
+        assert context_graph.root.next[6] is final_node
+        assert final_node.is_end
+        assert final_node.phrase == "ab"
+        assert first_node.is_primary
+        assert final_node.is_primary
+
+        expected_final_score = 1.0 + 1.0 + torch.log(torch.tensor(2.0)).item()
+        assert first_node.node_score == pytest.approx(1.0)
+        assert final_node.node_score == pytest.approx(expected_final_score)
+
+        order2cnt, tbranches = GPUBoostingTreeModel._read_context_graph(context_graph=context_graph)
+        assert order2cnt == {1: 4, 2: 2}
+        assert len(tbranches) == 6
+
+    @pytest.mark.unit
+    def test_var_bpe_boosting_tree_scores_equivalent_paths(self):
+        """Test split, merged, and case-variant paths receive the same total boost."""
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build_from_var_bpe(
+            token_ids=[_case_variant_var_bpe_representation()],
+            phrases=["ab"],
+            scores=[0.0],
+            uniform_weights=False,
+            var_bpe_scoring_temp=0.0,
+        )
+        boosting_tree = GPUBoostingTreeModel.from_context_graph(
+            context_graph=context_graph,
+            vocab_size=7,
+            unk_score=0.0,
+            final_eos_score=0.0,
+            use_triton=False,
+            uniform_weights=False,
+        )
+
+        sentences_ids = [[1, 2], [3, 2], [1, 4], [3, 4], [5], [6], [2]]
+        boosting_scores = boosting_tree(
+            labels=pad_sequence([torch.LongTensor(sentence) for sentence in sentences_ids], batch_first=True),
+            labels_lengths=torch.LongTensor([len(sentence) for sentence in sentences_ids]),
+            bos=False,
+            eos=False,
+        )
+
+        expected_second_token_score = 1.0 + torch.log(torch.tensor(2.0)).item()
+        expected_total_score = 1.0 + expected_second_token_score
+
+        assert boosting_scores[0, 0].item() == pytest.approx(1.0)
+        assert boosting_scores[0, 1].item() == pytest.approx(expected_second_token_score)
+        assert boosting_scores[4, 0].item() == pytest.approx(expected_total_score)
+        assert boosting_scores[5, 0].item() == pytest.approx(expected_total_score)
+        assert boosting_scores.sum(dim=1)[:6].detach().tolist() == pytest.approx([expected_total_score] * 6)
+        assert boosting_scores.sum(dim=1)[6].item() == pytest.approx(0.0)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "bpe_mode,phrase,expected_call",
+        [("case_insensitive", "Ab", ("ab", True)), ("var_bpe", "Ab", ("Ab", False))],
+    )
+    def test_boosting_tree_from_config_uses_var_bpe_modes(self, bpe_mode, phrase, expected_call):
+        """Test config routing for var-BPE and case-insensitive modes."""
+        tokenizer = _RecordingVarBPETokenizer()
+        boosting_tree = GPUBoostingTreeModel.from_config(
+            BoostingTreeModelConfig(
+                key_phrases_list=[phrase],
+                bpe_mode=bpe_mode,
+                depth_scaling=1.0,
+                use_triton=False,
+            ),
+            tokenizer=tokenizer,
+        )
+
+        assert tokenizer.var_bpe_calls == [expected_call]
+
+        boosting_scores = boosting_tree(
+            labels=pad_sequence([torch.LongTensor([3, 4]), torch.LongTensor([5])], batch_first=True),
+            labels_lengths=torch.LongTensor([2, 1]),
+            bos=False,
+            eos=False,
+        )
+        expected_total_score = 1.0 + 1.0 + torch.log(torch.tensor(2.0)).item()
+        assert boosting_scores.sum(dim=1).detach().tolist() == pytest.approx([expected_total_score] * 2)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

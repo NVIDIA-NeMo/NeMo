@@ -663,9 +663,6 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 uniform_weights=cfg.uniform_weights,
             )
 
-        # graph_name = "no_var"
-        # context_graph.draw(title=f"graph_{graph_name}", symbol_table=tokenizer.vocab, filename=f"/Users/vbataev/code/nemo/.sandbox/graph_{graph_name}.pdf")
-
         # 4. build GPU boosting tree model from python context graph
         boosting_tree_model = GPUBoostingTreeModel.from_context_graph(
             context_graph=context_graph,

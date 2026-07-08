@@ -240,7 +240,7 @@ class AggregateTokenizer(TokenizerSpec):
         return max_lang
 
     def tokens_to_ids(self, tokens: Union[str, List[str]], langs: Union[str, List[str]]) -> Union[int, List[int]]:
-        """Converts token(s)) annotated with language(s) to the list of ids."""
+        """Converts token(s) annotated with language(s) to the list of ids."""
         if isinstance(tokens, str):
             tokens = [tokens]
         if isinstance(langs, str):

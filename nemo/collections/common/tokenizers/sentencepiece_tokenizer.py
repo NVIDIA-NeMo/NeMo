@@ -190,7 +190,7 @@ class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
         return self._var_bpe_extension
 
     def text_to_ids_var_bpe(self, text: str, case_insensitive: bool = True) -> VarBPERepresentation:
-        """Transform import text to Var-BPE representation"""
+        """Transform input text to Var-BPE representation"""
         token_ids = self.text_to_ids(text)
         var_bpe_ext = self.get_var_bpe_extension(case_insensitive=case_insensitive)
         return var_bpe_ext.ids_to_all_representations(token_ids=token_ids)

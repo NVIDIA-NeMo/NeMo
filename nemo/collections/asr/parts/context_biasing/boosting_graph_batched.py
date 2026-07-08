@@ -78,7 +78,7 @@ class BoostingTreeModelConfig:
     uniform_weights: bool = False  # Whether to use uniform weights for the context-biasing tree as in Icefall
     bpe_mode: str = "default"  # BPE Mode: default, bpe_dropout, var_bpe, case_insensitive
     use_bpe_dropout: bool | None = (
-        None  # Deprecated: whether to use BPE dropout for generating alternative transcriptions; use bpe_mode isntead
+        None  # Deprecated: whether to use BPE dropout for generating alternative transcriptions; use bpe_mode instead
     )
     num_of_transcriptions: int = (
         5  # The number of alternative transcriptions to generate for each context-biasing phrase

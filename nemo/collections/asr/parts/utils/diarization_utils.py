@@ -37,13 +37,6 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
 )
 from nemo.utils import logging
 
-try:
-    import arpa
-
-    ARPA = True
-except ImportError:
-    ARPA = False
-
 __all__ = ['OfflineDiarWithASR']
 
 
@@ -739,10 +732,6 @@ class OfflineDiarWithASR:
             Hydra config for diarizer key
         params (OmegaConf):
             Parameters config in diarizer.asr
-        ctc_decoder_params (OmegaConf)
-            Hydra config for beam search decoder
-        realigning_lm_params (OmegaConf):
-            Hydra config for realigning language model
         manifest_filepath (str):
             Path to the input manifest path
         nonspeech_threshold (float):
@@ -759,8 +748,6 @@ class OfflineDiarWithASR:
             Offset for word timestamps from ASR decoders
         run_ASR:
             Placeholder variable for an ASR launcher function
-        realigning_lm:
-            Placeholder variable for a loaded ARPA Language model
         ctm_exists (bool):
             Boolean that indicates whether all files have the corresponding reference CTM file
         frame_VAD (dict):
@@ -774,8 +761,6 @@ class OfflineDiarWithASR:
     def __init__(self, cfg_diarizer):
         self.cfg_diarizer = cfg_diarizer
         self.params = cfg_diarizer.asr.parameters
-        self.ctc_decoder_params = cfg_diarizer.asr.ctc_decoder_parameters
-        self.realigning_lm_params = cfg_diarizer.asr.realigning_lm_parameters
         self.manifest_filepath = cfg_diarizer.manifest_filepath
         self.nonspeech_threshold = self.params.asr_based_vad_threshold
         self.fix_word_ts_with_VAD = self.params.fix_word_ts_with_VAD
@@ -785,7 +770,6 @@ class OfflineDiarWithASR:
         self.max_word_ts_length_in_sec = 0.6
         self.word_ts_anchor_offset = 0.0
         self.run_ASR = None
-        self.realigning_lm = None
         self.ctm_exists = False
         self.frame_VAD = {}
 
@@ -829,18 +813,6 @@ class OfflineDiarWithASR:
         # check if all unique IDs have CTM files
         if len(self.audio_file_list) == len(self.ctm_file_list):
             self.ctm_exists = True
-
-    def _load_realigning_LM(self):
-        """
-        Load ARPA language model for realigning speaker labels for words.
-        """
-        self.N_range = (
-            self.realigning_lm_params['min_number_of_words'],
-            self.realigning_lm_params['max_number_of_words'],
-        )
-        self.stt_end_tokens = ['</s>', '<s>']
-        logging.info(f"Loading LM for realigning: {self.realigning_lm_params['arpa_language_model']}")
-        return arpa.loadf(self.realigning_lm_params['arpa_language_model'])[0]
 
     def _save_VAD_labels_list(self, word_ts_dict: Dict[str, Dict[str, List[float]]]):
         """
@@ -1153,14 +1125,6 @@ class OfflineDiarWithASR:
         else:
             word_ts_refined = word_ts_hyp
 
-        if self.realigning_lm_params['arpa_language_model']:
-            if not ARPA:
-                raise ImportError(
-                    'LM for realigning is provided but arpa is not installed. Install arpa using PyPI: pip install arpa'
-                )
-            else:
-                self.realigning_lm = self._load_realigning_LM()
-
         word_dict_seq_list = []
         for k, audio_file_path in enumerate(self.audio_file_list):
             uniq_id = get_uniqname_from_filepath(audio_file_path)
@@ -1171,8 +1135,6 @@ class OfflineDiarWithASR:
             word_dict_seq_list = self.get_word_level_json_list(
                 words=words, word_ts=word_ts, word_rfnd_ts=word_rfnd_ts, diar_labels=diar_labels
             )
-            if self.realigning_lm:
-                word_dict_seq_list = self.realign_words_with_lm(word_dict_seq_list)
 
             # Create a transscript information json dictionary from the output variables
             trans_info_dict[uniq_id] = self._make_json_output(uniq_id, diar_labels, word_dict_seq_list)
@@ -1305,33 +1267,6 @@ class OfflineDiarWithASR:
         self._write_and_log(uniq_id, session_trans_dict, audacity_label_words, gecko_dict, sentences)
         return session_trans_dict
 
-    def _get_realignment_ranges(self, k: int, word_seq_len: int) -> Tuple[int, int]:
-        """
-        Calculate word ranges for realignment operation.
-        N1, N2 are calculated to not exceed the start and end of the input word sequence.
-
-        Args:
-            k (int):
-                Index of the current word
-            word_seq_len (int):
-                Length of the sentence
-
-        Returns:
-            N1 (int):
-                Start index of the word sequence
-            N2 (int):
-                End index of the word sequence
-        """
-        if k < self.N_range[1]:
-            N1 = max(k, self.N_range[0])
-            N2 = min(word_seq_len - k, self.N_range[1])
-        elif k > (word_seq_len - self.N_range[1]):
-            N1 = min(k, self.N_range[1])
-            N2 = max(word_seq_len - k, self.N_range[0])
-        else:
-            N1, N2 = self.N_range[1], self.N_range[1]
-        return N1, N2
-
     def _get_word_timestamp_anchor(self, word_ts_stt_end: List[float]) -> float:
         """
         Determine a reference point to match a word with the diarization results.
@@ -1365,60 +1300,6 @@ class OfflineDiarWithASR:
 
         word_pos = word_pos + self.word_ts_anchor_offset
         return word_pos
-
-    def realign_words_with_lm(self, word_dict_seq_list: List[Dict[str, float]]) -> List[Dict[str, float]]:
-        """
-        Realign the mapping between speaker labels and words using a language model.
-        The realigning process calculates the probability of the certain range around the words,
-        especially at the boundary between two hypothetical sentences spoken by different speakers.
-
-        Example:
-            k-th word: "but"
-
-            hyp_former:
-                since i think like tuesday </s> <s>  but he's coming back to albuquerque
-            hyp_latter:
-                since i think like tuesday but </s> <s>  he's coming back to albuquerque
-
-        The joint probabilities of words in the sentence are computed for these two hypotheses. In addition,
-        logprob_diff_threshold parameter is used for reducing the false positive realigning.
-
-        Args:
-            word_dict_seq_list (list):
-                List containing words and corresponding word timestamps in dictionary format.
-
-        Returns:
-            realigned_list (list):
-                List of dictionaries containing words, word timestamps and speaker labels.
-        """
-        word_seq_len = len(word_dict_seq_list)
-        hyp_w_dict_list, spk_list = [], []
-        for k, line_dict in enumerate(word_dict_seq_list):
-            word, spk_label = line_dict['word'], line_dict['speaker']
-            hyp_w_dict_list.append(word)
-            spk_list.append(spk_label)
-
-        realigned_list = []
-        org_spk_list = copy.deepcopy(spk_list)
-        for k, line_dict in enumerate(word_dict_seq_list):
-            if self.N_range[0] < k < (word_seq_len - self.N_range[0]) and (
-                spk_list[k] != org_spk_list[k + 1] or spk_list[k] != org_spk_list[k - 1]
-            ):
-                N1, N2 = self._get_realignment_ranges(k, word_seq_len)
-                hyp_former = self.realigning_lm.log_s(
-                    ' '.join(hyp_w_dict_list[k - N1 : k] + self.stt_end_tokens + hyp_w_dict_list[k : k + N2])
-                )
-                hyp_latter = self.realigning_lm.log_s(
-                    ' '.join(hyp_w_dict_list[k - N1 : k + 1] + self.stt_end_tokens + hyp_w_dict_list[k + 1 : k + N2])
-                )
-                log_p = [hyp_former, hyp_latter]
-                p_order = np.argsort(log_p)[::-1]
-                if log_p[p_order[0]] > log_p[p_order[1]] + self.realigning_lm_params['logprob_diff_threshold']:
-                    if p_order[0] == 0:
-                        spk_list[k] = org_spk_list[k + 1]
-                line_dict['speaker'] = spk_list[k]
-            realigned_list.append(line_dict)
-        return realigned_list
 
     @staticmethod
     def evaluate(

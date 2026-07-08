@@ -24,6 +24,38 @@ building those adapters would be valuable because the evaluator is strongest
 when the agent under test can expose the same task state that the scenario
 expects.
 
+## General Evaluator Compatibility Changes
+
+The branch includes evaluator changes that are not specific to Thinker/Talker.
+Thinker/Talker is the motivating external/cascaded-agent example, but the
+changes are intended to make the evaluator easier to use with any agent that can
+expose compatible RTVI state.
+
+Added compatibility support:
+
+- Judge scoring no longer requires both `reference_answer.json` and
+  `final_agent_response.json`. When a judge is configured, the runner can score
+  whatever evidence is available: transcript turns, agent context history, user
+  context history, final action/prediction trace, reference answer, and optional
+  natural-language assertions.
+- `get_scenario_summary` can return either a full `db` or a `db_hash`. Hash-only
+  summaries avoid sending large scenario databases over the WebSocket while
+  still supporting deterministic DB-state matching.
+- Bot context history is parsed safely using JSON / literal parsing with a
+  bounded raw fallback. The bridge no longer uses unsafe `eval(...)` on bot
+  output.
+- Optional `trace_metrics.json` artifacts are loaded into `metrics.json` when
+  present. This gives cascaded or multi-component agents a place to report
+  architecture-specific diagnostics without adding evaluator-specific code for
+  each architecture.
+- Judge request hardening makes provider-specific `thinking_token_budget`
+  opt-in and adds a request timeout. This avoids hosted endpoint failures caused
+  by unsupported payload fields.
+
+This is the part we should discuss with the evaluator team as broadly useful.
+The Thinker/Talker files then serve as one prototype consumer of the generic
+contract.
+
 ## Runs Completed
 
 ### EVA Airline Smoke Run

@@ -28,8 +28,31 @@ from typing import List, Optional
 from nemo.agents.voice_agent.evaluation.bridge import VoiceAgentEvaluationBridge
 from nemo.agents.voice_agent.evaluation.db_hash import compute_db_diff, get_dict_hash
 from nemo.agents.voice_agent.evaluation.scenarios.classes import Scenario
-from nemo.agents.voice_agent.evaluation.utils import LLMJudge, check_if_task_success
+from nemo.agents.voice_agent.evaluation.utils import LLMJudge, check_if_task_success, normalize_scenario_payload
 from nemo.agents.voice_agent.utils import FileLogger
+
+
+def _load_normalized_json_content(path: str) -> str:
+    with open(path, "r") as f:
+        payload = normalize_scenario_payload(json.load(f))
+    return json.dumps(payload, indent=2)
+
+
+def _load_json_if_exists(path: str, logger: FileLogger, label: str):
+    if not os.path.exists(path):
+        logger.info(f"{label} file {path} not found.")
+        return None
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def _load_optional_trace_metrics(scenario_dir: str) -> Optional[dict]:
+    for relative_path in ("trace_metrics.json", os.path.join("bot_logs_agent", "trace_metrics.json")):
+        path = os.path.join(scenario_dir, relative_path)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+    return None
 
 
 async def run_dynamic_evaluation(
@@ -143,28 +166,53 @@ async def run_dynamic_evaluation(
         await bridge.run_scenario(duration=duration)
         scenario_end = datetime.now()
 
+        # Collect metrics before scoring so judge calls can use the transcript.
+        metrics = bridge.get_metrics()
+
         # Check if the scenario is successful
         reference_file = os.path.join(scenario_config_dir, scenario.reference_file)
         prediction_file = os.path.join(scenario_dir, bridge.final_response_file)
-        if not os.path.exists(reference_file):
+        reference_exists = os.path.exists(reference_file)
+        prediction_exists = os.path.exists(prediction_file)
+        judge_result = None
+
+        if judge is not None:
+            reference_content = _load_normalized_json_content(reference_file) if reference_exists else None
+            prediction_content = _load_normalized_json_content(prediction_file) if prediction_exists else None
+            nl_assertions = getattr(scenario, "nl_assertions", None)
+            judge_result = judge.judge_scenario(
+                reference=reference_content,
+                prediction=prediction_content,
+                conversation=metrics.get("turns"),
+                agent_context_history=_load_json_if_exists(
+                    os.path.join(scenario_dir, "bot_logs_agent", "llm_context.json"), logger, "Agent context history"
+                ),
+                user_context_history=_load_json_if_exists(
+                    os.path.join(scenario_dir, "bot_logs_user", "llm_context.json"), logger, "User context history"
+                ),
+                nl_assertions=nl_assertions,
+            )
+            with open(os.path.join(scenario_dir, "judge_result.json"), "w") as f:
+                json.dump(judge_result, f, indent=2)
+            metrics["judge_score"] = judge_result["score"]
+            metrics["judge_reason"] = judge_result.get("reason", "")
+            if judge_threshold is not None:
+                metrics["judge_passed"] = judge_result["score"] >= judge_threshold
+                is_successful = metrics["judge_passed"]
+            else:
+                is_successful = judge_result["score"]
+            if "nl_assertion_pass_rate" in judge_result:
+                metrics["nl_assertion_pass_rate"] = judge_result["nl_assertion_pass_rate"]
+                metrics["nl_assertion_pass_count"] = judge_result.get("nl_assertion_pass_count", 0)
+                metrics["nl_assertion_total"] = judge_result.get("nl_assertion_total", 0)
+            success_results.append(is_successful)
+        elif not reference_exists:
             logger.info(f"Reference file {reference_file} not found, skipping checking for task success...")
             is_successful = "N/A"
-        elif not os.path.exists(prediction_file):
+        elif not prediction_exists:
             logger.info(f"Prediction file {prediction_file} not found, setting task success to False...")
             is_successful = False
             success_results.append(False)
-        elif judge is not None:
-            result = judge.judge_file(
-                reference=reference_file,
-                prediction=prediction_file,
-            )
-            with open(os.path.join(scenario_dir, "judge_result.json"), "w") as f:
-                json.dump(result, f, indent=2)
-            if judge_threshold is not None:
-                is_successful = result["score"] >= judge_threshold
-            else:
-                is_successful = result["score"]
-            success_results.append(is_successful)
         else:
             scenario_disallow_extra = strict_match or getattr(scenario, "disallow_extra_items", False)
             is_successful = check_if_task_success(
@@ -177,8 +225,6 @@ async def run_dynamic_evaluation(
             )
             success_results.append(is_successful)
 
-        # Collect metrics for this scenario
-        metrics = bridge.get_metrics()
         metrics["scenario_name"] = scenario.name
         metrics["scenario_directory"] = scenario_dir
         metrics["scenario_duration"] = (scenario_end - scenario_start).total_seconds()
@@ -191,20 +237,31 @@ async def run_dynamic_evaluation(
         expected_db = getattr(scenario, "expected_scenario_db", None)
         if expected_db is not None:
             db_path = os.path.join(scenario_dir, bridge.final_scenario_db_file)
-            if not os.path.exists(db_path):
-                logger.info(f"Final scenario DB file {db_path} not found; skipping DB-state match.")
-                metrics["db_state_match"] = "N/A"
-            else:
+            db_hash_path = os.path.join(scenario_dir, bridge.final_scenario_db_hash_file)
+            if os.path.exists(db_path):
                 with open(db_path, "r") as f:
                     actual_db = json.load(f)
-                expected_hash = get_dict_hash(expected_db)
                 actual_hash = get_dict_hash(actual_db)
+            elif os.path.exists(db_hash_path):
+                actual_hash = open(db_hash_path, "r").read().strip()
+                actual_db = None
+            else:
+                logger.info(f"Final scenario DB/hash file not found; skipping DB-state match.")
+                metrics["db_state_match"] = "N/A"
+                actual_hash = None
+
+            if actual_hash:
+                expected_hash = get_dict_hash(expected_db)
                 metrics["db_state_match"] = expected_hash == actual_hash
                 metrics["db_state_expected_hash"] = expected_hash
                 metrics["db_state_actual_hash"] = actual_hash
-                if not metrics["db_state_match"]:
+                if not metrics["db_state_match"] and actual_db is not None:
                     metrics["db_state_diff"] = compute_db_diff(expected_db=expected_db, actual_db=actual_db)
                 db_state_results.append(metrics["db_state_match"])
+
+        trace_metrics = _load_optional_trace_metrics(scenario_dir)
+        if trace_metrics is not None:
+            metrics["trace_metrics"] = trace_metrics
 
         # Save metrics to file
         metrics_file = os.path.join(scenario_dir, "metrics.json")

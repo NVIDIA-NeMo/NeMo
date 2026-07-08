@@ -169,6 +169,30 @@ python run_evaluation.py \
 
 **Known limitations.** Parakeet STT mis-recognizes spelled-out alphanumerics (homophones like "four" / "for", letter sequences sometimes collapsed into a single word). When a scenario fails, **compare the user-sim's text in `bot_logs_user/llm_context.json` against the agent-side STT output in `bot_logs_agent/llm_context.json`** to distinguish user-simulator prompt-following failures from voice-pipeline accuracy issues.
 
+### External agent compatibility
+
+The evaluator can score agents that expose evaluator-compatible RTVI actions
+without requiring them to be implemented inside this repository. The useful
+contract is:
+
+- `context.get_context_history` returns serializable LLM context history.
+- `context.get_scenario_summary` returns `actions` plus either `db` or
+  `db_hash`.
+- Optional `trace_metrics.json` can expose architecture-specific diagnostics
+  such as internal handoff quality.
+
+The runner now treats `reference_answer` as optional when an LLM judge is
+enabled. If a run has transcript, context history, natural-language assertions,
+or a prediction/action trace, the judge can score the available evidence instead
+of skipping the scenario solely because `reference_answer.json` is absent. This
+is useful for external/cascaded agents where the main correctness signal is
+state, tool/context history, or policy assertions rather than a single final
+response artifact.
+
+For large stateful scenarios, returning only `db_hash` from
+`get_scenario_summary` is supported. This avoids sending large databases over
+the WebSocket while preserving deterministic DB-state matching.
+
 ### Thinker/Talker airline prototype
 
 This domain is for evaluating the Thinker/Talker airline example from the

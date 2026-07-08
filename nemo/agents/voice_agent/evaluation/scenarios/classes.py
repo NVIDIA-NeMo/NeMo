@@ -226,6 +226,7 @@ class Scenario:
         clean_text: Optional[bool] = False,
         disallow_extra_items: Optional[bool] = False,
         expected_scenario_db: Optional[Dict[str, Any]] = None,
+        nl_assertions: Optional[List[str]] = None,
     ):
         """
         Initialize the scenario.
@@ -252,6 +253,7 @@ class Scenario:
                 end-state correctness — see ``evaluation/db_hash.py``). Subclasses
                 that derive the expected DB from a fixture file should expose this
                 as a ``cached_property`` instead of passing it through ``__init__``.
+            nl_assertions: Optional natural-language assertions for LLM judge scoring.
         """
         if not hasattr(self, "name"):
             self.name = name
@@ -276,6 +278,8 @@ class Scenario:
             self.disallow_extra_items = disallow_extra_items
         if not hasattr(self, "expected_scenario_db"):
             self.expected_scenario_db = expected_scenario_db
+        if not hasattr(self, "nl_assertions"):
+            self.nl_assertions = nl_assertions
 
     def setup_shared_state(self, state: dict, side: str) -> None:
         """Populate per-side ``shared_state`` before tools are instantiated.
@@ -429,6 +433,7 @@ class Scenario:
             "ignore_punctuation": self.ignore_punctuation,
             "clean_text": self.clean_text,
             "disallow_extra_items": self.disallow_extra_items,
+            "nl_assertions": self.nl_assertions,
         }
         with open(output_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)

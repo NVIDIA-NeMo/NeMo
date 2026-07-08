@@ -21,6 +21,7 @@ Connects two voice agents via WebSocket and provides:
 - Dynamic system prompt updates via RTVI actions
 - Conversation monitoring and metrics
 """
+import ast
 import asyncio
 import json
 import queue
@@ -323,6 +324,7 @@ class VoiceAgentEvaluationBridge:
         self.needs_reset = False
         self.final_response_file = "final_agent_response.json"
         self.final_scenario_db_file = "final_scenario_db.json"
+        self.final_scenario_db_hash_file = "final_scenario_db_hash.txt"
         self.user_context_history = None
         self.agent_context_history = None
         # Pulled at end-of-scenario via the get_scenario_summary RTVI action.
@@ -1229,9 +1231,10 @@ class VoiceAgentEvaluationBridge:
                         result = data.get("data", {}).get("result", {})
                         actions = result.get("actions", [])
                         db = result.get("db", {})
+                        db_hash = result.get("db_hash")
                         logger.info(
                             f"[SCENARIO SUMMARY] Received summary "
-                            f"(actions: {len(actions)}, db top-level keys: {len(db)})"
+                            f"(actions: {len(actions)}, db top-level keys: {len(db)}, db_hash: {bool(db_hash)})"
                         )
                         return result
                 except asyncio.TimeoutError:
@@ -1491,17 +1494,34 @@ class VoiceAgentEvaluationBridge:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        context = eval(context_history.get("context", "[]"))
-        if isinstance(context, str):
-            try:
-                context = json.loads(context)
-            except Exception as e:
-                logger.error(f"Error loading context into json object: {e}. Context: {context}")
+        context = self._parse_context_history(context_history.get("context", []))
 
         file_name = f"llm_context_{role}.json" if role else "llm_context.json"
         context_file = output_dir / file_name
         with open(context_file, "w") as f:
             json.dump(context, f, indent=2)
+
+    @staticmethod
+    def _parse_context_history(raw_context):
+        """Parse bot context history without executing arbitrary Python."""
+        if isinstance(raw_context, (list, dict)):
+            return raw_context
+        if raw_context in (None, ""):
+            return []
+        if not isinstance(raw_context, str):
+            return [{"raw_context": str(raw_context)}]
+
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(raw_context)
+            except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, (list, dict)):
+                return parsed
+            return [{"raw_context": str(parsed)}]
+
+        logger.warning("[CONTEXT HISTORY] Could not parse context history; saving bounded raw context fallback")
+        return [{"raw_context": raw_context[:200_000], "truncated": len(raw_context) > 200_000}]
 
     def _save_user_agent_history(self):
         """Save the user and agent context history to a JSON file under the output directory."""
@@ -1707,6 +1727,15 @@ class VoiceAgentEvaluationBridge:
         if not self.scenario_summary:
             return
         db = self.scenario_summary.get("db")
+        db_hash = self.scenario_summary.get("db_hash")
+        if db_hash:
+            output_path = Path(self.output_dir) / self.final_scenario_db_hash_file
+            try:
+                output_path.write_text(str(db_hash))
+                logger.info(f"Final scenario DB hash saved: {output_path}")
+            except Exception as e:
+                logger.error(f"Error saving final scenario DB hash: {e}")
+
         if not db:
             return
 

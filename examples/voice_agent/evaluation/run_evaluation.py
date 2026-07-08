@@ -113,6 +113,13 @@ Examples:
     parser.add_argument(
         "--judge-threshold", type=float, default=0.95, help="Threshold for the LLM judge if binary result is desired"
     )
+    parser.add_argument("--judge-timeout", type=float, default=120.0, help="LLM judge request timeout in seconds")
+    parser.add_argument(
+        "--judge-thinking-token-budget",
+        type=int,
+        default=None,
+        help="Optional provider-specific thinking token budget for the judge request",
+    )
     parser.add_argument(
         "--strict-match",
         action="store_true",
@@ -202,16 +209,21 @@ Examples:
 
     if args.judge_url and args.judge_model:
         logger.info(f"Using LLM judge: {args.judge_url} with model: {args.judge_model}")
+        judge_kwargs = {
+            "max_tokens": 2048,
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "seed": 42,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+        if args.judge_thinking_token_budget is not None:
+            judge_kwargs["thinking_token_budget"] = args.judge_thinking_token_budget
         judge = LLMJudge(
             url=args.judge_url,
             model=args.judge_model,
             api_key=args.judge_api_key,
-            max_tokens=2048,
-            temperature=0.7,
-            top_p=0.95,
-            seed=42,
-            chat_template_kwargs={"enable_thinking": True},
-            thinking_token_budget=1800,
+            timeout=args.judge_timeout,
+            **judge_kwargs,
         )
     else:
         judge = None

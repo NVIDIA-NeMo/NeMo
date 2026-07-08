@@ -36,7 +36,7 @@ asr:
       # bpe_mode: [default, bpe_dropout, var_bpe, case_insensitive]; recommended: case_insensitive or default
       bpe_mode: case_insensitive
       # var_bpe_scoring_temp: 10.0 is default conservative for case_insensitive/var_bpe modes to prevent FA;
-      # values 0.1 ... 1.0 can work better with small biasing lists with beam search
+      # values 0.1 ... 2.0 can work better with small biasing lists with beam search
       var_bpe_scoring_temp: 10.0
 
 

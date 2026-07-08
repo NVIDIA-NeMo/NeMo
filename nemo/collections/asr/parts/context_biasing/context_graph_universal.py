@@ -346,7 +346,7 @@ class ContextGraph:
             scoring temperature to adjust weight assignment for "intermediate sub-tokens" (chars)
             10.0 - conservative default, assign ~100% to the last (intermediate) transition;
             0.0 - assign weight divided equally between all chars
-            (low values 0.1 ... 1.0 can work better with beam search with small phrase lists)
+            (low values 0.1 ... 2.0 can work better with beam search with small phrase lists)
 
         Note: The phrases would have shared states, the score of the shared states is
               the MAXIMUM value among all the tokens sharing this state.

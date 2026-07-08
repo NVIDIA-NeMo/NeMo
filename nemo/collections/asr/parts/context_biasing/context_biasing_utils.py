@@ -202,8 +202,8 @@ def compute_fscore(
         all_key_words_list = sorted(all_keywords_set)
     else:
         assert key_words_list, "key_words_list is empty"
-        all_key_words_list = key_words_list
-        global_keywords_set = set(key_words_list)
+        all_key_words_list = [kw.lower() for kw in key_words_list]
+        global_keywords_set = set(all_key_words_list)
         per_sample_keywords = None
 
     max_ngram_order = max(len(item.split()) for item in all_key_words_list)

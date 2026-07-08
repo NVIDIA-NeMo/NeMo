@@ -23,6 +23,7 @@ from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
     GPUBoostingTreeModel,
 )
 from nemo.collections.asr.parts.context_biasing.context_graph_universal import ContextGraph
+from nemo.collections.common.tokenizers import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenWithLength, VarBPERepresentation
 
 DEVICES = [torch.device("cpu")]
@@ -58,6 +59,41 @@ class _RecordingVarBPETokenizer:
     def text_to_ids_var_bpe(self, text, case_insensitive=True):
         self.var_bpe_calls.append((text, case_insensitive))
         return _case_variant_var_bpe_representation()
+
+
+class _RecordingAggregateVarBPETokenizer:
+    def __init__(self, vocab_size=10):
+        self.vocab = [f"tok_{i}" for i in range(vocab_size)]
+        self.vocab_size = vocab_size
+        self.var_bpe_calls = []
+
+    def text_to_ids_var_bpe(self, text, case_insensitive=True):
+        self.var_bpe_calls.append((text, case_insensitive))
+        return _case_variant_var_bpe_representation()
+
+
+@pytest.mark.unit
+def test_aggregate_tokenizer_offsets_var_bpe_representation():
+    tokenizer1 = _RecordingAggregateVarBPETokenizer()
+    tokenizer2 = _RecordingAggregateVarBPETokenizer()
+    tokenizer = AggregateTokenizer({"en": tokenizer1, "es": tokenizer2})
+
+    result = tokenizer.text_to_ids_var_bpe("Ab", lang_id="es", case_insensitive=False)
+
+    assert tokenizer1.var_bpe_calls == []
+    assert tokenizer2.var_bpe_calls == [("Ab", False)]
+    assert result == VarBPERepresentation(
+        canonical_lengths=[1, 1],
+        token_ids_with_merges=[
+            [TokenWithLength(token_id=11), TokenWithLength(token_id=13)],
+            [
+                TokenWithLength(token_id=12),
+                TokenWithLength(token_id=14),
+                TokenWithLength(token_id=15, length=2),
+                TokenWithLength(token_id=16, length=2),
+            ],
+        ],
+    )
 
 
 @pytest.fixture(scope="module")

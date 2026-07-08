@@ -17,7 +17,7 @@ from typing import Dict, List, Union
 import numpy as np
 import torch
 
-from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec, VarBPERepresentation
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec, TokenWithLength, VarBPERepresentation
 from nemo.utils import logging
 
 __all__ = ['AggregateTokenizer', 'TokenizerWrapper']
@@ -133,7 +133,7 @@ class AggregateTokenizer(TokenizerSpec):
         )
         token_offset = self.token_id_offset[lang_id]
         for i, token_ids in enumerate(token_ids_var_bpe.token_ids_with_merges):
-            token_ids[:] = [t + token_offset for t in token_ids]
+            token_ids[:] = [TokenWithLength(token_id=t.token_id + token_offset, length=t.length) for t in token_ids]
         return token_ids_var_bpe
 
     def tokens_to_text(self, tokens, lang_id):

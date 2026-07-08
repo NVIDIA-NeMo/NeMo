@@ -537,7 +537,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
             'channel_selector': config.get('channel_selector', None),
-            'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
+            'use_start_end_token': self.cfg.get('validation_ds', {}).get('use_start_end_token', False),
         }
 
         if config.get("augmentor"):

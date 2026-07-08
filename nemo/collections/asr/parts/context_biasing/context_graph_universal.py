@@ -42,7 +42,8 @@ import numpy as np
 from nemo.collections.common.tokenizers.tokenizer_spec import VarBPERepresentation
 
 
-def softmax(x):
+def _softmax(x: np.ndarray):
+    """Compute softmax values for each sets of scores in x (numpy array)."""
     x_max = np.max(x, axis=-1, keepdims=True)
     exp_x = np.exp(x - x_max)
     sum_exp_x = np.sum(exp_x, axis=-1, keepdims=True)
@@ -307,8 +308,15 @@ class ContextGraph:
         var_bpe_scoring_temp: float = 10.0,
     ):
         """Build the ContextGraph from a list of token list.
-        It first build a trie from the given token lists, then fill the fail arc
-        for each trie node.
+        It first builds a graph based on trie from the given token lists,
+        then fills the fail arc for each trie node.
+        Graph is based on trie from tokens similar to one created in `build` method, but we can have different paths
+        representing different BPE representations ending at the same state with the same path weight.
+
+        NB: unlike trie structure created in `build` method, which stores
+        both token (arc) score and node_score = prev.node_score + token_score
+        here we do not use token_score (0 weight) and treat `token_score = node_score - prev.node_score`
+        (does not matter for pure trie, but for this data structure it is an important difference)
 
         See https://en.wikipedia.org/wiki/Trie for how to build a trie.
 
@@ -334,10 +342,16 @@ class ContextGraph:
             The length of `ac_threshold` MUST be equal to the length of `token_ids`.
           uniform_weights:
             If True, the weights will be distributed uniformly for all tokens as in Icefall.
+          var_bpe_scoring_temp:
+            scoring temperature to adjust weight assignment for "intermediate sub-tokens" (chars)
+            10.0 - conservative default, assign ~100% to the last (intermediate) transition;
+            0.0 - assign weight divided equally between all chars
+            (low values 0.1 ... 1.0 can work better with beam search with small phrase lists)
 
         Note: The phrases would have shared states, the score of the shared states is
               the MAXIMUM value among all the tokens sharing this state.
         """
+
         num_phrases = len(token_ids)
         if phrases is not None:
             assert len(phrases) == num_phrases, (len(phrases), num_phrases)
@@ -346,6 +360,7 @@ class ContextGraph:
         if ac_thresholds is not None:
             assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
 
+        var_bpe_representation: VarBPERepresentation
         for index, var_bpe_representation in enumerate(token_ids):
             phrase = "" if phrases is None else phrases[index]
             score = 0.0 if scores is None else scores[index]
@@ -356,42 +371,41 @@ class ContextGraph:
             context_score = self.context_score if score == 0.0 else score
             threshold = self.ac_threshold if ac_threshold == 0.0 else ac_threshold
 
-            orig_lengths, tokens = var_bpe_representation
-            token_scores = [0.0 for _ in range(len(tokens))]
-            node_path_to_primary = [False for _ in range(len(tokens))]
-            primary_context_scores = [0.0 for _ in range(len(tokens))]
-            primary_paths = [0 for _ in range(len(tokens))]
+            canonical_lengths, tokens_with_merges = var_bpe_representation
+            token_scores = [0.0 for _ in range(len(tokens_with_merges))]
+            node_path_to_primary = [False for _ in range(len(tokens_with_merges))]
+            primary_context_scores = [0.0 for _ in range(len(tokens_with_merges))]
+            primary_paths = [0 for _ in range(len(tokens_with_merges))]
 
             k = 0
-            for depth, cur_len in enumerate(orig_lengths):
+            for depth, cur_len in enumerate(canonical_lengths):
                 node_path_to_primary[k + cur_len - 1] = True
                 token_score = self._get_token_score(
                     depth=depth, uniform_weights=uniform_weights, context_score=context_score
-                )  # / cur_len
-                # if var_bpe_scoring_temp is not None:
-                probs = softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_len)]))
+                )
+                # distribute weight between sub-chains (chars)
+                # cur_len is (canonical) BPE token length (num elementary tokens/chars)
+                probs = _softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_len)]))
                 for t in range(k, k + cur_len):
                     token_scores[t] = token_score * probs[t - k]
-                # else:
-                #     token_scores[k + cur_len - 1] = token_score
                 primary_context_scores[k + cur_len - 1] = token_score
                 primary_paths[k + cur_len - 1] = cur_len
                 k += cur_len
 
             cur_nodes = [self.root]
             acc_score = 0.0
-            for i, token_group in enumerate(tokens):
+            for i, token_group in enumerate(tokens_with_merges):
                 token = token_group[0].token_id
                 token_score = token_scores[i]
                 acc_score += token_score
                 if token not in node.next:
                     self.num_nodes += 1
-                    is_end = i == len(tokens) - 1
+                    is_end = i == len(tokens_with_merges) - 1
                     node_score = max(0.0, acc_score - node.node_score)
                     next_node = ContextState(
                         id=self.num_nodes,
                         token=token,
-                        token_score=0.0,
+                        token_score=0.0,  # see note above: we do not store arc scores directly
                         node_score=node_score,
                         output_score=node_score if is_end else 0,
                         is_end=is_end,
@@ -412,11 +426,11 @@ class ContextGraph:
                     # node exists, get the score of shared state.
                     next_node = node.next[token]
                     node_score = next_node.node_score
-                    is_end = i == len(tokens) - 1 or next_node.is_end
+                    is_end = i == len(tokens_with_merges) - 1 or next_node.is_end
                     next_node.output_score = node_score if is_end else 0
                     next_node.is_end = is_end
                     next_node.is_primary |= node_path_to_primary[i]
-                    if i == len(tokens) - 1:
+                    if i == len(tokens_with_merges) - 1:
                         next_node.phrase = phrase
                         next_node.ac_threshold = threshold
                 if node_path_to_primary[i]:
@@ -542,7 +556,6 @@ class ContextGraph:
                             color="green",
                         )
                     drawn.add(node.id)
-                # weight = f"{node.token_score:.2f}".rstrip("0").rstrip(".")
                 weight = f"{node.node_score - current_node.node_score:.2f}".rstrip("0").rstrip(".")
                 label = str(token) if symbol_table is None else symbol_table[token]
                 dot.edge(str(current_node.id), str(node.id), label=f"{label}/{weight}")

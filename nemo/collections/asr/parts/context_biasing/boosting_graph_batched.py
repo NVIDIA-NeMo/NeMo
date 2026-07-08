@@ -235,7 +235,7 @@ class BoostingTreeStorage:
                 next_state = self.num_states
                 self.num_states += 1
                 self._state_mapping[tbranch.next_node.id] = next_state
-            # token_score = tbranch.next_node.token_score
+            # token_score: difference of potentials of nodes
             token_score = tbranch.next_node.node_score - tbranch.start_node.node_score
             if self.uniform_weights and tbranch.next_node.is_end:
                 token_score += tbranch.next_node.node_score

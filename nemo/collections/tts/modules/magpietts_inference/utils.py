@@ -228,7 +228,7 @@ def update_config_for_inference(
 
     # Update text tokenizer paths for backward compatibility
     if hasattr(model_cfg, 'text_tokenizer'):
-        model_cfg.text_tokenizer.g2p.phoneme_dict = "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+        model_cfg.text_tokenizer.g2p.phoneme_dict = "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv26.07.txt"
         model_cfg.text_tokenizer.g2p.heteronyms = "scripts/tts_dataset_files/heteronyms-052722"
         model_cfg.text_tokenizer.g2p.phoneme_probability = 1.0
 

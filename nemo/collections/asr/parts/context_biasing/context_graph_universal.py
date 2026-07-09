@@ -36,7 +36,6 @@ import os
 import shutil
 from collections import deque
 from typing import Optional
-from nemo.utils import logging
 
 import numpy as np
 

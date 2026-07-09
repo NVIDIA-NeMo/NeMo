@@ -306,6 +306,7 @@ class ContextGraph:
         ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
         var_bpe_scoring_temp: float = 10.0,
+        node_score_increasing: bool = True,  # TODO(vbataev): check and remove
     ):
         """Build the ContextGraph from a list of token list.
         It first builds a graph based on trie from the given token lists,
@@ -378,19 +379,19 @@ class ContextGraph:
             primary_paths = [0 for _ in range(len(tokens_with_merges))]
 
             k = 0
-            for depth, cur_len in enumerate(canonical_lengths):
-                node_path_to_primary[k + cur_len - 1] = True
+            for depth, cur_token_len in enumerate(canonical_lengths):
+                node_path_to_primary[k + cur_token_len - 1] = True
                 token_score = self._get_token_score(
                     depth=depth, uniform_weights=uniform_weights, context_score=context_score
                 )
                 # distribute weight between sub-chains (chars)
                 # cur_len is (canonical) BPE token length (num elementary tokens/chars)
-                probs = _softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_len)]))
-                for t in range(k, k + cur_len):
+                probs = _softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_token_len)]))
+                for t in range(k, k + cur_token_len):
                     token_scores[t] = token_score * probs[t - k]
-                primary_context_scores[k + cur_len - 1] = token_score
-                primary_paths[k + cur_len - 1] = cur_len
-                k += cur_len
+                primary_context_scores[k + cur_token_len - 1] = token_score
+                primary_paths[k + cur_token_len - 1] = cur_token_len
+                k += cur_token_len
 
             cur_nodes = [self.root]
             acc_score = 0.0
@@ -401,7 +402,10 @@ class ContextGraph:
                 if token not in node.next:
                     self.num_nodes += 1
                     is_end = i == len(tokens_with_merges) - 1
-                    node_score = max(0.0, acc_score - node.node_score)
+                    if node_score_increasing:
+                        node_score = max(node.node_score, acc_score - node.node_score)
+                    else:
+                        node_score = max(0.0, acc_score - node.node_score)
                     next_node = ContextState(
                         id=self.num_nodes,
                         token=token,

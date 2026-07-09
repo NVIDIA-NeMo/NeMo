@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os.path
+
 import pytest
 import torch
 from lightning.pytorch import Trainer
 from torch.nn.utils.rnn import pad_sequence
 
-from nemo.collections.asr.models import EncDecCTCModelBPE
+from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
     BoostingTreeModelConfig,
     GPUBoostingTreeModel,
@@ -394,3 +396,70 @@ class TestGPUBoostingTreeModel:
         assert torch.allclose(
             boosting_tree_from_model_path.arcs_weights, boosting_tree_from_key_phrases_list.arcs_weights
         )
+
+
+@pytest.fixture(scope="module")
+def bpe_tokenizer():
+    model_path = "/home/TestData/asr/stt_en_conformer_transducer_small.nemo"
+    if os.path.exists(model_path):
+        model = ASRModel.restore_from(model_path, map_location="cpu")
+    else:
+        model = ASRModel.from_pretrained("stt_en_conformer_transducer_small", map_location="cpu")
+    return model.tokenizer
+
+
+class TestVariativeBPE:
+    @pytest.mark.unit
+    @pytest.mark.with_downloads
+    def test_tokenizer_var_bpe_representation_contains_split_and_merge(self, bpe_tokenizer):
+        token_ids = bpe_tokenizer.text_to_ids("hello")
+        split_ids = bpe_tokenizer.tokens_to_ids([bpe_tokenizer.spm_separator, "h", "e", "l", "l", "o"])
+
+        assert bpe_tokenizer.ids_to_tokens(token_ids) == [f"{bpe_tokenizer.spm_separator}hello"]
+
+        var_bpe = bpe_tokenizer.text_to_ids_var_bpe("hello", case_insensitive=False)
+
+        assert var_bpe.canonical_lengths == [len(split_ids)]
+        assert len(var_bpe.token_ids_with_merges) == len(split_ids)
+        assert [token_group[0] for token_group in var_bpe.token_ids_with_merges] == [
+            TokenWithLength(token_id=token_id) for token_id in split_ids
+        ]
+        assert TokenWithLength(token_id=token_ids[0], length=len(split_ids)) in var_bpe.token_ids_with_merges[-1]
+
+    @pytest.mark.unit
+    @pytest.mark.with_downloads
+    @pytest.mark.parametrize(
+        "bpe_mode,phrase",
+        [("var_bpe", "hello"), ("case_insensitive", "Hello")],
+    )
+    def test_boosting_tree_from_config_sentencepiece_var_bpe_scores_split_and_merged_paths(
+        self, bpe_tokenizer, bpe_mode, phrase
+    ):
+        boosting_tree = GPUBoostingTreeModel.from_config(
+            BoostingTreeModelConfig(
+                key_phrases_list=[phrase],
+                bpe_mode=bpe_mode,
+                depth_scaling=1.0,
+                final_eos_score=0.0,
+                use_triton=False,
+                var_bpe_scoring_temp=0.0,
+            ),
+            tokenizer=bpe_tokenizer,
+        )
+
+        merged_ids = bpe_tokenizer.text_to_ids("hello")
+        split_ids = bpe_tokenizer.tokens_to_ids([bpe_tokenizer.spm_separator, "h", "e", "l", "l", "o"])
+        boosting_scores = boosting_tree(
+            labels=pad_sequence(
+                [torch.LongTensor(merged_ids), torch.LongTensor(split_ids)],
+                batch_first=True,
+            ),
+            labels_lengths=torch.LongTensor([len(merged_ids), len(split_ids)]),
+            bos=False,
+            eos=False,
+        )
+
+        expected_split_scores = [1.0 / len(split_ids)] * len(split_ids)
+        assert boosting_scores[0, 0].item() == pytest.approx(1.0)
+        assert boosting_scores[1, : len(split_ids)].detach().tolist() == pytest.approx(expected_split_scores)
+        assert boosting_scores.sum(dim=1).detach().tolist() == pytest.approx([1.0, 1.0])

@@ -36,6 +36,7 @@ import os
 import shutil
 from collections import deque
 from typing import Optional
+from nemo.utils import logging
 
 import numpy as np
 
@@ -306,7 +307,6 @@ class ContextGraph:
         ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
         var_bpe_scoring_temp: float = 10.0,
-        node_score_increasing: bool = True,  # TODO(vbataev): check and remove
     ):
         """Build the ContextGraph from a list of token list.
         It first builds a graph based on trie from the given token lists,
@@ -402,10 +402,7 @@ class ContextGraph:
                 if token not in node.next:
                     self.num_nodes += 1
                     is_end = i == len(tokens_with_merges) - 1
-                    if node_score_increasing:
-                        node_score = max(node.node_score, acc_score - node.node_score)
-                    else:
-                        node_score = max(0.0, acc_score - node.node_score)
+                    node_score = acc_score
                     next_node = ContextState(
                         id=self.num_nodes,
                         token=token,
@@ -431,8 +428,9 @@ class ContextGraph:
                     next_node = node.next[token]
                     node_score = next_node.node_score
                     is_end = i == len(tokens_with_merges) - 1 or next_node.is_end
-                    next_node.output_score = node_score if is_end else 0
-                    next_node.is_end = is_end
+                    if is_end:
+                        next_node.output_score = node_score
+                        next_node.is_end = is_end
                     next_node.is_primary |= node_path_to_primary[i]
                     if i == len(tokens_with_merges) - 1:
                         next_node.phrase = phrase
@@ -441,7 +439,8 @@ class ContextGraph:
                     ctx_node_score = cur_nodes[-primary_paths[i]].node_score + primary_context_scores[i]
                     if ctx_node_score > next_node.node_score:
                         next_node.node_score = ctx_node_score
-                        next_node.output_score = ctx_node_score if is_end else 0
+                        if is_end:
+                            next_node.output_score = ctx_node_score
                 cur_nodes.append(next_node)
                 node = next_node
         self._fill_fail_output()

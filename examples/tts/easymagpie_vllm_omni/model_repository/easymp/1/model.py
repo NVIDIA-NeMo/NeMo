@@ -311,8 +311,8 @@ class TritonPythonModel:
                         # We feed prompt_token_ids directly; the model loads the
                         # bundled tokenizer to tokenize context_text + text.
                         "skip_tokenizer_init": True,
-                        # DEBUG
-                        "load_format": "dummy",
+                        # uncomment for DEBUG
+                        #"load_format": "dummy",
                     },
                     "default_sampling_params": {
                         # Backbone token sampler is a no-op (audio is sampled in the

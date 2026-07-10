@@ -24,7 +24,7 @@ output [
 # concurrency the old 1ms delay was pure added TTFA latency with no batching
 # benefit; under load requests still pile up fast enough to batch.
 dynamic_batching {
-  max_queue_delay_microseconds: 500
+  max_queue_delay_microseconds: 5000
   preferred_batch_size: [ 32 ]
 }
 

@@ -178,6 +178,12 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
 
+        # vLLM's MTP llm_base_proposer reads image_token_index from the target
+        # model's config to locate multimodal placeholder positions during
+        # speculative decoding. For SpeechLM the <|audio|> token is the first
+        # extra row added above the base backbone vocab.
+        self.image_token_index = self.text_config.vocab_size - _SPEECHLM_EMBED_EXTRA_ROWS
+
     @property
     def llm_architectures(self) -> list[str]:
         """Return the LLM backbone architectures list."""
@@ -185,6 +191,16 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
     def get_text_config(self, decoder=False) -> PretrainedConfig:
         return self.text_config
+
+    @property
+    def mtp_hybrid_override_pattern(self) -> str:
+        """Hybrid layer pattern for MTP heads, consumed by NemotronHMultiTokenPredictor.
+
+        Reads from the ``mtp.hybrid_override_pattern`` field in config.json.
+        '*' means all-attention; 'M' means all-Mamba2.
+        """
+        mtp_cfg = self.__dict__.get("mtp") or {}
+        return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"
 
     _ATTR_ALIASES = {
         "rms_norm_eps": "layer_norm_epsilon",

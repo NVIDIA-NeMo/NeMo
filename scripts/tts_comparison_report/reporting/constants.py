@@ -17,15 +17,30 @@ from pathlib import Path
 _ROOT: Path = Path(__file__).parent.parent
 
 # Benchmark names supported by the comparison report pipeline.
-SUPPORTED_BENCHMARK_NAMES: list[str] = [
-    "libritts_seen",
-    "libritts_test_clean",
-    "riva_hard_digits",
-    "riva_hard_letters",
-    "riva_hard_money",
-    "riva_hard_short",
-    "vctk",
-]
+BENCHMARK_META = {
+    'libritts': 'en',
+    'riva_en': 'en',
+    'riva_en_hard_sentences': 'en',
+    'riva_en_short_sentences': 'en',
+    'riva_en_qa': 'en',
+    'riva_en_qa_longform': 'en',
+    'King_ASR_sa_diacritics': 'ar',
+    'King_ASR_sa_no_diacritics': 'ar',
+    'King_ASR_uae_diacritics': 'ar',
+    'King_ASR_uae_no_diacritics': 'ar',
+    'cmltts_de': 'de',
+    'cmltts_es': 'es',
+    'cmltts_fr': 'fr',
+    'AI4bharat': 'hi',
+    'cmltts_it': 'it',
+    'jvs_jsut': 'ja',
+    'F5I9N7A1': 'ko',
+    'cmltts_pt': 'pt',
+    'vivos': 'vi',
+    'mscenespeech': 'zh',
+}
+
+SUPPORTED_BENCHMARK_NAMES = BENCHMARK_META.keys()
 
 # Default width of tqdm progress bars in terminal columns.
 TQDM_NCOLS: int = 80
@@ -52,4 +67,4 @@ TEMPLATES_DIR: Path = _ROOT / "templates"
 DUMMY_TASK_ID: str = "NEMOTTS-0000"
 
 # URL prefix used to construct clickable Jira ticket links in reports.
-JIRA_TICKET_URL_PREFIX: str = "https://jirasw.nvidia.com/browse"
+TICKET_URL_PREFIX: str = "https://modelpor.ideas.aha.io/ideas"

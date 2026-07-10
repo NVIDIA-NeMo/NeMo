@@ -78,9 +78,6 @@ if ! command -v num2words &> /dev/null; then
   exit 1
 fi
 
-# ctc_segmentation ships as a Python library, not a CLI executable, so we probe
-# it with an import check rather than `command -v` (which only passed on Colab via
-# a manual `ctc_segmentation -> python` symlink and always failed elsewhere).
 if ! python -c "import ctc_segmentation" &> /dev/null; then
   echo "ctc_segmentation could not be found"
   echo "please install using tools/ctc_segmentation/requirements.txt"

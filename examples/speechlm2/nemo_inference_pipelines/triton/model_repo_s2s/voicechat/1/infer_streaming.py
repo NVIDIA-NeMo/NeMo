@@ -77,7 +77,7 @@ class TritonPythonModel:
             "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 240),  # ms of speech to interrupt FC async
             "s2s.use_separate_rnnt_ckpt":        ("S2S_USE_SEPARATE_RNNT_CKPT", False),  # True→use real .nemo RNNT, False→use combined ckpt fake RNNT
             "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 10),
-            "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 2),
+            "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 1),
             "s2s.fc_random_ack_enabled":         ("S2S_FC_RANDOM_ACK_ENABLED", False),
             "s2s.tool_reminder_enabled":         ("S2S_TOOL_REMINDER_ENABLED", False),
             "s2s.fc_on_hold_messages_path":      ("S2S_FC_ON_HOLD_MESSAGES_PATH", None),

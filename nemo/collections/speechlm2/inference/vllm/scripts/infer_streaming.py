@@ -75,7 +75,7 @@ class TritonPythonModel:
             "s2s.rnnt_eou_frames":               ("S2S_RNNT_EOU_FRAMES", 15),   # blank frames → EOU (15×80ms=1.2s)
             "s2s.rnnt_bou_frames":               ("S2S_RNNT_BOU_FRAMES", 3),    # speech frames → BOU/barge-in (3×80ms=240ms)
             "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 240),  # ms of speech to interrupt FC async
-            "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 2),
+            "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 1),
             "s2s.fc_random_ack_enabled":         ("S2S_FC_RANDOM_ACK_ENABLED", False),
             "s2s.tool_reminder_enabled":         ("S2S_TOOL_REMINDER_ENABLED", False),
             "s2s.fc_on_hold_messages_path":      ("S2S_FC_ON_HOLD_MESSAGES_PATH", None),

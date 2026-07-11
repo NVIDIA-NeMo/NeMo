@@ -1815,7 +1815,7 @@ class NemotronVoicechatInferenceWrapper:
         )
         # Prompt repetition (arxiv 2512.14982): repeat the prompt twice during prefill so
         # each token can attend to all others, improving recall of tool definitions across turns.
-        repeat_n = self.model_cfg.get("system_prompt_repeat_n", 2)
+        repeat_n = self.model_cfg.get("system_prompt_repeat_n", 1)
         prompt_token_ids = single_prompt_token_ids * repeat_n
         prompt_tokens = torch.tensor(prompt_token_ids, dtype=torch.long, device=self.device).unsqueeze(0)  # [1, prompt_len]
         prompt_len = prompt_tokens.shape[1]

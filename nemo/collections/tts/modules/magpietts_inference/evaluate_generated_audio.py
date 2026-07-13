@@ -36,11 +36,11 @@ from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    JapaneseTextProcessor,
     NemoTranscriber,
     NemoTranscriberWithPrompt,
     WhisperTranscriber,
     get_text_processor,
-    text_to_katakana,
 )
 from nemo.utils import logging
 
@@ -58,12 +58,15 @@ except (ImportError, ModuleNotFoundError) as e:
     )
 
 
-FILEWISE_METRICS_TO_SAVE = [
-    'cer',
-    'wer',
+KATAKANA_METRICS_TO_SAVE = [
     'katakana_cer',
     'gt_katakana',
     'pred_katakana',
+]
+
+FILEWISE_METRICS_TO_SAVE = [
+    'cer',
+    'wer',
     'pred_context_ssim',
     'pred_text',
     'gt_audio_text',
@@ -417,9 +420,9 @@ def evaluate_dir(
         # kanji/kana spelling differences between reference and ASR hypothesis.
         gt_katakana = pred_katakana = None
         katakana_cer = None
-        if (language or "").replace("_", "-").lower().split("-")[0] == "ja":
-            gt_katakana = text_to_katakana(gt_text)
-            pred_katakana = text_to_katakana(pred_text)
+        if isinstance(text_processor, JapaneseTextProcessor):
+            gt_katakana = text_processor.text_to_katakana(gt_text)
+            pred_katakana = text_processor.text_to_katakana(pred_text)
             katakana_cer = word_error_rate_detail(
                 hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True
             )[0]
@@ -612,7 +615,11 @@ def evaluate(
     elapsed = time.time() - start_time
     logging.info(f"evaluate() completed in {elapsed:.1f}s ({elapsed / 60:.1f} min)")
 
-    filtered_filewise = [{k: m[k] for k in FILEWISE_METRICS_TO_SAVE if k in m} for m in filewise_metrics]
+    filewise_metrics_to_save = list(FILEWISE_METRICS_TO_SAVE)
+    if (language or "").replace("_", "-").lower().split("-")[0] == "ja":
+        filewise_metrics_to_save[2:2] = KATAKANA_METRICS_TO_SAVE
+
+    filtered_filewise = [{k: m[k] for k in filewise_metrics_to_save if k in m} for m in filewise_metrics]
     return avg_metrics, filtered_filewise
 
 

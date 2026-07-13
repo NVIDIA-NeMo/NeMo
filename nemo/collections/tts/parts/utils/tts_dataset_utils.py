@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import importlib
 import logging
 import os
 import random
@@ -952,42 +953,32 @@ class NoSpaceTextProcessor(TextProcessor):
         return text
 
 
-_PYOPENJTALK = None
-
-
 class JapaneseTextProcessor(NoSpaceTextProcessor):
-    """Japanese WER text processor with optional Katakana reading conversion."""
+    """Japanese WER text processor with Katakana reading conversion."""
+
+    def __init__(self):
+        super().__init__()
+        try:
+            self.pyopenjtalk = importlib.import_module("pyopenjtalk")
+        except ImportError as e:
+            raise ImportError(
+                "JapaneseTextProcessor requires pyopenjtalk for Katakana CER computation. "
+                "Install pyopenjtalk or do not request Japanese evaluation text processing."
+            ) from e
 
     def text_to_katakana(self, text: str) -> str:
-        """Convert Japanese text to its Katakana reading via pyopenjtalk (lazy-imported).
+        """Convert Japanese text to its Katakana reading via pyopenjtalk.
 
         Used for an additional, reading-based Japanese CER metric that is robust to
         kanji/kana spelling variation between the reference and the ASR hypothesis.
-        Returns "" on empty input or if pyopenjtalk is unavailable/fails.
         """
-        global _PYOPENJTALK
         if not text:
             return ""
-        if _PYOPENJTALK is None:
-            try:
-                import pyopenjtalk
-
-                _PYOPENJTALK = pyopenjtalk
-            except Exception as e:  # noqa: BLE001
-                logging.warning(f"pyopenjtalk not available; skipping katakana CER: {e}")
-                _PYOPENJTALK = False
-        if _PYOPENJTALK is False:
-            return ""
         try:
-            return _PYOPENJTALK.g2p(text, kana=True).strip()
+            return self.pyopenjtalk.g2p(text, kana=True).strip()
         except Exception as e:  # noqa: BLE001
             logging.warning(f"pyopenjtalk failed for '{text[:40]}': {e}")
             return ""
-
-
-def text_to_katakana(text: str) -> str:
-    """Convert Japanese text to Katakana using the Japanese text processor."""
-    return JapaneseTextProcessor().text_to_katakana(text)
 
 
 class EnglishTextProcessor(TextProcessor):
@@ -1029,8 +1020,10 @@ def get_text_processor(language: str) -> TextProcessor:
     language = (language or "").replace("_", "-").lower().split("-")[0]
     if language == "en":
         return EnglishTextProcessor()
-    if language in {"ja", "zh"}:
-        return JapaneseTextProcessor() if language == "ja" else NoSpaceTextProcessor()
+    if language == "ja":
+        return JapaneseTextProcessor()
+    elif language == "zh":
+        return NoSpaceTextProcessor()
     else:
         logging.info(f"Text processing not implemented for language {language}; using default processor")
         return DefaultTextProcessor()

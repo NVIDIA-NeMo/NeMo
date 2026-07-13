@@ -239,7 +239,12 @@ def _load_model_meta(
         speech_delay=int(getattr(arch, "streaming_speech_delay", 0) or 0),
         frame_stacking_factor=int(arch.frame_stacking_factor),
         stop_token_id=EasyMagpieTTSForConditionalGeneration.audio_eos_stop_token_id(type("Cfg", (), config)),
-        text_eos_id=int(config.get("text_vocab_size", config.get("vocab_size", 0))) - 2,
+        text_eos_id=int(
+            config.get(
+                "text_eos_id",
+                int(config.get("text_vocab_size", config.get("vocab_size", 0))) - 2,
+            )
+        ),
     )
 
 

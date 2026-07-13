@@ -42,7 +42,7 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.04-cuda13.2-devel-ubuntu24.04
 FROM ${BASE_IMAGE} AS base-image
 ARG BASE_IMAGE
-ARG UV_VERSION=0.11.14
+ARG UV_VERSION=0.11.27
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TRANSFORMERS_OFFLINE=0
@@ -59,14 +59,11 @@ ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
 RUN <<"EOF" bash -ex
 apt-get update
 apt-get install -y \
-    bc \
     curl \
-    git \
-    libsndfile1 \
-    libsox-fmt-all \
-    sox
+    git
 apt-get clean
 EOF
+# NOTE: removed libsndfile1. Soundfile ships with its own version of libsndfile1
 
 RUN <<"EOF" bash -ex
 curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh

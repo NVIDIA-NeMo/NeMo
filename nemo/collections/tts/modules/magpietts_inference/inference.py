@@ -63,6 +63,7 @@ class BaseInferenceConfig(abc.ABC):
     batch_size: int = 32
     use_cfg: bool = False
     use_local_transformer: bool = False
+    default_tokenizer_name: str = "english_phoneme"
 
     @abc.abstractmethod
     def build_identifier(self) -> str:
@@ -130,7 +131,6 @@ class MagpieInferenceConfig(BaseInferenceConfig):
         parts.extend(
             [
                 f"LT_{self.use_local_transformer}",
-                f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
                 self._format_layer_list(self.maskgit_fixed_schedule),
                 f"EOS_{self.model_inference_parameters.eos_detection_method}",
                 f"IgnoreFST_{self.model_inference_parameters.ignore_finished_sentence_tracking}",
@@ -722,6 +722,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             context_duration_max=context_duration_max,
             ignore_phoneme_languages=self.model.cfg.get('ignore_phoneme_languages', []),
             add_language_to_context_text=self.model.add_language_to_context_text,
+            default_tokenizer_name=self.config.default_tokenizer_name,
         )
         dataset.text_tokenizer = self.model.tokenizer
 

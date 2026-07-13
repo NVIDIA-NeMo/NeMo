@@ -228,11 +228,10 @@ class EasyMagpieTTSForConditionalGeneration(
         text_vocab_size = int(getattr(hf_config, "text_vocab_size", getattr(hf_config, "vocab_size", 0)))
         self.text_embedding = nn.Embedding(text_vocab_size, self.embedding_dim)
 
-        # Text-stream EOS id — the last-but-one row of the text vocab, matching
-        # the reference ``EasyMagpieTTSInferenceModel.eos_id = num_tokens - 2``.
-        # Appended to the in-model-tokenized target text stream (see
-        # :meth:`_encode_text_stream`).
-        self.text_eos_id = text_vocab_size - 2
+        # Text-stream EOS id. Legacy checkpoints place it at vocab_size - 2;
+        # multiturn checkpoints append an interruption token after the existing
+        # specials, so their converter pins the unchanged EOS id explicitly.
+        self.text_eos_id = arch.resolved_text_eos_id(text_vocab_size)
 
         # Task ("service token") embedding — a single learned per-mode row
         # prepended to the prefill context for multi-mode checkpoints. Built only

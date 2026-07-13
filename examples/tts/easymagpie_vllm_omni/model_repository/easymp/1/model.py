@@ -222,7 +222,12 @@ class TritonPythonModel:
         self.stop_token_id = EasyMagpieTTSForConditionalGeneration.audio_eos_stop_token_id(cfg_obj)
         # Appended after the client's streamed subword ids to close the text channel
         # before the free-running acoustic tail (matches the demo / benchmark).
-        self.text_eos_id = int(config.get("text_vocab_size", config.get("vocab_size", 0))) - 2
+        self.text_eos_id = int(
+            config.get(
+                "text_eos_id",
+                int(config.get("text_vocab_size", config.get("vocab_size", 0))) - 2,
+            )
+        )
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.vllm_model_path, trust_remote_code=True)
         self._get_prompt_len = EasyMagpieTTSForConditionalGeneration.get_prompt_len

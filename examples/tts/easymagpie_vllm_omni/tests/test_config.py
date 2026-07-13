@@ -63,11 +63,19 @@ def test_phoneme_ids_fall_back_to_tokenizer_convention():
     assert arch.resolved_phoneme_unk_id == 2050
 
 
+def test_text_eos_id_supports_appended_multiturn_token():
+    assert EasyMagpieOmniArch().resolved_text_eos_id(text_vocab_size=103) == 101
+    arch = EasyMagpieOmniArch(text_eos_id=101, use_multiturn_dataset=True)
+    assert arch.resolved_text_eos_id(text_vocab_size=104) == 101
+
+
 def test_from_hf_config_overrides_and_ignores_unknown():
     hf_config = types.SimpleNamespace(
         num_audio_codebooks=4,
         codebook_size=2048,
         frame_stacking_factor=1,
+        text_eos_id=32001,
+        use_multiturn_dataset=True,
         local_transformer_n_layers=5,
         some_unrelated_field="ignored",
     )
@@ -75,6 +83,8 @@ def test_from_hf_config_overrides_and_ignores_unknown():
     assert arch.num_audio_codebooks == 4
     assert arch.codebook_size == 2048
     assert arch.frame_stacking_factor == 1
+    assert arch.text_eos_id == 32001
+    assert arch.use_multiturn_dataset is True
     assert arch.local_transformer_n_layers == 5
     # Untouched fields keep the default profile.
     assert arch.audio_embedding_dim == EASYMAGPIE_SMALLMAMBA.audio_embedding_dim

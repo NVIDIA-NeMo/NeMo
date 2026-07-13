@@ -185,11 +185,16 @@ def precompute_text_embeddings(model, batch_size: int) -> torch.Tensor:
     device = next(model.parameters()).device
 
     # Vocabulary size of the subword id space (decoder text-embedding table when
-    # present; otherwise the CAS-only id range, which ends at cfg_unk_token_id).
+    # present; otherwise the CAS-only id range). Multiturn checkpoints append an
+    # interruption token after CFG_UNK, so cfg_unk_token_id is not always last.
     if getattr(model, "text_embedding", None) is not None:
         vocab_size = model.text_embedding.num_embeddings
     else:
-        vocab_size = int(model.cfg_unk_token_id) + 1
+        last_special_id = max(
+            int(model.cfg_unk_token_id),
+            int(getattr(model, "interruption_token_id", model.cfg_unk_token_id)),
+        )
+        vocab_size = last_special_id + 1
     embedding_dim = int(model.cfg.embedding_dim)
 
     table = torch.zeros((vocab_size, embedding_dim), dtype=torch.float32, device=device)
@@ -297,6 +302,10 @@ def build_config(model, vocab_size: int, torch_dtype: str) -> dict:
 
     # ── EasyMagpie scalars (read by EasyMagpieOmniArch.from_hf_config) ──
     config["text_vocab_size"] = vocab_size
+    config["text_eos_id"] = int(model.eos_id)
+    config["use_multiturn_dataset"] = bool(cfg.get("use_multiturn_dataset", False))
+    if hasattr(model, "interruption_token_id"):
+        config["text_interruption_id"] = int(model.interruption_token_id)
     config["embedding_dim"] = embedding_dim
     config["audio_embedding_dim"] = int(cfg.get("audio_embedding_dim", hidden_dim))
     config["num_audio_codebooks"] = int(model.num_audio_codebooks)

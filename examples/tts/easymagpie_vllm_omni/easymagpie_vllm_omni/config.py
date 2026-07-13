@@ -72,6 +72,12 @@ class EasyMagpieOmniArch:
     phoneme_stacking_factor: int = 1
     phoneme_vocab_size: int = 2051
 
+    # Text EOS is normally the second-to-last text-vocabulary row. Multiturn
+    # checkpoints append an interruption token after CFG_UNK, so converters pin
+    # the actual ID explicitly instead of deriving it from the final table size.
+    text_eos_id: int | None = None
+    use_multiturn_dataset: bool = False
+
     # ── Streaming delays (per the checkpoint's default inference mode) ──
     # The text/phoneme/audio streams are temporally offset: at decode step ``k``
     # the text channel consumes ``text_tokens[k]``, the phoneme channel starts at
@@ -154,6 +160,10 @@ class EasyMagpieOmniArch:
         """Phoneme UNK id, falling back to the IPABPETokenizer convention (vocab-1)."""
         return self.phoneme_unk_id if self.phoneme_unk_id is not None else self.phoneme_vocab_size - 1
 
+    def resolved_text_eos_id(self, text_vocab_size: int) -> int:
+        """Text EOS id, preserving the legacy second-to-last-row convention."""
+        return self.text_eos_id if self.text_eos_id is not None else text_vocab_size - 2
+
     @classmethod
     def from_hf_config(cls, hf_config: Any) -> "EasyMagpieOmniArch":
         """Build an arch description from a vLLM ``hf_config``.
@@ -174,6 +184,8 @@ class EasyMagpieOmniArch:
             "frame_stacking_factor",
             "phoneme_stacking_factor",
             "phoneme_vocab_size",
+            "text_eos_id",
+            "use_multiturn_dataset",
             "streaming_phonemes_delay",
             "streaming_speech_delay",
             "phoneme_bos_id",

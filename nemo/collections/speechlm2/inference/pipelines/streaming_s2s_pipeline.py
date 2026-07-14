@@ -953,6 +953,14 @@ out center {limit};
 					"lat": rlat,
 					"lng": rlng,
 				})
+			if not restaurants:
+				# Grammatically-clean phrasing so the LLM has something
+				# natural to speak instead of announcing an empty list.
+				_cuisine_prefix = f"{cuisine} " if cuisine else ""
+				return json.dumps({
+					"message": f"No {_cuisine_prefix}restaurants were found near {city}.",
+					"city": city,
+				})
 			return json.dumps({"restaurants": restaurants, "city": city})
 		except Exception as e:
 			return json.dumps({"error": f"Overpass query failed: {e}"})

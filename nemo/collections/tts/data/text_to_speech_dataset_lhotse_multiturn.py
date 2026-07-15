@@ -24,10 +24,10 @@ from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_matrices, collate_vectors
 from lhotse.utils import ifnone
 from omegaconf import DictConfig
-from transformers import AutoTokenizer, T5Tokenizer
 
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPABPETokenizer
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import IPABPETokenizer
 from nemo.collections.speechlm2.parts.precision import fp32_precision
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
     normalize_volume,
@@ -35,29 +35,6 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
-
-
-def setup_tokenizers(all_tokenizers_config, mode='train'):
-    tokenizers = []
-    tokenizer_names = []
-    for tokenizer_name in all_tokenizers_config:
-        tokenizer_config = all_tokenizers_config[tokenizer_name]
-        if tokenizer_config._target_ == 'AutoTokenizer':
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config.pretrained_model, trust_remote_code=True)
-        elif tokenizer_config._target_ == 'T5Tokenizer':
-            tokenizer = T5Tokenizer.from_pretrained(tokenizer_config.pretrained_model)
-        else:
-            text_tokenizer_kwargs = {}
-            if "g2p" in tokenizer_config:
-                text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
-            tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
-            if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
-                tokenizer.set_phone_prob(1.0)
-        tokenizers.append(tokenizer)
-        tokenizer_names.append(tokenizer_name)
-
-    aggregated_tokenizer = AggregatedTTSTokenizer(tokenizers, tokenizer_names)
-    return aggregated_tokenizer
 
 
 def check_speaker_format(item: str):

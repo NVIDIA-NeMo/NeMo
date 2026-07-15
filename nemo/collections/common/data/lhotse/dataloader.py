@@ -260,6 +260,21 @@ class LhotseDataLoadingConfig:
 
 
 def resolve_excluded_speaker_ids(excluded_speaker_ids):
+    """Normalize ``excluded_speaker_ids`` from a dataloader config for :class:`SpeakerFilter`.
+
+    Training configs may specify held-out speakers inline or in an external YAML file when the
+    exclusion list is large. This helper accepts those Hydra/OmegaConf forms and returns a plain
+    list of speaker ID strings so training data can be filtered and test speakers are not leaked
+    into the training set.
+
+    Args:
+        excluded_speaker_ids: Speaker IDs to exclude. May be ``None``, a list of strings, a path to
+            a YAML file, or an OmegaConf/DictConfig value. If loading from YAML yields a dict, the
+            value under the ``excluded_speaker_ids`` key is used.
+
+    Returns:
+        A list of speaker ID strings, or ``None`` if no exclusions are configured.
+    """
     if excluded_speaker_ids is None:
         return None
 

@@ -191,9 +191,19 @@ test_eartts_config = {
     },
 }
 
-# set CI cached path
-if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
-    test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
+# Prefer a CI-cached copy of the LM under the mounted TestData volume so the test
+# resolves the tokenizer/backbone locally instead of reaching the HuggingFace Hub,
+# which rate-limits (HTTP 429) unauthenticated CI runners. The canonical staged
+# location matches the rest of the speechlm2 suite
+# (/home/TestData/speechlm/pretrained_models/...); the legacy top-level path is kept
+# as a fallback.
+for _cached_lm_path in (
+    "/home/TestData/speechlm/pretrained_models/nvidia--NVIDIA-Nemotron-Nano-9B-v2",
+    "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/",
+):
+    if os.path.exists(_cached_lm_path):
+        test_eartts_config["model"]["pretrained_lm_name"] = _cached_lm_path
+        break
 
 
 @pytest.fixture(scope="session")

@@ -423,9 +423,9 @@ def evaluate_dir(
         if isinstance(text_processor, JapaneseTextProcessor):
             gt_katakana = text_processor.text_to_katakana(gt_text)
             pred_katakana = text_processor.text_to_katakana(pred_text)
-            katakana_cer = word_error_rate_detail(
-                hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True
-            )[0]
+            katakana_cer = word_error_rate_detail(hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True)[
+                0
+            ]
 
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")

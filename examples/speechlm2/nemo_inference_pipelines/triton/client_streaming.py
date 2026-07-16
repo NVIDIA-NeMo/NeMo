@@ -63,6 +63,13 @@ NUM_FRAMES_PER_CHUNK = args.num_frames_per_chunk
 DUR_TEST_AUDIO = args.dur_test_audio
 INPUT_CHUNK_SIZE_SAMPLES = int(16000 * 0.08) * NUM_FRAMES_PER_CHUNK  # number of samples per input chunk
 NUM_CHUNKS_TEST_AUDIO = int(DUR_TEST_AUDIO / (0.08 * NUM_FRAMES_PER_CHUNK))
+# Samples of silence per output frame — used to keep the R channel of the
+# combined stereo file time-aligned with the L channel (user WAV). If the
+# server returns empty output_audio for a frame (agent silent while user
+# is speaking), we insert this many samples of silence so the timeline
+# stays wall-clock accurate.
+OUTPUT_SAMPLE_RATE = 22050
+SILENCE_SAMPLES_PER_FRAME = int(0.08 * NUM_FRAMES_PER_CHUNK * OUTPUT_SAMPLE_RATE)
 print(f"{NUM_CHUNKS_TEST_AUDIO=}")
 
 times_spend_on_inference = []
@@ -208,6 +215,16 @@ with grpcclient.InferenceServerClient(f"{args.host}:{args.port}") as client:
             if output_audio.shape[1] > 0:
                 times_spend_on_inference.append(end_time - start_time)
                 generated_audio.append(output_audio)
+            else:
+                # Server returned no audio this frame (agent silent while
+                # user speaks, or PAD frame). Insert one frame's worth of
+                # silence so the concatenated R channel stays wall-clock
+                # aligned with the L channel in the combined stereo file.
+                # Without this, agent replies get compressed to the front
+                # of the R timeline and appear before the user's question.
+                generated_audio.append(
+                    np.zeros((1, SILENCE_SAMPLES_PER_FRAME), dtype=np.float32)
+                )
                 
     except KeyboardInterrupt:
         logger.info("\nKeyboardInterrupt received! Calling send_sequence_end...")

@@ -27,6 +27,7 @@ import operator
 import os
 import tarfile
 import tempfile
+import types
 from collections import defaultdict
 from os.path import expanduser
 from pathlib import Path
@@ -37,7 +38,6 @@ import dash_bootstrap_components as dbc
 import diff_match_patch
 import editdistance
 import jiwer
-import librosa
 import numpy as np
 import pandas as pd
 import soundfile as sf
@@ -45,9 +45,53 @@ import tqdm
 from dash import dash_table, dcc, html
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
+from kaldialign import edit_distance
 from plotly import express as px
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
+
+
+def _ensure_numba_coverage_compatibility():
+    """Patch coverage API differences that break older numba imports."""
+    try:
+        import coverage
+    except ImportError:
+        return
+
+    try:
+        coverage_types = coverage.types
+    except AttributeError:
+        try:
+            import coverage.types as coverage_types
+        except ImportError:
+            coverage_types = types.SimpleNamespace()
+            coverage.types = coverage_types
+
+    if coverage_types is None:
+        return
+
+    if not hasattr(coverage_types, 'Tracer'):
+        tracer_type = getattr(coverage_types, 'TTracer', object)
+        if not isinstance(tracer_type, type):
+            tracer_type = object
+        coverage_types.Tracer = tracer_type
+
+    for type_name in (
+        'TTraceData',
+        'TShouldTraceFn',
+        'TFileDisposition',
+        'TShouldStartContextFn',
+        'TWarnFn',
+        'TTraceFn',
+    ):
+        if not hasattr(coverage_types, type_name):
+            setattr(coverage_types, type_name, object)
+
+
+# Keep this immediately before importing librosa; librosa can import numba,
+# and older numba releases expect coverage.types.Tracer to exist.
+_ensure_numba_coverage_compatibility()
+import librosa  # noqa: E402
 
 # S3/cloud dependencies — only required when using --s3cfg
 try:
@@ -295,6 +339,17 @@ def parse_s3_path(s3_path):
     return bucket, key
 
 
+def require_s3_client(s3_path):
+    """Return the configured S3 client or fail with an actionable message."""
+    if _s3_client is None:
+        raise RuntimeError(
+            f"S3 path requires S3 configuration: {s3_path}. "
+            "Run with --s3cfg ~/.s3cfg[default] when using s3:// paths, "
+            "or use --s3cfg AIS with AIS_ENDPOINT and AIS_AUTHN_TOKEN set."
+        )
+    return _s3_client
+
+
 def read_s3_file(s3_path):
     """Read a file from S3 and return its contents as a string.
 
@@ -303,10 +358,10 @@ def read_s3_file(s3_path):
     Returns:
         str: File contents
     """
-    global _s3_client
     try:
         bucket, key = parse_s3_path(s3_path)
-        response = _s3_client.get_object(Bucket=bucket, Key=key)
+        s3_client = require_s3_client(s3_path)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
         return response['Body'].read().decode('utf-8')
     except ClientError as e:
         logging.error(f"Error reading S3 file {s3_path}: {e}")
@@ -322,10 +377,10 @@ def read_s3_file_bytes(s3_path):
     Returns:
         bytes: File contents
     """
-    global _s3_client
     try:
         bucket, key = parse_s3_path(s3_path)
-        response = _s3_client.get_object(Bucket=bucket, Key=key)
+        s3_client = require_s3_client(s3_path)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
         return response['Body'].read()
     except ClientError as e:
         logging.error(f"Error reading S3 file {s3_path}: {e}")
@@ -480,12 +535,12 @@ def read_s3_range(s3_path, start_byte, end_byte):
     Returns:
         bytes: The requested byte range
     """
-    global _s3_client
     try:
         bucket, key = parse_s3_path(s3_path)
+        s3_client = require_s3_client(s3_path)
         range_size = end_byte - start_byte + 1
         logging.info(f"S3 Range request: bytes={start_byte}-{end_byte} (size: {range_size} bytes) from {s3_path}")
-        response = _s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={start_byte}-{end_byte}')
+        response = s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={start_byte}-{end_byte}')
         data = response['Body'].read()
         logging.info(f"S3 Range request completed: received {len(data)} bytes")
         return data
@@ -884,6 +939,18 @@ def parse_args():
     if len(args.manifest) == 2 and args.names_compared is None:
         parser.error('When two manifest files are provided, -nc/--names_compared is required.')
 
+    s3_cli_paths = [
+        path
+        for path in [*args.manifest, args.audio_base_path, args.tar_base_path, args.dali_index_base]
+        if is_s3_path(path)
+    ]
+    if s3_cli_paths and not args.s3cfg:
+        parser.error(
+            f"S3 paths require --s3cfg, but it was not provided. First S3 path: {s3_cli_paths[0]}. "
+            "Example: --s3cfg ~/.s3cfg[default]. "
+            "For AIS, use --s3cfg AIS with AIS_ENDPOINT and AIS_AUTHN_TOKEN set."
+        )
+
     dual_manifest_mode = len(args.manifest) == 2
 
     # assume audio_filepath is relative to the directory where the manifest is stored
@@ -1053,9 +1120,9 @@ def load_data(
                 if field_name in item and item[TEXT_KEY]:
                     metrics_available = True
                     pred = item[field_name].split()
-                    measures = jiwer.compute_measures(item[TEXT_KEY], item[field_name])
-                    word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
-                    char_dist = editdistance.eval(item[TEXT_KEY], item[field_name])
+                    measures = edit_distance(item[TEXT_KEY].split(), item[field_name].split())
+                    word_dist = measures['total']
+                    char_dist = edit_distance(list(item[TEXT_KEY]), list(item[field_name]))['total']
                     wer_dist += word_dist
                     cer_dist += char_dist
                     wer_count += num_words
@@ -1065,7 +1132,7 @@ def load_data(
                     for m in sm.get_matching_blocks():
                         for word_idx in range(m[0], m[0] + m[2]):
                             match_vocab[orig[word_idx]] += 1
-                    wmr_count += measures['hits']
+                    wmr_count += num_words - measures['sub'] - measures['del']
                 elif field_name in item:
                     pass
                 else:
@@ -1922,14 +1989,14 @@ if comparison_mode:
         pred_words = pred.split()
         if not grnd_words:
             return 0.0
-        edit_distance = editdistance.eval(grnd_words, pred_words)
-        wer = edit_distance / len(grnd_words)
+        dist = edit_distance(grnd_words, pred_words)['total']
+        wer = dist / len(grnd_words)
         return wer
 
     def metric(a, b, met=None):
         if not a:
             return 0.0, 0.0
-        cer = editdistance.distance(a, b) / len(a)
+        cer = edit_distance(list(a), list(b))['total'] / len(a)
         wer = _wer_(a, b)
         return round(float(wer) * 100, 2), round(float(cer) * 100, 2)
 

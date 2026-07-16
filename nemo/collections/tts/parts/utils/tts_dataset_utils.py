@@ -21,7 +21,7 @@ import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import librosa
 import numpy as np
@@ -29,10 +29,15 @@ import torch
 from einops import rearrange
 from scipy import ndimage
 from torch.special import gammaln
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCBPEModelWithPrompt
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -93,6 +98,69 @@ def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
         return audio
 
     return volume_level * (audio / np.max(np.abs(audio)))
+
+
+def setup_pronunciation_control_g2p(pronunciation_control_g2p_config):
+    """Instantiate per-language G2P modules used for pronunciation-control text augmentation.
+
+    Args:
+        pronunciation_control_g2p_config: Optional mapping from language code to Hydra config for the G2P module
+            that should be used when pronunciation-control augmentation is sampled.
+
+    Returns:
+        A dictionary mapping language code to the instantiated G2P module. Returns an empty dictionary when no
+        pronunciation-control config is provided.
+    """
+    g2p_modules = {}
+    if pronunciation_control_g2p_config is None:
+        return g2p_modules
+
+    for language in pronunciation_control_g2p_config:
+        g2p_modules[language] = safe_instantiate(pronunciation_control_g2p_config[language])
+
+    return g2p_modules
+
+
+def tokenize_text_with_pronunciation_control(
+    text_tokenizer,
+    text_str: str,
+    language: str,
+    tokenizer_name: str,
+    dataset_type: str,
+    phoneme_as_text_prob: float,
+    pronunciation_control_g2p: Optional[Dict],
+) -> List[int]:
+    """Tokenize text, optionally replacing it with G2P output for pronunciation-control training.
+
+    Pronunciation control is only applied for training samples, when ``phoneme_as_text_prob`` is sampled, and when a
+    G2P module is available for the sample language. Otherwise the original text is tokenized.
+
+    Args:
+        text_tokenizer: Aggregated TTS tokenizer used to encode either original text or G2P text.
+        text_str: Input text from the dataset sample.
+        language: Language code for selecting the pronunciation-control G2P module.
+        tokenizer_name: Name of the tokenizer inside ``text_tokenizer`` to use for encoding.
+        dataset_type: Dataset split/type. Pronunciation-control augmentation is restricted to ``"train"``.
+        phoneme_as_text_prob: Probability of replacing the text with G2P output for eligible training samples.
+        pronunciation_control_g2p: Optional mapping from language code to instantiated G2P module.
+
+    Returns:
+        Encoded token ids for either ``text_str`` or the sampled pronunciation-control G2P text.
+    """
+    use_pronunciation_control = (
+        dataset_type == 'train'
+        and phoneme_as_text_prob > 0.0
+        and random.random() < phoneme_as_text_prob
+        and pronunciation_control_g2p is not None
+        and language in pronunciation_control_g2p
+    )
+    if not use_pronunciation_control:
+        return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
+
+    g2p_module = pronunciation_control_g2p[language]
+    g2p_text = g2p_module(text_str)
+    text_for_tokens = ''.join(g2p_text) if isinstance(g2p_text, list) else str(g2p_text)
+    return text_tokenizer.encode(text=text_for_tokens, tokenizer_name=tokenizer_name)
 
 
 class BetaBinomialInterpolator:
@@ -675,22 +743,30 @@ def get_tokenizer_for_language(
     language: str,
     available_tokenizers: List[str],
     default_tokenizer: str = "english_phoneme",
+    language_tokenizer_map: Optional[Mapping[str, Union[str, Sequence[str]]]] = None,
 ) -> str:
     """Get the appropriate tokenizer name for a language.
 
-    Searches LANGUAGE_TOKENIZER_MAP for candidate tokenizers and returns
+    Searches language_tokenizer_map for candidate tokenizers and returns
     the first one available. Falls back to default if no match found.
 
     Args:
         language: Language code (e.g., "en", "de", "zh").
         available_tokenizers: List of tokenizer names available in the model.
         default_tokenizer: Fallback tokenizer if no match found.
+        language_tokenizer_map: Mapping of languages to a tokenizer or ordered tokenizer candidates.
+            Defaults to ``LANGUAGE_TOKENIZER_MAP``.
 
     Returns:
         Tokenizer name to use.
     """
-    if language in LANGUAGE_TOKENIZER_MAP:
-        for candidate in LANGUAGE_TOKENIZER_MAP[language]:
+    if language_tokenizer_map is None:
+        language_tokenizer_map = LANGUAGE_TOKENIZER_MAP
+    if language in language_tokenizer_map:
+        candidates = language_tokenizer_map[language]
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        for candidate in candidates:
             if candidate in available_tokenizers:
                 return candidate
 
@@ -909,3 +985,109 @@ def get_text_processor(language: str) -> TextProcessor:
     else:
         logging.info(f"Text processing not implemented for language {language}; using default processor")
         return DefaultTextProcessor()
+
+
+class Transcriber(ABC):
+    """Interface for transcribing TTS outputs with different ASR models"""
+
+    @abstractmethod
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        """
+        Run batch transcription of a list of audio files.
+
+        Args:
+            audio_paths: list of paths to audio files to transcribe
+            batch_size: batch size to use for inference
+            language: optional language of input audio
+
+        Returns:
+            List with transcribed text for each audio path
+        """
+        pass
+
+
+class NemoTranscriber(Transcriber):
+    """Transcriber for NeMo ASR models"""
+
+    def __init__(self, device, model_name="stt_en_conformer_transducer_large"):
+        if model_name.endswith('.nemo'):
+            model = ASRModel.restore_from(restore_path=model_name)
+        else:
+            model = ASRModel.from_pretrained(model_name=model_name)
+
+        self.model = model.to(device).eval()
+
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        override_config = TranscribeConfig(batch_size=batch_size, use_lhotse=False)
+        transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
+        transcriptions = [result.text for result in transcribe_results]
+        return transcriptions
+
+
+class NemoTranscriberWithPrompt(Transcriber):
+    """Transcriber for NeMo ASR models that accept language as an optional prompt"""
+
+    def __init__(self, device, model_name):
+        if model_name.endswith('.nemo'):
+            model = ASRModel.restore_from(restore_path=model_name)
+        else:
+            model = ASRModel.from_pretrained(model_name=model_name)
+
+        self.model = model.to(device).eval()
+        if not isinstance(self.model, EncDecHybridRNNTCTCBPEModelWithPrompt):
+            raise ValueError(f"Model {model_name} does not support prompting")
+
+        self.language_prompt_map = {
+            "en": "en-US",
+            "ar": "ar",
+            "ko": "ko-KR",
+            "hi": "hi-IN",
+            "zh": "zh-CN",
+            "it": "it-IT",
+            "es": "es-ES",
+            "de": "de-DE",
+            "fr": "fr-FR",
+            "ja": "ja-JP",
+        }
+
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        if language:
+            prompt_lang = self.language_prompt_map[language]
+            override_config = HybridRNNTCTCPromptTranscribeConfig(
+                batch_size=batch_size, use_lhotse=False, target_lang=prompt_lang
+            )
+        else:
+            override_config = HybridRNNTCTCPromptTranscribeConfig(batch_size=batch_size, use_lhotse=False)
+
+        transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
+        transcriptions = [result.text for result in transcribe_results]
+        return transcriptions
+
+
+class WhisperTranscriber(Transcriber):
+    """Transcriber for Whisper ASR models"""
+
+    def __init__(self, device, model_name="openai/whisper-large-v3"):
+        self.processor = WhisperProcessor.from_pretrained(model_name)
+        self.model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device).eval()
+        self.input_sample_rate = 16000
+
+    def transcribe(self, audio_paths: List[Path], language: str, batch_size: int) -> List[str]:
+        if language:
+            forced_decoder_ids = self.processor.get_decoder_prompt_ids(language=language, task="transcribe")
+        else:
+            forced_decoder_ids = None
+
+        all_transcriptions = []
+        for start in range(0, len(audio_paths), batch_size):
+            batch_paths = audio_paths[start : start + batch_size]
+            speech_arrays = [librosa.load(p, sr=self.input_sample_rate)[0] for p in batch_paths]
+            inputs = self.processor(
+                speech_arrays, sampling_rate=self.input_sample_rate, return_tensors="pt", padding=True
+            ).input_features
+            inputs = inputs.half().to(self.model.device)
+            with torch.inference_mode():
+                predicted_ids = self.model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+            transcriptions = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            all_transcriptions.extend(transcriptions)
+        return all_transcriptions

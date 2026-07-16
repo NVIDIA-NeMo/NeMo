@@ -13,16 +13,120 @@
 # limitations under the License.
 import copy
 import glob
+import types
 
-
-import jiwer
 import lightning.pytorch as ptl
 import pytest
 import torch
+from kaldialign import edit_distance
 from omegaconf import DictConfig, open_dict
 
 from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported
+
+
+# These tests move the model to CUDA before calling transcribe(), so avoid forking DataLoader workers afterwards.
+CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS = 0
+
+
+def test_forced_full_graph_compile_does_not_fallback():
+    from nemo.collections.asr.parts.submodules.transducer_decoding.rnnt_label_looping import (
+        GreedyBatchedRNNTLabelLoopingComputer,
+    )
+
+    accelerator_error = getattr(torch, "AcceleratorError", RuntimeError)
+    computer = GreedyBatchedRNNTLabelLoopingComputer.__new__(GreedyBatchedRNNTLabelLoopingComputer)
+    computer.cuda_graphs_allow_fallback = False
+
+    with pytest.raises(RuntimeError, match="Full CUDA graph decoding failed"):
+        computer._raise_or_warn_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
+
+
+def test_conditional_node_restores_previous_stream_on_body_error(monkeypatch):
+    from nemo.core.utils import cuda_python_utils
+
+    if not cuda_python_utils.CUDA_PYTHON_AVAILABLE:
+        pytest.skip("cuda-python is required to test with_conditional_node")
+
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
+            self.cuda_stream = name
+
+    class FakeTorchCuda:
+        def __init__(self):
+            self.parent_stream = FakeStream("parent")
+            self.body_stream = FakeStream("body")
+            self.current = self.parent_stream
+            self.set_calls = []
+
+        def current_stream(self, device=None):
+            return self.current
+
+        def Stream(self, device=None):
+            return self.body_stream
+
+        def set_stream(self, stream):
+            self.current = stream
+            self.set_calls.append(stream)
+
+    class FakeCudart:
+        cudaStreamCaptureStatus = types.SimpleNamespace(cudaStreamCaptureStatusActive="active")
+        cudaStreamUpdateCaptureDependenciesFlags = types.SimpleNamespace(cudaStreamSetCaptureDependencies="set")
+        cudaStreamCaptureMode = types.SimpleNamespace(cudaStreamCaptureModeThreadLocal="thread_local")
+
+        def __init__(self):
+            self.ended_streams = []
+
+        def cudaStreamGetCaptureInfo(self, stream):
+            return ("active", None, "graph", ["dependency"])
+
+        def cudaStreamUpdateCaptureDependencies(self, *args):
+            return ()
+
+        def cudaStreamBeginCaptureToGraph(self, *args):
+            return ()
+
+        def cudaStreamEndCapture(self, stream):
+            self.ended_streams.append(stream)
+            return ()
+
+    class FakeCuda:
+        CUgraphNodeType = types.SimpleNamespace(CU_GRAPH_NODE_TYPE_CONDITIONAL="conditional")
+        CUgraphConditionalNodeType = types.SimpleNamespace(CU_GRAPH_COND_TYPE_WHILE="while")
+
+        class CUgraphNodeParams:
+            def __init__(self):
+                self.conditional = types.SimpleNamespace(phGraph_out=["body_graph"])
+
+        def cuGraphAddNode(self, *args):
+            return ("node",)
+
+        def cuCtxGetCurrent(self):
+            return ("ctx",)
+
+        def cuLaunchKernel(self, *args):
+            return ()
+
+    fake_torch_cuda = FakeTorchCuda()
+    fake_cudart = FakeCudart()
+    fake_args = types.SimpleNamespace(ctypes=types.SimpleNamespace(data=1234))
+    fake_handle = types.SimpleNamespace(getPtr=lambda: 5678)
+
+    monkeypatch.setattr(cuda_python_utils, "cu_call", lambda result: result)
+    monkeypatch.setattr(cuda_python_utils, "cuda", FakeCuda())
+    monkeypatch.setattr(cuda_python_utils, "cudart", fake_cudart)
+    monkeypatch.setattr(cuda_python_utils, "cuda_python_version", "13.0.0")
+    monkeypatch.setattr(cuda_python_utils.torch, "cuda", fake_torch_cuda)
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        with cuda_python_utils.with_conditional_node("kernel", fake_args, fake_handle, device="cuda"):
+            assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.body_stream
+            raise RuntimeError("body failed")
+
+    assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.parent_stream
+    assert fake_torch_cuda.set_calls == [fake_torch_cuda.body_stream, fake_torch_cuda.parent_stream]
+    assert fake_cudart.ended_streams == ["body"]
 
 
 @pytest.mark.with_downloads
@@ -54,7 +158,9 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
     audio_filepaths = glob.glob("tests/.data/asr/test/an4/wav/*.wav")
 
     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=enable_bfloat16):
-        actual_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
+        actual_hypotheses = nemo_model.transcribe(
+            audio_filepaths, batch_size=batch_size, num_workers=CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS
+        )
 
     actual_transcripts = [hyp.text for hyp in actual_hypotheses]
     actual_y_sequences = [hyp.y_sequence for hyp in actual_hypotheses]
@@ -64,12 +170,18 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
     nemo_model.change_decoding_strategy(decoding_config)
 
     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=enable_bfloat16):
-        fast_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
+        fast_hypotheses = nemo_model.transcribe(
+            audio_filepaths, batch_size=batch_size, num_workers=CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS
+        )
 
     fast_transcripts = [hyp.text for hyp in fast_hypotheses]
     fast_y_sequences = [hyp.y_sequence for hyp in fast_hypotheses]
 
-    wer = jiwer.wer(actual_transcripts, fast_transcripts)
+    total_dist = sum(
+        edit_distance(r.split(), h.split())['total'] for r, h in zip(actual_transcripts, fast_transcripts)
+    )
+    total_words = sum(len(r.split()) for r in actual_transcripts)
+    wer = total_dist / total_words if total_words > 0 else 0.0
     y_sequence_eq = [torch.equal(act_y, fast_y) for (act_y, fast_y) in zip(actual_y_sequences, fast_y_sequences)]
 
     assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
@@ -118,7 +230,9 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
     audio_filepaths = glob.glob("tests/.data/asr/test/an4/wav/*.wav")
 
     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=enable_bfloat16):
-        actual_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
+        actual_hypotheses = nemo_model.transcribe(
+            audio_filepaths, batch_size=batch_size, num_workers=CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS
+        )
     actual_transcripts = [hyp.text for hyp in actual_hypotheses]
 
     # transcribe with use implementation with cuda graphs
@@ -129,10 +243,16 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
         nemo_model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(mode=force_mode)
 
         with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=enable_bfloat16):
-            fast_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
+            fast_hypotheses = nemo_model.transcribe(
+                audio_filepaths, batch_size=batch_size, num_workers=CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS
+            )
         fast_transcripts = [hyp.text for hyp in fast_hypotheses]
 
-        wer = jiwer.wer(actual_transcripts, fast_transcripts)
+        total_dist = sum(
+            edit_distance(r.split(), h.split())['total'] for r, h in zip(actual_transcripts, fast_transcripts)
+        )
+        total_words = sum(len(r.split()) for r in actual_transcripts)
+        wer = total_dist / total_words if total_words > 0 else 0.0
 
         assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
 
@@ -226,7 +346,9 @@ def test_change_devices(loop_labels: bool, stt_en_fastconformer_transducer_large
     nemo_model.to(first_device)
     audio_filepaths = glob.glob("tests/.data/asr/test/an4/wav/*.wav")
     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=True):
-        second_device_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
+        second_device_hypotheses = nemo_model.transcribe(
+            audio_filepaths, batch_size=batch_size, num_workers=CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS
+        )
     second_device_transcripts = [hyp.text for hyp in second_device_hypotheses]
 
     # Test that the model can run successfully back on second_device
@@ -237,7 +359,9 @@ def test_change_devices(loop_labels: bool, stt_en_fastconformer_transducer_large
     nemo_model.to(second_device)
 
     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=True):
-        first_device_hypotheses = nemo_model.transcribe(audio_filepaths, batch_size=batch_size, num_workers=None)
+        first_device_hypotheses = nemo_model.transcribe(
+            audio_filepaths, batch_size=batch_size, num_workers=CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS
+        )
     first_device_transcripts = [hyp.text for hyp in first_device_hypotheses]
     # Sanity check: The device we run on should not change execution
     # output.

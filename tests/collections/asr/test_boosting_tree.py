@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import pytest
 import torch
 from lightning.pytorch import Trainer
@@ -21,6 +22,7 @@ from nemo.collections.asr.models import EncDecCTCModelBPE
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
     BoostingTreeModelConfig,
     GPUBoostingTreeModel,
+    PhraseItem,
 )
 from nemo.collections.asr.parts.context_biasing.context_graph_universal import ContextGraph
 
@@ -34,9 +36,8 @@ if torch.cuda.is_available():
 def test_context_graph():
     phrases = ["abc", "abd", "c"]
     phrases_ids = [[1, 2, 3], [1, 2, 4], [3]]
-    scores = [0.0, 0.0, 0.0]
     context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
-    context_graph.build(token_ids=phrases_ids, phrases=phrases, scores=scores, uniform_weights=False)
+    context_graph.build(token_ids=phrases_ids, phrases=phrases, scores=None, uniform_weights=False)
     return context_graph
 
 
@@ -185,12 +186,11 @@ class TestGPUBoostingTreeModel:
         boosting_tree_cfg = BoostingTreeModelConfig()
         phrases = ["abc", "abd", "c"]
         phrases_ids = [conformer_ctc_bpe_model.tokenizer.text_to_ids(phrase) for phrase in phrases]
-        scores = [0.0, 0.0, 0.0]
         context_graph = ContextGraph(
             context_score=boosting_tree_cfg.context_score, depth_scaling=boosting_tree_cfg.depth_scaling
         )
         context_graph.build(
-            token_ids=phrases_ids, phrases=phrases, scores=scores, uniform_weights=boosting_tree_cfg.uniform_weights
+            token_ids=phrases_ids, phrases=phrases, scores=None, uniform_weights=boosting_tree_cfg.uniform_weights
         )
         test_boosting_tree = GPUBoostingTreeModel.from_context_graph(
             context_graph=context_graph,
@@ -228,3 +228,184 @@ class TestGPUBoostingTreeModel:
         assert torch.allclose(
             boosting_tree_from_model_path.arcs_weights, boosting_tree_from_key_phrases_list.arcs_weights
         )
+
+
+class TestPerPhraseBoostingParams:
+    @pytest.mark.unit
+    def test_per_phrase_context_score_affects_only_that_phrase(self):
+        """Per-phrase context_score changes arc scores of that phrase only (shared prefixes take the max)"""
+        phrases = ["abc", "abd", "c"]
+        phrases_ids = [[1, 2, 3], [1, 2, 4], [3]]
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build(token_ids=phrases_ids, phrases=phrases, scores=[None, 2.0, None], uniform_weights=False)
+
+        root = context_graph.root
+        # shared prefix "ab" is raised to the max of the two phrase scores
+        assert root.next[1].token_score == pytest.approx(2.0)
+        assert root.next[1].next[2].token_score == pytest.approx(2.0)
+        # "abd" leaf uses its custom score, "abc" leaf keeps the global one
+        assert root.next[1].next[2].next[4].token_score == pytest.approx(2.0 + np.log(3))
+        assert root.next[1].next[2].next[3].token_score == pytest.approx(1.0 + np.log(3))
+        # "c" is unaffected
+        assert root.next[3].token_score == pytest.approx(1.0)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_per_phrase_alpha_scales_whole_phrase(self, device):
+        """Uniform per-phrase alpha scales all graph scores (arcs and backoffs) by the same factor"""
+        phrases = ["abc", "abd", "c"]
+        phrases_ids = [[1, 2, 3], [1, 2, 4], [3]]
+        alpha = 2.0
+
+        trees = []
+        for alphas in (None, [alpha] * len(phrases)):
+            context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+            context_graph.build(
+                token_ids=phrases_ids, phrases=phrases, scores=None, alphas=alphas, uniform_weights=False
+            )
+            trees.append(
+                GPUBoostingTreeModel.from_context_graph(
+                    context_graph=context_graph,
+                    vocab_size=5,
+                    unk_score=0.0,
+                    final_eos_score=0.0,
+                    use_triton=True,
+                    uniform_weights=False,
+                ).to(device)
+            )
+        baseline_tree, scaled_tree = trees
+
+        # node-level check: every token/node score is scaled by alpha
+        assert scaled_tree.num_states == baseline_tree.num_states
+        assert torch.allclose(scaled_tree.arcs_weights, alpha * baseline_tree.arcs_weights)
+        assert torch.allclose(scaled_tree.backoff_weights, alpha * baseline_tree.backoff_weights)
+
+        # end-to-end check (includes backoff transitions): scores are exactly alpha * baseline
+        sentences_ids = [[1, 2, 3, 2, 1], [2, 2, 1, 2, 4], [3, 1, 2, 1]]
+        labels = pad_sequence([torch.LongTensor(s) for s in sentences_ids], batch_first=True).to(device)
+        lengths = torch.LongTensor([len(s) for s in sentences_ids]).to(device)
+        baseline_scores = baseline_tree(labels=labels, labels_lengths=lengths, bos=False, eos=False)
+        scaled_scores = scaled_tree(labels=labels, labels_lengths=lengths, bos=False, eos=False)
+        assert torch.allclose(scaled_scores, alpha * baseline_scores, atol=1e-4)
+
+    @pytest.mark.unit
+    def test_per_phrase_alpha_shared_suffix_backoff(self):
+        """Backoff transitions between phrases with different alphas keep alpha-consistent cumulative scores"""
+        phrases = ["ab", "c"]
+        phrases_ids = [[1, 2], [3]]
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build(token_ids=phrases_ids, phrases=phrases, scores=None, alphas=[2.0, 3.0])
+        boosting_tree = GPUBoostingTreeModel.from_context_graph(
+            context_graph=context_graph, vocab_size=5, unk_score=0.0, final_eos_score=0.0, use_triton=True
+        )
+
+        # [1, 3]: "a" arc (2.0), then backoff from non-final "a" state (-2.0) + "c" arc (3.0) = 1.0
+        # [1, 2, 3]: "a" (2.0), "b" (2 * (1 + log(2))), then "c" from final state without penalty (3.0)
+        sentences_ids = [[1, 3, 0], [1, 2, 3]]
+        boosting_scores = boosting_tree(
+            labels=torch.LongTensor(sentences_ids),
+            labels_lengths=torch.LongTensor([2, 3]),
+            bos=False,
+            eos=False,
+        )
+        expected = torch.tensor(
+            [
+                [2.0, 1.0, 0.0],
+                [2.0, 2.0 * (1.0 + np.log(2)), 3.0],
+            ],
+            dtype=boosting_scores.dtype,
+        )
+        assert torch.allclose(boosting_scores, expected, atol=1e-4)
+
+    @pytest.mark.unit
+    def test_per_phrase_alpha_scales_final_eos_score(self):
+        """final_eos_score of an end state is scaled by the alpha of the phrase ending there"""
+        phrases = ["abc", "abd", "c"]
+        phrases_ids = [[1, 2, 3], [1, 2, 4], [3]]
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build(token_ids=phrases_ids, phrases=phrases, scores=None, alphas=[2.0, None, 3.0])
+        boosting_tree = GPUBoostingTreeModel.from_context_graph(
+            context_graph=context_graph, vocab_size=5, unk_score=0.0, final_eos_score=1.0, use_triton=True
+        )
+
+        # three end states scaled by their phrase alphas (2.0, 1.0, 3.0), all other states are not final
+        final_weights = boosting_tree.final_weights[: boosting_tree.num_states]
+        assert sorted(w for w in final_weights.tolist() if w != 0.0) == pytest.approx([1.0, 2.0, 3.0])
+
+    @pytest.mark.unit
+    def test_explicit_zero_context_score_is_honored(self):
+        """An explicit per-phrase context_score of 0.0 is not treated as 'use the default' anymore"""
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build(token_ids=[[1, 2]], phrases=["ab"], scores=[0.0])
+
+        assert context_graph.root.next[1].token_score == pytest.approx(0.0)
+        # only the depth term remains for tokens after the first one
+        assert context_graph.root.next[1].next[2].token_score == pytest.approx(np.log(2))
+
+    @pytest.mark.unit
+    def test_negative_alpha_raises(self):
+        """Negative per-phrase boosting_tree_alpha is rejected"""
+        with pytest.raises(ValueError, match="Negative boosting_tree_alpha"):
+            GPUBoostingTreeModel._validate_phrase_items([PhraseItem("abc", boosting_tree_alpha=-1.0)])
+
+    @pytest.mark.unit
+    def test_per_phrase_params_none_matches_baseline(self, conformer_ctc_bpe_model):
+        """key_phrase_items_list with all-default params builds the same graph as key_phrases_list"""
+        phrases = ["abc", "abd", "c"]
+        baseline_tree = GPUBoostingTreeModel.from_config(
+            BoostingTreeModelConfig(key_phrases_list=phrases), tokenizer=conformer_ctc_bpe_model.tokenizer
+        )
+        items_tree = GPUBoostingTreeModel.from_config(
+            BoostingTreeModelConfig(key_phrase_items_list=[PhraseItem(phrase) for phrase in phrases]),
+            tokenizer=conformer_ctc_bpe_model.tokenizer,
+        )
+
+        assert torch.allclose(baseline_tree.arcs_weights, items_tree.arcs_weights)
+        assert torch.allclose(baseline_tree.backoff_weights, items_tree.backoff_weights)
+        assert torch.allclose(baseline_tree.final_weights, items_tree.final_weights)
+
+    @pytest.mark.unit
+    def test_per_phrase_context_score_precedence_over_score_per_phrase(self, conformer_ctc_bpe_model):
+        """Per-phrase context_score wins over score_per_phrase for that phrase only"""
+        tokenizer = conformer_ctc_bpe_model.tokenizer
+        cfg = BoostingTreeModelConfig(
+            key_phrase_items_list=[PhraseItem("abc", context_score=2.0), PhraseItem("abd")],
+            score_per_phrase=4.0,
+        )
+        items_tree = GPUBoostingTreeModel.from_config(cfg, tokenizer=tokenizer)
+
+        # reference graph: "abc" uses the per-phrase score, "abd" uses score_per_phrase / len(phrase)
+        reference_graph = ContextGraph(context_score=cfg.context_score, depth_scaling=cfg.depth_scaling)
+        reference_graph.build(
+            token_ids=[tokenizer.text_to_ids(phrase) for phrase in ("abc", "abd")],
+            phrases=["abc", "abd"],
+            scores=[2.0, round(4.0 / len("abd"), 2)],
+        )
+        reference_tree = GPUBoostingTreeModel.from_context_graph(
+            context_graph=reference_graph,
+            vocab_size=tokenizer.vocab_size,
+            unk_score=cfg.unk_score,
+            final_eos_score=cfg.final_eos_score,
+        )
+
+        assert torch.allclose(items_tree.arcs_weights, reference_tree.arcs_weights)
+        assert torch.allclose(items_tree.backoff_weights, reference_tree.backoff_weights)
+
+    @pytest.mark.unit
+    def test_per_phrase_params_with_bpe_dropout(self, conformer_ctc_bpe_model):
+        """All alternative BPE tokenizations of a phrase get that phrase's alpha"""
+        alpha = 2.0
+        trees = []
+        for phrase_alpha in (None, alpha):
+            cfg = BoostingTreeModelConfig(
+                key_phrase_items_list=[PhraseItem("nvidia", boosting_tree_alpha=phrase_alpha)],
+                use_bpe_dropout=True,
+            )
+            trees.append(GPUBoostingTreeModel.from_config(cfg, tokenizer=conformer_ctc_bpe_model.tokenizer))
+        baseline_tree, scaled_tree = trees
+
+        # the whole graph (all alternative tokenizations) is scaled by alpha
+        assert scaled_tree.num_states == baseline_tree.num_states
+        assert torch.allclose(scaled_tree.arcs_weights, alpha * baseline_tree.arcs_weights)
+        assert torch.allclose(scaled_tree.backoff_weights, alpha * baseline_tree.backoff_weights)
+        assert torch.allclose(scaled_tree.final_weights, alpha * baseline_tree.final_weights)

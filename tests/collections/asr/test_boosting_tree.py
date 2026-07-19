@@ -393,19 +393,20 @@ class TestPerPhraseBoostingParams:
 
     @pytest.mark.unit
     def test_per_phrase_params_with_bpe_dropout(self, conformer_ctc_bpe_model):
-        """All alternative BPE tokenizations of a phrase get that phrase's alpha"""
-        alpha = 2.0
-        trees = []
-        for phrase_alpha in (None, alpha):
-            cfg = BoostingTreeModelConfig(
-                key_phrase_items_list=[PhraseItem("nvidia", boosting_tree_alpha=phrase_alpha)],
-                use_bpe_dropout=True,
-            )
-            trees.append(GPUBoostingTreeModel.from_config(cfg, tokenizer=conformer_ctc_bpe_model.tokenizer))
-        baseline_tree, scaled_tree = trees
+        """All alternative BPE tokenizations of a phrase get that phrase's alpha.
 
-        # the whole graph (all alternative tokenizations) is scaled by alpha
-        assert scaled_tree.num_states == baseline_tree.num_states
-        assert torch.allclose(scaled_tree.arcs_weights, alpha * baseline_tree.arcs_weights)
-        assert torch.allclose(scaled_tree.backoff_weights, alpha * baseline_tree.backoff_weights)
-        assert torch.allclose(scaled_tree.final_weights, alpha * baseline_tree.final_weights)
+        Note: two consecutive builds with BPE dropout sample different alternative tokenizations
+        (sentencepiece seeds its random generator only on first use), so the check is done
+        within a single build via the final weights of the end states.
+        """
+        cfg = BoostingTreeModelConfig(
+            key_phrase_items_list=[PhraseItem("nvidia", boosting_tree_alpha=2.0), PhraseItem("omniverse")],
+            use_bpe_dropout=True,
+            final_eos_score=1.0,
+        )
+        boosting_tree = GPUBoostingTreeModel.from_config(cfg, tokenizer=conformer_ctc_bpe_model.tokenizer)
+
+        # every end state of a "nvidia" tokenization carries final_eos_score * 2.0,
+        # every end state of an "omniverse" tokenization keeps final_eos_score * 1.0
+        final_weights = boosting_tree.final_weights[: boosting_tree.num_states]
+        assert set(w for w in final_weights.tolist() if w != 0.0) == {1.0, 2.0}

@@ -36,10 +36,29 @@ We recommend to provide the list of context phrases directly into ``speech_to_te
 List of the most important parameters:
 
 *  ``strategy`` - The strategy to use for decoding depending on the model type (CTC - greedy_batch or beam_batch; RNN-T/TDT - greedy_batch or malsd_batch; AED - beam).
-*  ``model_path``, ``key_phrases_file``, ``key_phrases_list`` - The way to pass the context phrases into the decoding script.
+*  ``model_path``, ``key_phrases_file``, ``key_phrases_list``, ``key_phrase_items_list`` - The way to pass the context phrases into the decoding script.
 *  ``context_score`` - The score for each arc transition in the context graph (1.0 is recommended).
 *  ``depth_scaling`` - The scaling factor for the depth of the context graph (2.0 is recommended for CTC, RNN-T and TDT, 1.0 for Canary).
 *  ``boosting_tree_alpha`` - Weight of the GPU-PB boosting tree during shallow fusion decoding (tune it according to your data).
+
+Per-phrase boosting parameters
+------------------------------
+
+By default, all phrases share the global ``context_score`` and ``boosting_tree_alpha``. To boost individual phrases by different amounts,
+use ``boosting_tree.key_phrase_items_list``, where each item can carry its own parameters:
+
+.. code-block::
+
+    boosting_tree.key_phrase_items_list='[{phrase:"nvlink",boosting_tree_alpha:2.0},{phrase:"omniverse cloud",context_score:1.5},{phrase:"gtc"}]'
+
+*  ``context_score`` (per phrase) - Overrides the global ``context_score`` (and ``score_per_phrase``) for this phrase's arc transitions.
+*  ``boosting_tree_alpha`` (per phrase) - A relative boosting weight multiplier baked into the tree weights at build time.
+   The effective boost for a phrase is ``boosting_tree_alpha (decoding config) * boosting_tree_alpha (per phrase)``.
+   Note that the decode-time ``boosting_tree_alpha=0.0`` disables all boosting regardless of per-phrase values.
+*  ``lang`` (per phrase) - Language for the aggregate tokenizer; falls back to ``source_lang`` if omitted.
+
+Omitted fields fall back to the global values. Per-phrase parameters also work with ``build_gpu_boosting_tree.py``
+(the parameters are baked into the saved boosting tree).
 
 **0.0. [Optional] Build the boosting tree for a specific ASR model:**
 

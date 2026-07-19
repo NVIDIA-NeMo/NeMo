@@ -53,6 +53,7 @@ class ContextState:
         level: int,
         phrase: str = "",
         ac_threshold: float = 1.0,
+        phrase_alpha: float = 1.0,
     ):
         """Create a ContextState.
 
@@ -82,6 +83,9 @@ class ContextState:
             The acoustic threshold (probability) of current context phrase, the
             value is valid only when current state is end state (is_end == True).
             Note: ac_threshold only used in keywords spotting.
+          phrase_alpha:
+            The per-phrase boosting weight multiplier of current context phrase, the
+            value is valid only when current state is end state (is_end == True).
         """
         self.id = id
         self.token = token
@@ -93,6 +97,7 @@ class ContextState:
         self.next = {}
         self.phrase = phrase
         self.ac_threshold = ac_threshold
+        self.phrase_alpha = phrase_alpha
         self.fail = None
         self.output = None
 
@@ -182,9 +187,10 @@ class ContextGraph:
         self,
         token_ids: List[List[int]],
         phrases: Optional[List[str]] = None,
-        scores: Optional[List[float]] = None,
+        scores: Optional[List[Optional[float]]] = None,
         ac_thresholds: Optional[List[float]] = None,
         uniform_weights: Optional[bool] = False,
+        alphas: Optional[List[Optional[float]]] = None,
     ):
         """Build the ContextGraph from a list of token list.
         It first build a trie from the given token lists, then fill the fail arc
@@ -204,9 +210,10 @@ class ContextGraph:
             length of `phrases` MUST be equal to the length of `token_ids`.
           scores:
             The customize boosting score(token level) for each word/phrase,
-            0 means using the default value (i.e. self.context_score).
-            It is a list of floats, and the length of `scores` MUST be equal to
-            the length of `token_ids`.
+            None means using the default value (i.e. self.context_score);
+            an explicit 0.0 is honored (zero-weight arcs for this phrase).
+            It is a list of optional floats, and the length of `scores` MUST be
+            equal to the length of `token_ids`.
           ac_thresholds:
             The customize trigger acoustic threshold (probability) for each phrase,
             0 means using the default value (i.e. self.ac_threshold). It is
@@ -214,9 +221,17 @@ class ContextGraph:
             The length of `ac_threshold` MUST be equal to the length of `token_ids`.
           uniform_weights:
             If True, the weights will be distributed uniformly for all tokens as in Icefall.
+          alphas:
+            The customize boosting weight multiplier for each word/phrase, None means
+            the default value 1.0. The multiplier scales the whole token_score of the
+            phrase (including depth scaling terms), acting as a per-phrase counterpart
+            of the decode-time boosting_tree_alpha (the effective boost is
+            decode-time alpha * per-phrase alpha * base score). The length of `alphas`
+            MUST be equal to the length of `token_ids`.
 
         Note: The phrases would have shared states, the score of the shared states is
-              the MAXIMUM value among all the tokens sharing this state.
+              the MAXIMUM value among all the tokens sharing this state (effective,
+              i.e. alpha-scaled, scores are compared).
         """
         num_phrases = len(token_ids)
         if phrases is not None:
@@ -225,15 +240,18 @@ class ContextGraph:
             assert len(scores) == num_phrases, (len(scores), num_phrases)
         if ac_thresholds is not None:
             assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
+        if alphas is not None:
+            assert len(alphas) == num_phrases, (len(alphas), num_phrases)
 
         for index, tokens in enumerate(token_ids):
             phrase = "" if phrases is None else phrases[index]
-            score = 0.0 if scores is None else scores[index]
+            score = None if scores is None else scores[index]
             ac_threshold = 0.0 if ac_thresholds is None else ac_thresholds[index]
+            alpha = 1.0 if alphas is None or alphas[index] is None else alphas[index]
             node = self.root
             # If has customized score using the customized token score, otherwise
             # using the default score
-            context_score = self.context_score if score == 0.0 else score
+            context_score = self.context_score if score is None else score
             threshold = self.ac_threshold if ac_threshold == 0.0 else ac_threshold
             for i, token in enumerate(tokens):
                 if token not in node.next:
@@ -243,6 +261,7 @@ class ContextGraph:
                         )  # depth scaling is used to give a larger score for all tokens after the first one
                     else:
                         token_score = context_score
+                    token_score *= alpha
                     self.num_nodes += 1
                     is_end = i == len(tokens) - 1
                     node_score = node.node_score + token_score
@@ -256,10 +275,11 @@ class ContextGraph:
                         level=i + 1,
                         phrase=phrase if is_end else "",
                         ac_threshold=threshold if is_end else 0.0,
+                        phrase_alpha=alpha if is_end else 1.0,
                     )
                 else:
                     # node exists, get the score of shared state.
-                    token_score = max(context_score, node.next[token].token_score)
+                    token_score = max(alpha * context_score, node.next[token].token_score)
                     node.next[token].token_score = token_score
                     node_score = node.node_score + token_score
                     node.next[token].node_score = node_score
@@ -269,6 +289,7 @@ class ContextGraph:
                     if i == len(tokens) - 1:
                         node.next[token].phrase = phrase
                         node.next[token].ac_threshold = threshold
+                        node.next[token].phrase_alpha = max(alpha, node.next[token].phrase_alpha)
                 node = node.next[token]
         self._fill_fail_output()
 

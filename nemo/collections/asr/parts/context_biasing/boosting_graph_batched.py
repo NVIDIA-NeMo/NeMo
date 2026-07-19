@@ -35,8 +35,11 @@ from nemo.utils.exceptions import NeMoBaseException
 @dataclass
 class PhraseItem:
     phrase: str  # phrase itself
-    lang: str  # per-phrase language (for aggregate tokenizer)
-    # custom weight can be further added
+    lang: Optional[str] = None  # per-phrase language (for aggregate tokenizer); None -> cfg.source_lang
+    context_score: Optional[float] = None  # per-phrase score for each arc transition; None -> global behavior
+    # per-phrase boosting weight multiplier applied on top of the decode-time boosting_tree_alpha,
+    # baked into the graph weights at build time; None -> 1.0 (global behavior)
+    boosting_tree_alpha: Optional[float] = None
 
 
 @dataclass
@@ -51,8 +54,9 @@ class BoostingTreeModelConfig:
         None  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
     )
     # The list of context-biasing phrases with custom options:
-    # [PhraseItem("word1", lang="en"), PhraseItem("frase dos", lang="es"), ...]
-    # in CLI: key_phrase_items_list='[{phrase:"word1",lang:en},{phrase:"frase dos",lang:es}]'
+    # [PhraseItem("word1", lang="en"), PhraseItem("word2", context_score=2.0, boosting_tree_alpha=4.0), ...]
+    # in CLI: key_phrase_items_list='[{phrase:"word1",lang:en},{phrase:"word2",context_score:2.0,boosting_tree_alpha:4.0}]'
+    # omitted per-phrase fields fall back to the global values
     key_phrase_items_list: list[PhraseItem] | None = None
     context_score: float = 1.0  # The score for each arc transition in the context graph
     depth_scaling: float = (
@@ -174,7 +178,7 @@ class BoostingTreeStorage:
                 self.states[self.start_state]["order"] + 1,
                 self.start_state,
                 backoff_weight,
-                self.final_eos_score if tbranch.next_node.is_end else 0.0,
+                self.final_eos_score * tbranch.next_node.phrase_alpha if tbranch.next_node.is_end else 0.0,
             )
             num_vocab_labels += 1
             self._node_cache[tbranch.next_node.id] = next_state
@@ -216,7 +220,7 @@ class BoostingTreeStorage:
                 self.states[from_state]["order"] + 1,
                 backoff_state,
                 backoff_weight,
-                self.final_eos_score if tbranch.next_node.is_end else 0.0,
+                self.final_eos_score * tbranch.next_node.phrase_alpha if tbranch.next_node.is_end else 0.0,
             )
 
             self._node_cache[tbranch.next_node.id] = next_state
@@ -487,7 +491,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         """
 
         context_graph_trivial = ContextGraph(context_score=0.0, depth_scaling=0.0)
-        context_graph_trivial.build(token_ids=[[1]], phrases=["c"], scores=[0.0], uniform_weights=False)
+        context_graph_trivial.build(token_ids=[[1]], phrases=["c"], scores=None, uniform_weights=False)
 
         boosting_tree_trivial = GPUBoostingTreeModel.from_context_graph(
             context_graph=context_graph_trivial,
@@ -535,6 +539,25 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         raise NeMoBaseException("Boosting tree cannot be loaded from ARPA file")
 
     @classmethod
+    def _validate_phrase_items(cls, phrase_items_list: list[PhraseItem]) -> None:
+        """
+        Validate per-phrase boosting parameters (context_score and boosting_tree_alpha)
+        """
+        for item in phrase_items_list:
+            if item.boosting_tree_alpha is not None:
+                if item.boosting_tree_alpha < 0:
+                    raise ValueError(
+                        f"Negative boosting_tree_alpha {item.boosting_tree_alpha} for phrase '{item.phrase}' "
+                        "is not allowed (it would turn boosting into penalization)"
+                    )
+                if item.boosting_tree_alpha == 0.0:
+                    logging.warning(
+                        f"boosting_tree_alpha is 0.0 for phrase '{item.phrase}': the phrase is effectively disabled"
+                    )
+            if item.context_score is not None and item.context_score < 0:
+                logging.warning(f"Negative context_score {item.context_score} for phrase '{item.phrase}'")
+
+    @classmethod
     def from_config(cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec) -> "GPUBoostingTreeModel":
         """
         Constructor boosting tree model from config file
@@ -559,7 +582,10 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         else:
             raise ValueError("No key phrases file or list specified")
 
-        # 2. tokenize key phrases
+        cls._validate_phrase_items(phrase_items_list)
+
+        # 2. tokenize key phrases (deduplicated by phrase text, last occurrence wins)
+        items_by_phrase: dict[str, PhraseItem] = {item.phrase: item for item in phrase_items_list}
         phrases_dict = {}
         is_aggregate_tokenizer = isinstance(tokenizer, AggregateTokenizer)
 
@@ -572,31 +598,37 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 use_bpe_dropout = False
             spm.set_random_generator_seed(1234)  # fix random seed for reproducibility of BPE dropout
 
-        for phrase_item in phrase_items_list:
-            phrase = phrase_item.phrase
+        for phrase, phrase_item in items_by_phrase.items():
             if use_bpe_dropout:
                 phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase)
             else:
                 if is_aggregate_tokenizer:
-                    phrases_dict[phrase] = tokenizer.text_to_ids(phrase, phrase_item.lang)
+                    phrases_dict[phrase] = [tokenizer.text_to_ids(phrase, phrase_item.lang or cfg.source_lang)]
                 else:
-                    phrases_dict[phrase] = tokenizer.text_to_ids(phrase)
+                    phrases_dict[phrase] = [tokenizer.text_to_ids(phrase)]
 
-        # 3. build pythoncontext graph
-        contexts, scores, phrases = [], [], []
-        for phrase in phrases_dict:
-            if use_bpe_dropout:
-                for transcript in phrases_dict[phrase]:
-                    contexts.append(transcript)
-                    scores.append(round(cfg.score_per_phrase / len(phrase), 2))
-                    phrases.append(phrase)
+        # 3. build python context graph
+        contexts, scores, phrases, alphas = [], [], [], []
+        for phrase, transcripts in phrases_dict.items():
+            phrase_item = items_by_phrase[phrase]
+            # per-phrase context_score takes precedence over score_per_phrase;
+            # None means using the global cfg.context_score inside ContextGraph.build
+            if phrase_item.context_score is not None:
+                phrase_score = phrase_item.context_score
+            elif cfg.score_per_phrase != 0.0:
+                phrase_score = round(cfg.score_per_phrase / len(phrase), 2)
             else:
-                contexts.append(phrases_dict[phrase])
-                scores.append(round(cfg.score_per_phrase / len(phrase), 2))
+                phrase_score = None
+            for transcript in transcripts:
+                contexts.append(transcript)
+                scores.append(phrase_score)
+                alphas.append(phrase_item.boosting_tree_alpha)
                 phrases.append(phrase)
 
         context_graph = ContextGraph(context_score=cfg.context_score, depth_scaling=cfg.depth_scaling)
-        context_graph.build(token_ids=contexts, scores=scores, phrases=phrases, uniform_weights=cfg.uniform_weights)
+        context_graph.build(
+            token_ids=contexts, scores=scores, phrases=phrases, alphas=alphas, uniform_weights=cfg.uniform_weights
+        )
 
         # 4. build GPU boosting tree model from python context graph
         boosting_tree_model = GPUBoostingTreeModel.from_context_graph(

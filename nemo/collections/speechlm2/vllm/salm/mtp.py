@@ -32,7 +32,6 @@ from collections.abc import Iterable
 
 import torch
 from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
-from vllm.sequence import IntermediateTensors
 
 from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
 

@@ -22,6 +22,8 @@ The script performs the following steps:
     (3) Runs inference on the input audio files.
     (4) Writes the transcriptions to an output json/jsonl file. Word/Segment level output is written to a separate JSON file.
 
+For cache-aware streaming, pass ``asr.use_cuda_graphs=true`` to enable encoder CUDA graphs.
+
 Example usage:
 python asr_streaming_infer.py \
         --config-path=../conf/asr_streaming_inference/ \

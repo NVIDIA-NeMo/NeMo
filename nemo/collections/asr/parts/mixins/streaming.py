@@ -13,10 +13,8 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional
 
-if TYPE_CHECKING:
-    from nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs import CudaGraphsStreamingEncoderStep
+from nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs import CudaGraphsStreamingEncoderStep
 
 
 class StreamingEncoder(ABC):
@@ -47,7 +45,7 @@ class StreamingEncoder(ABC):
 
     def set_streaming_cuda_graphs(
         self, enabled: bool = True, warmup_steps: int = 3, max_graphs: int = 8
-    ) -> Optional["CudaGraphsStreamingEncoderStep"]:
+    ) -> CudaGraphsStreamingEncoderStep | None:
         """Enable or disable CUDA-graph replay for `cache_aware_stream_step` (inference only).
 
         When enabled, steady-state streaming steps are captured once into a
@@ -72,9 +70,6 @@ class StreamingEncoder(ABC):
                 helper.disable_cuda_graphs()
             self._stream_step_cuda_graphs = None
             return None
-        # local import: avoid a circular import at module load time
-        from nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs import CudaGraphsStreamingEncoderStep
-
         self._stream_step_cuda_graphs = CudaGraphsStreamingEncoderStep(
             self, warmup_steps=warmup_steps, max_graphs=max_graphs
         )

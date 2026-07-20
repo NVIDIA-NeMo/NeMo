@@ -15,8 +15,12 @@
 import pytest
 import torch
 
+from nemo.collections.asr.models.asr_model import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
-from nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs import CudaGraphsStreamingEncoderStep
+from nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs import (
+    CudaGraphsStreamingEncoderStep,
+    _CapturedStep,
+)
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 
 
@@ -125,6 +129,37 @@ class TestStreamingEncoderCudaGraphsGPU:
             out_clt = captured.stable_outputs[3].data_ptr()
             assert in_clc != out_clc, "input/output cache_last_channel buffers alias"
             assert in_clt != out_clt, "input/output cache_last_time buffers alias"
+        finally:
+            encoder.set_streaming_cuda_graphs(enabled=False)
+
+    @pytest.mark.unit
+    def test_replayed_outputs_are_not_overwritten(self):
+        """Each replay must return outputs with storage independent from the graph buffers."""
+        device = "cuda"
+        encoder = make_encoder(device)
+        helper = encoder.set_streaming_cuda_graphs(enabled=True, warmup_steps=1)
+        try:
+            chunks = steady_chunks(encoder, 2, num_steps=3, device=device)
+            cache_lc, cache_lt, cache_len = encoder.get_initial_cache_state(batch_size=2)
+            chunk_len = torch.full((2,), chunks[0].size(-1), dtype=torch.int64, device=device)
+            drop = encoder.streaming_cfg.drop_extra_pre_encoded
+
+            with torch.inference_mode():
+                eager = encoder.cache_aware_stream_step(
+                    chunks[0], chunk_len, cache_lc, cache_lt, cache_len, False, drop
+                )
+                first_replay = encoder.cache_aware_stream_step(
+                    chunks[1], chunk_len, eager[2], eager[3], eager[4], False, drop
+                )
+                first_replay_snapshot = tuple(t.clone() for t in first_replay)
+                second_replay = encoder.cache_aware_stream_step(
+                    chunks[2], chunk_len, first_replay[2], first_replay[3], first_replay[4], False, drop
+                )
+
+            assert len(helper._graphs) == 1
+            for output, snapshot, next_output in zip(first_replay, first_replay_snapshot, second_replay):
+                assert torch.equal(output, snapshot)
+                assert output.data_ptr() != next_output.data_ptr()
         finally:
             encoder.set_streaming_cuda_graphs(enabled=False)
 
@@ -296,7 +331,6 @@ class TestStreamingEncoderCudaGraphsCPU:
         """`ASRModel.disable_cuda_graphs()` / `maybe_enable_cuda_graphs()` must also toggle the
         encoder streaming graphs, so the train/val Lightning hooks manage them like the decoder
         graphs. Uses the real ASRModel methods on a minimal container (no model download)."""
-        from nemo.collections.asr.models.asr_model import ASRModel
 
         class _Container:
             maybe_enable_cuda_graphs = ASRModel.maybe_enable_cuda_graphs
@@ -319,6 +353,27 @@ class TestStreamingEncoderCudaGraphsCPU:
             assert helper.cuda_graphs_mode is helper.CudaGraphsMode.FULL_GRAPH
         finally:
             encoder.set_streaming_cuda_graphs(enabled=False)
+
+    @pytest.mark.unit
+    def test_reset_synchronizes_every_captured_graph_device(self, monkeypatch):
+        """Teardown must synchronize each device that owns a captured graph pool."""
+        encoder = make_encoder("cpu")
+        helper = CudaGraphsStreamingEncoderStep(encoder)
+        device_zero = torch.device("cuda:0")
+        device_one = torch.device("cuda:1")
+        helper._graphs = {
+            (0,): _CapturedStep(None, device_zero, {}, ()),
+            (1,): _CapturedStep(None, device_one, {}, ()),
+            (2,): _CapturedStep(None, device_zero, {}, ()),
+        }
+        synchronized_devices = []
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "synchronize", synchronized_devices.append)
+
+        helper.reset_cuda_graphs_state()
+
+        assert set(synchronized_devices) == {device_zero, device_one}
+        assert helper._graphs == {}
 
     @pytest.mark.unit
     def test_warmup_steps_validation(self):

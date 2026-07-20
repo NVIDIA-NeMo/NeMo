@@ -33,7 +33,8 @@ of an utterance (``keep_all_outputs=True``), and any call whose shapes/parameter
 already-captured graph.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any
 
 import torch
 
@@ -57,18 +58,18 @@ def _cuda_autocast_enabled() -> bool:
         return torch.is_autocast_enabled()
 
 
+@dataclass
 class _CapturedStep:
     """A captured CUDA graph with its static input and stable output buffers."""
 
-    def __init__(
-        self,
-        graph: torch.cuda.CUDAGraph,
-        static_inputs: Dict[str, torch.Tensor],
-        stable_outputs: Tuple[torch.Tensor, ...],
-    ):
-        self.graph = graph
-        self.static_inputs = static_inputs
-        self.stable_outputs = stable_outputs
+    graph: torch.cuda.CUDAGraph
+    device: torch.device
+    static_inputs: dict[str, torch.Tensor]
+    stable_outputs: tuple[torch.Tensor, ...]
+
+    def get_stable_outputs_copy(self) -> tuple[torch.Tensor, ...]:
+        """Return outputs with storage that is not overwritten by the next graph replay."""
+        return tuple(output.clone() for output in self.stable_outputs)
 
 
 class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
@@ -106,15 +107,15 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
         self.encoder = encoder
         self.warmup_steps = warmup_steps
         self.max_graphs = max_graphs
-        self.cuda_graphs_mode: Optional[CudaGraphsStreamingEncoderStep.CudaGraphsMode] = None
+        self.cuda_graphs_mode: CudaGraphsStreamingEncoderStep.CudaGraphsMode | None = None
         self.cuda_graphs_allow_fallback: bool = True
         self.allow_cuda_graphs: bool = True
-        self._graphs: Dict[tuple, _CapturedStep] = {}
-        self._key_counts: Dict[tuple, int] = {}
+        self._graphs: dict[tuple, _CapturedStep] = {}
+        self._key_counts: dict[tuple, int] = {}
         self.maybe_enable_cuda_graphs()
 
     # ------------------------------------------------------------------ WithOptionalCudaGraphs API
-    def force_cuda_graphs_mode(self, mode: Optional[str]):
+    def force_cuda_graphs_mode(self, mode: str | None):
         """Set the graphs mode explicitly (testing only); a forced mode disallows fallback."""
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
         self.cuda_graphs_allow_fallback = False
@@ -142,12 +143,13 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
         """Drop all captured graphs. Synchronizes the device first: destroying a graph's
         private memory pool while replays or other graphs are in flight is unsafe."""
         if self._graphs and torch.cuda.is_available():
-            torch.cuda.synchronize()
+            for device in {captured.device for captured in self._graphs.values()}:
+                torch.cuda.synchronize(device)
         self._graphs.clear()
         self._key_counts.clear()
 
     # ------------------------------------------------------------------------------- dispatching
-    def _make_key(self, signal: torch.Tensor, keep_all_outputs: bool, drop_extra_pre_encoded: Optional[int]) -> tuple:
+    def _make_key(self, signal: torch.Tensor, keep_all_outputs: bool, drop_extra_pre_encoded: int | None) -> tuple:
         """Key identifying a uniform step: input shape, dtype, device and the streaming
         parameters that alter the captured computation."""
         streaming_cfg = self.encoder.streaming_cfg
@@ -183,14 +185,14 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
     def stream_step(
         self,
         processed_signal: torch.Tensor,
-        processed_signal_length: Optional[torch.Tensor] = None,
-        cache_last_channel: Optional[torch.Tensor] = None,
-        cache_last_time: Optional[torch.Tensor] = None,
-        cache_last_channel_len: Optional[torch.Tensor] = None,
+        processed_signal_length: torch.Tensor | None = None,
+        cache_last_channel: torch.Tensor | None = None,
+        cache_last_time: torch.Tensor | None = None,
+        cache_last_channel_len: torch.Tensor | None = None,
         keep_all_outputs: bool = True,
-        drop_extra_pre_encoded: Optional[int] = None,
+        drop_extra_pre_encoded: int | None = None,
         bypass_pre_encode: bool = False,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         """Drop-in replacement for ``StreamingEncoder.cache_aware_stream_step``."""
         eager_kwargs = dict(
             processed_signal_length=processed_signal_length,
@@ -294,7 +296,7 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
                 for stable, out in zip(stable_outputs, outputs):
                     stable.copy_(out)  # recorded in the graph: every replay refreshes stable buffers
 
-        captured = _CapturedStep(graph, static_inputs, stable_outputs)
+        captured = _CapturedStep(graph, device, static_inputs, stable_outputs)
         self._graphs[key] = captured
         logging.info(
             f"Captured CUDA graph for streaming encoder step: signal={tuple(signal.shape)}, "
@@ -311,7 +313,7 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
         cache_last_channel: torch.Tensor,
         cache_last_time: torch.Tensor,
         cache_last_channel_len: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         """Copy inputs into the static buffers and replay the captured step."""
         # inference_mode: the static buffers are inference tensors (created during capture);
         # in-place updates to them are only allowed from inside inference mode
@@ -323,4 +325,4 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
             static["cache_last_time"].copy_(cache_last_time)
             static["cache_last_channel_len"].copy_(cache_last_channel_len)
             captured.graph.replay()
-        return captured.stable_outputs
+            return captured.get_stable_outputs_copy()

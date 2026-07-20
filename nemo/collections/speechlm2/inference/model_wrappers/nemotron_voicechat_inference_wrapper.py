@@ -35,7 +35,7 @@ from nemo.utils import logging
 from jiwer import wer
 
 import gc
-import types
+
 
 
 # Set environment variables (use existing env vars if set, otherwise use defaults)
@@ -194,8 +194,15 @@ class NemotronVoicechatInferenceWrapper:
         )
 
         self.speaker_reference = model_cfg.get("speaker_reference")
-        if self.decode_audio and not self.speaker_reference:
-            raise ValueError("`model_cfg.speaker_reference` must be provided when decode_audio is enabled.")
+        self.speaker_name = model_cfg.get("speaker_name", None) or None
+        if self.decode_audio and not self.speaker_reference and not self.speaker_name:
+            raise ValueError(
+                "`model_cfg.speaker_reference` or `model_cfg.speaker_name` must be provided when decode_audio is enabled."
+            )
+        if self.speaker_name:
+            logging.info(f"Speaker mode: pre-baked latent '{self.speaker_name}' (no WAV file needed)")
+        else:
+            logging.info(f"Speaker mode: WAV reference '{self.speaker_reference}'")
 
         self.tts_system_prompt = model_cfg.get("tts_system_prompt", None)
         logging.info(f"TTS system prompt: {self.tts_system_prompt}")
@@ -376,9 +383,10 @@ class NemotronVoicechatInferenceWrapper:
             merged_cfg.model.speech_generation = eartts_cfg.model.speech_generation
             logging.info("    TTS config from eartts")
 
-        # Set speaker reference
+        # Set speaker identity — prefer pre-baked name, fall back to WAV reference
         if 'model' not in merged_cfg:
             merged_cfg.model = {}
+        merged_cfg.model.inference_speaker_name = self.speaker_name
         merged_cfg.model.inference_speaker_reference = self.speaker_reference
 
         # Ensure data section has correct sample rates
@@ -625,8 +633,7 @@ class NemotronVoicechatInferenceWrapper:
                         engine_type="vllm_eartts",
                         vllm_config=self.vllm_tts_config)
                 )
-                from nemo.collections.speechlm2.inference.vllm.vllm_patch import patched_infer_codes_one_step
-                self.model.tts_model.infer_codes_one_step = types.MethodType(patched_infer_codes_one_step, self.model.tts_model)
+
 
             logging.info(f"  eartts checkpoint loaded (TTS only)")
 
@@ -1015,53 +1022,6 @@ class NemotronVoicechatInferenceWrapper:
             "[FC Async] Silence embedding cached: shape=%s (1s → %d frames, using frame 0)",
             list(self._silence_embedding_cache.shape), num_frames,
         )
-
-    def _encode_realtime_audio_frame(self, realtime_audio: dict) -> torch.Tensor | None:
-        """Try to consume a real audio frame based on wall-clock gating.
-
-        In real-time mode, audio frames become available at 80ms intervals
-        (simulated via wall-clock time since the async loop started).  If a
-        new frame has "arrived", we encode it through perception and return
-        the embedding.  Otherwise return *None* so the caller uses silence.
-
-        Mutates *realtime_audio* in-place (advances pointer, updates buffer).
-        """
-        elapsed = time.time() - realtime_audio["wall_start"]
-        frames_released = int(elapsed / FRAME_SIZE_SEC)
-        consumed_so_far = realtime_audio["frames_consumed"]
-        next_frame = realtime_audio["next_audio_frame"]
-        total_frames = realtime_audio["total_audio_frames"]
-
-        if consumed_so_far >= frames_released or next_frame >= total_frames:
-            return None
-
-        slice_start = next_frame * FRAME_SIZE_SAMPLES
-        slice_end = slice_start + FRAME_SIZE_SAMPLES
-        new_audio = realtime_audio["audio_signal_tensor"][:, slice_start:slice_end]
-        if new_audio.shape[1] == 0:
-            return None
-
-        buf = realtime_audio["audio_buffer"]
-        fill = realtime_audio["buffer_fill_level"]
-        buf_size = realtime_audio["buffer_size_samples"]
-        buf, fill, current_buf = self._update_audio_buffer(buf, fill, new_audio, buf_size)
-        realtime_audio["audio_buffer"] = buf
-        realtime_audio["buffer_fill_level"] = fill
-
-        buf_len = torch.tensor([current_buf.shape[1]], dtype=torch.long, device=self.device)
-        with torch.no_grad():
-            source_encoded, _, _ = self.model.stt_model.perception(
-                input_signal=current_buf,
-                input_signal_length=buf_len,
-                return_encoder_emb=True,
-            )
-        source_encoded = source_encoded.to(self.dtype)
-        emb_idx = max(source_encoded.shape[1] - 2, 0)
-        user_audio_emb = source_encoded[:, emb_idx:emb_idx + 1, :]
-
-        realtime_audio["next_audio_frame"] = next_frame + 1
-        realtime_audio["frames_consumed"] += 1
-        return user_audio_emb
 
     def _perception_background_worker(
         self,
@@ -1888,18 +1848,24 @@ class NemotronVoicechatInferenceWrapper:
 
         logging.info("Preparing TTS warmup state...")
 
-        with fp32_precision():
-            speaker_audio, speaker_sr = torchaudio.load(self.speaker_reference)
-            speaker_audio = resample(speaker_audio, speaker_sr, self.model.tts_model.target_sample_rate)
-
-        speaker_audio = speaker_audio.to(self.device)
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long()
+        if self.speaker_name is not None:
+            logging.info(f"Using pre-baked speaker latent '{self.speaker_name}' from checkpoint")
+            speaker_audio = None
+            speaker_audio_lens = None
+        else:
+            logging.info(f"Loading speaker WAV: {self.speaker_reference}")
+            with fp32_precision():
+                speaker_audio, speaker_sr = torchaudio.load(self.speaker_reference)
+                speaker_audio = resample(speaker_audio, speaker_sr, self.model.tts_model.target_sample_rate)
+            speaker_audio = speaker_audio.to(self.device)
+            speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long()
 
         #  init tts_model
         self.model.tts_model.set_init_inputs(
             speaker_audio=speaker_audio,
             speaker_audio_lens=speaker_audio_lens,
             system_prompt=self.tts_system_prompt,
+            speaker_name=self.speaker_name,
         )
         init_inputs = self.model.tts_model.get_init_inputs(B=1)
 
@@ -3481,8 +3447,6 @@ class NemotronVoicechatInferenceWrapper:
                 code = self.first_tts_code_input.detach().clone()
                 past_key_values = None
                 logging.info(f"Time taken to batch prefill tts model: {time.time() - start_batch_prefill:.3f}s")
-                # Initialize subword_mask for vLLM path as well
-            subword_mask = torch.ones(1, timeline_capacity, device=self.device, dtype=torch.bool)
             logging.info(f"TTS initialized")
 
         # Initialize perception cache if enabled
@@ -3502,6 +3466,7 @@ class NemotronVoicechatInferenceWrapper:
         # that run ahead of the audio. Pre-allocate generous headroom.
         fc_async_headroom = 2000 if (self._fc_async_enabled and self.model.stt_model.function_head is not None) else 0
         timeline_capacity = total_frames + fc_async_headroom
+        subword_mask = torch.ones(1, timeline_capacity, device=self.device, dtype=torch.bool)
 
         gen_text = torch.full((1, timeline_capacity), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
         gen_asr_text = torch.full((1, timeline_capacity), self.model.stt_model.text_pad_id, device=self.device, dtype=torch.long)
@@ -3815,8 +3780,14 @@ def main():
                        help="Append silence equal to this ratio of the original audio duration (e.g. 0.2 = 20%% extra)")
     parser.add_argument("--pad_audio_by_sec", type=float, default=None,
                        help="Append this many seconds of extra silence after the audio")
-    parser.add_argument("--speaker_reference", type=str, required=True,
-                       help="Path to speaker reference audio file")
+    parser.add_argument("--speaker_name", type=str, default="Aria",
+                       help="Name of pre-baked speaker latent stored in the checkpoint (default: 'Aria'). "
+                            "The speaker identity is baked into the checkpoint — no WAV file needed.")
+    parser.add_argument("--speaker_reference", type=str, default=None,
+                       help="[TEST ONLY] Path to a speaker WAV file for voice cloning. "
+                            "The current checkpoint does not support WAV-derived latents; "
+                            "use --speaker_name instead. "
+                            "If set, --speaker_name must be cleared (pass --speaker_name '').")
     parser.add_argument("--buffer_size_frames", type=int, default=DEFAULT_BUFFER_SIZE_FRAMES,
                        help=f"Size of audio buffer in frames (each frame = 80ms, default: {DEFAULT_BUFFER_SIZE_FRAMES})")
     parser.add_argument("--num_frames_per_chunk", type=int, default=DEFAULT_NUM_FRAMES_PER_CHUNK,
@@ -3905,6 +3876,10 @@ def main():
                             "speed. Requires --fc_async_enabled. Default: False (single-phase)")
     args = parser.parse_args()
 
+    # Validate speaker: either --speaker_reference (WAV) or --speaker_name (pre-baked) must be set
+    if not args.speaker_reference and not args.speaker_name:
+        parser.error("Either --speaker_reference (WAV path) or --speaker_name (pre-baked latent name) must be provided")
+
     # Validate arguments: either audio_path OR input_json must be provided
     if args.audio_path is None and args.input_json is None:
         parser.error("Either --audio_path (single-file mode) or --input_json (batch mode) must be provided")
@@ -3926,6 +3901,7 @@ def main():
             "model_path": args.model_path,
             "llm_checkpoint_path": args.llm_checkpoint_path,
             "speaker_reference": args.speaker_reference,
+            "speaker_name": args.speaker_name,
             "buffer_size_frames": args.buffer_size_frames,
             "decode_audio": bool(args.decode_audio),
             "engine_type": args.engine_type,

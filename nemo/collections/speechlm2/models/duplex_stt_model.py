@@ -137,8 +137,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         maybe_install_lora(self)
 
-        # Load the pretrained streaming ASR model
-        setup_speech_encoder(self)
+        # Load the pretrained streaming ASR model.
+        # Forward pretrained_weights so inference (cfg.pretrained_weights=False)
+        # skips the ASR .nemo load — perception weights come from the combined
+        # S2S ``model.safetensors`` instead. Matches sibling models
+        # (duplex_s2s_model.py, salm.py, etc.).
+        setup_speech_encoder(self, pretrained_weights=self.cfg.get("pretrained_weights", True))
 
         if self.cfg.get("pretrained_perception_from_s2s", None):
             self.init_perception_from_another_s2s_checkpoint(self.cfg.pretrained_perception_from_s2s)

@@ -350,7 +350,7 @@ class RVQEARTTSOutput:
 
     hidden_states: Tensor | None = None
     past_key_values: Tensor | None = None
-    audio_prompt_lantent: Tensor | None = None
+    audio_prompt_latent: Tensor | None = None
 
     codes: Tensor | None = None
     lm_logits: Tensor | None = None
@@ -1308,7 +1308,7 @@ class RVQEARTTSModel(nn.Module):
         teacher_forcing_inference: bool = False,
         ignore_eos_flag_stop: bool = False,
         asr_speech_tokens_emb: Tensor | None = None,
-        audio_prompt_lantent: Tensor | None = None,
+        audio_prompt_latent: Tensor | None = None,
     ) -> RVQEARTTSOutput:
         """
         Performs a forward pass handling training, generation, or single-step inference.
@@ -1369,31 +1369,24 @@ class RVQEARTTSModel(nn.Module):
             # Apply projection to model size 
             code_embed = self.embed_code(code_embed)
 
-            # Choose projection
-            if self.config.get("audio_prompt_encoder_config", None):
-                # Dedicated projection for audio prompt (pre-BOS)
-                if audio_prompt_lantent is None:
+            # Compute speaker latent if not pre-baked
+            if audio_prompt_latent is None:
+                if self.config.get("audio_prompt_encoder_config", None):
                     prompt_attn_mask = pre_bos_mask.squeeze(-1).long()
-                    audio_prompt_lantent = self.audio_prompt_encoder(
+                    audio_prompt_latent = self.audio_prompt_encoder(
                         inputs_embeds=code_embed,
                         attention_mask=prompt_attn_mask,
                         return_dict=True,
                     ).last_hidden_state
-
-                code_embed = torch.where(
-                    pre_bos_mask,
-                    audio_prompt_lantent,
-                    code_embed,
-                )
-
-            if self.config.get("use_audio_prompt_frozen_projection", False):
-                if audio_prompt_lantent is None:
+                elif self.config.get("use_audio_prompt_frozen_projection", False):
                     W = self.audio_prompt_projection_W.to(code_embed.device, code_embed.dtype)
-                    audio_prompt_lantent = torch.nn.functional.linear(code_embed, W.T)
+                    audio_prompt_latent = torch.nn.functional.linear(code_embed, W.T)
 
+            # Apply speaker latent at pre-BOS positions when available
+            if audio_prompt_latent is not None:
                 code_embed = torch.where(
                     pre_bos_mask,
-                    audio_prompt_lantent,
+                    audio_prompt_latent.to(dtype=code_embed.dtype, device=code_embed.device),
                     code_embed,
                 )
 
@@ -1474,7 +1467,7 @@ class RVQEARTTSModel(nn.Module):
                 return RVQEARTTSOutput(
                     hidden_states=hidden_states,
                     past_key_values=backbone_outputs.past_key_values,
-                    audio_prompt_lantent=audio_prompt_lantent,
+                    audio_prompt_latent=audio_prompt_latent,
                 )
             else:
                 if teacher_forcing_inference:

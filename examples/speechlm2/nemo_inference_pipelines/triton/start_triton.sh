@@ -13,21 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Start Triton Inference Server for S2S voicechat model.
+# Inner launcher called by the outer run_s2s_triton_server_*.sh scripts.
+# Starts the Triton Inference Server for the S2S voicechat model.
 #
 # Shares the same s2s_streaming.yaml config used by s2s_streaming_infer.py.
 # Fields marked ??? in the YAML are resolved from environment variables below.
+# Do NOT call this script directly — call the outer launcher script instead,
+# which sets all required env vars, copies inference code, and patches vLLM.
 #
-# Usage:
-#   S2S_MODEL_PATH=/path/to/eartts_ckpt \
-#   S2S_LLM_CHECKPOINT_PATH=/path/to/llm_ckpt \
-#   S2S_SPEAKER_REFERENCE=/path/to/speaker.wav \
+# Usage (via outer launcher):
+#   S2S_MODEL_PATH=/path/to/checkpoint \
+#   S2S_LLM_CHECKPOINT_PATH=/path/to/checkpoint \
+#   S2S_SPEAKER_NAME=Aria \          # use pre-baked latent (recommended)
 #   ./start_triton.sh
 #
 # Environment variables (required):
 #   S2S_MODEL_PATH              - Path to the EarTTS / S2S checkpoint
 #   S2S_LLM_CHECKPOINT_PATH     - Path to the LLM checkpoint
-#   S2S_SPEAKER_REFERENCE       - Path to a speaker reference .wav file
+#
+# Speaker identity (one of the two must be set):
+#   S2S_SPEAKER_NAME            - Name of pre-baked speaker latent in checkpoint (e.g. Aria)
+#   S2S_SPEAKER_REFERENCE       - [test only] Path to a speaker reference .wav file
 #
 # Environment variables (optional):
 #   S2S_ENGINE_TYPE             - Engine type (default: native)
@@ -49,7 +55,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ========================
 export S2S_MODEL_PATH="${S2S_MODEL_PATH:?Please set S2S_MODEL_PATH to the EarTTS / S2S checkpoint path}"
 export S2S_LLM_CHECKPOINT_PATH="${S2S_LLM_CHECKPOINT_PATH:?Please set S2S_LLM_CHECKPOINT_PATH to the LLM checkpoint path}"
-export S2S_SPEAKER_REFERENCE="${S2S_SPEAKER_REFERENCE:?Please set S2S_SPEAKER_REFERENCE to a speaker reference .wav file}"
+export S2S_SPEAKER_REFERENCE="${S2S_SPEAKER_REFERENCE:-}"   # optional when S2S_SPEAKER_NAME is set
+export S2S_SPEAKER_NAME="${S2S_SPEAKER_NAME:-}"             # optional; name of pre-baked latent in checkpoint
 
 # ========================
 # Optional overrides
@@ -67,7 +74,8 @@ export MODEL_REPO_DIR="${MODEL_REPO_DIR:-${SCRIPT_DIR}/model_repo_s2s}"
 echo "=== S2S Triton Server ==="
 echo "  S2S_MODEL_PATH:          ${S2S_MODEL_PATH}"
 echo "  S2S_LLM_CHECKPOINT_PATH: ${S2S_LLM_CHECKPOINT_PATH}"
-echo "  S2S_SPEAKER_REFERENCE:   ${S2S_SPEAKER_REFERENCE}"
+echo "  S2S_SPEAKER_REFERENCE:   ${S2S_SPEAKER_REFERENCE:-<not set>}
+  S2S_SPEAKER_NAME:        ${S2S_SPEAKER_NAME:-<not set>}"
 echo "  S2S_ENGINE_TYPE:         ${S2S_ENGINE_TYPE}"
 echo "  S2S_CHUNK_SIZE_IN_SECS:  ${S2S_CHUNK_SIZE_IN_SECS}"
 echo "  S2S_BUFFER_SIZE_IN_SECS: ${S2S_BUFFER_SIZE_IN_SECS}"

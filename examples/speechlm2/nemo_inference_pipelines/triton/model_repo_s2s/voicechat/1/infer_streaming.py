@@ -45,7 +45,8 @@ class TritonPythonModel:
         Env var mapping (cfg key -> env var, default):
             s2s.model_path             -> S2S_MODEL_PATH (required)
             s2s.llm_checkpoint_path    -> S2S_LLM_CHECKPOINT_PATH (required)
-            s2s.speaker_reference      -> S2S_SPEAKER_REFERENCE (required)
+            s2s.speaker_reference      -> S2S_SPEAKER_REFERENCE (optional if speaker_name set)
+            s2s.speaker_name           -> S2S_SPEAKER_NAME (optional; use pre-baked latent from ckpt)
             s2s.engine_type            -> S2S_ENGINE_TYPE (default: native)
             s2s.system_prompt          -> S2S_SYSTEM_PROMPT (default: none)
             s2s.tts_system_prompt      -> S2S_TTS_SYSTEM_PROMPT (default: none)
@@ -58,6 +59,7 @@ class TritonPythonModel:
             "s2s.model_path":             ("S2S_MODEL_PATH", None),
             "s2s.llm_checkpoint_path":    ("S2S_LLM_CHECKPOINT_PATH", None),
             "s2s.speaker_reference":      ("S2S_SPEAKER_REFERENCE", None),
+            "s2s.speaker_name":           ("S2S_SPEAKER_NAME", None),
             # Optional (with defaults)
             "s2s.engine_type":            ("S2S_ENGINE_TYPE", "native"),
             "s2s.system_prompt":          ("S2S_SYSTEM_PROMPT", None),
@@ -261,24 +263,8 @@ class TritonPythonModel:
                 if not system_prompt:
                     system_prompt = self.pipeline.system_prompt
 
-                fc_random_ack = None
-                try:
-                    ack_tensor = pb_utils.get_input_tensor_by_name(request, "fc_random_ack_enabled")
-                    if ack_tensor is not None:
-                        raw = ack_tensor.as_numpy()[0]
-                        val = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                        fc_random_ack = val.lower() not in ("", "false", "0", "no")
-                except Exception:
-                    pass
-                # Fall back to global config if not provided per-session
-                if fc_random_ack is None:
-                    env_val = os.environ.get("S2S_FC_RANDOM_ACK_ENABLED", "")
-                    if env_val:
-                        fc_random_ack = env_val.lower() not in ("false", "0", "no")
-
                 frame_options = S2SRequestOptions(
                     system_prompt=system_prompt,
-                    fc_random_ack_enabled=fc_random_ack,
                 )
 
             # Zero-length audio = prefill-only frame; pass through without validation

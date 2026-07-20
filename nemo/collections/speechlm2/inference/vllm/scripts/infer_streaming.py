@@ -260,38 +260,8 @@ class TritonPythonModel:
                 if not system_prompt:
                     system_prompt = self.pipeline.system_prompt
 
-                fc_random_ack = None
-                try:
-                    ack_tensor = pb_utils.get_input_tensor_by_name(request, "fc_random_ack_enabled")
-                    if ack_tensor is not None:
-                        raw = ack_tensor.as_numpy()[0]
-                        val = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                        fc_random_ack = val.lower() not in ("", "false", "0", "no")
-                except Exception:
-                    pass
-                if fc_random_ack is None:
-                    env_val = os.environ.get("S2S_FC_RANDOM_ACK_ENABLED", "")
-                    if env_val:
-                        fc_random_ack = env_val.lower() not in ("false", "0", "no")
-
-                tool_reminder = None
-                try:
-                    rem_tensor = pb_utils.get_input_tensor_by_name(request, "tool_reminder_enabled")
-                    if rem_tensor is not None:
-                        raw = rem_tensor.as_numpy()[0]
-                        val = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                        tool_reminder = val.lower() not in ("", "false", "0", "no")
-                except Exception:
-                    pass
-                if tool_reminder is None:
-                    env_val_r = os.environ.get("S2S_TOOL_REMINDER_ENABLED", "")
-                    if env_val_r:
-                        tool_reminder = env_val_r.lower() not in ("false", "0", "no")
-
                 frame_options = S2SRequestOptions(
                     system_prompt=system_prompt,
-                    fc_random_ack_enabled=fc_random_ack,
-                    tool_reminder_enabled=tool_reminder,
                 )
 
             # Zero-length audio = prefill-only frame; pass through without validation

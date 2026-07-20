@@ -120,6 +120,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+        self.audio_prompt_latents = nn.ParameterDict()
 
     def get_codec_silence_frame_last_one(self):
         audio = torch.zeros(1, 10 * self.target_sample_rate).float().to(self.device)
@@ -882,7 +883,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     def test_step(self, *args, **kwargs):
         return self.validation_step(*args, **kwargs)
 
-    def set_audio_prompt_lantent(
+    def set_audio_prompt_latent(
         self,
         speaker_audio,
         speaker_audio_lens,
@@ -895,7 +896,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         This function runs a one-time "warmup" forward pass through the TTS model using
         the provided speaker audio (and optional system prompt) to extract an
-        `audio_prompt_lantent`. The latent is cached and can be reused during inference
+        `audio_prompt_latent`. The latent is cached and can be reused during inference
         to bypass (and potentially remove) the speaker-prompt projection path; as a
         result, this inference path is not intended to support voice cloning from
         arbitrary user-provided reference audio.
@@ -940,20 +941,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             }
         )
 
-        audio_prompt_lantent = self.tts_model(**init_inputs).audio_prompt_lantent
+        audio_prompt_latent = self.tts_model(**init_inputs).audio_prompt_latent
 
-        if not hasattr(self, "audio_prompt_latents"):
-            self.audio_prompt_latents = {}
-
-        cached = audio_prompt_lantent.detach().clone().cpu()
-        self.audio_prompt_latents[name] = cached
+        cached = audio_prompt_latent.detach().clone().cpu()
+        self.audio_prompt_latents[name] = nn.Parameter(cached, requires_grad=False)
         return cached
 
-    def get_audio_prompt_lantent(self, name, B):
+    def get_audio_prompt_latent(self, name, B):
         """
         Retrieve a cached audio prompt latent and adapt it to the requested batch size.
 
-        This fetches a latent previously cached via `set_audio_prompt_lantent()` and
+        This fetches a latent previously cached via `set_audio_prompt_latent()` and
         ensures the returned tensor has batch size `B` by:
         - returning as-is when the batch already matches,
         - truncating when the cached batch is larger than `B`,
@@ -976,7 +974,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """
         if not hasattr(self, "audio_prompt_latents") or name not in self.audio_prompt_latents:
             raise KeyError(
-                f"Unknown audio prompt latent '{name}'. Call set_audio_prompt_lantent(...) first."
+                f"Unknown audio prompt latent '{name}'. Call set_audio_prompt_latent(...) first."
             )
 
         audio_prompt_latent = self.audio_prompt_latents[name]  # cached on CPU
@@ -990,7 +988,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         return out.to(self.device)
 
-    def set_init_inputs(self, speaker_audio, speaker_audio_lens, system_prompt=None):
+    def set_init_inputs(self, speaker_audio=None, speaker_audio_lens=None, system_prompt=None, speaker_name=None):
         """
         Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
 
@@ -998,6 +996,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             speaker_audio (torch.Tensor): Batch of prompt audio, (B, T).
             speaker_audio_lens (torch.Tensor): Lengths for each sample in speaker_audio, (B,).
             system_prompt (str, optional): System prompt for context.
+            speaker_name (str, optional): Name of a pre-baked speaker latent in audio_prompt_latents.
+                When provided, speaker_audio/speaker_audio_lens are ignored and silent audio is used
+                as the prompt carrier; the actual voice identity comes from the cached latent.
 
         Returns:
             dict: Dictionary of input tensors to be passed to inference, with registered buffers.
@@ -1009,6 +1010,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 ((self.data_cfg.audio_prompt_duration * self.target_sample_rate) // self.target_samples_per_frame)
                 * self.target_samples_per_frame
             )
+
+            if speaker_name is not None:
+                logging.info(f"set_init_inputs: using pre-baked latent for speaker '{speaker_name}' (silent carrier audio)")
+                speaker_audio = torch.zeros((1, prompt_audio_size), device=self.device, dtype=torch.float32)
+                speaker_audio_lens = torch.LongTensor([speaker_audio.shape[1]]).to(self.device)
 
             B, T = speaker_audio.shape
             device = speaker_audio.device
@@ -1120,6 +1126,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "subword_mask": subword_mask.bool()[:, :-1],
             "non_prompt_mask": non_prompt_mask.bool()[:, :-1],
         }
+
+        if speaker_name is not None:
+            init_inputs["audio_prompt_latent"] = self.get_audio_prompt_latent(speaker_name, B=1)
+
         self._init_input_cache = {}
         for k, v in init_inputs.items():
             if v is None:
@@ -1166,6 +1176,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 "non_prompt_mask",
             ]
 
+        if self._init_input_cache.get("audio_prompt_latent", None) is not None:
+            init_inputs_names = list(init_inputs_names) + ["audio_prompt_latent"]
+
         init_inputs = {}
         for name in init_inputs_names:
             buf = self._init_input_cache.get(name, None)
@@ -1195,7 +1208,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         past_key_values,
         guidance_enabled=True,
         generation_config=None,
-        ignore_eos_flag_stop=True
+        ignore_eos_flag_stop=True,
+        request_id=None,
     ):
         """
         Runs a single autoregressive prediction step to infer audio codec codes.
@@ -1242,7 +1256,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "use_cache": True,
             "guidance_enabled": guidance_enabled,
             "generation_config": generation_config,
-            "ignore_eos_flag_stop": ignore_eos_flag_stop
+            "ignore_eos_flag_stop": ignore_eos_flag_stop,
+            "request_id": request_id,
         }
 
         outputs = self.tts_model(**inputs)
@@ -1607,7 +1622,22 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             self.llm = fully_shard(self.llm, **fsdp_config)
             self.tts_model = fully_shard(self.tts_model, **fsdp_config)
 
+    def maybe_recreate_cached_audio_prompt_latents_structure(self, state_dict):
+        """
+        Recreate audio_prompt_latents ParameterDict structure
+        from keys present in the provided state_dict.
+        """
+        for k, tensor in state_dict.items():
+            if "audio_prompt_latents." in k:
+                name = k.split("audio_prompt_latents.")[1]
+                if name not in self.audio_prompt_latents:
+                    self.audio_prompt_latents[name] = nn.Parameter(
+                        torch.zeros_like(tensor),
+                        requires_grad=False,
+                    )
+
     def load_state_dict(self, state_dict, strict: bool = True):
+        self.maybe_recreate_cached_audio_prompt_latents_structure(state_dict)
         try:
             return super().load_state_dict(state_dict, strict=strict)
         except RuntimeError:

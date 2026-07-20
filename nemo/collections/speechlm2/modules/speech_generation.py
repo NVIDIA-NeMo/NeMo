@@ -23,14 +23,14 @@ class TransformerARSpeechDecoder(NeuralModule):
     def __init__(
         self,
         speech_decoder_parms: DictConfig,
-        lantent_dim: int,
+        latent_dim: int,
         num_audio_codebooks: int,
         num_audio_tokens_per_codebook: int,
     ):
         super().__init__()
         self.use_input_cache = False
         self.speech_decoder_parms = speech_decoder_parms
-        self.lantent_dim = lantent_dim
+        self.latent_dim = latent_dim
         self.num_audio_codebooks = num_audio_codebooks
         self.num_audio_tokens_per_codebook = num_audio_tokens_per_codebook
         # optional configs
@@ -40,8 +40,8 @@ class TransformerARSpeechDecoder(NeuralModule):
         self.detach_input = self.speech_decoder_parms.pop("detach_input", False)
 
         # projection to adapt llm embeddings into the same shape of speech decoder expected input
-        if lantent_dim != self.speech_decoder_parms["d_model"]:
-            self.input_proj = nn.Linear(lantent_dim, self.speech_decoder_parms["d_model"])
+        if latent_dim != self.speech_decoder_parms["d_model"]:
+            self.input_proj = nn.Linear(latent_dim, self.speech_decoder_parms["d_model"])
         else:
             self.input_proj = None
 

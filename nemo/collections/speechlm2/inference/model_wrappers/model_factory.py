@@ -685,6 +685,7 @@ class VllmEARTTSModel(VllmLLMModel):
             **kwargs: Arguments passed to the VllmLLMModel constructor
         """
         super().__init__(**kwargs)
+        self._speaker_latent_dim = None
         logging.info("VllmEARTTSModel initialized with EARTTS-specific settings.")
 
     def _convert_ckpt(self, save_path: str):
@@ -807,6 +808,27 @@ class VllmEARTTSModel(VllmLLMModel):
             # small enough that bos_mask * bos_emb remains negligible.
             bos_mask = torch.full_like(current_subword_id, 1e-20, dtype=getattr(torch, self._dtype))
             input_tensors.append(bos_mask)
+
+        # Pass speaker_latent: use pre-baked embedding if provided, else zeros
+        if "audio_prompt_latent" in inputs and inputs["audio_prompt_latent"] is not None:
+            speaker_latent = inputs["audio_prompt_latent"].squeeze(0)  # T x hidden_size
+            self._speaker_latent_dim = speaker_latent.shape[-1]
+            input_tensors.append(speaker_latent.to(dtype=getattr(torch, self._dtype)))
+        else:
+            if self._speaker_latent_dim is None:
+                import json as _json
+                converted_config_path = os.path.join(self.engine.model_path, "config.json")
+                if os.path.exists(converted_config_path):
+                    with open(converted_config_path) as _f:
+                        self._speaker_latent_dim = _json.load(_f)["hidden_size"]
+                else:
+                    raise RuntimeError(
+                        f"Cannot determine speaker_latent_dim: no converted config at {converted_config_path}. "
+                        "Run a prefill with audio_prompt_latent first."
+                    )
+            num_tokens = codes.shape[0]
+            speaker_latent = torch.zeros(num_tokens, self._speaker_latent_dim, dtype=getattr(torch, self._dtype))
+            input_tensors.append(speaker_latent)
 
         result = await self.engine.generate_next_token(input_tensors, prompt_token_ids=prompt_token_ids, request_id=request_id)
         acoustic_tokens = result.custom_outputs["acoustic_tokens"]  # T x 31

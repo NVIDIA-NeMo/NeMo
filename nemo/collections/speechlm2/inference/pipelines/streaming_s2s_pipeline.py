@@ -14,6 +14,9 @@
 
 import json
 import os
+import urllib.request
+import urllib.parse
+from pathlib import Path
 import queue as _queue_module
 import random
 import threading
@@ -39,9 +42,16 @@ from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
 from nemo.collections.speechlm2.inference.streaming.state.s2s_context_manager import S2SContextManager
 from nemo.collections.speechlm2.inference.streaming.framing.s2s_request_options import S2SRequestOptions
 from nemo.collections.speechlm2.inference.utils.pipeline_utils import PipelineOutput
+from nemo.collections.speechlm2.inference.pipelines.tool_clients import (
+    WeatherAPIClient, StockAPIClient, HuggingFacePapersClient, GoogleNewsClient,
+)
 from nemo.utils import logging
 
 import concurrent.futures
+
+_CITY_COORDS: dict = json.loads(
+    (Path(__file__).parent / "data" / "city_coords.json").read_text()
+)
 import re
 
 
@@ -198,28 +208,9 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		# lead-ins (Let me / I'll / Looking / Getting / Checking / Pulling),
 		# so the two phases sound like distinct conversational moves rather
 		# than the same sentence repeated.
-		_FC_ACK_MESSAGES = [
-			"Happy to help with that.",
-			"My pleasure to help.",
-			"Great question, looking now.",
-			"Lovely, on it now.",
-			"Glad you asked.",
-			"Happy to take a look.",
-			"Wonderful, looking now.",
-			"Happy to look into that.",
-			"Glad to help with that.",
-			"Happy to look that up.",
-			"Pleased to help out.",
-			"Great, happy to help.",
-			"Lovely question.",
-			"Glad to check.",
-			"Happy to check that.",
-			"Wonderful question.",
-			"Pleased to look into that.",
-			"Happy to assist.",
-			"Great, on it now.",
-			"Lovely, looking now.",
-		]
+		_FC_ACK_MESSAGES: list = json.loads(
+			(Path(__file__).parent / "data" / "fc_ack_messages.json").read_text()
+		)
 		self._fc_ack_tokens: list | None = None
 		self._fc_ack_token_list: list | None = None
 		fc_ack_text = getattr(s2s_cfg, "fc_random_ack_enabled", None)
@@ -275,18 +266,9 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		# _run_tts_reminder() in the background thread between Phase 1 and
 		# execute_tool_fn(), filling the silence gap.
 		# ------------------------------------------------------------------
-		_FC_REMINDER_MESSAGES = [
-			"Still working on that.",
-			"Just a moment longer.",
-			"Almost there, one second.",
-			"Bear with me just a bit.",
-			"Still looking that up for you.",
-			"Give me just another second.",
-			"Working on it, almost done.",
-			"Still checking, won't be long.",
-			"Hang tight, almost there.",
-			"Nearly done, one more moment.",
-		]
+		_FC_REMINDER_MESSAGES: list = json.loads(
+			(Path(__file__).parent / "data" / "fc_reminder_messages.json").read_text()
+		)
 		self._fc_reminder_token_list: list | None = None
 		fc_reminder_enabled = getattr(s2s_cfg, "tool_reminder_enabled", None)
 		if fc_reminder_enabled:
@@ -399,6 +381,11 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		self._fc_401_redirect_tokens: list = _tok_special(
 			"How can I help you?"
 		)
+		# Maximum additional seconds to wait for the external API response after all
+		# reminder messages have finished playing.  This only covers period 2 of a
+		# tool call (the external API call itself) — model prediction (period 1) and
+		# response decoding (period 3) are fast and not subject to this limit.
+		# Note: total wall time for the API is reminder_duration + fc_tool_timeout_sec.
 		self._fc_tool_timeout_sec: float = float(getattr(s2s_cfg, "fc_tool_timeout_sec", 15.0))
 
 		# ------------------------------------------------------------------
@@ -518,235 +505,32 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 
 	@staticmethod
 	def _tool_get_weather(args: dict) -> str:
-		import urllib.request
-		import urllib.parse
-		CITY_COORDS = {
-			# US
-			"san francisco": (37.77, -122.42),
-			"santa clara": (37.35, -121.95),
-			"new york": (40.71, -74.01),
-			"los angeles": (34.05, -118.24),
-			"chicago": (41.88, -87.63),
-			"seattle": (47.61, -122.33),
-			"austin": (30.27, -97.74),
-			"denver": (39.74, -104.99),
-			"miami": (25.76, -80.19),
-			"boston": (42.36, -71.06),
-			"washington": (38.91, -77.04),
-			"washington dc": (38.91, -77.04),
-			"dallas": (32.78, -96.80),
-			"houston": (29.76, -95.37),
-			"phoenix": (33.45, -112.07),
-			"atlanta": (33.75, -84.39),
-			"philadelphia": (39.95, -75.17),
-			"san diego": (32.72, -117.16),
-			"las vegas": (36.17, -115.14),
-			"portland": (45.52, -122.68),
-			"minneapolis": (44.98, -93.27),
-			"detroit": (42.33, -83.05),
-			"san jose": (37.34, -121.89),
-			# California — Bay Area / Silicon Valley
-			"oakland": (37.80, -122.27),
-			"berkeley": (37.87, -122.27),
-			"palo alto": (37.44, -122.14),
-			"mountain view": (37.39, -122.08),
-			"sunnyvale": (37.37, -122.04),
-			"cupertino": (37.32, -122.03),
-			"fremont": (37.55, -121.99),
-			"hayward": (37.67, -122.08),
-			"concord": (37.98, -122.03),
-			"san mateo": (37.56, -122.32),
-			"redwood city": (37.49, -122.24),
-			"menlo park": (37.45, -122.18),
-			# California — Southern / Central
-			"long beach": (33.77, -118.19),
-			"anaheim": (33.84, -117.91),
-			"santa monica": (34.02, -118.49),
-			"pasadena": (34.15, -118.14),
-			"burbank": (34.18, -118.31),
-			"glendale": (34.14, -118.25),
-			"hollywood": (34.10, -118.33),
-			"beverly hills": (34.07, -118.40),
-			"irvine": (33.68, -117.83),
-			"riverside": (33.95, -117.40),
-			"san bernardino": (34.11, -117.29),
-			"oxnard": (34.20, -119.18),
-			"ventura": (34.27, -119.23),
-			"santa barbara": (34.42, -119.70),
-			"bakersfield": (35.37, -119.02),
-			"fresno": (36.74, -119.78),
-			"stockton": (37.96, -121.29),
-			"modesto": (37.64, -120.99),
-			"monterey": (36.60, -121.89),
-			"santa cruz": (36.97, -122.03),
-			"napa": (38.30, -122.29),
-			"santa rosa": (38.44, -122.71),
-			"lake tahoe": (39.10, -120.04),
-			"honolulu": (21.31, -157.86),
-			"anchorage": (61.22, -149.90),
-			"sacramento": (38.58, -121.49),
-			"salt lake city": (40.76, -111.89),
-			"nashville": (36.16, -86.78),
-			"new orleans": (29.95, -90.07),
-			"charlotte": (35.23, -80.84),
-			"pittsburgh": (40.44, -79.99),
-			"saint louis": (38.63, -90.20),
-			"st louis": (38.63, -90.20),
-			"orlando": (28.54, -81.38),
-			"tampa": (27.95, -82.46),
-			"baltimore": (39.29, -76.61),
-			"indianapolis": (39.77, -86.16),
-			"kansas city": (39.10, -94.58),
-			"toronto": (43.65, -79.38),
-			"montreal": (45.50, -73.57),
-			"vancouver": (49.28, -123.12),
-			"mexico city": (19.43, -99.13),
-			# Europe
-			"london": (51.51, -0.13),
-			"paris": (48.86, 2.35),
-			"berlin": (52.52, 13.40),
-			"madrid": (40.42, -3.70),
-			"rome": (41.90, 12.50),
-			"amsterdam": (52.37, 4.90),
-			"barcelona": (41.39, 2.17),
-			"vienna": (48.21, 16.37),
-			"moscow": (55.76, 37.62),
-			"istanbul": (41.01, 28.98),
-			"stockholm": (59.33, 18.07),
-			"dublin": (53.35, -6.26),
-			"zurich": (47.38, 8.54),
-			"brussels": (50.85, 4.35),
-			"munich": (48.14, 11.58),
-			"lisbon": (38.72, -9.14),
-			"copenhagen": (55.68, 12.57),
-			"warsaw": (52.23, 21.01),
-			"prague": (50.08, 14.44),
-			"athens": (37.98, 23.73),
-			"frankfurt": (50.11, 8.68),
-			"hamburg": (53.55, 9.99),
-			"milan": (45.46, 9.19),
-			"geneva": (46.20, 6.14),
-			"helsinki": (60.17, 24.94),
-			"oslo": (59.91, 10.75),
-			"budapest": (47.50, 19.04),
-			"edinburgh": (55.95, -3.19),
-			"manchester": (53.48, -2.24),
-			"birmingham": (52.49, -1.90),
-			"marseille": (43.30, 5.37),
-			"lyon": (45.76, 4.84),
-			"naples": (40.85, 14.27),
-			"florence": (43.77, 11.26),
-			"venice": (45.44, 12.32),
-			"reykjavik": (64.15, -21.94),
-			# Asia / ME / Oceania
-			"tokyo": (35.68, 139.69),
-			"beijing": (39.90, 116.41),
-			"shanghai": (31.23, 121.47),
-			"hong kong": (22.32, 114.17),
-			"singapore": (1.35, 103.82),
-			"seoul": (37.57, 126.98),
-			"bangkok": (13.76, 100.50),
-			"mumbai": (19.08, 72.88),
-			"delhi": (28.61, 77.21),
-			"new delhi": (28.61, 77.21),
-			"dubai": (25.20, 55.27),
-			"jakarta": (-6.21, 106.85),
-			"manila": (14.60, 120.98),
-			"taipei": (25.03, 121.57),
-			"kuala lumpur": (3.14, 101.69),
-			"ho chi minh city": (10.82, 106.63),
-			"saigon": (10.82, 106.63),
-			"hanoi": (21.03, 105.85),
-			"osaka": (34.69, 135.50),
-			"kyoto": (35.01, 135.77),
-			"shenzhen": (22.54, 114.06),
-			"guangzhou": (23.13, 113.26),
-			"riyadh": (24.71, 46.68),
-			"tel aviv": (32.08, 34.78),
-			"karachi": (24.86, 67.01),
-			"lahore": (31.55, 74.34),
-			"chennai": (13.08, 80.27),
-			"bangalore": (12.97, 77.59),
-			"bengaluru": (12.97, 77.59),
-			"kolkata": (22.57, 88.36),
-			"hyderabad": (17.39, 78.49),
-			"ahmedabad": (23.02, 72.57),
-			"pune": (18.52, 73.86),
-			"jaipur": (26.92, 75.79),
-			"lucknow": (26.85, 80.95),
-			"surat": (21.17, 72.83),
-			"kanpur": (26.45, 80.33),
-			"nagpur": (21.15, 79.09),
-			"indore": (22.72, 75.86),
-			"bhopal": (23.26, 77.41),
-			"patna": (25.59, 85.14),
-			"coimbatore": (11.02, 76.96),
-			"agra": (27.18, 78.01),
-			"visakhapatnam": (17.69, 83.22),
-			"vizag": (17.69, 83.22),
-			"kochi": (9.93, 76.27),
-			"goa": (15.30, 74.12),
-			"thiruvananthapuram": (8.52, 76.94),
-			"trivandrum": (8.52, 76.94),
-			"chandigarh": (30.73, 76.78),
-			"varanasi": (25.32, 82.99),
-			"doha": (25.29, 51.53),
-			"abu dhabi": (24.45, 54.38),
-			"kuwait city": (29.38, 47.99),
-			"sapporo": (43.07, 141.35),
-			"yokohama": (35.44, 139.64),
-			"busan": (35.18, 129.08),
-			"chengdu": (30.57, 104.07),
-			"hangzhou": (30.27, 120.16),
-			"wuhan": (30.59, 114.31),
-			"xi'an": (34.27, 108.95),
-			"sydney": (-33.87, 151.21),
-			"melbourne": (-37.81, 144.96),
-			"auckland": (-36.85, 174.76),
-		}
-		WMO_CODES = {
-			0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
-			45: "foggy", 48: "depositing rime fog",
-			51: "light drizzle", 53: "moderate drizzle", 55: "dense drizzle",
-			61: "slight rain", 63: "moderate rain", 65: "heavy rain",
-			71: "slight snow", 73: "moderate snow", 75: "heavy snow",
-			80: "slight rain showers", 81: "moderate rain showers", 82: "violent rain showers",
-			95: "thunderstorm", 96: "thunderstorm with slight hail", 99: "thunderstorm with heavy hail",
-		}
 		city_raw = args.get("city", "").strip()
 		city = city_raw.lower()
 		# Try exact match first, then fuzzy: strip state/country suffixes and partial match
-		coords = CITY_COORDS.get(city)
+		coords = _CITY_COORDS.get(city)
 		if coords is None:
 			# Strip common suffixes like ", CA, USA" or ", California"
 			city_base = city.split(",")[0].strip()
-			coords = CITY_COORDS.get(city_base)
+			coords = _CITY_COORDS.get(city_base)
 		if coords is None:
 			# Partial match: check if any known city is a substring or vice versa
-			for known_city, known_coords in CITY_COORDS.items():
+			for known_city, known_coords in _CITY_COORDS.items():
 				if known_city in city or city_base in known_city:
 					coords = known_coords
 					break
 		if coords is None:
 			return json.dumps({"error": f"Unknown city '{city_raw}'. Try a major city in America, Europe, or Asia."})
 		lat, lon = coords
-		url = (
-			f"https://api.open-meteo.com/v1/forecast?"
-			f"latitude={lat}&longitude={lon}"
-			f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code"
-			f"&temperature_unit=fahrenheit"
-		)
 		try:
-			with urllib.request.urlopen(url, timeout=5) as resp:
-				data = json.loads(resp.read().decode())
+			data = WeatherAPIClient.get_current(lat, lon)
 			current = data["current"]
-			weather_desc = WMO_CODES.get(current["weather_code"], "unknown")
 			return json.dumps({
 				"city": args.get("city", city),
 				"temperature_f": current["temperature_2m"],
 				"humidity_percent": current["relative_humidity_2m"],
 				"wind_speed_kmh": current["wind_speed_10m"],
-				"conditions": weather_desc,
+				"conditions": WeatherAPIClient.describe_code(current["weather_code"]),
 			})
 		except Exception as e:
 			return json.dumps({"error": f"Weather API failed: {e}"})
@@ -780,18 +564,11 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 
 	@staticmethod
 	def _tool_get_stock_price(args: dict) -> str:
-		import urllib.request
 		symbol = args.get("symbol", "").strip().upper()
 		if not symbol:
 			return json.dumps({"error": "No stock symbol provided"})
-		url = (
-			f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-			f"?range=1d&interval=1d"
-		)
-		req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 		try:
-			with urllib.request.urlopen(req, timeout=5) as resp:
-				data = json.loads(resp.read().decode())
+			data = StockAPIClient.get_quote(symbol)
 			result = data["chart"]["result"]
 			if not result:
 				return json.dumps({"error": f"No data found for symbol '{symbol}'"})
@@ -810,23 +587,15 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 
 	@staticmethod
 	def _tool_get_top_paper(args: dict) -> str:
-		import urllib.request
-		import urllib.parse
 		from datetime import date as _date, timedelta
 		date_str = args.get("date", "").strip()
 		if not date_str:
 			date_str = _date.today().strftime("%Y-%m-%d")
-		url = f"https://huggingface.co/api/daily_papers?date={urllib.parse.quote(date_str)}&limit=1"
-		req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 		try:
-			with urllib.request.urlopen(req, timeout=10) as resp:
-				data = json.loads(resp.read().decode())
+			data = HuggingFacePapersClient.get_top(date_str)
 			if not data:
 				yesterday = (_date.fromisoformat(date_str) - timedelta(days=1)).strftime("%Y-%m-%d")
-				url2 = f"https://huggingface.co/api/daily_papers?date={yesterday}&limit=1"
-				req2 = urllib.request.Request(url2, headers={"User-Agent": "Mozilla/5.0"})
-				with urllib.request.urlopen(req2, timeout=10) as resp2:
-					data = json.loads(resp2.read().decode())
+				data = HuggingFacePapersClient.get_top(yesterday)
 				if not data:
 					return json.dumps({"error": f"No papers found for {date_str} or {yesterday}"})
 				date_str = yesterday
@@ -844,26 +613,13 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 
 	@staticmethod
 	def _tool_get_top_news(args: dict) -> str:
-		import urllib.request
 		import xml.etree.ElementTree as ET
 		topic = args.get("topic", "").strip().lower()
-		topic_map = {
-			"business": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB",
-			"technology": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB",
-			"science": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp0Y1RjU0FtVnVHZ0pWVXlnQVAB",
-			"health": "CAAqIQgKIhtDQkFTRGdvSUwyMHZNR3QwTlRFU0FtVnVLQUFQAQ",
-			"sports": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB",
-			"entertainment": "CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtVnVHZ0pWVXlnQVAB",
-		}
 		n = min(int(args.get("n", 1)), 1)
-		if topic and topic in topic_map:
-			url = f"https://news.google.com/rss/topics/{topic_map[topic]}?hl=en-US&gl=US&ceid=US:en"
-		else:
-			url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
-		req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 		try:
-			with urllib.request.urlopen(req, timeout=10) as resp:
-				tree = ET.parse(resp)
+			rss_bytes = GoogleNewsClient.get_feed(topic)
+			import io
+			tree = ET.parse(io.BytesIO(rss_bytes))
 			items = tree.findall(".//item")[:n]
 			if not items:
 				return json.dumps({"error": "No news articles found"})
@@ -894,7 +650,6 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 	@staticmethod
 	def _tool_find_nearby_restaurants(args: dict) -> str:
 		"""Find nearby restaurants using OpenStreetMap Nominatim + Overpass API (no API key)."""
-		import urllib.request, urllib.parse
 		city = args.get("city", "").strip()
 		cuisine = args.get("cuisine", "").strip()
 		limit = min(int(args.get("limit", 1)), 1)

@@ -240,14 +240,20 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 with safe_open(os.path.join(self.cfg.pretrained_s2s_model, "model.safetensors"), framework="pt", device="cpu") as f:
                     available_keys = f.keys()
                     for key in available_keys:
+                        tensor = f.get_tensor(key)
+
+                        # recreates the audio_prompt_latents if needed
+                        if "audio_prompt_latents." in key:
+                            self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure({key: tensor})
+                            # refresh so the new nn.Parameter appears in the dict
+                            model_state_dict = self.state_dict()
+
                         if key in model_state_dict:
-                            # Load tensor and copy to model parameter
-                            tensor = f.get_tensor(key)
                             model_state_dict[key].copy_(tensor)
                             loaded_keys.append(key)
-                            del tensor  # Free memory immediately
                         else:
                             missing_keys.append(key)
+                        del tensor  # Free memory immediately
                         
                         # Periodic garbage collection for very large models
                         if len(loaded_keys) % 100 == 0:
@@ -284,6 +290,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     self.tts_model.to(target)
                     self.stt_model.to('cuda:1')
                     self._stt_device = torch.device('cuda:1')
+                    # FilterbankFeatures.fb is a plain tensor attribute (not a registered
+                    # buffer) in some NeMo versions, so .to() silently skips it.
+                    # Explicitly move it to match the stt_model device.
+                    for module in self.stt_model.modules():
+                        if hasattr(module, 'fb') and isinstance(module.fb, torch.Tensor):
+                            module.fb = module.fb.to('cuda:1')
                     return self
         return super().to(*args, **kwargs)
 
@@ -434,18 +446,24 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         generation_config = None
         guidance_enabled = True
 
-        # create speaker audio for init
-        speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
-        speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
-        speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
-
-        # lengths -> [B]
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device) 
+        # create speaker audio for init — or use pre-baked latent when speaker_name is set
+        speaker_name = self.cfg.get("inference_speaker_name", None) or None
+        if speaker_name is not None:
+            speaker_audio = None
+            speaker_audio_lens = None
+        else:
+            speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
+            speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
+            if speaker_audio.shape[0] > 1:
+                speaker_audio = speaker_audio.mean(dim=0, keepdim=True)
+            speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
+            speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
 
         #  init tts_model
         self.tts_model.set_init_inputs(
             speaker_audio=speaker_audio,
             speaker_audio_lens=speaker_audio_lens,
+            speaker_name=speaker_name,
         )
         init_inputs = self.tts_model.get_init_inputs(B=B)
 
@@ -532,6 +550,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         return ans
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(state_dict)
         try:
             return super().load_state_dict(state_dict, strict=strict)
         except RuntimeError as e:

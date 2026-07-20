@@ -86,6 +86,10 @@ def setup_audio_codec(model: torch.nn.Module):
     The result is assigned to ``model.audio_codec`` attribute.
 
     Includes a workaround for PTL auto-downcasting the codec model to bf16 with bf16-true precision.
+
+    ``model.cfg.pretrained_audio_codec`` may be absolute or relative — the
+    caller (e.g. the inference wrapper) is expected to resolve any relative
+    path against the checkpoint directory before instantiating the model.
     """
     if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == torch.float:
         return  # skip if already set up and has the right dtype
@@ -125,11 +129,11 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
                         model.cfg.perception.encoder[key] = value
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
         model.perception.load_state_dict(asr.state_dict(), strict=False)
-        # Expose RNNT decoder+joint for EOU/BOU turn-taking (object.__setattr__ avoids PyTorch submodule registration)
+        # Expose RNNT decoder+joint for EOU/BOU turn-taking as proper submodules
         if hasattr(asr, 'decoder') and hasattr(asr, 'joint'):
-            object.__setattr__(model, '_rnnt_decoder', asr.decoder.eval())
-            object.__setattr__(model, '_rnnt_joint', asr.joint.eval())
-            object.__setattr__(model, '_rnnt_blank_id', getattr(asr.decoding, 'blank_id', 1024))
+            model._rnnt_decoder = asr.decoder.eval()
+            model._rnnt_joint = asr.joint.eval()
+            model._rnnt_blank_id = getattr(asr.decoding, 'blank_id', 1024)
             logging.info(f"setup_speech_encoder: RNNT decoder+joint exposed (blank_id={model._rnnt_blank_id})")
     else:
         model.perception = AudioPerceptionModule(model.cfg.perception).train()

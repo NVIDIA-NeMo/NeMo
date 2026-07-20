@@ -78,7 +78,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
 
         self.speech_generation = TransformerARSpeechDecoder(
             speech_decoder_parms=OmegaConf.to_container(self.cfg.speech_decoder),
-            lantent_dim=self.llm.config.hidden_size,
+            latent_dim=self.llm.config.hidden_size,
             num_audio_codebooks=self._num_codebooks,
             num_audio_tokens_per_codebook=self.speech_vocab_size,
         )

@@ -243,6 +243,7 @@ def convert(outdir, config, model_path):
         {"name": "text_tokens", "dtype": "int32"},
         {"name": "text_mask"},
         {"name": "bos_mask"},
+        {"name": "speaker_latent", "dim": hidden_size},
     ]
     flat_config["custom_outputs"] = ["acoustic_tokens"]
 

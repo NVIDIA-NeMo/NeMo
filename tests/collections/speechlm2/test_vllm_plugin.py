@@ -723,7 +723,6 @@ class TestMTPPlugin:
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         original_calls = []
-        _orig = SpeculativeConfig.hf_config_override
 
         def _recording_orig(cfg):
             original_calls.append(cfg)

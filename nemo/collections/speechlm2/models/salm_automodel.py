@@ -170,7 +170,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # (the THD shape mirrors Automodel's _shard_thd_chunk_for_te output —
         # the model squeezes 3D inputs internally when qkv_format=="thd", so
         # passing 2D directly skips that hop)
+        llm_input_ids = None
+        if llm_kwargs.get("qkv_format") == "thd":
+            # Automodel's THD preprocessor still squeezes input_ids even when
+            # inputs_embeds carries the real token/audio embeddings.
+            seq_len = input_embeds.shape[0] if input_embeds.ndim == 2 else input_embeds.shape[1]
+            llm_input_ids = torch.zeros((1, seq_len), device=input_embeds.device, dtype=torch.long)
+
         out = self.llm(
+            input_ids=llm_input_ids,
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,

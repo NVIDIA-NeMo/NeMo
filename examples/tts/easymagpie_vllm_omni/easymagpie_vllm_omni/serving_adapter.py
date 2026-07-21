@@ -108,7 +108,7 @@ def _build_adapter_cls() -> type:
             self._prompt_len_cache[speaker_id] = plen
             return plen
 
-        def validate(self, request: "OpenAICreateSpeechRequest") -> str | None:
+        def validate(self, request: OpenAICreateSpeechRequest) -> str | None:
             if not request.input or not request.input.strip():
                 return "Input text cannot be empty"
             extra = request.extra_params
@@ -118,7 +118,7 @@ def _build_adapter_cls() -> type:
 
         async def build(
             self,
-            request: "OpenAICreateSpeechRequest",
+            request: OpenAICreateSpeechRequest,
             sampling_params_list: list,
             has_inline_ref_audio: bool,
         ) -> "PreparedRequest":
@@ -137,7 +137,7 @@ def _build_adapter_cls() -> type:
             }
             return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
 
-        def build_streaming_spec(self, request: "OpenAICreateSpeechRequest") -> EasyMagpieStreamingSpec:
+        def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:
             """Build the speaker prefill and tokenizer metadata without complete text."""
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
             model_path = Path(self._model_path())

@@ -224,6 +224,7 @@ def _resolve_speech_delay(transfer_manager: Any) -> int:
             try:
                 model_config = getter()
             except Exception:
+                # Version-specific getters may fail before initialization; use the existing config fallback.
                 pass
 
     hf_config = getattr(model_config, "hf_config", None)

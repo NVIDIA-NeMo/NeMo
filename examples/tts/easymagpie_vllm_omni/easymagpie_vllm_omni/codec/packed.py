@@ -299,8 +299,6 @@ class PackedCausalConv1d(CodecStateLayer):
             if state_indices is None or query_start_loc is None or has_initial is None:
                 raise RuntimeError("incomplete codec prefill metadata")
 
-        batch_size = state_indices.numel()
-        sequence_rows = inputs.shape[0] // batch_size
         joined = gather_packed_state_inputs(
             inputs,
             self.kv_cache[0],
@@ -446,8 +444,6 @@ class PackedCausalConvTranspose1d(CodecStateLayer):
             if state_indices is None or query_start_loc is None or has_initial is None:
                 raise RuntimeError("incomplete codec prefill metadata")
 
-        batch_size = state_indices.numel()
-        sequence_rows = inputs.shape[0] // batch_size
         joined = gather_packed_state_inputs(
             inputs,
             self.kv_cache[0],

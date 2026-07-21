@@ -29,6 +29,7 @@ def register() -> None:
     try:
         AutoConfig.register(EasyMagpieCodecConfig.model_type, EasyMagpieCodecConfig)
     except ValueError:
+        # Plugin reloads may encounter the same model type already registered.
         pass
     MODELS_CONFIG_MAP.setdefault(_CODEC_ARCH, MambaModelConfig)
 

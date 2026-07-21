@@ -359,6 +359,7 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             await websocket.send_json({"type": "session.done", "total_sentences": 1})
             completed = True
         except (WebSocketDisconnect, asyncio.TimeoutError):
+            # Client disconnects and input timeouts are expected terminal conditions.
             pass
         except Exception as error:
             logger.exception("Incremental EasyMagpie generation failed for %s", request_id)

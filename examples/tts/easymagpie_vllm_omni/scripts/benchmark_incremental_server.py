@@ -137,7 +137,7 @@ async def _do_request_async(task: dict) -> IncrementalRequestResult:
                         elif event_type == "error":
                             raise RuntimeError(event.get("message", str(event)))
                         elif event_type == "session.done":
-                            await sender
+                            _ = await sender
                             break
                 finally:
                     if not sender.done():

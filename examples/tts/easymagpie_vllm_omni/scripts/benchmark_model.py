@@ -435,6 +435,7 @@ async def run_one_request(
             try:
                 await gen.aclose()
             except Exception:
+                # Cleanup failure must not replace the request result already recorded above.
                 pass
     return meter.result
 

@@ -338,11 +338,13 @@ def run_inference_and_evaluation(
             filewise_metrics_all_repeats.extend(filewise_metrics)
 
             # Save metrics
-            with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
+            metrics_path = os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json")
+            with open(metrics_path, "w") as f:
                 json.dump(metrics, f, indent=4)
 
             sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
-            with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
+            filewise_metrics_path = os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json")
+            with open(filewise_metrics_path, "w", encoding="utf-8") as f:
                 json.dump(sorted_filewise, f, indent=4, ensure_ascii=False)
 
             # Append to per-run CSV

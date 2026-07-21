@@ -14,7 +14,7 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from scripts.tts_comparison_report.reporting.constants import DUMMY_TASK_ID, TICKET_URL_PREFIX
+from scripts.tts_comparison_report.reporting.constants import TICKET_URL_PREFIX
 from scripts.tts_comparison_report.reporting.models import ExpirationInfo, TaskInfo
 
 

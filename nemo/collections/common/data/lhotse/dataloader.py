@@ -379,7 +379,12 @@ def get_lhotse_dataloader_from_single_config(
         pin_memory=config.pin_memory,
     )
     if config.num_workers > 0 and config.get("prefetch_factor") is not None:
-        dloader_kwargs["prefetch_factor"] = config.prefetch_factor
+        prefetch_factor = config.prefetch_factor
+        if not isinstance(prefetch_factor, int) or prefetch_factor <= 0:
+            raise ValueError(
+                f"LhotseDataLoadingConfig.prefetch_factor must be a positive integer when set; got {prefetch_factor!r}."
+            )
+        dloader_kwargs["prefetch_factor"] = prefetch_factor
 
     dloader = torch.utils.data.DataLoader(**dloader_kwargs)
 

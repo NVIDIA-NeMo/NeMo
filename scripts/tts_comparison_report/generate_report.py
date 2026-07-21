@@ -41,7 +41,7 @@ _REMOTE_PASSWORD: str = "REMOTE_PASSWORD"
 _S3_ACCESS_KEY_ID: str = "S3_ACCESS_KEY_ID"
 _S3_SECRET_ACCESS_KEY: str = "S3_SECRET_ACCESS_KEY"
 
-_DEFAULT_BENCHMARK_NAMES: str = ",".join(SUPPORTED_BENCHMARK_NAMES)
+_DEFAULT_BENCHMARK_NAMES: str = "libritts,riva_en"
 
 
 def _create_argparser() -> ArgumentParser:
@@ -113,7 +113,7 @@ def _create_argparser() -> ArgumentParser:
         "--task_id",
         type=str,
         default=DUMMY_TASK_ID,
-        help="Jira task number associated with this report.",
+        help="Task ID associated with this report.",
     )
     parser.add_argument(
         "--results_subdir",
@@ -129,7 +129,7 @@ def _create_argparser() -> ArgumentParser:
     parser.add_argument(
         "--audio_report_benchmarks",
         type=str,
-        default="libritts_test_clean,riva_hard_digits,riva_hard_letters",
+        default=_DEFAULT_BENCHMARK_NAMES,
         help="Comma-separated list of benchmarks to include in the audio report.",
     )
     parser.add_argument(

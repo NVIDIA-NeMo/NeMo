@@ -37,21 +37,19 @@ def make_expiration_info(expires_in: int) -> ExpirationInfo:
 
 
 def make_task_info(task_id: str) -> TaskInfo:
-    """Create task metadata and the corresponding Jira link information.
+    """Create task metadata and the corresponding link information.
 
     Args:
-        task_id: Jira task identifier used for the report.
+        task_id: Task identifier used for the report.
 
     Returns:
-        Task information with the original task ID, derived Jira ID, and Jira URL.
+        Task information with the original task ID and task URL.
     """
-    jira_id = task_id if task_id != DUMMY_TASK_ID else task_id.split("-")[0]
-    jira_url = f"{TICKET_URL_PREFIX}/{jira_id}"
+    task_url = f"{TICKET_URL_PREFIX}/{task_id}"
 
     return TaskInfo(
         task_id=task_id,
-        jira_id=jira_id,
-        jira_url=jira_url,
+        task_url=task_url,
     )
 
 

@@ -17,7 +17,7 @@ from pathlib import Path
 _ROOT: Path = Path(__file__).parent.parent
 
 # Benchmark names supported by the comparison report pipeline.
-BENCHMARK_META = {
+BENCHMARK_META: dict[str, str] = {
     'libritts': 'en',
     'riva_en': 'en',
     'riva_en_hard_sentences': 'en',
@@ -40,7 +40,7 @@ BENCHMARK_META = {
     'mscenespeech': 'zh',
 }
 
-SUPPORTED_BENCHMARK_NAMES = BENCHMARK_META.keys()
+SUPPORTED_BENCHMARK_NAMES: list[str] = list(BENCHMARK_META.keys())
 
 # Default width of tqdm progress bars in terminal columns.
 TQDM_NCOLS: int = 80
@@ -63,8 +63,8 @@ S3_IMAGES_DIR: str = "images"
 # Directory containing Jinja templates used for report rendering.
 TEMPLATES_DIR: Path = _ROOT / "templates"
 
-# Fallback task id used when no real Jira ticket is provided.
-DUMMY_TASK_ID: str = "NEMOTTS-0000"
+# Fallback task id used when no real ticket is provided.
+DUMMY_TASK_ID: str = "NMP-I-000"
 
-# URL prefix used to construct clickable Jira ticket links in reports.
+# URL prefix used to construct clickable ticket links in reports.
 TICKET_URL_PREFIX: str = "https://modelpor.ideas.aha.io/ideas"

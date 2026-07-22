@@ -1699,21 +1699,34 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         Perform one streaming inference step with batch support.
 
         Orchestrates three phases: (1) prepare the input embedding for this step,
-        (2) run the transformer forward pass, (3) extract predictions and update state.
+        (2) run the transformer forward pass, and (3) extract predictions and update
+        the streaming state.
 
         Args:
-            state: Current StreamingState from streaming_init or previous streaming_step.
-            text_tokens: Next text token for each batch item, shape (B,), or None if text has finished.
-                For items still in context phase, the text_token value is ignored (can be 0).
-                When None is passed, the model continues generating until EOS.
-            force_dropout_text: Whether to zero out text embeddings.
-            use_inference_mode: Whether to use torch.inference_mode (vs torch.no_grad).
+            state: Current StreamingState from streaming_init or a previous
+                streaming_step call.
+            text_tokens: Next text token for each batch item, shaped (B,), or None
+                when text input has finished. For items still in the context phase,
+                the token value is ignored. When None is passed, generation continues
+                until EOS.
+            force_dropout_text: Whether to zero out text embeddings for this step.
+            user_audio_channel_embedding: Optional user-audio conditioning embedding
+                for the current step, shaped (B, E).
+            prefill_like_step: If True, advance the streaming state while keeping the
+                generated audio silent and optionally predicting phonemes.
+            use_inference_mode: Whether to run under torch.inference_mode instead of
+                torch.no_grad.
+            prefill_like_is_last_step: Whether this is the final prefill-like step.
+                When enabled together with the corresponding model configuration,
+                the next audio input uses the user-speaking-end token.
 
         Returns:
             Tuple of:
-                - Updated StreamingState
-                - Predicted audio codes for this step (B, C, S) unstacked, or None if no items in audio phase
-                - Predicted phoneme tokens for this step (B, phoneme_stacking_factor) or None
+                - Updated StreamingState.
+                - Predicted audio codes for this step, shaped (B, C, S), or None when
+                no batch items are in the audio-generation phase.
+                - Predicted phoneme tokens for this step, shaped
+                (B, phoneme_stacking_factor), or None.
         """
         if state.finished.all():
             return state, None, None

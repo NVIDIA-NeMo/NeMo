@@ -274,17 +274,38 @@ def load_evaluation_models(
     emotion_model_size="small",
     emotion_cache_dir=None,
 ):
-    """Load ASR and speaker verification models used for evaluation.
+    """Load the ASR, speaker-verification, and optional emotion models used for evaluation.
 
     Args:
-        sv_model_type: Speaker verification model type ("wavlm" or "titanet").
-        asr_model_name: Name of the NeMo ASR model (used only when language is "en").
-        asr_model_type: Type of ASR mode ("nemo" or "nemo_with_prompt" or "whisper").
-        device: Device to place models on.
+        sv_model_type: Speaker-verification model type. Supported values are
+            ``"wavlm"`` and ``"titanet"``.
+        asr_model_name: Name or path of the ASR model to load.
+        asr_model_type: ASR model implementation. Supported values are
+            ``"nemo"``, ``"nemo_with_prompt"``, and ``"whisper"``.
+        device: Device on which the evaluation models are loaded.
+        with_emotion_metrics: Whether to load the emotion encoder used to compute
+            emotion similarity and emotion match metrics.
+        emotion_model_size: Size of the emotion encoder. Supported values are ``"small"`` or ``"large"``.
+        emotion_cache_dir: Optional directory used to cache the emotion encoder,
+            classifiers, and related model files.
 
     Returns:
-        Dict with keys: asr_model, whisper_model, whisper_processor, feature_extractor,
-        sv_model, sv_model_alternate.
+        Dictionary containing:
+
+            - ``asr_model``: Loaded ASR transcriber.
+            - ``whisper_model``: Reserved Whisper model entry, currently ``None``.
+            - ``whisper_processor``: Reserved Whisper processor entry, currently
+            ``None``.
+            - ``feature_extractor``: WavLM feature extractor when
+            ``sv_model_type="wavlm"``; otherwise ``None``.
+            - ``sv_model``: Primary speaker-verification model.
+            - ``sv_model_alternate``: Alternate ``titanet_small``
+            speaker-verification model.
+            - ``emotion_model``: Emotion encoder when ``with_emotion_metrics=True``;
+            otherwise ``None``. It is also ``None`` if loading fails.
+
+    Raises:
+        ValueError: If ``asr_model_type`` is unsupported.
     """
     models = {
         'asr_model': None,

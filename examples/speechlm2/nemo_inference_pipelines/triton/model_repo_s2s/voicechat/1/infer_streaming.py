@@ -51,6 +51,13 @@ class TritonPythonModel:
             s2s.system_prompt          -> S2S_SYSTEM_PROMPT (default: none)
             s2s.tts_system_prompt      -> S2S_TTS_SYSTEM_PROMPT (default: none)
             s2s.use_codec_cache        -> S2S_USE_CODEC_CACHE (default: true)
+            s2s.device_id              -> S2S_DEVICE_ID (default: 0)
+            s2s.vllm_llm_config.device_id -> S2S_VLLM_LLM_DEVICE_ID (default: 0)
+            s2s.vllm_tts_config.device_id -> S2S_VLLM_TTS_DEVICE_ID (default: 0)
+            s2s.vllm_llm_config.gpu_memory_utilization -> S2S_VLLM_LLM_GPU_MEMORY_UTILIZATION (default: 0.45)
+            s2s.vllm_tts_config.gpu_memory_utilization -> S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION (default: 0.15)
+            s2s.vllm_llm_config.max_model_len -> S2S_VLLM_MAX_MODEL_LEN (default: 5120)
+            streaming.max_len              -> S2S_MAX_LEN (default: 5120)
             streaming.chunk_size_in_secs -> S2S_CHUNK_SIZE_IN_SECS (default: 0.08)
             streaming.buffer_size_in_secs -> S2S_BUFFER_SIZE_IN_SECS (default: 5.6)
         """
@@ -89,6 +96,13 @@ class TritonPythonModel:
             "s2s.temperature":                   ("S2S_TEMPERATURE", 0.0),
             "s2s.top_p":                         ("S2S_TOP_P", 1.0),
             "s2s.inference_bos_boost":           ("S2S_INFERENCE_BOS_BOOST", 0.0),
+            "s2s.device_id":                          ("S2S_DEVICE_ID", 0),
+            "s2s.vllm_llm_config.device_id":          ("S2S_VLLM_LLM_DEVICE_ID", 0),
+            "s2s.vllm_tts_config.device_id":          ("S2S_VLLM_TTS_DEVICE_ID", 0),
+            "s2s.vllm_llm_config.gpu_memory_utilization": ("S2S_VLLM_LLM_GPU_MEMORY_UTILIZATION", 0.45),
+            "s2s.vllm_tts_config.gpu_memory_utilization": ("S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION", 0.15),
+            "s2s.vllm_llm_config.max_model_len":      ("S2S_VLLM_MAX_MODEL_LEN", 5120),
+            "streaming.max_len":                      ("S2S_MAX_LEN", 5120),
             "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.24),
             "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 2.0),
         }
@@ -102,6 +116,10 @@ class TritonPythonModel:
                     val = float(val)
                 elif default is not None and isinstance(default, int):
                     val = int(val)
+                elif default is None and cfg_key.endswith("device_id"):
+                    val = int(val)
+                elif default is None and "gpu_memory_utilization" in cfg_key:
+                    val = float(val)
                 OmegaConf.update(cfg, cfg_key, val, force_add=True)
             elif default is not None:
                 OmegaConf.update(cfg, cfg_key, default, force_add=True)
@@ -146,24 +164,25 @@ class TritonPythonModel:
           * model_version: Model version
           * model_name: Model name
         """
-        # Set up file logging so inference logs are saved to demo_record/.
+        # Set up optional file logging when S2S_INFERENCE_LOG_DIR is set.
         # NeMo uses a named logger "nemo_logger" with propagate=False, so we
         # must add the handler directly to that logger rather than to root.
         import logging as _stdlib_logging
         import datetime
-        _log_dir = "/home/vtrinh/projects/elena_niva_inference/demo_record"
-        os.makedirs(_log_dir, exist_ok=True)
-        _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        _log_path = os.path.join(_log_dir, f"duplex_demo_server_audio_{_ts}_text_outputs.log")
-        _file_handler = _stdlib_logging.FileHandler(_log_path)
-        _file_handler.setLevel(_stdlib_logging.DEBUG)
-        _file_handler.setFormatter(_stdlib_logging.Formatter(
-            "[%(asctime)s %(levelname)s %(filename)s:%(lineno)d] %(message)s"
-        ))
-        # logging is nemo.utils.logging (a Logger singleton); ._logger is the
-        # underlying stdlib Logger instance ("nemo_logger").
-        logging._logger.addHandler(_file_handler)
-        logging.info(f"Inference logs will be saved to: {_log_path}")
+        _log_dir = os.environ.get("S2S_INFERENCE_LOG_DIR")
+        if _log_dir:
+            os.makedirs(_log_dir, exist_ok=True)
+            _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _log_path = os.path.join(_log_dir, f"duplex_demo_server_audio_{_ts}_text_outputs.log")
+            _file_handler = _stdlib_logging.FileHandler(_log_path)
+            _file_handler.setLevel(_stdlib_logging.DEBUG)
+            _file_handler.setFormatter(_stdlib_logging.Formatter(
+                "[%(asctime)s %(levelname)s %(filename)s:%(lineno)d] %(message)s"
+            ))
+            # logging is nemo.utils.logging (a Logger singleton); ._logger is the
+            # underlying stdlib Logger instance ("nemo_logger").
+            logging._logger.addHandler(_file_handler)
+            logging.info(f"Inference logs will be saved to: {_log_path}")
 
         # Config path: set S2S_TRITON_CONFIG_PATH env var (start_triton.sh does this automatically).
         config_path = os.environ.get("S2S_TRITON_CONFIG_PATH")

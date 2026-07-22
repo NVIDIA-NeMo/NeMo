@@ -32,22 +32,22 @@ s2s:
   engine_type: ??? # Engine type: 'native' or 'vllm_llm' or 'vllm_eartts' or 'vllm_llm_vllm_eartts'
   vllm_llm_config:
     model_path: ${s2s.model_path}             # Inherits from s2s.model_path
-    max_model_len: 12288                      # Maximum sequence length for vLLM
-    gpu_memory_utilization: 0.52               # GPU memory utilization (0.0-1.0)
+    max_model_len: 5120                       # Single-GPU default (STT already resident shrinks TTS KV budget)
+    gpu_memory_utilization: 0.45              # LLM weights ~18 GiB; pool must exceed that (0.35 on 48GB → negative KV)
     dtype: bfloat16                           # Data type for vLLM inference
     engine_path: null                         # Path to vLLM engine (null = auto-convert if needed)
     pretrained_llm: ${s2s.llm_checkpoint_path}  # Inherits from s2s.llm_checkpoint_path
-    device_id: 1                              # LLM on GPU 1 (large model: ~19 GiB)
+    device_id: 0                              # Default: all engines on GPU 0; set to 1 for 2-GPU LLM split
 
   vllm_tts_config:
     model_path: ${s2s.vllm_llm_config.model_path}             # Inherits from s2s.model_path
     max_model_len: ${s2s.vllm_llm_config.max_model_len}
-    gpu_memory_utilization: 0.23                               # EarTTS GPU memory
+    gpu_memory_utilization: 0.15              # Single-GPU default; use 0.23 on dedicated GPU 0 in 2-GPU setup
     dtype: float32                              # EarTTS requires float32 for proper audio quality (bfloat16 causes hallucinations)
     engine_path: null
     pretrained_llm: null
     skip_tokenizer_init: true
-    device_id: 0                              # EarTTS on GPU 0 (small model: ~3 GiB)
+    device_id: 0                              # EarTTS on GPU 0
 
   device: cuda 
   # ========================
@@ -167,4 +167,4 @@ streaming:
   chunk_size_in_secs: ???                    # Needs to be multiple of 80ms
   buffer_size_in_secs: ???                    # Audio buffer size in seconds (larger = more context, better quality)
   request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
-  max_len: 8192
+  max_len: 5120                               # Single-GPU default; use 8192 on 2-GPU setups

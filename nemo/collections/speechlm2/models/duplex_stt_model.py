@@ -66,7 +66,6 @@ from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     set_model_dict_for_partial_init,
     setup_speech_encoder,
-    setup_rnnt_decoder_joint,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
@@ -312,9 +311,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model
-        setup_speech_encoder(self)
-        # Optionally load RNNT decoder and joint (set pretrained_rnnt_asr in config)
-        setup_rnnt_decoder_joint(self)
+        setup_speech_encoder(self, pretrained_weights=self.cfg.get("pretrained_weights", True))
 
         if self.cfg.get("pretrained_perception_from_s2s", None):
             self.init_perception_from_another_s2s_checkpoint(self.cfg.pretrained_perception_from_s2s)

@@ -11,18 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .ear_tts_commons import SCRIPT_PLACEHOLDER
 from .perception import AudioPerceptionModule
-from .rvq_ear_tts_model import RVQEARTTSModel
-from .rvq_ear_tts_vae import RVQVAEModel
-from .speech_generation import TransformerARSpeechDecoder, EOUDecoder, EOUDecoderFromWav
+from .speech_generation import TransformerARSpeechDecoder
 
 __all__ = [
-    'SCRIPT_PLACEHOLDER',
     'AudioPerceptionModule',
-    'RVQEARTTSModel',
-    'RVQVAEModel',
     'TransformerARSpeechDecoder',
-    'EOUDecoder',
-    'EOUDecoderFromWav',
 ]

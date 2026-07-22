@@ -22,17 +22,22 @@ import tempfile
 from typing import Optional, Tuple, List, Union
 from torchaudio.functional import filtfilt
 from nemo.collections.speechlm2.parts.add_background_noise import AddBackgroundNoise
-from torch_audiomentations import (
-    Compose,
-    # AddBackgroundNoise,
-    Gain,
-    # BandPassFilter,
-    LowPassFilter,
-    PitchShift,
-    # Shift,
-    # AddColoredNoise,
-    # PolarityInversion
-)
+try:
+    from torch_audiomentations import (
+        Compose,
+        # AddBackgroundNoise,
+        Gain,
+        # BandPassFilter,
+        LowPassFilter,
+        PitchShift,
+        # Shift,
+        # AddColoredNoise,
+        # PolarityInversion
+    )
+    _TORCH_AUDIOMENTATIONS_AVAILABLE = True
+except ImportError:
+    _TORCH_AUDIOMENTATIONS_AVAILABLE = False
+    Compose = Gain = LowPassFilter = PitchShift = None
 
 import librosa
 import numpy as np
@@ -418,6 +423,11 @@ class AudioAugmenter:
         noise_key = tuple(sorted(str(f) for f in noise_files))
         compose_key = (self.sample_rate, noise_key)
         if compose_key not in self._compose_aug_cache:
+            if not _TORCH_AUDIOMENTATIONS_AVAILABLE:
+                raise ImportError(
+                    "torch_audiomentations is required for compose augmentation but is not installed. "
+                    "Install it with: pip install torch_audiomentations"
+                )
             self._compose_aug_cache[compose_key] = Compose(
                 transforms=[
                     AddBackgroundNoise(
@@ -508,7 +518,13 @@ class AudioAugmenter:
 
     def get_random_eq(self, sampling_rate, display=False):
         """Generate random EQ"""
-        import audio_dspy as adsp
+        try:
+            import audio_dspy as adsp
+        except ImportError:
+            raise ImportError(
+                "audio_dspy is required for EQ augmentation but is not installed. "
+                "Install it with: pip install audio_dspy"
+            )
 
         eq = adsp.EQ(sampling_rate)
 

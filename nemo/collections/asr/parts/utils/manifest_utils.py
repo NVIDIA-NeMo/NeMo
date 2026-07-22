@@ -554,3 +554,21 @@ def write_text(output_path: str, target_ctm: Dict[str, dict]):
             word = tgt.split(' ')[4]
             outfile.write(word + ' ')
         outfile.write('\n')
+
+
+def filepath_to_absolute(filepath: str | Path, base_path: Path) -> Path:
+    """
+    Return absolute path to an audio file.
+
+    Check if a file exists at `filepath`.
+    If not, assume that the path is relative to `base_path`.
+
+    Args:
+        filepath (str or Path): path to file
+        base_path (Path): base path to resolve relative path
+    """
+    filepath = Path(filepath).expanduser()
+
+    if not filepath.is_file() and not filepath.is_absolute():
+        filepath = (base_path / filepath).absolute()
+    return filepath

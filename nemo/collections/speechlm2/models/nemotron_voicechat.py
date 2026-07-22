@@ -236,14 +236,21 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 with safe_open(os.path.join(self.cfg.pretrained_s2s_model, "model.safetensors"), framework="pt", device="cpu") as f:
                     available_keys = f.keys()
                     for key in available_keys:
+                        tensor = f.get_tensor(key)
+
+                        # recreates the audio_prompt_latents if needed
+                        if "audio_prompt_latents." in key:
+                            self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure({key: tensor})
+                            # refresh so the new nn.Parameter appears in the dict
+                            model_state_dict = self.state_dict()
+
                         if key in model_state_dict:
                             # Load tensor and copy to model parameter
-                            tensor = f.get_tensor(key)
                             model_state_dict[key].copy_(tensor)
                             loaded_keys.append(key)
-                            del tensor  # Free memory immediately
                         else:
                             missing_keys.append(key)
+                        del tensor  # Free memory immediately
 
                         # Periodic garbage collection for very large models
                         if len(loaded_keys) % 100 == 0:
@@ -643,19 +650,20 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         generation_config = None
         guidance_enabled = True
 
-        # create speaker audio for init
-        speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
-        speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
-        speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
-
-        # lengths -> [B]
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
-
-        #  init tts_model
-        self.tts_model.set_init_inputs(
-            speaker_audio=speaker_audio,
-            speaker_audio_lens=speaker_audio_lens,
-        )
+        # Use pre-baked speaker latent by name if available; otherwise load from wav
+        speaker_name = self.cfg.get("inference_speaker_name", None) or None
+        if speaker_name is not None:
+            # Use pre-baked latent stored in model weights — no wav file needed
+            self.tts_model.set_init_inputs(speaker_name=speaker_name)
+        else:
+            speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
+            speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
+            speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
+            speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
+            self.tts_model.set_init_inputs(
+                speaker_audio=speaker_audio,
+                speaker_audio_lens=speaker_audio_lens,
+            )
         init_inputs = self.tts_model.get_init_inputs(B=B)
 
         if generation_config is None:

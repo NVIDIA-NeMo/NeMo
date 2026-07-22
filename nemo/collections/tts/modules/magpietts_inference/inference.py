@@ -1135,7 +1135,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         return os.path.join(audio_base_dir, path)
 
     def _ensure_codec_silence_codes(self) -> torch.Tensor:
-        """Ensure silence codec codes exist before streaming_prefill_profile.
+        """Ensure silence codec codes exist before streaming_prefill.
 
         Newer EasyMagpieTTSInferenceModel exposes codec_sil_codes as a @property
         backed by _codec_sil_codes_buffer. Some older branches/checkpoints do not
@@ -1153,7 +1153,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
         class_codec_sil_codes = getattr(type(self.model), "codec_sil_codes", None)
         if class_codec_sil_codes is None:
-            # Compatibility with branches where streaming_prefill_profile expects
+            # Compatibility with branches where streaming_prefill expects
             # self.codec_sil_codes but the @property was not added.
             self.model.codec_sil_codes = self.model._codec_sil_codes_buffer
             if hasattr(self.model, "_codec_sil_codes_buffer_unconverted"):
@@ -1196,7 +1196,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             raise RuntimeError("multiturn_user_audio generation requires batch_size=1.")
 
         with torch.inference_mode():
-            # streaming_prefill_profile reads self.model.codec_sil_codes, so make
+            # streaming_prefill reads self.model.codec_sil_codes, so make
             # sure the silence buffer/property exists before entering the turn loop.
             self._ensure_codec_silence_codes()
 
@@ -1389,7 +1389,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     warmup_user_audio = None
 
                 if user_audio_prefill_tokens.size(1) > 0:
-                    state = model.streaming_prefill_profile(
+                    state = model.streaming_prefill(
                         state=state,
                         text_tokens=user_audio_prefill_tokens,
                         use_inference_mode=True,

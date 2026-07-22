@@ -703,7 +703,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self._codec_sil_codes_buffer.copy_(sil_tensor_converted)
             self._codec_sil_codes_buffer_unconverted.copy_(sil_tensor_unconverted)
 
-    def streaming_prefill_profile(
+    def streaming_prefill(
         self,
         state: StreamingState,
         text_tokens: torch.Tensor,  # (B, T) or (B,)

@@ -179,14 +179,25 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_lens,
         agent_mask_target=None,
     ):
-        """
-        Computes the audio codebook loss. Used by
-        (1) The main Magpie-TTS transformer
-        (2) The local transformer
+        """Compute the average cross-entropy loss across audio codebooks.
 
-        logits: (B, T', num_codebooks * num_tokens_per_codebook)
-        audio_codes: (B, C, T')
-        audio_codes_lens: (B,)
+        This loss is used by both the main Magpie-TTS prediction head and the
+        optional local transformer prediction head.
+
+        Args:
+            logits: Predicted audio-token logits with shape
+                ``(B, T, num_codebooks * num_tokens_per_codebook)``.
+            audio_codes: Target audio codes with shape ``(B, C, T)``.
+            audio_codes_lens: Valid target lengths with shape ``(B,)``.
+            agent_mask_target: Optional frame-level mask with shape ``(B, T)``.
+                When provided, loss is computed only at positions where the mask
+                is nonzero.
+
+        Returns:
+            A tuple containing:
+
+            - The scalar codebook loss averaged over all codebooks.
+            - The length-based loss mask with shape ``(B, C, T)``.
         """
         loss_mask = get_mask_from_lengths(audio_codes_lens)
         loss_mask = loss_mask.unsqueeze(1).repeat(1, audio_codes.size(1), 1)
@@ -221,11 +232,22 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         phoneme_tokens_lens,
         custom_mask=None,
     ):
-        """
-        logits: (B, T', phoneme_stacking_factor * phoneme_vocab_size)
-        phoneme_tokens: (B, S, T')
-        phoneme_tokens_lens: (B,)
-        custom_mask: optional (B, T')
+        """Compute the average cross-entropy loss across stacked phoneme streams.
+
+        Args:
+            logits: Predicted phoneme logits with shape
+                ``(B, T, phoneme_stacking_factor * phoneme_vocab_size)``.
+            phoneme_tokens: Target stacked phoneme tokens with shape ``(B, S, T)``.
+            phoneme_tokens_lens: Valid target lengths with shape ``(B,)``.
+            custom_mask: Optional frame-level mask with shape ``(B, T)``. When
+                provided, loss is computed only at positions where the mask is
+                nonzero.
+
+        Returns:
+            A tuple containing:
+
+            - The scalar phoneme loss averaged over stacked phoneme streams.
+            - The length-based loss mask with shape ``(B, S, T)``.
         """
         loss_mask = get_mask_from_lengths(phoneme_tokens_lens)
         loss_mask = loss_mask.unsqueeze(1).repeat(1, phoneme_tokens.size(1), 1)
@@ -401,7 +423,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             text_lens: Length of text for each batch item (B,)
             delay: Number of zero positions to prepend for each batch item (B,).
                    For text channel, this is typically just context_lens.
-            dropout_text_input: If True, return all zeros (for text dropout regularization).
+            dropout_text_input: If True, zero out all text embeddings for text
+                dropout regularization.
+            is_multiturn: Whether the input comes from the multi-turn dataset and
+                therefore may contain timeline-aligned text padding tokens.
+            text_pad_id: Token ID used for timeline padding in multi-turn text.
+                Required when ``is_multiturn`` is True.
 
         Returns:
             Tuple of:
@@ -597,29 +624,37 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         delay: torch.Tensor,
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
-        current_streaming_speech_delay: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Prepare audio embeddings as a channel input with delay handling.
+        """Prepare the delayed autoregressive audio channel and its targets.
 
-        This function processes audio codes by adding special tokens, stacking them,
-        and embedding them. It prepends zero-padding based on the delay parameter.
-        Also prepares input/target split for autoregressive training.
+        The method optionally converts codec tokens, adds special tokens, stacks
+        frames, injects speech-EOS markers, creates shifted input/target sequences,
+        applies user/agent masking, embeds the input sequence, and prepends the
+        requested per-sample delay.
 
         Args:
-            audio_codes: Audio codes (B, C, T) - raw codes without special tokens
-            audio_codes_lens: Length of audio codes for each batch item (B,)
-            delay: Number of zero positions to prepend for each batch item (B,).
-                   In full mode: context_lens + text_lens + speech_delay
-                   In streaming mode: context_lens + speech_delay
+            audio_codes: Raw audio codes without special tokens, with shape
+                ``(B, C, T)``.
+            audio_codes_lens: Valid audio-code lengths with shape ``(B,)``.
+            delay: Number of zero embedding positions to prepend per sample, with
+                shape ``(B,)``. In full-text mode this is typically
+                ``context_lens + text_lens + speech_delay``; in streaming mode it
+                is typically ``context_lens + speech_delay``.
+            speech_eos_mask: Optional frame-level mask indicating positions after
+                which an audio EOS token should be injected.
+            agent_mask: Optional frame-level mask identifying agent speech. It is
+                aligned to the autoregressive target timeline and may be used both
+                for loss masking and for replacing user regions with dedicated
+                user-speech tokens.
 
         Returns:
-            Tuple of:
-                - audio_channel_embedding: Audio embeddings with zero-padded delay (B, T_delay + T_audio, E)
-                - audio_channel_lens: Total length of audio channel for each batch item (B,)
-                - audio_codes_target: Target audio codes for loss computation (B, C, T'-1)
-                - audio_codes_lens_target: Length of target audio codes (B,)
-                - loss_agent_mask: Optional mask used for loss masking; None when no agent_mask is provided.
+            A tuple containing:
+
+            - Delayed audio-channel embeddings with shape ``(B, T_channel, E)``.
+            - Per-sample audio-channel lengths with shape ``(B,)``.
+            - Shifted target audio codes with shape ``(B, C, T_target)``.
+            - Per-sample target lengths with shape ``(B,)``.
+            - An optional aligned agent-loss mask with shape ``(B, T_target)``.
         """
         batch_size = audio_codes.size(0)
         device = audio_codes.device
@@ -850,7 +885,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         Simplified batch processing using channel-based embedding architecture.
 
         This function provides a cleaner implementation of process_batch where:
-        1. Context is prepared separately (without text)
+        1. Context is prepared separately from the current target text
         2. Text, phoneme, and audio are each treated as channels with delay-based alignment
         3. Channels are summed element-wise and joined temporally with context
 
@@ -869,10 +904,19 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes_lens: Length of audio codes (B,)
             context_audio_codes: Pre-computed context audio codes (B, C, T')
             context_audio_codes_lens: Length of context audio codes (B,)
-            phoneme_tokens: Phoneme token IDs (optional) (B, L_phoneme)
-            phoneme_tokens_lens: Length of phoneme tokens (B,)
-            mode: Training mode, either "train" or "val"
-            training_mode: Optional TrainingMode object
+            phoneme_tokens: Optional phoneme token IDs with shape
+                ``(B, L_phoneme)``.
+            phoneme_tokens_lens: Optional phoneme-token lengths with shape ``(B,)``.
+            phoneme_turn_dropout: Optional per-turn indicator used to suppress the
+                phoneme loss when phoneme conditioning was dropped by the dataset.
+            mode: Execution mode, either ``"train"`` or ``"val"``.
+            training_mode: Optional explicit :class:`TrainingMode`. When omitted,
+                one of the configured modes is selected automatically.
+            task: Optional task names for multi-turn training. Interruption tasks
+                preserve the interruption token in the text channel.
+            agent_mask: Optional frame-level mask identifying agent speech.
+            user_audio_embedded: Optional timeline-aligned user-audio conditioning
+                embeddings with shape ``(B, T, E)``.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
@@ -993,7 +1037,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             delay=audio_delay,
             speech_eos_mask=speech_eos_mask,
             agent_mask=agent_mask,
-            current_streaming_speech_delay=current_streaming_speech_delay,
         )
 
         # 6. Sum the channel embeddings element-wise

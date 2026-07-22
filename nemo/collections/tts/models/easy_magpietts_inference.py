@@ -200,6 +200,17 @@ class EasyModelInferenceParameters:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'EasyModelInferenceParameters':
+        """Create inference parameters from matching keys in a dictionary.
+
+        Unknown keys are ignored so that larger configuration dictionaries can be
+        passed safely.
+
+        Args:
+            data: Dictionary containing inference parameter values.
+
+        Returns:
+            EasyModelInferenceParameters populated from recognized fields.
+        """
         field_names = {field.name for field in fields(cls)}
         filtered_data = {k: v for k, v in data.items() if k in field_names}
         return cls(**filtered_data)
@@ -626,10 +637,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     @property
     def codec_sil_codes(self):
+        """Return the representative silence codes in the active codec codebook space."""
         return self._codec_sil_codes_buffer
 
     @property
     def codec_sil_codes_unconverted(self):
+        """Return the representative silence codes in the original codec codebook space."""
         return self._codec_sil_codes_buffer_unconverted
 
     def restore_from_pretrained_checkpoint(self, checkpoint_path):
@@ -658,6 +671,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
 
     def _generate_codec_silence_buffer(self):
+        """Generate and cache representative codec tokens for a silent waveform."""
         codec_device = next(self._codec_model.parameters()).device
 
         audio = torch.zeros(1, 5 * self.sample_rate, dtype=torch.float32, device=codec_device)
@@ -695,8 +709,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         text_tokens: torch.Tensor,  # (B, T) or (B,)
         user_audio_channel_embedding: torch.Tensor = None,
         use_inference_mode: bool = True,
-        # ToDo: implement audio direct support instead of use silence tokens
     ) -> StreamingState:
+        """Prefill the streaming cache with text and silent audio profile frames.
+
+        Args:
+            state: Mutable streaming state to update.
+            text_tokens: Text tokens shaped ``(B, T)`` or ``(B,)``.
+            user_audio_channel_embedding: Optional user-speech conditioning embeddings.
+            use_inference_mode: Whether to run under ``torch.inference_mode`` instead
+                of ``torch.no_grad``.
+
+        Returns:
+            The updated streaming state.
+        """
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
         with grad_ctx():
             if text_tokens.dim() == 1:
@@ -812,11 +837,22 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             return state
 
     def _get_state_dict_keys_to_exclude(self) -> List[str]:
+        """Return state-dict key substrings that should not be serialized."""
         return [
             '_codec_model',
         ]
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
+        """Return the model state dictionary after removing excluded components.
+
+        Args:
+            destination: Optional destination mapping used by ``torch.nn.Module.state_dict``.
+            prefix: Prefix applied to parameter and buffer names.
+            keep_vars: Whether returned tensors retain autograd variables.
+
+        Returns:
+            Filtered model state dictionary.
+        """
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
             return {}
         state_dict = super().state_dict(destination, prefix, keep_vars)
@@ -827,6 +863,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
+        """Load model parameters while skipping excluded child modules.
+
+        Args:
+            state_dict: State dictionary containing model parameters.
+            strict: Whether to require an exact key match for the top-level load.
+        """
         if not strict:
             super().load_state_dict(state_dict, strict=False)
         modules_to_skip = self._get_state_dict_keys_to_exclude()
@@ -861,9 +903,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self._optimizer_param_groups = [{"params": trainable_params}]
 
     def setup_training_data(self, train_data_config=None):
+        """No-op training-data hook for the inference-only base model."""
         pass
 
     def setup_validation_data(self, val_data_config=None):
+        """No-op validation-data hook for the inference-only base model."""
         pass
 
     def _prepare_codes_for_decode(self, codes, codes_len, min_len=4):
@@ -879,6 +923,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def embed_audio_tokens(self, audio_tokens):
         # audio_tokens: (B, C, T')
         # Add and average the embeddings of the audio tokens across the codebooks
+        """Embed and average audio-code tokens across codebook channels.
+
+        Args:
+            audio_tokens: Audio token IDs shaped ``(B, C, T)``.
+
+        Returns:
+            Audio embeddings shaped ``(B, T, E)``.
+        """
         audio_embedding = None
         for c in range(audio_tokens.size(1)):
             embedding = self.audio_embeddings[c](audio_tokens[:, c, :])
@@ -935,6 +987,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     def embed_phoneme_tokens(self, phoneme_tokens):
         # phoneme_tokens: (B, S, T')
+        """Embed and average phoneme tokens across stacked channels.
+
+        Args:
+            phoneme_tokens: Phoneme token IDs shaped ``(B, S, T)``.
+
+        Returns:
+            Phoneme embeddings shaped ``(B, T, E)``.
+        """
         phoneme_embedding = None
         for c in range(phoneme_tokens.size(1)):
             embedding = self.phoneme_embeddings[c](phoneme_tokens[:, c, :])
@@ -947,6 +1007,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     def forward(self, inputs_embeds, attention_mask, use_cache=False, past_key_values=None, cache_position=None):
         # Only pass cache_position for NemotronH (HF transformers may not accept it)
+        """Run the configured decoder backend.
+
+        Args:
+            inputs_embeds: Input embeddings for the decoder.
+            attention_mask: Optional decoder attention mask.
+            use_cache: Whether to return and update the key-value cache.
+            past_key_values: Optional existing key-value cache.
+            cache_position: Optional absolute cache positions used by Nemotron-H.
+
+        Returns:
+            Decoder backend output.
+        """
         if self.decoder_type == 'nemotron_h':
             backend_out = self.decoder(
                 inputs_embeds=inputs_embeds,
@@ -967,6 +1039,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def logits_to_audio_codes(self, all_code_logits, audio_codes_lens):
         # all_code_logits: (B, T', num_codebooks * num_tokens_per_codebook)
         # audio_codes_lens: (B,)
+        """Convert per-codebook logits to masked argmax audio-code predictions.
+
+        Args:
+            all_code_logits: Logits shaped ``(B, T, C * V)``.
+            audio_codes_lens: Valid output lengths shaped ``(B,)``.
+
+        Returns:
+            Predicted audio codes shaped ``(B, C, T)``.
+        """
         all_preds = []
         for idx in range(self.num_audio_codebooks * self.frame_stacking_factor):
             si = idx * self.num_all_tokens_per_codebook
@@ -987,6 +1068,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self, all_code_logits_t, temperature=0.7, topk=80, unfinished_items={}, finished_items={}
     ):
         # all_code_logits_t: (B, num_codebooks * num_tokens_per_codebook), logits at a given timestep
+        """Sample one token per audio-code channel from filtered logits.
+
+        Args:
+            all_code_logits_t: Per-step logits shaped ``(B, C * V)``.
+            temperature: Sampling temperature; non-positive values use argmax.
+            topk: Number of highest-logit candidates retained per channel.
+            unfinished_items: Batch indices for which EOS must be suppressed.
+            finished_items: Batch indices forced to emit EOS.
+
+        Returns:
+            Sampled stacked audio-code tokens shaped ``(B, C)``.
+        """
         all_preds = []
         for idx in range(self.num_audio_codebooks * self.frame_stacking_factor):
             si = idx * self.num_all_tokens_per_codebook
@@ -1021,6 +1114,16 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     def sample_codes_from_logits_phoneme(self, all_code_logits_t, temperature=0.7, topk=80):
         # all_code_logits_t: (B, phoneme_stacking_factor * phoneme_vocab_size), logits at a given timestep
+        """Sample one token per stacked phoneme channel from filtered logits.
+
+        Args:
+            all_code_logits_t: Per-step phoneme logits shaped ``(B, S * V)``.
+            temperature: Sampling temperature; non-positive values use argmax.
+            topk: Number of highest-logit candidates retained per channel.
+
+        Returns:
+            Sampled phoneme tokens shaped ``(B, S)``.
+        """
         all_preds = []
         for idx in range(self.phoneme_stacking_factor):
             si = idx * self.phoneme_vocab_size
@@ -2602,4 +2705,5 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
+        """Return metadata for pretrained models exposed by this class."""
         return []

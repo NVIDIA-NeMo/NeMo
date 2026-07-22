@@ -1082,7 +1082,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_channel_embedding = torch.cat([phoneme_channel_embedding, padding], dim=1)
             combined_channel_embedding = combined_channel_embedding + phoneme_channel_embedding
 
-        if user_audio_embedded is not None:
+        if user_audio_embedded is not None and not dropout_conditional_input:
             bos_user_pad = torch.zeros(
                 user_audio_embedded.size(0),
                 1,

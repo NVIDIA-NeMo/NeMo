@@ -56,16 +56,13 @@ from nemo.collections.speechlm2.parts.pretrained import (
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
-
-
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
-
 from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 
 def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     """
     Delays each EOS token by `shift` steps forward. Replaces original EOS with PAD.
-    Skips move if it would go out of bounds or overwrite another EOS/PAD.
+    Skips move if it would go out of bounds or overwrite another EOS.
     Safe for GPU execution.
     """
     B, T = tokens.shape
@@ -83,7 +80,7 @@ def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     eos_pos = eos_indices[:, 1]  # [N]
     new_pos = eos_pos + shift  # [N]
 
-    # Filter: new position must be in bounds and not overwrite EOS or PAD
+    # Filter: new position must be in bounds and not overwrite EOS
     valid = (new_pos < T)
     if valid.any():
         b_idx = b_idx[valid]
@@ -115,7 +112,7 @@ def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int 
         eos_token_id (int): Token ID for <eos>
 
     Returns:
-        torch.Tensor: FloatTensor of shape (B, T), with 1.0 for speaking, 0.0 for silence.
+        torch.Tensor: LongTensor of shape (B, T), with 1 for speaking, 0 for silence.
 
     Note BOS is considered as speaking (1) and EOS as non speaking 0
     """
@@ -270,7 +267,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
-            if '.nemo' in checkpoint_path:
+            if checkpoint_path.endswith('.nemo'):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
                     checkpoint_path = f"{tmpdir}/model_weights.ckpt"
@@ -726,7 +723,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     audio_pred = torch.cat([audio_pred, audio_pred_i], dim=1)
                 audio_pred_len += audio_pred_i_len
 
-            logging.info(f"Autoregressive inference step: {t} of {T} !")
+            if t % 50 == 0:
+                logging.info(f"Autoregressive inference step: {t} of {T} !")
 
         # Build final RNNT transcript from partial hypotheses (one asr_emb frame per step).
         if inference_state.get("rnnt_partial_hypotheses") is not None:

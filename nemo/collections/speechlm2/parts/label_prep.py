@@ -21,7 +21,7 @@ from nemo.utils import logging
 def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     """
     Delays each EOS token by `shift` steps forward. Replaces original EOS with PAD.
-    Skips move if it would go out of bounds or overwrite another EOS/PAD.
+    Skips move if it would go out of bounds or overwrite another EOS.
     Safe for GPU execution.
     """
     B, T = tokens.shape
@@ -39,7 +39,7 @@ def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     eos_pos = eos_indices[:, 1]  # [N]
     new_pos = eos_pos + shift  # [N]
 
-    # Filter: new position must be in bounds and not overwrite EOS or PAD
+    # Filter: new position must be in bounds and not overwrite EOS
     valid = (new_pos < T)
     if valid.any():
         b_idx = b_idx[valid]

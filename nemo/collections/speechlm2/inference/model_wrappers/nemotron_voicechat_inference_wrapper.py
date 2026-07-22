@@ -457,6 +457,23 @@ class NemotronVoicechatInferenceWrapper:
         # Convert to dict for model initialization
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
 
+        # Legacy cas_config cleanup (same as convert_eartts_checkpoint.py): checkpoints may
+        # still carry pretrained_tokenizer_name, but ear_tts_model.CharAwareSubwordEncoder
+        # no longer accepts it. vLLM Triton still builds NemotronVoiceChat/DuplexEARTTS
+        # before swapping TTS to the vLLM engine.
+        try:
+            cas_cfg = (
+                cfg_dict.get("model", {})
+                .get("speech_generation", {})
+                .get("model", {})
+                .get("tts_config", {})
+                .get("cas_config")
+            )
+            if isinstance(cas_cfg, dict):
+                cas_cfg.pop("pretrained_tokenizer_name", None)
+        except Exception:
+            pass
+
         # Step 3: Initialize model structure
         logging.info("Initializing model structure...")
         start_DuplexS2S_init = time.time()
@@ -603,12 +620,23 @@ class NemotronVoicechatInferenceWrapper:
 
             logging.info(f"  Loading {len(eartts_tts_only)} TTS parameters...")
 
+            # Load via DuplexEARTTS.load_state_dict so pre-baked speaker latents
+            # (audio_prompt_latents.Aria, etc.) are registered before vLLM TTS warmup.
+            tts_sd = {k[len("tts_model."):]: v for k, v in eartts_tts_only.items()}
             start_tts_load_state_dict = time.time()
-            missing, unexpected = self.model.load_state_dict(eartts_tts_only, strict=False)
+            missing, unexpected = self.model.tts_model.load_state_dict(tts_sd, strict=False)
             logging.info(f"Time taken to load TTS state dict: {time.time() - start_tts_load_state_dict} seconds")
+            if self.speaker_name is not None:
+                loaded_latents = list(self.model.tts_model.audio_prompt_latents.keys())
+                logging.info(f"  Pre-baked audio_prompt_latents after load: {loaded_latents}")
+                if self.speaker_name not in self.model.tts_model.audio_prompt_latents:
+                    logging.warning(
+                        f"  Speaker '{self.speaker_name}' not in checkpoint latents {loaded_latents}; "
+                        "TTS warmup may fail unless set_audio_prompt_latent() is called."
+                    )
 
-            missing_tts = [k for k in missing if any(k.startswith(prefix) for prefix in tts_keys_filter)]
-            unexpected_tts = [k for k in unexpected if any(k.startswith(prefix) for prefix in tts_keys_filter)]
+            missing_tts = list(missing)
+            unexpected_tts = list(unexpected)
 
             if missing_tts:
                 logging.info(f"  {len(missing_tts)} TTS keys missing")

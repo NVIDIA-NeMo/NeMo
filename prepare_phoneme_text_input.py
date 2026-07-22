@@ -5,6 +5,19 @@
 
 Examples:
     python prepare_phoneme_text_input.py --language en --text "The glimble fox arrived." --word glimble
+    python prepare_phoneme_text_input.py --language en --text "The colonel ate quinoa." --word colonel --word quinoa
+    python prepare_phoneme_text_input.py --language en --text "She ordered gnocchi in La Jolla." --word gnocchi --word La --word Jolla
+    python prepare_phoneme_text_input.py --language en --text "The choir toured Worcestershire." --word choir --word Worcestershire
+    python prepare_phoneme_text_input.py --language en --text "The yacht waited by the quay." --word yacht --word quay
+    python prepare_phoneme_text_input.py --language en --text "The recipe used meringue." --word recipe --word meringue
+    python prepare_phoneme_text_input.py --language en --text "The epitome was hyperbole." --word epitome --word hyperbole
+    python prepare_phoneme_text_input.py --language en --text "A subtle draught chilled the room." --word subtle --word draught
+    python prepare_phoneme_text_input.py --language en --text "The aisle was full of debris." --word aisle --word debris
+    python prepare_phoneme_text_input.py --language en --text "The psalm comforted the heir." --word psalm --word heir
+    python prepare_phoneme_text_input.py --language en --text "They visited Greenwich and Leicester." --word Greenwich --word Leicester
+    python prepare_phoneme_text_input.py --language en --text "The choir sang about chaos." --word choir --word chaos
+    python prepare_phoneme_text_input.py --language en --text "The island had a sword museum." --word island --word sword
+    python prepare_phoneme_text_input.py --language en --text "The depot had a facade." --word depot --word facade
     python prepare_phoneme_text_input.py --language es --text "La casa lupina canta." --prob 0.5 --seed 1234
 """
 

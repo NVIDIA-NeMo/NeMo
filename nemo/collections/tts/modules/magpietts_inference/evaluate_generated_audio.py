@@ -279,6 +279,7 @@ def load_evaluation_models(
     Args:
         sv_model_type: Speaker verification model type ("wavlm" or "titanet").
         asr_model_name: Name of the NeMo ASR model (used only when language is "en").
+        asr_model_type: Type of ASR mode ("nemo" or "nemo_with_prompt" or "whisper").
         device: Device to place models on.
 
     Returns:

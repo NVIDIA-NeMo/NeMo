@@ -371,6 +371,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
             )
             language_list.append(language)
+            context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
 
             # Target and Source Codes
             if self.load_cached_codes_if_available:
@@ -431,7 +432,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
 
                 if self.load_cached_codes_if_available:
-                    if len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
+                    if context_text is None and len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
                         sup = random.choice(matching_supervisions)
                         codes_array = cut.target_codes.load().astype(np.int32)
                         start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
@@ -445,7 +446,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     context_audio_codes_list.append(context_audio_codes)
                     context_audio_codes_len_list.append(context_audio_codes.shape[0])
                 else:
-                    if len(matching_supervisions) > 0:
+                    if context_text is None and len(matching_supervisions) > 0:
                         sup = random.choice(matching_supervisions)
                         with fp32_precision():
                             turn_cut = cut.resample(self.sample_rate, recording_field="target_audio").truncate(
@@ -497,9 +498,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
             # Context Text
             if self.use_text_conditioning_tokenizer:
-                context_text = next(
-                    (sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None
-                )
                 if context_text is not None:
                     if self.text_context_remapping is not None and context_text in self.text_context_remapping:
                         if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:

@@ -40,7 +40,7 @@ from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
-def setup_tokenizers(all_tokenizers_config, mode='train'):
+def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=False):
     # Being used in both model and worker_init_fn, so it is defined here
     # Returns two tokenizers: one for TTS transcript and one for conditioning text (if needed)
     tokenizers = []
@@ -55,8 +55,8 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
                 text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
-            # Ensure locale_specific_punct is persisted so it survives .nemo save/restore.
-            # New training for locales with extended punctuation should use the full set (True).
+            # Persist versioned tokenizer defaults so they survive .nemo save/restore. Archived configs that
+            # predate these fields must use the original defaults to preserve their trained token-to-ID mapping.
             if (
                 hasattr(tokenizer_config, '_target_')
                 and tokenizer_config._target_
@@ -66,9 +66,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
                 and not hasattr(tokenizer_config, 'locale_specific_punct')
             ):
                 with open_dict(tokenizer_config):
-                    tokenizer_config.locale_specific_punct = True
-            # Persist punct_version=2 for HindiCharsTokenizer so .nemo save/restore
-            # always uses the expanded punctuation set (with dandas).
+                    tokenizer_config.locale_specific_punct = not use_legacy_defaults
             if (
                 hasattr(tokenizer_config, '_target_')
                 and tokenizer_config._target_
@@ -76,22 +74,18 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
                 and not hasattr(tokenizer_config, 'punct_version')
             ):
                 with open_dict(tokenizer_config):
-                    tokenizer_config.punct_version = 2
-            tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
-            # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
-            if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
-                tokenizer.set_phone_prob(1.0)
-
-            # Persist charset_version so it's saved in .nemo archives and
-            # update_config_for_inference can distinguish old checkpoints
-            # (missing charset_version → v1) from new ones.
+                    tokenizer_config.punct_version = 1 if use_legacy_defaults else 2
             if (
                 hasattr(tokenizer_config, '_target_')
                 and tokenizer_config._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS
                 and not hasattr(tokenizer_config, 'charset_version')
             ):
-                with open_dict(all_tokenizers_config):
-                    tokenizer_config.charset_version = DEFAULT_CHARSET_VERSION
+                with open_dict(tokenizer_config):
+                    tokenizer_config.charset_version = 1 if use_legacy_defaults else DEFAULT_CHARSET_VERSION
+            tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
+            # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
+            if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
+                tokenizer.set_phone_prob(1.0)
 
         tokenizers.append(tokenizer)
         tokenizer_names.append(tokenizer_name)

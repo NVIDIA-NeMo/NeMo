@@ -434,6 +434,7 @@ class MagpieTTSModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
+            use_legacy_defaults=cfg.get('nemo_version') is not None,
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)
@@ -1055,30 +1056,6 @@ class MagpieTTSModel(ModelPT):
             else:
                 new_state_dict[key] = state_dict[key]
 
-        text_embedding_key = 'text_embedding.weight'
-        checkpoint_embedding = new_state_dict.get(text_embedding_key)
-        model_embedding = getattr(self, 'text_embedding', None)
-        conditioning_tokens = self.tokenizer.num_tokens_per_tokenizer.get(self.text_conditioning_tokenizer_name, 0)
-        if (
-            self.legacy_text_conditioning
-            and checkpoint_embedding is not None
-            and model_embedding is not None
-            and conditioning_tokens > 0
-            and checkpoint_embedding.shape[0] == model_embedding.num_embeddings + conditioning_tokens
-            and checkpoint_embedding.shape[1:] == model_embedding.weight.shape[1:]
-        ):
-            # Some legacy checkpoints include the conditioning-token rows in the transcript embedding, directly
-            # before BOS/EOS. The legacy model keeps conditioning embeddings separate, so remove only that known
-            # slice while preserving the checkpoint's trained BOS/EOS rows.
-            transcript_tokens = model_embedding.num_embeddings - 2
-            new_state_dict[text_embedding_key] = torch.cat(
-                [checkpoint_embedding[:transcript_tokens], checkpoint_embedding[-2:]], dim=0
-            )
-            logging.warning(
-                f"Migrated legacy text embedding from {tuple(checkpoint_embedding.shape)} to "
-                f"{tuple(new_state_dict[text_embedding_key].shape)} by removing {conditioning_tokens} "
-                "conditioning-token rows"
-            )
         return new_state_dict
 
     def load_state_dict(self, state_dict, strict=True):

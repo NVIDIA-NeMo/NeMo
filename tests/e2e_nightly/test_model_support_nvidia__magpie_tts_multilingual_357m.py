@@ -14,13 +14,17 @@
 
 """Functional tests for nvidia/magpie_tts_multilingual_357m."""
 
+import gc
 import os
 
 import pytest
 import torch
+from huggingface_hub import hf_hub_download
 
 MODEL_NAME = "nvidia/magpie_tts_multilingual_357m"
 NEMO_FILE = "nvidia__magpie_tts_multilingual_357m.nemo"
+HF_NEMO_FILE = "magpie_tts_multilingual_357m.nemo"
+MODEL_RELEASES = ("v2512", "v2602", "v2607")
 
 MODEL_DIR = os.environ.get(
     "NEMO_MODEL_SUPPORT_DIR",
@@ -39,6 +43,22 @@ def _load_model():
     filepath = os.path.join(MODEL_DIR, NEMO_FILE)
     _model = MagpieTTSModel.restore_from(filepath, map_location="cpu").to(_DEVICE)
     return _model
+
+
+@pytest.mark.with_downloads
+@pytest.mark.parametrize("revision", MODEL_RELEASES)
+def test_model_release_restore(revision):
+    """Ensure every published MagpieTTS release remains loadable by current NeMo code."""
+    from nemo.collections.tts.models import MagpieTTSModel
+
+    filepath = hf_hub_download(repo_id=MODEL_NAME, filename=HF_NEMO_FILE, revision=revision)
+    model = MagpieTTSModel.restore_from(filepath, map_location="cpu")
+
+    assert model is not None
+    assert model.text_embedding.num_embeddings == len(model.tokenizer.tokens) + 2
+
+    del model
+    gc.collect()
 
 
 def test_model_init():

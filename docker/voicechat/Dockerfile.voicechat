@@ -1,0 +1,50 @@
+FROM vllm/vllm-openai:v0.11.0
+
+WORKDIR /root
+
+# Install git
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+# Clone the fork (shallow clone to save time/space)
+RUN git clone --depth 1 --branch vklimkov/voicechat \
+    https://github.com/vklimkov-nvidia/vllm.git /tmp/vllm-fork
+
+# Overlay: copy fork's Python files over the installed vllm package.
+# This preserves the pre-compiled .so extensions from the base image
+# while replacing/adding only the Python source files.
+RUN VLLM_PKG=$(python3 -c "import vllm; print(vllm.__path__[0])") && \
+    echo "Overlaying Python files onto: $VLLM_PKG" && \
+    cp -r /tmp/vllm-fork/vllm/* "$VLLM_PKG/" && \
+    rm -rf /tmp/vllm-fork
+
+# Remove distutils-managed blinker that blocks pip uninstall
+RUN rm -rf /usr/lib/python3/dist-packages/blinker* && \
+    pip install blinker --force-reinstall --no-deps
+
+
+# Install mamba deps BEFORE nemo_toolkit[all]. NeMo pulls CUDA 12.8 nvcc
+# packages that break compiling mamba-ssm against torch 2.13.0+cu130.
+RUN pip install ninja packaging && \
+    pip install causal-conv1d --no-build-isolation && \
+    pip install mamba-ssm --no-build-isolation
+
+RUN pip install "nemo_toolkit[all]" && \
+    pip install transformers==4.55.2 && \
+    pip install torch_audiomentations && \
+    # nemo_toolkit may pull an incompatible torchvision; keep it matched to torch 2.8.0+cu128
+    pip install --force-reinstall "torchvision==0.23.0+cu128" \
+        --index-url https://download.pytorch.org/whl/cu128 && \
+    # breaks offline VoiceChat imports in this image; remove if present
+    python3 -m pip uninstall -y nvidia-resiliency-ext || true && \
+    # pin last so later installs cannot bump NumPy past Numba's max (2.2)
+    pip install numpy==2.2
+
+COPY nemotron_h.py /tmp/nemotron_h.py
+RUN mv /tmp/nemotron_h.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/nemotron_h.py
+    
+COPY eartts.py /tmp/eartts.py
+RUN mv /tmp/eartts.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/eartts.py
+# Set working directory for the application
+WORKDIR /ws
+
+ENTRYPOINT ["/bin/bash"]

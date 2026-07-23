@@ -59,7 +59,7 @@ def _load_file(mod_name: str, file_path: str):
 
 
 def import_nemotron_voicechat(code_dir: str) -> Type:
-    """Load NemotronVoiceChat from a NeMo_fc source tree without heavy __init__ chains."""
+    """Load NemotronVoiceChat from a Speech source tree without heavy __init__ chains."""
     code_dir = code_dir.rstrip("/")
     if code_dir not in sys.path:
         sys.path.insert(0, code_dir)

@@ -21,7 +21,7 @@ Usage:
         --wav /path/to/input.wav \\
         --system-prompt "You are a helpful assistant." \\
         --output-dir /path/to/output \\
-        --code-dir /path/to/NeMo_fc
+        --code-dir /path/to/Speech
 """
 
 from __future__ import annotations
@@ -30,6 +30,14 @@ import argparse
 import importlib.util
 import os
 import sys
+
+DEFAULT_SYSTEM_PROMPT = (
+    "You are an AI voice assistant developed by NVIDIA. "
+    "Your name is NVIDIA Voice Chat. "
+    "Answer in a spoken, conversational style rather than a written one. "
+    "Do not repeat the same sentence over and over again. "
+    "Start the conversation by greeting the user."
+)
 
 
 def _load_offline_voicechat_module(code_dir: str):
@@ -50,8 +58,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, help="HF checkpoint directory (config.json + weights)")
     parser.add_argument("--wav", required=True, help="Input wav file (resampled to 16 kHz mono)")
     parser.add_argument("--output-dir", required=True, help="Directory for {input_stem}_output.txt, _output.wav, _combined.wav")
-    parser.add_argument("--system-prompt", default="", help="Optional system prompt")
-    parser.add_argument("--code-dir", default=None, help="NeMo_fc source tree")
+    parser.add_argument(
+        "--system-prompt",
+        default=DEFAULT_SYSTEM_PROMPT,
+        help="System prompt (defaults to the NVIDIA Voice Chat prompt)",
+    )
+    parser.add_argument("--code-dir", default=None, help="Speech source tree")
     parser.add_argument("--device", default="cuda", help="Torch device")
     return parser.parse_args()
 

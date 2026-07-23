@@ -7,7 +7,7 @@
 #   OUTPUT_DIR   Output directory
 #
 # Optional:
-#   NEMO_FC_DIR, SYSTEM_PROMPT, HF cache vars, device
+#   NEMO_DIR, SYSTEM_PROMPT, HF cache vars, device
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ set -euo pipefail
 : "${OUTPUT_DIR:?Set OUTPUT_DIR to your output directory}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CODE_DIR="${NEMO_FC_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+CODE_DIR="${NEMO_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 SYSTEM_PROMPT="${SYSTEM_PROMPT:-You are a helpful AI voice assistant.}"
 
 export PYTHONPATH="${CODE_DIR}:${PYTHONPATH:-}"

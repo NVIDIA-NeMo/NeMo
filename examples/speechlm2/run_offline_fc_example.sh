@@ -2,21 +2,20 @@
 # Example: offline inference with function calling (two-pass).
 #
 # Required:
-#   CHECKPOINT, WAV, OUTPUT_DIR, TEMPLATE, API_RESPONSE_JSON
+#   CHECKPOINT, WAV, OUTPUT_DIR, API_RESPONSE_JSON
 #
 # Optional:
-#   NEMO_FC_DIR, TOOLS_JSON, SYSTEM_MESSAGE
+#   NEMO_DIR, TEMPLATE, TOOLS_JSON, SYSTEM_MESSAGE
 
 set -euo pipefail
 
 : "${CHECKPOINT:?Set CHECKPOINT to your HF checkpoint directory}"
 : "${WAV:?Set WAV to your input wav file}"
 : "${OUTPUT_DIR:?Set OUTPUT_DIR to your output directory}"
-: "${TEMPLATE:?Set TEMPLATE to your Jinja chat template}"
 : "${API_RESPONSE_JSON:?Set API_RESPONSE_JSON to your tool response JSON}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CODE_DIR="${NEMO_FC_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+CODE_DIR="${NEMO_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 
 export PYTHONPATH="${CODE_DIR}:${PYTHONPATH:-}"
 export HF_HOME="${HF_HOME:-${TORCH_HOME:-/tmp/cache}}"
@@ -33,11 +32,11 @@ mkdir -p "${OUTPUT_DIR}"
 ARGS=(
   --checkpoint "${CHECKPOINT}"
   --wav "${WAV}"
-  --template "${TEMPLATE}"
   --api-response-json "${API_RESPONSE_JSON}"
   --output-dir "${OUTPUT_DIR}"
   --code-dir "${CODE_DIR}"
 )
+[[ -n "${TEMPLATE:-}" ]] && ARGS+=(--template "${TEMPLATE}")
 [[ -n "${TOOLS_JSON:-}" ]] && ARGS+=(--tools-json "${TOOLS_JSON}")
 [[ -n "${SYSTEM_MESSAGE:-}" ]] && ARGS+=(--system-message "${SYSTEM_MESSAGE}")
 

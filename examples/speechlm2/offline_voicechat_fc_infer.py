@@ -19,10 +19,9 @@ Usage:
     python offline_voicechat_fc_infer.py \\
         --checkpoint /path/to/hf_checkpoint \\
         --wav /path/to/input.wav \\
-        --template /path/to/template.jinja \\
         --api-response-json /path/to/random_number_response.json \\
         --output-dir /path/to/output \\
-        --code-dir /path/to/NeMo_fc
+        --code-dir /path/to/Speech
 """
 
 from __future__ import annotations
@@ -33,11 +32,35 @@ import json
 import os
 import sys
 
+DEFAULT_TEMPLATE = os.path.join(os.path.dirname(__file__), "function_calling", "template.jinja")
+
 DEFAULT_SYSTEM_MESSAGE = (
-    "You are a helpful and harmless AI voice assistant. "
-    "Answer in a spoken, conversational style rather than a written one. "
-    "Do not repeat the same sentence over and over again. "
-    "Start the conversation by greeting the user."
+    "You are an AI voice assistant developed by NVIDIA. "
+    "Your name is NVIDIA Voice Chat. "
+    "Your job is to be helpful and harmless and have engaging conversations in English. "
+    "Maintain a warm and friendly tone. "
+    "Keep the dialogue open and ongoing. "
+    "Be clear and direct, especially when answering yes or no questions and multiple-choice questions. "
+    "Avoid long answers unless the user asks you to provide details or context. "
+    "You must provide diverse responses and rephrase answers if the user asks the same question. "
+    "DO NOT interrupt the user when they are speaking, let them finish their turn before answering."
+    "\n\nWhen you receive a request, follow this decision process:\n"
+    "1. Does the request match one of your available tools below? If yes, you MUST call that tool - "
+    "never answer it directly from your own knowledge, even if you think you know the answer.\n"
+    "2. Is it a general knowledge question (history, science, geography, math, facts, etc.)? "
+    "If yes, answer directly from your own knowledge - do not call any tool.\n"
+    "3. Does it require an external action or live data that none of your tools cover "
+    "(e.g. ordering food, sending email)? If yes, politely say you don't have that capability."
+    "\n\nNEVER say \"I don't have a tool for that\" for general knowledge questions you can answer yourself."
+    "\n\nDO NOT use any tools when not needed to answer the user's requests, under no circumstance."
+    "\n\nYou are an expert across history, geography, science, math, literature, biographies, languages, "
+    "recipes, programming, current affairs, and general knowledge. When the user asks about any of these, "
+    "answer directly and conversationally from your own knowledge — no <TOOLCALL>."
+    "\n\nCall a tool ONLY when the user's request matches one of the tools listed in <AVAILABLE_TOOLS> below. "
+    "For every other request, do not call any tool — just answer from your knowledge. "
+    "Never invent or call a tool name that is not literally in <AVAILABLE_TOOLS>."
+    "\n\nTool-call arguments must be values the user spoke. "
+    "If a required argument is missing, ask the user; never guess."
 )
 
 DEFAULT_TOOLS = [
@@ -75,7 +98,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--wav", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--template", required=True, help="Jinja chat template (tools + system message)")
+    parser.add_argument(
+        "--template",
+        default=DEFAULT_TEMPLATE,
+        help="Jinja chat template (defaults to function_calling/template.jinja)",
+    )
     parser.add_argument("--api-response-json", required=True, help="Pre-built tool response JSON")
     parser.add_argument("--tools-json", default=None, help="Tool definitions JSON (defaults to generate_random_number)")
     parser.add_argument("--system-message", default=DEFAULT_SYSTEM_MESSAGE)

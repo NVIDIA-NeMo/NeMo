@@ -1,0 +1,41 @@
+{#-
+    Voicechat tool-calling chat template for Nano v2.
+
+    Adapted from the full nano_v2_chat_template.jinja released with Nemotron Nano v2
+    (see https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2).
+    This template renders only the system prompt (with tool definitions
+    injected), since the s2s_voicechat backend receives audio as user
+    input and tokenises the system prompt separately.
+
+    Variables:
+      - system_message (str): original system prompt text.
+      - tools (list|None): OpenAI-format tool definitions.
+-#}
+{{- system_message -}}
+{%- if tools -%}
+    {%- if system_message != '' -%}
+        {{- '\n\n' -}}
+    {%- endif -%}
+    {{- 'You can use the following tools to assist the user if required:' -}}
+    {{- '\n<AVAILABLE_TOOLS>[' -}}
+    {%- for tool in tools -%}
+        {%- set _t = (tool.function if tool.function is defined else tool) -%}
+        {%- set _d = {} -%}
+        {%- for k, v in _t.items() if k != 'type' -%}
+            {%- set _ = _d.update({k: v}) -%}
+        {%- endfor -%}
+        {{- _d | tojson -}}
+        {{- ', ' if not loop.last else '' -}}
+    {%- endfor -%}
+    {{- ']</AVAILABLE_TOOLS>\n\n' -}}
+
+    {{- 'If you decide to call any tool(s), use the following format:\n' -}}
+    {{- '<TOOLCALL>[{"name": "tool_name1", "arguments": "tool_args1"}, ' -}}
+    {{- '{"name": "tool_name2", "arguments": "tool_args2"}]' -}}
+    {{- '</TOOLCALL>\n\n' -}}
+
+    {{- 'The user will execute tool-calls and return responses from tool(s) in this format:\n' -}}
+    {{- '<TOOL_RESPONSE>[{"tool_response1"}, {"tool_response2"}]</TOOL_RESPONSE>\n\n' -}}
+
+    {{- 'Based on the tool responses, you can call additional tools if needed, correct tool calls if any errors are found, or just respond to the user.' -}}
+{%- endif -%}

@@ -106,16 +106,27 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
     with a pretrained NeMo ``ASRModel``.
     The result is assigned to ``model.perception`` attribute and is trainable.
 
+    If ``pretrained_asr`` is empty (e.g. cleared in a combined inference checkpoint) or
+    ``pretrained_weights=False``, the ASR ``.nemo`` file is skipped and
+    ``AudioPerceptionModule`` is built directly from the embedded perception config.
+    This allows inference from a self-contained combined checkpoint without the original
+    ASR ``.nemo`` file.
+
     If user config specifies encoder parameters, they will override the pretrained model's config.
     """
-    if pretrained_weights:
-        # Save user-specified encoder config before loading pretrained model
+    # Load from ASR .nemo when pretrained_asr is set; use embedded config when empty.
+    # During inference the combine step clears pretrained_asr to "" so the
+    # full perception config embedded in config.json is used instead.
+    pretrained_asr_path = OmegaConf.select(model.cfg, "pretrained_asr") or ""
+
+    if pretrained_asr_path:
+        # Load from ASR .nemo whenever the path is set, regardless of pretrained_weights.
+        # pretrained_weights still controls LLM loading (line 226 in duplex_stt_model.py).
         user_encoder_config = {}
 
         if 'encoder' in model.cfg.perception:
             user_encoder_config = OmegaConf.to_container(model.cfg.perception.encoder, resolve=True)
 
-        pretrained_asr_path = os.environ.get("S2S_PRETRAINED_ASR", model.cfg.pretrained_asr)
         logging.info(f"setup_speech_encoder: loading ASR from {pretrained_asr_path}")
         asr = load_pretrained_nemo(ASRModel, pretrained_asr_path).eval()
         with open_dict(model.cfg):
@@ -129,13 +140,14 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
                         model.cfg.perception.encoder[key] = value
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
         model.perception.load_state_dict(asr.state_dict(), strict=False)
-        # Expose RNNT decoder+joint for EOU/BOU turn-taking as proper submodules
-        if hasattr(asr, 'decoder') and hasattr(asr, 'joint'):
-            model._rnnt_decoder = asr.decoder.eval()
-            model._rnnt_joint = asr.joint.eval()
-            model._rnnt_blank_id = getattr(asr.decoding, 'blank_id', 1024)
-            logging.info(f"setup_speech_encoder: RNNT decoder+joint exposed (blank_id={model._rnnt_blank_id})")
+        # RNNT decoder+joint are NOT exposed here — training does not need them
+        # and registering them as nn.Module submodules would include them in
+        # state_dict() and Lightning checkpoints unnecessarily, causing DTensor
+        # conflicts in ModelParallel mode.
+        # They are loaded separately at inference time via setup_rnnt_from_combined_checkpoint.
     else:
+        # Inference from combined checkpoint (pretrained_asr cleared) or pretrained_weights=False
+        logging.info("setup_speech_encoder: pretrained_asr not set — using embedded perception config")
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
 
 

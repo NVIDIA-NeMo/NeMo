@@ -20,7 +20,6 @@ import os
 import pytest
 import torch
 from huggingface_hub import hf_hub_download
-from omegaconf import open_dict
 
 MODEL_NAME = "nvidia/magpie_tts_multilingual_357m"
 NEMO_FILE = "nvidia__magpie_tts_multilingual_357m.nemo"

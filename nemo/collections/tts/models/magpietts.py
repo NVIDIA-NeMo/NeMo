@@ -1054,7 +1054,6 @@ class MagpieTTSModel(ModelPT):
                 new_state_dict[new_key] = state_dict[key]
             else:
                 new_state_dict[key] = state_dict[key]
-
         return new_state_dict
 
     def load_state_dict(self, state_dict, strict=True):

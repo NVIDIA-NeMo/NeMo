@@ -53,14 +53,7 @@ def test_model_release_restore(revision):
     from nemo.collections.tts.models import MagpieTTSModel
 
     filepath = hf_hub_download(repo_id=MODEL_NAME, filename=HF_NEMO_FILE, revision=revision)
-    if revision == "v2602":
-        # Regression coverage: loading must use NeMo's restore state rather than optional config metadata.
-        config = MagpieTTSModel.restore_from(filepath, return_config=True)
-        with open_dict(config):
-            config.pop("nemo_version", None)
-        model = MagpieTTSModel.restore_from(filepath, override_config_path=config, map_location="cpu")
-    else:
-        model = MagpieTTSModel.restore_from(filepath, map_location="cpu")
+    model = MagpieTTSModel.restore_from(filepath, map_location="cpu")
 
     assert model is not None
     assert model.text_embedding.num_embeddings == len(model.tokenizer.tokens) + 2

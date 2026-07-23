@@ -324,10 +324,6 @@ class MagpieTTSModel(ModelPT):
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
-        # Nested model restores, such as the audio codec below, clear ModelPT's global restore flag.
-        # Capture the parent Magpie restore state before constructing any nested models.
-        is_model_being_restored = self._is_model_being_restored()
-
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
@@ -438,7 +434,6 @@ class MagpieTTSModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
-            use_legacy_defaults=is_model_being_restored,
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)

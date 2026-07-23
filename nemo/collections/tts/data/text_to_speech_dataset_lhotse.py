@@ -40,7 +40,7 @@ from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
-def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=False):
+def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=True):
     # Being used in both model and worker_init_fn, so it is defined here
     # Returns two tokenizers: one for TTS transcript and one for conditioning text (if needed)
     tokenizers = []

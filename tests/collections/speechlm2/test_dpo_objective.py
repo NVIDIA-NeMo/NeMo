@@ -1,5 +1,6 @@
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 
+import hashlib
 import math
 
 import torch
@@ -9,6 +10,8 @@ from nemo.collections.speechlm2.dpo.model import _state_contract_digest, _state_
 from nemo.collections.speechlm2.dpo.surface import (
     ATTENTION_LAYERS,
     HERO2_ACOUSTIC_LAYERS,
+    HISTORICAL_R2_SURFACE_INVENTORY_SHA256,
+    HISTORICAL_R2_SURFACE_NAMES_SHA256,
     MAMBA_LAYERS,
     SELECTED_SCALAR_COUNT,
     selected_parameter_names,
@@ -52,7 +55,12 @@ def test_hero2_partial_acoustic_surface_contract_is_fixed():
     assert len(ATTENTION_LAYERS) == 6
     assert len(MAMBA_LAYERS) == 23
     assert HERO2_ACOUSTIC_LAYERS == (30, 31)
-    assert SELECTED_SCALAR_COUNT == 1_074_327_616
+    assert SELECTED_SCALAR_COUNT == 1_074_318_016
+    assert hashlib.sha256("\n".join(names).encode()).hexdigest() == HISTORICAL_R2_SURFACE_NAMES_SHA256
+    # This digest is the preserved r2 DCP's complete `name|shape|numel`
+    # inventory.  It makes the historical source for the scalar count explicit
+    # without baking a duplicate 269-row shape table into the training code.
+    assert HISTORICAL_R2_SURFACE_INVENTORY_SHA256 == "20cd5cb3a3fbdaa5a91e430e7a65dfdc53c463b72382e0d62a56039b4a7f9dfc"
     assert names[-2:] == ("perception.proj.weight", "perception.proj.bias")
 
 

@@ -31,7 +31,17 @@ HERO2_ENCODER_SUFFIXES = (
 )
 HERO2_ACOUSTIC_LAYERS = (30, 31)
 SELECTED_TENSOR_COUNT = 269
-SELECTED_SCALAR_COUNT = 1_074_327_616
+# Read directly from the preserved historical-r5 r2 s01 DCP metadata, not
+# from hand arithmetic.  The 269 selected names/shapes total 1,074,318,016
+# scalars.  The old compatibility program declared 1,074,327,616 (9,600 too
+# high) but never dynamically asserted that value.
+SELECTED_SCALAR_COUNT = 1_074_318_016
+
+# SHA256 of newline-joined ``name|shape|numel`` records from the immutable r2
+# checkpoint metadata.  It is provenance for the count above; the live
+# inventory remains the authoritative runtime check.
+HISTORICAL_R2_SURFACE_INVENTORY_SHA256 = "20cd5cb3a3fbdaa5a91e430e7a65dfdc53c463b72382e0d62a56039b4a7f9dfc"
+HISTORICAL_R2_SURFACE_NAMES_SHA256 = "b7066381abcfd73486e7bcd2e56cec6798b70bc8a3ba6afe46a702848e440cc2"
 
 
 def canonical_name(name: str) -> str:

@@ -26,7 +26,7 @@ trajectory as inputs rather than hard-coded program state:
 - standard DPO `-logsigmoid(beta * ((pi_c-ref_c) - (pi_r-ref_r)))`, beta .20;
 - grad-enabled initial-policy reference log probabilities, detached once and
   reused for the second ordered pass;
-- a named 269-tensor / 1,074,327,616-scalar FP32 mutation surface, no LoRA,
+- a named 269-tensor / 1,074,318,016-scalar FP32 mutation surface, no LoRA,
   PEFT, or adapters; and
 - AdamW (`lr=2.5e-6`, betas `.9,.95`, eps `1e-8`, zero weight decay) on one
   eight-GPU node.

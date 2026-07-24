@@ -15,7 +15,10 @@
 import pytest
 import torch
 
-from nemo.collections.common.metrics.classification_accuracy import TopKClassificationAccuracy
+from nemo.collections.common.metrics.classification_accuracy import (
+    ExactStringPerCategoryMatchMetric,
+    TopKClassificationAccuracy,
+)
 from nemo.collections.common.metrics.punct_er import (
     DatasetPunctuationErrorRate,
     OccurancePunctuationErrorRate,
@@ -85,6 +88,26 @@ class TestCommonMetrics:
         acc_top1 = acc_topk[0]
 
         assert abs(acc_top1 - 0.5) < 1e-3  # 3/6
+
+    @pytest.mark.unit
+    def test_exact_string_per_category_match_metric_default_categories_is_none(self):
+        """Default categories should be None to avoid shared mutable state."""
+        import inspect
+
+        sig = inspect.signature(ExactStringPerCategoryMatchMetric.__init__)
+        assert sig.parameters['categories'].default is None
+
+    @pytest.mark.unit
+    def test_exact_string_per_category_match_metric_tracks_categories(self):
+        """Metric should track per-category correct/total counts."""
+        metric = ExactStringPerCategoryMatchMetric(categories=['a', 'b'])
+        metric.update(pred='x', target='x', category='a')
+        metric.update(pred='x', target='y', category='b')
+
+        assert metric.a_total == 1
+        assert metric.a_correct == 1
+        assert metric.b_total == 1
+        assert metric.b_correct == 0
 
     @pytest.mark.unit
     def test_top_1_accuracy_distributed_uneven_batch(self):

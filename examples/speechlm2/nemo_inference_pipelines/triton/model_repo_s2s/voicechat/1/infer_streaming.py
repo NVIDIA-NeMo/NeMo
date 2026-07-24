@@ -54,10 +54,10 @@ class TritonPythonModel:
             s2s.device_id              -> S2S_DEVICE_ID (default: 0)
             s2s.vllm_llm_config.device_id -> S2S_VLLM_LLM_DEVICE_ID (default: 0)
             s2s.vllm_tts_config.device_id -> S2S_VLLM_TTS_DEVICE_ID (default: 0)
-            s2s.vllm_llm_config.gpu_memory_utilization -> S2S_VLLM_LLM_GPU_MEMORY_UTILIZATION (default: 0.45)
-            s2s.vllm_tts_config.gpu_memory_utilization -> S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION (default: 0.15)
-            s2s.vllm_llm_config.max_model_len -> S2S_VLLM_MAX_MODEL_LEN (default: 5120)
-            streaming.max_len              -> S2S_MAX_LEN (default: 5120)
+            s2s.vllm_llm_config.gpu_memory_utilization -> S2S_VLLM_LLM_GPU_MEMORY_UTILIZATION (default: 0.52)
+            s2s.vllm_tts_config.gpu_memory_utilization -> S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION (default: 0.18)
+            s2s.vllm_llm_config.max_model_len -> S2S_VLLM_MAX_MODEL_LEN (default: 6144)
+            streaming.max_len              -> S2S_MAX_LEN (default: 6144)
             streaming.chunk_size_in_secs -> S2S_CHUNK_SIZE_IN_SECS (default: 0.08)
             streaming.buffer_size_in_secs -> S2S_BUFFER_SIZE_IN_SECS (default: 5.6)
         """
@@ -99,10 +99,10 @@ class TritonPythonModel:
             "s2s.device_id":                          ("S2S_DEVICE_ID", 0),
             "s2s.vllm_llm_config.device_id":          ("S2S_VLLM_LLM_DEVICE_ID", 0),
             "s2s.vllm_tts_config.device_id":          ("S2S_VLLM_TTS_DEVICE_ID", 0),
-            "s2s.vllm_llm_config.gpu_memory_utilization": ("S2S_VLLM_LLM_GPU_MEMORY_UTILIZATION", 0.45),
-            "s2s.vllm_tts_config.gpu_memory_utilization": ("S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION", 0.15),
-            "s2s.vllm_llm_config.max_model_len":      ("S2S_VLLM_MAX_MODEL_LEN", 5120),
-            "streaming.max_len":                      ("S2S_MAX_LEN", 5120),
+            "s2s.vllm_llm_config.gpu_memory_utilization": ("S2S_VLLM_LLM_GPU_MEMORY_UTILIZATION", 0.52),
+            "s2s.vllm_tts_config.gpu_memory_utilization": ("S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION", 0.18),
+            "s2s.vllm_llm_config.max_model_len":      ("S2S_VLLM_MAX_MODEL_LEN", 6144),
+            "streaming.max_len":                      ("S2S_MAX_LEN", 6144),
             "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.24),
             "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 2.0),
         }

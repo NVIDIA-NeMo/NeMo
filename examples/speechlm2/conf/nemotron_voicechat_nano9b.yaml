@@ -1,0 +1,231 @@
+model:
+  scoring_asr: stt_en_fastconformer_transducer_large
+  stt:
+    model: {}
+    data:
+      source_sample_rate: 16000
+      target_sample_rate: 22050
+
+    exp_manager:
+      explicit_log_dir: " "
+
+  inference_speaker_reference: null
+  audio_save_path: ${exp_manager.explicit_log_dir}/pred_audios
+
+  speech_generation:
+    model:
+      pretrained_lm_name: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+      pretrained_ae_dir: null
+      pretrained_tts_model: null
+
+      freeze_params:
+        - "^audio_codec\\..+$"
+        - "^embed_tokens\\..+$"
+
+      prevent_freeze_params: []
+
+      audio_save_path: ${exp_manager.explicit_log_dir}/pred_audios
+
+      bos_token: "<s>"
+      eos_token: "</s>"
+      pad_token: "<SPECIAL_12>"
+
+      # inference params
+      inference_guidance_scale: 0.2
+      inference_noise_scale: 0.001
+      inference_top_p_or_k: 0.95
+      inference_guidance_enabled: true
+      inference_force_speech_silence_on_eos: true
+
+      # extra model parameters
+      subword_mask_exactly_as_eartts: false
+      context_hidden_mask_exactly_as_eartts: false
+
+      optimizer:
+        _target_: torch.optim.AdamW
+        lr: 4e-05
+        betas: [0.9, 0.98]
+        weight_decay: 0
+        foreach: true
+
+      lr_scheduler:
+        _target_: nemo.core.optim.lr_scheduler.InverseSquareRootAnnealing
+        warmup_steps: 2500
+        min_lr: 1e-6
+        max_steps: ${trainer.max_steps}
+
+      codec_config:
+        latent_size: 512
+        n_fft: 16
+        hop_length: 4
+        base_hidden_size: 384
+        channel_mult:
+          - 1
+          - 2
+          - 4
+        rates:
+          - 7
+          - 7
+          - 9
+        num_blocks: 3
+        kernel_size: 7
+        groups: 1
+        codebook_size: 1024
+        num_quantizers: 31
+        wav_to_token_ratio: 1764
+
+      tts_config:
+        use_gated_fusion_for_text_audio: true
+        disable_eos_prediction: true
+        use_bos_eos_emb: true
+        use_subword_flag_emb: true
+        num_delay_speech_tokens: 2
+
+        backbone_type: gemma3_text
+        backbone_model_class: null
+        backbone_config_class: null
+        backbone_config:
+          hidden_size: 1152
+          intermediate_size: 4608
+          num_hidden_layers: 28
+          num_attention_heads: 16
+          num_key_value_heads: 16
+          head_dim: 72
+          attention_dropout: 0.1
+          sliding_window: 1500
+          use_cache: false
+        latent_size: 512
+        codebook_size: 1024
+        num_quantizers: 31
+        context_hidden_size: null
+        cas_config:
+          pretrained_tokenizer_name: nvidia/NVIDIA-Nemotron-Nano-9B-v2
+          backbone_type: t5gemma
+          backbone_model_class: null
+          backbone_config_class: null
+          backbone_config:
+            is_encoder_decoder: false
+            encoder:
+              hidden_size: 1152
+              intermediate_size: 4608
+              num_hidden_layers: 1
+              num_attention_heads: 16
+              num_key_value_heads: 16
+              head_dim: 72
+              use_cache: false
+              attention_dropout: 0.1
+        mog_head_config:
+          intermediate_size: 4608
+          num_layers: 3
+          low_rank: 64
+          num_predictions: 1024
+          min_log_std: -4.0
+          eps: 1e-06
+        p_uncond: 0.1
+        label_smoothing: 0.01
+        max_training_rate: 0.8
+        quantizer_dropout: 0.5
+        random_target_masking: false
+        exponent: 3.0
+    data:
+      audio_prompt_duration: 3.0
+      frame_length: 0.08
+      source_sample_rate: 22050
+      target_sample_rate: 22050
+    exp_manager:
+      explicit_log_dir: " "
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 3e-4
+    betas: [0.9, 0.98]
+    weight_decay: 0
+    foreach: true
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.InverseSquareRootAnnealing
+    warmup_steps: 2500
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: 32
+  logger: False
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_steps: 1
+  val_check_interval: 1
+  limit_train_batches: 1
+  limit_val_batches: 0.0
+  log_every_n_steps: 20
+  num_sanity_val_steps: 0
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+
+data:
+  frame_length: 0.08
+  source_sample_rate: 16000
+  target_sample_rate: 22050
+  input_roles: ["user", "User"]
+  output_roles: ["agent", "Assistant", "assistant", "Agent"]
+
+  train_ds:
+    sample_rate: ${data.target_sample_rate}
+    multi_config: true
+    shuffle: true
+    sampler_fusion: randomized_round_robin
+    sampler_weights:
+      real_conv_data: 0.05
+    real_conv_data:
+      input_cfg: null
+      buffer_size: 1000
+      shuffle_buffer_size: 1000
+      num_workers: 1
+      pin_memory: true
+      max_duration: 142.39029
+      batch_duration: 250
+      quadratic_duration: 20
+      num_buckets: 31
+      duration_bins: [1,6,11,16,21,26,31,36,41,46,51,56,61,66,71,76,81,86,91,96,101,106,111,116,121,126,131,136,141,146]
+      use_bucketing: true
+      seed: 'trng'
+    seed: 42
+    shard_seed: "trng"
+    num_workers: 1
+    batch_duration: 250
+    max_duration: 142.39029
+    bucket_duration_bins: [1,6,11,16,21,26,31,36,41,46,51,56,61,66,71,76,81,86,91,96,101,106,111,116,121,126,131,136,141,146]
+    use_bucketing: true
+    bucket_buffer_size: 1000
+
+  validation_ds:
+    datasets:
+      ultrachat:
+        shar_path: null
+    sample_rate: ${data.target_sample_rate}
+    batch_size: 2
+    seed: 42
+    shard_seed: "randomized"
+
+exp_manager:
+   exp_dir: null
+   explicit_log_dir: null
+   name: nemotron_voicechat_combine
+   create_tensorboard_logger: false
+   create_checkpoint_callback: false
+   use_datetime_version: true
+   resume_from_checkpoint: null
+   resume_if_exists: false
+   resume_ignore_no_checkpoint: true
+   create_wandb_logger: false
+   wandb_logger_kwargs:
+     name: combine-ckpt
+     project: duplex_s2s_kevin
+     resume: false

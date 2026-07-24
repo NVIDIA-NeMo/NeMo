@@ -405,9 +405,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             context_audio_codes.shape[1] * self.codec_model_samples_per_frame / self.sample_rate
         )
         _context_duration_to_slice = self._sample_context_duration_with_available_limit(_available_context_duration)
-        _num_frames_to_slice = int(
-            _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
-        )
+        _num_frames_to_slice = int(_context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame)
 
         if _num_frames_to_slice < context_audio_codes.shape[1]:
             start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
@@ -675,9 +673,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         context_audio_codes_list = features["context_audio_codes"]
         if len(context_audio_codes_list) > 0:
-            batch_dict["context_audio_codes"] = collate_matrices(
-                context_audio_codes_list, padding_value=0
-            ).transpose(1, 2)
+            batch_dict["context_audio_codes"] = collate_matrices(context_audio_codes_list, padding_value=0).transpose(
+                1, 2
+            )
             batch_dict["context_audio_codes_lens"] = torch.IntTensor(features["context_audio_codes_lens"])
 
         if self.use_text_conditioning_tokenizer:

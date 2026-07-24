@@ -21,8 +21,8 @@ import subprocess
 import tempfile
 from typing import Optional, Tuple, List, Union
 from torchaudio.functional import filtfilt
-from nemo.collections.speechlm2.parts.add_background_noise import AddBackgroundNoise
 try:
+    from nemo.collections.speechlm2.parts.add_background_noise import AddBackgroundNoise
     from torch_audiomentations import (
         Compose,
         # AddBackgroundNoise,

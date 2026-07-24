@@ -1100,13 +1100,14 @@ class RVQEARTTSModel(nn.Module):
             else None
         )
 
+        cas_config = {k: v for k, v in self.config.cas_config.items() if k != "pretrained_tokenizer_name"} if self.config.cas_config else {}
         self.embed_subword = (
             CharAwareSubwordEncoder(
                 tokenizer=tokenizer,
                 out_size=self.hidden_size,
                 use_subword_flag_emb=self.config.use_subword_flag_emb,
                 use_bos_eos_emb=self.config.use_bos_eos_emb,
-                **self.config.cas_config,
+                **cas_config,
             )
             if self.config.cas_config
             else None

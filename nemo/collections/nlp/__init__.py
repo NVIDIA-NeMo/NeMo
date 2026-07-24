@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp import data, losses, models, modules
+def __getattr__(name):
+    if name in ('data', 'losses', 'models', 'modules'):
+        import importlib
+        mod = importlib.import_module(f'nemo.collections.nlp.{name}')
+        globals()[name] = mod
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.

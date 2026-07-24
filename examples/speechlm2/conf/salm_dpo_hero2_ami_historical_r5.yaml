@@ -1,0 +1,45 @@
+# Native SpeechLM2 DPO replay contract for the historical Hero2 r5 trajectory.
+# Every model/data location is an explicit, substitutable input.  The source
+# model DCP is the sole model-weight authority after normal architecture setup.
+
+trainer:
+  devices: 8
+  num_nodes: 1
+  precision: bf16-true
+  max_steps: 20
+
+model:
+  base_experiment_config: /lustre/fsw/portfolios/llmservice/users/kdhawan/project/nemotron-transcribe/0712-hero2-plusgranaryv2-mlrope-nsv-sotmst-nrt-16node/exp_config.yaml
+
+dpo:
+  source_checkpoint: /lustre/fsw/portfolios/llmservice/users/kdhawan/project/nemotron-transcribe/0712-hero2-plusgranaryv2-mlrope-nsv-sotmst-nrt-16node/checkpoints/step=14400.ckpt
+  output_root: ???
+  seed: 20260720
+  beta: 0.2
+  learning_rate: 2.5e-6
+  gradient_clip_norm: 1.0
+  pairs_per_update: 435
+  source_shards: 10
+  world_size: 8
+  explicit_passes: 2
+  expected_updates: 20
+  checkpoint_steps: [1, 8, 10, 12, 14, 16, 18, 20]
+  optimizer:
+    name: torch.optim.AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.0
+    foreach: false
+    fused: false
+  lora: false
+  peft: false
+  adapters: false
+
+data:
+  cuts_path: /lustre/fs1/portfolios/nemotron/projects/nemotron_speechprod_asr/users/vmendelev/runs/N3NT-fixes/AMI_short/data/AMI_train_fb_v3_mixed4350_v1/dataset_r1/lhotse/finite_lhotse.jsonl
+  expected_rows: 4350
+  pairs_per_update: 435
+  source_shards: 10
+  world_size: 8
+  shuffle: false
+  cycle: false

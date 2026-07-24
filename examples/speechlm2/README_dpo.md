@@ -36,7 +36,12 @@ that each rank executes 55 forwards per update.  It applies scale `8/435` to
 each active pair before Lightning's distributed gradient reduction, producing
 the global mean of exactly 435 pairs.  This retains the bounded-memory update
 shape of the historical trajectory while relying on Lightning for backward,
-gradient clipping, optimizer stepping, and global-step tracking.
+optimizer stepping, and global-step tracking. The DPO model invokes the
+inherited `SALMAutomodel.configure_gradient_clipping(..., 1.0, "norm")` once
+immediately before AdamW; that existing upstream path is mesh-aware for the
+LLM/perception DTensor layouts. It writes a data-free per-selected-gradient
+mesh/placement receipt before the clip, so the 269-tensor grouping is visible
+in every real-update run.
 
 ## Launch
 

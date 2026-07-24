@@ -1,6 +1,7 @@
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,8 @@ from lightning.pytorch.plugins.precision.half import HalfPrecision
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2.dpo.data import PreferenceBatch, PreferencePair, rank_active_slots
+from nemo.collections.speechlm2.dpo.model import DPOSALMAutomodel, _gradient_layout
+from nemo.collections.speechlm2.models.salm_automodel import SALMAutomodel
 
 
 class _ManualClipModule(LightningModule):
@@ -76,3 +79,32 @@ def test_stock_lightning_accepts_historical_manual_clip_when_trainer_clip_is_nul
     module.weight.grad = torch.tensor([2.0])
     module.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
     assert module.weight.grad.item() == pytest.approx(1.0, abs=1e-5)
+
+
+def test_dpo_uses_inherited_mesh_aware_clip_once_with_historical_norm():
+    """DPO must not bypass SALMAutomodel's existing mixed-DTensor handler."""
+
+    assert DPOSALMAutomodel.configure_gradient_clipping is SALMAutomodel.configure_gradient_clipping
+    calls = []
+
+    class Harness:
+        cfg = SimpleNamespace(dpo=SimpleNamespace(gradient_clip_norm=1.0))
+
+        def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+            calls.append((optimizer, gradient_clip_val, gradient_clip_algorithm))
+
+    optimizer = object()
+    DPOSALMAutomodel._clip_selected_gradients(Harness(), optimizer)
+    assert calls == [(optimizer, 1.0, "norm")]
+
+
+def test_selected_gradient_layout_receipt_is_data_free_for_local_tensors():
+    entry = _gradient_layout("perception.proj.weight", torch.ones((2, 3), dtype=torch.float32))
+    assert entry == {
+        "name": "perception.proj.weight",
+        "tensor_type": "torch.Tensor",
+        "global_shape": [2, 3],
+        "local_shape": [2, 3],
+        "dtype": "torch.float32",
+        "layout": {"kind": "local"},
+    }

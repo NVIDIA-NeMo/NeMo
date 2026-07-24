@@ -20,7 +20,11 @@ from torch.distributed.tensor.parallel import loss_parallel
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.dpo.data import PreferenceBatch, PreferencePair
 from nemo.collections.speechlm2.dpo.objective import dpo_pair_objective
-from nemo.collections.speechlm2.dpo.surface import configure_partial_acoustic_surface, named_selected_parameters
+from nemo.collections.speechlm2.dpo.surface import (
+    configure_partial_acoustic_surface,
+    named_selected_parameters,
+    selected_parameter_names,
+)
 from nemo.collections.speechlm2.models.salm_automodel import SALMAutomodel
 
 
@@ -149,6 +153,41 @@ def _state_sample_digest(state: Mapping[str, Any]) -> str:
             sample = local.index_select(0, indices).contiguous().view(torch.uint8).cpu()
             digest.update(memoryview(sample.numpy()))
     return digest.hexdigest()
+
+
+def _gradient_layout(name: str, gradient: torch.Tensor) -> dict[str, Any]:
+    """Return a bounded, data-free selected-gradient DTensor receipt.
+
+    The receipt is recorded immediately after backward and before clipping. It
+    captures only type, shape, mesh and placement metadata; gradient values
+    never leave the GPU. This makes mixed-FSDP layout evidence reviewable when
+    an upstream clipping implementation is used.
+    """
+
+    local = _local(gradient)
+    mesh = getattr(gradient, "device_mesh", None)
+    if mesh is None:
+        mesh_record: dict[str, Any] = {"kind": "local"}
+    else:
+        mesh_tensor = getattr(mesh, "mesh", None)
+        mesh_ranks = []
+        if isinstance(mesh_tensor, torch.Tensor):
+            mesh_ranks = mesh_tensor.detach().cpu().reshape(-1).tolist()
+        mesh_record = {
+            "kind": "dtensor",
+            "mesh_dim_names": [str(item) for item in (mesh.mesh_dim_names or ())],
+            "mesh_shape": list(mesh_tensor.shape) if isinstance(mesh_tensor, torch.Tensor) else [int(mesh.size())],
+            "mesh_ranks": mesh_ranks,
+            "placements": [str(item) for item in getattr(gradient, "placements", ())],
+        }
+    return {
+        "name": name,
+        "tensor_type": f"{type(gradient).__module__}.{type(gradient).__qualname__}",
+        "global_shape": [int(item) for item in gradient.shape],
+        "local_shape": [int(item) for item in local.shape],
+        "dtype": str(gradient.dtype),
+        "layout": mesh_record,
+    }
 
 
 class DPOSALMAutomodel(SALMAutomodel):
@@ -337,6 +376,59 @@ class DPOSALMAutomodel(SALMAutomodel):
             digest.update(memoryview(value.numpy()))
         return digest.hexdigest()
 
+    def _write_selected_gradient_layout_receipt(self, step: int) -> None:
+        """Persist the per-tensor mixed-FSDP layout before the single clip.
+
+        This is an observability receipt, not an extra training operation: all
+        selected gradients already exist at this point. Every rank contributes
+        the same bounded 269-entry schema, and rank zero writes one JSON file.
+        """
+
+        entries = [
+            _gradient_layout(name, parameter.grad)
+            for name, parameter in zip(selected_parameter_names(), named_selected_parameters(self), strict=True)
+            if parameter.grad is not None
+        ]
+        if len(entries) != len(selected_parameter_names()):
+            raise RuntimeError("DPO gradient-layout receipt observed a missing selected gradient")
+        groups: dict[str, list[str]] = {}
+        for entry in entries:
+            signature = json.dumps(entry["layout"], sort_keys=True, separators=(",", ":"))
+            groups.setdefault(signature, []).append(entry["name"])
+        local_receipt = {
+            "rank": int(self.global_rank),
+            "tensor_count": len(entries),
+            "groups": [{"layout": json.loads(signature), "names": names} for signature, names in groups.items()],
+            "tensors": entries,
+        }
+        receipts: list[dict[str, Any] | None] = [None] * (dist.get_world_size() if dist.is_initialized() else 1)
+        if dist.is_initialized():
+            dist.all_gather_object(receipts, local_receipt)
+        else:
+            receipts[0] = local_receipt
+        if any(receipt is None or receipt["tensor_count"] != len(selected_parameter_names()) for receipt in receipts):
+            raise RuntimeError("DPO selected-gradient layout receipt is incomplete")
+        if self.global_rank == 0:
+            _write_json(
+                self._output_root / "gradient_layout" / f"s{step:02d}.json",
+                {
+                    "schema": "speechlm2.dpo.selected-gradient-layout.v1",
+                    "pre_clip": True,
+                    "rank_receipts": receipts,
+                },
+            )
+        if dist.is_initialized():
+            dist.barrier()
+
+    def _clip_selected_gradients(self, optimizer: Any) -> None:
+        """Apply the one historical norm-1 clip via inherited mesh-aware code."""
+
+        self.configure_gradient_clipping(
+            optimizer,
+            gradient_clip_val=float(self.cfg.dpo.gradient_clip_norm),
+            gradient_clip_algorithm="norm",
+        )
+
     def training_step(self, batch: PreferenceBatch, batch_idx: int):
         del batch_idx
         if batch.global_step != len(self._metrics) + 1:
@@ -373,7 +465,8 @@ class DPOSALMAutomodel(SALMAutomodel):
         grads = [parameter.grad for parameter in named_selected_parameters(self) if parameter.grad is not None]
         if not grads or not all(bool(torch.isfinite(_local(grad)).all()) for grad in grads):
             raise RuntimeError("DPO backward produced missing or nonfinite gradients")
-        self.clip_gradients(optimizer, gradient_clip_val=float(self.cfg.dpo.gradient_clip_norm), gradient_clip_algorithm="norm")
+        self._write_selected_gradient_layout_receipt(batch.global_step)
+        self._clip_selected_gradients(optimizer)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         self._force_reshard()

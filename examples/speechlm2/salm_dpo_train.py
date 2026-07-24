@@ -50,7 +50,11 @@ def _prepare_model_config(cfg):
         trainer.logger = False
         trainer.log_every_n_steps = 1
         trainer.use_distributed_sampler = False
-        trainer.gradient_clip_val = cfg.dpo.gradient_clip_norm
+        # Lightning disallows trainer-managed clipping for manual optimization.
+        # DPOSALMAutomodel applies the historical global-norm clip explicitly
+        # immediately before AdamW.step(), so preserve that mechanism while
+        # disabling the incompatible Trainer-level duplicate.
+        trainer.gradient_clip_val = 0.0
     return model, trainer
 
 

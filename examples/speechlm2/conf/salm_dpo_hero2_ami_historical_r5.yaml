@@ -7,6 +7,9 @@ trainer:
   num_nodes: 1
   precision: bf16-true
   max_steps: 20
+  # The DPO model performs the historical norm-1.0 clip explicitly immediately
+  # before AdamW.step(); Lightning must not register a second clip.
+  gradient_clip_val: null
 
 model:
   base_experiment_config: /lustre/fsw/portfolios/llmservice/users/kdhawan/project/nemotron-transcribe/0712-hero2-plusgranaryv2-mlrope-nsv-sotmst-nrt-16node/exp_config.yaml

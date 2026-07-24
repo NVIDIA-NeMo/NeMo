@@ -2,11 +2,21 @@
 
 from pathlib import Path
 
+import pytest
+
 import torch
+from lightning import LightningModule
+from lightning.pytorch import Trainer
 from lightning.pytorch.plugins.precision.half import HalfPrecision
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2.dpo.data import PreferenceBatch, PreferencePair, rank_active_slots
+
+
+class _ManualClipModule(LightningModule):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor([2.0]))
 
 
 def test_hero2_r5_dpo_config_has_explicit_finite_two_pass_accounting():
@@ -15,6 +25,7 @@ def test_hero2_r5_dpo_config_has_explicit_finite_two_pass_accounting():
     assert cfg.trainer.devices == 8
     assert cfg.trainer.num_nodes == 1
     assert cfg.trainer.max_steps == 20
+    assert cfg.trainer.gradient_clip_val is None
     assert cfg.dpo.explicit_passes == 2
     assert cfg.dpo.expected_updates == 20
     assert cfg.dpo.pairs_per_update == 435
@@ -55,3 +66,13 @@ def test_preference_batch_accepts_stock_lightning_bf16_input_conversion():
     # Conversion returns a framework-owned transport copy; loader-provided
     # samples retain their original data for the model's reference cache.
     assert batch.pairs[0].audio.dtype is torch.float32
+
+
+def test_stock_lightning_accepts_historical_manual_clip_when_trainer_clip_is_null():
+    trainer = Trainer(accelerator="cpu", devices=1, gradient_clip_val=None, logger=False, enable_checkpointing=False)
+    module = _ManualClipModule()
+    module._trainer = trainer
+    optimizer = torch.optim.AdamW(module.parameters())
+    module.weight.grad = torch.tensor([2.0])
+    module.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+    assert module.weight.grad.item() == pytest.approx(1.0, abs=1e-5)

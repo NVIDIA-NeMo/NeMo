@@ -57,7 +57,7 @@ def _prepare_model_config(cfg):
         # DPOSALMAutomodel applies the historical global-norm clip explicitly
         # immediately before AdamW.step(), so preserve that mechanism while
         # disabling the incompatible Trainer-level duplicate.
-        trainer.gradient_clip_val = 0.0
+        trainer.gradient_clip_val = cfg.trainer.gradient_clip_val
     return model, trainer
 
 

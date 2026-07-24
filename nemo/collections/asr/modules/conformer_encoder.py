@@ -1301,7 +1301,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     )
                 else:
                     raise ValueError(
-                        f"'{self_attention_model}' is not not a valid value for 'self_attention_model', "
+                        f"'{self_attention_model}' is not a valid value for 'self_attention_model', "
                         f"valid values can be from ['rel_pos', 'rel_pos_local_attn', 'abs_pos', 'rope']"
                     )
                 if device is not None:

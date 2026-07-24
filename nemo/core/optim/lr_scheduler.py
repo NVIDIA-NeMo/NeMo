@@ -925,7 +925,7 @@ def prepare_lr_scheduler(
         # Raise exception if neither `max_steps` nor `t_max_epochs` is provided
         if scheduler_config.get('t_max_epochs', None) is None:
             logging.warning(
-                "`t_max_epochs` cannot be None when `max_steps` is not not provided.\n"
+                "`t_max_epochs` cannot be None when `max_steps` is not provided.\n"
                 "This can occur when `train dataloader` is not available to correctly "
                 "prepare the scheduler.\n"
                 "Scheduler will not be instantiated !"

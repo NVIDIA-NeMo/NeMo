@@ -32,11 +32,14 @@ def _prepare_model_config(cfg):
     model = OmegaConf.create(OmegaConf.to_container(base.model, resolve=True))
     with open_dict(model):
         model.init_from_checkpoint = None
-        # The strict DCP below is the single model-weight authority.  These
-        # settings construct the architecture without loading the stale 5600
-        # training checkpoint or ASR archive weights before that strict load.
+        # The strict DCP below is the single final model-weight authority.
+        # Avoid the stale 5600 training checkpoint, but retain the configured
+        # ASR archive during construction: it supplies the perception
+        # preprocessor/encoder schema absent from the experiment YAML.  The
+        # strict Hero2 step-14400 DCP immediately overwrites those temporary
+        # construction weights before references or updates are permitted.
         model.pretrained_llm_weights = True
-        model.pretrained_asr_weights = False
+        model.pretrained_asr_weights = True
         model.init_configure_model = False
         model.torch_dtype = "bfloat16"
         model.dpo = OmegaConf.to_container(cfg.dpo, resolve=True)

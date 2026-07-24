@@ -105,6 +105,52 @@ def _local(value: torch.Tensor) -> torch.Tensor:
     return to_local() if callable(to_local) else value
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _state_contract_digest(state: Mapping[str, Any]) -> str:
+    """Digest keys, dtypes, and shapes without copying model weights to host."""
+
+    contract: list[tuple[str, str, tuple[int, ...]]] = []
+    for name, value in sorted(state.items()):
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"DPO model state {name!r} is not a tensor")
+        contract.append((name, str(value.dtype), tuple(int(item) for item in value.shape)))
+    return hashlib.sha256(json.dumps(contract, separators=(",", ":")).encode()).hexdigest()
+
+
+def _state_sample_digest(state: Mapping[str, Any]) -> str:
+    """Small content receipt over every rank-local model-state tensor.
+
+    The strict DCP load below is the authority proof.  This digest is a cheap
+    corroborating receipt that construction weights and post-DCP state are not
+    silently conflated; it deliberately avoids a multi-tens-of-GB host copy.
+    """
+
+    digest = hashlib.sha256()
+    for name, value in sorted(state.items()):
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"DPO model state {name!r} is not a tensor")
+        local = _local(value).detach().reshape(-1)
+        digest.update(name.encode())
+        digest.update(str(local.dtype).encode())
+        digest.update(str(tuple(int(item) for item in local.shape)).encode())
+        if local.numel():
+            indices = torch.tensor(
+                sorted({0, int(local.numel()) // 2, int(local.numel()) - 1}),
+                device=local.device,
+                dtype=torch.long,
+            )
+            sample = local.index_select(0, indices).contiguous().view(torch.uint8).cpu()
+            digest.update(memoryview(sample.numpy()))
+    return digest.hexdigest()
+
+
 class DPOSALMAutomodel(SALMAutomodel):
     """SALMAutomodel with standard manual-optimization DPO update semantics.
 
@@ -129,20 +175,66 @@ class DPOSALMAutomodel(SALMAutomodel):
         self._output_root = Path(str(self.cfg.dpo.output_root))
         self._initial_checkpoint = Path(str(self.cfg.dpo.source_checkpoint))
         self._metrics: list[dict[str, Any]] = []
+        self._authority_confirmed = False
 
     def configure_model(self, *args: Any, **kwargs: Any) -> None:
+        if self.cfg.get("init_from_checkpoint", None) is not None:
+            raise RuntimeError("DPO model construction must not load an experiment checkpoint before the strict source DCP")
         super().configure_model(*args, **kwargs)
         if getattr(self, "_dpo_checkpoint_loaded", False):
             return
         from torch.distributed.checkpoint import load
 
-        if not self._initial_checkpoint.joinpath(".metadata").is_file():
-            raise FileNotFoundError(self._initial_checkpoint / ".metadata")
+        metadata_path = self._initial_checkpoint / ".metadata"
+        if not metadata_path.is_file():
+            raise FileNotFoundError(metadata_path)
+        # All temporary LLM/ASR construction state is overwritten through this
+        # complete model state dict before any reference or optimizer path.
+        construction_state = self.state_dict()
+        construction_contract = _state_contract_digest(construction_state)
+        construction_sample = _state_sample_digest(construction_state)
         state = {"state_dict": self.state_dict()}
         load(state, checkpoint_id=str(self._initial_checkpoint))
         incompatible = self.load_state_dict(state["state_dict"], strict=True)
         if incompatible.missing_keys or incompatible.unexpected_keys:
             raise RuntimeError(f"strict Hero2 model DCP load failed: {incompatible}")
+        post_dcp_state = self.state_dict()
+        post_dcp_sample = _state_sample_digest(post_dcp_state)
+        local_receipt = {
+            "rank": int(self.global_rank),
+            "model_state_key_count": len(post_dcp_state),
+            "model_state_contract_digest": _state_contract_digest(post_dcp_state),
+            "construction_state_contract_digest": construction_contract,
+            "construction_state_sample_digest_rank_local": construction_sample,
+            "post_dcp_state_sample_digest_rank_local": post_dcp_sample,
+            "construction_sample_changed": construction_sample != post_dcp_sample,
+            "missing_keys": list(incompatible.missing_keys),
+            "unexpected_keys": list(incompatible.unexpected_keys),
+        }
+        receipts: list[dict[str, Any] | None] = [None] * (dist.get_world_size() if dist.is_initialized() else 1)
+        if dist.is_initialized():
+            dist.all_gather_object(receipts, local_receipt)
+        else:
+            receipts[0] = local_receipt
+        if any(receipt is None or receipt["missing_keys"] or receipt["unexpected_keys"] for receipt in receipts):
+            raise RuntimeError("strict Hero2 DCP authority receipt is incomplete")
+        if self.global_rank == 0:
+            _write_json(
+                self._output_root / "MODEL_AUTHORITY.json",
+                {
+                    "schema": "speechlm2.dpo.model-authority.v1",
+                    "source_checkpoint": str(self._initial_checkpoint),
+                    "source_dcp_metadata_sha256": _sha256_file(metadata_path),
+                    "init_from_checkpoint": self.cfg.get("init_from_checkpoint", None),
+                    "temporary_asr_construction_only": True,
+                    "strict_dcp_load_before_reference": True,
+                    "all_model_state_keys_overwritten_by_source_dcp": True,
+                    "rank_receipts": receipts,
+                },
+            )
+        if dist.is_initialized():
+            dist.barrier()
+        self._authority_confirmed = True
         self._dpo_checkpoint_loaded = True
 
     def configure_optimizers(self):
@@ -163,6 +255,8 @@ class DPOSALMAutomodel(SALMAutomodel):
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
+        if not self._authority_confirmed or not (self._output_root / "MODEL_AUTHORITY.json").is_file():
+            raise RuntimeError("DPO references are forbidden before strict source-DCP authority receipt")
         data_module = self.trainer.datamodule
         shards = data_module.local_shards()
         self._capture_initial_references(shards)

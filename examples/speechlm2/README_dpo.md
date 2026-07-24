@@ -12,6 +12,10 @@ an adapter/updater outside the owning package.
 trajectory as inputs rather than hard-coded program state:
 
 - strict source DCP: Hero2 step 14400;
+- the configured ASR archive is used only to construct the perception schema;
+  `init_from_checkpoint` is disabled and the strict Hero2 step-14400 DCP
+  immediately replaces all temporary construction weights before reference
+  capture or an update;
 - one direct finite Lhotse JSONL of 4,350 preference cuts;
 - ten ordered source shards of 435 pairs and two explicit passes (20 updates);
 - no shuffle and no cycling; every rank reads only its assigned audio slots;
@@ -57,11 +61,15 @@ historical-r5 config remains the full 20-update trajectory.
 
 ## Evidence produced by a run
 
-The run writes `TRAJECTORY.json`, one `steps/sNN.json` per optimizer update,
-and `global_compact.json`.  A scheduled checkpoint has both a model DCP and a
-model-plus-AdamW DCP.  `CHECKPOINT_READY.json` is emitted only after every rank
-can observe the two DCP metadata files.  Treat a checkpoint without that file
-as incomplete.
+Before any reference forward, the run writes `MODEL_AUTHORITY.json`: it binds
+the source DCP metadata SHA-256, requires a strict no-missing/no-unexpected
+model-state load on every rank, and records compact preconstruction/post-DCP
+state receipts. It is the proof that temporary ASR construction weights do not
+remain an initialization authority. The run then writes `TRAJECTORY.json`, one
+`steps/sNN.json` per optimizer update, and `global_compact.json`. A scheduled
+checkpoint has both a model DCP and a model-plus-AdamW DCP.
+`CHECKPOINT_READY.json` is emitted only after every rank can observe the two
+DCP metadata files. Treat a checkpoint without that file as incomplete.
 
 The source data and source checkpoint are substitutable configuration inputs.
 An actual replay must record its source revision, effective config, data

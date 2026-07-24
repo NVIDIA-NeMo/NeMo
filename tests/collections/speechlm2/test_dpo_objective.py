@@ -5,6 +5,7 @@ import math
 import torch
 
 from nemo.collections.speechlm2.dpo.objective import dpo_pair_objective
+from nemo.collections.speechlm2.dpo.model import _state_contract_digest, _state_sample_digest
 from nemo.collections.speechlm2.dpo.surface import (
     ATTENTION_LAYERS,
     HERO2_ACOUSTIC_LAYERS,
@@ -53,3 +54,10 @@ def test_hero2_partial_acoustic_surface_contract_is_fixed():
     assert HERO2_ACOUSTIC_LAYERS == (30, 31)
     assert SELECTED_SCALAR_COUNT == 1_074_327_616
     assert names[-2:] == ("perception.proj.weight", "perception.proj.bias")
+
+
+def test_source_dcp_authority_receipt_distinguishes_temporary_construction_weights():
+    construction = {"perception.encoder.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0]])}
+    source_dcp = {"perception.encoder.weight": torch.tensor([[5.0, 6.0], [7.0, 8.0]])}
+    assert _state_contract_digest(construction) == _state_contract_digest(source_dcp)
+    assert _state_sample_digest(construction) != _state_sample_digest(source_dcp)

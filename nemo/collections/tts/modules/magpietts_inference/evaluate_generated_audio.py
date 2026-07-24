@@ -36,6 +36,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    JapaneseTextProcessor,
     NemoTranscriber,
     NemoTranscriberWithPrompt,
     WhisperTranscriber,
@@ -57,11 +58,18 @@ except (ImportError, ModuleNotFoundError) as e:
     )
 
 
+KATAKANA_METRICS_TO_SAVE = [
+    'katakana_cer',
+    'gt_katakana',
+    'pred_katakana',
+]
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'wer',
     'pred_context_ssim',
     'pred_text',
+    'gt_audio_text',
     'gt_text',
     'gt_audio_filepath',
     'pred_audio_filepath',
@@ -408,6 +416,17 @@ def evaluate_dir(
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
 
+        # Japanese: additional reading-based CER on Katakana (pyopenjtalk g2p), robust to
+        # kanji/kana spelling differences between reference and ASR hypothesis.
+        gt_katakana = pred_katakana = None
+        katakana_cer = None
+        if isinstance(text_processor, JapaneseTextProcessor):
+            gt_katakana = text_processor.text_to_katakana(gt_text)
+            pred_katakana = text_processor.text_to_katakana(pred_text)
+            katakana_cer = word_error_rate_detail(hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True)[
+                0
+            ]
+
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
         # Format cer and wer to 2 decimal places
@@ -502,6 +521,9 @@ def evaluate_dir(
                 'detailed_wer': detailed_wer,
                 'cer': detailed_cer[0],
                 'wer': detailed_wer[0],
+                'katakana_cer': katakana_cer,
+                'gt_katakana': gt_katakana,
+                'pred_katakana': pred_katakana,
                 'pred_gt_ssim': pred_gt_ssim,
                 'pred_context_ssim': pred_context_ssim,
                 'gt_context_ssim': gt_context_ssim,
@@ -593,7 +615,11 @@ def evaluate(
     elapsed = time.time() - start_time
     logging.info(f"evaluate() completed in {elapsed:.1f}s ({elapsed / 60:.1f} min)")
 
-    filtered_filewise = [{k: m[k] for k in FILEWISE_METRICS_TO_SAVE if k in m} for m in filewise_metrics]
+    filewise_metrics_to_save = list(FILEWISE_METRICS_TO_SAVE)
+    if (language or "").replace("_", "-").lower().split("-")[0] == "ja":
+        filewise_metrics_to_save[2:2] = KATAKANA_METRICS_TO_SAVE
+
+    filtered_filewise = [{k: m[k] for k in filewise_metrics_to_save if k in m} for m in filewise_metrics]
     return avg_metrics, filtered_filewise
 
 
@@ -651,6 +677,15 @@ def compute_global_metrics(
     avg_metrics['wer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=False)[
         0
     ]
+    # Japanese reading-based CER (Katakana via pyopenjtalk); only present for ja datasets.
+    kata = [m for m in filewise_metrics if m.get('katakana_cer') is not None]
+    if kata:
+        avg_metrics['katakana_cer_filewise_avg'] = sum(m['katakana_cer'] for m in kata) / len(kata)
+        avg_metrics['katakana_cer_cumulative'] = word_error_rate_detail(
+            hypotheses=[m['pred_katakana'] for m in kata],
+            references=[m['gt_katakana'] for m in kata],
+            use_cer=True,
+        )[0]
     avg_metrics['ssim_pred_gt_avg'] = sum(m['pred_gt_ssim'] for m in filewise_metrics) / n
     avg_metrics['ssim_pred_context_avg'] = sum(m['pred_context_ssim'] for m in filewise_metrics) / n
     avg_metrics['ssim_gt_context_avg'] = sum(m['gt_context_ssim'] for m in filewise_metrics) / n

@@ -17,7 +17,11 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader, IterableDataset
 
 
-@dataclass(frozen=True)
+# Lightning's stock BF16 precision plugin reconstructs every dataclass in a
+# batch while converting tensor fields.  These are transport objects, not
+# semantic immutability guards; keeping them mutable preserves every field and
+# ordering while allowing that normal framework path.
+@dataclass
 class PreferencePair:
     pair_id: str
     source_id: str
@@ -28,7 +32,7 @@ class PreferencePair:
     active: bool
 
 
-@dataclass(frozen=True)
+@dataclass
 class PreferenceBatch:
     global_step: int
     dpo_pass: int

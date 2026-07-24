@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
+import torch
+from lightning.pytorch.plugins.precision.half import HalfPrecision
 from omegaconf import OmegaConf
 
-from nemo.collections.speechlm2.dpo.data import rank_active_slots
+from nemo.collections.speechlm2.dpo.data import PreferenceBatch, PreferencePair, rank_active_slots
 
 
 def test_hero2_r5_dpo_config_has_explicit_finite_two_pass_accounting():
@@ -34,3 +36,22 @@ def test_435_pair_schedule_has_fixed_multirank_ownership_and_five_padding_slots(
     # same 55-slot local accumulation shape, instead of a rotating global
     # modulo partition caused by the 435 % 8 offset.
     assert [active for _ in range(10)] == [(55, 55, 55, 54, 54, 54, 54, 54)] * 10
+
+
+def test_preference_batch_accepts_stock_lightning_bf16_input_conversion():
+    """The normal Lightning precision plugin may reconstruct the batch."""
+
+    pair = PreferencePair(
+        pair_id="p", source_id="s", prompt="<audio>", chosen="yes", rejected="no",
+        audio=torch.ones(4, dtype=torch.float32), active=True,
+    )
+    batch = PreferenceBatch(global_step=1, dpo_pass=1, source_shard=1, pairs=(pair,))
+    converted = HalfPrecision("bf16-true").convert_input(batch)
+    assert converted.global_step == 1
+    assert converted.dpo_pass == 1 and converted.source_shard == 1
+    assert converted.pairs[0].pair_id == "p"
+    assert converted.pairs[0].prompt == "<audio>"
+    assert converted.pairs[0].audio.dtype is torch.bfloat16
+    # Conversion returns a framework-owned transport copy; loader-provided
+    # samples retain their original data for the model's reference cache.
+    assert batch.pairs[0].audio.dtype is torch.float32

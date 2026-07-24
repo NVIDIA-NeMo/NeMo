@@ -24,6 +24,7 @@ from nemo.collections.tts.modules.magpietts_modules import build_vocabs
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,
     _get_sentence_separators_for_language,
+    _sample_probability_range,
     chunk_and_tokenize_text_by_sentence,
     chunk_text_for_inference,
     filter_dataset_by_duration,
@@ -434,7 +435,6 @@ class TestPhonemeTextInput:
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=text_tokenizer,
             text_str=text,
-            language="en",
             tokenizer_name="english_phoneme",
             enable_phoneme_text_input=False,
             phoneme_tokenizer=phoneme_tokenizer,
@@ -452,7 +452,6 @@ class TestPhonemeTextInput:
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=_FakeTextTokenizer(),
             text_str="Hi <bop>ab<eop>!",
-            language="en",
             tokenizer_name="english_phoneme",
             enable_phoneme_text_input=True,
             phoneme_tokenizer=phoneme_tokenizer,
@@ -468,7 +467,6 @@ class TestPhonemeTextInput:
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=_FakeTextTokenizer(),
             text_str="<bop>ab<eop>",
-            language="en",
             tokenizer_name="english_phoneme",
             enable_phoneme_text_input=True,
             phoneme_tokenizer=_FakePhonemeTokenizer(),
@@ -484,7 +482,6 @@ class TestPhonemeTextInput:
             tokenize_text_with_phoneme_spans(
                 text_tokenizer=_FakeTextTokenizer(),
                 text_str="Hi <bop>ab",
-                language="en",
                 tokenizer_name="english_phoneme",
                 enable_phoneme_text_input=True,
                 phoneme_tokenizer=_FakePhonemeTokenizer(),
@@ -493,102 +490,69 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_partially_phonemize_text_coalesces_selected_words(self, monkeypatch):
-        monkeypatch.setattr(
-            tts_dataset_utils,
-            "_phonemize_with_espeak",
-            lambda text, language, phonemizer_language_map: text.upper(),
+    def test_partially_phonemize_text_uses_precomputed_alignments(self):
+        text = partially_phonemize_text(
+            text="hi how",
+            ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
+            partial_phoneme_word_prob=1.0,
         )
+
+        assert text == "<bop>ab<eop> <bop>c<eop>"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_samples_alignment_items(self, monkeypatch):
+        samples = iter([0.1, 0.9])
+        monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: next(samples))
 
         text = partially_phonemize_text(
             text="hi how",
-            language="en",
-            partial_phoneme_word_prob=1.0,
+            ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
+            partial_phoneme_word_prob=0.5,
         )
 
-        assert text == "<bop>HI HOW<eop>"
+        assert text == "<bop>ab<eop> how"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_training_augmentation_then_tokenization_uses_no_marker_ids(self, monkeypatch):
-        monkeypatch.setattr(
-            tts_dataset_utils,
-            "_phonemize_with_espeak",
-            lambda text, language, phonemizer_language_map: "ab",
-        )
+    def test_partially_phonemize_text_without_alignment_is_noop(self):
+        assert partially_phonemize_text("hello", None, 1.0) == "hello"
+        assert partially_phonemize_text("hello", [], 1.0) == "hello"
 
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_alignment_augmentation_then_tokenization_uses_no_marker_ids(self):
+        text = partially_phonemize_text(
+            text="hello",
+            ipa_alignment=[[0, 5, "hello", "ab"]],
+            partial_phoneme_word_prob=1.0,
+        )
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=_FakeTextTokenizer(),
-            text_str="hello",
-            language="en",
+            text_str=text,
             tokenizer_name="english_phoneme",
-            dataset_type="train",
             enable_phoneme_text_input=True,
             phoneme_tokenizer=_FakePhonemeTokenizer(),
             text_phoneme_token_offset=100,
-            partial_phoneme_text_prob=1.0,
-            partial_phoneme_word_prob=1.0,
         )
 
         assert tokens == [101, 102]
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_training_augmentation_skips_ignored_language(self, monkeypatch):
-        monkeypatch.setattr(
-            tts_dataset_utils,
-            "_phonemize_with_espeak",
-            lambda text, language, phonemizer_language_map: "ab",
-        )
-
-        tokens = tokenize_text_with_phoneme_spans(
-            text_tokenizer=_FakeTextTokenizer(),
-            text_str="hello",
-            language="vi",
-            tokenizer_name="english_phoneme",
-            dataset_type="train",
-            enable_phoneme_text_input=True,
-            phoneme_tokenizer=_FakePhonemeTokenizer(),
-            text_phoneme_token_offset=100,
-            partial_phoneme_text_prob=1.0,
-            partial_phoneme_word_prob=1.0,
-            ignore_phoneme_languages=["vi"],
-        )
-
-        assert tokens == [ord(char) for char in "hello"]
-
-    @pytest.mark.run_only_on('CPU')
-    @pytest.mark.unit
-    def test_training_augmentation_samples_word_probability_range(self, monkeypatch):
+    def test_samples_word_probability_range(self, monkeypatch):
         sampled_ranges = []
-        monkeypatch.setattr(
-            tts_dataset_utils,
-            "_phonemize_with_espeak",
-            lambda text, language, phonemizer_language_map: "ab",
-        )
 
         def fake_uniform(min_value, max_value):
             sampled_ranges.append((min_value, max_value))
-            return 1.0
+            return 0.5
 
         monkeypatch.setattr(tts_dataset_utils.random, "uniform", fake_uniform)
 
-        tokens = tokenize_text_with_phoneme_spans(
-            text_tokenizer=_FakeTextTokenizer(),
-            text_str="hello",
-            language="en",
-            tokenizer_name="english_phoneme",
-            dataset_type="train",
-            enable_phoneme_text_input=True,
-            phoneme_tokenizer=_FakePhonemeTokenizer(),
-            text_phoneme_token_offset=100,
-            partial_phoneme_text_prob=1.0,
-            partial_phoneme_word_prob_min=0.25,
-            partial_phoneme_word_prob_max=0.75,
-        )
+        probability = _sample_probability_range("partial_phoneme_word_prob", 0.25, 0.75)
 
         assert sampled_ranges == [(0.25, 0.75)]
-        assert tokens == [101, 102]
+        assert probability == 0.5
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit

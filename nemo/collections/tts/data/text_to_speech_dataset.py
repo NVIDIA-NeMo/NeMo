@@ -393,11 +393,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         ignore_phoneme_languages: List[str] = None,
         enable_phoneme_text_input: bool = False,
         text_phoneme_token_offset: int = None,
-        partial_phoneme_text_prob: float = 0.0,
-        partial_phoneme_word_prob: float = 0.5,
-        partial_phoneme_word_prob_min: float = None,
-        partial_phoneme_word_prob_max: float = None,
-        phonemizer_language_map: Dict[str, str] = None,
         phoneme_text_bop_marker: str = "<bop>",
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
@@ -438,11 +433,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
         self.enable_phoneme_text_input = enable_phoneme_text_input
         self.text_phoneme_token_offset = text_phoneme_token_offset
-        self.partial_phoneme_text_prob = partial_phoneme_text_prob
-        self.partial_phoneme_word_prob = partial_phoneme_word_prob
-        self.partial_phoneme_word_prob_min = partial_phoneme_word_prob_min
-        self.partial_phoneme_word_prob_max = partial_phoneme_word_prob_max
-        self.phonemizer_language_map = phonemizer_language_map or {}
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
@@ -475,18 +465,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=self.text_tokenizer,
             text_str=data.text,
-            language=language,
             tokenizer_name=tokenizer_name,
-            dataset_type=self.dataset_type,
             enable_phoneme_text_input=self.enable_phoneme_text_input,
             phoneme_tokenizer=self.phoneme_tokenizer,
             text_phoneme_token_offset=self.text_phoneme_token_offset,
-            partial_phoneme_text_prob=self.partial_phoneme_text_prob,
-            partial_phoneme_word_prob=self.partial_phoneme_word_prob,
-            partial_phoneme_word_prob_min=self.partial_phoneme_word_prob_min,
-            partial_phoneme_word_prob_max=self.partial_phoneme_word_prob_max,
-            phonemizer_language_map=self.phonemizer_language_map,
-            ignore_phoneme_languages=self.ignore_phoneme_languages,
             bop_marker=self.phoneme_text_bop_marker,
             eop_marker=self.phoneme_text_eop_marker,
         )
@@ -1031,12 +1013,6 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             enable_phoneme_text_input=self.enable_phoneme_text_input,
             phoneme_tokenizer=self.phoneme_tokenizer,
             text_phoneme_token_offset=self.text_phoneme_token_offset,
-            partial_phoneme_text_prob=0.0,
-            partial_phoneme_word_prob=self.partial_phoneme_word_prob,
-            partial_phoneme_word_prob_min=self.partial_phoneme_word_prob_min,
-            partial_phoneme_word_prob_max=self.partial_phoneme_word_prob_max,
-            phonemizer_language_map=self.phonemizer_language_map,
-            ignore_phoneme_languages=self.ignore_phoneme_languages,
             bop_marker=self.phoneme_text_bop_marker,
             eop_marker=self.phoneme_text_eop_marker,
         )

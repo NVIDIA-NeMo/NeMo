@@ -48,33 +48,6 @@ except (ImportError, ModuleNotFoundError):
     PYNINI_AVAILABLE = False
 
 
-DEFAULT_PHONEMIZER_LANGUAGE_MAP = {
-    # phonemizer does not accept "en"; "en-gb" matches `espeak-ng -v en --ipa -q`.
-    "en": "en-gb",
-    "de": "de",
-    "es": "es",
-    "fr": "fr-fr",
-    "hi": "hi",
-    "it": "it",
-    "vi": "vi",
-    "zh": "cmn",
-    "ru": "ru",
-    "ja": "ja",
-    "ko": "ko",
-    "ar": "ar",
-    "he": "he",
-    "nl": "nl",
-    "pl": "pl",
-    "pt": "pt",
-    "pt-BR": "pt",
-    "ar-AE": "ar",
-    "ar-MSA": "ar",
-    "ar-SA": "ar",
-    "ar-SY": "ar",
-    "ko-KR": "ko",
-}
-
-
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
     """
     Get the absolute and relative paths of input file path.
@@ -179,87 +152,25 @@ def _split_text_and_phoneme_spans(
     return [(kind, segment) for kind, segment in segments if segment]
 
 
-@functools.lru_cache(maxsize=None)
-def _get_espeak_backend(phonemizer_language: str):
-    """Construct and cache (once per worker process and language) an espeak phonemizer backend.
-
-    The top-level ``phonemizer.phonemize`` helper instantiates a brand new ``EspeakBackend`` (which
-    ``dlopen``s libespeak-ng) on *every* call. When partial phonemization is enabled this happens
-    once per selected word span, for many utterances, across every dataloader worker — which is both
-    slow and a steady source of host-memory growth (espeak-ng is known to leak across repeated
-    backend creation). Reusing a single cached backend per language removes both problems.
-    """
-    try:
-        from phonemizer.backend import EspeakBackend  # type: ignore[import-not-found]
-    except ImportError as e:
-        raise ImportError(
-            "`phonemizer` is required when `partial_phoneme_text_prob > 0`. "
-            "Install it and ensure the espeak-ng backend is available."
-        ) from e
-
-    return EspeakBackend(
-        phonemizer_language,
-        preserve_punctuation=False,
-        with_stress=True,
-        language_switch="remove-flags",
-        words_mismatch="ignore",
-    )
-
-
-def _phonemize_with_espeak(text: str, language: str, phonemizer_language_map: Optional[Dict[str, str]] = None) -> str:
-    language_map = dict(DEFAULT_PHONEMIZER_LANGUAGE_MAP)
-    if phonemizer_language_map:
-        language_map.update(dict(phonemizer_language_map))
-    phonemizer_language = language_map.get(language, language)
-
-    backend = _get_espeak_backend(phonemizer_language)
-    phonemized = backend.phonemize([text], strip=True, njobs=1)
-    return phonemized[0] if isinstance(phonemized, list) else str(phonemized)
-
-
 def partially_phonemize_text(
     text: str,
-    language: str,
+    ipa_alignment: Optional[List],
     partial_phoneme_word_prob: float,
-    phonemizer_language_map: Optional[Dict[str, str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> str:
-    """Replace sampled word spans with espeak IPA wrapped in user-facing markers."""
+    """Replace sampled aligned spans with their precomputed IPA."""
     _validate_probability("partial_phoneme_word_prob", partial_phoneme_word_prob)
-    if partial_phoneme_word_prob == 0.0 or not text:
+    if partial_phoneme_word_prob == 0.0 or not text or not ipa_alignment:
         return text
-
-    word_spans = list(re.finditer(r"\b[\w'-]+\b", text, flags=re.UNICODE))
-    selected_spans = [match.span() for match in word_spans if random.random() < partial_phoneme_word_prob]
-    if not selected_spans:
-        return text
-
-    coalesced_spans = []
-    for start, end in selected_spans:
-        if coalesced_spans and text[coalesced_spans[-1][1] : start].isspace():
-            coalesced_spans[-1] = (coalesced_spans[-1][0], end)
-        else:
-            coalesced_spans.append((start, end))
 
     output_parts = []
     cursor = 0
-    for start, end in coalesced_spans:
+    for start, end, _source_text, ipa_text in ipa_alignment:
+        if random.random() >= partial_phoneme_word_prob:
+            continue
         output_parts.append(text[cursor:start])
-        span_text = text[start:end]
-        try:
-            ipa_text = _phonemize_with_espeak(span_text, language, phonemizer_language_map)
-            output_parts.append(f"{bop_marker}{ipa_text}{eop_marker}")
-        except Exception:
-            # Never let a phonemizer failure (error, missing voice, etc.) take down the dataloader
-            # worker. Fall back to the original grapheme text for this span and keep training.
-            logging.warning(
-                "Phonemization failed for language=%s span=%r; using original text instead.\n%s",
-                language,
-                span_text,
-                traceback.format_exc(),
-            )
-            output_parts.append(span_text)
+        output_parts.append(f"{bop_marker}{ipa_text}{eop_marker}")
         cursor = end
     output_parts.append(text[cursor:])
 
@@ -269,18 +180,10 @@ def partially_phonemize_text(
 def tokenize_text_with_phoneme_spans(
     text_tokenizer,
     text_str: str,
-    language: str,
     tokenizer_name: str,
-    dataset_type: str = 'test',
     enable_phoneme_text_input: bool = False,
     phoneme_tokenizer=None,
     text_phoneme_token_offset: Optional[int] = None,
-    partial_phoneme_text_prob: float = 0.0,
-    partial_phoneme_word_prob: float = 0.0,
-    partial_phoneme_word_prob_min: Optional[float] = None,
-    partial_phoneme_word_prob_max: Optional[float] = None,
-    phonemizer_language_map: Optional[Dict[str, str]] = None,
-    ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> List[int]:
@@ -289,13 +192,6 @@ def tokenize_text_with_phoneme_spans(
     Span markers are syntax only and are not emitted as token IDs. IPA span IDs are encoded with the phoneme tokenizer
     and shifted by ``text_phoneme_token_offset`` so they live in the text-channel vocabulary.
     """
-    _validate_probability("partial_phoneme_text_prob", partial_phoneme_text_prob)
-    _validate_probability("partial_phoneme_word_prob", partial_phoneme_word_prob)
-    if partial_phoneme_word_prob_min is None:
-        partial_phoneme_word_prob_min = partial_phoneme_word_prob
-    if partial_phoneme_word_prob_max is None:
-        partial_phoneme_word_prob_max = partial_phoneme_word_prob
-
     if not enable_phoneme_text_input:
         return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
 
@@ -304,32 +200,8 @@ def tokenize_text_with_phoneme_spans(
     if text_phoneme_token_offset is None:
         raise ValueError("`text_phoneme_token_offset` is required when `enable_phoneme_text_input=True`.")
 
-    text_for_tokens = text_str
-    explicit_phoneme_spans = has_phoneme_text_spans(text_for_tokens, bop_marker=bop_marker, eop_marker=eop_marker)
-    skip_partial_phonemization = language in (ignore_phoneme_languages or [])
-    if (
-        dataset_type == 'train'
-        and partial_phoneme_text_prob > 0.0
-        and random.random() < partial_phoneme_text_prob
-        and not explicit_phoneme_spans
-        and not skip_partial_phonemization
-    ):
-        sampled_word_prob = _sample_probability_range(
-            "partial_phoneme_word_prob", partial_phoneme_word_prob_min, partial_phoneme_word_prob_max
-        )
-        text_for_tokens = partially_phonemize_text(
-            text=text_for_tokens,
-            language=language,
-            partial_phoneme_word_prob=sampled_word_prob,
-            phonemizer_language_map=phonemizer_language_map,
-            bop_marker=bop_marker,
-            eop_marker=eop_marker,
-        )
-
     token_ids = []
-    for segment_type, segment in _split_text_and_phoneme_spans(
-        text_for_tokens, bop_marker=bop_marker, eop_marker=eop_marker
-    ):
+    for segment_type, segment in _split_text_and_phoneme_spans(text_str, bop_marker=bop_marker, eop_marker=eop_marker):
         if segment_type == "text":
             token_ids.extend(text_tokenizer.encode(text=segment, tokenizer_name=tokenizer_name))
         else:
@@ -784,12 +656,6 @@ def chunk_and_tokenize_text_by_sentence(
     enable_phoneme_text_input: bool = False,
     phoneme_tokenizer=None,
     text_phoneme_token_offset: Optional[int] = None,
-    partial_phoneme_text_prob: float = 0.0,
-    partial_phoneme_word_prob: float = 0.0,
-    partial_phoneme_word_prob_min: Optional[float] = None,
-    partial_phoneme_word_prob_max: Optional[float] = None,
-    phonemizer_language_map: Optional[Dict[str, str]] = None,
-    ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
@@ -822,18 +688,10 @@ def chunk_and_tokenize_text_by_sentence(
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=text_tokenizer,
             text_str=sentence,
-            language=language,
             tokenizer_name=tokenizer_name,
-            dataset_type='test',
             enable_phoneme_text_input=enable_phoneme_text_input,
             phoneme_tokenizer=phoneme_tokenizer,
             text_phoneme_token_offset=text_phoneme_token_offset,
-            partial_phoneme_text_prob=partial_phoneme_text_prob,
-            partial_phoneme_word_prob=partial_phoneme_word_prob,
-            partial_phoneme_word_prob_min=partial_phoneme_word_prob_min,
-            partial_phoneme_word_prob_max=partial_phoneme_word_prob_max,
-            phonemizer_language_map=phonemizer_language_map,
-            ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
         )
@@ -989,12 +847,6 @@ def chunk_text_for_inference(
     enable_phoneme_text_input: bool = False,
     phoneme_tokenizer=None,
     text_phoneme_token_offset: Optional[int] = None,
-    partial_phoneme_text_prob: float = 0.0,
-    partial_phoneme_word_prob: float = 0.0,
-    partial_phoneme_word_prob_min: Optional[float] = None,
-    partial_phoneme_word_prob_max: Optional[float] = None,
-    phonemizer_language_map: Optional[Dict[str, str]] = None,
-    ignore_phoneme_languages: Optional[List[str]] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
@@ -1054,12 +906,6 @@ def chunk_text_for_inference(
             enable_phoneme_text_input=enable_phoneme_text_input,
             phoneme_tokenizer=phoneme_tokenizer,
             text_phoneme_token_offset=text_phoneme_token_offset,
-            partial_phoneme_text_prob=partial_phoneme_text_prob,
-            partial_phoneme_word_prob=partial_phoneme_word_prob,
-            partial_phoneme_word_prob_min=partial_phoneme_word_prob_min,
-            partial_phoneme_word_prob_max=partial_phoneme_word_prob_max,
-            phonemizer_language_map=phonemizer_language_map,
-            ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
         )
@@ -1068,18 +914,10 @@ def chunk_text_for_inference(
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=text_tokenizer,
             text_str=text,
-            language=language,
             tokenizer_name=tokenizer_name,
-            dataset_type='test',
             enable_phoneme_text_input=enable_phoneme_text_input,
             phoneme_tokenizer=phoneme_tokenizer,
             text_phoneme_token_offset=text_phoneme_token_offset,
-            partial_phoneme_text_prob=partial_phoneme_text_prob,
-            partial_phoneme_word_prob=partial_phoneme_word_prob,
-            partial_phoneme_word_prob_min=partial_phoneme_word_prob_min,
-            partial_phoneme_word_prob_max=partial_phoneme_word_prob_max,
-            phonemizer_language_map=phonemizer_language_map,
-            ignore_phoneme_languages=ignore_phoneme_languages,
             bop_marker=bop_marker,
             eop_marker=eop_marker,
         )

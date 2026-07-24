@@ -30,8 +30,11 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     IPABPETokenizer,
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    _sample_probability_range,
     beta_binomial_prior_distribution,
+    has_phoneme_text_spans,
     normalize_volume,
+    partially_phonemize_text,
     stack_tensors,
     tokenize_text_with_phoneme_spans,
 )
@@ -188,7 +191,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         partial_phoneme_word_prob: float = 0.5,
         partial_phoneme_word_prob_min: float = None,
         partial_phoneme_word_prob_max: float = None,
-        phonemizer_language_map: Dict[str, str] = None,
         phoneme_text_bop_marker: str = "<bop>",
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
@@ -223,7 +225,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.partial_phoneme_word_prob = partial_phoneme_word_prob
         self.partial_phoneme_word_prob_min = partial_phoneme_word_prob_min
         self.partial_phoneme_word_prob_max = partial_phoneme_word_prob_max
-        self.phonemizer_language_map = phonemizer_language_map or {}
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
@@ -477,6 +478,40 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             else:
                 text_str = cut.supervisions[0].text
             raw_text_list.append(text_str)
+            text_for_tokens = text_str
+            if (
+                self.dataset_type == 'train'
+                and self.enable_phoneme_text_input
+                and self.partial_phoneme_text_prob > 0.0
+                and language not in self.ignore_phoneme_languages
+                and cut.supervisions[0].has_custom("ipa_alignment")
+                and not has_phoneme_text_spans(
+                    text_str,
+                    bop_marker=self.phoneme_text_bop_marker,
+                    eop_marker=self.phoneme_text_eop_marker,
+                )
+                and random.random() < self.partial_phoneme_text_prob
+            ):
+                min_word_prob = (
+                    self.partial_phoneme_word_prob
+                    if self.partial_phoneme_word_prob_min is None
+                    else self.partial_phoneme_word_prob_min
+                )
+                max_word_prob = (
+                    self.partial_phoneme_word_prob
+                    if self.partial_phoneme_word_prob_max is None
+                    else self.partial_phoneme_word_prob_max
+                )
+                sampled_word_prob = _sample_probability_range(
+                    "partial_phoneme_word_prob", min_word_prob, max_word_prob
+                )
+                text_for_tokens = partially_phonemize_text(
+                    text=text_str,
+                    ipa_alignment=cut.supervisions[0].ipa_alignment,
+                    partial_phoneme_word_prob=sampled_word_prob,
+                    bop_marker=self.phoneme_text_bop_marker,
+                    eop_marker=self.phoneme_text_eop_marker,
+                )
             if cut.has_custom("tokenizer_names"):
                 # Pick a random tokenizer from the list of tokenizers
                 tokenizer_name = random.choice(cut.tokenizer_names)
@@ -484,19 +519,11 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 tokenizer_name = "english_phoneme"  # Default to english phoneme tokenizer
             tokens = tokenize_text_with_phoneme_spans(
                 text_tokenizer=self.text_tokenizer,
-                text_str=text_str,
-                language=language,
+                text_str=text_for_tokens,
                 tokenizer_name=tokenizer_name,
-                dataset_type=self.dataset_type,
                 enable_phoneme_text_input=self.enable_phoneme_text_input,
                 phoneme_tokenizer=self.phoneme_tokenizer,
                 text_phoneme_token_offset=self.text_phoneme_token_offset,
-                partial_phoneme_text_prob=self.partial_phoneme_text_prob,
-                partial_phoneme_word_prob=self.partial_phoneme_word_prob,
-                partial_phoneme_word_prob_min=self.partial_phoneme_word_prob_min,
-                partial_phoneme_word_prob_max=self.partial_phoneme_word_prob_max,
-                phonemizer_language_map=self.phonemizer_language_map,
-                ignore_phoneme_languages=self.ignore_phoneme_languages,
                 bop_marker=self.phoneme_text_bop_marker,
                 eop_marker=self.phoneme_text_eop_marker,
             )

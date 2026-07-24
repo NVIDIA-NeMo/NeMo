@@ -97,13 +97,12 @@ model:
   phoneme_corruption_unk_mode_prob: 0.5
   phoneme_corruption_type: "repeat_skip_unk" # "repeat_skip_unk" or "complete_channel"
   enable_phoneme_text_input: false # Enable inline IPA spans in text as <bop>...<eop>; requires phoneme_tokenizer.
-  partial_phoneme_text_prob: 0.0 # Training-only probability of replacing sampled words with espeak IPA spans.
-  partial_phoneme_word_prob: 0.5 # Fallback fixed per-word probability when min/max are not set.
-  partial_phoneme_word_prob_min: 0.25 # Sampled per-word probability lower bound during training augmentation.
-  partial_phoneme_word_prob_max: 0.75 # Sampled per-word probability upper bound during training augmentation.
+  partial_phoneme_text_prob: 0.0 # Training-only probability of using precomputed IPA alignments.
+  partial_phoneme_word_prob: 0.5 # Fallback fixed per-alignment probability when min/max are not set.
+  partial_phoneme_word_prob_min: 0.25 # Sampled per-alignment probability lower bound.
+  partial_phoneme_word_prob_max: 0.75 # Sampled per-alignment probability upper bound.
   phoneme_text_bop_marker: "<bop>"
   phoneme_text_eop_marker: "<eop>"
-  phonemizer_language_map: {} # Optional language-code overrides for phonemizer/espeak. Requires phonemizer when augmentation is enabled.
   ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
   add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
 

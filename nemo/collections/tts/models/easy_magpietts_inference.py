@@ -354,7 +354,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.partial_phoneme_word_prob = cfg.get('partial_phoneme_word_prob', 0.5)
         self.partial_phoneme_word_prob_min = cfg.get('partial_phoneme_word_prob_min', self.partial_phoneme_word_prob)
         self.partial_phoneme_word_prob_max = cfg.get('partial_phoneme_word_prob_max', self.partial_phoneme_word_prob)
-        self.phonemizer_language_map = cfg.get('phonemizer_language_map', {})
         self.phoneme_text_bop_marker = cfg.get('phoneme_text_bop_marker', '<bop>')
         self.phoneme_text_eop_marker = cfg.get('phoneme_text_eop_marker', '<eop>')
         self.bos_id = num_tokens_tokenizer
@@ -2188,18 +2187,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         text_tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=self.tokenizer,
             text_str=transcript,
-            language=language,
             tokenizer_name=main_tokenizer_name,
-            dataset_type='test',
             enable_phoneme_text_input=self.enable_phoneme_text_input,
             phoneme_tokenizer=self.phoneme_tokenizer,
             text_phoneme_token_offset=self.text_phoneme_token_offset,
-            partial_phoneme_text_prob=0.0,
-            partial_phoneme_word_prob=self.partial_phoneme_word_prob,
-            partial_phoneme_word_prob_min=self.partial_phoneme_word_prob_min,
-            partial_phoneme_word_prob_max=self.partial_phoneme_word_prob_max,
-            phonemizer_language_map=self.phonemizer_language_map,
-            ignore_phoneme_languages=self.ignore_phoneme_languages,
             bop_marker=self.phoneme_text_bop_marker,
             eop_marker=self.phoneme_text_eop_marker,
         ) + [self.eos_id]

@@ -44,8 +44,6 @@ def _make_easy_mock_model(local_transformer_type):
     model.enable_phoneme_text_input = False
     model.phoneme_tokenizer = None
     model.text_phoneme_token_offset = None
-    model.partial_phoneme_word_prob = 0.0
-    model.phonemizer_language_map = {}
     model.phoneme_text_bop_marker = "<bop>"
     model.phoneme_text_eop_marker = "<eop>"
     model.eos_id = 0

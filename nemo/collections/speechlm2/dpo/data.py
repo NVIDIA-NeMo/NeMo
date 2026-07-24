@@ -36,6 +36,19 @@ class PreferenceBatch:
     pairs: tuple[PreferencePair, ...]
 
 
+def rank_active_slots(*, pairs_per_update: int, world_size: int) -> tuple[int, ...]:
+    """Return the fixed within-update active-slot count for every rank.
+
+    Each source shard has its own zero-based 435-pair schedule.  Thus rank
+    ownership restarts at every shard, exactly as the historical 435→440 slot
+    schedule does; ownership must not rotate with the global manifest offset.
+    """
+
+    if pairs_per_update <= 0 or world_size <= 0:
+        raise ValueError("pairs_per_update and world_size must be positive")
+    return tuple(len(range(rank, pairs_per_update, world_size)) for rank in range(world_size))
+
+
 def _stable_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -117,7 +130,14 @@ class FiniteLhotsePreferenceCorpus:
             pair_id = str(value["record_id"])
             ids.append(pair_id)
             reads += 1
-            if position % self.world_size != rank:
+            shard_index = position // self.pairs_per_update
+            within_shard_index = position % self.pairs_per_update
+            # Restart rank ownership for each ordered source shard.  The
+            # 435-pair historical schedule maps local positions 0..434 to
+            # ranks 0..7, then pads to 440 slots (55/rank) with five inactive
+            # positions.  Global modulo would rotate the five padding slots
+            # between source shards and no longer match that schedule.
+            if within_shard_index % self.world_size != rank:
                 continue
             waveform = np.asarray(cut.load_audio(), dtype=np.float32)
             if waveform.ndim == 2:
@@ -129,7 +149,7 @@ class FiniteLhotsePreferenceCorpus:
             # manifest's audio digest identifies the staged recording (checked
             # in ``_validate``).  It is deliberately not recomputed after WAV
             # decoding: the historical staging digest predates PCM rounding.
-            local[position // self.pairs_per_update].append(
+            local[shard_index].append(
                 PreferencePair(
                     pair_id=pair_id,
                     source_id=str(value["source_id"]),
@@ -142,7 +162,9 @@ class FiniteLhotsePreferenceCorpus:
             )
         if reads != self.expected_rows or len(set(ids)) != self.expected_rows:
             raise ValueError(f"finite Lhotse corpus mismatch: reads={reads} unique_ids={len(set(ids))}")
-        expected_rank_counts = [len(range(rank, self.pairs_per_update, self.world_size)) for rank in range(self.world_size)]
+        expected_rank_counts = rank_active_slots(
+            pairs_per_update=self.pairs_per_update, world_size=self.world_size
+        )
         wanted = expected_rank_counts[rank]
         if any(len(shard) != wanted for shard in local):
             raise ValueError(f"rank {rank} did not receive the expected direct-Lhotse slots")

@@ -10,7 +10,7 @@ import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 import torch.distributed as dist
@@ -44,26 +44,44 @@ def _ids(value: Any) -> list[int]:
     return torch.as_tensor(value).detach().cpu().to(torch.long).reshape(-1).tolist()
 
 
-def _encode_completion(formatter: Any, *, prompt: str, completion: str, audio_tag: str, audio_tag_id: int) -> _EncodedCompletion:
-    prompt = prompt if audio_tag in prompt else f"{audio_tag}\n{prompt}"
+def _dialog_turns(prompt: str | Mapping[str, str], completion: str, audio_tag: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create prompt-formatter turns without flattening structured system/user prompts."""
+
+    if isinstance(prompt, str):
+        system = None
+        user_text = prompt
+    elif isinstance(prompt, Mapping) and isinstance(prompt.get("system", ""), str) and isinstance(prompt.get("user"), str):
+        system = str(prompt.get("system", ""))
+        user_text = str(prompt["user"])
+    else:
+        raise ValueError("DPO prompt must be a nonempty string or {system, user} mapping")
+    user_text = user_text if audio_tag in user_text else f"{audio_tag}\n{user_text}"
+    context: list[dict[str, Any]] = []
+    if system is not None:
+        context.append({"role": "system", "slots": {"message": system}})
+    context.append({"role": "user", "slots": {"message": user_text}})
+    answered = [*context, {"role": "assistant", "slots": {"message": completion}}]
+    empty_answer = [*context, {"role": "assistant", "slots": {"message": ""}}]
+    return answered, empty_answer
+
+
+def _encode_completion(formatter: Any, *, prompt: str | Mapping[str, str], completion: str, audio_tag: str, audio_tag_id: int) -> _EncodedCompletion:
+    answered, empty_answer = _dialog_turns(prompt, completion, audio_tag)
     failures: list[str] = []
-    for style, user, assistant, empty in (
-        ("slots", {"role": "user", "slots": {"message": prompt}}, {"role": "assistant", "slots": {"message": completion}}, {"role": "assistant", "slots": {"message": ""}}),
-        ("content", {"role": "user", "content": prompt}, {"role": "assistant", "content": completion}, {"role": "assistant", "content": ""}),
-    ):
+    for style, turns, prefix_turns in (("slots", answered, empty_answer),):
         try:
             try:
-                encoded = formatter.encode_dialog(turns=[user, assistant], enable_thinking=False)
+                encoded = formatter.encode_dialog(turns=turns, enable_thinking=False)
             except TypeError:
-                encoded = formatter.encode_dialog(turns=[user, assistant])
+                encoded = formatter.encode_dialog(turns=turns)
             input_ids = _ids(_field(encoded, ("input_ids",)))
             raw_mask = _field(encoded, ("mask", "loss_mask", "answer_mask", "labels_mask"))
             mask = [] if raw_mask is None else [bool(x) for x in torch.as_tensor(raw_mask).detach().cpu().reshape(-1).tolist()]
             if len(mask) != len(input_ids) or not any(mask):
                 try:
-                    prefix = formatter.encode_dialog(turns=[user, empty], enable_thinking=False)
+                    prefix = formatter.encode_dialog(turns=prefix_turns, enable_thinking=False)
                 except TypeError:
-                    prefix = formatter.encode_dialog(turns=[user, empty])
+                    prefix = formatter.encode_dialog(turns=prefix_turns)
                 prefix_ids = _ids(_field(prefix, ("input_ids",)))
                 shared = next((index for index, pair in enumerate(zip(input_ids, prefix_ids)) if pair[0] != pair[1]), min(len(input_ids), len(prefix_ids)))
                 mask = [index >= shared for index in range(len(input_ids))]

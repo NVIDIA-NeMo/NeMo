@@ -17,6 +17,8 @@ trajectory as inputs rather than hard-coded program state:
 - no shuffle and no cycling; every rank reads only its assigned audio slots;
 - same-audio `chosen`/`rejected` pairs, bound to the one direct-Lhotse
   recording whose ID and staged filename equal the manifest's audio identity;
+- either a legacy string prompt or a structured `{system, user}` prompt; the
+  latter is rendered as separate dialog turns and is never flattened;
 - standard DPO `-logsigmoid(beta * ((pi_c-ref_c) - (pi_r-ref_r)))`, beta .20;
 - grad-enabled initial-policy reference log probabilities, detached once and
   reused for the second ordered pass;

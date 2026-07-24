@@ -8,7 +8,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import numpy as np
 import torch
@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, IterableDataset
 class PreferencePair:
     pair_id: str
     source_id: str
-    prompt: str
+    prompt: str | dict[str, str]
     chosen: str
     rejected: str
     audio: torch.Tensor
@@ -51,8 +51,17 @@ def _preference(cut: Any) -> dict[str, Any]:
 
 
 def _validate(cut: Any, value: dict[str, Any]) -> None:
-    required = ("record_id", "source_id", "prompt", "chosen", "rejected", "audio_sha256")
+    required = ("record_id", "source_id", "chosen", "rejected", "audio_sha256")
     missing = [key for key in required if not str(value.get(key, "")).strip()]
+    prompt = value.get("prompt")
+    if isinstance(prompt, str):
+        prompt_ok = bool(prompt.strip())
+    elif isinstance(prompt, Mapping):
+        prompt_ok = isinstance(prompt.get("system", ""), str) and isinstance(prompt.get("user"), str) and bool(prompt["user"].strip())
+    else:
+        prompt_ok = False
+    if not prompt_ok:
+        missing.append("prompt")
     if missing:
         raise ValueError(f"{cut.id}: missing DPO fields {missing}")
     checks = {
@@ -124,7 +133,7 @@ class FiniteLhotsePreferenceCorpus:
                 PreferencePair(
                     pair_id=pair_id,
                     source_id=str(value["source_id"]),
-                    prompt=str(value["prompt"]),
+                    prompt=value["prompt"] if isinstance(value["prompt"], str) else dict(value["prompt"]),
                     chosen=str(value["chosen"]),
                     rejected=str(value["rejected"]),
                     audio=torch.from_numpy(waveform),

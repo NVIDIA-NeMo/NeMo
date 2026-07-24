@@ -202,7 +202,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         num_audio_samples = num_codec_frames * self.codec_model_samples_per_frame
         return num_audio_samples
 
-    def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
+    def _initialize_tokenizers(self):
         if self.text_tokenizer is None:
             worker_info = torch.utils.data.get_worker_info()
             worker_id = worker_info.id if worker_info is not None else 0
@@ -221,6 +221,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
             self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
 
+    def _prepare_cuts(self, cuts: CutSet) -> tuple[CutSet, list[str]]:
         cuts = cuts.transform_text(_strip_timestamps)
         for cut in cuts:
             if str(getattr(cut, "task", "tts")).lower() == "tts":
@@ -234,14 +235,17 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             else:
                 batch_tokenizer_names.append("english_phoneme")
 
-        def _align_codebooks(t):
-            C = t.shape[1]
-            if C < self.num_audio_codebooks:
-                return F.pad(t, (0, self.num_audio_codebooks - C))
-            elif C > self.num_audio_codebooks:
-                return t[:, : self.num_audio_codebooks]
-            return t
+        return cuts, batch_tokenizer_names
 
+    def _align_codebooks(self, tensor: torch.Tensor) -> torch.Tensor:
+        num_codebooks = tensor.shape[1]
+        if num_codebooks < self.num_audio_codebooks:
+            return F.pad(tensor, (0, self.num_audio_codebooks - num_codebooks))
+        elif num_codebooks > self.num_audio_codebooks:
+            return tensor[:, : self.num_audio_codebooks]
+        return tensor
+
+    def _collate_audio_channels(self, cuts: CutSet) -> Dict[str, torch.Tensor]:
         with fp32_precision():
             target_audio, target_audio_lens = collate_audio(
                 cuts.resample(self.sample_rate, recording_field="target_audio"), recording_field="target_audio"
@@ -287,6 +291,17 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 )
             )
 
+        return {
+            "target_audio": target_audio,
+            "target_audio_lens": target_audio_lens,
+            "source_audio": source_audio,
+            "source_audio_lens": source_audio_lens,
+            "user_audio_turn_splitted": user_audio_turn_splitted,
+            "user_audio_turn_splitted_lens": user_audio_turn_splitted_lens,
+            "user_audio_turn_splitted_indices": user_audio_turn_splitted_indices,
+        }
+
+    def _collate_text_channels(self, cuts: CutSet, batch_tokenizer_names: list[str]) -> Dict[str, torch.Tensor]:
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts,
             self.text_tokenizer,
@@ -312,6 +327,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             interruption_token_id=self.interruption_token_id,
         )
 
+        return {
+            "target_text_tokens": target_text_tokens,
+            "target_token_lens": target_token_lens,
+            "source_tokens": source_tokens,
+            "source_token_lens": source_token_lens,
+        }
+
+    def _collate_phoneme_tokens(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, None]]:
         if self.phoneme_tokenizer is not None:
             target_phoneme_tokens, target_phoneme_lens, phoneme_turn_dropout = collate_phoneme_channel(
                 cuts,
@@ -330,304 +353,381 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         else:
             target_phoneme_tokens, target_phoneme_lens, phoneme_turn_dropout = None, None, None
 
-        dataset_name_list = []
-        audio_list_16khz = []
-        audio_len_list_16khz = []
-        prior_list = []
+        return {
+            "target_phoneme_tokens": target_phoneme_tokens,
+            "target_phoneme_lens": target_phoneme_lens,
+            "phoneme_turn_dropout": phoneme_turn_dropout,
+        }
 
-        target_codes_list = []
-        source_codes_list = []
+    def _get_dataset_name(self, cut: Cut) -> str:
+        speaker_found = False
+        for sup in reversed(cut.supervisions):
+            if check_speaker_format(sup.speaker):
+                dataset_name = sup.speaker.strip().split()[2].split(":")[-1]
+                speaker_found = True
+                break
 
-        context_audio_list = []
-        context_audio_len_list = []
-        context_audio_codes_list = []
-        context_audio_codes_len_list = []
-        context_text_tokens_list = []
-        context_text_tokens_len_list = []
-        context_has_text_context_list = []
-        reward_list = []
-        language_list = []
+        if not speaker_found:
+            dataset_name = "unknown"
 
-        def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
-            effective_duration_max = min(self.context_duration_max, available_duration_sec)
-            effective_duration_max = max(self.context_duration_min, effective_duration_max)
-            return random.uniform(self.context_duration_min, effective_duration_max)
+        return dataset_name
 
-        for i, cut in enumerate(cuts):
-            speaker_found = False
-            for sup in reversed(cut.supervisions):
-                if check_speaker_format(sup.speaker):
-                    dataset_name = sup.speaker.strip().split()[2].split(":")[-1]
-                    speaker_found = True
-                    break
+    def _get_language(self, cut: Cut) -> str:
+        return (
+            cut.lang
+            if cut.has_custom("lang")
+            else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
+        )
 
-            if not speaker_found:
-                dataset_name = "unknown"
-            dataset_name_list.append(dataset_name)
+    def _load_cached_codes(self, cut: Cut) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
+        target_codes = None
+        source_codes = None
 
-            language = (
-                cut.lang
-                if cut.has_custom("lang")
-                else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
-            )
-            language_list.append(language)
-            context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
+        if self.load_cached_codes_if_available:
+            if cut.has_custom("target_codes"):
+                codes_array = cut.target_codes.load().astype(np.int32)
+                target_codes = torch.from_numpy(codes_array).T
 
-            # Target and Source Codes
-            if self.load_cached_codes_if_available:
-                if cut.has_custom("target_codes"):
-                    codes_array = cut.target_codes.load().astype(np.int32)
-                    target_codes_list.append(torch.from_numpy(codes_array).T)
+            if cut.has_custom("source_codes"):
+                source_codes = torch.from_numpy(cut.source_codes.load().astype(np.int32)).T
 
-                if cut.has_custom("source_codes"):
-                    source_codes_list.append(torch.from_numpy(cut.source_codes.load().astype(np.int32)).T)
+        return target_codes, source_codes
 
-            # Context Audio or Context Codes
-            if self.load_cached_codes_if_available and cut.has_custom("context_codes"):
-                context_audio_codes_array = cut.context_codes.load().astype(np.int32)
-                context_audio_codes = torch.from_numpy(context_audio_codes_array)
-                _available_context_duration = (
-                    context_audio_codes.shape[1] * self.codec_model_samples_per_frame / self.sample_rate
+    def _sample_context_duration_with_available_limit(self, available_duration_sec: float) -> float:
+        effective_duration_max = min(self.context_duration_max, available_duration_sec)
+        effective_duration_max = max(self.context_duration_min, effective_duration_max)
+        return random.uniform(self.context_duration_min, effective_duration_max)
+
+    def _load_context_codes(self, cut: Cut) -> torch.Tensor:
+        context_audio_codes_array = cut.context_codes.load().astype(np.int32)
+        context_audio_codes = torch.from_numpy(context_audio_codes_array)
+        _available_context_duration = (
+            context_audio_codes.shape[1] * self.codec_model_samples_per_frame / self.sample_rate
+        )
+        _context_duration_to_slice = self._sample_context_duration_with_available_limit(_available_context_duration)
+        _num_frames_to_slice = int(
+            _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
+        )
+
+        if _num_frames_to_slice < context_audio_codes.shape[1]:
+            start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
+            context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
+        else:
+            _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
+            context_audio_codes = context_audio_codes.repeat(1, _num_repeats)[:, :_num_frames_to_slice]
+
+        return self._align_codebooks(context_audio_codes.T)
+
+    def _load_context_audio(self, cut: Cut) -> torch.Tensor:
+        with fp32_precision():
+            context_audio_array = cut.context_audio.resample(self.sample_rate).load_audio().squeeze(0)
+        if self.volume_norm:
+            context_audio_array = normalize_volume(context_audio_array)
+
+        _available_context_duration = len(context_audio_array) / self.sample_rate
+        _context_duration_to_slice = self._sample_context_duration_with_available_limit(_available_context_duration)
+        _num_samples_to_slice = self.get_num_audio_samples_to_slice(_context_duration_to_slice, self.sample_rate)
+
+        if _num_samples_to_slice < len(context_audio_array):
+            start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
+            context_audio_array = context_audio_array[start_idx : start_idx + _num_samples_to_slice]
+        else:
+            _num_repeats = int(np.ceil(_num_samples_to_slice / len(context_audio_array)))
+            context_audio_array = np.tile(context_audio_array, _num_repeats)[:_num_samples_to_slice]
+
+        return torch.from_numpy(context_audio_array)
+
+    def _load_fallback_context(
+        self, cut: Cut, context_text: Union[str, None]
+    ) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
+        matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
+
+        if self.load_cached_codes_if_available:
+            if context_text is None and len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
+                sup = random.choice(matching_supervisions)
+                codes_array = cut.target_codes.load().astype(np.int32)
+                start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
+                num_frames = int(sup.duration * self.sample_rate / self.codec_model_samples_per_frame)
+                context_audio_codes = torch.from_numpy(codes_array)[:, start_frame : start_frame + num_frames].T
+                context_audio_codes = self._align_codebooks(context_audio_codes)
+            else:
+                context_audio_codes = torch.zeros([0, self.num_audio_codebooks], dtype=torch.int32)
+            return None, context_audio_codes
+
+        if context_text is None and len(matching_supervisions) > 0:
+            sup = random.choice(matching_supervisions)
+            with fp32_precision():
+                turn_cut = cut.resample(self.sample_rate, recording_field="target_audio").truncate(
+                    offset=max(0, sup.start), duration=sup.duration
                 )
-                _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
-                _num_frames_to_slice = int(
-                    _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
-                )
+                context_audio_array = turn_cut.load_custom("target_audio").squeeze(0)
+            if self.volume_norm:
+                context_audio_array = normalize_volume(context_audio_array)
+            context_audio = torch.from_numpy(context_audio_array)
+        else:
+            context_audio = torch.zeros(self.codec_model_samples_per_frame, dtype=torch.float32)
 
-                if _num_frames_to_slice < context_audio_codes.shape[1]:
-                    start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
-                    context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
-                else:
-                    _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
-                    context_audio_codes = context_audio_codes.repeat(1, _num_repeats)[:, :_num_frames_to_slice]
+        return context_audio, None
 
-                context_audio_codes = _align_codebooks(context_audio_codes.T)
-                context_audio_codes_list.append(context_audio_codes)
-                context_audio_codes_len_list.append(context_audio_codes.shape[0])
+    def _load_context_audio_or_codes(
+        self, cut: Cut, context_text: Union[str, None]
+    ) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
+        if self.load_cached_codes_if_available and cut.has_custom("context_codes"):
+            return None, self._load_context_codes(cut)
+        elif cut.has_custom("context_audio"):
+            return self._load_context_audio(cut), None
+        return self._load_fallback_context(cut, context_text)
 
-            elif cut.has_custom("context_audio"):
-                with fp32_precision():
-                    context_audio_array = cut.context_audio.resample(self.sample_rate).load_audio().squeeze(0)
+    def _load_audio_16khz(self, cut: Cut) -> torch.Tensor:
+        with fp32_precision():
+            if cut.has_custom("context_audio"):
+                audio_array_16khz = cut.context_audio.resample(16_000).load_audio().squeeze(0)
                 if self.volume_norm:
-                    context_audio_array = normalize_volume(context_audio_array)
+                    audio_array_16khz = normalize_volume(audio_array_16khz)
 
-                _available_context_duration = len(context_audio_array) / self.sample_rate
-                _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
-                _num_samples_to_slice = self.get_num_audio_samples_to_slice(
-                    _context_duration_to_slice, self.sample_rate
+                _available_context_duration = len(audio_array_16khz) / 16_000
+                _context_duration_to_slice = self._sample_context_duration_with_available_limit(
+                    _available_context_duration
                 )
-
-                if _num_samples_to_slice < len(context_audio_array):
-                    start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
-                    context_audio_array = context_audio_array[start_idx : start_idx + _num_samples_to_slice]
-                else:
-                    _num_repeats = int(np.ceil(_num_samples_to_slice / len(context_audio_array)))
-                    context_audio_array = np.tile(context_audio_array, _num_repeats)[:_num_samples_to_slice]
-
-                context_audio = torch.from_numpy(context_audio_array)
-                context_audio_list.append(context_audio)
-                context_audio_len_list.append(context_audio.shape[0])
-
+                _num_samples_to_slice = int(_context_duration_to_slice * 16_000)
+                if _num_samples_to_slice < len(audio_array_16khz):
+                    start_idx = random.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
+                    audio_array_16khz = audio_array_16khz[start_idx : start_idx + _num_samples_to_slice]
             else:
                 matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
-
-                if self.load_cached_codes_if_available:
-                    if context_text is None and len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
-                        sup = random.choice(matching_supervisions)
-                        codes_array = cut.target_codes.load().astype(np.int32)
-                        start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
-                        num_frames = int(sup.duration * self.sample_rate / self.codec_model_samples_per_frame)
-                        context_audio_codes = torch.from_numpy(codes_array)[
-                            :, start_frame : start_frame + num_frames
-                        ].T
-                        context_audio_codes = _align_codebooks(context_audio_codes)
-                    else:
-                        context_audio_codes = torch.zeros([0, self.num_audio_codebooks], dtype=torch.int32)
-                    context_audio_codes_list.append(context_audio_codes)
-                    context_audio_codes_len_list.append(context_audio_codes.shape[0])
+                if len(matching_supervisions) > 0:
+                    sup = random.choice(matching_supervisions)
+                    turn_cut = cut.resample(16_000, recording_field="target_audio").truncate(
+                        offset=max(0, sup.start), duration=sup.duration
+                    )
+                    audio_array_16khz = turn_cut.load_custom("target_audio").squeeze(0)
                 else:
-                    if context_text is None and len(matching_supervisions) > 0:
-                        sup = random.choice(matching_supervisions)
-                        with fp32_precision():
-                            turn_cut = cut.resample(self.sample_rate, recording_field="target_audio").truncate(
-                                offset=max(0, sup.start), duration=sup.duration
-                            )
-                            context_audio_array = turn_cut.load_custom("target_audio").squeeze(0)
-                        if self.volume_norm:
-                            context_audio_array = normalize_volume(context_audio_array)
-                        context_audio = torch.from_numpy(context_audio_array)
-                    else:
-                        context_audio = torch.zeros(self.codec_model_samples_per_frame, dtype=torch.float32)
+                    audio_array_16khz = np.zeros(16000, dtype=np.float32)
 
-                    context_audio_list.append(context_audio)
-                    context_audio_len_list.append(context_audio.shape[0])
+                if self.volume_norm:
+                    audio_array_16khz = normalize_volume(audio_array_16khz)
 
-            # 16khz audio for SV
+        return torch.from_numpy(audio_array_16khz)
+
+    def _encode_context_text(self, context_text: Union[str, None], language: str) -> tuple[torch.Tensor, bool]:
+        if context_text is not None:
+            if self.text_context_remapping is not None and context_text in self.text_context_remapping:
+                if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
+                    context_text = self.text_context_remapping[context_text]
+            context_text_tokens = self.text_tokenizer.encode(
+                context_text, tokenizer_name=self.text_conditioning_tokenizer_name
+            )
+            has_text_context = True
+        else:
+            context_text = f"[{language.upper()}]" if self.add_language_to_context_text else "[NO TEXT CONTEXT]"
+            context_text_tokens = self.text_tokenizer.encode(
+                context_text, tokenizer_name=self.text_conditioning_tokenizer_name
+            )
+            has_text_context = False
+
+        if self.pad_context_text_to_max_duration:
+            _required_len = int(self.context_duration_max * self.sample_rate / self.codec_model_samples_per_frame) + 2
+            if len(context_text_tokens) < _required_len:
+                _pad_id = self.text_tokenizer.tokenizer_pad_ids[self.text_conditioning_tokenizer_name]
+                context_text_tokens += [_pad_id] * (_required_len - len(context_text_tokens))
+            else:
+                context_text_tokens = context_text_tokens[:_required_len]
+
+        return torch.tensor(context_text_tokens, dtype=torch.int32), has_text_context
+
+    def _compute_align_prior(
+        self,
+        cut: Cut,
+        cut_index: int,
+        batch_tokenizer_names: list[str],
+        target_audio_lens: torch.Tensor,
+        target_codes_list: list[torch.Tensor],
+    ) -> torch.Tensor:
+        tok_name = batch_tokenizer_names[cut_index]
+        full_text_len = sum(
+            [
+                len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name))
+                for sup in cut.supervisions
+                if sup.speaker in self.output_roles
+            ]
+        )
+
+        if self.add_text_bos:
+            full_text_len += 2 * sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
+        else:
+            # cont eos token
+            full_text_len += sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
+
+        full_text_len = max(1, full_text_len)
+
+        if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
+            spec_len = int(target_codes_list[-1].shape[0]) + 1
+        else:
+            spec_len = (
+                int(target_audio_lens[cut_index] / self.codec_model_samples_per_frame) + 2
+            )  # +1 extra in case it was truncated
+
+        align_prior = beta_binomial_prior_distribution(
+            phoneme_count=full_text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor
+        )
+        return torch.tensor(align_prior, dtype=torch.float32)
+
+    def _collect_cut_features(
+        self, cuts: CutSet, batch_tokenizer_names: list[str], target_audio_lens: torch.Tensor
+    ) -> Dict[str, List]:
+        features = {
+            "dataset_names": [],
+            "audio_16khz": [],
+            "audio_lens_16khz": [],
+            "align_priors": [],
+            "target_codes": [],
+            "source_codes": [],
+            "context_audio": [],
+            "context_audio_lens": [],
+            "context_audio_codes": [],
+            "context_audio_codes_lens": [],
+            "context_text_tokens": [],
+            "context_text_tokens_lens": [],
+            "has_text_context": [],
+            "rewards": [],
+            "languages": [],
+        }
+
+        for i, cut in enumerate(cuts):
+            features["dataset_names"].append(self._get_dataset_name(cut))
+
+            language = self._get_language(cut)
+            features["languages"].append(language)
+            context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
+
+            target_codes, source_codes = self._load_cached_codes(cut)
+            if target_codes is not None:
+                features["target_codes"].append(target_codes)
+            if source_codes is not None:
+                features["source_codes"].append(source_codes)
+
+            context_audio, context_audio_codes = self._load_context_audio_or_codes(cut, context_text)
+            if context_audio is not None:
+                features["context_audio"].append(context_audio)
+                features["context_audio_lens"].append(context_audio.shape[0])
+            if context_audio_codes is not None:
+                features["context_audio_codes"].append(context_audio_codes)
+                features["context_audio_codes_lens"].append(context_audio_codes.shape[0])
+
             if self.load_16khz_audio:
-                with fp32_precision():
-                    if cut.has_custom("context_audio"):
-                        audio_array_16khz = cut.context_audio.resample(16_000).load_audio().squeeze(0)
-                        if self.volume_norm:
-                            audio_array_16khz = normalize_volume(audio_array_16khz)
+                audio_16khz = self._load_audio_16khz(cut)
+                features["audio_16khz"].append(audio_16khz)
+                features["audio_lens_16khz"].append(audio_16khz.shape[0])
 
-                        _available_context_duration = len(audio_array_16khz) / 16_000
-                        _context_duration_to_slice = _sample_context_duration_with_available_limit(
-                            _available_context_duration
-                        )
-                        _num_samples_to_slice = int(_context_duration_to_slice * 16_000)
-                        if _num_samples_to_slice < len(audio_array_16khz):
-                            start_idx = random.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
-                            audio_array_16khz = audio_array_16khz[start_idx : start_idx + _num_samples_to_slice]
-                    else:
-                        matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
-                        if len(matching_supervisions) > 0:
-                            sup = random.choice(matching_supervisions)
-                            turn_cut = cut.resample(16_000, recording_field="target_audio").truncate(
-                                offset=max(0, sup.start), duration=sup.duration
-                            )
-                            audio_array_16khz = turn_cut.load_custom("target_audio").squeeze(0)
-                        else:
-                            audio_array_16khz = np.zeros(16000, dtype=np.float32)
-
-                        if self.volume_norm:
-                            audio_array_16khz = normalize_volume(audio_array_16khz)
-
-                audio_16khz = torch.from_numpy(audio_array_16khz)
-                audio_list_16khz.append(audio_16khz)
-                audio_len_list_16khz.append(audio_16khz.shape[0])
-
-            # Context Text
             if self.use_text_conditioning_tokenizer:
-                if context_text is not None:
-                    if self.text_context_remapping is not None and context_text in self.text_context_remapping:
-                        if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
-                            context_text = self.text_context_remapping[context_text]
-                    context_text_tokens = self.text_tokenizer.encode(
-                        context_text, tokenizer_name=self.text_conditioning_tokenizer_name
-                    )
-                    has_text_context = True
-                else:
-                    context_text = (
-                        f"[{language.upper()}]" if self.add_language_to_context_text else "[NO TEXT CONTEXT]"
-                    )
-                    context_text_tokens = self.text_tokenizer.encode(
-                        context_text, tokenizer_name=self.text_conditioning_tokenizer_name
-                    )
-                    has_text_context = False
+                context_text_tokens, has_text_context = self._encode_context_text(context_text, language)
+                features["context_text_tokens"].append(context_text_tokens)
+                features["context_text_tokens_lens"].append(context_text_tokens.shape[0])
+                features["has_text_context"].append(has_text_context)
 
-                if self.pad_context_text_to_max_duration:
-                    _required_len = (
-                        int(self.context_duration_max * self.sample_rate / self.codec_model_samples_per_frame) + 2
-                    )
-                    if len(context_text_tokens) < _required_len:
-                        _pad_id = self.text_tokenizer.tokenizer_pad_ids[self.text_conditioning_tokenizer_name]
-                        context_text_tokens += [_pad_id] * (_required_len - len(context_text_tokens))
-                    else:
-                        context_text_tokens = context_text_tokens[:_required_len]
-
-                context_text_tokens = torch.tensor(context_text_tokens, dtype=torch.int32)
-                context_text_tokens_list.append(context_text_tokens)
-                context_text_tokens_len_list.append(context_text_tokens.shape[0])
-                context_has_text_context_list.append(has_text_context)
-
-            # Align Prior (Note: Using full target length to preserve shape compatibility)
             if self.include_align_prior:
-                tok_name = batch_tokenizer_names[i]
-                full_text_len = sum(
-                    [
-                        len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name))
-                        for sup in cut.supervisions
-                        if sup.speaker in self.output_roles
-                    ]
+                features["align_priors"].append(
+                    self._compute_align_prior(
+                        cut,
+                        i,
+                        batch_tokenizer_names,
+                        target_audio_lens,
+                        features["target_codes"],
+                    )
                 )
-
-                if self.add_text_bos:
-                    full_text_len += 2 * sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
-                else:
-                    # cont eos token
-                    full_text_len += sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
-
-                full_text_len = max(1, full_text_len)
-
-                if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
-                    spec_len = int(target_codes_list[-1].shape[0]) + 1
-                else:
-                    spec_len = (
-                        int(target_audio_lens[i] / self.codec_model_samples_per_frame) + 2
-                    )  # +1 extra in case it was truncated
-
-                align_prior = beta_binomial_prior_distribution(
-                    phoneme_count=full_text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor
-                )
-                prior_list.append(torch.tensor(align_prior, dtype=torch.float32))
 
             reward = next((sup.reward for sup in reversed(cut.supervisions) if sup.has_custom("reward")), None)
             if reward is not None:
-                reward_list.append(reward)
+                features["rewards"].append(reward)
 
-        batch_dict = {
-            "sample_id": [str(cut.id) for cut in cuts],
-            "dataset_names": dataset_name_list,
-            "languages": language_list,
-            "source_audio": source_audio,
-            "source_audio_lens": source_audio_lens,
-            "audio": target_audio,
-            "audio_lens": target_audio_lens,
-            "source_tokens": source_tokens,
-            "source_token_lens": source_token_lens,
-            "text": target_text_tokens,
-            "text_lens": target_token_lens,
-            "raw_texts": [
-                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
-            ],
-            "task": [getattr(cut, "task", "tts") for cut in cuts],
-            "user_audio_turn_splitted": user_audio_turn_splitted,
-            "user_audio_turn_splitted_lens": user_audio_turn_splitted_lens,
-            "user_audio_turn_splitted_indices": user_audio_turn_splitted_indices,
-        }
+        return features
 
+    def _add_optional_batch_fields(
+        self,
+        batch_dict: Dict[str, Union[torch.Tensor, List]],
+        phoneme_data: Dict[str, Union[torch.Tensor, None]],
+        features: Dict[str, List],
+    ):
+        target_codes_list = features["target_codes"]
         if target_codes_list:
             batch_dict["audio_codes"] = collate_matrices(target_codes_list, padding_value=0).transpose(1, 2)
             batch_dict["audio_codes_lens"] = torch.IntTensor([c.shape[0] for c in target_codes_list])
 
+        source_codes_list = features["source_codes"]
         if source_codes_list:
             batch_dict["source_codes"] = collate_matrices(source_codes_list, padding_value=0).transpose(1, 2)
             batch_dict["source_codes_lens"] = torch.IntTensor([c.shape[0] for c in source_codes_list])
 
         if self.phoneme_tokenizer is not None:
-            batch_dict["phoneme_tokens"] = target_phoneme_tokens
-            batch_dict["phoneme_tokens_lens"] = target_phoneme_lens
-            batch_dict["phoneme_turn_dropout"] = phoneme_turn_dropout
+            batch_dict["phoneme_tokens"] = phoneme_data["target_phoneme_tokens"]
+            batch_dict["phoneme_tokens_lens"] = phoneme_data["target_phoneme_lens"]
+            batch_dict["phoneme_turn_dropout"] = phoneme_data["phoneme_turn_dropout"]
 
+        audio_list_16khz = features["audio_16khz"]
         if len(audio_list_16khz) > 0:
             batch_dict["audio_16khz"] = collate_vectors(audio_list_16khz, padding_value=0.0)
-            batch_dict["audio_lens_16khz"] = torch.IntTensor(audio_len_list_16khz)
+            batch_dict["audio_lens_16khz"] = torch.IntTensor(features["audio_lens_16khz"])
 
+        context_audio_list = features["context_audio"]
         if len(context_audio_list) > 0:
             batch_dict["context_audio"] = collate_vectors(context_audio_list, padding_value=0.0)
-            batch_dict["context_audio_lens"] = torch.IntTensor(context_audio_len_list)
+            batch_dict["context_audio_lens"] = torch.IntTensor(features["context_audio_lens"])
 
+        context_audio_codes_list = features["context_audio_codes"]
         if len(context_audio_codes_list) > 0:
-            batch_dict["context_audio_codes"] = collate_matrices(context_audio_codes_list, padding_value=0).transpose(
-                1, 2
-            )
-            batch_dict["context_audio_codes_lens"] = torch.IntTensor(context_audio_codes_len_list)
+            batch_dict["context_audio_codes"] = collate_matrices(
+                context_audio_codes_list, padding_value=0
+            ).transpose(1, 2)
+            batch_dict["context_audio_codes_lens"] = torch.IntTensor(features["context_audio_codes_lens"])
 
         if self.use_text_conditioning_tokenizer:
             batch_dict['context_text_tokens'] = collate_vectors(
-                tensors=context_text_tokens_list,
+                tensors=features["context_text_tokens"],
                 padding_value=self.text_tokenizer.tokenizer_pad_ids[self.text_conditioning_tokenizer_name],
             )
-            batch_dict['context_text_tokens_lens'] = torch.IntTensor(context_text_tokens_len_list)
-            batch_dict['has_text_context'] = torch.BoolTensor(context_has_text_context_list)
+            batch_dict['context_text_tokens_lens'] = torch.IntTensor(features["context_text_tokens_lens"])
+            batch_dict['has_text_context'] = torch.BoolTensor(features["has_text_context"])
 
+        prior_list = features["align_priors"]
         if self.include_align_prior:
             spec_max_len = max([prior.shape[0] for prior in prior_list])
             text_max_len = max([prior.shape[1] for prior in prior_list])
             batch_dict["align_prior_matrix"] = stack_tensors(prior_list, max_lens=[text_max_len, spec_max_len])
 
+        reward_list = features["rewards"]
         if len(reward_list) > 0:
             batch_dict['rewards'] = torch.FloatTensor(reward_list)
+
+    def _build_batch_dict(
+        self,
+        cuts: CutSet,
+        audio_data: Dict[str, torch.Tensor],
+        text_data: Dict[str, torch.Tensor],
+        phoneme_data: Dict[str, Union[torch.Tensor, None]],
+        features: Dict[str, List],
+    ) -> Dict[str, Union[torch.Tensor, List]]:
+        batch_dict = {
+            "sample_id": [str(cut.id) for cut in cuts],
+            "dataset_names": features["dataset_names"],
+            "languages": features["languages"],
+            "source_audio": audio_data["source_audio"],
+            "source_audio_lens": audio_data["source_audio_lens"],
+            "audio": audio_data["target_audio"],
+            "audio_lens": audio_data["target_audio_lens"],
+            "source_tokens": text_data["source_tokens"],
+            "source_token_lens": text_data["source_token_lens"],
+            "text": text_data["target_text_tokens"],
+            "text_lens": text_data["target_token_lens"],
+            "raw_texts": [
+                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+            ],
+            "task": [getattr(cut, "task", "tts") for cut in cuts],
+            "user_audio_turn_splitted": audio_data["user_audio_turn_splitted"],
+            "user_audio_turn_splitted_lens": audio_data["user_audio_turn_splitted_lens"],
+            "user_audio_turn_splitted_indices": audio_data["user_audio_turn_splitted_indices"],
+        }
+
+        self._add_optional_batch_fields(batch_dict, phoneme_data, features)
 
         agent_mask, agent_mask_lens = collate_speaker_mask_channel(
             cuts,
@@ -646,6 +746,17 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         batch_dict["user_mask"] = user_mask
         batch_dict["user_mask_lens"] = user_mask_lens
         return batch_dict
+
+    def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
+        self._initialize_tokenizers()
+        cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
+
+        audio_data = self._collate_audio_channels(cuts)
+        text_data = self._collate_text_channels(cuts, batch_tokenizer_names)
+        phoneme_data = self._collate_phoneme_tokens(cuts)
+        features = self._collect_cut_features(cuts, batch_tokenizer_names, audio_data["target_audio_lens"])
+
+        return self._build_batch_dict(cuts, audio_data, text_data, phoneme_data, features)
 
 
 def collate_token_channel(

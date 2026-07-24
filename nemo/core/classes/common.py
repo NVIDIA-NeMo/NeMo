@@ -538,7 +538,7 @@ class Typing(ABC):
 
                     if type_shape is not None and len(value_shape) != len(type_shape):
                         raise TypeError(
-                            f"Input shape mismatch occured for {name} in module {self.__class__.__name__} : \n"
+                            f"Input shape mismatch occurred for {name} in module {self.__class__.__name__} : \n"
                             f"Input shape expected = {metadata.base_types[key].axes} | \n"
                             f"Input shape found : {value_shape}"
                         )
@@ -625,7 +625,7 @@ class Typing(ABC):
 
                     if type_shape is not None and len(value_shape) != len(type_shape):
                         raise TypeError(
-                            f"Output shape mismatch occured for {name} in module {self.__class__.__name__} : \n"
+                            f"Output shape mismatch occurred for {name} in module {self.__class__.__name__} : \n"
                             f"Output shape expected = {type_shape} | \n"
                             f"Output shape found : {value_shape}"
                         )
@@ -713,7 +713,7 @@ class Typing(ABC):
 
             if type_shape is not None and len(value_shape) != len(type_shape):
                 raise TypeError(
-                    f"Input shape mismatch occured for {name} in module {self.__class__.__name__} : \n"
+                    f"Input shape mismatch occurred for {name} in module {self.__class__.__name__} : \n"
                     f"Input shape expected = {type_shape} | \n"
                     f"Input shape found : {value_shape}"
                 )
@@ -756,7 +756,7 @@ class Typing(ABC):
 
             if type_shape is not None and len(value_shape) != len(type_shape):
                 raise TypeError(
-                    f"Output shape mismatch occured for {name} in module {self.__class__.__name__} : \n"
+                    f"Output shape mismatch occurred for {name} in module {self.__class__.__name__} : \n"
                     f"Output shape expected = {type_shape} | \n"
                     f"Output shape found : {value_shape}"
                 )

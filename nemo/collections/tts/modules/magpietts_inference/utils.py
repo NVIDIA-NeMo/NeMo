@@ -664,7 +664,7 @@ def parse_layer_list(layer_str: Optional[str]) -> Optional[List[int]]:
     """Parse a comma-separated list of layer indices."""
     if layer_str is None:
         return None
-    return [int(l.strip()) for l in layer_str.split(",")]
+    return [int(layer.strip()) for layer in layer_str.split(",")]
 
 
 def write_csv_header_if_needed(csv_path: str, header: str) -> None:

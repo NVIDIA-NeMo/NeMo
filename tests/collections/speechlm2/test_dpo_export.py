@@ -81,4 +81,6 @@ def test_r22_server_entrypoint_uses_a_verified_staged_package_artifact():
     assert "--verify-r22-package-install" in script
     assert "python3 -m venv \"$target/venv\"" in script
     assert "R22_PACKAGE_INSTALL_RECEIPT" in script
+    assert "pip-install.log" in script
+    assert "write_install_receipt false pip_install" in script
     assert "PYTHONPATH" not in script

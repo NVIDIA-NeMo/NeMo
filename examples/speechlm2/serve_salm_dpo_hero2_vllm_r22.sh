@@ -73,22 +73,9 @@ trap cleanup_stage EXIT
 
 stage_verified_r22_package
 
-if test "${1:-}" = "--verify-r22-package-install"; then
-    target="$(mktemp -d "${TMPDIR:-/tmp}/r22-nemo-install-test.XXXXXX")"
-    trap 'rm -rf "${target:-}"; cleanup_stage' EXIT
-    python3 -m venv "$target/venv"
-    "$target/venv/bin/python" -m pip install --no-deps --force-reinstall "$R22_STAGE_ROOT/source"
-    "$target/venv/bin/python" - <<'PY'
-import pathlib
-import nemo
-location = pathlib.Path(nemo.__file__).resolve()
-target = pathlib.Path(__import__('sys').prefix).resolve()
-    if target not in location.parents:
-    raise SystemExit(f"r22 package did not import from staged install target: {location}")
-print(f"R22_NEMO_PACKAGE_INSTALL_REGRESSION passed import={location}")
-PY
-    if test -n "${R22_PACKAGE_INSTALL_RECEIPT:-}"; then
-        python3 - "$R22_PACKAGE_INSTALL_RECEIPT" "$R22_SOURCE_FINGERPRINT" "$R22_STAGED_FINGERPRINT" <<'PY'
+write_install_receipt() {
+    test -n "${R22_PACKAGE_INSTALL_RECEIPT:-}" || return 0
+    python3 - "$R22_PACKAGE_INSTALL_RECEIPT" "$1" "$2" "$3" "$R22_SOURCE_FINGERPRINT" "$R22_STAGED_FINGERPRINT" <<'PY'
 import json
 import pathlib
 import sys
@@ -98,9 +85,11 @@ path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(
     json.dumps(
         {
-            "passed": True,
-            "source_fingerprint": sys.argv[2],
-            "staged_fingerprint": sys.argv[3],
+            "passed": sys.argv[2] == "true",
+            "phase": sys.argv[3],
+            "detail": sys.argv[4],
+            "source_fingerprint": sys.argv[5],
+            "staged_fingerprint": sys.argv[6],
             "mode": "isolated_venv_noneditable_install",
         },
         sort_keys=True,
@@ -109,7 +98,33 @@ path.write_text(
     encoding="utf-8",
 )
 PY
+}
+
+if test "${1:-}" = "--verify-r22-package-install"; then
+    target="$(mktemp -d "${TMPDIR:-/tmp}/r22-nemo-install-test.XXXXXX")"
+    trap 'rm -rf "${target:-}"; cleanup_stage' EXIT
+    python3 -m venv "$target/venv"
+    pip_log="$target/pip-install.log"
+    set +e
+    "$target/venv/bin/python" -m pip install --no-deps --force-reinstall "$R22_STAGE_ROOT/source" >"$pip_log" 2>&1
+    install_status=$?
+    set -e
+    if test "$install_status" -ne 0; then
+        write_install_receipt false pip_install "$(tail -80 "$pip_log")"
+        exit "$install_status"
     fi
+    import_log="$target/import.log"
+    set +e
+    "$target/venv/bin/python" -c 'import pathlib, sys, nemo; location = pathlib.Path(nemo.__file__).resolve(); target = pathlib.Path(sys.prefix).resolve(); assert target in location.parents, f"r22 package did not import from staged install target: {location}"; print(location)' >"$import_log" 2>&1
+    import_status=$?
+    set -e
+    if test "$import_status" -ne 0; then
+        write_install_receipt false import "$(tail -80 "$import_log")"
+        exit "$import_status"
+    fi
+    location="$(cat "$import_log")"
+    write_install_receipt true import "$location"
+    printf 'R22_NEMO_PACKAGE_INSTALL_REGRESSION passed import=%s\n' "$location"
     exit 0
 fi
 

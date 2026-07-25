@@ -102,9 +102,14 @@ python examples/speechlm2/salm_dpo_export.py \
 ```
 
 Use the tracked `serve_salm_dpo_hero2_vllm_r22.sh` as the server entrypoint
-for official NeMo-Skills `ns_eval`.  It installs the readable, pinned r22
-NeMo source non-editably and invokes the stock NeMo-Skills vLLM server.  It
-does not copy model/source files, compose an alternate TransformerEncoder,
-set `PYTHONPATH`, or score outputs itself.  The evaluation workflow records
-the r22 source path and its TransformerEncoder SHA-256 and retains the exact
-OpenASR AMI and Full-HF prompt/decoder/scorer configuration.
+for official NeMo-Skills `ns_eval`.  It verifies the immutable r22 source
+fingerprint, stages only its normal package inputs into a fresh writable
+job-local package artifact (the source mount remains untouched), and
+non-editably installs that artifact before invoking the stock NeMo-Skills
+vLLM server.  It does not compose an alternate TransformerEncoder, set
+`PYTHONPATH`, overlay files into an installed package, or score outputs
+itself.  `--verify-r22-package-install` is the focused regression: it proves
+that the staged artifact installs and imports from an isolated venv.  The
+evaluation workflow records the r22 source path, server fingerprint,
+TransformerEncoder SHA-256, and exact OpenASR AMI/Full-HF
+prompt/decoder/scorer configuration.

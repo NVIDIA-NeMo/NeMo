@@ -80,3 +80,31 @@ The source data and source checkpoint are substitutable configuration inputs.
 An actual replay must record its source revision, effective config, data
 receipt, output root, and matched AMI/Full-HF evaluation artifact alongside
 these files.
+
+## Standard r22 serving export and evaluation
+
+`salm_dpo_export.py` converts only a durable `CHECKPOINT_READY` model DCP into
+a fresh indexed safetensors directory.  It requires the training
+`TRAJECTORY.json`, the immutable Hero2 serving baseline, and a fresh output
+directory.  The exporter verifies the full tensor namespace and shapes,
+requires precisely the trajectory's 269 BF16-to-FP32 selected tensors, and
+round-trips each emitted tensor byte-for-byte before it writes
+`EVAL_MODEL_READY.json`.  All served weights come from the candidate DCP; the
+baseline supplies only `config.json` (with bootstrap state removed) and
+tokenizer/generation assets.
+
+```bash
+python examples/speechlm2/salm_dpo_export.py \
+  --candidate-dcp=/durable/run/checkpoints/s08/model_weights.dcp \
+  --trajectory=/durable/run/TRAJECTORY.json \
+  --serving-baseline=/immutable/hero2/eval-step-14400 \
+  --output=/durable/evaluation/s08/model
+```
+
+Use the tracked `serve_salm_dpo_hero2_vllm_r22.sh` as the server entrypoint
+for official NeMo-Skills `ns_eval`.  It installs the readable, pinned r22
+NeMo source non-editably and invokes the stock NeMo-Skills vLLM server.  It
+does not copy model/source files, compose an alternate TransformerEncoder,
+set `PYTHONPATH`, or score outputs itself.  The evaluation workflow records
+the r22 source path and its TransformerEncoder SHA-256 and retains the exact
+OpenASR AMI and Full-HF prompt/decoder/scorer configuration.

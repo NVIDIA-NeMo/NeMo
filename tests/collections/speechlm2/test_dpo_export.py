@@ -80,4 +80,5 @@ def test_r22_server_entrypoint_uses_a_verified_staged_package_artifact():
     assert "--force-reinstall \"$R22_STAGE_ROOT/source\"" in script
     assert "--verify-r22-package-install" in script
     assert "python3 -m venv \"$target/venv\"" in script
+    assert "R22_PACKAGE_INSTALL_RECEIPT" in script
     assert "PYTHONPATH" not in script

@@ -57,6 +57,9 @@ stage_verified_r22_package() {
     chmod -R u+w "$stage_root/source"
     staged_fingerprint="$(fingerprint_r22_server_source "$stage_root/source")"
     test "$staged_fingerprint" = "$expected"
+    R22_SOURCE_FINGERPRINT="$source_fingerprint"
+    R22_STAGED_FINGERPRINT="$staged_fingerprint"
+    export R22_SOURCE_FINGERPRINT R22_STAGED_FINGERPRINT
     printf 'R22_NEMO_PACKAGE_ARTIFACT source_fingerprint=%s stage_fingerprint=%s source=%s staged=%s\n' \
         "$source_fingerprint" "$staged_fingerprint" "$source" "$stage_root/source"
 }
@@ -80,10 +83,33 @@ import pathlib
 import nemo
 location = pathlib.Path(nemo.__file__).resolve()
 target = pathlib.Path(__import__('sys').prefix).resolve()
-if target not in location.parents:
+    if target not in location.parents:
     raise SystemExit(f"r22 package did not import from staged install target: {location}")
 print(f"R22_NEMO_PACKAGE_INSTALL_REGRESSION passed import={location}")
 PY
+    if test -n "${R22_PACKAGE_INSTALL_RECEIPT:-}"; then
+        python3 - "$R22_PACKAGE_INSTALL_RECEIPT" "$R22_SOURCE_FINGERPRINT" "$R22_STAGED_FINGERPRINT" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(
+    json.dumps(
+        {
+            "passed": True,
+            "source_fingerprint": sys.argv[2],
+            "staged_fingerprint": sys.argv[3],
+            "mode": "isolated_venv_noneditable_install",
+        },
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+    fi
     exit 0
 fi
 

@@ -75,15 +75,17 @@ model:
 
   # Automodel backend dispatch. Selects the kernel/backend for each major module
   # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). Defaults
-  # come from Automodel's BackendConfig and auto-select TE/DeepEP when available;
-  # override here to pin a specific backend (e.g. attn=sdpa to bypass TE).
-  # automodel_backend:
+  # come from Automodel's BackendConfig and auto-select TE/DeepEP when available.
+  # TODO (Dongji): This is a temporary release unblock. Remove the override once
+  # BackendConfig checks NVLINK/NVSHMEM topology before selecting DeepEP.
+  automodel_backend:
+    dispatcher: torch           # Set to "deepep" only if your GPUs have NVLINK/NVSHMEM
+  # Optional overrides for other backends (e.g. attn=sdpa to bypass TE):
   #   attn: te                  # "te" | "sdpa" | "flex"
   #   linear: te                # "torch" | "te"
   #   rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
   #   rope_fusion: true         # Fused RoPE (requires TE)
   #   experts: torch_mm         # MoE expert GEMM: "torch" | "te" | "gmm" | "torch_mm"
-  #   dispatcher: deepep        # MoE token dispatcher: "torch" | "deepep" | "hybridep" | "uccl_ep"
   #   dispatcher_num_sms: 20    # SM count for DeepEP/UCCL-EP kernels
   #   fake_balanced_gate: false # Replace learned Gate with balanced fake gate (debug/bench)
   #   fake_gate_noise: 0.0      # [0, 1] — noise for FakeBalancedGate routing

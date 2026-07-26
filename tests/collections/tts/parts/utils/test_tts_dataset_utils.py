@@ -490,28 +490,67 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_partially_phonemize_text_uses_precomputed_alignments(self):
+    def test_partially_phonemize_text_uses_full_ipa_for_full_portion(self):
         text = partially_phonemize_text(
             text="hi how",
             ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
-            partial_phoneme_word_prob=1.0,
+            partial_phoneme_portion=1.0,
+            full_ipa_text="ab c",
         )
 
-        assert text == "<bop>ab<eop> <bop>c<eop>"
+        assert text == "<bop>ab c<eop>"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_partially_phonemize_text_samples_alignment_items(self, monkeypatch):
-        samples = iter([0.1, 0.9])
-        monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: next(samples))
+    def test_partially_phonemize_text_samples_exact_portion(self, monkeypatch):
+        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [0, 2])
 
         text = partially_phonemize_text(
-            text="hi how",
-            ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
-            partial_phoneme_word_prob=0.5,
+            text="one two three four",
+            ipa_alignment=[
+                [0, 3, "one", "a"],
+                [4, 7, "two", "b"],
+                [8, 13, "three", "c"],
+                [14, 18, "four", "d"],
+            ],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="a b c d",
         )
 
-        assert text == "<bop>ab<eop> how"
+        assert text == "<bop>a<eop> two <bop>c<eop> four"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_merges_adjacent_words(self, monkeypatch):
+        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [1, 2])
+
+        text = partially_phonemize_text(
+            text="one two three four",
+            ipa_alignment=[
+                [0, 3, "one", "a"],
+                [4, 7, "two", "b"],
+                [8, 13, "three", "c"],
+                [14, 18, "four", "d"],
+            ],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="a b c d",
+        )
+
+        assert text == "one <bop>b c<eop> four"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_skips_unmatched_full_ipa(self):
+        text = "one two three"
+
+        phonemized_text = partially_phonemize_text(
+            text=text,
+            ipa_alignment=[[0, 3, "one", "a"], [4, 7, "two", "b"], [8, 13, "three", "c"]],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="unmatched",
+        )
+
+        assert phonemized_text == text
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -521,26 +560,28 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_alignment_augmentation_then_tokenization_uses_no_marker_ids(self):
+    def test_full_ipa_span_tokens_match_phoneme_channel_tokens(self):
         text = partially_phonemize_text(
-            text="hello",
-            ipa_alignment=[[0, 5, "hello", "ab"]],
-            partial_phoneme_word_prob=1.0,
+            text="hello world",
+            ipa_alignment=[[0, 5, "hello", "ab"], [6, 11, "world", "c"]],
+            partial_phoneme_portion=1.0,
+            full_ipa_text="ab c",
         )
+        phoneme_tokenizer = _FakePhonemeTokenizer()
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=_FakeTextTokenizer(),
             text_str=text,
             tokenizer_name="english_phoneme",
             enable_phoneme_text_input=True,
-            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            phoneme_tokenizer=phoneme_tokenizer,
             text_phoneme_token_offset=100,
         )
 
-        assert tokens == [101, 102]
+        assert tokens == [100 + token_id for token_id in phoneme_tokenizer.encode("ab c")]
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_samples_word_probability_range(self, monkeypatch):
+    def test_samples_phoneme_portion_range(self, monkeypatch):
         sampled_ranges = []
 
         def fake_uniform(min_value, max_value):
@@ -549,7 +590,7 @@ class TestPhonemeTextInput:
 
         monkeypatch.setattr(tts_dataset_utils.random, "uniform", fake_uniform)
 
-        probability = _sample_probability_range("partial_phoneme_word_prob", 0.25, 0.75)
+        probability = _sample_probability_range("partial_phoneme_portion", 0.25, 0.75)
 
         assert sampled_ranges == [(0.25, 0.75)]
         assert probability == 0.5

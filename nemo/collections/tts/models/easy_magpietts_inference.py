@@ -351,9 +351,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         self.enable_phoneme_text_input = cfg.get('enable_phoneme_text_input', False)
         self.partial_phoneme_text_prob = cfg.get('partial_phoneme_text_prob', 0.0)
-        self.partial_phoneme_word_prob = cfg.get('partial_phoneme_word_prob', 0.5)
-        self.partial_phoneme_word_prob_min = cfg.get('partial_phoneme_word_prob_min', self.partial_phoneme_word_prob)
-        self.partial_phoneme_word_prob_max = cfg.get('partial_phoneme_word_prob_max', self.partial_phoneme_word_prob)
+        self.partial_phoneme_portion_min = cfg.get('partial_phoneme_portion_min', 0.25)
+        self.partial_phoneme_portion_max = cfg.get('partial_phoneme_portion_max', 0.75)
         self.phoneme_text_bop_marker = cfg.get('phoneme_text_bop_marker', '<bop>')
         self.phoneme_text_eop_marker = cfg.get('phoneme_text_eop_marker', '<eop>')
         self.bos_id = num_tokens_tokenizer

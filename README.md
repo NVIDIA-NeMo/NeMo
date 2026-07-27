@@ -1,5 +1,4 @@
 [![Project Status: Active -- The project has reached a stable, usable state and is being actively developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
-[![Documentation](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/nemo/speech/nightly/)
 [![CodeQL](https://github.com/nvidia/nemo/actions/workflows/codeql.yml/badge.svg?branch=main&event=push)](https://github.com/nvidia/nemo/actions/workflows/codeql.yml)
 [![NeMo core license and license for collections in this repo](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg)](https://github.com/NVIDIA/NeMo/blob/master/LICENSE)
 [![Release version](https://badge.fury.io/py/nemo-toolkit.svg)](https://badge.fury.io/py/nemo-toolkit)
@@ -65,10 +64,10 @@ can have the risk of arbitrary code execution.
 
 ## Developer Documentation
 
-| Version | Status                                                                                                                                                              | Description                                                                                                                    |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Latest  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)     | [Documentation of the latest (i.e. main) branch.](https://docs.nvidia.com/nemo/speech/nightly/)          |
-| Stable  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=stable)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/) | Documentation of the stable (i.e. most recent release) - To be added |
+| Version |  Description                                                                                     |
+| ------- | ------------------------------------------------------------------------------------------------ |
+| Latest  | [Documentation of the latest (i.e. main) branch.](https://docs.nvidia.com/nemo/speech/nightly/)  |
+| Stable  | Documentation of the stable (i.e. most recent release) - To be added                             |
 
 ## Install NeMo Speech
 

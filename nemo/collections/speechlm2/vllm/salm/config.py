@@ -176,13 +176,12 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             if num_layers > 0:
                 self.text_config.layer_types = ["attention"] * num_layers
 
-        self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
-
         # vLLM's MTP llm_base_proposer reads image_token_index from the target
         # model's config to locate multimodal placeholder positions during
         # speculative decoding. For SpeechLM the <|audio|> token is the first
         # extra row added above the base backbone vocab.
-        self.image_token_index = self.text_config.vocab_size - _SPEECHLM_EMBED_EXTRA_ROWS
+        self.image_token_index = self.text_config.vocab_size
+        self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
 
     @property
     def llm_architectures(self) -> list[str]:

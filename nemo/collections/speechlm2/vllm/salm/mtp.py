@@ -82,9 +82,10 @@ class NeMoSpeechLMMTP(NemotronHMTP):
     ) -> torch.Tensor:
         """Embed token IDs and merge audio embeddings at placeholder positions.
 
-        Mirrors ``NeMoSpeechLMForConditionalGeneration.embed_input_ids``. The
-        embedding table itself is shared from the target model by vLLM's MTP
-        framework, so text-token rows are identical to the target's.
+        The target model inherits this fusion from ``SupportsMultiModal``; the
+        draft must implement it itself because ``NemotronHMTP`` is not
+        multimodal. The embedding table is shared from the target by vLLM's
+        MTP framework, so text-token rows stay identical.
         """
         inputs_embeds = self.model.get_input_embeddings(input_ids)
 

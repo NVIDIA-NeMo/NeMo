@@ -26,6 +26,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
+    get_tokenizer_for_language,
     load_audio,
     normalize_volume,
     split_by_sentence,
@@ -817,3 +818,34 @@ class TestGetWordCount:
         """Test unknown language falls back to whitespace splitting."""
         text = "word1 word2 word3"
         assert self.thresholds.get_word_count(text, "unknown") == 3
+
+
+class TestGetTokenizerForLanguage:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_mapping_uses_first_available_candidate(self):
+        mapping = {"hi": ["hindi_phoneme", "hindi_chartokenizer"]}
+
+        result = get_tokenizer_for_language(
+            "hi", ["english_phoneme", "hindi_chartokenizer"], language_tokenizer_map=mapping
+        )
+
+        assert result == "hindi_chartokenizer"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_mapping_accepts_single_tokenizer(self):
+        result = get_tokenizer_for_language(
+            "hi", ["english_phoneme", "hindi_phoneme"], language_tokenizer_map={"hi": "hindi_phoneme"}
+        )
+
+        assert result == "hindi_phoneme"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_mapping_preserves_default_fallback(self):
+        result = get_tokenizer_for_language(
+            "hi", ["english_phoneme"], language_tokenizer_map={"hi": ["hindi_phoneme"]}
+        )
+
+        assert result == "english_phoneme"

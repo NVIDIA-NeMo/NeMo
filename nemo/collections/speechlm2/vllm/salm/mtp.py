@@ -22,10 +22,10 @@ weights (including MTP layers) carry an ``llm.`` prefix:
     ──────────────────────     ────────────────────
     llm.mtp.layers.0.*    →    mtp.layers.0.*
     llm.lm_head.weight    →    lm_head.weight
-    llm.model.embed_*     →    (embeddings shared from target model)
+    llm.model.embed_*     →    backbone.embeddings.*
 
-Only the ``mtp.*`` and ``lm_head.*`` weights are loaded here; the
-embedding table is shared with the target model by vLLM's MTP framework.
+The embedding alias is required by vLLM's Nemotron-H MTP loader even though
+the proposer subsequently shares the table with the target model.
 """
 
 from collections.abc import Iterable
@@ -34,6 +34,26 @@ import torch
 from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
 
 from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
+
+
+def _remap_nemo_mtp_weights(
+    items: Iterable[tuple[str, torch.Tensor]], target_vocab: int | None = None
+) -> Iterable[tuple[str, torch.Tensor]]:
+    """Map exported NeMo SpeechLM names to ``NemotronHMTP`` aliases."""
+    for name, tensor in items:
+        if name.startswith("llm."):
+            name = name[len("llm.") :]
+
+        # NemotronHMTP.load_weights only admits embedding names containing
+        # ``embeddings`` and then maps this backbone alias to
+        # ``model.embed_tokens``. Passing model.embed_tokens through directly
+        # is silently skipped and DefaultModelLoader reports it uninitialized.
+        if name == "model.embed_tokens.weight":
+            name = "backbone.embeddings.weight"
+
+        if name in {"backbone.embeddings.weight", "lm_head.weight"} and target_vocab is not None:
+            tensor = _pad_to_vocab_size(tensor, target_vocab)
+        yield name, tensor
 
 
 class NeMoSpeechLMMTP(NemotronHMTP):
@@ -77,18 +97,10 @@ class NeMoSpeechLMMTP(NemotronHMTP):
         return inputs_embeds
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        lm_head_vocab = None
+        target_vocab = None
         for name, module in self.named_modules():
             if hasattr(module, "org_vocab_size") and "lm_head" in name:
-                lm_head_vocab = module.org_vocab_size
+                target_vocab = module.org_vocab_size
                 break
 
-        def _strip_llm_prefix(items):
-            for name, tensor in items:
-                if name.startswith("llm."):
-                    name = name[len("llm.") :]
-                if name == "lm_head.weight" and lm_head_vocab is not None:
-                    tensor = _pad_to_vocab_size(tensor, lm_head_vocab)
-                yield name, tensor
-
-        return super().load_weights(_strip_llm_prefix(weights))
+        return super().load_weights(_remap_nemo_mtp_weights(weights, target_vocab))

@@ -769,6 +769,25 @@ class TestMTPPlugin:
         assert result.n_predict == 1
         assert result.num_nextn_predict_layers == 1
 
+    def test_patched_override_repeated_layer_exposes_one_reusable_head(self, monkeypatch):
+        """Repeated-layer training depth must not constrain inference-time K."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
+        register()
+
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm",
+            mtp={"num_nextn_predict_layers": 4, "use_repeated_layer": True},
+        )
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result.n_predict == 1
+        assert result.num_nextn_predict_layers == 1
+
     def test_patched_override_no_mtp_falls_through(self, monkeypatch):
         """hf_config_override should not alter non-MTP configs."""
         from transformers import AutoConfig
@@ -859,6 +878,39 @@ class TestMTPPlugin:
         assert torch.equal(result[1], torch.ones(2) * 9.0)
         assert torch.equal(result[2], torch.ones(2) * 9.0)
         assert torch.equal(result[3], torch.zeros(2))
+
+    def test_mtp_weight_remap_uses_vllm_embedding_alias(self):
+        """Exported SpeechLM embeddings must pass NemotronHMTP's name filter."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import _remap_nemo_mtp_weights
+
+        tensor = torch.ones(2, 3)
+        remapped = dict(
+            _remap_nemo_mtp_weights(
+                [
+                    ("llm.model.embed_tokens.weight", tensor),
+                    ("llm.mtp.layers.0.enorm.weight", tensor),
+                    ("llm.lm_head.weight", tensor),
+                ]
+            )
+        )
+
+        assert set(remapped) == {
+            "backbone.embeddings.weight",
+            "mtp.layers.0.enorm.weight",
+            "lm_head.weight",
+        }
+        assert remapped["backbone.embeddings.weight"] is tensor
+
+        padded = dict(
+            _remap_nemo_mtp_weights(
+                [("llm.model.embed_tokens.weight", tensor), ("llm.lm_head.weight", tensor)],
+                target_vocab=5,
+            )
+        )
+        assert padded["backbone.embeddings.weight"].shape == (5, 3)
+        assert padded["lm_head.weight"].shape == (5, 3)
 
     @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
     def test_mtp_hybrid_override_pattern_from_config(self):

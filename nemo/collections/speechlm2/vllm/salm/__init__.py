@@ -76,9 +76,11 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
                     hf_config.model_type = "nemo_speechlm_mtp"
                     hf_config.update(
                         {
-                            # Draft-able tokens per target step: SpeculativeConfig caps/validates
-                            # num_speculative_tokens against this.
-                            "n_predict": n_predict,
+                            # Size of the physical MTP block that vLLM reuses. A
+                            # repeated-layer checkpoint ships one shared head even
+                            # when it was trained for multiple next-token positions,
+                            # so arbitrary inference K values must be multiples of 1.
+                            "n_predict": 1 if use_repeated_layer else n_predict,
                             # Physical MTP layers to instantiate. Repeated-layer checkpoints ship
                             # one shared layer (mtp.layers.0.*) that is reapplied every step, which
                             # is exactly how the vLLM proposer drives an MTP draft. This also

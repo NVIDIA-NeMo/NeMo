@@ -160,7 +160,8 @@ def _migrate_versioned_tokenizer_fields(model_cfg: DictConfig) -> None:
     defaults would apply, silently changing the token-to-ID mapping and breaking the model. Checkpoints
     saved by current code already carry the fields, so this leaves them untouched.
 
-    Must be called inside ``open_dict(model_cfg)``.
+    ``persist_versioned_tokenizer_defaults`` unlocks each tokenizer node itself, so no enclosing
+    ``open_dict(model_cfg)`` is needed here (the caller still needs one for its own writes).
     """
     if not hasattr(model_cfg, 'text_tokenizers'):
         return

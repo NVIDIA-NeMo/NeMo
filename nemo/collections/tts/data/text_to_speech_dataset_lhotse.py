@@ -58,7 +58,8 @@ def predates_versioned_tokenizer_fields(model_cfg) -> bool:
 
     Known limitation: a config extracted from a ``.nemo`` and reused verbatim to start new training is
     treated as legacy. That is right when initializing from those weights and merely conservative
-    otherwise -- the tokenizer emits a ``DeprecationWarning`` naming the field to set explicitly.
+    otherwise; ``persist_versioned_tokenizer_defaults`` logs a warning naming the fields to set
+    explicitly, so the fallback is never silent.
 
     Args:
         model_cfg: The model-level config passed to ``__init__`` (before ``super().__init__`` stamps it).
@@ -86,6 +87,7 @@ def persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults):
     if target is None:
         return
 
+    backfilled = {}
     with open_dict(tokenizer_config):
         # Most locales always used their locale-specific IPA punctuation, so the current default (True)
         # matches what they were trained with. pt-BR is the exception: it is the one locale with released
@@ -96,14 +98,28 @@ def persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults):
             and 'non_default_punct_list' not in tokenizer_config
             and 'locale_specific_punct' not in tokenizer_config
         ):
-            tokenizer_config.locale_specific_punct = not use_legacy_defaults
+            backfilled['locale_specific_punct'] = tokenizer_config.locale_specific_punct = not use_legacy_defaults
         # punct_version=2 adds the dandas ("।", "॥") to the Hindi punctuation set.
         if target == _HINDI_CHARS_TOKENIZER_TARGET and 'punct_version' not in tokenizer_config:
-            tokenizer_config.punct_version = 1 if use_legacy_defaults else 2
+            backfilled['punct_version'] = tokenizer_config.punct_version = 1 if use_legacy_defaults else 2
         # charset_version=2 collapses the caseless Hindi/Arabic scripts to one case, which *shrinks* the
         # vocabulary (Hindi 191 -> 146 tokens, Arabic 164 -> 119) rather than extending it.
         if target in CASELESS_SCRIPT_TOKENIZER_TARGETS and 'charset_version' not in tokenizer_config:
-            tokenizer_config.charset_version = 1 if use_legacy_defaults else DEFAULT_CHARSET_VERSION
+            backfilled['charset_version'] = tokenizer_config.charset_version = (
+                1 if use_legacy_defaults else DEFAULT_CHARSET_VERSION
+            )
+
+    # Only the legacy direction is worth reporting: it silently reproduces an older vocabulary, and for
+    # pt-BR the tokenizer itself says nothing (unlike the Hindi/Arabic charset paths, which raise a
+    # DeprecationWarning that Python's default filters swallow outside pytest anyway).
+    if use_legacy_defaults and backfilled:
+        settings = ", ".join(f"{field}={value}" for field, value in backfilled.items())
+        logging.warning(
+            f"Tokenizer {target.rsplit('.', 1)[-1]} did not specify {', '.join(backfilled)}; assuming the "
+            f"pre-versioning defaults ({settings}) because this config predates those fields. This "
+            f"reproduces the vocabulary the checkpoint was trained with. If you are starting a NEW "
+            f"training run from this config, set these fields explicitly to choose the current defaults."
+        )
 
 
 def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=False):

@@ -29,6 +29,8 @@ fresh training config that should get today's defaults. These tests pin both rea
    restores to the same token-to-ID mapping no matter how the class defaults evolve later.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 import torch
 from omegaconf import OmegaConf, open_dict
@@ -153,6 +155,34 @@ class TestPersistVersionedTokenizerDefaults:
 
         assert cfg == OmegaConf.create({"pretrained_model": "google-t5/t5-small"})
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cfg_fields, use_legacy_defaults, should_warn",
+        [
+            ({}, True, True),
+            ({"_target_": _IPA, "locale": "pt-BR"}, True, True),
+            ({}, False, False),
+            ({"punct_version": 1, "charset_version": 1}, True, False),
+        ],
+        ids=["legacy-hindi", "legacy-pt-br", "fresh", "already-explicit"],
+    )
+    def test_legacy_backfill_is_never_silent(self, cfg_fields, use_legacy_defaults, should_warn):
+        """Falling back to a pre-versioning vocabulary must say so.
+
+        The tokenizers cannot be relied on for this: the pt-BR path emits nothing at all, and the
+        Hindi/Arabic ``DeprecationWarning`` is swallowed by Python's default filters outside pytest.
+        Warning only on the legacy direction keeps ordinary training runs quiet.
+        """
+        cfg = OmegaConf.create({"_target_": _HINDI_CHARS, **cfg_fields})
+
+        with patch("nemo.collections.tts.data.text_to_speech_dataset_lhotse.logging.warning") as mock_warning:
+            persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=use_legacy_defaults)
+
+        assert mock_warning.called is should_warn
+        if should_warn:
+            # The message has to name the field, otherwise it is not actionable.
+            assert any(field in mock_warning.call_args.args[0] for field in ("punct_version", "locale_specific_punct"))
+
 
 class TestPredatesVersionedTokenizerFields:
     @pytest.mark.unit
@@ -168,6 +198,87 @@ class TestPredatesVersionedTokenizerFields:
         OmegaConf.set_struct(cfg, True)
 
         assert not predates_versioned_tokenizer_fields(cfg)
+
+
+class _StopAtTokenizerSetup(Exception):
+    """Raised from the patched ``setup_tokenizers`` to end ``__init__`` once the call site has run."""
+
+
+def _mock_codec():
+    """An AudioCodecModel stand-in with the numeric attributes ``__init__`` reads before tokenizer setup."""
+    codec = MagicMock()
+    codec.sample_rate = 22050
+    codec.output_sample_rate = 22050
+    codec.samples_per_frame = 1024
+    codec.num_codebooks = 8
+    codec.codebook_size = 1000
+    return codec
+
+
+class TestProductionCallSites:
+    """The wiring in the real model constructors, which is the whole fix.
+
+    Without this, mutating either call site (deleting the kwarg, or negating it) leaves the entire TTS
+    unit suite green while reintroducing the v2602 restore failure -- the tests below are the only thing
+    that fails on such a mutation, because every other test drives ``setup_tokenizers`` directly.
+
+    Each constructor is stopped at the tokenizer-setup call rather than run to completion, so no codec,
+    encoders, or downloads are needed.
+    """
+
+    @staticmethod
+    def _captured_kwargs(model_cls, module_path, cfg_extra, codec_attr):
+        cfg = OmegaConf.create(
+            {
+                "codecmodel_path": "nvidia/fake-codec",
+                "text_tokenizers": _tokenizers_cfg(),
+                **cfg_extra,
+            }
+        )
+        captured = {}
+        with (
+            patch(f"{module_path}.AudioCodecModel") as mock_codec,
+            patch(f"{module_path}.setup_tokenizers") as mock_setup,
+        ):
+            getattr(mock_codec, codec_attr).return_value = _mock_codec()
+
+            def _record(*_args, **kwargs):
+                captured.update(kwargs)
+                raise _StopAtTokenizerSetup()
+
+            mock_setup.side_effect = _record
+            with pytest.raises(_StopAtTokenizerSetup):
+                model_cls(cfg=cfg)
+        return captured
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cfg_extra, expected", [({}, False), ({"nemo_version": "2.6.0rc0"}, True)], ids=["fresh", "serialized"]
+    )
+    def test_magpietts_passes_config_provenance(self, cfg_extra, expected):
+        from nemo.collections.tts.models.magpietts import MagpieTTSModel
+
+        captured = self._captured_kwargs(
+            MagpieTTSModel, "nemo.collections.tts.models.magpietts", cfg_extra, "from_pretrained"
+        )
+
+        assert captured["use_legacy_defaults"] is expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cfg_extra, expected", [({}, False), ({"nemo_version": "2.6.0rc0"}, True)], ids=["fresh", "serialized"]
+    )
+    def test_easy_magpietts_passes_config_provenance(self, cfg_extra, expected):
+        from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
+
+        captured = self._captured_kwargs(
+            EasyMagpieTTSInferenceModel,
+            "nemo.collections.tts.models.easy_magpietts_inference",
+            cfg_extra,
+            "restore_from",
+        )
+
+        assert captured["use_legacy_defaults"] is expected
 
 
 class TestNemoRoundTrip:

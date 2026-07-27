@@ -26,6 +26,7 @@ from transformers import AutoTokenizer, T5Tokenizer
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     CASELESS_SCRIPT_TOKENIZER_TARGETS,
     DEFAULT_CHARSET_VERSION,
+    DEFAULT_PUNCT_VERSION,
     AggregatedTTSTokenizer,
     IPABPETokenizer,
 )
@@ -101,7 +102,9 @@ def persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults):
             backfilled['locale_specific_punct'] = tokenizer_config.locale_specific_punct = not use_legacy_defaults
         # punct_version=2 adds the dandas ("।", "॥") to the Hindi punctuation set.
         if target == _HINDI_CHARS_TOKENIZER_TARGET and 'punct_version' not in tokenizer_config:
-            backfilled['punct_version'] = tokenizer_config.punct_version = 1 if use_legacy_defaults else 2
+            backfilled['punct_version'] = tokenizer_config.punct_version = (
+                1 if use_legacy_defaults else DEFAULT_PUNCT_VERSION
+            )
         # charset_version=2 collapses the caseless Hindi/Arabic scripts to one case, which *shrinks* the
         # vocabulary (Hindi 191 -> 146 tokens, Arabic 164 -> 119) rather than extending it.
         if target in CASELESS_SCRIPT_TOKENIZER_TARGETS and 'charset_version' not in tokenizer_config:

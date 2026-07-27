@@ -29,8 +29,10 @@ fresh training config that should get today's defaults. These tests pin both rea
    restores to the same token-to-ID mapping no matter how the class defaults evolve later.
 """
 
+import inspect
 from unittest.mock import MagicMock, patch
 
+import hydra
 import pytest
 import torch
 from omegaconf import OmegaConf, open_dict
@@ -154,6 +156,39 @@ class TestPersistVersionedTokenizerDefaults:
         persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=True)
 
         assert cfg == OmegaConf.create({"pretrained_model": "google-t5/t5-small"})
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "target, field",
+        [
+            (_HINDI_CHARS, "charset_version"),
+            (_HINDI_CHARS, "punct_version"),
+            (_ARABIC_CHARS, "charset_version"),
+        ],
+    )
+    def test_non_legacy_backfill_matches_the_tokenizer_class_default(self, target, field):
+        """What gets persisted for a fresh config must equal what the tokenizer would have chosen itself.
+
+        Otherwise bumping a version in the tokenizer signature would silently leave this backfill writing
+        the old value, and every newly trained model would be pinned a version behind. Read off the real
+        signature rather than a literal, so this keeps holding when the defaults move.
+        """
+        class_default = inspect.signature(hydra.utils.get_class(target)).parameters[field].default
+        cfg = OmegaConf.create({"_target_": target})
+
+        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=False)
+
+        assert cfg[field] == class_default
+
+    @pytest.mark.unit
+    def test_non_legacy_pt_br_backfill_matches_the_tokenizer_class_default(self):
+        """Same invariant for the pt-BR flag, whose default lives on ``IPATokenizer``."""
+        class_default = inspect.signature(hydra.utils.get_class(_IPA)).parameters["locale_specific_punct"].default
+        cfg = OmegaConf.create({"_target_": _IPA, "locale": "pt-BR"})
+
+        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=False)
+
+        assert cfg.locale_specific_punct == class_default
 
     @pytest.mark.unit
     @pytest.mark.parametrize(

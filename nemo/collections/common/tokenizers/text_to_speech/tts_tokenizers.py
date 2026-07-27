@@ -51,7 +51,12 @@ CASELESS_SCRIPT_TOKENIZER_TARGETS = frozenset(
     }
 )
 
+# Defaults for the versioned tokenizer fields. These are the single source of truth: the tokenizer
+# signatures below and the config backfill in
+# ``nemo.collections.tts.data.text_to_speech_dataset_lhotse.persist_versioned_tokenizer_defaults``
+# both read them, so bumping a version stays one edit and the two cannot drift apart.
 DEFAULT_CHARSET_VERSION = 2
+DEFAULT_PUNCT_VERSION = 2
 
 
 class BaseTokenizer(ABC):
@@ -429,13 +434,13 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
     def __init__(
         self,
         chars=None,
-        charset_version=2,
+        charset_version=DEFAULT_CHARSET_VERSION,
         punct=True,
         apostrophe=True,
         add_blank_at=None,
         pad_with_space=False,
         non_default_punct_list=None,
-        punct_version=2,
+        punct_version=DEFAULT_PUNCT_VERSION,
         text_preprocessing_func=any_locale_text_preprocessing,
     ):
         if chars is None:
@@ -543,7 +548,7 @@ class ArabicCharsTokenizer(BaseCharsTokenizer):
     def __init__(
         self,
         chars=None,
-        charset_version=2,
+        charset_version=DEFAULT_CHARSET_VERSION,
         punct=True,
         apostrophe=True,
         add_blank_at=None,

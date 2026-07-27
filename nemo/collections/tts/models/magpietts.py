@@ -35,7 +35,7 @@ from torch import nn
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
     MagpieTTSLhotseDataset,
-    is_restored_model_config,
+    predates_versioned_tokenizer_fields,
     setup_tokenizers,
 )
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
@@ -328,11 +328,6 @@ class MagpieTTSModel(ModelPT):
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
-        # Must be read before the audio codec is restored below, since that nested restore clears the
-        # global restore flag this relies on. Decides whether tokenizer fields missing from `cfg` fall
-        # back to their pre-versioning values (trained model) or to the current defaults (fresh run).
-        restored_model_config = is_restored_model_config(cfg)
-
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
@@ -443,7 +438,8 @@ class MagpieTTSModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
-            use_legacy_defaults=restored_model_config,
+            # `cfg` has not been through super().__init__ yet, so it still shows its original provenance.
+            use_legacy_defaults=predates_versioned_tokenizer_fields(cfg),
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)

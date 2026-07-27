@@ -23,7 +23,7 @@ fresh training config that should get today's defaults. These tests pin both rea
 
 1. ``setup_tokenizers`` uses the current defaults for fresh configs, and the pre-versioning values only
    when ``use_legacy_defaults=True`` -- so new training is never silently downgraded to v1.
-2. ``is_restored_model_config`` is what tells the two apart, via the ``nemo_version`` stamp that
+2. ``predates_versioned_tokenizer_fields`` is what tells the two apart, via the ``nemo_version`` stamp that
    ``ModelPT`` writes into every config it saves.
 3. Whatever the resolved values are, they are written back into the config, so a model saved today
    restores to the same token-to-ID mapping no matter how the class defaults evolve later.
@@ -34,12 +34,11 @@ import torch
 from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
-    is_restored_model_config,
     persist_versioned_tokenizer_defaults,
+    predates_versioned_tokenizer_fields,
     setup_tokenizers,
 )
 from nemo.core.classes import ModelPT
-from nemo.utils.app_state import AppState
 
 _HINDI_CHARS = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
 _ARABIC_CHARS = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ArabicCharsTokenizer"
@@ -51,28 +50,19 @@ def _tokenizers_cfg(**tokenizer_fields):
     return OmegaConf.create({"hindi_chartokenizer": {"_target_": _HINDI_CHARS, **tokenizer_fields}})
 
 
-@pytest.fixture(autouse=True)
-def _clear_restore_flag():
-    """Keep ``AppState``'s process-global restore flag from leaking between tests."""
-    AppState().is_model_being_restored = False
-    yield
-    AppState().is_model_being_restored = False
-
-
 class _TokenizerVersionModel(ModelPT):
     """Minimal stand-in for MagpieTTS that reproduces only its tokenizer/embedding sizing.
 
-    It mirrors the two lines that matter -- resolve the tokenizer defaults according to whether the
-    config came from a checkpoint, then size the text embedding from the resulting vocabulary -- so a
-    ``save_to`` / ``restore_from`` round-trip exercises the real vocabulary-drift failure without
-    building a codec, encoders, or downloading a released archive.
+    It mirrors the two lines that matter -- resolve the tokenizer defaults according to the config's
+    provenance, then size the text embedding from the resulting vocabulary -- so a ``save_to`` /
+    ``restore_from`` round-trip exercises the real vocabulary-drift failure without building a codec,
+    encoders, or downloading a released archive.
     """
 
     def __init__(self, cfg, trainer=None):
-        restored_model_config = is_restored_model_config(cfg)
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
-            use_legacy_defaults=restored_model_config,
+            use_legacy_defaults=predates_versioned_tokenizer_fields(cfg),
         )
         super().__init__(cfg=cfg, trainer=trainer)
         self.text_embedding = torch.nn.Embedding(len(self.tokenizer.tokens) + 2, 4)
@@ -164,26 +154,20 @@ class TestPersistVersionedTokenizerDefaults:
         assert cfg == OmegaConf.create({"pretrained_model": "google-t5/t5-small"})
 
 
-class TestIsRestoredModelConfig:
+class TestPredatesVersionedTokenizerFields:
     @pytest.mark.unit
-    def test_nemo_version_marks_a_saved_config(self):
-        """``ModelPT.__init__`` stamps ``nemo_version``, so its presence means the config was saved."""
-        assert is_restored_model_config(OmegaConf.create({"nemo_version": "2.6.0rc0"}))
+    def test_serialized_config_predates_the_fields(self):
+        """``ModelPT.__init__`` stamps ``nemo_version``, so carrying one means the config was serialized;
+        current code always writes the versioned fields, so a serialized config lacking them is older."""
+        assert predates_versioned_tokenizer_fields(OmegaConf.create({"nemo_version": "2.6.0rc0"}))
 
     @pytest.mark.unit
-    def test_restore_in_flight_marks_a_saved_config(self):
-        """Covers archives whose ``nemo_version`` was stripped by an override config."""
-        AppState().is_model_being_restored = True
-
-        assert is_restored_model_config(OmegaConf.create({"text_tokenizers": {}}))
-
-    @pytest.mark.unit
-    def test_fresh_struct_config_is_not_restored(self):
+    def test_hand_authored_struct_config_does_not(self):
         """Model configs reach ``__init__`` in struct mode, where a plain attribute read would raise."""
         cfg = OmegaConf.create({"text_tokenizers": {}})
         OmegaConf.set_struct(cfg, True)
 
-        assert not is_restored_model_config(cfg)
+        assert not predates_versioned_tokenizer_fields(cfg)
 
 
 class TestNemoRoundTrip:

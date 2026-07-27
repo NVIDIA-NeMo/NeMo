@@ -38,29 +38,35 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
-from nemo.utils.app_state import AppState
 
 _IPA_TOKENIZER_TARGET = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
 _HINDI_CHARS_TOKENIZER_TARGET = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
 
 
-def is_restored_model_config(model_cfg) -> bool:
-    """Whether ``model_cfg`` was deserialized from a saved model rather than authored for a fresh run.
+def predates_versioned_tokenizer_fields(model_cfg) -> bool:
+    """Whether ``model_cfg`` was written by a NeMo release older than the versioned tokenizer fields.
 
-    ``ModelPT.__init__`` stamps ``nemo_version`` into every config it owns, so a config that already
-    carries one came out of a ``.nemo`` archive or an ``hparams.yaml``. ``AppState`` additionally flags
-    an in-flight ``restore_from``, covering archives whose ``nemo_version`` was stripped.
+    Note this asks about the config's *origin*, not about restoration: being restored does not make a
+    checkpoint legacy. The deduction rests on one invariant -- every NeMo that knows about these fields
+    writes them (see ``persist_versioned_tokenizer_defaults``), so a serialized config that lacks them
+    can only have come from a NeMo that did not know about them, and its vocabulary was therefore built
+    with the pre-versioning values.
 
-    Call this at the very top of a model's ``__init__``: restoring a nested model (e.g. the audio codec)
-    clears the ``AppState`` flag, which would otherwise make a genuine restore look like a fresh run.
+    ``nemo_version`` identifies a serialized config: ``ModelPT.__init__`` stamps it into every config it
+    owns, so a config carrying one has already been through a ``.nemo`` archive or an ``hparams.yaml``,
+    whereas one hand-authored for a fresh training run has not.
+
+    Known limitation: a config extracted from a ``.nemo`` and reused verbatim to start new training is
+    treated as legacy. That is right when initializing from those weights and merely conservative
+    otherwise -- the tokenizer emits a ``DeprecationWarning`` naming the field to set explicitly.
 
     Args:
-        model_cfg: The model-level config passed to ``__init__`` (before ``super().__init__``).
+        model_cfg: The model-level config passed to ``__init__`` (before ``super().__init__`` stamps it).
 
     Returns:
-        True if the config describes an already-trained model.
+        True if absent versioned fields should resolve to their pre-versioning values.
     """
-    return AppState().is_model_being_restored or 'nemo_version' in model_cfg
+    return 'nemo_version' in model_cfg
 
 
 def persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults):
@@ -111,7 +117,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=Fa
         mode: 'train' or 'test'. 'test' forces phoneme probability to 1.0 where supported.
         use_legacy_defaults: Fill missing versioned fields with their pre-versioning values rather than
             the current defaults. Callers restoring a trained model should pass
-            ``is_restored_model_config(cfg)``; fresh training runs should leave this False so new
+            ``predates_versioned_tokenizer_fields(cfg)``; fresh training runs should leave this False so new
             models get the current character/punctuation sets.
 
     Returns:

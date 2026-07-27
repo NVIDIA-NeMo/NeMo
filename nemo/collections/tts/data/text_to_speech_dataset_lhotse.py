@@ -38,11 +38,85 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
+from nemo.utils.app_state import AppState
+
+_IPA_TOKENIZER_TARGET = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+_HINDI_CHARS_TOKENIZER_TARGET = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
 
 
-def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=True):
-    # Being used in both model and worker_init_fn, so it is defined here
-    # Returns two tokenizers: one for TTS transcript and one for conditioning text (if needed)
+def is_restored_model_config(model_cfg) -> bool:
+    """Whether ``model_cfg`` was deserialized from a saved model rather than authored for a fresh run.
+
+    ``ModelPT.__init__`` stamps ``nemo_version`` into every config it owns, so a config that already
+    carries one came out of a ``.nemo`` archive or an ``hparams.yaml``. ``AppState`` additionally flags
+    an in-flight ``restore_from``, covering archives whose ``nemo_version`` was stripped.
+
+    Call this at the very top of a model's ``__init__``: restoring a nested model (e.g. the audio codec)
+    clears the ``AppState`` flag, which would otherwise make a genuine restore look like a fresh run.
+
+    Args:
+        model_cfg: The model-level config passed to ``__init__`` (before ``super().__init__``).
+
+    Returns:
+        True if the config describes an already-trained model.
+    """
+    return AppState().is_model_being_restored or 'nemo_version' in model_cfg
+
+
+def persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults):
+    """Write the versioned tokenizer defaults into ``tokenizer_config`` when they are absent.
+
+    Pinning the values in the config (instead of leaning on the tokenizer class defaults) is what makes
+    a vocabulary survive a ``.nemo`` save/restore round-trip: once persisted, the token-to-ID mapping a
+    model was trained with is reproduced exactly, however the class defaults evolve afterwards.
+
+    Args:
+        tokenizer_config: A single tokenizer's config node. Mutated in place.
+        use_legacy_defaults: Use the values that were in force before these fields existed, instead of
+            the current defaults. Set for configs restored from checkpoints that predate the fields —
+            their vocabulary was built with the old values, so the new ones would shift every token ID.
+    """
+    target = tokenizer_config.get('_target_', None)
+    if target is None:
+        return
+
+    with open_dict(tokenizer_config):
+        # Most locales always used their locale-specific IPA punctuation, so the current default (True)
+        # matches what they were trained with. pt-BR is the exception: it is the one locale with released
+        # checkpoints built on DEFAULT_PUNCTUATION only, so it is the only one that needs opting out.
+        if (
+            target == _IPA_TOKENIZER_TARGET
+            and tokenizer_config.get('locale', None) == "pt-BR"
+            and 'non_default_punct_list' not in tokenizer_config
+            and 'locale_specific_punct' not in tokenizer_config
+        ):
+            tokenizer_config.locale_specific_punct = not use_legacy_defaults
+        # punct_version=2 adds the dandas ("।", "॥") to the Hindi punctuation set.
+        if target == _HINDI_CHARS_TOKENIZER_TARGET and 'punct_version' not in tokenizer_config:
+            tokenizer_config.punct_version = 1 if use_legacy_defaults else 2
+        # charset_version=2 collapses the caseless Hindi/Arabic scripts to one case, which *shrinks* the
+        # vocabulary (Hindi 191 -> 146 tokens, Arabic 164 -> 119) rather than extending it.
+        if target in CASELESS_SCRIPT_TOKENIZER_TARGETS and 'charset_version' not in tokenizer_config:
+            tokenizer_config.charset_version = 1 if use_legacy_defaults else DEFAULT_CHARSET_VERSION
+
+
+def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=False):
+    """Instantiate the aggregated TTS transcript tokenizer described by ``all_tokenizers_config``.
+
+    Being used in both model and worker_init_fn, so it is defined here.
+
+    Args:
+        all_tokenizers_config: The ``text_tokenizers`` config node. Mutated in place so that the
+            versioned tokenizer defaults it resolved to are persisted into any ``.nemo`` saved later.
+        mode: 'train' or 'test'. 'test' forces phoneme probability to 1.0 where supported.
+        use_legacy_defaults: Fill missing versioned fields with their pre-versioning values rather than
+            the current defaults. Callers restoring a trained model should pass
+            ``is_restored_model_config(cfg)``; fresh training runs should leave this False so new
+            models get the current character/punctuation sets.
+
+    Returns:
+        An ``AggregatedTTSTokenizer`` over every configured tokenizer.
+    """
     tokenizers = []
     tokenizer_names = []
     for tokenizer_name in all_tokenizers_config:
@@ -55,33 +129,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=Tr
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
                 text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
-            # Persist versioned tokenizer defaults so they survive .nemo save/restore. Archived configs that
-            # predate these fields must use the original defaults to preserve their trained token-to-ID mapping.
-            if (
-                hasattr(tokenizer_config, '_target_')
-                and tokenizer_config._target_
-                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
-                and tokenizer_config.get('locale', None) == "pt-BR"
-                and not hasattr(tokenizer_config, 'non_default_punct_list')
-                and not hasattr(tokenizer_config, 'locale_specific_punct')
-            ):
-                with open_dict(tokenizer_config):
-                    tokenizer_config.locale_specific_punct = not use_legacy_defaults
-            if (
-                hasattr(tokenizer_config, '_target_')
-                and tokenizer_config._target_
-                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
-                and not hasattr(tokenizer_config, 'punct_version')
-            ):
-                with open_dict(tokenizer_config):
-                    tokenizer_config.punct_version = 1 if use_legacy_defaults else 2
-            if (
-                hasattr(tokenizer_config, '_target_')
-                and tokenizer_config._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS
-                and not hasattr(tokenizer_config, 'charset_version')
-            ):
-                with open_dict(tokenizer_config):
-                    tokenizer_config.charset_version = 1 if use_legacy_defaults else DEFAULT_CHARSET_VERSION
+            persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults)
             tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):

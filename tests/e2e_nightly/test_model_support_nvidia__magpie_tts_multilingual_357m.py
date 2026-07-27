@@ -48,14 +48,24 @@ def _load_model():
 @pytest.mark.with_downloads
 @pytest.mark.parametrize("revision", MODEL_RELEASES)
 def test_model_release_restore(revision):
-    """Ensure every published MagpieTTS release remains loadable by current NeMo code."""
+    """Ensure every published MagpieTTS release remains loadable by current NeMo code.
+
+    The releases span three generations of tokenizer defaults: v2512 and v2602 predate the
+    ``charset_version`` / ``punct_version`` / ``locale_specific_punct`` fields, while v2607 pins them
+    explicitly. A vocabulary rebuilt from anything but the values a release was trained with shifts
+    every token ID, which surfaces here as a text_embedding size mismatch during ``restore_from``.
+    """
     from nemo.collections.tts.models import MagpieTTSModel
 
     filepath = hf_hub_download(repo_id=MODEL_NAME, filename=HF_NEMO_FILE, revision=revision)
     model = MagpieTTSModel.restore_from(filepath, map_location="cpu")
 
     assert model is not None
-    assert model.text_embedding.num_embeddings == len(model.tokenizer.tokens) + 2
+    assert model.text_embedding.num_embeddings == len(model.tokenizer.tokens) + 2, (
+        f"{revision}: text embedding has {model.text_embedding.num_embeddings} rows but the tokenizer "
+        f"built {len(model.tokenizer.tokens)} tokens (+2 for BOS/EOS) -- the restored tokenizer config "
+        f"does not match the one this release was trained with."
+    )
 
     del model
     gc.collect()

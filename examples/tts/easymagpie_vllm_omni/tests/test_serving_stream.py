@@ -18,6 +18,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from easymagpie_vllm_omni.serving_adapter import _build_adapter_cls
 from easymagpie_vllm_omni.serving_stream import EasyMagpieInputStream, EasyMagpieStreamingSpeechHandler
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
@@ -69,6 +70,87 @@ async def test_input_stream_builds_one_resumable_request_from_token_chunks():
     assert chunks[1].sampling_params.max_tokens == 3
     assert chunks[2].prompt["additional_information"] == {"text_token": []}
     assert chunks[2].sampling_params.max_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_input_stream_prefills_four_tokens_and_requires_them_in_first_update():
+    params = SamplingParams(max_tokens=32, output_kind=RequestOutputKind.DELTA)
+    stream = EasyMagpieInputStream(
+        prefill_prompt={
+            "prompt_token_ids": [0] * 6,
+            "additional_information": {"speaker_id": "eng", "text_prefill_num": 4},
+        },
+        sampling_params=params,
+        text_eos_id=99,
+        max_new_tokens=32,
+        text_prefill_num=4,
+        pace_timeout_s=0.0,
+    )
+
+    with pytest.raises(ValueError, match="first input update must contain at least 4"):
+        await stream.put_tokens([10, 11, 12])
+
+    stream = EasyMagpieInputStream(
+        prefill_prompt={
+            "prompt_token_ids": [0] * 6,
+            "additional_information": {"speaker_id": "eng", "text_prefill_num": 4},
+        },
+        sampling_params=params,
+        text_eos_id=99,
+        max_new_tokens=32,
+        text_prefill_num=4,
+        pace_timeout_s=0.0,
+    )
+    await stream.put_tokens([10, 11, 12, 13, 14])
+    await stream.finish()
+    chunks = [chunk async for chunk in stream.inputs()]
+
+    assert chunks[0].prompt["additional_information"] == {
+        "speaker_id": "eng",
+        "text_prefill_num": 4,
+        "prefill_text_tokens": [10, 11, 12, 13],
+        "text_token": [10, 11, 12, 13, 14],
+        "text_token_start": 0,
+    }
+    assert chunks[0].sampling_params.max_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_http_adapter_folds_four_text_positions_into_prefill():
+    adapter = _build_adapter_cls()(SimpleNamespace(engine_client=None))
+    adapter._prompt_len = lambda _speaker_id: 2
+    adapter._text_stream_metadata = lambda: (99, 4)
+    adapter._model_tokenizer = lambda: SimpleNamespace(encode=lambda *_args, **_kwargs: [10, 11, 12, 13, 14])
+    request = SimpleNamespace(
+        input="hello",
+        voice="eng",
+        extra_params=None,
+    )
+
+    prepared = await adapter.build(
+        request,
+        sampling_params_list=[],
+        has_inline_ref_audio=False,
+    )
+
+    prompt = prepared.prompt
+    info = prompt["additional_information"]
+    assert len(prompt["prompt_token_ids"]) == 6
+    assert info["text_tokens"] == [10, 11, 12, 13, 14, 99]
+    assert info["prefill_text_tokens"] == [10, 11, 12, 13]
+    assert info["text_prefill_num"] == 4
+
+
+def test_adapter_treats_null_text_eos_as_legacy_vocab_offset():
+    adapter = _build_adapter_cls()(SimpleNamespace(engine_client=None))
+    adapter._model_config_cache = {
+        "text_vocab_size": 100,
+        "text_eos_id": None,
+        "streaming_phonemes_delay": 3,
+        "streaming_speech_delay": 5,
+    }
+
+    assert adapter._text_stream_metadata() == (98, 4)
 
 
 @pytest.mark.asyncio

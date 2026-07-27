@@ -96,3 +96,12 @@ def test_from_hf_config_hidden_size_fallback():
     assert arch.hidden_dim == 999
     # embedding_dim defaults to the same backbone width when not given explicitly.
     assert arch.embedding_dim == 999
+
+
+def test_text_prefill_includes_first_phoneme_bos_position():
+    arch = EasyMagpieOmniArch(
+        streaming_phonemes_delay=3,
+        streaming_speech_delay=5,
+    )
+
+    assert arch.text_prefill_num == 4

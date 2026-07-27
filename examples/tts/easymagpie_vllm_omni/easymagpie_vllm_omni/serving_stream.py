@@ -58,6 +58,7 @@ class EasyMagpieInputStream:
         text_eos_id: int,
         max_new_tokens: int,
         pace_timeout_s: float = _DEFAULT_PACE_TIMEOUT_S,
+        text_prefill_num: int = 0,
         queue_depth: int = _QUEUE_DEPTH,
         coalesce_queued_tokens: bool = True,
     ) -> None:
@@ -65,11 +66,13 @@ class EasyMagpieInputStream:
         self.sampling_params = sampling_params
         self.text_eos_id = int(text_eos_id)
         self.max_new_tokens = max(1, int(max_new_tokens))
+        self.text_prefill_num = max(0, int(text_prefill_num))
         self.pace_timeout_s = max(0.0, float(pace_timeout_s))
         self.coalesce_queued_tokens = coalesce_queued_tokens
         self._input_queue: asyncio.Queue[list[int] | object] = asyncio.Queue(maxsize=max(1, queue_depth))
         self._segment_completions: asyncio.Queue[None] = asyncio.Queue()
         self._finished = False
+        self._received_first_update = False
         self.observed_output_frames = 0
 
     @property
@@ -81,7 +84,11 @@ class EasyMagpieInputStream:
             raise RuntimeError("Cannot append tokens after input.done")
         if not token_ids:
             return
-        await self._input_queue.put([int(token_id) for token_id in token_ids])
+        normalized = [int(token_id) for token_id in token_ids]
+        if not self._received_first_update and len(normalized) < self.text_prefill_num:
+            raise ValueError(f"first input update must contain at least {self.text_prefill_num} text tokens")
+        await self._input_queue.put(normalized)
+        self._received_first_update = True
 
     async def finish(self) -> None:
         if not self._finished:
@@ -138,7 +145,12 @@ class EasyMagpieInputStream:
         first_info = first_prompt.setdefault("additional_information", {})
         first_info["text_token"] = first_token_ids
         first_info["text_token_start"] = text_token_start
-        first_required_frames = len(first_token_ids)
+        if self.text_prefill_num:
+            first_info["text_prefill_num"] = self.text_prefill_num
+            first_info["prefill_text_tokens"] = first_token_ids[: self.text_prefill_num]
+            first_required_frames = 1 + len(first_token_ids) - self.text_prefill_num
+        else:
+            first_required_frames = len(first_token_ids)
         yield StreamingInput(
             prompt=first_prompt,
             sampling_params=_sampling_params_with_max_tokens(self.sampling_params, first_required_frames),
@@ -253,6 +265,7 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 sampling_params=stage0_params,
                 text_eos_id=spec.text_eos_id,
                 max_new_tokens=max_new_tokens,
+                text_prefill_num=getattr(spec, "text_prefill_num", 0),
             )
             request_id = f"speech-stream-{random_uuid()}"
             generator = self._speech_service.engine_client.generate(

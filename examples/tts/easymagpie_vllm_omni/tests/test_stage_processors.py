@@ -92,6 +92,7 @@ def test_async_codec_state_stays_continuous_across_resumable_segments():
     request.resumable = False
     assert talker2code2wav_async_chunk(manager, None, request, is_finished=True) is None
     assert request.external_req_id not in manager._emp_seen_frames
+    assert request.external_req_id not in manager._emp_request_speech_delay
     assert request.external_req_id not in manager._emp_emitted_frames
     assert request.external_req_id not in manager._emp_emitted_chunks
     assert request.external_req_id not in manager._emp_frame_buffer_base
@@ -113,6 +114,59 @@ def test_resumable_segment_stop_does_not_flush_partial_codec_chunk():
     full = talker2code2wav_async_chunk(manager, _output(4), request)
     assert full is not None
     torch.testing.assert_close(full.codes.audio, torch.tensor([[1, 101], [2, 102], [3, 103], [4, 104]]))
+
+
+def test_async_codec_drops_only_warmup_not_moved_into_prefill():
+    manager = _manager()
+    manager.config.hf_config = SimpleNamespace(
+        streaming_phonemes_delay=3,
+        streaming_speech_delay=5,
+    )
+    manager.connector.config["extra"]["codec_chunk_frames"] = 1
+    request = _Request()
+    request.additional_information = {"text_prefill_num": 4}
+
+    # The prefill callback carries no generated acoustic frame and must not
+    # consume the one remaining warm-up slot.
+    assert (
+        talker2code2wav_async_chunk(
+            manager,
+            {"audio_codes": torch.zeros(1, 2, dtype=torch.long)},
+            request,
+        )
+        is None
+    )
+    assert manager._emp_seen_frames[request.external_req_id] == 0
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    first_audio = talker2code2wav_async_chunk(manager, _output(2), request)
+    torch.testing.assert_close(first_audio.codes.audio, torch.tensor([[2, 102]]))
+
+
+def test_async_codec_drops_terminal_audio_eos_row():
+    manager = _manager()
+    manager.config.hf_config = SimpleNamespace(
+        streaming_speech_delay=0,
+        forced_audio_eos_id=1025,
+        codebook_size=1024,
+    )
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+    request.resumable = False
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    assert talker2code2wav_async_chunk(manager, _output(2), request) is None
+
+    request.finished = True
+    terminal = talker2code2wav_async_chunk(
+        manager,
+        {"audio_codes": torch.tensor([[1025, 777]], dtype=torch.long)},
+        request,
+        is_finished=True,
+    )
+
+    assert bool(terminal.meta.finished)
+    torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101], [2, 102]]))
 
 
 def test_async_codec_buffer_drops_emitted_rows():

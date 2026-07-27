@@ -18,7 +18,10 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
+
+from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,7 @@ class EasyMagpieStreamingSpec:
     tokenizer: Any
     text_eos_id: int
     sample_rate: int
+    text_prefill_num: int
 
 
 def _build_adapter_cls() -> type:
@@ -65,6 +69,8 @@ def _build_adapter_cls() -> type:
             self._tokenizer: Any = None
             self._model_path_cache: str | None = None
             self._prompt_len_cache: dict[str, int] = {}
+            self._model_config_cache: dict[str, Any] | None = None
+            self._arch_cache: EasyMagpieOmniArch | None = None
 
         def _model_path(self) -> str:
             if self._model_path_cache is not None:
@@ -108,6 +114,30 @@ def _build_adapter_cls() -> type:
             self._prompt_len_cache[speaker_id] = plen
             return plen
 
+        def _model_config(self) -> dict[str, Any]:
+            if self._model_config_cache is None:
+                path = Path(self._model_path()) / "config.json"
+                self._model_config_cache = json.loads(path.read_text())
+            return self._model_config_cache
+
+        def _arch(self) -> EasyMagpieOmniArch:
+            if self._arch_cache is None:
+                self._arch_cache = EasyMagpieOmniArch.from_hf_config(SimpleNamespace(**self._model_config()))
+            return self._arch_cache
+
+        def _text_stream_metadata(self) -> tuple[int, int]:
+            config = self._model_config()
+            text_vocab_size = int(config.get("text_vocab_size", config.get("vocab_size", 0)))
+            if text_vocab_size <= _TEXT_EOS_OFFSET_FROM_VOCAB:
+                raise ValueError("EasyMagpie config must define text_vocab_size")
+            configured_text_eos_id = config.get("text_eos_id")
+            text_eos_id = (
+                text_vocab_size - _TEXT_EOS_OFFSET_FROM_VOCAB
+                if configured_text_eos_id is None
+                else int(configured_text_eos_id)
+            )
+            return text_eos_id, self._arch().text_prefill_num
+
         def validate(self, request: OpenAICreateSpeechRequest) -> str | None:
             if not request.input or not request.input.strip():
                 return "Input text cannot be empty"
@@ -125,11 +155,17 @@ def _build_adapter_cls() -> type:
             del sampling_params_list, has_inline_ref_audio  # EasyMagpie needs neither.
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
             extra = request.extra_params or {}
+            text_eos_id, text_prefill_num = self._text_stream_metadata()
+            text_tokens = list(self._model_tokenizer().encode(request.input, add_special_tokens=False))
+            text_tokens.append(text_eos_id)
+
             prompt = {
-                "prompt_token_ids": [0] * self._prompt_len(speaker_id),
+                "prompt_token_ids": [0] * (self._prompt_len(speaker_id) + text_prefill_num),
                 "additional_information": {
                     "context_text": extra.get("context_text", _DEFAULT_CONTEXT_TEXT),
-                    "text": request.input,
+                    "text_tokens": text_tokens,
+                    "prefill_text_tokens": text_tokens[:text_prefill_num],
+                    "text_prefill_num": text_prefill_num,
                     "temperature": float(extra.get("temperature", _DEFAULT_TEMPERATURE)),
                     "top_k": int(extra.get("top_k", _DEFAULT_TOP_K)),
                     "speaker_id": speaker_id,
@@ -141,10 +177,7 @@ def _build_adapter_cls() -> type:
             """Build the speaker prefill and tokenizer metadata without complete text."""
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
             model_path = Path(self._model_path())
-            config = json.loads((model_path / "config.json").read_text())
-            text_vocab_size = int(config.get("text_vocab_size", config.get("vocab_size", 0)))
-            if text_vocab_size <= _TEXT_EOS_OFFSET_FROM_VOCAB:
-                raise ValueError("EasyMagpie config must define text_vocab_size")
+            text_eos_id, text_prefill_num = self._text_stream_metadata()
 
             sample_rate = 22050
             codec_config_path = model_path / "codec_native" / "config.json"
@@ -154,17 +187,19 @@ def _build_adapter_cls() -> type:
 
             return EasyMagpieStreamingSpec(
                 prefill_prompt={
-                    "prompt_token_ids": [0] * self._prompt_len(speaker_id),
+                    "prompt_token_ids": [0] * (self._prompt_len(speaker_id) + text_prefill_num),
                     "additional_information": {
                         "context_text": _DEFAULT_CONTEXT_TEXT,
                         "temperature": _DEFAULT_TEMPERATURE,
                         "top_k": _DEFAULT_TOP_K,
                         "speaker_id": speaker_id,
+                        "text_prefill_num": text_prefill_num,
                     },
                 },
                 tokenizer=self._model_tokenizer(),
-                text_eos_id=int(config.get("text_eos_id", text_vocab_size - _TEXT_EOS_OFFSET_FROM_VOCAB)),
+                text_eos_id=text_eos_id,
                 sample_rate=sample_rate,
+                text_prefill_num=text_prefill_num,
             )
 
     return EasyMagpieTTSAdapter

@@ -71,6 +71,15 @@ APIs are available:
 - `WS /v1/audio/speech/stream` with incremental text/token updates and
   asynchronous PCM audio output.
 
+For delayed-stream checkpoints, the adapter folds the known text-led positions
+into the causal prefill. The current `phoneme_delay=3`, `speech_delay=5` model
+therefore prefills four target positions: text-only positions 0–2 and position
+3 with the known phoneme BOS input. Whole-text HTTP requests satisfy this
+automatically. For incremental WebSocket input, the first `input.text` or
+`input.tokens` update must tokenize to at least `phoneme_delay + 1` tokens
+(four for this checkpoint); a shorter first update returns an error. Later
+updates may contain any supported chunk size.
+
 Query the HTTP endpoint from any OpenAI-compatible client:
 
 ```bash
@@ -88,7 +97,7 @@ of both serving APIs.
 ```bash
 # Benchmark acoustic token prediction only (no codec).
 python scripts/benchmark_model.py --model ./converted_model -n 128 -c 1 32 \
-    [--incremental --tokens-per-chunk 5]
+    [--streaming --tokens-per-chunk 5]
 
 # Benchmark the service's HTTP API.
 python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32

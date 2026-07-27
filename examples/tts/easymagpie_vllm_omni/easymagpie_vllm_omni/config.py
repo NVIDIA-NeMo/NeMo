@@ -85,6 +85,21 @@ class EasyMagpieOmniArch:
         return self.num_audio_codebooks * self.frame_stacking_factor
 
     @property
+    def text_prefill_num(self) -> int:
+        """Text-led decode positions that can be folded into causal prefill.
+
+        Positions before ``streaming_phonemes_delay`` have no phoneme input.
+        The next position is also deterministic because it receives phoneme
+        BOS, so it can be prefetched as long as speech starts later.
+        """
+        if self.phoneme_vocab_size <= 0 or self.phoneme_stacking_factor <= 0:
+            return 0
+        if self.streaming_speech_delay <= 0:
+            return 0
+        assert self.streaming_speech_delay > self.streaming_phonemes_delay, "speech delay must exceed phoneme delay"
+        return self.streaming_phonemes_delay + 1
+
+    @property
     def num_all_tokens_per_codebook(self) -> int:
         """Per-codebook vocabulary size including the trailing special tokens."""
         return self.codebook_size + NUM_SPECIAL_AUDIO_TOKENS

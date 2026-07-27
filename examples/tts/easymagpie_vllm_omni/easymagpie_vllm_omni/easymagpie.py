@@ -19,8 +19,9 @@ frame. Request metadata supplies the target text, speaker id or embedding,
 optional context text and task mode, and audio sampling parameters.
 
 ``prompt_token_ids`` must have the same length as the assembled speaker
-conditioning. Streaming text requests provide one or more ``text_token`` ids
-per decode chunk and terminate the stream with ``text_eos_id``.
+conditioning plus any causal target-text rows moved into prefill. Streaming
+text requests provide one or more ``text_token`` ids per decode chunk and
+terminate the stream with ``text_eos_id``.
 """
 from __future__ import annotations
 
@@ -350,31 +351,33 @@ class EasyMagpieTTSForConditionalGeneration(
                 break
         return None, None
 
-    def _get_decode_idxs(self):
-        """Return ``(decode_token_indices, num_requests)`` for code-predictor dispatch.
+    def _get_query_dispatch(self):
+        """Return decode rows and the final row of each prefill query.
 
-        * ``(None, 0)`` → run the local transformer on every token (a warm-up
+        * ``(None, 0, None)`` → run the local transformer on every token (a warm-up
           run with no ``attn_metadata``, or a decode-only batch where
           ``max_query_len == 1``), so the captured CUDA graph covers every
           ``cudagraph_capture_sizes`` value.
-        * ``(indices, num_requests)`` → run only on the listed decode positions
-          (mixed prefill+decode batch). ``indices`` is padded to the next
-          captured graph size; ``num_requests`` is the unpadded count.
+        * ``(indices, num_requests, prefill_last_indices)`` → run the local
+          transformer only on listed decode rows, and the phoneme projection on
+          each final prefill row. ``indices`` is CUDA-graph padded;
+          ``num_requests`` is its unpadded count.
         """
         ctx = get_forward_context()
         attn_metadata = ctx.attn_metadata
         if attn_metadata is None:
-            return None, 0
+            return None, 0, None
 
         max_query_len, start_loc = self._select_query_layout(attn_metadata)
 
         # Decode-only batch (or layout unavailable) -> run the LT on every token.
         if max_query_len is None or max_query_len == 1 or start_loc is None:
-            return None, 0
+            return None, 0, None
 
         tokens_per_req = start_loc[1:] - start_loc[:-1]
         is_decode = tokens_per_req == 1
         decode_token_indices = start_loc[:-1][is_decode]
+        prefill_last_indices = start_loc[1:][~is_decode] - 1
 
         num_requests = decode_token_indices.shape[0]
         padded_num_requests = num_requests
@@ -387,7 +390,7 @@ class EasyMagpieTTSForConditionalGeneration(
             decode_token_indices = torch.nn.functional.pad(
                 decode_token_indices, (0, padded_num_requests - num_requests)
             )
-        return decode_token_indices, num_requests
+        return decode_token_indices, num_requests, prefill_last_indices
 
     # ------------------------------------------------------------------
     # forward
@@ -421,8 +424,12 @@ class EasyMagpieTTSForConditionalGeneration(
         self._token_stop[:num_tokens].zero_()
         logits_index = kwargs.get("logits_index")
 
-        decode_idx, num_req = self._get_decode_idxs()
+        decode_idx, num_req, prefill_last_idx = self._get_query_dispatch()
 
+        if decode_idx is not None:
+            # Acoustic prediction is skipped on prefill rows. Clear their shared
+            # scratch slots so a prior request cannot leak a fake codec frame.
+            self._out_codes[:num_tokens].zero_()
         if decode_idx is None:
             # Warm-up or decode-only batches exercise the full decode path.
             self._assemble_decode_embeddings(combined, slice(0, num_tokens))
@@ -455,6 +462,11 @@ class EasyMagpieTTSForConditionalGeneration(
             self._flag_audio_eos(codes[:num_req], valid)
             if self.has_phoneme:
                 self._predict_phonemes(hidden_states, valid)
+
+        # The final prefetched text position predicts the phoneme consumed by the
+        # first decode step. It does not need an acoustic-code prediction.
+        if self.has_phoneme and prefill_last_idx is not None and prefill_last_idx.numel() > 0:
+            self._predict_phonemes(hidden_states, prefill_last_idx)
 
         # Re-index _token_stop into _sample_stop.
         # this only happens for mixed/prefill, since for capture logits_index is None,
@@ -663,18 +675,18 @@ class EasyMagpieTTSForConditionalGeneration(
         # short chunks with zeros / a repeated last row is invalid: the backbone
         # was never trained on padded context frames, so silently doing so would
         # corrupt conditioning rather than fail loudly. This holds iff the caller
-        # sized ``prompt_token_ids`` to ``estimate_prompt_len(...)``.
+        # sized ``prompt_token_ids`` to the complete assembled prefill.
         assert int(take.shape[0]) == span_len, (
             f"EasyMagpieTTS prefill chunk [{offset}:{offset + span_len}] is not fully covered by the "
             f"assembled context embedding (length {total}). The caller must pass "
-            f"prompt_token_ids of length estimate_prompt_len(...) = "
-            f"[task?] + speaker_embedding.shape[0] + len(tokenize(context_text)); "
+            f"prompt_token_ids of length [task?] + speaker_embedding.shape[0] + "
+            f"len(tokenize(context_text)) + text_prefill_num; "
             f"zero-padding the backbone context is invalid (the model was not trained on it)."
         )
 
         info_update = {
             "prefill_offset": offset + span_len,
-            "decode_offset": 0,
+            "decode_offset": int(info_dict.get("text_prefill_num", 0) or 0),
         }
         # Tokenize the caller's ``text`` in-model and stash the subword ids in the
         # per-request info dict (alongside the offsets) so each decode step
@@ -712,7 +724,7 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> torch.Tensor:
         """Assemble the full ``(T_ctx, embedding_dim)`` prefill context embedding::
 
-            [task_embedding | speaker_embedding | context_text_embedded]
+            [task_embedding | speaker_embedding | context_text_embedded | target_text_prefill]
 
         from the per-request inputs:
 
@@ -725,8 +737,8 @@ class EasyMagpieTTSForConditionalGeneration(
         * ``task_mode_id`` — selects the per-mode task ("service token")
           embedding row; prepended only when the checkpoint has a task table.
 
-        Returns the full context embedding; the per-chunk slicing is done by
-        :meth:`_preprocess_prefill`.
+        Returns the full conditioning plus request-specific causal text prefix;
+        per-chunk slicing is done by :meth:`_preprocess_prefill`.
 
         For a known ``speaker_id`` the result is a pure function of
         ``(task_mode_id, speaker_id, context_text)`` and is cached in
@@ -748,7 +760,8 @@ class EasyMagpieTTSForConditionalGeneration(
         if cache_key is not None:
             cached = self._prefill_cache.get(cache_key)
             if cached is not None:
-                return cached
+                target_prefill = self._build_text_prefill_embeds(device, self._combined_embeddings.dtype, info_dict)
+                return cached if target_prefill is None else torch.cat((cached, target_prefill), dim=0)
 
         dtype = self._combined_embeddings.dtype
         parts: list[torch.Tensor] = []
@@ -769,7 +782,45 @@ class EasyMagpieTTSForConditionalGeneration(
         embeds = torch.cat(parts, dim=0)
         if cache_key is not None:
             self._prefill_cache[cache_key] = embeds
-        return embeds
+        target_prefill = self._build_text_prefill_embeds(device, dtype, info_dict)
+        return embeds if target_prefill is None else torch.cat((embeds, target_prefill), dim=0)
+
+    def _build_text_prefill_embeds(
+        self,
+        device: torch.device,
+        dtype: torch.dtype,
+        info_dict: dict[str, Any],
+    ) -> Optional[torch.Tensor]:
+        """Build the causal text-led rows moved from decode into prefill."""
+        text_prefill_num = int(info_dict.get("text_prefill_num", 0) or 0)
+        if text_prefill_num == 0:
+            return None
+        assert text_prefill_num == self.arch.text_prefill_num, (
+            f"EasyMagpieTTS expected text_prefill_num={self.arch.text_prefill_num}, " f"got {text_prefill_num}"
+        )
+
+        prefix_ids = list(info_dict.get("prefill_text_tokens") or [])
+        assert len(prefix_ids) <= text_prefill_num, (
+            f"EasyMagpieTTS got {len(prefix_ids)} prefill text tokens for " f"text_prefill_num={text_prefill_num}"
+        )
+        rows = torch.zeros((text_prefill_num, self.embedding_dim), device=device, dtype=dtype)
+        if prefix_ids:
+            ids = torch.tensor(prefix_ids, device=device, dtype=torch.long)
+            rows[: len(prefix_ids)] = self.text_embedding(ids).to(dtype)
+
+        # At position phonemes_delay the phoneme input is known: it is BOS. The
+        # phoneme projected from this row is fed back at the first decode step.
+        if self.has_phoneme:
+            bos_row = self.phonemes_delay
+            assert bos_row < text_prefill_num
+            bos = torch.full(
+                (1, self.arch.phoneme_stacking_factor),
+                self.phoneme_bos_id,
+                device=device,
+                dtype=torch.long,
+            )
+            rows[bos_row : bos_row + 1] += self._embed_phoneme(bos).to(dtype)
+        return rows
 
     def _resolve_speaker_embedding(self, device: torch.device, info_dict: dict[str, Any]) -> torch.Tensor:
         """Return the speaker context-audio embedding on ``device`` in model dtype.
@@ -887,13 +938,14 @@ class EasyMagpieTTSForConditionalGeneration(
         context_text: str = _DEFAULT_CONTEXT_TEXT,
         has_task_embedding: bool = False,
     ) -> int:
-        """Compute the prefill length for a custom voice.
+        """Compute the speaker-conditioning prefill length for a custom voice.
 
         The engine assembles the prefill context as
         ``[task_embedding? | speaker_embedding | context_text_embedded]``, so the
-        caller must pass ``prompt_token_ids = [0] * estimate_prompt_len(...)`` for
-        the placeholder length to match the assembled embedding length (otherwise
-        vLLM pads / truncates and quality drops). This is a pure function of
+        this base length plus ``text_prefill_num`` target rows. The caller must
+        pass that total as the placeholder length so it matches the assembled
+        embedding (otherwise vLLM pads / truncates and quality drops). The base
+        length is a pure function of
         lengths, so it stays static — callable in the request-building process
         without an engine instance.
 

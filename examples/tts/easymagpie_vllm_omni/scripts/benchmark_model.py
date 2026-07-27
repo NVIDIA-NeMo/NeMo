@@ -164,6 +164,7 @@ class ModelMeta:
     audio_eos_id: int
     speech_delay: int
     frame_stacking_factor: int
+    text_prefill_num: int
     stop_token_id: int  # backbone token emitted at the audio-EOS frame
     text_eos_id: int  # appended to streamed subword ids
 
@@ -210,6 +211,9 @@ def _load_model_meta(
             has_task_embedding=arch.num_task_embeddings > 0,
         )
 
+    text_prefill_num = arch.text_prefill_num
+    prompt_len += text_prefill_num
+
     return ModelMeta(
         tokenizer=tokenizer,
         speaker_embedding=speaker_embedding,
@@ -218,20 +222,20 @@ def _load_model_meta(
         audio_eos_id=int(arch.audio_eos_id),
         speech_delay=int(getattr(arch, "streaming_speech_delay", 0) or 0),
         frame_stacking_factor=int(arch.frame_stacking_factor),
+        text_prefill_num=text_prefill_num,
         stop_token_id=EasyMagpieTTSForConditionalGeneration.audio_eos_stop_token_id(type("Cfg", (), config)),
-        text_eos_id=int(
-            config.get(
-                "text_eos_id",
-                int(config.get("text_vocab_size", config.get("vocab_size", 0))) - 2,
-            )
-        ),
+        text_eos_id=int(arch.resolved_text_eos_id(int(config.get("text_vocab_size", config.get("vocab_size", 0))))),
     )
 
 
 def build_prompt(text: str, meta: ModelMeta) -> dict:
+    text_prefill_num = getattr(meta, "text_prefill_num", 0)
+    text_tokens = list(meta.tokenizer.encode(text, add_special_tokens=False)) + [meta.text_eos_id]
     info: dict = {
         "context_text": CONTEXT_TEXT,
-        "text": text,
+        "text_tokens": text_tokens,
+        "prefill_text_tokens": text_tokens[:text_prefill_num],
+        "text_prefill_num": text_prefill_num,
         "temperature": LT_TEMPERATURE,
         "top_k": LT_TOPK,
     }
@@ -259,6 +263,7 @@ class RequestResult:
     eos_reached: bool = False
     finish_reason: Optional[str] = None
     ttft_s: float = 0.0
+    ttfa_s: float = 0.0
     inter_token_latencies: list = field(default_factory=list)
     error: str = ""
     request_index: int = -1
@@ -353,6 +358,9 @@ class StepMeter:
         self._t_last = None
         self._prev_tokens = 0
         self._finish_reason = None
+        remaining_delay = max(0, meta.speech_delay - getattr(meta, "text_prefill_num", 0))
+        self._audio_overhead = 1 + remaining_delay
+
         # Per-step code deltas, concatenated once in finalize() (never per step,
         # so measurement is not polluted by O(n^2) accumulation/serialization).
         self._code_chunks: list = []
@@ -377,6 +385,8 @@ class StepMeter:
         if cur <= self._prev_tokens:
             return
 
+        if self.result.ttfa_s == 0.0 and cur > self._audio_overhead:
+            self.result.ttfa_s = now - self._t_start
         if self._t_last is None:
             self.result.ttft_s = now - self._t_start
         else:
@@ -392,7 +402,7 @@ class StepMeter:
         self.result.eos_reached = self._finish_reason == "stop"
         self.result.finish_reason = self._finish_reason
         self.result.generated_tokens = self._prev_tokens
-        audio_frames = max(0, self._prev_tokens - self.meta.speech_delay)
+        audio_frames = max(0, self._prev_tokens - self._audio_overhead)
         self.result.audio_frames = audio_frames
         self.result.audio_s = audio_frames * self.meta.frame_stacking_factor / CODEC_FRAME_RATE
         if self.capture_audio_codes and self._code_chunks:
@@ -443,20 +453,27 @@ async def run_one_request(
 def build_streaming_request(text: str, meta: ModelMeta, stream_params, max_new_tokens: int, tokens_per_chunk: int = 1):
     from easymagpie_vllm_omni.serving_stream import EasyMagpieInputStream
 
+    text_prefill_num = getattr(meta, "text_prefill_num", 0)
     prefill_info = {
         "context_text": CONTEXT_TEXT,
         "temperature": LT_TEMPERATURE,
         "top_k": LT_TOPK,
+        "text_prefill_num": text_prefill_num,
     }
     prefill_info.update(_speaker_info(meta))
     text_ids = list(meta.tokenizer.encode(text, add_special_tokens=False))
     n = max(1, int(tokens_per_chunk))
-    chunks = [text_ids[i : i + n] for i in range(0, len(text_ids), n)]
+    if len(text_ids) < text_prefill_num:
+        raise ValueError(f"streaming benchmark text must contain at least {text_prefill_num} tokens")
+    first_chunk_size = max(n, text_prefill_num)
+    chunks = [text_ids[:first_chunk_size]]
+    chunks.extend(text_ids[i : i + n] for i in range(first_chunk_size, len(text_ids), n))
     stream = EasyMagpieInputStream(
         prefill_prompt={"prompt_token_ids": [0] * meta.prompt_len, "additional_information": prefill_info},
         sampling_params=stream_params,
         text_eos_id=meta.text_eos_id,
         max_new_tokens=max_new_tokens,
+        text_prefill_num=text_prefill_num,
         queue_depth=len(chunks) + 1,
         coalesce_queued_tokens=False,
     )
@@ -549,6 +566,7 @@ def compute_and_print_metrics(
     failed = [r for r in results if not r.success]
 
     ttfts = [r.ttft_s * 1000 for r in ok]
+    ttfas = [r.ttfa_s * 1000 for r in ok if r.ttfa_s > 0.0]
     itls = [t * 1000 for r in ok for t in r.inter_token_latencies]
     total_audio_s = sum(r.audio_s for r in ok)
     eos_hits = sum(1 for r in ok if r.eos_reached)
@@ -563,6 +581,8 @@ def compute_and_print_metrics(
         "req_per_s": len(ok) / duration if duration > 0 else 0.0,
         "ttft_mean_ms": float(np.mean(ttfts)) if ttfts else 0.0,
         "ttft_p95_ms": float(np.percentile(ttfts, 95)) if ttfts else 0.0,
+        "ttfa_mean_ms": float(np.mean(ttfas)) if ttfas else 0.0,
+        "ttfa_p95_ms": float(np.percentile(ttfas, 95)) if ttfas else 0.0,
         "itl_mean_ms": float(np.mean(itls)) if itls else 0.0,
         "itl_p95_ms": float(np.percentile(itls, 95)) if itls else 0.0,
         "rtf": total_audio_s / duration if duration > 0 else 0.0,
@@ -584,6 +604,7 @@ def compute_and_print_metrics(
     print(f"{'Throughput (req/s):':<28}{summary['req_per_s']:.2f}")
     print(f"{'TTFT mean / p95 (ms):':<28}{summary['ttft_mean_ms']:.2f} / {summary['ttft_p95_ms']:.2f}")
     print(f"{'ITL  mean / p95 (ms):':<28}{summary['itl_mean_ms']:.2f} / {summary['itl_p95_ms']:.2f}")
+    print(f"{'TTFA mean / p95 (ms):':<28}{summary['ttfa_mean_ms']:.2f} / {summary['ttfa_p95_ms']:.2f}")
     print(f"{'Produced frames / utterance:':<28}{summary['frames_per_utterance']:.1f}")
     print(f"{'RTF (audio_s / wall):':<28}{summary['rtf']:.2f}x")
     print(f"{'=' * W}\n")
@@ -616,7 +637,8 @@ def save_audio_codes(results: list, output_dir: str, meta: ModelMeta, concurrenc
             continue
 
         raw_codes = raw_codes.detach().to(device="cpu", dtype=torch.long).contiguous()
-        start = min(raw_codes.shape[0], meta.prompt_len + meta.speech_delay)
+        remaining_delay = max(0, meta.speech_delay - getattr(meta, "text_prefill_num", 0))
+        start = min(raw_codes.shape[0], meta.prompt_len + remaining_delay)
         end = raw_codes.shape[0] - (1 if result.eos_reached and raw_codes.shape[0] > start else 0)
         acoustic_codes = raw_codes[start:end].contiguous()
         path = level_dir / f"request_{result.request_index:04d}.pt"
@@ -709,10 +731,11 @@ async def main(args):
         f"known speaker_id={meta.speaker_id!r}" if meta.speaker_id else "raw speaker_embedding tensor per request",
     )
     logger.info(
-        "prompt_len=%d  audio_eos_id=%d  speech_delay=%d  frame_stacking=%d",
+        "prompt_len=%d  audio_eos_id=%d  speech_delay=%d  text_prefill=%d  frame_stacking=%d",
         meta.prompt_len,
         meta.audio_eos_id,
         meta.speech_delay,
+        meta.text_prefill_num,
         meta.frame_stacking_factor,
     )
     if meta.prompt_len + args.max_new_tokens > args.max_model_len:

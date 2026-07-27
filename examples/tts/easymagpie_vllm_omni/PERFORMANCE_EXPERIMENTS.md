@@ -1,10 +1,51 @@
 # EasyMagpie performance experiments
 
-This note records performance experiments that were intentionally not kept in
-the production implementation. Measurements were taken on an RTX A6000 with
-vLLM/vLLM-Omni 0.24 in the `easymagpie-vllm` environment on 2026-07-20 and
-2026-07-21. Treat the absolute numbers as hardware-specific; the controlled
-comparisons are the useful part.
+This note records the current EasyMagpie serving reference plus performance
+experiments that were intentionally not kept in production. Measurements were
+taken on an RTX A6000 with vLLM/vLLM-Omni 0.24 in the `easymagpie-vllm`
+environment on 2026-07-20, 2026-07-21, and 2026-07-27. Treat the absolute
+numbers as hardware-specific; the controlled comparisons are the useful part.
+
+## Latest deployed reference: four-position text prefill
+
+The current reference was measured on 2026-07-27 after folding the first four
+known text-led decode positions into causal prefill. For this checkpoint,
+`phoneme_delay=3` and `speech_delay=5`: positions 0--2 contain only target-text
+input, while position 3 also contains the known phoneme BOS input. Acoustic
+prediction remains disabled during these rows; the phoneme predicted from the
+last prefill row is reinjected into the first decode step.
+
+The benchmark used an RTX A6000, vLLM/vLLM-Omni 0.24.0, 128 requests per row,
+the deployed FP32 native codec, startup cadence 6/6 frames, steady cadence 8
+frames, and five text tokens per WebSocket update. It ran from the pending
+prefill working tree based on `3e016e5ed`. The model `config.json` SHA-256 was
+`a04011f6e2869630009360c800dceb310773f7e68a37b5c769aaa0f293280fd7`;
+the deployment YAML SHA-256 was
+`67daa189a35acdf074f0f3f97ee24086706481f475993f177095593af761b9ca`.
+
+| Input / concurrency | Request rate | Audio RTF | TTFA mean / p95 | Latency mean / p95 | Audio ITL mean / p95 | Playback |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Whole-text HTTP, c=1 | 1.30 req/s | 8.07x | 103.7 / 106.7 ms | 0.77 / 1.22 s | 68.8 / 76.7 ms | 0/1,364 underruns |
+| Incremental WebSocket, c=1 | 1.34 req/s | 7.51x | 110.2 / 115.5 ms | 0.75 / 1.25 s | 72.8 / 79.3 ms | 0/1,188 underruns |
+| Whole-text HTTP, c=32 | 8.11 req/s | 47.52x | 504.9 / 616.5 ms | 3.62 / 5.71 s | 343.2 / 463.8 ms | 0/1,291 underruns; 2 deadlines |
+| Incremental WebSocket, c=32 | 7.66 req/s | 42.83x | 594.7 / 761.7 ms | 3.76 / 6.66 s | 361.6 / 461.7 ms | 0/1,182 underruns |
+
+All 512 measured requests succeeded. Relative to the earlier eager c=1 rows
+below, mean TTFA improved by 24.1 ms (18.9%) for HTTP and 23.8 ms (17.8%) for
+WebSocket. The dtype-matched whole-text c=32 comparison is the mean of the two
+explicit FP32 side runs below: request rate improved from 7.50 to 8.11 req/s
+(8.1%), RTF from 45.11x to 47.52x (5.3%), and TTFA from 608.6 to 504.9 ms
+(103.7 ms, or 17.0%). The older eager whole-text c=32 result of 52.79x aligns
+with the explicit FP16 side result of 52.71x, so it is not the appropriate
+throughput control for the deployed FP32 codec.
+
+A separate 128-request HTTP c=32 run saved 128 valid mono 22.05 kHz waveforms.
+It measured 8.16 req/s, 48.97x RTF, 492.3 ms mean TTFA, and zero playback
+underruns. Whisper-turbo scoring produced 1.61% WER (17 substitutions, 6
+deletions, and 8 insertions over 1,930 reference words), with no utterance at
+or above 20% error. The earlier 1.49% WER used a different 128-item cohort:
+the benchmark selects samples with unseeded `random.sample`, so the 0.12
+percentage-point difference is not a paired quality regression.
 
 ## Native vLLM codec migration
 

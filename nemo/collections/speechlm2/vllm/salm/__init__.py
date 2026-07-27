@@ -49,20 +49,22 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     import vllm.config.speculative as _spec_mod
     from vllm.config.speculative import SpeculativeConfig
 
-    # 1 ── Extend MTPModelTypes -------------------------------------------
+    # Extend vLLM's recognized MTP model types.
     old_args = get_args(_spec_mod.MTPModelTypes)
     if "nemo_speechlm_mtp" not in old_args:
         _spec_mod.MTPModelTypes = Literal[old_args + ("nemo_speechlm_mtp",)]
 
-    # 2 ── Wrap hf_config_override ----------------------------------------
+    # Route SpeechLM MTP checkpoints through SpeculativeConfig.hf_config_override.
     current_override = SpeculativeConfig.hf_config_override
     if not getattr(current_override, "_nemo_speechlm_mtp_override", False):
         original_override = current_override
 
         def _patched_override(hf_config):
             if hf_config.model_type == "nemo_speechlm":
-                mtp_cfg = getattr(hf_config, "mtp", {}) or {}
-                n_predict = mtp_cfg.get("num_nextn_predict_layers", 0) if isinstance(mtp_cfg, dict) else 0
+                mtp_cfg = getattr(hf_config, "mtp", None)
+                if not isinstance(mtp_cfg, dict):
+                    mtp_cfg = {}
+                n_predict = mtp_cfg.get("num_nextn_predict_layers", 0)
                 if n_predict > 0:
                     use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
                     if n_predict > 1 and not use_repeated_layer:
@@ -97,7 +99,7 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
         _patched_override._nemo_speechlm_mtp_override = True
         SpeculativeConfig.hf_config_override = staticmethod(_patched_override)
 
-    # 3 ── Register NeMoSpeechLMMTPModel ----------------------------------
+    # Register the SpeechLM MTP draft architecture with vLLM.
     from vllm.model_executor.models.registry import ModelRegistry
 
     ModelRegistry.register_model(

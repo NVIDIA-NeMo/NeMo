@@ -180,33 +180,6 @@ class NeMoSpeechLMForConditionalGeneration(
             return []
         return self._process_audio(audio_input)
 
-    def embed_input_ids(
-        self,
-        input_ids: torch.Tensor,
-        multimodal_embeddings: MultiModalEmbeddings | None = None,
-        *,
-        is_multimodal: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Embed token IDs and fuse audio embeddings at placeholder positions.
-
-        Required so that vLLM's MTP speculator probe
-        (``draft_model.embed_input_ids(ids, multimodal_embeddings=None)``)
-        succeeds and ``speculator.supports_mm_inputs`` stays True.
-        Without this method the probe raises AttributeError and the
-        speculator silently falls back to text-only draft mode.
-        """
-        inputs_embeds = self.language_model.embed_input_ids(input_ids)
-
-        if multimodal_embeddings is None or is_multimodal is None or not is_multimodal.any():
-            return inputs_embeds
-
-        # Concatenate per-audio embedding tensors and overwrite the audio
-        # placeholder token positions with the actual audio embeddings.
-        audio_embeds = torch.cat(list(multimodal_embeddings), dim=0)
-        inputs_embeds = inputs_embeds.clone()
-        inputs_embeds[is_multimodal] = audio_embeds.to(inputs_embeds.dtype)
-        return inputs_embeds
-
     # ── forward / logits ──
 
     def forward(

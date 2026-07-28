@@ -864,7 +864,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
-
         """Load model parameters while skipping excluded child modules.
 
         Args:

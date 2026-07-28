@@ -36,7 +36,6 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import CASELESS_SCRIPT_TOKENIZER_TARGETS
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters

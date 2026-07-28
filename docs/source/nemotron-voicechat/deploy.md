@@ -156,6 +156,7 @@ Tools follow the OpenAI Realtime API function tool specification:
   {
     "name": "get_weather",
     "description": "Get current weather for a city",
+    "ack_messages": ["Sure, let me check the weather for you."],
     "parameters": {
       "type": "object",
       "properties": {
@@ -170,7 +171,12 @@ Tools follow the OpenAI Realtime API function tool specification:
 ]
 ```
 
-Each tool object must have `"type": "function"` and a non-empty `"name"`. The `"description"` and `"parameters"` fields are optional but recommended for model accuracy.
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `name` | Yes | Non-empty string identifying the tool. |
+| `description` | No | Human-readable description; recommended for model accuracy. |
+| `ack_messages` | No | Array of one or more non-empty strings. The model speaks one of these while waiting for the tool result, keeping the conversation flowing naturally. Example: `["Sure, let me check that.", "One moment please."]` |
+| `parameters` | No | JSON Schema object describing the tool's arguments (`type` must be `"object"`). |
 
 ### Built-in Demo Tools
 

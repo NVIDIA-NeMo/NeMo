@@ -7,65 +7,20 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 ## Prerequisites
 
 - Completed [prerequisites](prerequisites.md).
-
-## Generate Model Repository from a NeMo Checkpoint
-
-If you have a local NeMo checkpoint, you can generate the Triton model repository yourself using the `deploy_s2s_model.sh` script bundled in the inference container at `/s2s/deploy_s2s_model.sh`. This skips the NGC model download entirely.
-
-The checkpoint directory must contain `model.safetensors`.
-
-```bash
-export CHECKPOINT_DIR=/path/to/nemo-checkpoint
-export OUTPUT_DIR=/path/to/output/model-repo
-
-docker run -it --rm \
-  --runtime=nvidia \
-  --gpus '"device=0"' \
-  --shm-size=8GB \
-  -v $CHECKPOINT_DIR:/checkpoint \
-  -v $OUTPUT_DIR:/data/models \
-  -e NEMO_CHECKPOINT_PATH=/checkpoint \
-  --entrypoint /s2s/deploy_s2s_model.sh \
-  nvcr.io/nim/nvidia/nemotron-voicechat:latest
-```
-
-- `-v $CHECKPOINT_DIR:/checkpoint` — mounts the NeMo checkpoint into the container.
-- `-e NEMO_CHECKPOINT_PATH=/checkpoint` — tells the script to use the local checkpoint; NGC download is skipped.
-- `-v $OUTPUT_DIR:/data/models` — captures the generated Triton model repository on the host (the script writes to `/data/models` inside the container by default).
-
-Once complete, `$OUTPUT_DIR` contains the Triton model repository. Mount it as `/data/models` when launching the inference container instead of relying on the downloaded model cache. See [Model Caching](#model-caching) for the full launch command with a volume mount.
+- To use a custom NeMo checkpoint instead of the downloaded model, first [generate a Triton model repository](generate-model-repo.md).
 
 ## Deploy the Container
 
-```bash
-export CONTAINER_ID=nemotron-voicechat
-export NIM_TAGS_SELECTOR="name=nemotron-voicechat"
-
-docker run -it --rm --name=$CONTAINER_ID \
-  --runtime=nvidia \
-  --gpus '"device=0"' \
-  --shm-size=8GB \
-  -e NIM_HTTP_API_PORT=9000 \
-  -p 9000:9000 \
-  -e NIM_TAGS_SELECTOR \
-  nvcr.io/nim/nvidia/$CONTAINER_ID:latest
-```
-
-On first startup, the container downloads the model, which can take up to 30 minutes depending on network speed.
-
-### Model Caching
-
-Mount a local cache directory to avoid repeated downloads on subsequent runs.
+Create a local cache directory and launch the container. The cache avoids repeated model downloads on subsequent runs.
 
 ```bash
 export LOCAL_NIM_CACHE=~/.cache/nim
 mkdir -p $LOCAL_NIM_CACHE
 chmod 777 $LOCAL_NIM_CACHE
 
-export CONTAINER_ID=nemotron-voicechat
 export NIM_TAGS_SELECTOR="name=nemotron-voicechat"
 
-docker run -it --rm --name=$CONTAINER_ID \
+docker run -it --rm --name=nemotron-voicechat \
   --runtime=nvidia \
   --gpus '"device=0"' \
   --shm-size=8GB \
@@ -73,10 +28,10 @@ docker run -it --rm --name=$CONTAINER_ID \
   -e NIM_HTTP_API_PORT=9000 \
   -p 9000:9000 \
   -v $LOCAL_NIM_CACHE:/opt/nim/.cache \
-  nvcr.io/nim/nvidia/$CONTAINER_ID:latest
+  nvcr.io/nvidia/nemotron-voicechat:latest
 ```
 
-On later runs, the container loads the model from the cache instead of downloading it again.
+On first startup, the container downloads the model, which can take up to 30 minutes depending on network speed. Subsequent runs load the model from the cache.
 
 ### Verify Readiness
 
@@ -101,7 +56,7 @@ The Nemotron Voicechat container uses a bidirectional WebSocket connection for r
 Copy the client script from the running container before running inference.
 
 ```bash
-docker cp $CONTAINER_ID:/s2s/nemotron-voicechat-client.py .
+docker cp nemotron-voicechat:/s2s/nemotron-voicechat-client.py .
 ```
 
 ### Install Dependencies
@@ -133,8 +88,6 @@ If you are not using a microphone or audio playback (for example, using `--input
 The client streams audio to the server at `ws://<host>:<port>/v1/realtime` and plays back or saves the returned speech. Audio playback is enabled by default.
 
 Stream from a microphone and play on speakers:
-
-This command uses default capture and playback device available in the system.
 
 ```bash
 python3 nemotron-voicechat-client.py --server ws://localhost:9000
@@ -294,8 +247,6 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 
 ## Client Parameters Reference
 
-### nemotron-voicechat-client.py (WebSocket)
-
 | Parameter | Description | Default |
 | --------- | ----------- | ------- |
 | `--server` | Server address as `host:port` or full URI `ws://host[:port]`. | required |
@@ -315,8 +266,8 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 
 ## Next Steps
 
-- [S2S API Reference](api-reference.md): WebSocket and HTTP API reference.
-- [Prerequisites](prerequisites.md): GPU requirements and available model profiles.
+- [API Reference](api-reference.md): WebSocket and HTTP API reference.
+- [Generate Model Repository](generate-model-repo.md): Build a Triton model repository from a local NeMo checkpoint.
 
 ## Troubleshooting
 
@@ -324,7 +275,7 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 
 **Cause:** First-run model download.
 
-**Solution:** Mount a local cache directory to avoid repeated downloads. See [Model Caching](#model-caching).
+**Solution:** The cache directory mounted at `/opt/nim/.cache` persists the model across restarts. Ensure the volume mount is present in your `docker run` command.
 
 ### GPU Out of Memory (OOM)
 

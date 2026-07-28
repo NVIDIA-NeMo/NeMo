@@ -118,6 +118,7 @@ The [Nemotron Voicechat container](docs/source/nemotron-voicechat/deploy.md) pac
 
 - [Prerequisites](docs/source/nemotron-voicechat/prerequisites.md) — hardware, software, and driver requirements
 - [Deploy and Run](docs/source/nemotron-voicechat/deploy.md) — launch the container and run voice conversations
+- [Generate Model Repository](docs/source/nemotron-voicechat/generate-model-repo.md) — build a Triton model repository from a local NeMo checkpoint
 - [API Reference](docs/source/nemotron-voicechat/api-reference.md) — WebSocket and HTTP API reference
 
 

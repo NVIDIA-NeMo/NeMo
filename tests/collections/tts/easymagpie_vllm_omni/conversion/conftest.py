@@ -17,7 +17,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-EASYMAGPIE_ROOT = Path(__file__).resolve().parents[5] / "examples" / "tts" / "easymagpie_vllm_omni"
+EASYMAGPIE_ROOT = Path(__file__).resolve().parents[5] / "tools" / "easymagpie_vllm_omni"
 SCRIPTS_DIR = EASYMAGPIE_ROOT / "scripts"
 
 # Conversion uses Speech and pure PyTorch helpers, never the vLLM runtime.

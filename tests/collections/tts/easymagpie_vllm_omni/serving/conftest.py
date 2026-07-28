@@ -28,7 +28,7 @@ _HAS_SERVING_DEPENDENCIES = all(importlib.util.find_spec(name) is not None for n
 # The dedicated serving job provides both dependencies and collects this suite.
 collect_ignore_glob = [] if _HAS_SERVING_DEPENDENCIES else ["test_*.py"]
 
-EASYMAGPIE_ROOT = Path(__file__).resolve().parents[5] / "examples" / "tts" / "easymagpie_vllm_omni"
+EASYMAGPIE_ROOT = Path(__file__).resolve().parents[5] / "tools" / "easymagpie_vllm_omni"
 SCRIPTS_DIR = EASYMAGPIE_ROOT / "scripts"
 
 # Load the standalone serving package from this checkout without installing Speech.

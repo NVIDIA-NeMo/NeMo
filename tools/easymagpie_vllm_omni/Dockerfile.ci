@@ -14,7 +14,7 @@
 
 FROM vllm/vllm-openai:v0.24.0
 
-COPY examples/tts/easymagpie_vllm_omni/requirements.txt /tmp/easymagpie-requirements.txt
+COPY tools/easymagpie_vllm_omni/requirements.txt /tmp/easymagpie-requirements.txt
 
 RUN python3 -m pip install --no-cache-dir \
     -r /tmp/easymagpie-requirements.txt \

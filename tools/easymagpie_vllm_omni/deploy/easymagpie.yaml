@@ -17,7 +17,7 @@ connectors:
       connector_get_max_wait_first_chunk: 3000
       connector_get_max_wait: 300
       # Native vLLM state pages retain the decoder's exact causal history.
-      # Two 6-frame startup chunks prevent FP32 playback underruns on the RTX A6000.
+      # Two startup chunks provide playback headroom before steady-state streaming.
       codec_chunk_frames: 8
       codec_startup_chunk_frames: [6, 6]
 

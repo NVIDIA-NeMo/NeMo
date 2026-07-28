@@ -62,7 +62,7 @@ jobs:
           base_sha: ${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').base.sha || github.event.pull_request.base.sha }}
           files: |
             .github/workflows/cicd-main-speech.yml
-            examples/tts/easymagpie_vllm_omni/**
+            tools/easymagpie_vllm_omni/**
             tests/collections/tts/easymagpie_vllm_omni/serving/**
             tests/functional_tests/L0_Unit_Tests_GPU_TTS_EasyMagpie_vLLM.sh
       - name: Decide whether to run serving tests
@@ -90,7 +90,7 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     with:
       image-name: nemo_container_easymagpie_vllm
-      dockerfile: examples/tts/easymagpie_vllm_omni/Dockerfile.ci
+      dockerfile: tools/easymagpie_vllm_omni/Dockerfile.ci
       runner: ${{ inputs.runner }}
 
   unit-tests:

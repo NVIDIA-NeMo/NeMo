@@ -16,12 +16,12 @@
 
 set -euo pipefail
 
-python3 -m pip install --no-build-isolation --no-deps -e examples/tts/easymagpie_vllm_omni
+python3 -m pip install --no-build-isolation --no-deps -e tools/easymagpie_vllm_omni
 
 CUDA_VISIBLE_DEVICES=0 coverage run \
     -a \
     --data-file=/workspace/.coverage \
-    --source=/workspace/examples/tts/easymagpie_vllm_omni \
+    --source=/workspace/tools/easymagpie_vllm_omni \
     -m pytest \
     --confcutdir=tests/collections/tts/easymagpie_vllm_omni/serving \
     tests/collections/tts/easymagpie_vllm_omni/serving

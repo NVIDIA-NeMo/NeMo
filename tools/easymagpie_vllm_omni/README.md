@@ -23,11 +23,11 @@ vLLM models, precomputes the text-embedding lookup, and saves the tokenizer and
 optional speaker embedding. Run it in the **NeMo environment** from the repository root:
 
 ```bash
-python examples/tts/easymagpie_vllm_omni/scripts/convert_to_vllm.py \
+python tools/easymagpie_vllm_omni/scripts/convert_to_vllm.py \
   --nemo_file /path/to/emptts.nemo \
   --codec_model_path /path/to/25fps_spectral_codec.nemo \
   --phoneme_tokenizer_path /path/to/bpe_ipa_tokenizer.json \
-  --outdir examples/tts/easymagpie_vllm_omni/converted_model \
+  --outdir tools/easymagpie_vllm_omni/converted_model \
   --context_audio /path/to/reference_voice.wav \
   --speaker_name eng
 ```
@@ -38,7 +38,7 @@ Serving needs a GPU, matching **vLLM 0.24 / vLLM-Omni 0.24** versions, and this 
 It does not need NeMo after conversion:
 
 ```bash
-cd examples/tts/easymagpie_vllm_omni
+cd tools/easymagpie_vllm_omni
 conda create -n easymagpie-vllm python=3.12 -y
 conda activate easymagpie-vllm
 pip install -r requirements.txt
@@ -106,18 +106,3 @@ python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32
 python scripts/benchmark_incremental_server.py --model ./converted_model \
     --text-file vctk_subset.txt --tokens-per-chunk 5 -n 128 -c 1 32
 ```
-
-#### RTX A6000 reference (2026-07-21)
-
-Results for 128 requests using VCTK texts. Service rows use the default FP32 codec with 6/6/8-frame cadence:
-
-| Concurrency | Benchmark | Input | Requests/s | RTF | Mean latency | Underruns |
-| ---: | --- | --- | ---: | ---: | ---: | ---: |
-| 1 | Model | Whole text | 1.32 | 7.85x | 28.7 ms TTFT | — |
-| 1 | Model | 5 tokens/chunk | 1.28 | 7.64x | 29.3 ms TTFT | — |
-| 1 | HTTP service | Whole text | 1.27 | 7.73x | 130.8 ms TTFA | 0 / 1,335 |
-| 1 | WebSocket service | 5 tokens/chunk | 1.25 | 7.24x | 137.2 ms TTFA | 0 / 1,226 |
-| 32 | Model | Whole text | 11.20 | 67.75x | 107.3 ms TTFT | — |
-| 32 | Model | 5 tokens/chunk | 10.44 | 63.01x | 105.1 ms TTFT | — |
-| 32 | HTTP service | Whole text | 7.47 | 48.43x | 606.0 ms TTFA | 0 / 1,426 |
-| 32 | WebSocket service | 5 tokens/chunk | 7.45 | 44.12x | 690.9 ms TTFA | 0 / 1,249 |

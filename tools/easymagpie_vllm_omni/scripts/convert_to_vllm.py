@@ -43,7 +43,7 @@ backbone is always fed via ``inputs_embeds``).
 
 Example::
 
-    python examples/tts/easymagpie_vllm_omni/scripts/convert_to_vllm.py \\
+    python tools/easymagpie_vllm_omni/scripts/convert_to_vllm.py \\
         --nemo_file /path/to/EMTTS_SmallMamba.nemo \\
         --codec_model_path /path/to/25fps_spectral_codec.nemo \\
         --outdir ./easymagpie_vllm_model \\

@@ -50,7 +50,7 @@ The Nemotron Voicechat container uses a bidirectional WebSocket connection for r
 
 ### Copy the Client Script
 
-Copy the client script from the running container before running inference.
+Copy the client script from the running container:
 
 ```bash
 docker cp nemotron-voicechat:/s2s/nemotron-voicechat-client.py .
@@ -59,10 +59,10 @@ docker cp nemotron-voicechat:/s2s/nemotron-voicechat-client.py .
 ### Install Dependencies
 
 ```bash
-pip install websockets soundfile numpy sphn==0.1.12
+pip install websockets soundfile numpy
 ```
 
-`pyaudio` is required for microphone input and audio playback. Install it with the system dependency for your OS:
+`pyaudio` is required for microphone input and audio playback. Skip it if using `--input-file` with `--no-playback`.
 
 #### Ubuntu/Debian
 
@@ -77,8 +77,6 @@ pip install pyaudio
 brew install portaudio
 pip install pyaudio
 ```
-
-If you are not using a microphone or audio playback (for example, using `--input-file` with `--no-playback`), you can skip `pyaudio`.
 
 ### Real-Time Conversation (WebSocket)
 

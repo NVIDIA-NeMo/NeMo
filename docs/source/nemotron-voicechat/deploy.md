@@ -18,13 +18,10 @@ export LOCAL_NIM_CACHE=~/.cache/nim
 mkdir -p $LOCAL_NIM_CACHE
 chmod 777 $LOCAL_NIM_CACHE
 
-export NIM_TAGS_SELECTOR="name=nemotron-voicechat"
-
 docker run -it --rm --name=nemotron-voicechat \
   --runtime=nvidia \
   --gpus '"device=0"' \
   --shm-size=8GB \
-  -e NIM_TAGS_SELECTOR \
   -e NIM_HTTP_API_PORT=9000 \
   -p 9000:9000 \
   -v $LOCAL_NIM_CACHE:/opt/nim/.cache \

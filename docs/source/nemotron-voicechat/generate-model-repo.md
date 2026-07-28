@@ -1,11 +1,18 @@
-# Generate Model Repository from a NeMo Checkpoint
+# Generate Model Repository
 
-If you have a local NeMo checkpoint, you can generate the Triton model repository yourself using the `deploy_s2s_model.sh` script bundled in the inference container at `/s2s/deploy_s2s_model.sh`. This skips the NGC model download entirely.
+Instead of relying on the container's built-in model download, you can generate a Triton model repository from a checkpoint and mount it directly. This is useful for:
 
-The checkpoint directory must contain `model.safetensors`.
+- **HuggingFace checkpoint** — use the publicly released [Nemotron Voicechat model on HuggingFace](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B).
+- **Custom checkpoint** — use a checkpoint from your own training run (e.g., fine-tuned or experimental weights).
+
+In both cases the checkpoint directory must contain `model.safetensors`.
+
+## Generate the Triton Model Repository
+
+Use the `deploy_s2s_model.sh` script bundled in the inference container at `/s2s/deploy_s2s_model.sh`:
 
 ```bash
-export CHECKPOINT_DIR=/path/to/nemo-checkpoint
+export CHECKPOINT_DIR=/path/to/checkpoint   # HuggingFace or custom checkpoint
 export OUTPUT_DIR=/path/to/output/model-repo
 
 docker run -it --rm \
@@ -19,11 +26,13 @@ docker run -it --rm \
   nvcr.io/nvidia/nemotron-voicechat:latest
 ```
 
-- `-v $CHECKPOINT_DIR:/checkpoint` — mounts the NeMo checkpoint into the container.
-- `-e NEMO_CHECKPOINT_PATH=/checkpoint` — tells the script to use the local checkpoint; NGC download is skipped.
-- `-v $OUTPUT_DIR:/data/models` — captures the generated Triton model repository on the host (the script writes to `/data/models` inside the container by default).
+- `-v $CHECKPOINT_DIR:/checkpoint` — mounts the checkpoint into the container.
+- `-e NEMO_CHECKPOINT_PATH=/checkpoint` — tells the script to use the local checkpoint; NGC model download is skipped.
+- `-v $OUTPUT_DIR:/data/models` — captures the generated Triton model repository on the host.
 
-Once complete, `$OUTPUT_DIR` contains the Triton model repository. Launch the inference container with the generated repo mounted at `/data/models` and the server entrypoint overridden:
+## Launch the Inference Container
+
+Once complete, `$OUTPUT_DIR` contains the Triton model repository. Launch the inference container with it mounted at `/data/models` and the server entrypoint overridden:
 
 ```bash
 docker run -it --rm --name=nemotron-voicechat \

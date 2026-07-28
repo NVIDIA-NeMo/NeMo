@@ -101,6 +101,8 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
 
 > **Note:** The Nemotron Voicechat container supports real-time streaming mode only. Offline (batch) synthesis is not supported.
 
+> **Note:** For best results, run the client in a quiet environment. The model is sensitive to background noise and may produce degraded output in noisy or reverberant conditions.
+
 
 ## Function Calling
 

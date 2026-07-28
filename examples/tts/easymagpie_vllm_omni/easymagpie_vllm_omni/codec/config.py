@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from math import prod
+
 from transformers import PretrainedConfig
 
 
@@ -70,16 +72,67 @@ class EasyMagpieCodecConfig(PretrainedConfig):
         # Minimal language-model-shaped fields used by generic vLLM input allocation.
         self.vocab_size = max(self.codebook_size + 1, 2)
         self.hidden_size = 1
+        self.validate()
 
+    def validate(self) -> None:
+        """Reject codec architectures the native decoder does not implement."""
+        positive_fields = (
+            "input_dim",
+            "input_filters",
+            "hidden_filters",
+            "kernel_size",
+            "resblock_kernel_size",
+            "num_codebooks",
+            "codebook_size",
+            "frame_stacking_factor",
+            "output_sample_rate",
+        )
+        for name in positive_fields:
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
+        if self.num_hidden_layers < 0:
+            raise ValueError(f"num_hidden_layers cannot be negative, got {self.num_hidden_layers}")
         if len(self.pre_upsample_rates) != len(self.pre_upsample_filters):
             raise ValueError("pre_upsample_rates and pre_upsample_filters must have the same length")
         if len(self.resblock_upsample_rates) != len(self.resblock_upsample_filters):
             raise ValueError("resblock_upsample_rates and resblock_upsample_filters must have the same length")
+        for name in (
+            "pre_upsample_rates",
+            "pre_upsample_filters",
+            "resblock_upsample_rates",
+            "resblock_upsample_filters",
+            "num_levels_per_group",
+        ):
+            if any(value <= 0 for value in getattr(self, name)):
+                raise ValueError(f"all {name} values must be positive")
         if self.input_dim != self.num_codebooks * len(self.num_levels_per_group):
             raise ValueError(
                 "input_dim must equal num_codebooks * len(num_levels_per_group), got "
                 f"{self.input_dim} and {self.num_codebooks} * {len(self.num_levels_per_group)}"
             )
+        if any(level <= 1 for level in self.num_levels_per_group):
+            raise ValueError("all num_levels_per_group values must be greater than 1")
+        if prod(self.num_levels_per_group) != self.codebook_size:
+            raise ValueError(
+                "codebook_size must equal the product of num_levels_per_group, got "
+                f"{self.codebook_size} and {prod(self.num_levels_per_group)}"
+            )
+        if self.activation != "half_snake":
+            raise ValueError(
+                "activation must be 'half_snake' because the native codec currently hard-codes HalfSnake; "
+                f"implement the matching activation in codec.py and packed.py to support '{self.activation}'."
+            )
+
+        channels = self.input_filters
+        for name, filters in [("pre_upsample_filters", value) for value in self.pre_upsample_filters] + [
+            ("resblock_upsample_filters", value) for value in self.resblock_upsample_filters
+        ]:
+            if channels % filters != 0:
+                raise ValueError(
+                    f"decoder input channels {channels} must be divisible by {name} stage filters {filters} "
+                    "because the native causal ConvTranspose1d uses groups=out_channels"
+                )
+            channels = filters
 
     @property
     def num_stacked_codebooks(self) -> int:

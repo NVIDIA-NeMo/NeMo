@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
 import torch
 
 from easymagpie_vllm_omni.codec.codec import EasyMagpieCodec, FiniteScalarDequantizer
@@ -89,3 +90,32 @@ def test_streaming_matches_full_decode() -> None:
 
     assert actual.shape == (1, 7 * config.samples_per_frame)
     torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"activation": "snake"}, "half_snake"),
+        ({"codebook_size": 8}, "product of num_levels_per_group"),
+        ({"pre_upsample_filters": [3]}, "divisible"),
+    ],
+)
+def test_codec_config_rejects_unsupported_topologies(kwargs, message) -> None:
+    config_kwargs = {
+        "input_dim": 4,
+        "input_filters": 8,
+        "hidden_filters": 16,
+        "num_hidden_layers": 2,
+        "pre_upsample_rates": [2],
+        "pre_upsample_filters": [8],
+        "resblock_upsample_rates": [2],
+        "resblock_upsample_filters": [4],
+        "num_codebooks": 2,
+        "codebook_size": 4,
+        "num_levels_per_group": [2, 2],
+        "frame_stacking_factor": 2,
+    }
+    config_kwargs.update(kwargs)
+
+    with pytest.raises(ValueError, match=message):
+        EasyMagpieCodecConfig(**config_kwargs)

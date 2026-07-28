@@ -17,6 +17,7 @@ import sys
 import types
 
 import convert_to_vllm as converter  # noqa: E402
+import pytest
 import torch
 from omegaconf import OmegaConf
 
@@ -64,6 +65,7 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
                 "hidden_dim": 4,
                 "embedding_dim": 4,
                 "nemotron_h_config": {"hidden_size": 4},
+                "local_transformer_type": "ar",
                 "use_multiturn_dataset": True,
             }
         ),
@@ -87,3 +89,48 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
     assert config["text_eos_id"] == 101
     assert config["text_interruption_id"] == 103
     assert config["use_multiturn_dataset"] is True
+
+
+def _validation_model():
+    mode = types.SimpleNamespace(
+        text_input_mode="streaming",
+        streaming_phonemes_delay=3,
+        streaming_speech_delay=5,
+    )
+    return types.SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "decoder_type": "nemotron_h",
+                "hidden_dim": 4,
+                "embedding_dim": 4,
+                "nemotron_h_config": {"hidden_size": 4},
+                "local_transformer_type": "ar",
+            }
+        ),
+        mode_name_to_mode={"default": mode},
+        default_inference_mode="default",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("decoder_type", "huggingface", "Nemotron-H"),
+        ("local_transformer_type", "none", "local_transformer_type='ar'"),
+        ("hidden_dim", 8, "hidden_dim.*embedding_dim"),
+    ],
+)
+def test_validate_model_config_rejects_unsupported_model(field, value, message):
+    model = _validation_model()
+    model.cfg[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        converter.validate_model_config(model)
+
+
+def test_validate_model_config_rejects_non_streaming_default_mode():
+    model = _validation_model()
+    model.mode_name_to_mode["default"].text_input_mode = "full"
+
+    with pytest.raises(ValueError, match="text_input_mode='streaming'"):
+        converter.validate_model_config(model)

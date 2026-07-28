@@ -62,15 +62,31 @@ def _read_nemo(codec_path: Path) -> tuple[dict, dict[str, torch.Tensor]]:
     return config, state
 
 
+def validate_decoder_config(decoder_config: dict) -> None:
+    """Validate NeMo decoder features implemented by the native vLLM codec."""
+    expected_target = "nemo.collections.tts.modules.audio_codec_modules.ResNetDecoder"
+    if decoder_config.get("_target_") != expected_target:
+        raise ValueError(
+            f"expected {expected_target}, got {decoder_config.get('_target_')}; "
+            "add a matching native decoder before converting this codec"
+        )
+    if decoder_config.get("is_causal") is not True:
+        raise ValueError(
+            "only the causal spectral codec decoder is supported; set is_causal=true or add state handling"
+        )
+    activation = str(decoder_config.get("activation", "half_snake"))
+    if activation != "half_snake":
+        raise ValueError(
+            "the native codec currently requires activation='half_snake'; implement the matching activation in "
+            f"codec.py and packed.py to support '{activation}'"
+        )
+
+
 def main() -> None:
     args = parse_args()
     nemo_config, state = _read_nemo(args.codec)
     decoder_config = nemo_config["audio_decoder"]
-    expected_target = "nemo.collections.tts.modules.audio_codec_modules.ResNetDecoder"
-    if decoder_config.get("_target_") != expected_target:
-        raise ValueError(f"expected {expected_target}, got {decoder_config.get('_target_')}")
-    if not decoder_config.get("is_causal"):
-        raise ValueError("only the causal spectral codec decoder is supported")
+    validate_decoder_config(decoder_config)
 
     levels = list(args.num_levels_per_group)
     codebook_size = 1

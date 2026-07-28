@@ -281,16 +281,53 @@ def extract_speaker_embedding(model, context_audio_path: str, context_audio_dura
     return context_audio_embedded[0, :audio_len].contiguous().float().detach().cpu()
 
 
+def validate_model_config(model) -> None:
+    """Validate checkpoint features implemented by the vLLM serving model."""
+    cfg = model.cfg
+    decoder_type = str(cfg.get("decoder_type", "huggingface"))
+    if decoder_type != "nemotron_h":
+        raise ValueError(
+            "The easymagpie_vllm_omni model only supports a Nemotron-H backbone "
+            f"(decoder_type='nemotron_h'); got '{decoder_type}'. Add a vLLM backbone adapter to support it."
+        )
+
+    hidden_dim = int(cfg.hidden_dim)
+    embedding_dim = int(cfg.embedding_dim)
+    if hidden_dim != embedding_dim:
+        raise ValueError(
+            "hidden_dim must equal embedding_dim because the current vLLM model has no projection between them; "
+            f"got hidden_dim={hidden_dim}, embedding_dim={embedding_dim}. Add the projection to support this checkpoint."
+        )
+    backbone_hidden_dim = int(cfg.get("nemotron_h_config", {}).get("hidden_size", embedding_dim))
+    if backbone_hidden_dim != embedding_dim:
+        raise ValueError(
+            "nemotron_h_config.hidden_size must equal embedding_dim because the backbone consumes inputs_embeds "
+            f"directly; got {backbone_hidden_dim} and {embedding_dim}. Add an input projection to support this layout."
+        )
+
+    local_transformer_type = str(cfg.get("local_transformer_type", "none"))
+    if local_transformer_type != "ar":
+        raise ValueError(
+            "The serving code currently requires local_transformer_type='ar'; extend EasyMagpieCodePredictor "
+            f"to support '{local_transformer_type}'."
+        )
+
+    default_mode = model.mode_name_to_mode.get(model.default_inference_mode)
+    if default_mode is None:
+        raise ValueError(f"default inference mode '{model.default_inference_mode}' is missing from mode_name_to_mode")
+    if default_mode.text_input_mode != "streaming":
+        raise ValueError(
+            "The serving code currently requires text_input_mode='streaming' for the default inference mode; "
+            f"got '{default_mode.text_input_mode}'. Implement full-text conditioning to support this checkpoint."
+        )
+
+
 def build_config(model, vocab_size: int, torch_dtype: str) -> dict:
     """Build the flat vLLM ``config.json`` dict from the loaded NeMo model."""
     from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig
 
+    validate_model_config(model)
     cfg = model.cfg
-    if cfg.get("decoder_type", "huggingface") != "nemotron_h":
-        raise ValueError(
-            "The easymagpie_vllm_omni model only supports a Nemotron-H backbone "
-            f"(decoder_type='nemotron_h'); got '{cfg.get('decoder_type')}'."
-        )
 
     hidden_dim = int(cfg.hidden_dim)
     embedding_dim = int(cfg.embedding_dim)
@@ -343,19 +380,8 @@ def build_config(model, vocab_size: int, torch_dtype: str) -> dict:
     # delays; the vLLM model reproduces them in its decode step. A 0/0 (or "full")
     # mode runs the three streams in lock-step.
     default_mode = model.mode_name_to_mode.get(model.default_inference_mode)
-    if default_mode is not None:
-        if default_mode.text_input_mode != "streaming":
-            logging.warning(
-                "Converting a checkpoint whose default inference mode is "
-                f"'{default_mode.text_input_mode}' (not 'streaming'); the vLLM model only "
-                "implements the streaming-mode delay semantics (audio starts after "
-                "`streaming_speech_delay` text tokens)."
-            )
-        config["streaming_phonemes_delay"] = int(default_mode.streaming_phonemes_delay)
-        config["streaming_speech_delay"] = int(default_mode.streaming_speech_delay)
-    else:
-        config["streaming_phonemes_delay"] = 0
-        config["streaming_speech_delay"] = 0
+    config["streaming_phonemes_delay"] = int(default_mode.streaming_phonemes_delay)
+    config["streaming_speech_delay"] = int(default_mode.streaming_speech_delay)
 
     config["num_task_embeddings"] = len(model.training_modes) if model.task_embedding is not None else 0
 

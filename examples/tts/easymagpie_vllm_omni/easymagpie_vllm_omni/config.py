@@ -79,6 +79,96 @@ class EasyMagpieOmniArch:
 
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def validate(self, *, text_vocab_size: int | None = None) -> None:
+        """Reject architecture variants the current vLLM implementation cannot serve."""
+
+        positive_fields = (
+            "hidden_dim",
+            "embedding_dim",
+            "audio_embedding_dim",
+            "num_audio_codebooks",
+            "codebook_size",
+            "frame_stacking_factor",
+            "local_transformer_n_layers",
+            "local_transformer_n_heads",
+            "local_transformer_hidden_dim",
+        )
+        for name in positive_fields:
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
+
+        if self.hidden_dim != self.embedding_dim:
+            raise ValueError(
+                "hidden_dim must equal embedding_dim because the vLLM backbone currently consumes text/audio "
+                "embeddings without an input projection. Add the corresponding projection to support unequal widths; "
+                f"got hidden_dim={self.hidden_dim}, embedding_dim={self.embedding_dim}."
+            )
+        if self.local_transformer_hidden_dim % self.local_transformer_n_heads != 0:
+            raise ValueError(
+                "local_transformer_hidden_dim must be divisible by local_transformer_n_heads for the current "
+                "attention implementation; extend EasyMagpieCodePredictor to support other head layouts. Got "
+                f"{self.local_transformer_hidden_dim} and {self.local_transformer_n_heads}."
+            )
+
+        phonemes_enabled = self.phoneme_vocab_size > 0 and self.phoneme_stacking_factor > 0
+        if phonemes_enabled != (self.phoneme_vocab_size > 0 or self.phoneme_stacking_factor > 0):
+            raise ValueError(
+                "phoneme_vocab_size and phoneme_stacking_factor must be both enabled or both disabled; "
+                f"got {self.phoneme_vocab_size} and {self.phoneme_stacking_factor}."
+            )
+        if self.phoneme_vocab_size < 0 or self.phoneme_stacking_factor < 0:
+            raise ValueError("phoneme_vocab_size and phoneme_stacking_factor cannot be negative")
+        if phonemes_enabled:
+            if self.phoneme_vocab_size < 3:
+                raise ValueError("phoneme_vocab_size must include at least BOS, EOS, and UNK tokens")
+            phoneme_ids = {
+                "phoneme_bos_id": self.resolved_phoneme_bos_id,
+                "phoneme_eos_id": self.resolved_phoneme_eos_id,
+                "phoneme_unk_id": self.resolved_phoneme_unk_id,
+            }
+            for name, token_id in phoneme_ids.items():
+                if not 0 <= token_id < self.phoneme_vocab_size:
+                    raise ValueError(f"{name}={token_id} must be in [0, {self.phoneme_vocab_size})")
+            if len(set(phoneme_ids.values())) != len(phoneme_ids):
+                raise ValueError("phoneme BOS, EOS, and UNK token ids must be distinct")
+        if not 0.0 <= self.phoneme_confidence_unk_threshold <= 1.0:
+            raise ValueError("phoneme_confidence_unk_threshold must be in [0, 1]")
+
+        if self.streaming_phonemes_delay < 0 or self.streaming_speech_delay < 0:
+            raise ValueError("streaming delays cannot be negative")
+        if (self.streaming_phonemes_delay or self.streaming_speech_delay) and (
+            self.streaming_speech_delay <= self.streaming_phonemes_delay
+        ):
+            raise ValueError(
+                "streaming_speech_delay must be greater than streaming_phonemes_delay for delayed streaming; "
+                "extend the prefill/decode scheduling before using other delay layouts. Got "
+                f"{self.streaming_speech_delay} and {self.streaming_phonemes_delay}."
+            )
+
+        audio_special_ids = {
+            "forced_audio_bos_id" if self.forced_audio_bos_id is not None else "audio_bos_id": self.audio_bos_id,
+            "forced_audio_eos_id" if self.forced_audio_eos_id is not None else "audio_eos_id": self.audio_eos_id,
+            "forced_mask_token_id" if self.forced_mask_token_id is not None else "mask_token_id": self.mask_token_id,
+        }
+        special_start = self.codebook_size
+        special_end = self.num_all_tokens_per_codebook
+        for name, token_id in audio_special_ids.items():
+            if not special_start <= token_id < special_end:
+                raise ValueError(
+                    f"{name}={token_id} must be in the special-token range [{special_start}, {special_end})"
+                )
+        if len(set(audio_special_ids.values())) != len(audio_special_ids):
+            raise ValueError("audio BOS, EOS, and MASK token ids must be distinct")
+
+        if self.num_task_embeddings < 0:
+            raise ValueError("num_task_embeddings cannot be negative")
+        if text_vocab_size is not None:
+            if text_vocab_size <= 0:
+                raise ValueError(f"text_vocab_size must be positive, got {text_vocab_size}")
+            text_eos_id = self.resolved_text_eos_id(text_vocab_size)
+            if not 0 <= text_eos_id < text_vocab_size:
+                raise ValueError(f"text_eos_id={text_eos_id} must be in [0, {text_vocab_size})")
+
     @property
     def num_stacked_codebooks(self) -> int:
         """Number of independent codebooks the model autoregresses over (``C * S``)."""
@@ -96,7 +186,10 @@ class EasyMagpieOmniArch:
             return 0
         if self.streaming_speech_delay <= 0:
             return 0
-        assert self.streaming_speech_delay > self.streaming_phonemes_delay, "speech delay must exceed phoneme delay"
+        if self.streaming_speech_delay <= self.streaming_phonemes_delay:
+            raise ValueError(
+                "streaming_speech_delay must be greater than streaming_phonemes_delay for text-led prefill"
+            )
         return self.streaming_phonemes_delay + 1
 
     @property
@@ -186,7 +279,9 @@ class EasyMagpieOmniArch:
             kwargs.setdefault("embedding_dim", hf_config.hidden_size)
         merged = {**defaults.__dict__, **kwargs}
         merged.pop("extra", None)
-        return cls(**merged)
+        arch = cls(**merged)
+        arch.validate(text_vocab_size=getattr(hf_config, "text_vocab_size", None))
+        return arch
 
 
 EASYMAGPIE_SMALLMAMBA = EasyMagpieOmniArch()

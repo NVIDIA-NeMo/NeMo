@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from easymagpie_vllm_omni.config import (
     EASYMAGPIE_SMALLMAMBA,
     NUM_SPECIAL_AUDIO_TOKENS,
@@ -105,3 +107,26 @@ def test_text_prefill_includes_first_phoneme_bos_position():
     )
 
     assert arch.text_prefill_num == 4
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"hidden_dim": 1024, "embedding_dim": 1536}, "hidden_dim.*embedding_dim"),
+        ({"local_transformer_n_heads": 7}, "local_transformer_hidden_dim.*divisible"),
+        ({"phoneme_stacking_factor": 0, "phoneme_vocab_size": 2051}, "both enabled or both disabled"),
+        (
+            {"streaming_phonemes_delay": 3, "streaming_speech_delay": 3},
+            "streaming_speech_delay.*greater",
+        ),
+        ({"forced_audio_eos_id": 7}, "forced_audio_eos_id"),
+    ],
+)
+def test_validate_rejects_unsupported_architectures(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        EasyMagpieOmniArch(**kwargs).validate()
+
+
+def test_from_hf_config_validates_text_eos_id():
+    with pytest.raises(ValueError, match="text_eos_id"):
+        EasyMagpieOmniArch.from_hf_config(types.SimpleNamespace(text_vocab_size=10, text_eos_id=10))

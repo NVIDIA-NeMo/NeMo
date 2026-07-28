@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_matrices, collate_vectors
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig
 from transformers import AutoTokenizer, T5Tokenizer
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (

@@ -111,11 +111,9 @@ def test_model_training_step():
     model.train()
     d = _DEVICE
 
-    # Derive safe upper bounds for token IDs from the model's embedding tables.
-    # text_embedding vocab = num_tokens_tokenizer + 2 (BOS/EOS).
-    text_vocab_size = model.text_embedding.num_embeddings
     # audio_codes must be strictly less than codebook_size (special tokens are
     # appended *after* codebook_size inside process_batch / add_special_tokens).
+    # Text IDs need no such bound here: the batch below uses the fixed safe ID 1.
     audio_token_max = model.codebook_size - 1
 
     B = 1

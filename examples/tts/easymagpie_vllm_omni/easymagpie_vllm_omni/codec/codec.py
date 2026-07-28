@@ -16,6 +16,11 @@
 This file deliberately contains a plain PyTorch implementation first. It is the
 numeric oracle for the packed vLLM kernels and also provides a useful eager
 fallback while the cache-aware path is being integrated with a runner.
+
+It intentionally does not inherit NeMo's training-time ``ResNetDecoder``:
+serving must remain installable without NeMo Speech, and the production vLLM
+path uses packed request batches plus explicit cache state rather than NeMo's
+length-masked ``NeuralModule`` contract.
 """
 
 from __future__ import annotations

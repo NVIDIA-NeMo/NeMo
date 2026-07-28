@@ -15,14 +15,10 @@ from __future__ import annotations
 
 import sys
 import types
-from pathlib import Path
 
+import convert_to_vllm as converter  # noqa: E402
 import torch
 from omegaconf import OmegaConf
-
-SCRIPTS_DIR = Path(__file__).parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-import convert_to_vllm as converter  # noqa: E402
 
 
 class _FakeEmbeddingModel(torch.nn.Module):

@@ -11,12 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shared fixtures for CPU-only EasyMagpieTTS tests."""
+"""Fixtures and dependency boundary for EasyMagpie vLLM serving tests."""
 from __future__ import annotations
 
+import importlib.util
+import sys
 import types
+from pathlib import Path
 
 import pytest
+
+_SERVING_DEPENDENCIES = ("vllm", "vllm_omni")
+_HAS_SERVING_DEPENDENCIES = all(importlib.util.find_spec(name) is not None for name in _SERVING_DEPENDENCIES)
+
+# Ordinary Speech test environments do not install the pinned serving stack.
+# The dedicated serving job provides both dependencies and collects this suite.
+collect_ignore_glob = [] if _HAS_SERVING_DEPENDENCIES else ["test_*.py"]
+
+EASYMAGPIE_ROOT = Path(__file__).resolve().parents[5] / "examples" / "tts" / "easymagpie_vllm_omni"
+SCRIPTS_DIR = EASYMAGPIE_ROOT / "scripts"
+
+# Load the standalone serving package from this checkout without installing Speech.
+sys.path.insert(0, str(EASYMAGPIE_ROOT))
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 # Equal dimensions exercise the identity projection path.
 _DEFAULT_ARCH: dict = dict(

@@ -13,16 +13,11 @@
 # limitations under the License.
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
+import benchmark_model as benchmark  # noqa: E402
 import pytest
 from vllm.sampling_params import RequestOutputKind, SamplingParams
-
-SCRIPTS_DIR = Path(__file__).parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-import benchmark_model as benchmark  # noqa: E402
 
 
 @pytest.mark.asyncio

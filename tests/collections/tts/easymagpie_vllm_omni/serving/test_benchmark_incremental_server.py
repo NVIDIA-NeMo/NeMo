@@ -14,16 +14,12 @@
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("numpy")
 pytest.importorskip("websockets")
 
-SCRIPTS_DIR = Path(__file__).parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
 import benchmark_incremental_server as benchmark  # noqa: E402
 
 

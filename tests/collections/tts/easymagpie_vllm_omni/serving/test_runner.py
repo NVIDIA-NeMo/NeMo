@@ -14,14 +14,12 @@
 """Tests for the vLLM-Omni 0.24 streaming runner compatibility layer."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import torch
 import yaml
 
+from conftest import EASYMAGPIE_ROOT
 from easymagpie_vllm_omni.runner import merge_streaming_additional_information
 
-ROOT = Path(__file__).parents[1]
 WORKER_CLS = "easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker"
 
 
@@ -57,6 +55,6 @@ def test_streaming_update_accumulates_declared_tensor_keys():
 
 def test_deploy_configs_select_compatibility_worker_for_talker():
     for filename in ("easymagpie_talker.yaml", "easymagpie.yaml"):
-        deploy = yaml.safe_load((ROOT / "deploy" / filename).read_text())
+        deploy = yaml.safe_load((EASYMAGPIE_ROOT / "deploy" / filename).read_text())
         talker = next(stage for stage in deploy["stages"] if stage["stage_id"] == 0)
         assert talker["engine_extras"]["worker_cls"] == WORKER_CLS

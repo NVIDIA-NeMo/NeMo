@@ -11,14 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Runtime fixes for the EasyMagpie Nemotron-H backbone."""
+"""Compatibility fixes for the EasyMagpie backbone on the pinned vLLM 0.24.0."""
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import vllm.v1.attention.backends.mamba_attn as _mamba_attn
 from vllm.logger import init_logger
+from vllm.model_executor.layers.activation import ReLUSquaredActivation, get_act_fn
 
 logger = init_logger(__name__)
 
@@ -52,15 +51,17 @@ def patch_mamba_streaming_decode() -> None:
     logger.info("Mamba streaming-decode classification patch installed")
 
 
-class _SiluActivation(nn.Module):
-    """Module wrapper for ``F.silu``."""
+def patch_shared_expert_activation(backbone) -> int:
+    """Make shared experts honor ``mlp_hidden_act`` from the model config.
 
-    def forward(self, x):
-        return F.silu(x)
+    vLLM 0.24's ``NemotronHMLP`` hard-codes ReLU² even though routed experts
+    read ``mlp_hidden_act``. NeMo uses the configured activation for both.
+    """
+    activation_name = getattr(getattr(backbone, "config", None), "mlp_hidden_act", None)
+    if not isinstance(activation_name, str) or not activation_name:
+        raise ValueError("Nemotron-H config must provide a non-empty mlp_hidden_act")
 
-
-def patch_silu_shared_experts(backbone) -> int:
-    """Use the checkpoint's SiLU activation on every shared expert."""
+    expected_type = type(get_act_fn(activation_name))
     patched = 0
     for layer in backbone.layers:
         mixer = getattr(layer, "mixer", None)
@@ -69,9 +70,16 @@ def patch_silu_shared_experts(backbone) -> int:
         se = getattr(mixer, "shared_experts", None)
         if se is None:
             continue
-        se.act_fn = _SiluActivation()
+        if isinstance(se.act_fn, expected_type):
+            continue
+        if not isinstance(se.act_fn, ReLUSquaredActivation):
+            raise RuntimeError(
+                "vLLM Nemotron-H shared-expert activation implementation changed; "
+                "review the compatibility patch before replacing it"
+            )
+        se.act_fn = get_act_fn(activation_name)
         patched += 1
-    logger.info("SiLU shared_experts fix installed on %d layers", patched)
+    logger.info("%s shared-expert activation fix installed on %d layers", activation_name, patched)
     return patched
 
 

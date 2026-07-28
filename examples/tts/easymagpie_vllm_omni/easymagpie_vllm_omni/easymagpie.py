@@ -33,7 +33,7 @@ import torch
 from easymagpie_vllm_omni.backbone_patches import (
     patch_mamba_streaming_decode,
     patch_moe_routed_scale,
-    patch_silu_shared_experts,
+    patch_shared_expert_activation,
 )
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
@@ -166,10 +166,10 @@ class EasyMagpieTTSForConditionalGeneration(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "backbone"),
         )
-        # The checkpoint was trained with mlp_hidden_act=silu but vLLM's
-        # NemotronHMLP hard-codes ReLU² in shared_experts. Restore SiLU (no-op
-        # when the backbone has no MoE layers).
-        patch_silu_shared_experts(self.backbone)
+        # vLLM 0.24's NemotronHMLP hard-codes ReLU² in shared_experts,
+        # ignoring the checkpoint's mlp_hidden_act. Restore the configured
+        # activation (no-op when the backbone has no MoE layers).
+        patch_shared_expert_activation(self.backbone)
         # vLLM's FusedMoE defers routed_scaling_factor to the decoder layer in
         # FP16, but NemotronH's decoder layer never compensates, so the MoE
         # output is under-scaled by routed_scaling_factor. Restore it (no-op in

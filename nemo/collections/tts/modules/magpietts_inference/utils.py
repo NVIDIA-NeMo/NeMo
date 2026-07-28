@@ -689,8 +689,6 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('ssim_pred_gt_avg_alternate', ''),
         metrics.get('ssim_pred_context_avg_alternate', ''),
         metrics.get('ssim_gt_context_avg_alternate', ''),
-        metrics.get('esim_pred_gt_avg', ''),
-        metrics.get('ems_pred_gt_avg', ''),
         metrics.get('cer_gt_audio_cumulative', ''),
         metrics.get('wer_gt_audio_cumulative', ''),
         metrics.get('utmosv2_avg', ''),
@@ -808,8 +806,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
         pred_context_ssim_turns = [r.get("pred_context_ssim") for r in turns]
         pred_gt_ssim_turns = [r.get("pred_gt_ssim") for r in turns]
         gt_context_ssim_turns = [r.get("gt_context_ssim") for r in turns]
-        pred_gt_esim_turns = [r.get("pred_gt_esim") for r in turns]
-        pred_gt_ems_turns = [r.get("pred_gt_ems") for r in turns]
         utmosv2_turns = [r.get("utmosv2") for r in turns]
         eou_type_turns = [r.get("eou_type") for r in turns]
         eou_trailing_duration_turns = [r.get("eou_trailing_duration") for r in turns]
@@ -830,8 +826,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "pred_context_ssim": _mean_finite(pred_context_ssim_turns),
                 "pred_gt_ssim": _mean_finite(pred_gt_ssim_turns),
                 "gt_context_ssim": _mean_finite(gt_context_ssim_turns),
-                "pred_gt_esim": _mean_finite(pred_gt_esim_turns),
-                "pred_gt_ems": _mean_finite(pred_gt_ems_turns),
                 "utmosv2": _mean_finite(utmosv2_turns),
                 "eou_trailing_duration": _mean_finite(eou_trailing_duration_turns),
                 "eou_trail_rms_ratio": _mean_finite(eou_trail_rms_ratio_turns),
@@ -842,8 +836,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "pred_context_ssim_turns": pred_context_ssim_turns,
                 "pred_gt_ssim_turns": pred_gt_ssim_turns,
                 "gt_context_ssim_turns": gt_context_ssim_turns,
-                "pred_gt_esim_turns": pred_gt_esim_turns,
-                "pred_gt_ems_turns": pred_gt_ems_turns,
                 "utmosv2_turns": utmosv2_turns,
                 "eou_type_turns": eou_type_turns,
                 "eou_trailing_duration_turns": eou_trailing_duration_turns,
@@ -881,8 +873,6 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "pred_context_ssim",
         "pred_gt_ssim",
         "gt_context_ssim",
-        "pred_gt_esim",
-        "pred_gt_ems",
         "utmosv2",
         "eou_trailing_duration",
         "eou_trail_rms_ratio",
@@ -892,8 +882,6 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "pred_context_ssim_turns",
         "pred_gt_ssim_turns",
         "gt_context_ssim_turns",
-        "pred_gt_esim_turns",
-        "pred_gt_ems_turns",
         "utmosv2_turns",
         "eou_type_turns",
         "eou_trailing_duration_turns",
@@ -1284,20 +1272,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
-    eval_group.add_argument('--with_emotion_metrics', action='store_true')
     eval_group.add_argument(
         '--strip_text_annotations_for_metrics',
         action='store_true',
         help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
     )
-    eval_group.add_argument('--emotion_model_size', type=str, default="small", choices=["small", "large"])
-    eval_group.add_argument(
-        '--emotion_embedding_type',
-        type=str,
-        default="score_vector",
-        choices=["head_concat", "head_mean", "score_vector"],
-    )
-    eval_group.add_argument('--emotion_cache_dir', type=str, default=None)
     eval_group.add_argument(
         '--violin_plot_metrics',
         type=str,

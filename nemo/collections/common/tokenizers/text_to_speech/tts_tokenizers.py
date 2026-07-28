@@ -123,9 +123,10 @@ def _predates_nemo_release(cfg_nemo_version: Optional[str], changed_in: str) -> 
     today's defaults. Comparison is on ``Version.release`` so "2.8.0rc0" reads as 2.8.0 rather than as
     older than it (PEP 440 orders pre-releases first). That resolves the entire 2.8.0rc0 window to the
     current defaults even though the fields landed mid-window -- genuinely undecidable from the stamp,
-    tie-broken toward current because ArabicCharsTokenizer postdates ``charset_version`` (so for Arabic
-    this reading is always right) and because guessing legacy downgrades new training silently while
-    guessing current fails loudly. Released checkpoints from that window pin their fields anyway.
+    tie-broken toward current because ArabicCharsTokenizer was added by the very commit that added
+    ``charset_version`` (so for Arabic this reading is always right), and because guessing legacy
+    downgrades new training silently while guessing current fails loudly. Released checkpoints from
+    that window pin their fields anyway, so none of them reach here.
     """
     if cfg_nemo_version is None:
         return False
@@ -152,10 +153,12 @@ def resolve_versioned_tokenizer_defaults(tokenizer_config, cfg_nemo_version: Opt
         if tokenizer_config.get(spec.field) is not None or not spec.applies_to(tokenizer_config):
             continue
         is_legacy = _predates_nemo_release(cfg_nemo_version, spec.changed_in)
+        value = spec.legacy if is_legacy else spec.current
         with open_dict(tokenizer_config):
-            backfilled[spec.field] = tokenizer_config[spec.field] = spec.legacy if is_legacy else spec.current
+            tokenizer_config[spec.field] = value
+        backfilled[spec.field] = value
         if is_legacy:
-            legacy[spec.field] = backfilled[spec.field]
+            legacy[spec.field] = value
 
     # Only the legacy direction is worth reporting: it silently reproduces an older vocabulary.
     if legacy:

@@ -610,7 +610,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     def load_state_dict(self, state_dict, strict=True):
         check_text_embedding_matches_tokenizer(
-            state_dict, getattr(self, 'text_embedding', None), self.tokenizer, self.cfg
+            state_dict,
+            text_embedding=getattr(self, 'text_embedding', None),
+            tokenizer=self.tokenizer,
+            model_cfg=self.cfg,
         )
         if not strict:
             super().load_state_dict(state_dict, strict=False)

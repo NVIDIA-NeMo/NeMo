@@ -96,9 +96,9 @@ class _TokenizerVersionModel(ModelPT):
 
 
 class TestSetupTokenizersDefaults:
-    """Covers that the version reaches every tokenizer node. Which value each stamp resolves to is
-    pinned by ``TestVersionDating``, and what each value *means* for the resulting vocabulary by
-    ``test_tts_tokenizers.py`` at the tokenizer-class level."""
+    """Covers the plumbing from ``setup_tokenizers`` down to the resolver. Which value each stamp
+    resolves to is pinned by ``TestVersionDating``, and what each value *means* for the resulting
+    vocabulary by ``test_tts_tokenizers.py`` at the tokenizer-class level."""
 
     @pytest.mark.unit
     def test_version_reaches_the_tokenizer_config(self):
@@ -223,10 +223,9 @@ class TestResolveVersionedTokenizerDefaults:
             ({}, LEGACY_VERSION, True),
             ({"_target_": _IPA, "locale": "pt-BR"}, LEGACY_VERSION, True),
             ({}, CURRENT_VERSION, False),
-            ({}, None, False),
             ({"punct_version": 1, "charset_version": 1}, LEGACY_VERSION, False),
         ],
-        ids=["legacy-hindi", "legacy-pt-br", "current", "unstamped", "already-explicit"],
+        ids=["legacy-hindi", "legacy-pt-br", "current", "already-explicit"],
     )
     def test_legacy_backfill_is_never_silent(self, cfg_fields, cfg_nemo_version, should_warn):
         """Falling back to a pre-versioning vocabulary must say so.
@@ -376,7 +375,9 @@ class TestTextEmbeddingMismatchError:
     def test_matching_sizes_pass(self):
         state_dict, tokenizer = self._model_and_state_dict(100)
 
-        check_text_embedding_matches_tokenizer(state_dict, torch.nn.Embedding(100, 4), tokenizer, OmegaConf.create({}))
+        check_text_embedding_matches_tokenizer(
+            state_dict, text_embedding=torch.nn.Embedding(100, 4), tokenizer=tokenizer, model_cfg=OmegaConf.create({})
+        )
 
     @pytest.mark.unit
     def test_mismatch_names_the_fields_to_pin(self):
@@ -385,9 +386,9 @@ class TestTextEmbeddingMismatchError:
         with pytest.raises(RuntimeError) as excinfo:
             check_text_embedding_matches_tokenizer(
                 state_dict,
-                torch.nn.Embedding(148, 4),
-                tokenizer,
-                OmegaConf.create({"nemo_version": LEGACY_VERSION}),
+                text_embedding=torch.nn.Embedding(148, 4),
+                tokenizer=tokenizer,
+                model_cfg=OmegaConf.create({"nemo_version": LEGACY_VERSION}),
             )
 
         message = str(excinfo.value)
@@ -405,7 +406,9 @@ class TestTextEmbeddingMismatchError:
     )
     def test_absent_embedding_is_not_an_error(self, state_dict, text_embedding):
         """The CAS-encoder MagpieTTS variant has no text_embedding to compare; it must not trip here."""
-        check_text_embedding_matches_tokenizer(state_dict, text_embedding, MagicMock(), OmegaConf.create({}))
+        check_text_embedding_matches_tokenizer(
+            state_dict, text_embedding=text_embedding, tokenizer=MagicMock(), model_cfg=OmegaConf.create({})
+        )
 
 
 class TestNemoRoundTrip:

@@ -82,7 +82,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train', cfg_nemo_version=None)
     return aggregated_tokenizer
 
 
-def check_text_embedding_matches_tokenizer(state_dict, text_embedding, tokenizer, model_cfg) -> None:
+def check_text_embedding_matches_tokenizer(state_dict, *, text_embedding, tokenizer, model_cfg) -> None:
     """Fail actionably when a checkpoint's text embedding disagrees with the rebuilt tokenizer.
 
     This is the symptom of every tokenizer-versioning mistake: the vocabulary is rebuilt with different

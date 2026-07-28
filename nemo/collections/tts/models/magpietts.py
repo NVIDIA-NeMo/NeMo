@@ -1079,7 +1079,10 @@ class MagpieTTSModel(ModelPT):
         state_dict = self.update_ckpt(state_dict)
         # `text_embedding` is absent on the CAS-encoder variant, which has no such table to compare.
         check_text_embedding_matches_tokenizer(
-            state_dict, getattr(self, 'text_embedding', None), self.tokenizer, self.cfg
+            state_dict,
+            text_embedding=getattr(self, 'text_embedding', None),
+            tokenizer=self.tokenizer,
+            model_cfg=self.cfg,
         )
 
         # Check if checkpoint has baked context embedding (nn.Embedding format)

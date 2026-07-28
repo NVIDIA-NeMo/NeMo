@@ -175,7 +175,7 @@ Tools follow the OpenAI Realtime API function tool specification:
 | ----- | -------- | ----------- |
 | `name` | Yes | Non-empty string identifying the tool. |
 | `description` | No | Human-readable description; recommended for model accuracy. |
-| `ack_messages` | No | Array of one or more non-empty strings. The model speaks one of these while waiting for the tool result, keeping the conversation flowing naturally. Example: `["Sure, let me check that.", "One moment please."]` |
+| `ack_messages` | No (optional) | Array of one or more non-empty strings. The model speaks one of these while waiting for the tool result, keeping the conversation flowing naturally. Example: `["Sure, let me check that.", "One moment please."]` |
 | `parameters` | No | JSON Schema object describing the tool's arguments (`type` must be `"object"`). |
 
 ### Built-in Demo Tools
@@ -196,11 +196,11 @@ Example — enable all built-in demo tools:
 python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
   --input-file sample_speech.wav \
   --tools '[
-    {"name":"get_current_time","description":"Get the current time","parameters":{"type":"object","properties":{}}},
-    {"name":"get_current_datetime","description":"Get current date and time","parameters":{"type":"object","properties":{}}},
-    {"name":"calculate_bmi","description":"Calculate BMI","parameters":{"type":"object","properties":{"weight":{"type":"number"},"height":{"type":"number"}},"required":["weight","height"]}},
-    {"name":"convert_currency","description":"Convert currency","parameters":{"type":"object","properties":{"amount":{"type":"number"},"from_currency":{"type":"string"},"to_currency":{"type":"string"}},"required":["amount","from_currency","to_currency"]}},
-    {"name":"get_news_headlines","description":"Get news headlines","parameters":{"type":"object","properties":{}}}
+    {"name":"get_current_time","description":"Get the current time","ack_messages":["Sure, let me check the time for you."],"parameters":{"type":"object","properties":{}}},
+    {"name":"get_current_datetime","description":"Get current date and time","ack_messages":["One moment, fetching the date and time."],"parameters":{"type":"object","properties":{}}},
+    {"name":"calculate_bmi","description":"Calculate BMI","ack_messages":["Let me calculate that for you."],"parameters":{"type":"object","properties":{"weight":{"type":"number"},"height":{"type":"number"}},"required":["weight","height"]}},
+    {"name":"convert_currency","description":"Convert currency","ack_messages":["Sure, let me convert that for you."],"parameters":{"type":"object","properties":{"amount":{"type":"number"},"from_currency":{"type":"string"},"to_currency":{"type":"string"}},"required":["amount","from_currency","to_currency"]}},
+    {"name":"get_news_headlines","description":"Get news headlines","ack_messages":["Let me fetch the latest headlines."],"parameters":{"type":"object","properties":{}}}
   ]'
 ```
 

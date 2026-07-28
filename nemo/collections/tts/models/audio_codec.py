@@ -39,11 +39,7 @@ from nemo.collections.tts.losses.audio_codec_loss import (
     SISDRLoss,
     TimeDomainLoss,
 )
-from nemo.collections.tts.modules.audio_codec_modules import (
-    GroupFiniteScalarQuantizer,
-    ResNetSpeakerEncoder,
-    default_precision,
-)
+from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder, default_precision
 from nemo.collections.tts.modules.common import GaussianDropout
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
@@ -101,6 +97,7 @@ class AudioCodecModel(ModelPT):
 
         if "vector_quantizer" in cfg:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
+            self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -110,13 +107,10 @@ class AudioCodecModel(ModelPT):
             else:
                 self.vector_quantizer_has_commit_loss = False
                 logging.info('Vector quantizer does not support commit loss.')
-
-            self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
-            if self.codebook_dropout_rate and not isinstance(self.vector_quantizer, GroupFiniteScalarQuantizer):
-                raise ValueError("Codebook dropout only supported for GroupFiniteScalarQuantizer")
         else:
             logging.warning('Vector quantizer will not be used.')
             self.vector_quantizer = None
+            self.codebook_dropout_rate = 0.0
 
         # Decoder setup
         self.audio_decoder = safe_instantiate(cfg.audio_decoder)
@@ -466,7 +460,9 @@ class AudioCodecModel(ModelPT):
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
 
         if num_codebooks:
-            encoded = self._dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks)
+            assert self.vector_quantizer is not None
+            num_codebooks_batch = num_codebooks * torch.ones([encoded.shape[0]])
+            encoded = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks_batch)
 
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
@@ -568,43 +564,15 @@ class AudioCodecModel(ModelPT):
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
         return audio, audio_len
 
-    def _dropout_codebooks(self, encoded, num_codebooks):
-        """Dropout encoder output so that only 'num_codebooks' are left as decoder_input.
-        This is done for FSQ by setting all embedding values in dimensions above (num_codebooks * codebook_dim) to 0.
-
-        Args:
-            encoded: encoder output (B, D, T)
-            num_codebooks: number of codebooks to keep. This can be an integer, or a 3-D tensor compatible with the
-                dimensions of the encoder output
-
-        Returns:
-            Encoder output with all codebooks above index 'num_codebooks' masked out
-        """
-        batch_size, embed_dim, num_frames = encoded.shape
-        emb_unmask_dim = self.vector_quantizer.codebook_dim_per_group * num_codebooks
-        # [B, D, T]
-        embed_indices = (
-            torch.arange(start=0, end=embed_dim, device=encoded.device)
-            .unsqueeze(0)
-            .unsqueeze(2)
-            .repeat(batch_size, 1, num_frames)
-        )
-        codebook_mask = embed_indices < emb_unmask_dim
-        out = encoded * codebook_mask
-        return out
-
     def _dropout_random_codebooks(self, encoded):
         """Dropout a random number of codebooks for each batch element"""
         batch_size = encoded.shape[0]
         # [B]
         apply_dropout = torch.rand(size=[batch_size], device=encoded.device) < self.codebook_dropout_rate
         # Select random integers in range (1, num_codebooks - 1)
-        num_codebooks_unmasked = torch.randint(
-            low=1, high=self.num_codebooks, size=[batch_size], device=encoded.device
-        )
-        num_codebooks_unmasked = torch.where(apply_dropout, num_codebooks_unmasked, self.num_codebooks)
-        num_codebooks_unmasked = rearrange(num_codebooks_unmasked, 'B -> B 1 1')
-        out = self._dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks_unmasked)
+        num_codebooks = torch.randint(low=1, high=self.num_codebooks, size=[batch_size], device=encoded.device)
+        num_codebooks = torch.where(apply_dropout, num_codebooks, self.num_codebooks)
+        out = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks)
         return out
 
     def _process_batch(self, batch):

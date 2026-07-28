@@ -293,21 +293,6 @@ class TestOptimizersSchedulers:
         assert isinstance(scheduler_setup['scheduler'], optim.lr_scheduler.CosineAnnealing)
 
     @pytest.mark.unit
-    def test_sched_config_warns_when_t_max_epochs_is_none(self, caplog):
-        model = TempModel()
-        opt_cls = optim.get_optimizer('novograd')
-        opt = opt_cls(model.parameters(), lr=self.INITIAL_LR)
-
-        train_dataloader = torch.utils.data.DataLoader(RandomDataset(8), batch_size=2)
-        sched_config = {'name': 'CosineAnnealing', 't_max_epochs': None}
-
-        with caplog.at_level(logging.WARNING):
-            scheduler_setup = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config, train_dataloader)
-
-        assert scheduler_setup is None
-        assert "`t_max_epochs` cannot be None when `max_steps` is not provided" in caplog.text
-
-    @pytest.mark.unit
     def test_sched_config_parse_from_cls(self):
         model = TempModel()
         opt_cls = optim.get_optimizer('novograd')

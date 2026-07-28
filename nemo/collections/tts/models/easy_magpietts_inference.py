@@ -29,7 +29,10 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
+    check_text_embedding_matches_tokenizer,
+    setup_tokenizers,
+)
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
@@ -352,6 +355,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
+            # Read before super().__init__, which stamps the *current* version into configs that lack one.
+            cfg_nemo_version=cfg.get('nemo_version', None),
         )
 
         base_num_tokens = len(self.tokenizer.tokens)
@@ -859,12 +864,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
+
         """Load model parameters while skipping excluded child modules.
 
         Args:
             state_dict: State dictionary containing model parameters.
             strict: Whether to require an exact key match for the top-level load.
         """
+        check_text_embedding_matches_tokenizer(
+            state_dict,
+            text_embedding=getattr(self, 'text_embedding', None),
+            tokenizer=self.tokenizer,
+            model_cfg=self.cfg,
+        )
         if not strict:
             super().load_state_dict(state_dict, strict=False)
         modules_to_skip = self._get_state_dict_keys_to_exclude()

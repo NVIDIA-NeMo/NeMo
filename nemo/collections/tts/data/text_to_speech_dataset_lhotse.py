@@ -20,14 +20,13 @@ import numpy as np
 import torch
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_matrices, collate_vectors
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig
 from transformers import AutoTokenizer, T5Tokenizer
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
-    CASELESS_SCRIPT_TOKENIZER_TARGETS,
-    DEFAULT_CHARSET_VERSION,
     AggregatedTTSTokenizer,
     IPABPETokenizer,
+    resolve_versioned_tokenizer_defaults,
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
@@ -40,9 +39,23 @@ from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
-def setup_tokenizers(all_tokenizers_config, mode='train'):
-    # Being used in both model and worker_init_fn, so it is defined here
-    # Returns two tokenizers: one for TTS transcript and one for conditioning text (if needed)
+def setup_tokenizers(all_tokenizers_config, mode='train', cfg_nemo_version=None):
+    """Instantiate the aggregated TTS transcript tokenizer described by ``all_tokenizers_config``.
+
+    Being used in both model and worker_init_fn, so it is defined here.
+
+    Args:
+        all_tokenizers_config: The ``text_tokenizers`` config node. Mutated in place so that the
+            versioned tokenizer defaults it resolved to are persisted into any ``.nemo`` saved later.
+        mode: 'train' or 'test'. 'test' forces phoneme probability to 1.0 where supported.
+        cfg_nemo_version: The enclosing model config's ``nemo_version``, used to date any versioned
+            tokenizer field the config leaves unset (see ``resolve_versioned_tokenizer_defaults``).
+            Only a model's ``__init__`` needs it: that call pins the resolved values into the config,
+            so later calls -- dataloader setup, worker_init_fn -- can leave it None.
+
+    Returns:
+        An ``AggregatedTTSTokenizer`` over every configured tokenizer.
+    """
     tokenizers = []
     tokenizer_names = []
     for tokenizer_name in all_tokenizers_config:
@@ -55,43 +68,11 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
                 text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
-            # Ensure locale_specific_punct is persisted so it survives .nemo save/restore.
-            # New training for locales with extended punctuation should use the full set (True).
-            if (
-                hasattr(tokenizer_config, '_target_')
-                and tokenizer_config._target_
-                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
-                and tokenizer_config.get('locale', None) == "pt-BR"
-                and not hasattr(tokenizer_config, 'non_default_punct_list')
-                and not hasattr(tokenizer_config, 'locale_specific_punct')
-            ):
-                with open_dict(tokenizer_config):
-                    tokenizer_config.locale_specific_punct = True
-            # Persist punct_version=2 for HindiCharsTokenizer so .nemo save/restore
-            # always uses the expanded punctuation set (with dandas).
-            if (
-                hasattr(tokenizer_config, '_target_')
-                and tokenizer_config._target_
-                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
-                and not hasattr(tokenizer_config, 'punct_version')
-            ):
-                with open_dict(tokenizer_config):
-                    tokenizer_config.punct_version = 2
+            resolve_versioned_tokenizer_defaults(tokenizer_config, cfg_nemo_version)
             tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
                 tokenizer.set_phone_prob(1.0)
-
-            # Persist charset_version so it's saved in .nemo archives and
-            # update_config_for_inference can distinguish old checkpoints
-            # (missing charset_version → v1) from new ones.
-            if (
-                hasattr(tokenizer_config, '_target_')
-                and tokenizer_config._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS
-                and not hasattr(tokenizer_config, 'charset_version')
-            ):
-                with open_dict(all_tokenizers_config):
-                    tokenizer_config.charset_version = DEFAULT_CHARSET_VERSION
 
         tokenizers.append(tokenizer)
         tokenizer_names.append(tokenizer_name)
@@ -99,6 +80,34 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
     aggregated_tokenizer = AggregatedTTSTokenizer(tokenizers, tokenizer_names)  # TTS Transcript tokenizer
 
     return aggregated_tokenizer
+
+
+def check_text_embedding_matches_tokenizer(state_dict, *, text_embedding, tokenizer, model_cfg) -> None:
+    """Fail actionably when a checkpoint's text embedding disagrees with the rebuilt tokenizer.
+
+    This is the symptom of every tokenizer-versioning mistake: the vocabulary is rebuilt with different
+    character or punctuation sets than the checkpoint was trained with, every token ID shifts, and
+    ``load_state_dict`` reports an opaque size mismatch. Naming the per-tokenizer token counts and the
+    fields to pin turns that into something a user can act on. A no-op when either side is absent --
+    the CAS-encoder MagpieTTS variant has no text embedding table.
+    """
+    ckpt_weight = state_dict.get('text_embedding.weight', None)
+    if ckpt_weight is None or text_embedding is None:
+        return
+    if ckpt_weight.shape[0] == text_embedding.num_embeddings:
+        return
+
+    raise RuntimeError(
+        f"MagpieTTS tokenizer/checkpoint mismatch: the checkpoint's text_embedding has "
+        f"{ckpt_weight.shape[0]} rows but this config builds {text_embedding.num_embeddings}. The text "
+        f"tokenizer vocabulary was not rebuilt the way this checkpoint was trained.\n"
+        f"  tokens per tokenizer: {getattr(tokenizer, 'num_tokens_per_tokenizer', 'n/a')}\n"
+        f"  config nemo_version:  {model_cfg.get('nemo_version', '<absent>')}\n"
+        f"This is usually a versioned tokenizer field resolving differently than at training time. Pin "
+        f"the values the checkpoint was trained with explicitly under `model.text_tokenizers.<name>`: "
+        f"`charset_version` (Hindi/Arabic char tokenizers), `punct_version` (Hindi), or "
+        f"`locale_specific_punct` (pt-BR IPA). See `VERSIONED_TOKENIZER_FIELDS` in tts_tokenizers.py."
+    )
 
 
 def check_speaker_format(item: str):

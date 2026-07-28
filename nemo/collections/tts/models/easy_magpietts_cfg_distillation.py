@@ -70,7 +70,7 @@ _STATE_DICT_EXCLUDE_NAMES: list[str] = ["_teacher_model"]
 class _DefaultParams:
 
     # Maximum number of decoding steps during audio rollout generation.
-    max_decoder_steps: int = 330
+    max_decoder_steps: int = 300
     # Sampling temperature during rollout generation.
     rollout_temperature: float = 0.7
     # Top-k sampling limit for token selection.
@@ -84,25 +84,25 @@ class _DefaultParams:
     # Weight coefficient in the combined entropy-divergence distillation loss.
     audio_alpha: float = 0.3
     # Weight coefficient for the NRMSE component in the distillation loss.
-    audio_beta: float = 2.0
+    audio_beta: float = 1.0
     # Fraction of the ground-truth sequence length used for finalized rollout rejection.
-    lower_rejection_threshold: Optional[float] = 0.3
+    lower_rejection_threshold: Optional[float] = 0.5
     # Fraction of the ground-truth sequence length used as a cutoff for early rollout truncation.
-    upper_rejection_threshold: Optional[float] = 1.5
+    upper_rejection_threshold: Optional[float] = 10.5
     # Weight assigned to truncated samples when computing the loss (used to down-weight rejected rollouts).
-    rejection_weight: Optional[float] = 0.01
+    rejection_weight: Optional[float] = 0.1
     # Whether to enable distillation of the local transformer head in addition to the main decoder logits.
     distill_local_transformer: bool = True
     # Target mixing weight for the local-transformer distillation loss in the final total loss.
     lt_loss_weight: float = 0.1
     # Global training step at which local-transformer distillation becomes active.
-    lt_distillation_start_step: int = 2000
+    lt_distillation_start_step: int = 0
     # Number of steps used to linearly ramp the local-transformer loss weight from 0 to `lt_loss_weight`.
-    lt_distillation_ramp_len: int = 2000
+    lt_distillation_ramp_len: int = 0
     # Whether to enable phoneme-channel supervision or distillation during training.
     distill_phoneme_channel: bool = False
     # Weight coefficient for the phoneme-channel loss contribution in the final total loss.
-    phonemes_loss_weight: float = 0.05
+    phonemes_loss_weight: float = 0.01
     # Weight coefficient controlling the balance between KL-divergence and cross-entropy for phoneme distillation.
     phonemes_distillation_alpha: float = 0.3
     # Whether to save rejected teacher rollouts for debugging.
@@ -516,12 +516,9 @@ class _StreamingState:
         eos_id: int,
         fs_factor: int,
     ) -> list[int]:
-        if not self.use_lt:
-            codes_t = audio_codes.codes_t
-            codes_t_argmax = audio_codes.codes_t_argmax
-        else:
-            codes_t = audio_codes.codes_t_lt
-            codes_t_argmax = audio_codes.codes_t_argmax_lt
+        # Use backbone codes to preserve EOS prediction policy.
+        codes_t = audio_codes.codes_t
+        codes_t_argmax = audio_codes.codes_t_argmax
 
         eos_in_sampled = codes_t == eos_id
         eos_in_argmax = codes_t_argmax == eos_id
@@ -940,7 +937,9 @@ class _TeacherInferenceEngine:
 
         if status.audio.any():
             audio_emb = torch.zeros(bs, 1, self.embedding_dim, device=device)
-            last_audio_codes = state.last_audio_codes_lt if state.use_lt else state.last_audio_codes
+            # Use backbone codes to preserve rollout policy.
+            last_audio_codes = state.last_audio_codes
+
             first_audio_step = status.audio & (state.audio_steps == 0)
             has_last_audio = status.audio & ~first_audio_step & (last_audio_codes is not None)
 
@@ -1928,6 +1927,7 @@ class _ValidationInferenceEngine:
 
         return _ValidationSpeakerEmbeddings(generated=generated_embeds, context=context_embeds)
 
+    @torch.no_grad()
     def get_utmos_scores(
         self,
         input_dir: Path,
@@ -2780,6 +2780,11 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         if teacher_output.rejected is None:
             return
 
+        audio_codes, audio_codes_lens = batch.get("audio_codes"), batch.get("audio_codes_lens")
+
+        if audio_codes is None or audio_codes_lens is None:
+            raise ValueError()
+
         rejected_indices = torch.nonzero(teacher_output.rejected, as_tuple=False).flatten().tolist()
 
         if not rejected_indices:
@@ -2801,7 +2806,18 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             codes=rejected_codes,
             codes_len=rejected_lens,
         )
-
+        audio_codes_gt = self._codec_converter.convert_original_to_new(
+            audio_tokens=audio_codes,
+            audio_lens=audio_codes_lens,
+        ).long()
+        audio_codes_gt, audio_codes_lens_gt = self._prepare_codes_for_decode(
+            codes=audio_codes_gt,
+            codes_len=audio_codes_lens,
+        )
+        audio_gt, audio_lens_gt, _ = self._codec_helper.codes_to_audio(
+            codes=audio_codes_gt,
+            codes_len=audio_codes_lens_gt,
+        )
         languages = batch.get("languages")
         dataset_names = batch.get("dataset_names")
         texts = batch.get("raw_texts")
@@ -2813,18 +2829,24 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             audio_path = debug_dir / f"{sample_id}.wav"
             sf.write(audio_path, audio_np, self.output_sample_rate)
 
+            audio_np_gt = audio_gt[batch_idx].float().detach().cpu().numpy()
+            audio_np_gt = audio_np_gt[: int(audio_lens_gt[batch_idx].item())]
+            sample_id_gt = f"{sample_id}_gt"
+            audio_path_gt = debug_dir / f"{sample_id_gt}.wav"
+            sf.write(audio_path_gt, audio_np_gt, self.output_sample_rate)
+
             item_meta = {
                 "global_step": int(self.global_step),
                 "global_rank": int(self.global_rank),
                 "batch_index": batch_idx,
                 "audio_path": audio_path.as_posix(),
+                "audio_path_gt": audio_path_gt.as_posix(),
             }
             if languages is not None:
                 item_meta["language"] = languages[batch_idx]
 
             if dataset_names is not None:
                 item_meta["dataset_name"] = dataset_names[batch_idx]
-
 
             if texts is not None:
                 item_meta["text"] = texts[batch_idx]

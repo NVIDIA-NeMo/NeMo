@@ -35,7 +35,7 @@ from torch import nn
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
     MagpieTTSLhotseDataset,
-    predates_versioned_tokenizer_fields,
+    check_text_embedding_matches_tokenizer,
     setup_tokenizers,
 )
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
@@ -438,8 +438,8 @@ class MagpieTTSModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
-            # `cfg` has not been through super().__init__ yet, so it still shows its original provenance.
-            use_legacy_defaults=predates_versioned_tokenizer_fields(cfg),
+            # Read before super().__init__, which stamps the *current* version into configs that lack one.
+            cfg_nemo_version=cfg.get('nemo_version', None),
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)
@@ -1077,6 +1077,10 @@ class MagpieTTSModel(ModelPT):
         (N, T*D) and reconstructed to (N, T, D) at inference time using stored T and D dimensions.
         """
         state_dict = self.update_ckpt(state_dict)
+        # `text_embedding` is absent on the CAS-encoder variant, which has no such table to compare.
+        check_text_embedding_matches_tokenizer(
+            state_dict, getattr(self, 'text_embedding', None), self.tokenizer, self.cfg
+        )
 
         # Check if checkpoint has baked context embedding (nn.Embedding format)
         has_baked_embedding_in_ckpt = 'baked_context_embedding.weight' in state_dict

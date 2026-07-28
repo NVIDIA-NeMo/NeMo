@@ -28,7 +28,6 @@ from typing import Dict, Optional, Tuple
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse import persist_versioned_tokenizer_defaults
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.utils import logging
 
@@ -152,23 +151,6 @@ class ModelLoadConfig:
             )
 
 
-def _migrate_versioned_tokenizer_fields(model_cfg: DictConfig) -> None:
-    """Backfill the versioned tokenizer fields (charset/punctuation) for checkpoints that predate them.
-
-    Old checkpoints were trained before ``charset_version`` / ``punct_version`` /
-    ``locale_specific_punct`` existed, so their configs omit them. Without this migration the current
-    defaults would apply, silently changing the token-to-ID mapping and breaking the model. Checkpoints
-    saved by current code already carry the fields, so this leaves them untouched.
-
-    ``persist_versioned_tokenizer_defaults`` unlocks each tokenizer node itself, so no enclosing
-    ``open_dict(model_cfg)`` is needed here (the caller still needs one for its own writes).
-    """
-    if not hasattr(model_cfg, 'text_tokenizers'):
-        return
-    for tok_name in model_cfg.text_tokenizers:
-        persist_versioned_tokenizer_defaults(model_cfg.text_tokenizers[tok_name], use_legacy_defaults=True)
-
-
 def update_config_for_inference(
     model_cfg: DictConfig,
     codecmodel_path: Optional[str],
@@ -191,7 +173,9 @@ def update_config_for_inference(
     """
     model_cfg.codecmodel_path = codecmodel_path
 
-    _migrate_versioned_tokenizer_fields(model_cfg)
+    # The versioned tokenizer fields (charset_version / punct_version / locale_specific_punct) need no
+    # migration here: the model's __init__ resolves them from the config's own ``nemo_version`` stamp
+    # and pins the result, and every path below constructs the model from this config afterwards.
 
     # Update text tokenizer paths for backward compatibility
     if hasattr(model_cfg, 'text_tokenizer'):

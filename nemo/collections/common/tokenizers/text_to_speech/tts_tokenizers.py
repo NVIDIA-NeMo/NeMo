@@ -19,8 +19,11 @@ import string
 import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import List, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
+from omegaconf import open_dict
+from packaging.version import InvalidVersion, Version
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerBase
 
@@ -44,19 +47,162 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
-CASELESS_SCRIPT_TOKENIZER_TARGETS = frozenset(
-    {
-        'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer',
-        'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ArabicCharsTokenizer',
-    }
-)
+_TOKENIZER_MODULE = 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers'
+_HINDI_CHARS_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.HindiCharsTokenizer'
+_ARABIC_CHARS_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.ArabicCharsTokenizer'
+_IPA_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.IPATokenizer'
 
-# Defaults for the versioned tokenizer fields. These are the single source of truth: the tokenizer
-# signatures below and the config backfill in
-# ``nemo.collections.tts.data.text_to_speech_dataset_lhotse.persist_versioned_tokenizer_defaults``
-# both read them, so bumping a version stays one edit and the two cannot drift apart.
+# Tokenizers whose ``__init__`` accepts the corresponding versioned argument. These are API facts, not
+# linguistic ones -- do not conflate them with "which scripts are caseless". A tokenizer that is added
+# here but does not take the argument makes the backfill below pass an unknown kwarg to it.
+CHARSET_VERSIONED_TOKENIZER_TARGETS = frozenset({_HINDI_CHARS_TOKENIZER_TARGET, _ARABIC_CHARS_TOKENIZER_TARGET})
+PUNCT_VERSIONED_TOKENIZER_TARGETS = frozenset({_HINDI_CHARS_TOKENIZER_TARGET})
+
+# Current defaults for the versioned tokenizer fields. These are the single source of truth: the
+# tokenizer signatures below and ``VERSIONED_TOKENIZER_FIELDS`` both read them, so bumping a default
+# stays one edit and the two cannot drift apart.
 DEFAULT_CHARSET_VERSION = 2
 DEFAULT_PUNCT_VERSION = 2
+DEFAULT_LOCALE_SPECIFIC_PUNCT = True
+
+
+def _unset(tokenizer_config: Mapping, field: str) -> bool:
+    """Whether ``field`` is absent or explicitly null.
+
+    Null counts as unset because that is how the tokenizers themselves read it: their version branches
+    are gated on ``if chars is None`` / ``if non_default_punct_list is None``. Treating an explicit
+    ``chars: null`` as "specified" would suppress the backfill while the tokenizer still took the
+    version branch, silently picking the class default over the dated one.
+    """
+    return tokenizer_config.get(field, None) is None
+
+
+@dataclass(frozen=True)
+class VersionedTokenizerField:
+    """A tokenizer default that changed after checkpoints had already been trained and released.
+
+    A config that leaves ``field`` unset is ambiguous: it is either an archive that predates the field
+    (whose vocabulary was built with ``legacy``) or a config written since (which means ``current``).
+    ``changed_in`` is what dates it, against the config's own ``nemo_version`` stamp.
+
+    Attributes:
+        field: The config key this entry resolves.
+        current: Value in force today. Must *be* the tokenizer's own default, not a copy of it.
+        legacy: Value in force before ``changed_in``.
+        changed_in: NeMo release that introduced ``current``.
+        applies_to: Whether the field is meaningful for a given tokenizer config node. Must exclude
+            tokenizers that do not accept the argument, and configs that already fix the vocabulary by
+            other means (an explicit ``chars`` makes ``charset_version`` inert).
+    """
+
+    field: str
+    current: Any
+    legacy: Any
+    changed_in: str
+    applies_to: Callable[[Mapping], bool]
+
+
+# Both PRs that introduced these fields (#15567, #15614) landed during 2.8.0rc0, each shipping with the
+# current default from day one. Adding a versioned field, or flipping a default, is one new row here.
+VERSIONED_TOKENIZER_FIELDS = (
+    VersionedTokenizerField(
+        field='charset_version',
+        current=DEFAULT_CHARSET_VERSION,
+        legacy=1,
+        changed_in="2.8.0",
+        applies_to=lambda cfg: (cfg.get('_target_') in CHARSET_VERSIONED_TOKENIZER_TARGETS and _unset(cfg, 'chars')),
+    ),
+    VersionedTokenizerField(
+        field='punct_version',
+        current=DEFAULT_PUNCT_VERSION,
+        legacy=1,
+        changed_in="2.8.0",
+        applies_to=lambda cfg: (
+            cfg.get('_target_') in PUNCT_VERSIONED_TOKENIZER_TARGETS and _unset(cfg, 'non_default_punct_list')
+        ),
+    ),
+    # Every other locale always used its locale-specific IPA punctuation, so the current default matches
+    # what those were trained with. pt-BR is the one locale with released checkpoints built on
+    # DEFAULT_PUNCTUATION alone, so it is the only one that ever needs the legacy value.
+    VersionedTokenizerField(
+        field='locale_specific_punct',
+        current=DEFAULT_LOCALE_SPECIFIC_PUNCT,
+        legacy=False,
+        changed_in="2.8.0",
+        applies_to=lambda cfg: (
+            cfg.get('_target_') == _IPA_TOKENIZER_TARGET
+            and cfg.get('locale') == "pt-BR"
+            and _unset(cfg, 'non_default_punct_list')
+        ),
+    ),
+)
+
+
+def _predates_nemo_release(cfg_nemo_version: Optional[str], changed_in: str) -> bool:
+    """Whether a config stamped ``cfg_nemo_version`` was authored before ``changed_in``.
+
+    ``None`` means the config carries no stamp, i.e. it was hand-authored for a fresh training run
+    rather than serialized by ``ModelPT``, and should get today's defaults.
+
+    Comparison is on ``Version.release`` so "2.8.0rc0" reads as 2.8.0, not as older than it (PEP 440
+    orders pre-releases first). That resolves the whole 2.8.0rc0 window (2026-02-02 .. 2026-06-10) to
+    the current defaults even though the fields landed mid-window on 2026-04-24. The window is genuinely
+    undecidable from the stamp alone; we break the tie toward current because ``ArabicCharsTokenizer``
+    did not exist before ``charset_version`` did (so for Arabic this reading is always right), and
+    because guessing legacy silently downgrades new training whereas guessing current fails loudly with
+    a text embedding mismatch that names the field to set. Every released checkpoint from that window
+    pins its fields, so none of them reach here.
+    """
+    if cfg_nemo_version is None:
+        return False
+    try:
+        return Version(str(cfg_nemo_version)).release < Version(changed_in).release
+    except InvalidVersion:
+        logging.warning(f"Unparseable nemo_version={cfg_nemo_version!r}; assuming current tokenizer defaults.")
+        return False
+
+
+def resolve_versioned_tokenizer_defaults(tokenizer_config, cfg_nemo_version: Optional[str] = None) -> Dict[str, Any]:
+    """Pin every unset versioned field of a single tokenizer config, in place.
+
+    Writing the resolved values into the config, rather than leaning on the class defaults, is what
+    makes a vocabulary survive a ``.nemo`` round-trip: once pinned, the token-to-ID mapping the model
+    was trained with is reproduced exactly however the class defaults evolve. It also leaves the config
+    unambiguous for every downstream ``setup_tokenizers`` call, which therefore needs no version.
+
+    Args:
+        tokenizer_config: One tokenizer's config node. Mutated in place.
+        cfg_nemo_version: The enclosing model config's ``nemo_version``, or None if it has none.
+
+    Returns:
+        The fields that were backfilled, mapped to the values chosen for them.
+    """
+    if tokenizer_config.get('_target_', None) is None:
+        return {}
+
+    backfilled, legacy_backfilled = {}, {}
+    for spec in VERSIONED_TOKENIZER_FIELDS:
+        if not _unset(tokenizer_config, spec.field) or not spec.applies_to(tokenizer_config):
+            continue
+        is_legacy = _predates_nemo_release(cfg_nemo_version, spec.changed_in)
+        value = spec.legacy if is_legacy else spec.current
+        with open_dict(tokenizer_config):
+            tokenizer_config[spec.field] = value
+        backfilled[spec.field] = value
+        if is_legacy:
+            legacy_backfilled[spec.field] = value
+
+    # Only the legacy direction is worth reporting: it silently reproduces an older vocabulary.
+    if legacy_backfilled:
+        settings = ", ".join(f"{field}={value}" for field, value in legacy_backfilled.items())
+        logging.warning(
+            f"Tokenizer {tokenizer_config['_target_'].rsplit('.', 1)[-1]} did not specify "
+            f"{', '.join(legacy_backfilled)}; assuming the pre-versioning defaults ({settings}) because this "
+            f"config is stamped nemo_version={cfg_nemo_version}, which predates those fields. This reproduces "
+            f"the vocabulary the checkpoint was trained with. If you are starting a NEW training run from "
+            f"this config, set these fields explicitly to choose the current defaults."
+        )
+    return backfilled
 
 
 class BaseTokenizer(ABC):
@@ -446,9 +592,9 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
         if chars is None:
             if charset_version == 1:
                 warnings.warn(
-                    "HindiCharsTokenizer charset_version=1 (case='mixed' + ascii_lowercase) is deprecated "
-                    "and will be removed in a future release. "
-                    "Migrate to charset_version=2 (case='upper' + ascii_letters) and retrain.",
+                    "HindiCharsTokenizer charset_version=1 (case='mixed' + ascii_lowercase) is frozen: it is "
+                    "retained so that checkpoints trained on it stay loadable, and receives no further "
+                    "changes. New models should use charset_version=2 (case='upper' + ascii_letters).",
                     DeprecationWarning,
                     stacklevel=2,
                 )
@@ -462,8 +608,8 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
         if non_default_punct_list is None:
             if punct_version == 1:
                 warnings.warn(
-                    "HindiCharsTokenizer: punct_version=1 uses DEFAULT_PUNCTUATION without dandas "
-                    "and will be removed in a future release. Migrate to punct_version=2.",
+                    "HindiCharsTokenizer: punct_version=1 uses DEFAULT_PUNCTUATION without dandas. It is frozen "
+                    "so that checkpoints trained on it stay loadable; new models should use punct_version=2.",
                     DeprecationWarning,
                     stacklevel=2,
                 )
@@ -559,9 +705,9 @@ class ArabicCharsTokenizer(BaseCharsTokenizer):
         if chars is None:
             if charset_version == 1:
                 warnings.warn(
-                    "ArabicCharsTokenizer charset_version=1 (case='mixed' + ascii_letters) is deprecated "
-                    "and will be removed in a future release. "
-                    "Migrate to charset_version=2 (case='upper' + ascii_letters) and retrain.",
+                    "ArabicCharsTokenizer charset_version=1 (case='mixed' + ascii_letters) is frozen: it is "
+                    "retained so that checkpoints trained on it stay loadable (the released v2607 MagpieTTS "
+                    "pins it), and receives no further changes. New models should use charset_version=2.",
                     DeprecationWarning,
                     stacklevel=2,
                 )
@@ -940,7 +1086,7 @@ class IPATokenizer(BaseTokenizer):
         locale="en-US",
         punct=True,
         non_default_punct_list=None,
-        locale_specific_punct=True,
+        locale_specific_punct=DEFAULT_LOCALE_SPECIFIC_PUNCT,
         fixed_vocab=None,
         *,
         space=' ',

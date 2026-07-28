@@ -24,11 +24,9 @@ from omegaconf import DictConfig, open_dict
 from transformers import AutoTokenizer, T5Tokenizer
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
-    CASELESS_SCRIPT_TOKENIZER_TARGETS,
-    DEFAULT_CHARSET_VERSION,
-    DEFAULT_PUNCT_VERSION,
     AggregatedTTSTokenizer,
     IPABPETokenizer,
+    resolve_versioned_tokenizer_defaults,
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
@@ -40,92 +38,8 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
-_IPA_TOKENIZER_TARGET = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
-_HINDI_CHARS_TOKENIZER_TARGET = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
 
-
-def predates_versioned_tokenizer_fields(model_cfg) -> bool:
-    """Whether ``model_cfg`` was written by a NeMo release older than the versioned tokenizer fields.
-
-    Note this asks about the config's *origin*, not about restoration: being restored does not make a
-    checkpoint legacy. The deduction rests on one invariant -- every NeMo that knows about these fields
-    writes them (see ``persist_versioned_tokenizer_defaults``), so a serialized config that lacks them
-    can only have come from a NeMo that did not know about them, and its vocabulary was therefore built
-    with the pre-versioning values.
-
-    ``nemo_version`` identifies a serialized config: ``ModelPT.__init__`` stamps it into every config it
-    owns, so a config carrying one has already been through a ``.nemo`` archive or an ``hparams.yaml``,
-    whereas one hand-authored for a fresh training run has not.
-
-    Known limitation: a config extracted from a ``.nemo`` and reused verbatim to start new training is
-    treated as legacy. That is right when initializing from those weights and merely conservative
-    otherwise; ``persist_versioned_tokenizer_defaults`` logs a warning naming the fields to set
-    explicitly, so the fallback is never silent.
-
-    Args:
-        model_cfg: The model-level config passed to ``__init__`` (before ``super().__init__`` stamps it).
-
-    Returns:
-        True if absent versioned fields should resolve to their pre-versioning values.
-    """
-    return 'nemo_version' in model_cfg
-
-
-def persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults):
-    """Write the versioned tokenizer defaults into ``tokenizer_config`` when they are absent.
-
-    Pinning the values in the config (instead of leaning on the tokenizer class defaults) is what makes
-    a vocabulary survive a ``.nemo`` save/restore round-trip: once persisted, the token-to-ID mapping a
-    model was trained with is reproduced exactly, however the class defaults evolve afterwards.
-
-    Args:
-        tokenizer_config: A single tokenizer's config node. Mutated in place.
-        use_legacy_defaults: Use the values that were in force before these fields existed, instead of
-            the current defaults. Set for configs restored from checkpoints that predate the fields —
-            their vocabulary was built with the old values, so the new ones would shift every token ID.
-    """
-    target = tokenizer_config.get('_target_', None)
-    if target is None:
-        return
-
-    backfilled = {}
-    with open_dict(tokenizer_config):
-        # Most locales always used their locale-specific IPA punctuation, so the current default (True)
-        # matches what they were trained with. pt-BR is the exception: it is the one locale with released
-        # checkpoints built on DEFAULT_PUNCTUATION only, so it is the only one that needs opting out.
-        if (
-            target == _IPA_TOKENIZER_TARGET
-            and tokenizer_config.get('locale', None) == "pt-BR"
-            and 'non_default_punct_list' not in tokenizer_config
-            and 'locale_specific_punct' not in tokenizer_config
-        ):
-            backfilled['locale_specific_punct'] = tokenizer_config.locale_specific_punct = not use_legacy_defaults
-        # punct_version=2 adds the dandas ("।", "॥") to the Hindi punctuation set.
-        if target == _HINDI_CHARS_TOKENIZER_TARGET and 'punct_version' not in tokenizer_config:
-            backfilled['punct_version'] = tokenizer_config.punct_version = (
-                1 if use_legacy_defaults else DEFAULT_PUNCT_VERSION
-            )
-        # charset_version=2 collapses the caseless Hindi/Arabic scripts to one case, which *shrinks* the
-        # vocabulary (Hindi 191 -> 146 tokens, Arabic 164 -> 119) rather than extending it.
-        if target in CASELESS_SCRIPT_TOKENIZER_TARGETS and 'charset_version' not in tokenizer_config:
-            backfilled['charset_version'] = tokenizer_config.charset_version = (
-                1 if use_legacy_defaults else DEFAULT_CHARSET_VERSION
-            )
-
-    # Only the legacy direction is worth reporting: it silently reproduces an older vocabulary, and for
-    # pt-BR the tokenizer itself says nothing (unlike the Hindi/Arabic charset paths, which raise a
-    # DeprecationWarning that Python's default filters swallow outside pytest anyway).
-    if use_legacy_defaults and backfilled:
-        settings = ", ".join(f"{field}={value}" for field, value in backfilled.items())
-        logging.warning(
-            f"Tokenizer {target.rsplit('.', 1)[-1]} did not specify {', '.join(backfilled)}; assuming the "
-            f"pre-versioning defaults ({settings}) because this config predates those fields. This "
-            f"reproduces the vocabulary the checkpoint was trained with. If you are starting a NEW "
-            f"training run from this config, set these fields explicitly to choose the current defaults."
-        )
-
-
-def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=False):
+def setup_tokenizers(all_tokenizers_config, mode='train', cfg_nemo_version=None):
     """Instantiate the aggregated TTS transcript tokenizer described by ``all_tokenizers_config``.
 
     Being used in both model and worker_init_fn, so it is defined here.
@@ -134,10 +48,10 @@ def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=Fa
         all_tokenizers_config: The ``text_tokenizers`` config node. Mutated in place so that the
             versioned tokenizer defaults it resolved to are persisted into any ``.nemo`` saved later.
         mode: 'train' or 'test'. 'test' forces phoneme probability to 1.0 where supported.
-        use_legacy_defaults: Fill missing versioned fields with their pre-versioning values rather than
-            the current defaults. Callers restoring a trained model should pass
-            ``predates_versioned_tokenizer_fields(cfg)``; fresh training runs should leave this False so new
-            models get the current character/punctuation sets.
+        cfg_nemo_version: The enclosing model config's ``nemo_version``, used to date any versioned
+            tokenizer field the config leaves unset (see ``resolve_versioned_tokenizer_defaults``).
+            Only a model's ``__init__`` needs it: that call pins the resolved values into the config,
+            so later calls -- dataloader setup, worker_init_fn -- can leave it None.
 
     Returns:
         An ``AggregatedTTSTokenizer`` over every configured tokenizer.
@@ -154,7 +68,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=Fa
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
                 text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
-            persist_versioned_tokenizer_defaults(tokenizer_config, use_legacy_defaults)
+            resolve_versioned_tokenizer_defaults(tokenizer_config, cfg_nemo_version)
             tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
@@ -166,6 +80,34 @@ def setup_tokenizers(all_tokenizers_config, mode='train', use_legacy_defaults=Fa
     aggregated_tokenizer = AggregatedTTSTokenizer(tokenizers, tokenizer_names)  # TTS Transcript tokenizer
 
     return aggregated_tokenizer
+
+
+def check_text_embedding_matches_tokenizer(state_dict, text_embedding, tokenizer, model_cfg) -> None:
+    """Fail actionably when a checkpoint's text embedding disagrees with the rebuilt tokenizer.
+
+    This is the symptom of every tokenizer-versioning mistake: the vocabulary is rebuilt with different
+    character or punctuation sets than the checkpoint was trained with, every token ID shifts, and
+    ``load_state_dict`` reports an opaque size mismatch. Naming the per-tokenizer token counts and the
+    fields to pin turns that into something a user can act on. A no-op when either side is absent --
+    the CAS-encoder MagpieTTS variant has no text embedding table.
+    """
+    ckpt_weight = state_dict.get('text_embedding.weight', None)
+    if ckpt_weight is None or text_embedding is None:
+        return
+    if ckpt_weight.shape[0] == text_embedding.num_embeddings:
+        return
+
+    raise RuntimeError(
+        f"MagpieTTS tokenizer/checkpoint mismatch: the checkpoint's text_embedding has "
+        f"{ckpt_weight.shape[0]} rows but this config builds {text_embedding.num_embeddings}. The text "
+        f"tokenizer vocabulary was not rebuilt the way this checkpoint was trained.\n"
+        f"  tokens per tokenizer: {getattr(tokenizer, 'num_tokens_per_tokenizer', 'n/a')}\n"
+        f"  config nemo_version:  {model_cfg.get('nemo_version', '<absent>')}\n"
+        f"This is usually a versioned tokenizer field resolving differently than at training time. Pin "
+        f"the values the checkpoint was trained with explicitly under `model.text_tokenizers.<name>`: "
+        f"`charset_version` (Hindi/Arabic char tokenizers), `punct_version` (Hindi), or "
+        f"`locale_specific_punct` (pt-BR IPA). See `VERSIONED_TOKENIZER_FIELDS` in tts_tokenizers.py."
+    )
 
 
 def check_speaker_format(item: str):

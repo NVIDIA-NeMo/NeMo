@@ -27,7 +27,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
-    predates_versioned_tokenizer_fields,
+    check_text_embedding_matches_tokenizer,
     setup_tokenizers,
 )
 from nemo.collections.tts.models import AudioCodecModel
@@ -335,8 +335,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
-            # `cfg` has not been through super().__init__ yet, so it still shows its original provenance.
-            use_legacy_defaults=predates_versioned_tokenizer_fields(cfg),
+            # Read before super().__init__, which stamps the *current* version into configs that lack one.
+            cfg_nemo_version=cfg.get('nemo_version', None),
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)
@@ -609,6 +609,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
+        check_text_embedding_matches_tokenizer(
+            state_dict, getattr(self, 'text_embedding', None), self.tokenizer, self.cfg
+        )
         if not strict:
             super().load_state_dict(state_dict, strict=False)
         modules_to_skip = self._get_state_dict_keys_to_exclude()

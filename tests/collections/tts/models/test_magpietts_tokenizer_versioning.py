@@ -22,9 +22,10 @@ it is either an archive that predates them (and whose vocabulary was built with 
 fresh training config that should get today's defaults. These tests pin both readings:
 
 1. ``setup_tokenizers`` uses the current defaults for fresh configs, and the pre-versioning values only
-   when ``use_legacy_defaults=True`` -- so new training is never silently downgraded to v1.
-2. ``predates_versioned_tokenizer_fields`` is what tells the two apart, via the ``nemo_version`` stamp that
-   ``ModelPT`` writes into every config it saves.
+   for configs stamped with a release that predates the fields -- so new training is never silently
+   downgraded to v1.
+2. The ``nemo_version`` stamp that ``ModelPT`` writes into every config it saves is what dates the
+   config, and ``VERSIONED_TOKENIZER_FIELDS`` records the release each default changed in.
 3. Whatever the resolved values are, they are written back into the config, so a model saved today
    restores to the same token-to-ID mapping no matter how the class defaults evolve later.
 """
@@ -36,10 +37,14 @@ import hydra
 import pytest
 import torch
 from omegaconf import OmegaConf, open_dict
+from packaging.version import Version
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    VERSIONED_TOKENIZER_FIELDS,
+    resolve_versioned_tokenizer_defaults,
+)
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
-    persist_versioned_tokenizer_defaults,
-    predates_versioned_tokenizer_fields,
+    check_text_embedding_matches_tokenizer,
     setup_tokenizers,
 )
 from nemo.core.classes import ModelPT
@@ -47,6 +52,11 @@ from nemo.core.classes import ModelPT
 _HINDI_CHARS = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
 _ARABIC_CHARS = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ArabicCharsTokenizer"
 _IPA = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+
+# A release that predates the versioned fields (both v2512 and v2602 are stamped exactly this) and one
+# that postdates them. "2.8.0rc0" is deliberately the *current* side: see ``_predates_nemo_release``.
+LEGACY_VERSION = "2.6.0rc0"
+CURRENT_VERSION = "2.8.0rc0"
 
 
 def _tokenizers_cfg(**tokenizer_fields):
@@ -66,7 +76,7 @@ class _TokenizerVersionModel(ModelPT):
     def __init__(self, cfg, trainer=None):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
-            use_legacy_defaults=predates_versioned_tokenizer_fields(cfg),
+            cfg_nemo_version=cfg.get('nemo_version', None),
         )
         super().__init__(cfg=cfg, trainer=trainer)
         self.text_embedding = torch.nn.Embedding(len(self.tokenizer.tokens) + 2, 4)
@@ -86,122 +96,139 @@ class _TokenizerVersionModel(ModelPT):
 
 
 class TestSetupTokenizersDefaults:
-    """Covers that the flag reaches the tokenizer config. What each version *means* for the resulting
-    vocabulary is already pinned by ``test_tts_tokenizers.py`` at the tokenizer-class level."""
+    """Covers that the version reaches every tokenizer node. Which value each stamp resolves to is
+    pinned by ``TestVersionDating``, and what each value *means* for the resulting vocabulary by
+    ``test_tts_tokenizers.py`` at the tokenizer-class level."""
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("use_legacy_defaults, expected", [(False, 2), (True, 1)])
-    def test_missing_versions_follow_the_legacy_flag(self, use_legacy_defaults, expected):
-        """Fresh training must get the current charsets; restoring an older archive must get v1."""
+    def test_version_reaches_the_tokenizer_config(self):
+        """The one line of plumbing between the model constructor and the resolver."""
         cfg = _tokenizers_cfg()
 
-        setup_tokenizers(cfg, use_legacy_defaults=use_legacy_defaults)
+        setup_tokenizers(cfg, cfg_nemo_version=LEGACY_VERSION)
 
-        assert cfg.hindi_chartokenizer.charset_version == expected
-        assert cfg.hindi_chartokenizer.punct_version == expected
+        assert cfg.hindi_chartokenizer.charset_version == 1
+        assert cfg.hindi_chartokenizer.punct_version == 1
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("use_legacy_defaults", [False, True])
-    def test_explicit_values_are_never_overridden(self, use_legacy_defaults):
+    @pytest.mark.parametrize("cfg_nemo_version", [CURRENT_VERSION, LEGACY_VERSION])
+    def test_explicit_values_are_never_overridden(self, cfg_nemo_version):
         """An explicitly configured version wins over both defaults -- that is what pins v2607."""
         cfg = _tokenizers_cfg(charset_version=1, punct_version=2)
 
-        setup_tokenizers(cfg, use_legacy_defaults=use_legacy_defaults)
+        setup_tokenizers(cfg, cfg_nemo_version=cfg_nemo_version)
 
         assert cfg.hindi_chartokenizer.charset_version == 1
         assert cfg.hindi_chartokenizer.punct_version == 2
 
 
-class TestPersistVersionedTokenizerDefaults:
+class TestResolveVersionedTokenizerDefaults:
+    # The current direction for these two targets is covered by
+    # ``test_current_backfill_matches_the_tokenizer_class_default``, which asserts something stronger.
     @pytest.mark.unit
-    @pytest.mark.parametrize("use_legacy_defaults, expected", [(False, 2), (True, 1)])
-    def test_arabic_charset_version(self, use_legacy_defaults, expected):
+    def test_arabic_charset_version_dates_back_to_v1(self):
         cfg = OmegaConf.create({"_target_": _ARABIC_CHARS})
 
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=use_legacy_defaults)
+        resolve_versioned_tokenizer_defaults(cfg, LEGACY_VERSION)
 
-        assert cfg.charset_version == expected
+        assert cfg.charset_version == 1
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("use_legacy_defaults, expected", [(False, True), (True, False)])
-    def test_pt_br_locale_specific_punct(self, use_legacy_defaults, expected):
+    def test_pt_br_locale_specific_punct_dates_back_to_off(self):
         cfg = OmegaConf.create({"_target_": _IPA, "locale": "pt-BR"})
 
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=use_legacy_defaults)
+        resolve_versioned_tokenizer_defaults(cfg, LEGACY_VERSION)
 
-        assert cfg.locale_specific_punct is expected
+        assert cfg.locale_specific_punct is False
 
     @pytest.mark.unit
     def test_non_default_punct_list_suppresses_pt_br_backfill(self):
         """An explicit punctuation list already fixes the vocabulary; adding the flag would fight it."""
         cfg = OmegaConf.create({"_target_": _IPA, "locale": "pt-BR", "non_default_punct_list": [".", ","]})
 
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=True)
+        resolve_versioned_tokenizer_defaults(cfg, LEGACY_VERSION)
 
         assert "locale_specific_punct" not in cfg
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cfg_fields, field, expected",
+        [
+            ({"chars": None}, "charset_version", 1),
+            ({"non_default_punct_list": None}, "punct_version", 1),
+            ({"charset_version": None}, "charset_version", 1),
+        ],
+        ids=["null-chars", "null-punct-list", "null-field-itself"],
+    )
+    def test_explicit_null_counts_as_unset(self, cfg_fields, field, expected):
+        """``chars: null`` must not read as "specified".
+
+        The tokenizers gate their version branches on ``is None``, so a null suppressing the backfill
+        would leave the branch running against the class default rather than the dated value.
+        """
+        cfg = OmegaConf.create({"_target_": _HINDI_CHARS, **cfg_fields})
+
+        resolve_versioned_tokenizer_defaults(cfg, LEGACY_VERSION)
+
+        assert cfg[field] == expected
 
     @pytest.mark.unit
     def test_other_ipa_locales_are_untouched(self):
         """Only pt-BR's punctuation set diverged from DEFAULT_PUNCTUATION, so only it is backfilled."""
         cfg = OmegaConf.create({"_target_": _IPA, "locale": "es-ES"})
 
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=True)
+        resolve_versioned_tokenizer_defaults(cfg, LEGACY_VERSION)
 
         assert "locale_specific_punct" not in cfg
 
     @pytest.mark.unit
-    def test_config_without_target_is_ignored(self):
-        cfg = OmegaConf.create({"pretrained_model": "google-t5/t5-small"})
+    @pytest.mark.parametrize("extra_cfg", [{}, {"_target_": None}], ids=["absent", "null"])
+    def test_config_without_target_is_ignored(self, extra_cfg):
+        """HuggingFace tokenizer nodes carry no resolvable ``_target_`` and must pass through untouched."""
+        cfg = OmegaConf.create({"pretrained_model": "google-t5/t5-small", **extra_cfg})
+        before = OmegaConf.to_container(cfg)
 
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=True)
+        resolve_versioned_tokenizer_defaults(cfg, LEGACY_VERSION)
 
-        assert cfg == OmegaConf.create({"pretrained_model": "google-t5/t5-small"})
+        assert OmegaConf.to_container(cfg) == before
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "target, field",
+        "target, field, extra_cfg",
         [
-            (_HINDI_CHARS, "charset_version"),
-            (_HINDI_CHARS, "punct_version"),
-            (_ARABIC_CHARS, "charset_version"),
+            (_HINDI_CHARS, "charset_version", {}),
+            (_HINDI_CHARS, "punct_version", {}),
+            (_ARABIC_CHARS, "charset_version", {}),
+            (_IPA, "locale_specific_punct", {"locale": "pt-BR"}),
         ],
     )
-    def test_non_legacy_backfill_matches_the_tokenizer_class_default(self, target, field):
-        """What gets persisted for a fresh config must equal what the tokenizer would have chosen itself.
+    def test_current_backfill_matches_the_tokenizer_class_default(self, target, field, extra_cfg):
+        """What gets persisted for a current config must equal what the tokenizer would have chosen itself.
 
-        Otherwise bumping a version in the tokenizer signature would silently leave this backfill writing
-        the old value, and every newly trained model would be pinned a version behind. Read off the real
-        signature rather than a literal, so this keeps holding when the defaults move.
+        ``VERSIONED_TOKENIZER_FIELDS`` and the tokenizer signatures read the same ``DEFAULT_*`` constants,
+        so this holds by construction today. It is kept as the guard against someone re-introducing a
+        literal on either side, which would silently pin every newly trained model a version behind.
         """
         class_default = inspect.signature(hydra.utils.get_class(target)).parameters[field].default
-        cfg = OmegaConf.create({"_target_": target})
+        cfg = OmegaConf.create({"_target_": target, **extra_cfg})
 
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=False)
+        resolve_versioned_tokenizer_defaults(cfg, CURRENT_VERSION)
 
         assert cfg[field] == class_default
 
     @pytest.mark.unit
-    def test_non_legacy_pt_br_backfill_matches_the_tokenizer_class_default(self):
-        """Same invariant for the pt-BR flag, whose default lives on ``IPATokenizer``."""
-        class_default = inspect.signature(hydra.utils.get_class(_IPA)).parameters["locale_specific_punct"].default
-        cfg = OmegaConf.create({"_target_": _IPA, "locale": "pt-BR"})
-
-        persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=False)
-
-        assert cfg.locale_specific_punct == class_default
-
-    @pytest.mark.unit
     @pytest.mark.parametrize(
-        "cfg_fields, use_legacy_defaults, should_warn",
+        "cfg_fields, cfg_nemo_version, should_warn",
         [
-            ({}, True, True),
-            ({"_target_": _IPA, "locale": "pt-BR"}, True, True),
-            ({}, False, False),
-            ({"punct_version": 1, "charset_version": 1}, True, False),
+            ({}, LEGACY_VERSION, True),
+            ({"_target_": _IPA, "locale": "pt-BR"}, LEGACY_VERSION, True),
+            ({}, CURRENT_VERSION, False),
+            ({}, None, False),
+            ({"punct_version": 1, "charset_version": 1}, LEGACY_VERSION, False),
         ],
-        ids=["legacy-hindi", "legacy-pt-br", "fresh", "already-explicit"],
+        ids=["legacy-hindi", "legacy-pt-br", "current", "unstamped", "already-explicit"],
     )
-    def test_legacy_backfill_is_never_silent(self, cfg_fields, use_legacy_defaults, should_warn):
+    def test_legacy_backfill_is_never_silent(self, cfg_fields, cfg_nemo_version, should_warn):
         """Falling back to a pre-versioning vocabulary must say so.
 
         The tokenizers cannot be relied on for this: the pt-BR path emits nothing at all, and the
@@ -210,8 +237,8 @@ class TestPersistVersionedTokenizerDefaults:
         """
         cfg = OmegaConf.create({"_target_": _HINDI_CHARS, **cfg_fields})
 
-        with patch("nemo.collections.tts.data.text_to_speech_dataset_lhotse.logging.warning") as mock_warning:
-            persist_versioned_tokenizer_defaults(cfg, use_legacy_defaults=use_legacy_defaults)
+        with patch("nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.logging.warning") as mock_warning:
+            resolve_versioned_tokenizer_defaults(cfg, cfg_nemo_version)
 
         assert mock_warning.called is should_warn
         if should_warn:
@@ -219,20 +246,36 @@ class TestPersistVersionedTokenizerDefaults:
             assert any(field in mock_warning.call_args.args[0] for field in ("punct_version", "locale_specific_punct"))
 
 
-class TestPredatesVersionedTokenizerFields:
-    @pytest.mark.unit
-    def test_serialized_config_predates_the_fields(self):
-        """``ModelPT.__init__`` stamps ``nemo_version``, so carrying one means the config was serialized;
-        current code always writes the versioned fields, so a serialized config lacking them is older."""
-        assert predates_versioned_tokenizer_fields(OmegaConf.create({"nemo_version": "2.6.0rc0"}))
+class TestVersionDating:
+    """How a config's ``nemo_version`` stamp maps onto the versioned fields."""
 
     @pytest.mark.unit
-    def test_hand_authored_struct_config_does_not(self):
-        """Model configs reach ``__init__`` in struct mode, where a plain attribute read would raise."""
-        cfg = OmegaConf.create({"text_tokenizers": {}})
-        OmegaConf.set_struct(cfg, True)
+    @pytest.mark.parametrize(
+        "cfg_nemo_version, expect_legacy",
+        [
+            ("2.6.0rc0", True),  # v2512 and v2602 are both stamped exactly this
+            ("2.7.3", True),
+            ("2.8.0rc0", False),  # v2607; the rc window is broken toward the current defaults
+            ("2.8.0", False),
+            ("3.1.0", False),
+            (None, False),  # hand-authored fresh training config
+            ("not-a-version", False),
+        ],
+        ids=["v2512-v2602", "2.7.3", "v2607-rc", "2.8.0", "3.1.0", "unstamped", "garbage"],
+    )
+    def test_stamp_decides_the_backfilled_value(self, cfg_nemo_version, expect_legacy):
+        cfg = OmegaConf.create({"_target_": _HINDI_CHARS})
 
-        assert not predates_versioned_tokenizer_fields(cfg)
+        resolve_versioned_tokenizer_defaults(cfg, cfg_nemo_version)
+
+        assert cfg.charset_version == (1 if expect_legacy else 2)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("spec", VERSIONED_TOKENIZER_FIELDS, ids=lambda s: s.field)
+    def test_every_field_documents_a_parseable_release(self, spec):
+        """``changed_in`` is compared against real stamps, so it has to parse and differ from legacy."""
+        assert Version(spec.changed_in).release
+        assert spec.current != spec.legacy
 
 
 class _StopAtTokenizerSetup(Exception):
@@ -288,22 +331,26 @@ class TestProductionCallSites:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "cfg_extra, expected", [({}, False), ({"nemo_version": "2.6.0rc0"}, True)], ids=["fresh", "serialized"]
+        "cfg_extra, expected",
+        [({}, None), ({"nemo_version": LEGACY_VERSION}, LEGACY_VERSION)],
+        ids=["fresh", "serialized"],
     )
-    def test_magpietts_passes_config_provenance(self, cfg_extra, expected):
+    def test_magpietts_passes_config_nemo_version(self, cfg_extra, expected):
         from nemo.collections.tts.models.magpietts import MagpieTTSModel
 
         captured = self._captured_kwargs(
             MagpieTTSModel, "nemo.collections.tts.models.magpietts", cfg_extra, "from_pretrained"
         )
 
-        assert captured["use_legacy_defaults"] is expected
+        assert captured["cfg_nemo_version"] == expected
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "cfg_extra, expected", [({}, False), ({"nemo_version": "2.6.0rc0"}, True)], ids=["fresh", "serialized"]
+        "cfg_extra, expected",
+        [({}, None), ({"nemo_version": LEGACY_VERSION}, LEGACY_VERSION)],
+        ids=["fresh", "serialized"],
     )
-    def test_easy_magpietts_passes_config_provenance(self, cfg_extra, expected):
+    def test_easy_magpietts_passes_config_nemo_version(self, cfg_extra, expected):
         from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
 
         captured = self._captured_kwargs(
@@ -313,7 +360,52 @@ class TestProductionCallSites:
             "restore_from",
         )
 
-        assert captured["use_legacy_defaults"] is expected
+        assert captured["cfg_nemo_version"] == expected
+
+
+class TestTextEmbeddingMismatchError:
+    """The diagnostic a user actually hits when a vocabulary is rebuilt the wrong way."""
+
+    @staticmethod
+    def _model_and_state_dict(ckpt_rows):
+        model = MagicMock()
+        model.num_tokens_per_tokenizer = {"hindi_chartokenizer": 191}
+        return {"text_embedding.weight": torch.zeros(ckpt_rows, 4)}, model
+
+    @pytest.mark.unit
+    def test_matching_sizes_pass(self):
+        state_dict, tokenizer = self._model_and_state_dict(100)
+
+        check_text_embedding_matches_tokenizer(state_dict, torch.nn.Embedding(100, 4), tokenizer, OmegaConf.create({}))
+
+    @pytest.mark.unit
+    def test_mismatch_names_the_fields_to_pin(self):
+        state_dict, tokenizer = self._model_and_state_dict(193)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            check_text_embedding_matches_tokenizer(
+                state_dict,
+                torch.nn.Embedding(148, 4),
+                tokenizer,
+                OmegaConf.create({"nemo_version": LEGACY_VERSION}),
+            )
+
+        message = str(excinfo.value)
+        assert "193" in message and "148" in message  # both sides of the mismatch
+        assert LEGACY_VERSION in message  # the stamp that drove the decision
+        assert "hindi_chartokenizer" in message  # which tokenizer to look at
+        for field in ("charset_version", "punct_version", "locale_specific_punct"):
+            assert field in message  # what to set
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "state_dict, text_embedding",
+        [({}, torch.nn.Embedding(10, 4)), ({"text_embedding.weight": torch.zeros(10, 4)}, None)],
+        ids=["no-weight-in-ckpt", "cas-encoder-variant-has-no-table"],
+    )
+    def test_absent_embedding_is_not_an_error(self, state_dict, text_embedding):
+        """The CAS-encoder MagpieTTS variant has no text_embedding to compare; it must not trip here."""
+        check_text_embedding_matches_tokenizer(state_dict, text_embedding, MagicMock(), OmegaConf.create({}))
 
 
 class TestNemoRoundTrip:
@@ -324,11 +416,16 @@ class TestNemoRoundTrip:
         """Write a .nemo that looks like a pre-versioning release (v2512/v2602).
 
         Such archives were trained with the v1 charset/punctuation but their configs name neither, so
-        the versioned fields are stripped back out after the model is built.
+        the versioned fields are stripped back out after the model is built. The ``nemo_version`` stamp
+        is what remains to date them -- both released archives carry exactly ``2.6.0rc0``. Setting it
+        before ``super().__init__`` is also what a real restore does: ``ModelPT`` only stamps a config
+        that has no version yet, so the original release's stamp survives every later save.
         """
-        model = _TokenizerVersionModel(OmegaConf.create({"text_tokenizers": _tokenizers_cfg()}))
+        model = _TokenizerVersionModel(
+            OmegaConf.create({"text_tokenizers": _tokenizers_cfg(), "nemo_version": LEGACY_VERSION})
+        )
         model.text_embedding = torch.nn.Embedding(
-            len(setup_tokenizers(_tokenizers_cfg(), use_legacy_defaults=True).tokens) + 2, 4
+            len(setup_tokenizers(_tokenizers_cfg(), cfg_nemo_version=LEGACY_VERSION).tokens) + 2, 4
         )
         with open_dict(model.cfg):
             del model.cfg.text_tokenizers.hindi_chartokenizer.charset_version
@@ -356,8 +453,9 @@ class TestNemoRoundTrip:
     def test_newly_trained_model_round_trips_on_current_defaults(self, tmp_path):
         """A model trained today keeps its v2 vocabulary through a save/restore cycle.
 
-        The restore takes the legacy branch, so this pins that the versions persisted at save time --
-        not the branch -- are what decides the vocabulary.
+        The archive is stamped with the current release, so nothing here depends on the dating rule:
+        this pins that the versions persisted at save time are what decide the vocabulary, which is
+        what makes every future release self-describing regardless of how the class defaults move.
         """
         model = _TokenizerVersionModel(OmegaConf.create({"text_tokenizers": _tokenizers_cfg()}))
         assert model.cfg.text_tokenizers.hindi_chartokenizer.charset_version == 2

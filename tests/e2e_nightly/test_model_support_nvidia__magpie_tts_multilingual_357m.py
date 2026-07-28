@@ -50,10 +50,17 @@ def _load_model():
 def test_model_release_restore(revision):
     """Ensure every published MagpieTTS release remains loadable by current NeMo code.
 
-    The releases span three generations of tokenizer defaults: v2512 and v2602 predate the
-    ``charset_version`` / ``punct_version`` / ``locale_specific_punct`` fields, while v2607 pins them
-    explicitly. A vocabulary rebuilt from anything but the values a release was trained with shifts
-    every token ID, which surfaces here as a text_embedding size mismatch during ``restore_from``.
+    The three releases cover each way the versioned tokenizer fields can present themselves:
+
+    - v2512 (stamped nemo_version 2.6.0rc0) has no version-sensitive tokenizer at all.
+    - v2602 (2.6.0rc0) carries a ``HindiCharsTokenizer`` naming neither ``charset_version`` nor
+      ``punct_version``, so both must be dated back to v1 from the stamp. This is the restore that
+      broke and prompted the fix.
+    - v2607 (2.8.0rc0) pins ``locale_specific_punct=false`` (pt-BR) and ``charset_version=1`` (Arabic)
+      explicitly, so the stamp must not override them.
+
+    A vocabulary rebuilt from anything but the values a release was trained with shifts every token ID,
+    which surfaces during ``restore_from`` as a text embedding size mismatch.
     """
     from nemo.collections.tts.models import MagpieTTSModel
 
@@ -61,10 +68,16 @@ def test_model_release_restore(revision):
     model = MagpieTTSModel.restore_from(filepath, map_location="cpu")
 
     assert model is not None
-    assert model.text_embedding.num_embeddings == len(model.tokenizer.tokens) + 2, (
+    # Independent restatement of the sizing in MagpieTTSModel.__init__, so this still catches drift if
+    # the check inside load_state_dict is ever removed. All three releases set
+    # legacy_text_conditioning=false; legacy models exclude the context-text tokens from this table.
+    expected_tokens = len(model.tokenizer.tokens)
+    if model.legacy_text_conditioning:
+        expected_tokens -= model.tokenizer.num_tokens_per_tokenizer[model.text_conditioning_tokenizer_name]
+    assert model.text_embedding.num_embeddings == expected_tokens + 2, (
         f"{revision}: text embedding has {model.text_embedding.num_embeddings} rows but the tokenizer "
-        f"built {len(model.tokenizer.tokens)} tokens (+2 for BOS/EOS) -- the restored tokenizer config "
-        f"does not match the one this release was trained with."
+        f"built {expected_tokens} usable tokens (+2 for BOS/EOS) -- the restored tokenizer config does "
+        f"not match the one this release was trained with."
     )
 
     del model

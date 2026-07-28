@@ -450,7 +450,7 @@ class AudioCodecModel(ModelPT):
             audio_len: valid length for each example in the batch, shape `(batch size,)`
             sample_rate: sample rate of input audio (int)
             num_codebooks: number of codebooks to use for reconstructing audio.
-                Using fewer codebooks will only be accurate for codecs trained with FSQ codebook dropout.
+                Using fewer codebooks will only be accurate for codecs trained with codebook dropout.
 
         Returns:
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,

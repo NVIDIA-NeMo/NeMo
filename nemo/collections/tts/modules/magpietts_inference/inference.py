@@ -1326,8 +1326,8 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
 
                     user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
-                    real_start = 1
-                    real_end = max(real_start, int(user_audio_codes_lens[0].item()) - 1)
+                    real_start = 0
+                    real_end = int(user_audio_codes_lens[0].item())
                     user_audio_embedded = user_audio_embedded[:, real_start:real_end]
 
                     bos_user_pad = torch.zeros(

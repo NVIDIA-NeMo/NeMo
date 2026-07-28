@@ -187,8 +187,8 @@ The default expiration time is one year.
 - The expiration time is also included as a suffix in the uploaded artifacts
 directory name, using the format `%Y-%m-%dT%H-%M-%SZ`, so uploaded reports
 can be filtered and deleted later if needed.
-- Both generated reports include a clickable POR link derived from `--task_id`. 
-If no task ID is specified, the link points to the POR project page.
+- Both generated reports include a clickable Jira link derived from `--task_id`. 
+If no task ID is specified, the link points to the Jira project page.
 
 ## Maintenance
 

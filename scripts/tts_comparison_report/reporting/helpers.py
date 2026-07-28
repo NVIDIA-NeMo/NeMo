@@ -14,7 +14,7 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from scripts.tts_comparison_report.reporting.constants import TICKET_URL_PREFIX
+from scripts.tts_comparison_report.reporting.constants import DUMMY_TASK_ID, JIRA_TICKET_URL_PREFIX
 from scripts.tts_comparison_report.reporting.models import ExpirationInfo, TaskInfo
 
 
@@ -37,19 +37,21 @@ def make_expiration_info(expires_in: int) -> ExpirationInfo:
 
 
 def make_task_info(task_id: str) -> TaskInfo:
-    """Create task metadata and the corresponding link information.
+    """Create task metadata and the corresponding Jira link information.
 
     Args:
-        task_id: Task identifier used for the report.
+        task_id: Jira task identifier used for the report.
 
     Returns:
-        Task information with the original task ID and task URL.
+        Task information with the original task ID, derived Jira ID, and Jira URL.
     """
-    task_url = f"{TICKET_URL_PREFIX}/{task_id}"
+    jira_id = task_id if task_id != DUMMY_TASK_ID else task_id.split("-")[0]
+    jira_url = f"{JIRA_TICKET_URL_PREFIX}/{jira_id}"
 
     return TaskInfo(
         task_id=task_id,
-        task_url=task_url,
+        jira_id=jira_id,
+        jira_url=jira_url,
     )
 
 

@@ -535,10 +535,11 @@ class BucketData:
 
 @dataclass(frozen=True)
 class TaskInfo:
-    """Task identifiers and derived link information used in reports."""
+    """Task identifiers and derived Jira link information used in reports."""
 
     task_id: str
-    task_url: str
+    jira_id: str
+    jira_url: str
 
 
 @dataclass(frozen=True)

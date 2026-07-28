@@ -275,8 +275,8 @@ class Orchestrator:
 
         report = self.renderer.render(
             name=TemplateName.audio_report,
-            task_id=task_info.task_id,
-            task_url=task_info.task_url,
+            jira_id=task_info.jira_id,
+            jira_url=task_info.jira_url,
             header_block=header_block,
             benchmark_blocks=benchmark_blocks,
             benchmark_section_info=benchmark_section_info,
@@ -380,8 +380,8 @@ class Orchestrator:
         report = self.renderer.render(
             name=TemplateName.eval_report,
             is_self_comparison=eval_artifacts.is_self_comparison,
-            task_id=task_info.task_id,
-            task_url=task_info.task_url,
+            jira_id=task_info.jira_id,
+            jira_url=task_info.jira_url,
             audio_report_url=audio_report_url,
             configuration_block=configuration_block,
             header_block=header_block,
@@ -419,7 +419,7 @@ class Orchestrator:
             generate_audio_report: Whether to generate the audio comparison report.
             audio_report_benchmarks: Benchmark names to include in the audio report.
             samples_per_benchmark: Number of audio pairs to sample per benchmark.
-            task_id: Task identifier used for report metadata and link.
+            task_id: Task identifier used for report metadata and Jira linking.
 
         Returns:
             Tuple containing the evaluation report URL and the optional audio report URL.

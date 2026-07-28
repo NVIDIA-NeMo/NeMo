@@ -113,7 +113,7 @@ def _create_argparser() -> ArgumentParser:
         "--task_id",
         type=str,
         default=DUMMY_TASK_ID,
-        help="Task ID associated with this report.",
+        help="Jira task number associated with this report.",
     )
     parser.add_argument(
         "--results_subdir",

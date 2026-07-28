@@ -63,8 +63,8 @@ S3_IMAGES_DIR: str = "images"
 # Directory containing Jinja templates used for report rendering.
 TEMPLATES_DIR: Path = _ROOT / "templates"
 
-# Fallback task id used when no real ticket is provided.
-DUMMY_TASK_ID: str = "NMP-I-000"
+# Fallback task id used when no real Jira ticket is provided.
+DUMMY_TASK_ID: str = "NEMOTTS-0000"
 
-# URL prefix used to construct clickable ticket links in reports.
-TICKET_URL_PREFIX: str = "https://modelpor.ideas.aha.io/ideas"
+# URL prefix used to construct clickable Jira ticket links in reports.
+JIRA_TICKET_URL_PREFIX: str = "https://jirasw.nvidia.com/browse"

@@ -1388,7 +1388,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             user_audio_embedded_restored = user_audio_embedded.new_zeros(B, T, D)
 
             sample_prob = float(self.cfg.get("user_cond_trim_augmentation_sample_prob", 0.0) or 0.0)
+            # Probability of applying trim augmentation to each turn for a sample selected by sample_prob.
             turn_prob = float(self.cfg.get("user_cond_trim_augmentation_turn_prob", 0.0) or 0.0)
+            # Base number of user-audio embedding frames to remove, before random one-frame jitter.
             base_trim = int(self.cfg.get("user_cond_trim_augmentation_base", 0) or 0)
 
             if self.training and sample_prob > 0.0 and turn_prob > 0.0 and base_trim > 0:
@@ -1412,17 +1414,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if seq_len <= 0:
                     continue
 
-                boundary_trim = self.cfg.get("user_audio_boundary_trim", 0)
-                boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
-
-                if boundary_trim == 0:
-                    real_start = 0
-                    real_end = int(user_audio_codes_lens[turn_idx].item())
-                else:
-                    turn_len_with_special = int(user_audio_codes_lens[turn_idx].item())
-                    real_start = 1
-                    real_end = max(real_start, turn_len_with_special - 1)
-
+                turn_len_with_special = int(user_audio_codes_lens[turn_idx].item())
+                real_start = 1
+                real_end = max(real_start, turn_len_with_special - 1)
                 turn_emb = user_audio_embedded[turn_idx, real_start:real_end]
 
                 copy_len = min(seq_len, turn_emb.size(0))
@@ -1430,12 +1424,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     continue
 
                 turn_emb = turn_emb[:copy_len].clone()
-
-                if boundary_trim > 0:
-                    trim = min(boundary_trim, copy_len // 2)
-                    if trim > 0:
-                        turn_emb[:trim] = 0.0
-                        turn_emb[copy_len - trim :] = 0.0
 
                 if bool(sample_trim_aug[b].item()):
                     do_turn_aug = torch.rand((), device=user_audio_embedded.device).item() < turn_prob

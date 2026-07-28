@@ -1326,23 +1326,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
 
                     user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
-                    boundary_trim = model.cfg.get("user_audio_boundary_trim", 4)
-                    boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
-
-                    if boundary_trim == 0:
-                        real_start = 0
-                        real_end = int(user_audio_codes_lens[0].item())
-                    else:
-                        real_start = 1
-                        real_end = max(real_start, int(user_audio_codes_lens[0].item()) - 1)
-
+                    real_start = 1
+                    real_end = max(real_start, int(user_audio_codes_lens[0].item()) - 1)
                     user_audio_embedded = user_audio_embedded[:, real_start:real_end]
-                    copy_len = user_audio_embedded.size(1)
-                    if boundary_trim > 0:
-                        trim = min(boundary_trim, copy_len // 2)
-                        if trim > 0:
-                            user_audio_embedded[:, :trim] = 0.0
-                            user_audio_embedded[:, copy_len - trim :] = 0.0
 
                     bos_user_pad = torch.zeros(
                         user_audio_embedded.size(0),

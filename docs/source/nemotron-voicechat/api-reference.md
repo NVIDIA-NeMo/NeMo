@@ -153,7 +153,8 @@ Events sent from client to server.
 
 ---
 
-### `input_audio_buffer.append` {#inputaudiobufferappend}
+<a name="inputaudiobufferappend"></a>
+### `input_audio_buffer.append`
 
 Sends one chunk of audio to the server. Chunks should be approximately 80 ms long (3 840 bytes at 24 kHz PCM16).
 
@@ -173,7 +174,8 @@ Sends one chunk of audio to the server. Chunks should be approximately 80 ms lon
 
 ---
 
-### `session.update` {#sessionupdate}
+<a name="sessionupdate"></a>
+### `session.update`
 
 Configures the session. Send once immediately after connection, before streaming audio. Unknown fields (for example, `turn_detection`, `voice`) are silently ignored.
 
@@ -203,7 +205,8 @@ Configures the session. Send once immediately after connection, before streaming
 
 ---
 
-### `conversation.item.create` {#conversationitemcreate}
+<a name="conversationitemcreate"></a>
+### `conversation.item.create`
 
 Sends a function call result back to the server after executing a tool requested by the model.
 
@@ -228,7 +231,8 @@ The server will return an error with code `tools_not_set` if tools were not conf
 
 ---
 
-### `session.close` {#sessionclose}
+<a name="sessionclose"></a>
+### `session.close`
 
 Requests an orderly shutdown. The server sends a [`session.end`](#sessionend) message with session statistics and then closes the WebSocket connection.
 
@@ -271,7 +275,8 @@ Events sent from server to client.
 
 ---
 
-### `session.created` {#sessioncreated}
+<a name="sessioncreated"></a>
+### `session.created`
 
 Sent once immediately after the WebSocket is accepted.
 
@@ -295,7 +300,8 @@ Sent once immediately after the WebSocket is accepted.
 
 ---
 
-### `session.updated` {#sessionupdated}
+<a name="sessionupdated"></a>
+### `session.updated`
 
 Acknowledgment of a `session.update`, echoing the effective configuration with structured format objects.
 
@@ -316,7 +322,8 @@ Acknowledgment of a `session.update`, echoing the effective configuration with s
 
 ---
 
-### `input_audio_buffer.speech_started` {#inputaudiobufferspeechstarted}
+<a name="inputaudiobufferspeechstarted"></a>
+### `input_audio_buffer.speech_started`
 
 Emitted when the first ASR token arrives for a new user utterance.
 
@@ -331,7 +338,8 @@ Emitted when the first ASR token arrives for a new user utterance.
 
 ---
 
-### `input_audio_buffer.speech_stopped` {#inputaudiobufferspeechstopped}
+<a name="inputaudiobufferspeechstopped"></a>
+### `input_audio_buffer.speech_stopped`
 
 Emitted when the ASR output contains an end-of-speech marker.
 
@@ -346,7 +354,8 @@ Emitted when the ASR output contains an end-of-speech marker.
 
 ---
 
-### `response.created` {#responsecreated}
+<a name="responsecreated"></a>
+### `response.created`
 
 Emitted when the model produces its first audio output for a turn.
 
@@ -366,7 +375,8 @@ Emitted when the model produces its first audio output for a turn.
 
 ---
 
-### `response.output_item.added` {#responseoutputitemadded}
+<a name="responseoutputitemadded"></a>
+### `response.output_item.added`
 
 ```json
 {
@@ -385,7 +395,8 @@ Emitted when the model produces its first audio output for a turn.
 
 ---
 
-### `response.content_part.added` {#responsecontentpartadded}
+<a name="responsecontentpartadded"></a>
+### `response.content_part.added`
 
 ```json
 {
@@ -401,7 +412,8 @@ Emitted when the model produces its first audio output for a turn.
 
 ---
 
-### `response.output_audio.delta` {#responseoutputaudiodelta}
+<a name="responseoutputaudiodelta"></a>
+### `response.output_audio.delta`
 
 A chunk of synthesized speech audio.
 
@@ -421,7 +433,8 @@ A chunk of synthesized speech audio.
 
 ---
 
-### `response.output_audio_transcript.delta` {#responseoutputaudiotranscriptdelta}
+<a name="responseoutputaudiotranscriptdelta"></a>
+### `response.output_audio_transcript.delta`
 
 Incremental transcript of the agent's spoken audio.
 
@@ -439,7 +452,8 @@ Incremental transcript of the agent's spoken audio.
 
 ---
 
-### `response.output_audio_transcript.done` {#responseoutputaudiotranscriptdone}
+<a name="responseoutputaudiotranscriptdone"></a>
+### `response.output_audio_transcript.done`
 
 Complete transcript of the agent's utterance.
 
@@ -457,7 +471,8 @@ Complete transcript of the agent's utterance.
 
 ---
 
-### `response.output_audio.done` {#responseoutputaudiodone}
+<a name="responseoutputaudiodone"></a>
+### `response.output_audio.done`
 
 Emitted after all audio for a turn has been sent (output buffer drained).
 
@@ -474,7 +489,8 @@ Emitted after all audio for a turn has been sent (output buffer drained).
 
 ---
 
-### `response.content_part.done` {#responsecontentpartdone}
+<a name="responsecontentpartdone"></a>
+### `response.content_part.done`
 
 ```json
 {
@@ -490,7 +506,8 @@ Emitted after all audio for a turn has been sent (output buffer drained).
 
 ---
 
-### `response.output_item.done` {#responseoutputitemdone}
+<a name="responseoutputitemdone"></a>
+### `response.output_item.done`
 
 ```json
 {
@@ -509,7 +526,8 @@ Emitted after all audio for a turn has been sent (output buffer drained).
 
 ---
 
-### `response.done` {#responsedone}
+<a name="responsedone"></a>
+### `response.done`
 
 Marks the end of a complete response turn.
 
@@ -536,7 +554,8 @@ Marks the end of a complete response turn.
 
 ---
 
-### `response.function_call_arguments.done` {#responsefunctioncallargumentsdone}
+<a name="responsefunctioncallargumentsdone"></a>
+### `response.function_call_arguments.done`
 
 Sent when the model requests a function call. The client should execute the function and return the result via [`conversation.item.create`](#conversationitemcreate).
 
@@ -561,7 +580,8 @@ Sent when the model requests a function call. The client should execute the func
 
 ---
 
-### `conversation.item.input_audio_transcription.delta` {#conversationiteminputaudiotranscriptiondelta}
+<a name="conversationiteminputaudiotranscriptiondelta"></a>
+### `conversation.item.input_audio_transcription.delta`
 
 Incremental ASR transcript of the user's audio.
 
@@ -577,7 +597,8 @@ Incremental ASR transcript of the user's audio.
 
 ---
 
-### `conversation.item.input_audio_transcription.completed` {#conversationiteminputaudiotranscriptioncompleted}
+<a name="conversationiteminputaudiotranscriptioncompleted"></a>
+### `conversation.item.input_audio_transcription.completed`
 
 Complete user utterance transcript.
 
@@ -593,7 +614,8 @@ Complete user utterance transcript.
 
 ---
 
-### `error` {#error}
+<a name="error"></a>
+### `error`
 
 Sent when a recoverable or fatal error occurs server-side.
 
@@ -619,7 +641,8 @@ Sent when a recoverable or fatal error occurs server-side.
 
 ---
 
-### `session.end` {#sessionend}
+<a name="sessionend"></a>
+### `session.end`
 
 Sent by the server before closing the connection. Contains session statistics.
 

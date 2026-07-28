@@ -25,7 +25,6 @@ from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
     check_text_embedding_matches_tokenizer,
     setup_tokenizers,

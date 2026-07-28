@@ -88,6 +88,8 @@ Stream from a microphone and play on speakers:
 python3 nemotron-voicechat-client.py --server ws://localhost:9000
 ```
 
+> **Note:** For best results, run the client in a quiet environment. The model is sensitive to background noise and may produce degraded output in noisy or reverberant conditions.
+
 Stream from and to a file:
 
 Use a speech recording file, with 16-bit, Mono, 16KHz format as the input. Make sure to append silence (~20 seconds) after the speech when preparing `sample_speech.wav`, to get the correct response. Nemotron Voicechat is a full duplex model, it generates output as long as there is input.
@@ -100,8 +102,6 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
 ```
 
 > **Note:** The Nemotron Voicechat container supports real-time streaming mode only. Offline (batch) synthesis is not supported.
-
-> **Note:** For best results, run the client in a quiet environment. The model is sensitive to background noise and may produce degraded output in noisy or reverberant conditions.
 
 
 ## Function Calling

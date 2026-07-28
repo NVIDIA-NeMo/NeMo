@@ -1,0 +1,342 @@
+# Nemotron Voicechat
+
+The NVIDIA Nemotron Voicechat microservice enables real-time voice conversations. It accepts spoken audio as input and returns synthesized speech as output in a single end-to-end pipeline, without requiring separate ASR, LLM, and TTS components.
+
+The microservice uses a bidirectional WebSocket interface to stream audio in and stream synthesized speech out with low latency. It packages the complete model with the full NVIDIA inference stack (CUDA, Triton, vLLM) into a single container — no orchestration of multiple containers is required.
+
+## Prerequisites
+
+- Completed [prerequisites](prerequisites.md).
+
+## Generate Model Repository from a NeMo Checkpoint
+
+If you have a local NeMo checkpoint, you can generate the Triton model repository yourself using the `deploy_s2s_model.sh` script bundled in the inference container at `/s2s/deploy_s2s_model.sh`. This skips the NGC model download entirely.
+
+The checkpoint directory must contain `model.safetensors`.
+
+```bash
+export CHECKPOINT_DIR=/path/to/nemo-checkpoint
+export OUTPUT_DIR=/path/to/output/model-repo
+
+docker run -it --rm \
+  --runtime=nvidia \
+  --gpus '"device=0"' \
+  --shm-size=8GB \
+  -v $CHECKPOINT_DIR:/checkpoint \
+  -v $OUTPUT_DIR:/data/models \
+  -e NEMO_CHECKPOINT_PATH=/checkpoint \
+  --entrypoint /s2s/deploy_s2s_model.sh \
+  nvcr.io/nim/nvidia/nemotron-voicechat:latest
+```
+
+- `-v $CHECKPOINT_DIR:/checkpoint` — mounts the NeMo checkpoint into the container.
+- `-e NEMO_CHECKPOINT_PATH=/checkpoint` — tells the script to use the local checkpoint; NGC download is skipped.
+- `-v $OUTPUT_DIR:/data/models` — captures the generated Triton model repository on the host (the script writes to `/data/models` inside the container by default).
+
+Once complete, `$OUTPUT_DIR` contains the Triton model repository. Mount it as `/data/models` when launching the inference container instead of relying on the downloaded model cache. See [Model Caching](#model-caching) for the full launch command with a volume mount.
+
+## Deploy the Container
+
+```bash
+export CONTAINER_ID=nemotron-voicechat
+export NIM_TAGS_SELECTOR="name=nemotron-voicechat"
+
+docker run -it --rm --name=$CONTAINER_ID \
+  --runtime=nvidia \
+  --gpus '"device=0"' \
+  --shm-size=8GB \
+  -e NIM_HTTP_API_PORT=9000 \
+  -p 9000:9000 \
+  -e NIM_TAGS_SELECTOR \
+  nvcr.io/nim/nvidia/$CONTAINER_ID:latest
+```
+
+On first startup, the container downloads the model, which can take up to 30 minutes depending on network speed.
+
+### Model Caching
+
+Mount a local cache directory to avoid repeated downloads on subsequent runs.
+
+```bash
+export LOCAL_NIM_CACHE=~/.cache/nim
+mkdir -p $LOCAL_NIM_CACHE
+chmod 777 $LOCAL_NIM_CACHE
+
+export CONTAINER_ID=nemotron-voicechat
+export NIM_TAGS_SELECTOR="name=nemotron-voicechat"
+
+docker run -it --rm --name=$CONTAINER_ID \
+  --runtime=nvidia \
+  --gpus '"device=0"' \
+  --shm-size=8GB \
+  -e NIM_TAGS_SELECTOR \
+  -e NIM_HTTP_API_PORT=9000 \
+  -p 9000:9000 \
+  -v $LOCAL_NIM_CACHE:/opt/nim/.cache \
+  nvcr.io/nim/nvidia/$CONTAINER_ID:latest
+```
+
+On later runs, the container loads the model from the cache instead of downloading it again.
+
+### Verify Readiness
+
+Wait for the container to finish model setup, then check the health endpoint.
+
+```bash
+curl -X 'GET' 'http://localhost:9000/v1/health/ready'
+```
+
+Expected response:
+
+```json
+{"object":"health.response","message":"ready","status":"ready"}
+```
+
+## Run a Voice Conversation
+
+The Nemotron Voicechat container uses a bidirectional WebSocket connection for real-time voice conversations. Audio is streamed to the server and synthesized speech is streamed back.
+
+### Copy the Client Script
+
+Copy the client script from the running container before running inference.
+
+```bash
+docker cp $CONTAINER_ID:/s2s/nemotron-voicechat-client.py .
+```
+
+### Install Dependencies
+
+```bash
+pip install websockets soundfile numpy sphn==0.1.12
+```
+
+`pyaudio` is required for microphone input and audio playback. Install it with the system dependency for your OS:
+
+#### Ubuntu/Debian
+
+```bash
+sudo apt-get install portaudio19-dev
+pip install pyaudio
+```
+
+#### macOS
+
+```bash
+brew install portaudio
+pip install pyaudio
+```
+
+If you are not using a microphone or audio playback (for example, using `--input-file` with `--no-playback`), you can skip `pyaudio`.
+
+### Real-Time Conversation (WebSocket)
+
+The client streams audio to the server at `ws://<host>:<port>/v1/realtime` and plays back or saves the returned speech. Audio playback is enabled by default.
+
+Stream from a microphone and play on speakers:
+
+This command uses default capture and playback device available in the system.
+
+```bash
+python3 nemotron-voicechat-client.py --server ws://localhost:9000
+```
+
+Stream from and to a file:
+
+Use a speech recording file, with 16-bit, Mono, 16KHz format as the input. Make sure to append silence (~20 seconds) after the speech when preparing `sample_speech.wav`, to get the correct response. Nemotron Voicechat is a full duplex model, it generates output as long as there is input.
+
+```bash
+python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
+  --input-file sample_speech.wav \
+  --audio-output output.wav \
+  --no-playback
+```
+
+> **Note:** The Nemotron Voicechat container supports real-time streaming mode only. Offline (batch) synthesis is not supported.
+
+
+## Function Calling
+
+The Nemotron Voicechat container supports function calling (tool use), allowing the model to pause its spoken response, request an external function result, and seamlessly resume after receiving the result.
+
+### How It Works
+
+```
+User speaks
+    │
+    ▼
+Model responds (audio + text)
+    │
+    ▼  model signals tool needed
+    │
+Server sends response.function_call_arguments.done → client
+    │
+    ▼
+Client executes function, sends conversation.item.create (function_call_output) → server
+    │
+    ▼
+Model resumes with final answer
+```
+
+### Providing Tools
+
+Pass tool definitions to the client with `--tools` as an inline JSON string or a path to a JSON file.
+
+Inline JSON:
+
+```bash
+python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
+  --input-file sample_speech.wav \
+  --tools '[{"name":"get_current_time","description":"Returns the current local time","parameters":{"type":"object","properties":{}}}]'
+```
+
+From a file:
+
+```bash
+python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
+  --input-file sample_speech.wav \
+  --tools tools.json
+```
+
+### Tool Definition Format
+
+Tools follow the OpenAI Realtime API function tool specification:
+
+```json
+[
+  {
+    "name": "get_weather",
+    "description": "Get current weather for a city",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string",
+          "description": "City name"
+        }
+      },
+      "required": ["city"]
+    }
+  }
+]
+```
+
+Each tool object must have `"type": "function"` and a non-empty `"name"`. The `"description"` and `"parameters"` fields are optional but recommended for model accuracy.
+
+### Built-in Demo Tools
+
+The client script includes built-in handlers for the following demo tools. When you pass their definitions via `--tools`, the model can invoke them automatically and the client responds with real (or plausible dummy) results.
+
+| Tool | Description |
+| ---- | ----------- |
+| `get_current_time` | Returns the current local time |
+| `get_current_datetime` | Returns current date, time, and day of week |
+| `calculate_bmi` | Calculates BMI given weight (kg) and height (m) |
+| `convert_currency` | Converts an amount between currencies using static rates |
+| `get_news_headlines` | Returns sample news headlines |
+
+Example — enable all built-in demo tools:
+
+```bash
+python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
+  --input-file sample_speech.wav \
+  --tools '[
+    {"name":"get_current_time","description":"Get the current time","parameters":{"type":"object","properties":{}}},
+    {"name":"get_current_datetime","description":"Get current date and time","parameters":{"type":"object","properties":{}}},
+    {"name":"calculate_bmi","description":"Calculate BMI","parameters":{"type":"object","properties":{"weight":{"type":"number"},"height":{"type":"number"}},"required":["weight","height"]}},
+    {"name":"convert_currency","description":"Convert currency","parameters":{"type":"object","properties":{"amount":{"type":"number"},"from_currency":{"type":"string"},"to_currency":{"type":"string"}},"required":["amount","from_currency","to_currency"]}},
+    {"name":"get_news_headlines","description":"Get news headlines","parameters":{"type":"object","properties":{}}}
+  ]'
+```
+
+### WebSocket Events
+
+| Event | Direction | Description |
+| ----- | --------- | ----------- |
+| `session.update` (with `tools` array) | client → server | Registers tools for the session |
+| `response.function_call_arguments.done` | server → client | Signals a complete tool call with name, call ID, and JSON arguments |
+| `conversation.item.create` (with `function_call_output` item) | client → server | Returns the function result to the server |
+
+The `response.function_call_arguments.done` event carries:
+
+```json
+{
+  "type": "response.function_call_arguments.done",
+  "call_id": "call_<id>",
+  "name": "get_current_time",
+  "arguments": "{}"
+}
+```
+
+The client returns the result with:
+
+```json
+{
+  "type": "conversation.item.create",
+  "item": {
+    "type": "function_call_output",
+    "call_id": "call_<id>",
+    "output": "{\"time\": \"14:32:00\"}"
+  }
+}
+```
+
+### Saving Function Call Logs
+
+Use `--function-text-output` to save all tool invocations and their results to a JSONL file (one entry per call):
+
+```bash
+python3 nemotron-voicechat-client.py --server localhost:9000 \
+  --input-file sample_speech.wav \
+  --tools tools.json \
+  --function-text-output function_calls.jsonl
+```
+
+
+## Client Parameters Reference
+
+### nemotron-voicechat-client.py (WebSocket)
+
+| Parameter | Description | Default |
+| --------- | ----------- | ------- |
+| `--server` | Server address as `host:port` or full URI `ws://host[:port]`. | required |
+| `--input-file` | Path to an audio file to stream (WAV). If omitted, reads from the default microphone. | -- |
+| `--audio-output` | Output WAV file path for the received audio. | auto-generated |
+| `--user-text-output` | Output file for user ASR transcripts. | auto-generated |
+| `--agent-text-output` | Output file for agent response text. | auto-generated |
+| `--conversation-output` | Output file for the full conversation log in JSONL format. | auto-generated |
+| `--format` | Audio format for input and output. `pcm16` or `opus`. Opus is experimental. | `pcm16` |
+| `--instructions` | Instructions for the agent (inline string or path to a text file). | -- |
+| `--tools` | Tool definitions for function calling (JSON array as inline string or path to a JSON file). | -- |
+| `--function-text-output` | Output file for tool/function call log in JSONL format. | `function_calls.jsonl` |
+| `--no-playback` | Disable audio playback of server responses. | playback enabled |
+| `--num-streams` | Number of concurrent streams to launch for load testing. Requires `--input-file`. | `1` |
+| `--output-dir` | Directory for per-stream output files. Used with `--num-streams` > 1. | -- |
+| `-v`, `--verbose` | Enable verbose logging. | `false` |
+
+## Next Steps
+
+- [S2S API Reference](api-reference.md): WebSocket and HTTP API reference.
+- [Prerequisites](prerequisites.md): GPU requirements and available model profiles.
+
+## Troubleshooting
+
+### Container Startup Takes Longer Than 30 Minutes
+
+**Cause:** First-run model download.
+
+**Solution:** Mount a local cache directory to avoid repeated downloads. See [Model Caching](#model-caching).
+
+### GPU Out of Memory (OOM)
+
+**Cause:** The model requires approximately 66 GB of GPU memory.
+
+**Solution:** Free other GPU processes or select a different device with `--gpus '"device=1"'`.
+
+### Health Check Returns 503
+
+**Cause:** Triton is not yet ready during model loading.
+
+**Solution:**
+- Watch logs with `docker logs -f <container>`.
+- Poll `curl http://localhost:9000/v1/health/ready` until it returns `ready`.
+- Ensure `--shm-size=8GB` is set on the `docker run` command.

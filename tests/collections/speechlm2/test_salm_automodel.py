@@ -80,6 +80,7 @@ def model():
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": False,
+        "automodel_backend": {"dispatcher": "torch"},
         "prompt_format": PROMPT,
         "audio_locator_tag": AUDIO_LOCATOR_TAG,
         "perception": {

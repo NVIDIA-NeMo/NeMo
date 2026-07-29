@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 import torch.nn as nn
 
 _COMPAT_PATH = Path(__file__).resolve().parents[3] / "nemo/collections/speechlm2/parts/automodel_compat.py"
@@ -70,6 +71,58 @@ def _install_fake_legacy_automodel(monkeypatch, *, has_upstream_fix=False, has_s
     monkeypatch.setitem(sys.modules, "nemo_automodel.components.distributed", distributed)
     monkeypatch.setitem(sys.modules, "nemo_automodel.components.distributed.parallelizer", parallelizer)
     return parallelizer
+
+
+def _install_fake_model_selection(monkeypatch, *, is_hf_model):
+    class FakeAutoConfig:
+        @classmethod
+        def from_pretrained(cls, model_path_or_name, **kwargs):
+            return object()
+
+    transformers = ModuleType("transformers")
+    transformers.AutoConfig = FakeAutoConfig
+
+    model_init = ModuleType("nemo_automodel._transformers.model_init")
+    model_init.get_is_hf_model = lambda config, force_hf: force_hf or is_hf_model
+    automodel_transformers = ModuleType("nemo_automodel._transformers")
+    automodel_transformers.model_init = model_init
+    automodel = ModuleType("nemo_automodel")
+    automodel._transformers = automodel_transformers
+
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "nemo_automodel", automodel)
+    monkeypatch.setitem(sys.modules, "nemo_automodel._transformers", automodel_transformers)
+    monkeypatch.setitem(sys.modules, "nemo_automodel._transformers.model_init", model_init)
+
+
+def test_hf_fallback_drops_automodel_backend(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=True)
+
+    class Qwen3ForCausalLM:
+        def __init__(self, config):
+            self.config = config
+
+    backend = object()
+    kwargs = {"backend": backend}
+    with pytest.raises(TypeError, match="unexpected keyword argument 'backend'"):
+        Qwen3ForCausalLM(object(), **kwargs)
+
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("Qwen/Qwen3-1.7B", kwargs) is True
+    assert "backend" not in kwargs
+    Qwen3ForCausalLM(object(), **kwargs)
+
+
+def test_native_automodel_preserves_backend(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=False)
+
+    backend = object()
+    kwargs = {"backend": backend}
+
+    assert (
+        _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", kwargs)
+        is False
+    )
+    assert kwargs["backend"] is backend
 
 
 def test_legacy_parallelizer_supports_native_nemotron_v3(monkeypatch):

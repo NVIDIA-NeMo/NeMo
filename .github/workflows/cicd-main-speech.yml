@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: NeMo E2E Speech Tests
+
+env:
+  HF_HUB_OFFLINE: 1
+
 on:
   workflow_call:
     inputs:

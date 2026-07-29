@@ -47,4 +47,6 @@ docker run -it --rm --name=nemotron-voicechat \
 ```
 
 ---
+For a full description of the WebSocket protocol, client and server events, and audio format details, see the API reference.
+
 Next: [API Reference](api-reference.md)

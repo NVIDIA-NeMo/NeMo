@@ -78,4 +78,6 @@ The output should display the driver version, CUDA version, and available GPU(s)
 If this succeeds, your environment is ready to run the Nemotron Voicechat container.
 
 ---
+Once your environment is ready, proceed to deploy the container and run your first voice conversation.
+
 Next: [Deploy and Run](deploy.md)

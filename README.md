@@ -114,12 +114,12 @@ python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
 
 ### Optimized NVIDIA inference container for interactive streaming deployment
 
-The [Nemotron Voicechat container](docs/source/nemotron-voicechat/deploy.md) packages the complete model with the NVIDIA inference stack (CUDA, Triton, vLLM) into a single container. It exposes a bidirectional WebSocket interface for real-time, low-latency voice conversations and supports function calling.
+The [Nemotron Voicechat container](voicechat_realtime_instructions/deploy.md) packages the complete model with the NVIDIA inference stack (CUDA, Triton, vLLM) into a single container. It exposes a bidirectional WebSocket interface for real-time, low-latency voice conversations and supports function calling.
 
-- [Prerequisites](docs/source/nemotron-voicechat/prerequisites.md) — hardware, software, and driver requirements
-- [Deploy and Run](docs/source/nemotron-voicechat/deploy.md) — launch the container and run voice conversations
-- [Generate Model Repository](docs/source/nemotron-voicechat/generate-model-repo.md) — build a Triton model repository from a local NeMo checkpoint
-- [API Reference](docs/source/nemotron-voicechat/api-reference.md) — WebSocket and HTTP API reference
+- [Prerequisites](voicechat_realtime_instructions/prerequisites.md) — hardware, software, and driver requirements
+- [Deploy and Run](voicechat_realtime_instructions/deploy.md) — launch the container and run voice conversations
+- [Generate Model Repository](voicechat_realtime_instructions/generate-model-repo.md) — build a Triton model repository from a local NeMo checkpoint
+- [API Reference](voicechat_realtime_instructions/api-reference.md) — WebSocket and HTTP API reference
 
 
 ## Code Overview

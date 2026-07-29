@@ -30,7 +30,7 @@ jobs:
 
   claude-review:
     needs: acknowledge
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@v1.7.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@fe0ff3bbe10790c51273ee3c1189b3c0497bf860 # v1.8.5
     with:
       model: ${{ vars.CLAUDE_MODEL }}
       prompt: |

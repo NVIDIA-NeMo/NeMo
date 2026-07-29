@@ -26,6 +26,13 @@ if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
+def _create_salm_dataset(tokenizer, data_cfg):
+    multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
+    if multispeaker_cfg is None:
+        return SALMDataset(tokenizer=tokenizer)
+    return SALMDataset(tokenizer=tokenizer, multispeaker_cfg=multispeaker_cfg)
+
+
 @hydra_runner(config_path="conf", config_name="salm")
 def train(cfg):
     OmegaConf.resolve(cfg)
@@ -46,7 +53,7 @@ def train(cfg):
     with trainer.init_module():
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
 
-    dataset = SALMDataset(tokenizer=model.tokenizer, multispeaker_cfg=cfg.data.get("multispeaker_cfg", None))
+    dataset = _create_salm_dataset(model.tokenizer, cfg.data)
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     trainer.fit(model, datamodule)

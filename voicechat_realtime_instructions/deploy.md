@@ -4,6 +4,8 @@ The NVIDIA Nemotron Voicechat microservice enables real-time voice conversations
 
 The microservice uses a bidirectional WebSocket interface to stream audio in and stream synthesized speech out with low latency. It packages the complete model with the full NVIDIA inference stack (CUDA, Triton, vLLM) into a single container — no orchestration of multiple containers is required.
 
+On first startup, the container automatically downloads a prebuilt Triton model repository generated from the HuggingFace checkpoint, so you do not need to generate one yourself.
+
 ## Prerequisites
 
 - Completed [prerequisites](prerequisites.md).

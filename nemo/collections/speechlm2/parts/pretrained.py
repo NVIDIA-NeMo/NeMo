@@ -87,6 +87,10 @@ def load_pretrained_automodel_llm(
     """
     from nemo_automodel import NeMoAutoModelForCausalLM
 
+    from nemo.collections.speechlm2.parts.automodel_compat import install_nemotron_h_layer_compatibility
+
+    install_nemotron_h_layer_compatibility()
+
     if pretrained_weights:
         return NeMoAutoModelForCausalLM.from_pretrained(model_path_or_name, torch_dtype=dtype, **kwargs)
     else:

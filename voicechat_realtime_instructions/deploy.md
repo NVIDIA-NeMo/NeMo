@@ -294,3 +294,6 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 - Watch logs with `docker logs -f <container>`.
 - Poll `curl http://localhost:9000/v1/health/ready` until it returns `ready`.
 - Ensure `--shm-size=8GB` is set on the `docker run` command.
+
+---
+Next: [Generate Model Repository](generate-model-repo.md)

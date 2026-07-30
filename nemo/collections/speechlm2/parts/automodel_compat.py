@@ -45,24 +45,29 @@ def remove_automodel_backend_for_hf_fallback(
     try:
         from nemo_automodel._transformers.model_init import get_is_hf_model
         from transformers import AutoConfig
-    except (ImportError, AttributeError) as error:
-        logger.warning("Could not resolve Automodel implementation; leaving backend unchanged: %s", error)
-        return False
 
-    config = kwargs.get("config")
-    if config is None:
-        config_kwargs = {key: kwargs[key] for key in _HF_CONFIG_KWARGS if key in kwargs}
-        config = AutoConfig.from_pretrained(
-            model_path_or_name,
-            trust_remote_code=trust_remote_code,
-            **config_kwargs,
+        config = kwargs.get("config")
+        if config is None:
+            config_kwargs = {key: kwargs[key] for key in _HF_CONFIG_KWARGS if key in kwargs}
+            config = AutoConfig.from_pretrained(
+                model_path_or_name,
+                trust_remote_code=trust_remote_code,
+                **config_kwargs,
+            )
+
+        uses_hf_model = kwargs.get("quantization_config") is not None or get_is_hf_model(
+            config,
+            force_hf=bool(kwargs.get("force_hf", False)),
         )
-
-    if not get_is_hf_model(config, force_hf=bool(kwargs.get("force_hf", False))):
+    except Exception as error:
+        logger.warning("Could not determine Automodel implementation; leaving backend unchanged: %s", error)
         return False
 
-    kwargs.pop("backend")
+    if not uses_hf_model:
+        return False
+
     # TODO(Dongji): Remove after Automodel consumes backend before entering its HF fallback.
+    kwargs.pop("backend")
     logger.warning("Ignoring Automodel backend configuration for Hugging Face fallback model %s", model_path_or_name)
     return True
 

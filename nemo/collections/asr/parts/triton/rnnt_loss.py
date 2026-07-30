@@ -122,6 +122,8 @@ if TRITON_AVAILABLE:
         )
         log_likelihood = final_alpha + final_blank
         tl.store(losses_ptr + batch_idx, -log_likelihood * fastemit_scale)
+        # The beta pass below walks the target axis in reverse, so each lane reads alpha values
+        # that a different lane wrote. This barrier publishes those stores; it is not a debug aid.
         tl.debug_barrier()
 
         reverse_idx = tl.arange(0, block_target)

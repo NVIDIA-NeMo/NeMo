@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import importlib
 import logging
 import os
 import random
@@ -21,19 +22,23 @@ import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import librosa
 import numpy as np
 import torch
 from einops import rearrange
-from hydra.utils import instantiate
 from scipy import ndimage
 from torch.special import gammaln
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCBPEModelWithPrompt
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -112,7 +117,7 @@ def setup_pronunciation_control_g2p(pronunciation_control_g2p_config):
         return g2p_modules
 
     for language in pronunciation_control_g2p_config:
-        g2p_modules[language] = instantiate(pronunciation_control_g2p_config[language])
+        g2p_modules[language] = safe_instantiate(pronunciation_control_g2p_config[language])
 
     return g2p_modules
 
@@ -739,22 +744,30 @@ def get_tokenizer_for_language(
     language: str,
     available_tokenizers: List[str],
     default_tokenizer: str = "english_phoneme",
+    language_tokenizer_map: Optional[Mapping[str, Union[str, Sequence[str]]]] = None,
 ) -> str:
     """Get the appropriate tokenizer name for a language.
 
-    Searches LANGUAGE_TOKENIZER_MAP for candidate tokenizers and returns
+    Searches language_tokenizer_map for candidate tokenizers and returns
     the first one available. Falls back to default if no match found.
 
     Args:
         language: Language code (e.g., "en", "de", "zh").
         available_tokenizers: List of tokenizer names available in the model.
         default_tokenizer: Fallback tokenizer if no match found.
+        language_tokenizer_map: Mapping of languages to a tokenizer or ordered tokenizer candidates.
+            Defaults to ``LANGUAGE_TOKENIZER_MAP``.
 
     Returns:
         Tokenizer name to use.
     """
-    if language in LANGUAGE_TOKENIZER_MAP:
-        for candidate in LANGUAGE_TOKENIZER_MAP[language]:
+    if language_tokenizer_map is None:
+        language_tokenizer_map = LANGUAGE_TOKENIZER_MAP
+    if language in language_tokenizer_map:
+        candidates = language_tokenizer_map[language]
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        for candidate in candidates:
             if candidate in available_tokenizers:
                 return candidate
 
@@ -932,6 +945,50 @@ class DefaultTextProcessor(TextProcessor):
         return text
 
 
+class NoSpaceTextProcessor(TextProcessor):
+    """WER text processor for languages where ASR/tokenization spaces should be ignored."""
+
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = self.default_processor.process_text_for_wer(text)
+        text = text.replace(" ", "")
+        return text
+
+
+class JapaneseTextProcessor(NoSpaceTextProcessor):
+    """Japanese WER text processor with Katakana reading conversion."""
+
+    def __init__(self):
+        super().__init__()
+        try:
+            self.pyopenjtalk = importlib.import_module("pyopenjtalk")
+        except ImportError as e:
+            raise ImportError(
+                "JapaneseTextProcessor requires pyopenjtalk for Katakana CER computation. "
+                "Install pyopenjtalk or do not request Japanese evaluation text processing."
+            ) from e
+
+    def text_to_katakana(self, text: str) -> str:
+        """Convert Japanese text to its Katakana reading via pyopenjtalk.
+
+        Used for an additional, reading-based Japanese CER metric that is robust to
+        kanji/kana spelling variation between the reference and the ASR hypothesis.
+        """
+        if not text:
+            return ""
+        try:
+            return self.pyopenjtalk.g2p(text, kana=True).strip()
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"pyopenjtalk failed for '{text[:40]}': {e}")
+            return ""
+
+
 class EnglishTextProcessor(TextProcessor):
     """English text processing, which catches some edge cases not covered by normal text normalization.
 
@@ -968,8 +1025,119 @@ class EnglishTextProcessor(TextProcessor):
 
 
 def get_text_processor(language: str) -> TextProcessor:
+    language = (language or "").replace("_", "-").lower().split("-")[0]
     if language == "en":
         return EnglishTextProcessor()
+    if language == "ja":
+        return JapaneseTextProcessor()
+    elif language == "zh":
+        return NoSpaceTextProcessor()
     else:
         logging.info(f"Text processing not implemented for language {language}; using default processor")
         return DefaultTextProcessor()
+
+
+class Transcriber(ABC):
+    """Interface for transcribing TTS outputs with different ASR models"""
+
+    @abstractmethod
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        """
+        Run batch transcription of a list of audio files.
+
+        Args:
+            audio_paths: list of paths to audio files to transcribe
+            batch_size: batch size to use for inference
+            language: optional language of input audio
+
+        Returns:
+            List with transcribed text for each audio path
+        """
+        pass
+
+
+class NemoTranscriber(Transcriber):
+    """Transcriber for NeMo ASR models"""
+
+    def __init__(self, device, model_name="stt_en_conformer_transducer_large"):
+        if model_name.endswith('.nemo'):
+            model = ASRModel.restore_from(restore_path=model_name)
+        else:
+            model = ASRModel.from_pretrained(model_name=model_name)
+
+        self.model = model.to(device).eval()
+
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        override_config = TranscribeConfig(batch_size=batch_size, use_lhotse=False)
+        transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
+        transcriptions = [result.text for result in transcribe_results]
+        return transcriptions
+
+
+class NemoTranscriberWithPrompt(Transcriber):
+    """Transcriber for NeMo ASR models that accept language as an optional prompt"""
+
+    def __init__(self, device, model_name):
+        if model_name.endswith('.nemo'):
+            model = ASRModel.restore_from(restore_path=model_name)
+        else:
+            model = ASRModel.from_pretrained(model_name=model_name)
+
+        self.model = model.to(device).eval()
+        if not isinstance(self.model, EncDecHybridRNNTCTCBPEModelWithPrompt):
+            raise ValueError(f"Model {model_name} does not support prompting")
+
+        self.language_prompt_map = {
+            "en": "en-US",
+            "ar": "ar",
+            "ko": "ko-KR",
+            "hi": "hi-IN",
+            "zh": "zh-CN",
+            "it": "it-IT",
+            "es": "es-ES",
+            "de": "de-DE",
+            "fr": "fr-FR",
+            "ja": "ja-JP",
+        }
+
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        if language:
+            prompt_lang = self.language_prompt_map[language]
+            override_config = HybridRNNTCTCPromptTranscribeConfig(
+                batch_size=batch_size, use_lhotse=False, target_lang=prompt_lang
+            )
+        else:
+            override_config = HybridRNNTCTCPromptTranscribeConfig(batch_size=batch_size, use_lhotse=False)
+
+        transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
+        transcriptions = [result.text for result in transcribe_results]
+        return transcriptions
+
+
+class WhisperTranscriber(Transcriber):
+    """Transcriber for Whisper ASR models"""
+
+    def __init__(self, device, model_name="openai/whisper-large-v3"):
+        self.processor = WhisperProcessor.from_pretrained(model_name)
+        self.model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device).eval()
+        self.input_sample_rate = 16000
+
+    def transcribe(self, audio_paths: List[Path], language: str, batch_size: int) -> List[str]:
+        if language:
+            forced_decoder_ids = self.processor.get_decoder_prompt_ids(language=language, task="transcribe")
+        else:
+            forced_decoder_ids = None
+
+        all_transcriptions = []
+        for start in range(0, len(audio_paths), batch_size):
+            batch_paths = audio_paths[start : start + batch_size]
+            speech_arrays = [librosa.load(p, sr=self.input_sample_rate)[0] for p in batch_paths]
+            inputs = self.processor(
+                speech_arrays, sampling_rate=self.input_sample_rate, return_tensors="pt", padding=True
+            ).input_features
+            inputs = inputs.half().to(self.model.device)
+            with torch.inference_mode():
+                predicted_ids = self.model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+            transcriptions = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            all_transcriptions.extend(transcriptions)
+        return all_transcriptions

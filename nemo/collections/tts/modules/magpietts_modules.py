@@ -19,12 +19,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from hydra.utils import instantiate
 from torch import Tensor
 from torch.utils.data import get_worker_info
 
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.module import NeuralModule
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
@@ -96,8 +96,8 @@ class SpecialAudioToken(Enum):
     AUDIO_CONTEXT_EOS = 3
     MASK_TOKEN = 4
     # Reserve these values so that if we need to add more special tokens in the future the codebook size will remain the same
-    RESERVED_1 = 5
-    RESERVED_2 = 6
+    USER_SPEAKING = 5
+    USER_SPEAKING_END = 6
     RESERVED_3 = 7
 
     @staticmethod
@@ -244,6 +244,11 @@ class CharAwareSubwordEncoder(NeuralModule):
         if subword_mask.ndim == 3:
             subword_mask = subword_mask.squeeze(-1)
 
+        if not subword_mask.any():
+            B, T = subword_ids.shape
+            D = self.embed_tokens.embedding_dim
+            return torch.zeros((B, T, D), dtype=self.embed_tokens.weight.dtype, device=device)
+
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
         char_mask = get_mask_from_lengths(char_lengths)
         char_emb = self.embed_tokens(char_ids)
@@ -272,7 +277,7 @@ def worker_init_fn(worker_id):
     tokenizer = setup_tokenizers(dataset.tokenizer_config, mode=dataset.dataset_type)
     dataset.text_tokenizer = tokenizer
     if hasattr(dataset, 'phoneme_tokenizer_config'):
-        dataset.phoneme_tokenizer = instantiate(dataset.phoneme_tokenizer_config)
+        dataset.phoneme_tokenizer = safe_instantiate(dataset.phoneme_tokenizer_config)
 
 
 def add_eos_token(codes, codes_len, eos_id, num_eos_tokens=1):

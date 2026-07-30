@@ -17,7 +17,7 @@ import random
 import torch
 
 from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
-from nemo.core.classes.common import Serialization
+from nemo.core.classes import Serialization
 
 
 class SpeakerNoiseAugmentation(Serialization):

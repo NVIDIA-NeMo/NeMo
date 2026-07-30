@@ -78,7 +78,7 @@ if ! command -v num2words &> /dev/null; then
   exit 1
 fi
 
-if ! command -v ctc_segmentation &> /dev/null; then
+if ! python -c "import ctc_segmentation" &> /dev/null; then
   echo "ctc_segmentation could not be found"
   echo "please install using tools/ctc_segmentation/requirements.txt"
   exit 1

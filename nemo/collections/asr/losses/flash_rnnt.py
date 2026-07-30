@@ -279,9 +279,8 @@ def _compute_flash_rnnt(
 
     from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 
-    # Clamping applies to the unit-scale gradient, but autograd folds each sample's upstream
-    # gradient into the score gradients before the chunks see them. The loss backward publishes
-    # that scale here so every chunk can divide it out, whatever the tiling.
+    # Clamping needs the unit-scale gradient; the loss backward publishes the per-sample
+    # scale autograd already folded in, so each chunk can divide it back out.
     upstream_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
     target_score_chunks = []

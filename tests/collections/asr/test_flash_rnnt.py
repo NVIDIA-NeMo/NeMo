@@ -647,8 +647,7 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream
         loss_name="flash_rnnt",
         loss_kwargs={"fastemit_lambda": 0.01, "clamp": 0.02, "max_joint_rows": max_joint_rows},
     )
-    # Guard the coverage: a budget that stopped splitting source time would leave the scale
-    # plumbing untested, since a single tile can recover the scale from its own final blank.
+    # A budget that stopped splitting source time would leave the scale plumbing untested.
     assert _balanced_time_tile_size(9, fused_batch_size, 6, max_joint_rows) < 9
     joint.set_loss(flash_loss)
     joint.set_wer(object())

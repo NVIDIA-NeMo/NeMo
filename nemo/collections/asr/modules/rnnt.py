@@ -1567,6 +1567,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     )
                 hypotheses = []
                 if compute_wer:
+                    # One decode, so `wer` is total errors over total words. The loop below
+                    # averages per-chunk ratios instead; wer_num and wer_denom are unaffected.
                     wer, wer_num, wer_denom, hypotheses = self._compute_wer(
                         encoder_outputs, encoder_lengths, transcripts, transcript_lengths, keep_hypotheses
                     )

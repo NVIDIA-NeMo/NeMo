@@ -20,11 +20,14 @@ from nemo.collections.asr.losses.rnnt import NUMBA_RNNT_AVAILABLE, RNNT_LOSS_RES
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint
 from nemo.collections.asr.parts.triton.rnnt_joint import join_activate
-from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS, rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE, TRITON_INSTALLATION_MESSAGE
 
 CUDA_TRITON_AVAILABLE = TRITON_AVAILABLE and torch.cuda.is_available()
+
+if TRITON_AVAILABLE:
+    # This module imports Triton at the top level, so only reach for it once Triton is known good.
+    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 
 
 def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fastemit_lambda=0.0, clamp=-1.0):

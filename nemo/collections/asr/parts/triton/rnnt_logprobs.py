@@ -13,144 +13,138 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import torch
-
-from nemo.core.utils.optional_libs import TRITON_AVAILABLE
-
-if TRITON_AVAILABLE:
-    import triton
-    import triton.language as tl
+import triton
+import triton.language as tl
 
 
-if TRITON_AVAILABLE:
+@triton.jit
+def _rnnt_logprobs_fwd_kernel(
+    logits_ptr,
+    targets_ptr,
+    source_lengths_ptr,
+    target_lengths_ptr,
+    max_source_len: int,
+    max_target_len_plus_1: int,
+    num_labels: int,  # vocab size (with blank)
+    blank_id: int,
+    target_scores_ptr,
+    blank_scores_ptr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Forward kernel for RNN-T log probs. Stores result in `target_scores_ptr` and `blank_scores_ptr`.
+    Calculations are performed in float32 (but original tensors can use any precision).
+    """
+    batch_i = tl.program_id(axis=0).to(tl.int64)
+    source_i = tl.program_id(axis=1).to(tl.int64)
+    target_i = tl.program_id(axis=2).to(tl.int64)
 
-    @triton.jit
-    def _rnnt_logprobs_fwd_kernel(
-        logits_ptr,
-        targets_ptr,
-        source_lengths_ptr,
-        target_lengths_ptr,
-        max_source_len: int,
-        max_target_len_plus_1: int,
-        num_labels: int,  # vocab size (with blank)
-        blank_id: int,
-        target_scores_ptr,
-        blank_scores_ptr,
-        BLOCK_SIZE: tl.constexpr,
-    ):
-        """
-        Forward kernel for RNN-T log probs. Stores result in `target_scores_ptr` and `blank_scores_ptr`.
-        Calculations are performed in float32 (but original tensors can use any precision).
-        """
-        batch_i = tl.program_id(axis=0).to(tl.int64)
-        source_i = tl.program_id(axis=1).to(tl.int64)
-        target_i = tl.program_id(axis=2).to(tl.int64)
+    # load lengths for source/target
+    source_len = tl.load(source_lengths_ptr + batch_i)
+    target_len = tl.load(target_lengths_ptr + batch_i)
 
-        # load lengths for source/target
-        source_len = tl.load(source_lengths_ptr + batch_i)
-        target_len = tl.load(target_lengths_ptr + batch_i)
+    if source_i >= source_len or target_i > target_len:
+        # no calculations required
+        return
 
-        if source_i >= source_len or target_i > target_len:
-            # no calculations required
-            return
+    # calculate offset in [B, T, U+1, V] tensor for the current vector with target logits
+    flat_index = ((batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i) * num_labels
+    logits_ptr += flat_index
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < num_labels
+    logits = tl.load(logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(tl.float32)
+    # stable log softmax calculation
+    logits_max = tl.max(logits, axis=0)
+    logits_minus_max = logits - logits_max
+    denominator_sum = tl.sum(tl.exp(logits_minus_max), axis=0)
+    denominator = tl.log(denominator_sum)
+    blank_logit = tl.load(logits_ptr + blank_id).to(tl.float32)
+    flat_index_output = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
+    tl.store(blank_scores_ptr + flat_index_output, blank_logit - logits_max - denominator)
 
-        # calculate offset in [B, T, U+1, V] tensor for the current vector with target logits
-        flat_index = ((batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i) * num_labels
-        logits_ptr += flat_index
-        col_offsets = tl.arange(0, BLOCK_SIZE)
-        mask = col_offsets < num_labels
-        logits = tl.load(logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(tl.float32)
-        # stable log softmax calculation
-        logits_max = tl.max(logits, axis=0)
-        logits_minus_max = logits - logits_max
-        denominator_sum = tl.sum(tl.exp(logits_minus_max), axis=0)
-        denominator = tl.log(denominator_sum)
-        blank_logit = tl.load(logits_ptr + blank_id).to(tl.float32)
-        flat_index_output = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
-        tl.store(blank_scores_ptr + flat_index_output, blank_logit - logits_max - denominator)
+    # calculate log prob for target if needed
+    if target_i < target_len:
+        target_id = tl.load(targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i)
+        valid_target_id = (target_id >= 0) & (target_id < num_labels)
+        target_logit = tl.load(logits_ptr + target_id, mask=valid_target_id, other=-float("inf")).to(tl.float32)
+        tl.store(target_scores_ptr + flat_index_output, target_logit - logits_max - denominator)
 
-        # calculate log prob for target if needed
-        if target_i < target_len:
-            target_id = tl.load(targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i)
-            valid_target_id = (target_id >= 0) & (target_id < num_labels)
-            target_logit = tl.load(logits_ptr + target_id, mask=valid_target_id, other=-float("inf")).to(tl.float32)
-            tl.store(target_scores_ptr + flat_index_output, target_logit - logits_max - denominator)
 
-    @triton.jit
-    def _rnnt_logprobs_bwd_kernel(
-        logits_ptr,
-        grad_logits_ptr,
-        targets_ptr,
-        source_lengths_ptr,
-        target_lengths_ptr,
-        max_source_len: int,
-        max_target_len_plus_1: int,
-        num_labels: int,
-        blank_id: int,
-        grad_target_scores_ptr,
-        grad_blank_scores_ptr,
-        upstream_scale_ptr,
-        clamp: float,
-        CLAMP_GRAD: tl.constexpr,
-        BLOCK_SIZE: tl.constexpr,
-    ):
-        """
-        Backward kernel for RNN-T log probs. Stores result in `grad_target_scores_ptr` and `grad_blank_scores_ptr`.
-        We recalculate part of the forward here to avoid using extra memory in forward.
-        Calculations are performed in float32 (but original tensors can use any precision).
-        """
-        batch_i = tl.program_id(axis=0).to(tl.int64)
-        source_i = tl.program_id(axis=1).to(tl.int64)
-        target_i = tl.program_id(axis=2).to(tl.int64)
+@triton.jit
+def _rnnt_logprobs_bwd_kernel(
+    logits_ptr,
+    grad_logits_ptr,
+    targets_ptr,
+    source_lengths_ptr,
+    target_lengths_ptr,
+    max_source_len: int,
+    max_target_len_plus_1: int,
+    num_labels: int,
+    blank_id: int,
+    grad_target_scores_ptr,
+    grad_blank_scores_ptr,
+    upstream_scale_ptr,
+    clamp: float,
+    CLAMP_GRAD: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Backward kernel for RNN-T log probs. Stores result in `grad_target_scores_ptr` and `grad_blank_scores_ptr`.
+    We recalculate part of the forward here to avoid using extra memory in forward.
+    Calculations are performed in float32 (but original tensors can use any precision).
+    """
+    batch_i = tl.program_id(axis=0).to(tl.int64)
+    source_i = tl.program_id(axis=1).to(tl.int64)
+    target_i = tl.program_id(axis=2).to(tl.int64)
 
-        # load lengths for source/target
-        source_len = tl.load(source_lengths_ptr + batch_i)
-        target_len = tl.load(target_lengths_ptr + batch_i)
-        valid_state = (source_i < source_len) & (target_i <= target_len)
+    # load lengths for source/target
+    source_len = tl.load(source_lengths_ptr + batch_i)
+    target_len = tl.load(target_lengths_ptr + batch_i)
+    valid_state = (source_i < source_len) & (target_i <= target_len)
 
-        # calculate offset in [B, T, U+1, V] tensor for the current vector with target logits/grad_logits
-        flat_index = ((batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i) * num_labels
-        logits_ptr += flat_index
-        grad_logits_ptr += flat_index
+    # calculate offset in [B, T, U+1, V] tensor for the current vector with target logits/grad_logits
+    flat_index = ((batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i) * num_labels
+    logits_ptr += flat_index
+    grad_logits_ptr += flat_index
 
-        col_offsets = tl.arange(0, BLOCK_SIZE)
-        mask = col_offsets < num_labels
-        logits = tl.load(logits_ptr + col_offsets, mask=mask & valid_state, other=-float("inf")).to(tl.float32)
-        # stable log softmax calculation
-        logits_max = tl.max(logits, axis=0)
-        logits_minus_max = logits - logits_max
-        unnormalized = tl.exp(logits_minus_max)
-        denominator_sum = tl.sum(unnormalized, axis=0)
-        # softmax for gradient
-        softmax = unnormalized / denominator_sum
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < num_labels
+    logits = tl.load(logits_ptr + col_offsets, mask=mask & valid_state, other=-float("inf")).to(tl.float32)
+    # stable log softmax calculation
+    logits_max = tl.max(logits, axis=0)
+    logits_minus_max = logits - logits_max
+    unnormalized = tl.exp(logits_minus_max)
+    denominator_sum = tl.sum(unnormalized, axis=0)
+    # softmax for gradient
+    softmax = unnormalized / denominator_sum
 
-        flat_index_grad = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
-        blank_grad = tl.load(grad_blank_scores_ptr + flat_index_grad, mask=valid_state, other=0.0).to(tl.float32)
-        target_i_valid = valid_state & (target_i < target_len)
-        target_grad = tl.load(grad_target_scores_ptr + flat_index_grad, mask=target_i_valid, other=0.0).to(tl.float32)
-        target_id = tl.load(
-            targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i, mask=target_i_valid, other=-1
-        )
+    flat_index_grad = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
+    blank_grad = tl.load(grad_blank_scores_ptr + flat_index_grad, mask=valid_state, other=0.0).to(tl.float32)
+    target_i_valid = valid_state & (target_i < target_len)
+    target_grad = tl.load(grad_target_scores_ptr + flat_index_grad, mask=target_i_valid, other=0.0).to(tl.float32)
+    target_id = tl.load(targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i, mask=target_i_valid, other=-1)
 
-        if CLAMP_GRAD:
-            # Numba clamps the unit-scale per-sample gradient before multiplying by the loss
-            # reduction or AMP scale, so divide that scale out, clamp, and reapply it below.
-            upstream_scale = tl.load(upstream_scale_ptr + batch_i).to(tl.float32)
-            inverse_scale = tl.where(upstream_scale != 0.0, 1.0 / upstream_scale, 0.0)
-            blank_grad *= inverse_scale
-            target_grad *= inverse_scale
+    if CLAMP_GRAD:
+        # Numba clamps the unit-scale per-sample gradient before multiplying by the loss
+        # reduction or AMP scale, so divide that scale out, clamp, and reapply it below.
+        upstream_scale = tl.load(upstream_scale_ptr + batch_i).to(tl.float32)
+        inverse_scale = tl.where(upstream_scale != 0.0, 1.0 / upstream_scale, 0.0)
+        blank_grad *= inverse_scale
+        target_grad *= inverse_scale
 
-        grad_not_in_targets = (-softmax) * (blank_grad + target_grad)
-        # Add both deltas instead of overwriting one with the other. This also keeps
-        # malformed target==blank inputs mathematically correct.
-        grad = grad_not_in_targets
-        grad += tl.where(col_offsets == blank_id, blank_grad, 0.0)
-        grad += tl.where(col_offsets == target_id, target_grad, 0.0)
-        if CLAMP_GRAD:
-            grad = tl.maximum(tl.minimum(grad, clamp), -clamp)
-            grad *= upstream_scale
-        grad = tl.where(valid_state, grad, 0.0)
-        tl.store(grad_logits_ptr + col_offsets, grad, mask=mask)
+    grad_not_in_targets = (-softmax) * (blank_grad + target_grad)
+    # Add both deltas instead of overwriting one with the other. This also keeps
+    # malformed target==blank inputs mathematically correct.
+    grad = grad_not_in_targets
+    grad += tl.where(col_offsets == blank_id, blank_grad, 0.0)
+    grad += tl.where(col_offsets == target_id, target_grad, 0.0)
+    if CLAMP_GRAD:
+        grad = tl.maximum(tl.minimum(grad, clamp), -clamp)
+        grad *= upstream_scale
+    grad = tl.where(valid_state, grad, 0.0)
+    tl.store(grad_logits_ptr + col_offsets, grad, mask=mask)
 
 
 def _validate_rnnt_logprobs_inputs(
@@ -341,8 +335,6 @@ def rnnt_logprobs_triton(
         Tuple of tensors with log probabilities for targets and blank labels, both of size [B, T, U+1].
         For the non-existent targets (U+1 or beyond target_lengths) output is zero.
     """
-    if not TRITON_AVAILABLE:
-        raise RuntimeError("Triton is required to extract RNN-T log probabilities")
     _validate_rnnt_logprobs_inputs(logits, targets, blank_id, source_lengths, target_lengths)
     if clamp > 0.0:
         if upstream_scale is None:

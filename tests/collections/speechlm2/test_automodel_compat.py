@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 import torch.nn as nn
 
 _COMPAT_PATH = Path(__file__).resolve().parents[3] / "nemo/collections/speechlm2/parts/automodel_compat.py"
@@ -70,6 +71,95 @@ def _install_fake_legacy_automodel(monkeypatch, *, has_upstream_fix=False, has_s
     monkeypatch.setitem(sys.modules, "nemo_automodel.components.distributed", distributed)
     monkeypatch.setitem(sys.modules, "nemo_automodel.components.distributed.parallelizer", parallelizer)
     return parallelizer
+
+
+def _install_fake_model_selection(monkeypatch, *, is_hf_model):
+    class FakeAutoConfig:
+        @classmethod
+        def from_pretrained(cls, model_path_or_name, **kwargs):
+            return object()
+
+    transformers = ModuleType("transformers")
+    transformers.AutoConfig = FakeAutoConfig
+
+    model_init = ModuleType("nemo_automodel._transformers.model_init")
+    model_init.get_is_hf_model = lambda config, force_hf: force_hf or is_hf_model
+    automodel_transformers = ModuleType("nemo_automodel._transformers")
+    automodel_transformers.model_init = model_init
+    automodel = ModuleType("nemo_automodel")
+    automodel._transformers = automodel_transformers
+
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "nemo_automodel", automodel)
+    monkeypatch.setitem(sys.modules, "nemo_automodel._transformers", automodel_transformers)
+    monkeypatch.setitem(sys.modules, "nemo_automodel._transformers.model_init", model_init)
+
+
+def test_hf_fallback_drops_automodel_backend(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=True)
+
+    class Qwen3ForCausalLM:
+        def __init__(self, config):
+            self.config = config
+
+    backend = object()
+    kwargs = {"backend": backend}
+    with pytest.raises(TypeError, match="unexpected keyword argument 'backend'"):
+        Qwen3ForCausalLM(object(), **kwargs)
+
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("Qwen/Qwen3-1.7B", kwargs) is True
+    assert "backend" not in kwargs
+    Qwen3ForCausalLM(object(), **kwargs)
+
+
+def test_native_automodel_preserves_backend(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=False)
+
+    backend = object()
+    kwargs = {"backend": backend}
+
+    assert (
+        _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", kwargs)
+        is False
+    )
+    assert kwargs["backend"] is backend
+
+
+def test_native_automodel_with_bnb_quantization_drops_backend(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=False)
+
+    backend = object()
+    quantization_config = object()
+    kwargs = {"backend": backend, "quantization_config": quantization_config}
+
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("native-model", kwargs) is True
+    assert "backend" not in kwargs
+    assert kwargs["quantization_config"] is quantization_config
+
+
+def test_model_selection_failure_preserves_backend(monkeypatch, caplog):
+    _install_fake_model_selection(monkeypatch, is_hf_model=True)
+
+    class BrokenAutoConfig:
+        @classmethod
+        def from_pretrained(cls, model_path_or_name, **kwargs):
+            raise RuntimeError("config resolution failed")
+
+    monkeypatch.setattr(sys.modules["transformers"], "AutoConfig", BrokenAutoConfig)
+    backend = object()
+    kwargs = {"backend": backend}
+
+    with caplog.at_level(logging.WARNING):
+        assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("unavailable-model", kwargs) is False
+
+    assert kwargs["backend"] is backend
+    assert "Could not determine Automodel implementation" in caplog.text
+
+
+def test_installed_automodel_model_selection_accepts_force_hf_keyword():
+    model_init = pytest.importorskip("nemo_automodel._transformers.model_init")
+
+    assert model_init.get_is_hf_model(object(), force_hf=True) is True
 
 
 def test_legacy_parallelizer_supports_native_nemotron_v3(monkeypatch):

@@ -68,7 +68,7 @@ def test_flash_rnnt_configuration():
         },
     )
 
-    assert loss.is_flash_rnnt
+    assert loss.requires_factorized_joint
     assert loss._loss.blank == 1023
     assert loss._loss.fastemit_lambda == 0.01
     assert loss._loss.clamp == 0.0

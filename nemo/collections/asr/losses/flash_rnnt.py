@@ -103,7 +103,7 @@ class FlashRNNTLoss(torch.nn.Module):
         target_lengths: torch.Tensor,
         max_samples_per_chunk: int,
     ) -> torch.Tensor:
-        """Return per-sample losses from channel-first joint inputs."""
+        """Return per-sample losses from encoder [B, T, D] and prediction network [B, U + 1, D] states."""
         return _compute_flash_rnnt(
             joint=joint,
             encoder=encoder,
@@ -277,10 +277,8 @@ def _compute_flash_rnnt(
     predictor = predictor.index_select(0, order)
     targets = targets.index_select(0, order)
 
-    encoder = encoder.transpose(1, 2)
-    predictor = predictor.transpose(1, 2)
-    projected_encoder = F.linear(encoder, joint.enc.weight, joint.enc.bias)
-    projected_predictor = F.linear(predictor, joint.pred.weight, joint.pred.bias)
+    projected_encoder = joint.project_encoder(encoder)
+    projected_predictor = joint.project_prednet(predictor)
 
     from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 

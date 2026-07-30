@@ -392,7 +392,7 @@ class RNNTLoss(Loss):
                     joint:
                         fuse_loss_wer: true
                         # Maximum samples per Flash chunk, not the number of chunks.
-                        fused_batch_size: 16
+                        fused_batch_size: 4
                         jointnet:
                             dropout: 0.1
                     loss:
@@ -405,10 +405,12 @@ class RNNTLoss(Loss):
                             # Target B * T_tile * (U + 1) row budget; each tile keeps at least one T.
                             max_joint_rows: 200000
 
-            ``fused_batch_size`` controls sorting and trimming granularity. ``max_joint_rows``
-            sets a workspace budget by dividing source time into balanced tiles. A tile cannot be
-            shorter than one source step, and positive gradient clamping disables tiling. Larger
-            row budgets generally improve throughput; smaller budgets reduce peak memory.
+            ``fused_batch_size`` controls sorting and trimming granularity. A chunk costs what its
+            longest member costs, so prefer the smallest value that still saturates the GPU.
+            ``max_joint_rows`` sets a workspace budget by dividing source time into balanced tiles;
+            it trades peak memory for kernel launches without changing what is computed. A tile
+            cannot be shorter than one source step, and positive gradient clamping disables tiling,
+            so a clamped run materializes a whole chunk regardless of the budget.
 
         Warning:
             In the case that GPU memory is exhausted in order to compute RNNTLoss, it might cause

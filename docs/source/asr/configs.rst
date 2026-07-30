@@ -684,6 +684,35 @@ The loss config is based on a resolver pattern and can be used as follows:
     warprnnt_numba_kwargs:
       fastemit_lambda: 0.0
 
+Flash Transducer Loss
+^^^^^^^^^^^^^^^^^^^^^
+
+The default loss builds the joint tensor of shape ``[B, T, U + 1, V]`` in full, which dominates the
+memory of a Transducer step. ``flash_rnnt`` computes the same loss without it: the encoder and
+prediction network are projected once, then the batch is walked in chunks and each chunk in
+source-time tiles, reducing every tile to the two transition scores the dynamic programming needs.
+Only those ``[B, T, U + 1]`` scores survive into the backward pass, so the vocabulary axis is
+bounded by a workspace budget rather than by the batch. It requires Triton, CUDA, and a standard
+Transducer joint, and must be paired with a fused joint step:
+
+.. code-block:: yaml
+
+  model:
+    joint:
+      fuse_loss_wer: true
+      fused_batch_size: 4  # maximum samples per chunk, not the number of chunks
+    loss:
+      loss_name: "flash_rnnt"
+      flash_rnnt_kwargs:
+        fastemit_lambda: 0.0
+        clamp: -1.0
+        max_joint_rows: 200000  # target B * T_tile * (U + 1) workspace rows
+
+A chunk costs what its longest utterance costs, so smaller ``fused_batch_size`` values trim padding
+more aggressively; prefer the smallest value that still saturates the GPU. ``max_joint_rows`` trades
+peak memory for kernel launches without changing the result. Positive ``clamp`` disables source-time
+tiling, so a clamped run materializes a whole chunk regardless of that budget.
+
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^
 

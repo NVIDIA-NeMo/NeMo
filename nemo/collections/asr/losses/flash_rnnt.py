@@ -54,9 +54,11 @@ class FlashRNNTLoss(torch.nn.Module):
     ``RNNTJoint.fused_batch_size`` supplies ``max_samples_per_chunk``. It limits
     samples in each chunk, not the number of chunks. A local batch of size ``B``
     produces ``ceil(B / fused_batch_size)`` chunks.
-    Larger chunks generally reduce outer scheduling overhead and improve
-    trimming efficiency. ``max_joint_rows`` independently sets the target row
-    budget for the disposable workspace within each batch chunk.
+    A chunk costs what its longest member costs, so smaller chunks trim padding
+    more aggressively: with a 4x spread of utterance lengths, chunks of 4 run
+    roughly twice as fast as chunks of 32 at the same peak memory. Prefer the
+    smallest value that still saturates the GPU. ``max_joint_rows`` independently
+    sets the target row budget for the disposable workspace within each chunk.
 
     ``max_target_tokens`` is a safety guard, not a compile-time reservation.
     The actual padded target length selects the Triton scan width, so leaving

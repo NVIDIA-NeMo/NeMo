@@ -15,7 +15,7 @@ import os
 
 import torch
 from lightning.pytorch import Trainer, seed_everything
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.speechlm2 import SALM, DataModule, SALMDataset
 from nemo.core.config import hydra_runner
@@ -26,8 +26,10 @@ if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-def _create_salm_dataset(tokenizer, data_cfg):
+def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
+    """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
+    # TODO(Dongji): Remove after all release images ship SALMDataset with multispeaker_cfg support.
     if multispeaker_cfg is None:
         return SALMDataset(tokenizer=tokenizer)
     return SALMDataset(tokenizer=tokenizer, multispeaker_cfg=multispeaker_cfg)

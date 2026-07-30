@@ -125,6 +125,43 @@ def test_native_automodel_preserves_backend(monkeypatch):
     assert kwargs["backend"] is backend
 
 
+def test_native_automodel_with_bnb_quantization_drops_backend(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=False)
+
+    backend = object()
+    quantization_config = object()
+    kwargs = {"backend": backend, "quantization_config": quantization_config}
+
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("native-model", kwargs) is True
+    assert "backend" not in kwargs
+    assert kwargs["quantization_config"] is quantization_config
+
+
+def test_model_selection_failure_preserves_backend(monkeypatch, caplog):
+    _install_fake_model_selection(monkeypatch, is_hf_model=True)
+
+    class BrokenAutoConfig:
+        @classmethod
+        def from_pretrained(cls, model_path_or_name, **kwargs):
+            raise RuntimeError("config resolution failed")
+
+    monkeypatch.setattr(sys.modules["transformers"], "AutoConfig", BrokenAutoConfig)
+    backend = object()
+    kwargs = {"backend": backend}
+
+    with caplog.at_level(logging.WARNING):
+        assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("unavailable-model", kwargs) is False
+
+    assert kwargs["backend"] is backend
+    assert "Could not determine Automodel implementation" in caplog.text
+
+
+def test_installed_automodel_model_selection_accepts_force_hf_keyword():
+    model_init = pytest.importorskip("nemo_automodel._transformers.model_init")
+
+    assert model_init.get_is_hf_model(object(), force_hf=True) is True
+
+
 def test_legacy_parallelizer_supports_native_nemotron_v3(monkeypatch):
     parallelizer = _install_fake_legacy_automodel(monkeypatch)
 

@@ -1,0 +1,77 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+
+import hashlib
+import math
+
+import torch
+
+from nemo.collections.speechlm2.dpo.model import _state_contract_digest, _state_sample_digest
+from nemo.collections.speechlm2.dpo.objective import dpo_pair_objective
+from nemo.collections.speechlm2.dpo.surface import (
+    ACOUSTIC_LAYERS,
+    ATTENTION_LAYERS,
+    MAMBA_LAYERS,
+    SELECTED_SCALAR_COUNT,
+    VERIFIED_SURFACE_INVENTORY_SHA256,
+    VERIFIED_SURFACE_NAMES_SHA256,
+    selected_parameter_names,
+)
+
+
+def test_dpo_initial_identity_has_log2_but_nonzero_preference_gradient():
+    chosen = torch.tensor(3.0, requires_grad=True)
+    rejected = torch.tensor(1.0, requires_grad=True)
+    objective = dpo_pair_objective(
+        chosen_policy_logp=chosen,
+        rejected_policy_logp=rejected,
+        chosen_reference_logp=torch.tensor(3.0),
+        rejected_reference_logp=torch.tensor(1.0),
+        beta=0.2,
+    )
+    assert objective.margin.item() == 0.0
+    assert math.isclose(objective.loss.item(), math.log(2.0), rel_tol=0, abs_tol=1e-7)
+    objective.loss.backward()
+    assert chosen.grad.item() < 0.0
+    assert rejected.grad.item() > 0.0
+
+
+def test_dpo_positive_margin_reduces_loss():
+    identity = dpo_pair_objective(
+        chosen_policy_logp=torch.tensor(0.0),
+        rejected_policy_logp=torch.tensor(0.0),
+        chosen_reference_logp=torch.tensor(0.0),
+        rejected_reference_logp=torch.tensor(0.0),
+        beta=0.2,
+    )
+    improved = dpo_pair_objective(
+        chosen_policy_logp=torch.tensor(2.0),
+        rejected_policy_logp=torch.tensor(0.0),
+        chosen_reference_logp=torch.tensor(0.0),
+        rejected_reference_logp=torch.tensor(0.0),
+        beta=0.2,
+    )
+    assert improved.margin.item() > 0.0
+    assert improved.loss.item() < identity.loss.item()
+
+
+def test_partial_acoustic_surface_contract_is_fixed():
+    names = selected_parameter_names()
+    assert len(names) == 269
+    assert len(set(names)) == len(names)
+    assert len(ATTENTION_LAYERS) == 6
+    assert len(MAMBA_LAYERS) == 23
+    assert ACOUSTIC_LAYERS == (30, 31)
+    assert SELECTED_SCALAR_COUNT == 1_074_318_016
+    assert hashlib.sha256("\n".join(names).encode()).hexdigest() == VERIFIED_SURFACE_NAMES_SHA256
+    # This digest is the verified DCP's complete `name|shape|numel` inventory.
+    # It makes the source for the scalar count explicit
+    # without baking a duplicate 269-row shape table into the training code.
+    assert VERIFIED_SURFACE_INVENTORY_SHA256 == "20cd5cb3a3fbdaa5a91e430e7a65dfdc53c463b72382e0d62a56039b4a7f9dfc"
+    assert names[-2:] == ("perception.proj.weight", "perception.proj.bias")
+
+
+def test_source_dcp_authority_receipt_distinguishes_temporary_construction_weights():
+    construction = {"perception.encoder.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0]])}
+    source_dcp = {"perception.encoder.weight": torch.tensor([[5.0, 6.0], [7.0, 8.0]])}
+    assert _state_contract_digest(construction) == _state_contract_digest(source_dcp)
+    assert _state_sample_digest(construction) != _state_sample_digest(source_dcp)

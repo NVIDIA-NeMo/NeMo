@@ -299,7 +299,9 @@ def tdt_loss_gpu(
 
     # Select GPU index
     cuda.select_device(label_acts.device.index)
-    gpu_workspace = torch.zeros(gpu_size, device=label_acts.device, dtype=label_acts.dtype, requires_grad=False)
+    # The workspace holds FP32 dynamic-programming state (denominator, alphas, betas,
+    # log-likelihoods), so it must not inherit a narrow activation dtype.
+    gpu_workspace = torch.zeros(gpu_size, device=label_acts.device, dtype=torch.float32, requires_grad=False)
 
     tdt_workspace = torch.zeros(len(durations), device=label_acts.device, dtype=torch.long, requires_grad=False)
 
@@ -423,7 +425,9 @@ def multiblank_rnnt_loss_gpu(
 
     # Select GPU index
     cuda.select_device(acts.device.index)
-    gpu_workspace = torch.zeros(gpu_size, device=acts.device, dtype=acts.dtype, requires_grad=False)
+    # The workspace holds FP32 dynamic-programming state (denominator, alphas, betas,
+    # log-likelihoods), so it must not inherit a narrow activation dtype.
+    gpu_workspace = torch.zeros(gpu_size, device=acts.device, dtype=torch.float32, requires_grad=False)
 
     big_blank_workspace = torch.zeros(
         len(big_blank_durations), device=acts.device, dtype=torch.long, requires_grad=False

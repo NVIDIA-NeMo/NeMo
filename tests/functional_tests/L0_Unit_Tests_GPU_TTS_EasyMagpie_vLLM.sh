@@ -16,6 +16,12 @@
 
 set -euo pipefail
 
+CONTRACT_DIR=/workspace/.ci_artifacts/easymagpie-codec-contract
+test -f "$CONTRACT_DIR/config.json"
+test -f "$CONTRACT_DIR/model.safetensors"
+test -f "$CONTRACT_DIR/contract.safetensors"
+export EASYMAGPIE_CODEC_CONTRACT="$CONTRACT_DIR"
+
 python3 -m pip install --no-build-isolation --no-deps -e tools/easymagpie_vllm_omni
 
 CUDA_VISIBLE_DEVICES=0 coverage run \

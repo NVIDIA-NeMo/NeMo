@@ -24,7 +24,6 @@ from pathlib import Path
 
 import torch
 import yaml
-from easymagpie_vllm_omni.codec.codec import EasyMagpieCodec
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
 from easymagpie_vllm_omni.codec.weight_conversion import convert_decoder_state_dict
 from safetensors.torch import save_file
@@ -78,8 +77,19 @@ def validate_decoder_config(decoder_config: dict) -> None:
     if activation != "half_snake":
         raise ValueError(
             "the native codec currently requires activation='half_snake'; implement the matching activation in "
-            f"codec.py and packed.py to support '{activation}'"
+            f"packed.py to support '{activation}'"
         )
+
+
+def restore_speech_decoder(decoder_config: dict, state: dict[str, torch.Tensor]) -> torch.nn.Module:
+    """Instantiate and strictly restore the canonical Speech decoder."""
+    from hydra.utils import instantiate
+
+    prefix = "audio_decoder."
+    decoder_state = {name.removeprefix(prefix): tensor for name, tensor in state.items() if name.startswith(prefix)}
+    decoder = instantiate(decoder_config)
+    decoder.load_state_dict(decoder_state, strict=True)
+    return decoder.eval()
 
 
 def main() -> None:
@@ -111,11 +121,10 @@ def main() -> None:
         output_sample_rate=int(nemo_config.get("output_sample_rate", nemo_config["sample_rate"])),
     )
 
+    decoder = restore_speech_decoder(decoder_config, state)
     converted = convert_decoder_state_dict(state)
-    model = EasyMagpieCodec(config)
-    model.load_state_dict(converted, strict=True)
-    parameter_count = sum(parameter.numel() for parameter in model.parameters())
-    del model
+    parameter_count = sum(parameter.numel() for parameter in converted.values())
+    del decoder
 
     args.output.mkdir(parents=True, exist_ok=True)
     save_file(converted, args.output / "model.safetensors")

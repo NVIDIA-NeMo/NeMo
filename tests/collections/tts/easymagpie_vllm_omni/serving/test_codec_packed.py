@@ -14,7 +14,6 @@
 
 import pytest
 import torch
-from easymagpie_vllm_omni.codec.codec import EasyMagpieCodec
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
 from easymagpie_vllm_omni.codec.packed import CODEC_STATE_ELEMENTS, CodecStateLayer, PackedEasyMagpieCodec
 from vllm.config import VllmConfig, set_current_vllm_config
@@ -117,14 +116,12 @@ def mixed_metadata(prefill_frames: int, *, device: torch.device | str = "cpu") -
     return result
 
 
-def test_packed_profile_path_matches_batched_codec() -> None:
+def test_packed_profile_path_registers_state_layers() -> None:
     torch.manual_seed(11)
     config = tiny_config()
-    reference = EasyMagpieCodec(config).eval()
     vllm_config = VllmConfig()
     with set_current_vllm_config(vllm_config):
         packed = PackedEasyMagpieCodec(config, dtype=torch.float32).eval()
-    packed.load_state_dict(reference.state_dict(), strict=True)
     state_layers = [module for module in packed.modules() if isinstance(module, CodecStateLayer)]
     assert [layer.prefix for layer in state_layers] == [
         f"easymagpie_codec_state.{index}" for index in range(len(state_layers))
@@ -133,18 +130,17 @@ def test_packed_profile_path_matches_batched_codec() -> None:
     codes = torch.randint(0, config.codebook_size, (1, 5, config.num_stacked_codebooks))
     with set_forward_context(None, vllm_config):
         actual = packed(codes.squeeze(0))
-    expected = reference(codes).squeeze(0)
-    torch.testing.assert_close(actual, expected)
+    assert actual.shape == (5 * config.samples_per_frame,)
 
 
 def test_vllm_state_pages_match_full_decode() -> None:
     torch.manual_seed(17)
     config = tiny_config()
-    reference = EasyMagpieCodec(config).eval()
     vllm_config = VllmConfig()
     with set_current_vllm_config(vllm_config):
+        full = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="full").eval()
         packed = PackedEasyMagpieCodec(config, dtype=torch.float32).eval()
-    packed.load_state_dict(reference.state_dict(), strict=True)
+    packed.load_state_dict(full.state_dict(), strict=True)
 
     state_layers = [module for module in packed.modules() if isinstance(module, CodecStateLayer)]
     for layer in state_layers:
@@ -160,18 +156,19 @@ def test_vllm_state_pages_match_full_decode() -> None:
         offset += chunk_size
 
     actual = torch.cat(pieces)
-    expected = reference(codes).squeeze(0)
+    with set_forward_context(None, vllm_config):
+        expected = full(codes.squeeze(0))
     torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
 
 
 def test_one_frame_decode_metadata_matches_full_decode() -> None:
     torch.manual_seed(23)
     config = tiny_config()
-    reference = EasyMagpieCodec(config).eval()
     vllm_config = VllmConfig()
     with set_current_vllm_config(vllm_config):
+        full = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="full").eval()
         packed = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="one_frame").eval()
-    packed.load_state_dict(reference.state_dict(), strict=True)
+    packed.load_state_dict(full.state_dict(), strict=True)
 
     state_layers = [module for module in packed.modules() if isinstance(module, CodecStateLayer)]
     for layer in state_layers:
@@ -187,17 +184,19 @@ def test_one_frame_decode_metadata_matches_full_decode() -> None:
         with set_forward_context(layer_metadata, vllm_config):
             pieces.append(packed(codes[0, frame : frame + 1]))
 
-    torch.testing.assert_close(torch.cat(pieces), reference(codes).squeeze(0), atol=2e-5, rtol=2e-5)
+    with set_forward_context(None, vllm_config):
+        expected = full(codes.squeeze(0))
+    torch.testing.assert_close(torch.cat(pieces), expected, atol=2e-5, rtol=2e-5)
 
 
 def test_mixed_decode_and_prefill_batch() -> None:
     torch.manual_seed(27)
     config = tiny_config()
-    reference = EasyMagpieCodec(config).eval()
     vllm_config = VllmConfig()
     with set_current_vllm_config(vllm_config):
+        full = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="full").eval()
         packed = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="mixed").eval()
-    packed.load_state_dict(reference.state_dict(), strict=True)
+    packed.load_state_dict(full.state_dict(), strict=True)
 
     state_layers = [module for module in packed.modules() if isinstance(module, CodecStateLayer)]
     for layer in state_layers:
@@ -214,8 +213,9 @@ def test_mixed_decode_and_prefill_batch() -> None:
     with set_forward_context(layer_metadata, vllm_config):
         actual = packed(batch_codes)
 
-    decode_expected = reference(decode_codes).squeeze(0)[config.samples_per_frame :]
-    prefill_expected = reference(prefill_codes).squeeze(0)
+    with set_forward_context(None, vllm_config):
+        decode_expected = full(decode_codes.squeeze(0))[config.samples_per_frame :]
+        prefill_expected = full(prefill_codes.squeeze(0))
     torch.testing.assert_close(actual, torch.cat((decode_expected, prefill_expected)), atol=2e-5, rtol=2e-5)
 
 
@@ -224,13 +224,11 @@ def test_cuda_packed_kernels_preserve_state_across_chunks() -> None:
     torch.manual_seed(29)
     device = torch.device("cuda")
     config = tiny_config()
-    reference = EasyMagpieCodec(config).eval()
     vllm_config = VllmConfig()
     with set_current_vllm_config(vllm_config):
         full = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="full").to(device).eval()
         streamed = PackedEasyMagpieCodec(config, dtype=torch.float32, prefix="streamed").to(device).eval()
-    full.load_state_dict(reference.state_dict(), strict=True)
-    streamed.load_state_dict(reference.state_dict(), strict=True)
+    streamed.load_state_dict(full.state_dict(), strict=True)
 
     full_layers = [module for module in full.modules() if isinstance(module, CodecStateLayer)]
     streamed_layers = [module for module in streamed.modules() if isinstance(module, CodecStateLayer)]

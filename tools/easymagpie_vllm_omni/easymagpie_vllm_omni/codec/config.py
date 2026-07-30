@@ -120,7 +120,7 @@ class EasyMagpieCodecConfig(PretrainedConfig):
         if self.activation != "half_snake":
             raise ValueError(
                 "activation must be 'half_snake' because the native codec currently hard-codes HalfSnake; "
-                f"implement the matching activation in codec.py and packed.py to support '{self.activation}'."
+                f"implement the matching activation in packed.py to support '{self.activation}'."
             )
 
         channels = self.input_filters

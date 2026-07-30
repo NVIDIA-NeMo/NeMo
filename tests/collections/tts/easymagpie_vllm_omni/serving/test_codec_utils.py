@@ -14,9 +14,8 @@
 
 import pytest
 import torch
-
-from easymagpie_vllm_omni.codec.codec import EasyMagpieCodec, FiniteScalarDequantizer
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
+from easymagpie_vllm_omni.codec.packed import PackedFiniteScalarDequantizer
 from easymagpie_vllm_omni.codec.packing import unstack_acoustic_codes
 from easymagpie_vllm_omni.codec.weight_conversion import fold_weight_norm
 
@@ -39,9 +38,9 @@ def tiny_config() -> EasyMagpieCodecConfig:
 
 
 def test_fsq_decode() -> None:
-    decode = FiniteScalarDequantizer(2, [2, 2])
+    decode = PackedFiniteScalarDequantizer(tiny_config())
     indices = torch.tensor([[[0, 3]]])
-    actual = decode(indices)
+    actual = decode(indices.squeeze(0)).unsqueeze(0)
     expected = torch.tensor([[[-1.0, -1.0, 0.0, 0.0]]])
     torch.testing.assert_close(actual, expected)
 
@@ -72,24 +71,6 @@ def test_fold_weight_norm_matches_torch() -> None:
     g = conv.parametrizations.weight.original0.detach()
     v = conv.parametrizations.weight.original1.detach()
     torch.testing.assert_close(fold_weight_norm(g, v), conv.weight.detach())
-
-
-def test_streaming_matches_full_decode() -> None:
-    torch.manual_seed(7)
-    config = tiny_config()
-    model = EasyMagpieCodec(config).eval()
-    codes = torch.randint(0, config.codebook_size, (1, 7, config.num_stacked_codebooks))
-
-    expected = model(codes)
-    state = None
-    chunks = []
-    for start, end in ((0, 1), (1, 4), (4, 6), (6, 7)):
-        audio, state = model.stream(codes[:, start:end], state)
-        chunks.append(audio)
-    actual = torch.cat(chunks, dim=-1)
-
-    assert actual.shape == (1, 7 * config.samples_per_frame)
-    torch.testing.assert_close(actual, expected)
 
 
 @pytest.mark.parametrize(

@@ -11,20 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the talker-only EasyMagpie pipeline topology."""
+"""Tests for the standalone EasyMagpie LM pipeline topology."""
 from __future__ import annotations
 
 import pytest
 
 pytest.importorskip("vllm_omni")
 
-from easymagpie_vllm_omni.pipeline import EASYMAGPIE_PIPELINE, EASYMAGPIE_TALKER_ONLY_PIPELINE  # noqa: E402
+from easymagpie_vllm_omni.pipeline import EASYMAGPIE_LM_PIPELINE, EASYMAGPIE_PIPELINE  # noqa: E402
 
 
-def test_talker_only_pipeline_is_single_stage():
-    assert EASYMAGPIE_TALKER_ONLY_PIPELINE.model_type == "easymagpie_talker"
-    assert len(EASYMAGPIE_TALKER_ONLY_PIPELINE.stages) == 1
-    stage = EASYMAGPIE_TALKER_ONLY_PIPELINE.stages[0]
+def test_lm_pipeline_is_single_stage():
+    assert EASYMAGPIE_LM_PIPELINE.model_type == "easymagpie_lm"
+    assert len(EASYMAGPIE_LM_PIPELINE.stages) == 1
+    stage = EASYMAGPIE_LM_PIPELINE.stages[0]
     assert stage.stage_id == 0
     assert stage.model_stage == "easymagpie"
     assert stage.final_output is True

@@ -53,8 +53,8 @@ def test_streaming_update_accumulates_declared_tensor_keys():
     torch.testing.assert_close(merged["hidden_states"]["output"], torch.tensor([[1.0], [2.0]]))
 
 
-def test_deploy_configs_select_compatibility_worker_for_talker():
-    for filename in ("easymagpie_talker.yaml", "easymagpie.yaml"):
+def test_deploy_configs_select_compatibility_worker_for_lm():
+    for filename in ("easymagpie_lm.yaml", "easymagpie.yaml"):
         deploy = yaml.safe_load((EASYMAGPIE_ROOT / "deploy" / filename).read_text())
-        talker = next(stage for stage in deploy["stages"] if stage["stage_id"] == 0)
-        assert talker["engine_extras"]["worker_cls"] == WORKER_CLS
+        lm_stage = next(stage for stage in deploy["stages"] if stage["stage_id"] == 0)
+        assert lm_stage["engine_extras"]["worker_cls"] == WORKER_CLS

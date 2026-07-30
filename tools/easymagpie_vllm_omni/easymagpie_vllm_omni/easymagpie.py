@@ -101,7 +101,7 @@ class EasyMagpieTTSForConditionalGeneration(
     IsHybrid,
     SupportsMambaPrefixCaching,
 ):
-    """EasyMagpieTTS talker for vLLM-Omni.
+    """EasyMagpie LM stage for vLLM-Omni.
 
     See the module docstring for the per-step flow and the per-request I/O
     contract. The class exposes the omni hooks (``has_preprocess`` /
@@ -149,13 +149,13 @@ class EasyMagpieTTSForConditionalGeneration(
         # How to surface sampled acoustic codes from ``make_omni_output``, driven
         # by the stage's pipeline-config ``engine_output_type``:
         #
-        # * "audio" (single-stage talker that is also the *final*, client-facing
+        # * "audio" (single-stage EasyMagpie LM that is also the *final*, client-facing
         #   stage): emit under the ``model_outputs`` key. vLLM-Omni's output
         #   processor remaps ``model_outputs`` -> the drainable ``audio`` modality
         #   key, so DELTA streaming DRAINS the codes every step (the client gets
         #   per-step deltas) instead of re-accumulating and re-sending the whole
         #   cumulative code tensor on every step.
-        # * otherwise (two-stage talker; ``engine_output_type="latent"``): emit
+        # * otherwise (two-stage EasyMagpie LM; ``engine_output_type="latent"``): emit
         #   the inter-stage keys (``audio_codes`` + nested ``codes.audio``) that
         #   the Code2Wav connector / async-chunk streamer consume.
         engine_output_type = getattr(vllm_config.model_config, "engine_output_type", None)

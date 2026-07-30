@@ -1,5 +1,5 @@
 # Stage 0 produces stacked acoustic codes; stage 1 decodes them to audio.
-# Explicit routing is required because the talker reports model_type "nemotron_h".
+# Explicit routing is required because EasyMagpie LM reports model_type "nemotron_h".
 pipeline: easymagpie
 
 # Required for streaming code transfer between the two stages.

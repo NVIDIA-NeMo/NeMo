@@ -32,7 +32,7 @@ It contains:
   input at inference time.
 * ``codec_native/`` (optional, on by default) — the causal audio codec converted
   to a stateful vLLM model for the in-engine second stage. Disable codec conversion
-  with ``--no-bundle-codec`` when serving the talker-only pipeline.
+  with ``--no-bundle-codec`` when serving the EasyMagpie LM pipeline.
 
 Compared to running the reference model, the character-aware subword (CAS)
 encoder is collapsed into a single pre-computed lookup table mapping
@@ -163,7 +163,7 @@ def parse_args():
         default=True,
         help="Bundle the codec into the model dir so the in-engine two-stage native codec "
         "can decode without an external codec service. Use "
-        "--no-bundle-codec to serve the talker only.",
+        "--no-bundle-codec to serve EasyMagpie LM only.",
     )
     parser.add_argument("--context_audio_duration", type=float, default=5.0)
     parser.add_argument(

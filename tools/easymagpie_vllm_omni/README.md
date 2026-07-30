@@ -3,12 +3,12 @@
 Streaming TTS for **NemotronTTS** (Nemotron-H backbone + per-codebook local
 transformer over a 25 fps spectral codec) via [vLLM-Omni](https://github.com/vllm-project/vllm-omni).
 
-The in-engine **two-stage pipeline** chains:
+EasyMagpieTTS decomposes into EasyMagpie LM and SpectralCodec-BWE-22kHz:
 
 | Stage | Role |
 |-------|------|
-| **0 — talker** | Autoregressive Nemotron-H + local transformer → stacked acoustic codes |
-| **1 — codec** | Stateful native vLLM codec → 22.05 kHz waveform |
+| **0 — EasyMagpie LM** | `EasyMagpie_LM_Backbone` (Nemotron-H) + `EasyMagpie_LM_LT` → stacked acoustic codes |
+| **1 — SpectralCodec-BWE-22kHz** | Stateful native vLLM codec → 22.05 kHz waveform |
 
 Model definition and pipeline registration live in
 [`easymagpie_vllm_omni/`](easymagpie_vllm_omni/) and
@@ -18,7 +18,7 @@ Deployment knobs are in [`deploy/easymagpie.yaml`](deploy/easymagpie.yaml).
 ### Convert a NeMo checkpoint
 
 This step turns the training-time `.nemo` checkpoints into a self-contained
-vLLM-Omni model directory: it converts the talker and causal codec to native
+vLLM-Omni model directory: it converts EasyMagpie LM and the causal codec to native
 vLLM models, precomputes the text-embedding lookup, and saves the tokenizer and
 optional speaker embedding. Run it in the **NeMo environment** from the repository root:
 

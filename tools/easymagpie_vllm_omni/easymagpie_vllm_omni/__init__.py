@@ -25,8 +25,8 @@ def __getattr__(name: str):
         from easymagpie_vllm_omni.pipeline import EASYMAGPIE_PIPELINE
 
         return EASYMAGPIE_PIPELINE
-    if name == "EASYMAGPIE_TALKER_ONLY_PIPELINE":
-        from easymagpie_vllm_omni.pipeline import EASYMAGPIE_TALKER_ONLY_PIPELINE
+    if name == "EASYMAGPIE_LM_PIPELINE":
+        from easymagpie_vllm_omni.pipeline import EASYMAGPIE_LM_PIPELINE
 
-        return EASYMAGPIE_TALKER_ONLY_PIPELINE
+        return EASYMAGPIE_LM_PIPELINE
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

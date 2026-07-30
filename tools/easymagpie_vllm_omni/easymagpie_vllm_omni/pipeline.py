@@ -13,19 +13,19 @@
 # limitations under the License.
 """EasyMagpieTTS pipeline topologies for vLLM-Omni.
 
-The talker reports the generic ``model_type="nemotron_h"``, so routing uses its
-HF architecture or an explicit ``pipeline: …`` deployment setting.
+EasyMagpie LM reports the generic ``model_type="nemotron_h"``, so routing uses
+its HF architecture or an explicit ``pipeline: …`` deployment setting.
 
 * :data:`EASYMAGPIE_PIPELINE` — two-stage text → acoustic codes → waveform.
-* :data:`EASYMAGPIE_TALKER_ONLY_PIPELINE` — single-stage acoustic-token
+* :data:`EASYMAGPIE_LM_PIPELINE` — single-stage acoustic-token
   prediction only (no in-engine Code2Wav). Use this to benchmark and develop
-  the talker in isolation; select it with ``pipeline: easymagpie_talker``.
+  EasyMagpie LM in isolation; select it with ``pipeline: easymagpie_lm``.
 """
 from vllm_omni.config.stage_config import PipelineConfig, StageExecutionType, StagePipelineConfig
 
 _PROC = "easymagpie_vllm_omni.stage_processors"
 
-# The talker repurposes a 2-wide dummy backbone vocab as a continue/stop signal;
+# EasyMagpie LM repurposes a 2-wide dummy backbone vocab as a continue/stop signal;
 # the last index is the audio-EOS stop token (see
 # ``EasyMagpieTTSForConditionalGeneration.audio_eos_stop_token_id``).
 _AUDIO_EOS_STOP_TOKEN_ID = 1
@@ -83,8 +83,8 @@ EASYMAGPIE_PIPELINE = PipelineConfig(
     ),
 )
 
-EASYMAGPIE_TALKER_ONLY_PIPELINE = PipelineConfig(
-    model_type="easymagpie_talker",
+EASYMAGPIE_LM_PIPELINE = PipelineConfig(
+    model_type="easymagpie_lm",
     model_arch="EasyMagpieTTSForConditionalGeneration",
     hf_architectures=(
         "EasyMagpieTTSForConditionalGeneration",

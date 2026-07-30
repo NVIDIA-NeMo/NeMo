@@ -268,13 +268,13 @@ async def test_input_stream_accepts_segment_completion_with_a_dropped_output_fra
     assert next_input.prompt["additional_information"] == {"text_token": [12], "text_token_start": 2}
 
 
-def test_two_stage_pipeline_exposes_talker_progress_for_stream_pacing():
+def test_two_stage_pipeline_exposes_lm_progress_for_stream_pacing():
     from easymagpie_vllm_omni.pipeline import EASYMAGPIE_PIPELINE
 
-    talker = EASYMAGPIE_PIPELINE.stages[0]
-    assert talker.final_output is True
-    assert talker.final_output_type == "latent"
-    assert talker.scheduler_cls == "easymagpie_vllm_omni.scheduler.EasyMagpieARAsyncScheduler"
+    lm_stage = EASYMAGPIE_PIPELINE.stages[0]
+    assert lm_stage.final_output is True
+    assert lm_stage.final_output_type == "latent"
+    assert lm_stage.scheduler_cls == "easymagpie_vllm_omni.scheduler.EasyMagpieARAsyncScheduler"
 
 
 @pytest.mark.asyncio

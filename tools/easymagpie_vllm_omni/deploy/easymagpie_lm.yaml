@@ -1,11 +1,11 @@
-# EasyMagpieTTS talker-only deploy: acoustic-token prediction without Code2Wav.
+# EasyMagpie LM deploy: acoustic-token prediction without SpectralCodec-BWE-22kHz.
 #
-# Use this topology to benchmark and develop the AR talker in isolation from the
-# two-stage codec path. Select it via:
-#   pipeline: easymagpie_talker
+# Use this topology to benchmark and develop EasyMagpie_LM (the autoregressive
+# backbone + local transformer) in isolation from the two-stage codec path:
+#   pipeline: easymagpie_lm
 #
 # scripts/benchmark_model.py uses this deploy config by default.
-pipeline: easymagpie_talker
+pipeline: easymagpie_lm
 
 # Required for streaming-text input (whole-text mode ignores this).
 async_chunk: true

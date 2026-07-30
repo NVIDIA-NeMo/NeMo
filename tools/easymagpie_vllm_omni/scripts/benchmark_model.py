@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Benchmark the EasyMagpieTTS talker via a single-stage AsyncOmni engine.
+"""Benchmark EasyMagpie LM via a single-stage AsyncOmni engine.
 
 Measures acoustic-token prediction only (no in-engine Code2Wav). Uses the
-``easymagpie_talker`` pipeline so talker throughput can be tracked separately
-from the two-stage codec path.
+``easymagpie_lm`` pipeline so LM throughput can be tracked separately from
+the two-stage codec path.
 
 Two input modes, selectable with ``--streaming``:
 
@@ -59,7 +59,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DEPLOY_CONFIG = _SCRIPT_DIR.parent / "deploy" / "easymagpie_talker.yaml"
+DEFAULT_DEPLOY_CONFIG = _SCRIPT_DIR.parent / "deploy" / "easymagpie_lm.yaml"
 
 # ── Hardcoded run settings ─────────────────────────────────────────────────
 SPEAKER = "eng"
@@ -104,14 +104,14 @@ def _build_deploy_config(
     torch_profiler_dir: str,
     load_format: Optional[str],
 ) -> dict:
-    """Load the talker-only deploy YAML and apply benchmark runtime overrides."""
+    """Load the EasyMagpie LM deploy YAML and apply benchmark runtime overrides."""
     config_path = Path(deploy_config)
     cfg = yaml.safe_load(config_path.read_text())
-    if cfg.get("pipeline") != "easymagpie_talker":
-        raise ValueError(f"{config_path} must set pipeline: easymagpie_talker")
+    if cfg.get("pipeline") != "easymagpie_lm":
+        raise ValueError(f"{config_path} must set pipeline: easymagpie_lm")
     stages = cfg.get("stages", [])
     if len(stages) != 1:
-        raise ValueError(f"{config_path} must define exactly one talker stage")
+        raise ValueError(f"{config_path} must define exactly one EasyMagpie LM stage")
 
     cfg = copy.deepcopy(cfg)
     stage: dict[str, Any] = cfg["stages"][0]
@@ -284,7 +284,7 @@ def _extract_request_output(stage_output):
 def _extract_step_audio_codes(stage_output):
     """Find this step's audio-code payload as one ``[T, Q]`` delta tensor.
 
-    The single-stage talker emits its codes under the ``model_outputs`` key,
+    The single-stage EasyMagpie LM emits its codes under the ``model_outputs`` key,
     which vLLM-Omni remaps to the drainable ``audio`` modality; in DELTA mode
     that key is drained every step, so each per-step snapshot carries only the
     codes produced this step (a delta), NOT the cumulative sequence. Callers
@@ -781,7 +781,7 @@ async def main(args):
     )
 
     try:
-        logger.info("Creating AsyncOmni engine for %s (pipeline=easymagpie_talker) ...", args.model)
+        logger.info("Creating AsyncOmni engine for %s (pipeline=easymagpie_lm) ...", args.model)
         omni = AsyncOmni(
             model=args.model,
             deploy_config=tmp_config_path,
@@ -855,7 +855,7 @@ async def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Benchmark the EasyMagpieTTS talker (acoustic tokens only) via AsyncOmni",
+        description="Benchmark EasyMagpie LM (acoustic tokens only) via AsyncOmni",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -866,7 +866,7 @@ def parse_args():
         "--deploy-config",
         type=str,
         default=str(DEFAULT_DEPLOY_CONFIG),
-        help="Base talker-only deploy YAML; benchmark runtime values override capacity settings",
+        help="Base EasyMagpie LM deploy YAML; benchmark runtime values override capacity settings",
     )
     parser.add_argument("--text-file", type=str, default=None, help="One utterance per line (optionally tab-sep)")
     parser.add_argument(

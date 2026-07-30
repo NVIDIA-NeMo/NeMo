@@ -80,6 +80,8 @@ def model():
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": False,
+        # Exercise backend preservation for native fixtures and removal for HF fixtures.
+        "automodel_backend": {"dispatcher": "torch"},
         "prompt_format": PROMPT,
         "audio_locator_tag": AUDIO_LOCATOR_TAG,
         "perception": {

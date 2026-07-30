@@ -110,12 +110,14 @@ def test_selected_gradient_layout_receipt_is_data_free_for_local_tensors():
     }
 
 
-def test_r22_server_entrypoint_uses_direct_pinned_source_without_a_runtime_overlay():
+def test_r22_server_entrypoint_stages_pinned_source_without_a_runtime_overlay():
     root = Path(__file__).parents[3]
     script = (root / "examples/speechlm2/serve_salm_dpo_hero2_vllm_r22.sh").read_text(encoding="utf-8")
     assert "R22_NEMO_SOURCE" in script
     assert "R22_TRANSFORMER_ENCODER_SHA256" in script
-    assert "pip install --no-deps \"$R22_NEMO_SOURCE\"" in script
+    assert "R22_NEMO_SERVER_FINGERPRINT_SHA256" in script
+    assert 'test "$source_fingerprint" = "$expected"' in script
+    assert 'test "$staged_fingerprint" = "$expected"' in script
+    assert 'python3 -m pip install --no-deps --force-reinstall "$R22_STAGE_ROOT/source"' in script
     assert "PYTHONPATH" not in script
-    assert "cp " not in script
     assert "\npatch " not in script

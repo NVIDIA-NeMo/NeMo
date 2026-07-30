@@ -392,15 +392,14 @@ def compute_grad_kernel(
                 # multiplying (1.0 + fastemit_lambda) with result.
                 grad -= math.exp(math.log1p(fastemit_lambda) + alphas[col] + logpk - logll[mb] + betas[col + 1])
 
+            # clamp gradient (if needed) while it is still an FP32 register, so that
+            # narrow `grads` dtypes are not rounded twice.
+            if clamp > 0.0:
+                grad = min(grad, clamp)
+                grad = max(grad, -clamp)
+
             # update grads[b, t, u, v] = grad
             grads[col * alphabet_size + idx] = grad
-
-            # clamp gradient (if needed)
-            if clamp > 0.0:
-                g = grads[col * alphabet_size + idx]
-                g = min(g, clamp)
-                g = max(g, -clamp)
-                grads[col * alphabet_size + idx] = g
 
             # update internal index through the thread_buffer;
             # until idx < V + 1, such that entire vocabulary has been updated.
@@ -870,15 +869,14 @@ def compute_multiblank_grad_kernel(
                     math.log1p(fastemit_lambda) + alphas[col] + logpk - sigma - logll[mb] + betas[col + 1]
                 )
 
+            # clamp gradient (if needed) while it is still an FP32 register, so that
+            # narrow `grads` dtypes are not rounded twice.
+            if clamp > 0.0:
+                grad = min(grad, clamp)
+                grad = max(grad, -clamp)
+
             # update grads[b, t, u, v] = grad
             grads[col * alphabet_size + idx] = grad
-
-            # clamp gradient (if needed)
-            if clamp > 0.0:
-                g = grads[col * alphabet_size + idx]
-                g = min(g, clamp)
-                g = max(g, -clamp)
-                grads[col * alphabet_size + idx] = g
 
             # update internal index through the thread_buffer;
             # until idx < V + 1, such that entire vocabulary has been updated.
@@ -1424,15 +1422,14 @@ def compute_tdt_grad_kernel(
                             + duration_acts[col * num_durations + i]
                         )
 
+            # clamp gradient (if needed) while it is still an FP32 register, so that
+            # narrow `label_grads` dtypes are not rounded twice.
+            if clamp > 0.0:
+                grad = min(grad, clamp)
+                grad = max(grad, -clamp)
+
             # update grads[b, t, u, v] = grad
             label_grads[col * alphabet_size + idx] = grad
-
-            # clamp gradient (if needed)
-            if clamp > 0.0:
-                g = label_grads[col * alphabet_size + idx]
-                g = min(g, clamp)
-                g = max(g, -clamp)
-                label_grads[col * alphabet_size + idx] = g
 
             # update internal index through the thread_buffer;
             # until idx < V + 1, such that entire vocabulary has been updated.

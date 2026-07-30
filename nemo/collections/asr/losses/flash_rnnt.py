@@ -134,7 +134,7 @@ def _chunk_scores(
     clamp: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Calculate transition scores for one disposable joint chunk."""
-    from nemo.collections.asr.parts.k2.rnnt_logprobs_triton import rnnt_logprobs_triton
+    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 
     hidden = join_activate(projected_encoder, projected_predictor, activation)
     hidden = F.dropout(hidden, p=dropout_p, training=True)

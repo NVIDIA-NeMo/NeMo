@@ -19,8 +19,8 @@ from nemo.collections.asr.losses.flash_rnnt import FlashRNNTLoss, _balanced_time
 from nemo.collections.asr.losses.rnnt import NUMBA_RNNT_AVAILABLE, RNNT_LOSS_RESOLVER, RNNTLoss
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint
-from nemo.collections.asr.parts.k2.rnnt_logprobs_triton import rnnt_logprobs_triton
 from nemo.collections.asr.parts.triton.rnnt_joint import join_activate
+from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS, rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE, TRITON_INSTALLATION_MESSAGE
 

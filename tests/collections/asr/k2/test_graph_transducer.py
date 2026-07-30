@@ -30,7 +30,7 @@ if K2_AVAILABLE:
     from nemo.collections.asr.parts.k2.graph_transducer import GraphRnntLoss
 
 if TRITON_AVAILABLE:
-    from nemo.collections.asr.parts.k2.rnnt_logprobs_triton import rnnt_logprobs_triton
+    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 
 
 EPS_SM_INPUT = 1e-6

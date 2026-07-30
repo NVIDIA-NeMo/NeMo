@@ -901,8 +901,7 @@ def sample_preference_to_conversation(
     candidates = [
         instr
         for instr in instructions
-        if instr.get("target")
-        and (weights is None or weights.get(_type_of(instr), 0.0) > 0.0)
+        if instr.get("target") and (weights is None or weights.get(_type_of(instr), 0.0) > 0.0)
     ]
 
     rng = random.Random(f"{seed}:{cut.id}")

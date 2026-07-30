@@ -888,6 +888,80 @@ Two equivalent ways:
    separate directory tree that mirrors the data files' layout instead of
    placing them next to the data — see :ref:`lhotse-indexes-root` below.
 
+Packing sidecars into dataset-level ``.idxpack`` files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For a heavily sharded dataset, reading loose ``.idx`` sidecars can still make
+startup metadata-bound: the runtime has to discover every shard, open every
+sidecar, and construct one reader and offset view per source. An ``.idxpack``
+combines the existing sidecar payloads and ordered shard catalog for one
+dataset into one immutable file. Lhotse opens the pack through a single
+read-only memory map and faults in offset pages on demand; it does not preload
+the offset payload into Python or NumPy memory.
+
+Build loose sidecars first, then convert each independently configured dataset
+to its own pack. Conversion does not rescan the source manifests or tar files:
+
+.. code-block:: bash
+
+   python scripts/dataloading/build_indexes.py \
+       --indexes-root /data/indexes \
+       /data/configs/books.yaml /data/configs/speech.yaml
+
+   python scripts/dataloading/convert_indexes_to_idxpack.py \
+       --indexes-root /data/indexes \
+       --output /data/index-packs/books.idxpack \
+       /data/configs/books.yaml
+
+   python scripts/dataloading/convert_indexes_to_idxpack.py \
+       --indexes-root /data/indexes \
+       --output /data/index-packs/speech.idxpack \
+       /data/configs/speech.yaml
+
+The converter walks nested ``group`` entries and transform wrappers. It
+currently packs native ``nemo``/``nemo_tarred`` manifests and tar shards,
+``nemotron_text_converation`` JSONL or tar paths, and ``share_gpt`` JSONL
+manifests. Unsupported data-bearing types raise instead of being silently
+omitted; types that need no sidecar (such as ``parquet``) are ignored. Other
+indexed adapters can continue to use loose sidecars.
+
+At runtime, set a shared ``index_pack_root`` and declare the pack explicitly on
+each owning outer ``input_cfg`` entry:
+
+.. code-block:: yaml
+
+   data:
+     train_ds:
+       indexed: true
+       use_stateful_dataloader: true
+       force_map_dataset: false
+       seed: 42
+       shard_seed: 42
+       index_pack_root: /data/index-packs
+       index_pack_max_open_files: 32
+
+       input_cfg:
+         - type: group
+           input_cfg: /data/configs/books.yaml
+           index_pack: books.idxpack
+           weight: 0.25
+         - type: group
+           input_cfg: /data/configs/speech.yaml
+           index_pack: speech.idxpack
+           weight: 0.75
+
+The outer entry propagates its pack only to that dataset's nested leaves, so a
+composition can use one pack per dataset. Relative ``index_pack`` values are
+resolved under ``index_pack_root``; absolute paths are also accepted.
+Declaration is strict: ``index_pack`` requires ``indexed: true``, and a missing
+pack raises immediately. Omitting ``index_pack`` preserves the existing loose
+sidecar behavior. Keep ``indexes_root`` configured as well if the overall
+pipeline contains indexed adapters that are not pack-backed.
+
+Rebuild a pack whenever the source declaration, expanded shard order, source
+contents, or sidecars change. Packs are local, seekable runtime artifacts even
+when an application uses them to catalog remote payload paths.
+
 .. _lhotse-indexes-root:
 
 Storing ``.idx`` sidecars in a separate directory (``indexes_root``)
@@ -955,13 +1029,13 @@ End-to-end YAML example
         # Top-level switches enable indexed restore for every source below.
         indexed: true
         use_stateful_dataloader: true
-        force_finite: true
-        force_map_dataset: true
+        force_finite: false
+        force_map_dataset: false
 
         sample_rate: 16000
         num_workers: 4
         seed: 42
-        shard_seed: randomized
+        shard_seed: 42
 
         # Bucketing and the rest of the dataloader knobs work exactly as before.
         use_bucketing: true
@@ -1508,7 +1582,8 @@ options by what they control.
 ``sampler_weights``.
 
 **Indexed / resumable.** ``indexed``, ``use_stateful_dataloader``,
-``indexes_root``. See :ref:`indexed-resumable-dataloading` and
+``indexes_root``, ``index_pack_root``, ``index_pack``,
+``index_pack_max_open_files``. See :ref:`indexed-resumable-dataloading` and
 :ref:`lhotse-indexes-root`.
 
 **Mixing & weighting.** ``reweight_temperature``, ``max_open_streams``.

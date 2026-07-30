@@ -1,7 +1,6 @@
 ---
 name: migrate-to-resumable-dataloader
-description: This skill should be used when the user asks to "migrate to the resumable dataloader", "switch to indexed Lhotse", "adopt the indexed + resumable pipeline", "make my training resumable", "set up StatefulDataLoader for NeMo/Lhotse", "use AIStore GetBatch", or "convert this YAML to the resumable path". Walks a NeMo training YAML and optional launcher, data blend, and runtime context through the indexed + resumable Lhotse migration; lints interacting fields; auto-patches safe YAML changes; emits a migration report, pre-flight checklist, and index-build command. Static analysis only; never launches training.
-argument-hint: '<config.yaml> [launcher.py] [blend.yaml] [runtime-notes]'
+description: This skill should be used when the user asks to "migrate to the resumable dataloader", "switch to indexed Lhotse", "adopt the indexed + resumable pipeline", "make my training resumable", "set up StatefulDataLoader for NeMo/Lhotse", "use index packs", "use AIStore GetBatch", or "convert this YAML to the resumable path". Walks a NeMo training YAML and optional launcher, data blend, and runtime context through the indexed + resumable Lhotse migration; lints interacting fields; auto-patches safe YAML changes; emits a migration report, pre-flight checklist, and index-build command. Static analysis only; never launches training.
 ---
 
 # Migrate a NeMo training YAML to indexed + resumable Lhotse
@@ -15,6 +14,10 @@ storage backend, and resume topology all interact.
 
 - Indexed sources need `.idx` sidecars for random access into JSONL, tar, and
   supported Shar-style data. Build these once per blend/source set.
+- For datasets with very many shards, an optional dataset-level `.idxpack`
+  combines existing sidecars into one memory-mapped catalog. Prefer one pack
+  per independently configured outer `input_cfg`; do not create one global
+  pack for an entire mixture.
 - `use_stateful_dataloader: true` lets Lightning checkpoint the dataloader
   iterator state, but only if seeds, worker counts, and distributed topology are
   stable across chunks.
@@ -47,7 +50,7 @@ Every output lands in `migrate-resumable/<config-stem>/` in the current repo:
 | `<config-stem>-resumable.yaml` | Patched training config when safe automatic edits are possible. |
 | `<blend-stem>-resumable.yaml` | Patched blend, only when a blend was inspected and safe changes are possible. |
 | `pre-flight-checklist.md` | User-run steps before submitting training. |
-| `build-indexes-cmd.sh` | One-shot index-build command using the project wrapper when available, otherwise the generic NeMo/Lhotse index builder. |
+| `build-indexes-cmd.sh` | One-shot sidecar-build command and, when packs are selected, one conversion command per outer dataset. Use a project wrapper when available, otherwise the generic NeMo scripts. |
 
 ## Workflow
 
@@ -109,6 +112,9 @@ Use `templates/migration-report.md`. Include:
 Use `templates/pre-flight-checklist.md` when present. Required steps:
 
 - Build `.idx` sidecars for every training/validation/test blend involved.
+- When startup would open many loose sidecars, build and validate one `.idxpack`
+  per supported outer dataset after the sidecars exist. Record the owning
+  `input_cfg` entry and output filename explicitly.
 - Verify `indexes_root` points at the same stable mirror used by the runtime, or
   that explicit node-local index staging populates it before training starts.
 - If AIStore is in play: verify `aistore` SDK availability, `AIS_ENDPOINT`, and
@@ -130,6 +136,22 @@ python <NeMo>/scripts/dataloading/build_indexes.py \
     --workers <N> \
     <blend>.yaml [<validation-blend>.yaml ...]
 ```
+
+When an outer dataset is supported and has enough shards to benefit from one
+memory map, append a command for that dataset (repeat for every independently
+configured outer `input_cfg`):
+
+```bash
+python <NeMo>/scripts/dataloading/convert_indexes_to_idxpack.py \
+    --indexes-root <shared-index-mirror> \
+    --output <index-pack-root>/<dataset-name>.idxpack \
+    <dataset-input-cfg>.yaml
+```
+
+Patch the owning outer entry with `index_pack: <dataset-name>.idxpack` and set
+`index_pack_root` at the dataloader level. Never infer a pack by filename: an
+explicit declaration is part of the runtime validation contract. If the
+converter rejects a type, keep that adapter on loose sidecars and report it.
 
 If running through a managed runtime or container wrapper, include comments for required
 container image, mounts, environment variables, worker count, and any CPU/GPU

@@ -50,17 +50,23 @@ checkpointable dataloading.
     batch endpoint fails for a dataset, use `USE_AIS_INDIVIDUAL_GETS=true` as a
     slower fallback while investigating storage availability.
 
+12. **Pack heavily sharded datasets independently.** After loose sidecars are
+    built, create one `.idxpack` per supported outer `input_cfg` when sidecar
+    discovery/open time is material. Keep each pack declaration explicit so
+    one dataset can be rebuilt or rolled back without changing the rest of a
+    mixture.
+
 ## Tier 3 - operational hygiene
 
-12. **Tune index-build workers to memory and storage backend.** Many workers can
+13. **Tune index-build workers to memory and storage backend.** Many workers can
     OOM on large manifests or remote tar headers. Reduce workers or split the
     blend when needed.
 
-13. **Keep optional prefetch steps explicit.** Manifest prefetch, index staging,
+14. **Keep optional prefetch steps explicit.** Manifest prefetch, index staging,
     and model-cache preambles should be visible in the launcher and documented in
     the report.
 
-14. **Use CPU-safe container settings for CPU-only index builds.** Some container
+15. **Use CPU-safe container settings for CPU-only index builds.** Some container
     runtimes expect GPU hooks by default; bypass or disable them when the index
     build runs without GPU access.
 

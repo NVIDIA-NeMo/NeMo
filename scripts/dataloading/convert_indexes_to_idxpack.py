@@ -26,9 +26,9 @@ files, normally from ``--indexes-root``.
 Example::
 
     python scripts/dataloading/convert_indexes_to_idxpack.py \
-        --indexes-root /lustre/.../indexes_mirror \
-        --output /lustre/.../packs/granary-v2.idxpack \
-        /path/to/granary_v2_packed-lustre.yaml
+        --indexes-root /data/indexes \
+        --output /data/index-packs/speech.idxpack \
+        /data/configs/speech.yaml
 """
 
 from __future__ import annotations

@@ -13,6 +13,9 @@ you when producing a report.
 | `use_stateful_dataloader` | `true` | Uses `torchdata.StatefulDataLoader` so dataloader iterator state can be saved in Lightning checkpoints. | NeMo Lhotse dataloader config |
 | `force_map_dataset` | `false` for training | Enforces iterable partitioning across data-parallel ranks and workers. Map-style training has too much sampler/manifest overhead; if a source cannot yet be indexed, report the migration as not launch-ready unless the user explicitly approves a temporary exception. | failure-modes §§18-22, conflict-matrix |
 | `indexes_root` | stable filesystem mirror, or node-local path populated before startup | Tells indexed readers where to find `.idx` sidecars. Prefer a persistent shared mirror. Use `/tmp/idx` only when the launcher stages indexes there before training. | failure-modes §16 |
+| `index_pack_root` | directory containing dataset-level `.idxpack` files | Resolves relative `index_pack` declarations. Keep the pack local and seekable at runtime. | NeMo Lhotse dataloader config |
+| `index_pack` on an outer `input_cfg` entry | explicit filename/path, when that dataset uses a pack | Propagates one pack through that dataset's nested leaves. It requires `indexed: true` and fails if the file is missing; omission keeps loose sidecars. | `convert_indexes_to_idxpack.py` |
+| `index_pack_max_open_files` | positive integer; default `32` | Bounds the process-local source descriptor cache shared by readers of one pack. | Lhotse `LazyPackedManifestIterator` |
 | `seed` | fixed integer, invariant across chunks | Lightning reseeds Python/NumPy/Torch at chunk start. Rotating this across resumable chunks breaks model-level bit-exactness even when sampler state restores correctly. | failure-modes §11 |
 | `shard_seed` | fixed integer, not `"randomized"` | Controls sampler/multiplexer RNG. Randomized shard seeds can diverge across resume and are invalid for multi-shard iterable partitioning. | conflict-matrix |
 | `num_workers` | invariant between save and restore | `StatefulDataLoader` and iterable partition state depend on worker topology. | failure-modes §14, §21 |
@@ -67,6 +70,7 @@ user explicitly approves a temporary exception.
 |---|---|---|
 | Per-chunk seed | invariant for all chunks in a resumable chain | Prevents model-level RNG divergence across resumes. |
 | Index mirror availability | `.idx` sidecars exist before training starts | Indexed readers fail or fall back to slow behavior when sidecars are missing. |
+| Pack availability | every declared `index_pack` exists and matches its owning dataset layout | Pack declaration is strict; never rely on implicit filename inference or fallback. |
 | Optional index staging | YAML `indexes_root` matches the staged destination | Node-local paths such as `/tmp/idx` must be populated in every chunk. |
 | `num_workers`, `world_size` | unchanged between save and restore | Required by stateful dataloading and iterable partitioning. |
 | Python path / package selection | loads the NeMo and Lhotse versions with indexed/resumable support | Avoids accidentally using stock packages without the required code. |
@@ -90,3 +94,4 @@ user explicitly approves a temporary exception.
 | Mirror destination | persistent shared filesystem when available | Reuse sidecars across runs and avoid per-launch rebuilds. |
 | Remote sources | verify credentials/backend before building | Indexing remote data exercises storage credentials and byte-range access. |
 | Reusability | build once per source path set | Existing sidecars can be reused while source contents and paths are unchanged. |
+| Dataset-level pack | optional after sidecars exist; one per supported outer dataset | Collapses many sidecar opens and in-memory readers into one memory map without rescanning source data. Rebuild when collection identity, path order, source contents, or sidecars change. |

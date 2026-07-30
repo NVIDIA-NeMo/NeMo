@@ -29,6 +29,7 @@
 import enum
 import math
 
+import numba
 import torch
 from numba import cuda
 
@@ -36,6 +37,9 @@ from nemo.collections.asr.parts.numba.rnnt_loss.utils import global_constants, r
 
 warp_size = global_constants.warp_size()
 dtype = global_constants.dtype()
+
+# RNN-T dynamic-programming state is FP32. Promote narrow activation reads
+# explicitly because Numba-CUDA cannot implicitly unify BF16 with FP32.
 
 CTA_REDUCE_SIZE = 128
 
@@ -147,13 +151,13 @@ def _reduce_rows(I_opid: int, R_opid: int, acts, output, num_rows: int):
     col = cuda.blockIdx.x
 
     # allocate shared thread memory
-    storage = cuda.shared.array(shape=(CTA_REDUCE_SIZE,), dtype=acts.dtype)
+    storage = cuda.shared.array(shape=(CTA_REDUCE_SIZE,), dtype=dtype)
 
     max = output[col]
 
     # // Each block works on a column
     if idx < num_rows:
-        curr = acts[col * num_rows + idx] - max
+        curr = numba.float32(acts[col * num_rows + idx]) - max
         if I_opid == 0:
             curr = rnnt_helper.exponential(curr)
         else:
@@ -162,7 +166,7 @@ def _reduce_rows(I_opid: int, R_opid: int, acts, output, num_rows: int):
     idx += CTA_REDUCE_SIZE
 
     while idx < num_rows:
-        activation_ = acts[col * num_rows + idx] - max
+        activation_ = numba.float32(acts[col * num_rows + idx]) - max
 
         if I_opid == 0 and R_opid == 0:
             curr = rnnt_helper.add(curr, rnnt_helper.exponential(activation_))
@@ -212,13 +216,13 @@ def _reduce_minus(I_opid: int, R_opid: int, acts, output, num_rows: int):
     col = cuda.blockIdx.x
 
     # allocate shared thread memory
-    storage = cuda.shared.array(shape=(CTA_REDUCE_SIZE,), dtype=acts.dtype)
+    storage = cuda.shared.array(shape=(CTA_REDUCE_SIZE,), dtype=dtype)
 
     max = output[col]
 
     # // Each block works on a column
     if idx < num_rows:
-        curr = acts[col * num_rows + idx] - max
+        curr = numba.float32(acts[col * num_rows + idx]) - max
         if I_opid == 0:
             curr = rnnt_helper.exponential(curr)
         else:
@@ -227,7 +231,7 @@ def _reduce_minus(I_opid: int, R_opid: int, acts, output, num_rows: int):
     idx += CTA_REDUCE_SIZE
 
     while idx < num_rows:
-        activation_ = acts[col * num_rows + idx] - max
+        activation_ = numba.float32(acts[col * num_rows + idx]) - max
 
         if I_opid == 0 and R_opid == 0:
             curr = rnnt_helper.add(curr, rnnt_helper.exponential(activation_))

@@ -28,6 +28,7 @@
 
 import math
 
+import numba
 import torch
 from numba import cuda
 
@@ -61,13 +62,13 @@ def logp(
         The sum of logprobs[mb, t, u, v] + denom[mb, t, u]
     """
     col = (mb * maxT + t) * maxU + u
-    return denom[col] + acts[col * alphabet_size + v]
+    return denom[col] + numba.float32(acts[col * alphabet_size + v])
 
 
 @cuda.jit(device=True, inline=True)
 def logp_duration(acts: torch.Tensor, maxT: int, maxU: int, num_durations: int, mb: int, t: int, u: int, v: int):
     col = (mb * maxT + t) * maxU + u
-    return acts[col * num_durations + v]
+    return numba.float32(acts[col * num_durations + v])
 
 
 @cuda.jit()

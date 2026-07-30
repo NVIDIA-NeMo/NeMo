@@ -268,6 +268,16 @@ class LhotseDataLoadingConfig:
     # disk while the data lives on shared / object storage. Cascades through
     # ``read_dataset_config`` to every nested ``input_cfg`` entry.
     indexes_root: Optional[str] = None
+    # Root containing dataset-level .idxpack files. Individual outer input_cfg
+    # entries declare ``index_pack`` relative to this directory and propagate
+    # that pack to every nested leaf.
+    index_pack_root: Optional[str] = None
+    # Bounded number of source descriptors shared by all readers in one pack.
+    index_pack_max_open_files: int = 32
+    # Explicitly set on an owning input_cfg entry, normally relative to
+    # index_pack_root. Declaring a pack is strict: missing packs are errors.
+    index_pack: Optional[str] = None
+
     # When True, build the dataloader with ``torchdata.stateful_dataloader.StatefulDataLoader``
     # instead of ``torch.utils.data.DataLoader``. Combined with a checkpointable lhotse sampler
     # (DynamicBucketingSampler / DynamicCutSampler), this enables exact resume from the next batch
@@ -661,6 +671,8 @@ def get_lhotse_dataloader_from_multi_config(
             # underlying readers fall back to streaming.
             "indexed",
             "indexes_root",
+            "index_pack_root",
+            "index_pack_max_open_files",
         ]
         defaults = OmegaConf.structured(LhotseDataLoadingConfig)
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])

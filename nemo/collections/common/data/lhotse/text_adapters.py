@@ -44,6 +44,7 @@ from nemo.collections.common.data.lhotse._compat import (
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedTarMemberReader,
     IndexedTarSampleReader,
+    PackedTarMemberReader,
     _split_json_audio_pair,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
@@ -570,15 +571,21 @@ class NemotronTextConversationAdapter(IteratorNode):
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
     indexed: bool = False
     indexes_root: Optional[Pathlike] = None
+    index_pack: Optional[Pathlike] = None
+    index_pack_max_open_files: int = 32
 
     def __post_init__(self):
-        paths = [self.paths] if isinstance(self.paths, (str, Path)) else list(self.paths)
-        self.paths = [str(p) for raw in paths for p in expand_sharded_filepaths(str(raw))]
+        raw_paths = self.paths
         self._readers: list = []
         self._reader_kinds: list[str] = []
         self._source_paths: list[str] = []
         self._cum_lens: list[int] = []
         self._iter_state = PartitionedIndexedIterator()
+        if self.indexed and self.index_pack is not None:
+            self._init_packed(raw_paths)
+            return
+        paths = [raw_paths] if isinstance(raw_paths, (str, Path)) else list(raw_paths)
+        self.paths = [str(p) for raw in paths for p in expand_sharded_filepaths(str(raw))]
         if self.indexed:
             self._init_indexed()
 
@@ -593,6 +600,46 @@ class NemotronTextConversationAdapter(IteratorNode):
     @property
     def has_constant_time_access(self) -> bool:
         return self.indexed
+
+    def _init_packed(self, source_spec) -> None:
+        from lhotse.index_pack import index_pack_collection_key, open_index_pack
+        from lhotse.packed_lazy import LazyPackedManifestIterator
+
+        pack = open_index_pack(self.index_pack)
+        collection_specs = (
+            ("packed_jsonl", "jsonl"),
+            ("packed_tar", "nemo_tar"),
+        )
+        found = []
+        for reader_kind, pack_kind in collection_specs:
+            key = index_pack_collection_key("paths", pack_kind, source_spec)
+            try:
+                collection = pack.collection(key)
+            except KeyError:
+                continue
+            if reader_kind == "packed_jsonl":
+                reader = LazyPackedManifestIterator(
+                    pack,
+                    key,
+                    decode=dict,
+                    max_open_files=self.index_pack_max_open_files,
+                )
+            else:
+                reader = PackedTarMemberReader(collection, max_open_files=self.index_pack_max_open_files)
+            self._readers.append(reader)
+            self._reader_kinds.append(reader_kind)
+            self._source_paths.append(str(pack.path))
+            found.append(pack_kind)
+        if not found:
+            raise KeyError(f"Index pack {pack.path} has no paths collection for {source_spec!r}")
+        if len(found) != 1:
+            raise ValueError(
+                "A packed Nemotron text source must be homogeneous; "
+                f"found collections for {found}. Split mixed JSONL/tar paths "
+                "into separate dataset entries."
+            )
+        self._finish_indexed_init()
+        self._packed_indexed = True
 
     def _init_indexed(self) -> None:
         from lhotse.indexing import IndexedJsonlReader, index_file_path
@@ -611,6 +658,9 @@ class NemotronTextConversationAdapter(IteratorNode):
                 self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
                 self._reader_kinds.append("jsonl")
                 self._source_paths.append(p)
+        self._finish_indexed_init()
+
+    def _finish_indexed_init(self) -> None:
         cum = 0
         self._cum_lens.append(cum)
         for reader in self._readers:
@@ -642,9 +692,18 @@ class NemotronTextConversationAdapter(IteratorNode):
         return _transform_nemotron_text_conversation(data, sample_id)
 
     def _reader_item_to_conversation(self, shard_idx: int, local_idx: int) -> "NeMoMultimodalConversation":
-        item = self._readers[shard_idx][local_idx]
+        reader = self._readers[shard_idx]
+        reader_kind = self._reader_kinds[shard_idx]
         source_path = self._source_paths[shard_idx]
-        if self._reader_kinds[shard_idx] == "tar":
+        if reader_kind == "packed_tar":
+            item, location = reader.read_with_location(local_idx)
+            source_path = location.path
+        else:
+            item = reader[local_idx]
+        if reader_kind == "packed_jsonl":
+            location = reader.collection.locate(local_idx)
+            return self._data_to_conversation(item, location.path, location.local_index)
+        if reader_kind in ("tar", "packed_tar"):
             name, payload = item
             if not name.endswith(".json"):
                 raise RuntimeError(
@@ -1407,15 +1466,12 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     slice_length: int | None = None
     indexed: bool = False
     indexes_root: Optional[Pathlike] = None
+    index_pack: Optional[Pathlike] = None
+    index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
 
     def __post_init__(self):
-        self.manifest_filepath = expand_sharded_filepaths(self.manifest_filepath)
-        if self.tarred_audio_filepaths is not None:
-            self.tarred_audio_filepaths = expand_sharded_filepaths(self.tarred_audio_filepaths)
-            assert len(self.manifest_filepath) == len(
-                self.tarred_audio_filepaths
-            ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
+        raw_manifest_filepath = self.manifest_filepath
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
         self.epoch = 0
         self._cuts_readers: list = []
@@ -1423,6 +1479,15 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         self._cum_lens: list[int] = []
         self._total_len = 0
         self._iter_state = PartitionedIndexedIterator()
+        if self.indexed and self.index_pack is not None:
+            self._init_packed(raw_manifest_filepath)
+            return
+        self.manifest_filepath = expand_sharded_filepaths(raw_manifest_filepath)
+        if self.tarred_audio_filepaths is not None:
+            self.tarred_audio_filepaths = expand_sharded_filepaths(self.tarred_audio_filepaths)
+            assert len(self.manifest_filepath) == len(
+                self.tarred_audio_filepaths
+            ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
         if self.indexed:
             self._init_indexed()
 
@@ -1459,6 +1524,31 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             self._cum_lens.append(cum)
         self._total_len = cum
 
+    def _init_packed(self, source_spec) -> None:
+        from lhotse.index_pack import index_pack_collection_key, open_index_pack
+        from lhotse.packed_lazy import LazyPackedManifestIterator
+
+        if self.slice_length is not None:
+            raise ValueError(
+                "NeMoMultimodalConversationShareGPTJsonlAdapter(indexed=True) " "does not support slice_length."
+            )
+        if self.tarred_audio_filepaths is not None:
+            raise ValueError(
+                "Packed ShareGPT currently supports JSONL manifests with "
+                "direct/remote audio paths, not paired audio tar files."
+            )
+        pack = open_index_pack(self.index_pack)
+        key = index_pack_collection_key("manifest", "jsonl", source_spec)
+        self._packed_source = LazyPackedManifestIterator(
+            pack,
+            key,
+            decode=dict,
+            max_open_files=self.index_pack_max_open_files,
+        )
+        self._cuts_readers = [self._packed_source]
+        self._cum_lens = [0, len(self._packed_source)]
+        self._total_len = len(self._packed_source)
+
     def __len__(self) -> int:
         if self.indexed:
             return self._total_len
@@ -1483,7 +1573,9 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
 
-    def _build_one(self, data: dict, shard_idx: int) -> NeMoMultimodalConversation | None:
+    def _build_one(
+        self, data: dict, shard_idx: int, manifest_path: str | None = None
+    ) -> NeMoMultimodalConversation | None:
         try:
             conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
             if self._tar_readers:
@@ -1498,7 +1590,8 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                     ),
                     token_equivalent_duration=self.token_equivalent_duration,
                 )
-            manifest_path = self._cuts_readers[shard_idx].path
+            if manifest_path is None:
+                manifest_path = self._cuts_readers[shard_idx].path
             return NeMoMultimodalConversation(
                 id=data.get("id", "missing-example-id"),
                 turns=_ShareGPTConversationParser.create_turns(
@@ -1550,8 +1643,12 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             )
         idx = int(normalize_graph_token(token))
         shard_idx, local_idx = self._resolve(idx)
-        data = self._cuts_readers[shard_idx][local_idx]
-        convo = self._build_one(data, shard_idx)
+        if hasattr(self, "_packed_source"):
+            data, location = self._packed_source.read_with_location(local_idx)
+            convo = self._build_one(data, shard_idx, location.path)
+        else:
+            data = self._cuts_readers[shard_idx][local_idx]
+            convo = self._build_one(data, shard_idx)
         if convo is None:
             raise IndexError(
                 f"ShareGPT sample at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
@@ -1570,8 +1667,12 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     def _iter_indexed_node(self) -> Iterator[NeMoMultimodalConversation]:
         for global_idx in self._iter_state.iterate(self._total_len):
             shard_idx, local_idx = self._resolve(global_idx)
-            data = self._cuts_readers[shard_idx][local_idx]
-            convo = self._build_one(data, shard_idx)
+            if hasattr(self, "_packed_source"):
+                data, location = self._packed_source.read_with_location(local_idx)
+                convo = self._build_one(data, shard_idx, location.path)
+            else:
+                data = self._cuts_readers[shard_idx][local_idx]
+                convo = self._build_one(data, shard_idx)
             if convo is None:
                 continue
             attach_graph_origin(convo, global_idx)

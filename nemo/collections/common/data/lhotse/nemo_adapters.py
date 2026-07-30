@@ -148,6 +148,8 @@ class LazyNeMoIterator(IteratorNode):
         extra_fields: list[dict[str, str]] | None = None,
         indexed: bool = False,
         indexes_root: str | Path | None = None,
+        index_pack: str | Path | None = None,
+        index_pack_max_open_files: int = 32,
         skip_missing_manifest_entries: bool = False,
     ) -> None:
         self.path = path
@@ -159,9 +161,10 @@ class LazyNeMoIterator(IteratorNode):
         self.extra_fields = extra_fields
         self.indexed = indexed
         self.indexes_root = indexes_root
+        self.index_pack = index_pack
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
         validate_extra_fields(self.extra_fields)
-        paths = expand_sharded_filepaths(path)
+        paths = None if indexed and index_pack is not None else expand_sharded_filepaths(path)
 
         if indexed:
             if extra_fields:
@@ -170,6 +173,23 @@ class LazyNeMoIterator(IteratorNode):
                     "their values are positional/streaming and cannot be reconstructed under "
                     "graph-token random access."
                 )
+            if index_pack is not None:
+                from lhotse.index_pack import index_pack_collection_key
+                from lhotse.packed_lazy import LazyPackedManifestIterator
+
+                seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
+                self.source = LazyPackedManifestIterator(
+                    index_pack,
+                    index_pack_collection_key("manifest", "jsonl", path),
+                    shuffle_shards=shuffle_shards,
+                    seed=seed,
+                    decode=GraphOriginDict,
+                    skip_decode_errors=skip_missing_manifest_entries,
+                    decode_error_callback=_warn_malformed_indexed_manifest_record,
+                    max_open_files=index_pack_max_open_files,
+                )
+                return
+
             from lhotse.indexing import index_file_path
 
             seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
@@ -426,11 +446,34 @@ class LazyNeMoTarredIterator(IteratorNode):
         slice_length: int = None,
         indexed: bool = False,
         indexes_root: str | Path | None = None,
+        index_pack: str | Path | None = None,
+        index_pack_max_open_files: int = 32,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
         self._malformed_manifest_warning_keys: set[tuple[str, ShardKey]] = set()
         self.indexed = indexed
         self.indexes_root = indexes_root
+        self.index_pack = index_pack
+        self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        if indexed and index_pack is not None:
+            self.shuffle_shards = shuffle_shards
+            self.shard_seed = shard_seed
+            self.text_field = text_field
+            self.lang_field = lang_field
+            self.extra_fields = extra_fields
+            self.slice_length = slice_length
+            self.epoch = 0
+            self.paths = []
+            self.tar_paths = []
+            self.shard_id_to_manifest = {}
+            self.shard_id_to_tar_path = {}
+            self._validate()
+            self._init_indexed_pack(
+                manifest_path,
+                tar_paths,
+                max_open_files=index_pack_max_open_files,
+            )
+            return
         self.shard_id_to_manifest: dict[ShardKey, Iterable[dict]]
         self._shard_key_to_manifest_path: dict[ShardKey, str] = {}
         self.paths = expand_sharded_filepaths(manifest_path)
@@ -487,6 +530,62 @@ class LazyNeMoTarredIterator(IteratorNode):
     @property
     def has_constant_time_access(self) -> bool:
         return self.indexed
+
+    def _init_indexed_pack(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
+        from lhotse.index_pack import index_pack_collection_key, open_index_pack
+        from lhotse.packed_lazy import LazyPackedManifestIterator
+
+        if self.extra_fields:
+            raise ValueError(
+                "LazyNeMoTarredIterator(indexed=True) does not support 'extra_fields' "
+                "because their values are positional and cannot be reproduced under graph-token random access."
+            )
+        if self.slice_length is not None:
+            raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
+
+        self._index_pack = open_index_pack(self.index_pack)
+        manifest_key = index_pack_collection_key("manifest", "jsonl", manifest_path)
+        tar_key = index_pack_collection_key("tar", "nemo_tar", tar_paths)
+        self._packed_manifest_source = LazyPackedManifestIterator(
+            self._index_pack,
+            manifest_key,
+            decode=GraphOriginDict,
+            skip_decode_errors=self.skip_missing_manifest_entries,
+            decode_error_callback=_warn_malformed_indexed_manifest_record,
+            max_open_files=max_open_files,
+        )
+        self._packed_manifest_collection = self._index_pack.collection(manifest_key)
+        self._packed_tar_collection = self._index_pack.collection(tar_key)
+        if self._packed_manifest_collection.sequence_count != self._packed_tar_collection.sequence_count:
+            raise ValueError(
+                "Packed manifest/tar shard-count mismatch: "
+                f"{self._packed_manifest_collection.sequence_count} manifests vs "
+                f"{self._packed_tar_collection.sequence_count} tars"
+            )
+        self._total_len = len(self._packed_manifest_collection)
+        if not self.use_ais_get_batch:
+            from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
+
+            if not self._packed_tar_collection.offsets_required:
+                raise ValueError(
+                    "Packed local tar access requires tar-member offsets; "
+                    "rebuild without --native-tar-paths-only or enable "
+                    "USE_AIS_GET_BATCH."
+                )
+            for shard_index in range(self._packed_manifest_collection.sequence_count):
+                manifest_len = self._packed_manifest_collection.shard_length(shard_index)
+                tar_len = self._packed_tar_collection.shard_length(shard_index)
+                if manifest_len != tar_len:
+                    raise ValueError(
+                        "Packed manifest/tar length mismatch in shard "
+                        f"{shard_index}: manifest={manifest_len}, tar={tar_len}"
+                    )
+            self._packed_tar_reader = PackedTarMemberReader(self._packed_tar_collection, max_open_files=max_open_files)
+        self._iter_state = PartitionedIndexedIterator()
+        self._packed_indexed = True
+
+    def _packed_tar_path(self, shard_index: int) -> str:
+        return self._packed_tar_collection.path_for_shard(shard_index)
 
     def _init_indexed(self) -> None:
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
@@ -547,6 +646,8 @@ class LazyNeMoTarredIterator(IteratorNode):
         like ``mux(..., max_open_streams=N)`` won't notice until the bucketer
         fails to checkpoint.
         """
+        if getattr(self, "_packed_indexed", False):
+            return [self]
         if len(self.paths) == 1:
             # Cannot do that if the JSON manifest is a single file for all shards;
             # just return self.
@@ -800,6 +901,40 @@ class LazyNeMoTarredIterator(IteratorNode):
             cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
         return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
 
+    def _decode_packed_cut_at(self, idx: int) -> Cut | None:
+        try:
+            data, location = self._packed_manifest_source.read_with_location(idx)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            location = self._packed_manifest_collection.locate(idx)
+            if self.skip_missing_manifest_entries:
+                manifest_path = location.path
+                warning_key = (str(manifest_path), location.shard_index)
+                if warning_key not in self._malformed_manifest_warning_keys:
+                    self._malformed_manifest_warning_keys.add(warning_key)
+                    logging.warning(
+                        "Skipping malformed manifest entries in packed indexed Lhotse dataloader: "
+                        f"{manifest_path=} shard={location.shard_index} "
+                        f"first_local_idx={location.local_index} first_global_idx={idx}."
+                    )
+                return None
+            raise
+        manifest_path = location.path
+        tar_path = self._packed_tar_path(location.shard_index)
+        if self.use_ais_get_batch:
+            return self._build_indexed_url_cut(data, manifest_path, tar_path)
+        member_name, audio_bytes = self._packed_tar_reader.read_shard(location.shard_index, location.local_index)
+        expected_name = self._audio_member_name_from_entry(data)
+        if member_name != expected_name:
+            message = (
+                f"Packed manifest/tar positional mismatch at global index {idx}: "
+                f"manifest expects {expected_name!r}, tar contains {member_name!r}"
+            )
+            if self.skip_missing_manifest_entries:
+                logging.warning(message)
+                return None
+            raise ValueError(message)
+        return self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+
     def _decode_cut_at(self, idx: int) -> Cut | None:
         """Build the Cut for a global index in indexed mode (AIS or local).
 
@@ -807,6 +942,8 @@ class LazyNeMoTarredIterator(IteratorNode):
         malformed and ``skip_missing_manifest_entries`` is set, or if the
         entry has ``_skipme=True`` / undecodable audio.
         """
+        if getattr(self, "_packed_indexed", False):
+            return self._decode_packed_cut_at(idx)
         sid, local_idx = self._resolve_global_idx(idx)
         cuts_reader = self._cuts_readers[sid]
         manifest_path = cuts_reader.path

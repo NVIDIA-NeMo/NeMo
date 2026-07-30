@@ -288,6 +288,9 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "slice_length": config.get("slice_length", None),
         "indexed": config.get("indexed", False),
         "indexes_root": config.get("indexes_root", None),
+        "index_pack_root": config.get("index_pack_root", None),
+        "index_pack_max_open_files": config.get("index_pack_max_open_files", 32),
+        "index_pack": config.get("index_pack", None),
         # Temperature for re-weighting datasets. 1 is a neutral value. Lower temperature over-samples smaller datasets, and vice versa.
         "reweight_temperature": config.get("reweight_temperature", None),
     }
@@ -317,6 +320,21 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
     if (extra_tags := grp_cfg.get("tags")) is not None:
         cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
     return cuts, is_tarred
+
+
+def _resolve_index_pack(config) -> Path | None:
+    index_pack = config.get("index_pack")
+    if index_pack is None:
+        return None
+    if not config.get("indexed", False):
+        raise ValueError("Declaring index_pack requires indexed=true.")
+    index_pack = Path(str(index_pack))
+    root = config.get("index_pack_root")
+    if not index_pack.is_absolute() and root is not None:
+        index_pack = Path(str(root)) / index_pack
+    if not index_pack.is_file():
+        raise FileNotFoundError(f"Declared index pack does not exist: {index_pack}")
+    return index_pack
 
 
 @data_type_parser("txt")
@@ -408,6 +426,8 @@ def read_nemotron_text_converation(config: DictConfig) -> tuple[CutSet, bool]:
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
         )
     )
     if not config.get("force_finite", False):
@@ -454,6 +474,8 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
         )
     )
@@ -1615,8 +1637,17 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 common_kwargs[key] = config[key]
     indexed = config.get("indexed", False)
     indexes_root = config.get("indexes_root", None)
+    index_pack = _resolve_index_pack(config)
+    pack_extra = (
+        {
+            "index_pack": index_pack,
+            "index_pack_max_open_files": config.get("index_pack_max_open_files", 32),
+        }
+        if indexed and index_pack is not None
+        else {}
+    )
     indexed_extra = {"indexes_root": indexes_root} if (indexed and indexes_root is not None) else {}
-    notar_kwargs_extra = {"indexed": indexed, **indexed_extra} if indexed else {}
+    notar_kwargs_extra = {"indexed": indexed, **indexed_extra, **pack_extra} if indexed else {}
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
     # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,
     # so lhotse has to look up the headers of audio files to fill it on-the-fly.
@@ -1629,8 +1660,19 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
         "metadata_only": metadata_only,
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
     }
-    tar_kwargs_extra = {"indexed": indexed, **indexed_extra} if indexed else {}
+    tar_kwargs_extra = {"indexed": indexed, **indexed_extra, **pack_extra} if indexed else {}
     is_tarred = config.get("tarred_audio_filepaths") is not None
+    if index_pack is not None:
+        if not isinstance(config.manifest_filepath, (str, Path)):
+            raise ValueError(
+                "Packed native NeMo datasets require manifest_filepath to be "
+                "a string/Path (brace expansion is supported); list forms are not."
+            )
+        if is_tarred and not isinstance(config.tarred_audio_filepaths, (str, Path)):
+            raise ValueError(
+                "Packed native NeMo datasets require tarred_audio_filepaths to "
+                "be a string/Path (brace expansion is supported); list forms are not."
+            )
     if isinstance(config.manifest_filepath, (str, Path)):
         if is_tarred and not metadata_only:
             cuts = CutSet(

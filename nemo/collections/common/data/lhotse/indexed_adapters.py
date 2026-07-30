@@ -16,11 +16,11 @@ import os
 import re
 import struct
 import tarfile
+from io import BytesIO
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 import numpy as np
-
 
 # Tar block size + the all-zeros block that marks end-of-archive in tar.
 _TAR_BLOCK_SIZE = 512
@@ -363,6 +363,51 @@ def _read_tar_member(f):
         return info.name, data
 
 
+class PackedTarMemberReader:
+    """Random access to native tar members through an idxpack collection."""
+
+    def __init__(self, collection, max_open_files: int = 32):
+        if collection.kind != "nemo_tar":
+            raise ValueError(f"Expected a nemo_tar collection, got {collection.kind!r}")
+        self.collection = collection
+        self.max_open_files = max_open_files
+
+    def __len__(self) -> int:
+        return len(self.collection)
+
+    def __getitem__(self, idx: int) -> tuple[str, bytes]:
+        item, _ = self.read_with_location(idx)
+        return item
+
+    def read_with_location(self, idx: int):
+        """Read one member together with its resolved source byte range."""
+        location = self.collection.locate(_resolve_idx(idx, len(self)))
+        return self._read_location(location, idx), location
+
+    def read_shard(self, shard_index: int, local_index: int) -> tuple[str, bytes]:
+        """Read one member by its paired manifest shard/local position."""
+        location = self.collection.locate_in_shard(shard_index, local_index)
+        return self._read_location(location, (shard_index, local_index))
+
+    def _read_location(self, location, idx) -> tuple[str, bytes]:
+        from lhotse.packed_lazy import read_packed_range
+
+        raw = read_packed_range(
+            self.collection.pack,
+            location.path,
+            location.start,
+            location.end,
+            max_open_files=self.max_open_files,
+        )
+        try:
+            return _read_tar_member(BytesIO(raw))
+        except (EOFError, tarfile.TarError) as ex:
+            raise type(ex)(
+                f"{ex} — reading packed tar sample {idx}/{len(self)} "
+                f"at [{location.start}, {location.end}) in {location.path}"
+            ) from ex
+
+
 class _CountingReader:
     """
     Minimal file-like wrapper that delegates everything to an inner stream
@@ -425,6 +470,10 @@ def create_tar_index(tar_path, idx_path):
                 if stem != prev_stem:
                     offsets.append(member.offset)
                     prev_stem = stem
+        # tarfile stops at the end-of-archive marker; consume trailing
+        # record padding so the sentinel matches the physical object size.
+        while counter.read(1024 * 1024):
+            pass
         file_size = counter.bytes_read
     tmp_path = f"{idx_path}.tmp.{os.getpid()}"
     with open(tmp_path, 'wb') as f_out:

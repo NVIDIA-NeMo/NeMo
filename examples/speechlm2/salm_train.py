@@ -12,19 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-import pathlib as _pathlib
-
-# Compat shim: DCP checkpoints whose ``.metadata`` was pickled under Python 3.13
-# reference ``pathlib._local.PosixPath`` (pathlib was split into _local/_abc in
-# 3.13). Loading such a checkpoint under Python 3.12 (no ``pathlib._local``)
-# makes ``pickle.load`` raise ModuleNotFoundError during dcp.load. The classes
-# are identical, so alias the missing submodule to ``pathlib`` when absent.
-import sys as _sys
-
-try:
-    import pathlib._local  # noqa: F401
-except ModuleNotFoundError:
-    _sys.modules["pathlib._local"] = _pathlib
 
 import torch
 from lightning.pytorch import Trainer, seed_everything

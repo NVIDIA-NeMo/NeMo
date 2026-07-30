@@ -27,6 +27,7 @@ from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
+from nemo.utils.compat import python313_pathlib_pickle_compat
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):
@@ -613,7 +614,8 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
         state_dict = {"state_dict": model.state_dict()}
-        dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
+        with python313_pathlib_pickle_compat():
+            dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
         model.load_state_dict(state_dict["state_dict"])
         logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
     else:

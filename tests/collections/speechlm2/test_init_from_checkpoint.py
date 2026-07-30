@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
+import torch.distributed.checkpoint as dcp
 from omegaconf import DictConfig
 from safetensors.torch import save_file
 
@@ -161,7 +162,7 @@ class TestInitFromTrainingCheckpointDCP:
 
         model = SimpleModel()
 
-        with patch("nemo.collections.speechlm2.parts.pretrained.torch.distributed.checkpoint.load") as mock_load:
+        with patch.object(dcp, "load") as mock_load:
             init_from_training_checkpoint(model, str(ckpt_dir))
 
             mock_load.assert_called_once()
@@ -178,13 +179,29 @@ class TestInitFromTrainingCheckpointDCP:
 
         model = SimpleModel()
 
-        with patch("nemo.collections.speechlm2.parts.pretrained.torch.distributed.checkpoint.load") as mock_load:
+        with patch.object(dcp, "load") as mock_load:
             init_from_training_checkpoint(model, str(ckpt_dir))
 
             state_dict_wrapper = mock_load.call_args[0][0]
             model_sd = state_dict_wrapper["state_dict"]
             assert "linear.weight" in model_sd
             assert "norm.weight" in model_sd
+
+    def test_dcp_load_uses_python313_pathlib_pickle_compat(self, tmp_path):
+        """DCP metadata loading should scope the Python 3.13 pathlib shim."""
+        ckpt_dir = tmp_path / "step=100.ckpt"
+        ckpt_dir.mkdir()
+        (ckpt_dir / ".metadata").touch()
+
+        with (
+            patch("nemo.collections.speechlm2.parts.pretrained.python313_pathlib_pickle_compat") as mock_compat,
+            patch.object(dcp, "load"),
+        ):
+            init_from_training_checkpoint(SimpleModel(), str(ckpt_dir))
+
+        mock_compat.assert_called_once_with()
+        mock_compat.return_value.__enter__.assert_called_once_with()
+        mock_compat.return_value.__exit__.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

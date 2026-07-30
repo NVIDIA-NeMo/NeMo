@@ -96,7 +96,7 @@ jobs:
       # non-member adds the label, revert it and explain.
       - name: Verify label sender is speech_team
         id: authz
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
           script: |
@@ -117,7 +117,7 @@ jobs:
             }
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Refuse activation from non-speech_team sender
         if: steps.authz.outputs.authorized != 'true'
@@ -133,7 +133,7 @@ jobs:
 
       - name: Post takeover comment
         if: steps.authz.outputs.authorized == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             await github.rest.issues.createComment({
@@ -164,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check team membership
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
           script: |
@@ -189,7 +189,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Add eyes reaction
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             if (context.payload.comment) {
@@ -205,9 +205,9 @@ jobs:
     needs: acknowledge-review
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
           CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
@@ -237,7 +237,7 @@ jobs:
     steps:
       - name: Look up PR and assess state
         id: lookup
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const prNumber = context.payload.workflow_run.pull_requests[0].number;
@@ -274,11 +274,11 @@ jobs:
       group: babysit-fix-${{ needs.check-label-for-ci.outputs.pr_number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.check-label-for-ci.outputs.head_ref }}
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
           CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
@@ -361,7 +361,7 @@ jobs:
       # be an active speech_team member. Also fork-guard by fetching the PR.
       - name: Verify commenter is speech_team and PR is not a fork
         id: authz
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
           script: |
@@ -397,7 +397,7 @@ jobs:
             }
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Refuse non-speech_team approval
         if: steps.authz.outputs.authorized != 'true' && steps.authz.outputs.reason == 'not-speech-team'
@@ -409,7 +409,7 @@ jobs:
           gh pr comment "$PR_NUMBER" --body \
             "@${SENDER} only NVIDIA-NeMo \`speech_team\` members can approve the babysitter's plan. Ignoring this reply."
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         if: steps.authz.outputs.authorized == 'true'
         env:
           GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
@@ -464,7 +464,7 @@ jobs:
       # speech_team. Defense-in-depth against a non-member adding the label.
       - name: Verify label sender is speech_team
         id: authz
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
           script: |
@@ -486,7 +486,7 @@ jobs:
       - name: Verify a bot-authored plan comment exists
         id: plan
         if: steps.authz.outputs.authorized == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -502,7 +502,7 @@ jobs:
 
       - name: Checkout for GH CLI (refusal paths)
         if: steps.authz.outputs.authorized != 'true' || steps.plan.outputs.found != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Refuse execution from non-speech_team sender
         if: steps.authz.outputs.authorized != 'true'
@@ -527,7 +527,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
           exit 0
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
         with:
           ref: ${{ github.event.pull_request.head.ref }}
@@ -537,7 +537,7 @@ jobs:
         if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
@@ -587,7 +587,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping PR author
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
           CHECK_NAME: ${{ github.event.workflow_run.name }}
@@ -602,7 +602,7 @@ jobs:
             });
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Clear all babysitter labels
         env:
@@ -626,7 +626,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Post deactivation comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             await github.rest.issues.createComment({
@@ -637,7 +637,7 @@ jobs:
             });
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Clear plan-state labels
         env:

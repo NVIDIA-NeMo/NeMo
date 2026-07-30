@@ -43,9 +43,8 @@ class PreferenceBatch:
 def rank_active_slots(*, pairs_per_update: int, world_size: int) -> tuple[int, ...]:
     """Return the fixed within-update active-slot count for every rank.
 
-    Each source shard has its own zero-based 435-pair schedule.  Thus rank
-    ownership restarts at every shard, exactly as the historical 435→440 slot
-    schedule does; ownership must not rotate with the global manifest offset.
+    Each source shard has its own zero-based schedule. Rank ownership restarts
+    at every shard and must not rotate with the global manifest offset.
     """
 
     if pairs_per_update <= 0 or world_size <= 0:
@@ -136,11 +135,9 @@ class FiniteLhotsePreferenceCorpus:
             reads += 1
             shard_index = position // self.pairs_per_update
             within_shard_index = position % self.pairs_per_update
-            # Restart rank ownership for each ordered source shard.  The
-            # 435-pair historical schedule maps local positions 0..434 to
-            # ranks 0..7, then pads to 440 slots (55/rank) with five inactive
-            # positions.  Global modulo would rotate the five padding slots
-            # between source shards and no longer match that schedule.
+            # Restart rank ownership for each ordered source shard. Global
+            # modulo would rotate any padding slots between source shards and
+            # no longer match the fixed within-update schedule.
             if within_shard_index % self.world_size != rank:
                 continue
             waveform = np.asarray(cut.load_audio(), dtype=np.float32)
@@ -152,7 +149,7 @@ class FiniteLhotsePreferenceCorpus:
             # Both completions below receive this one decoded tensor.  The
             # manifest's audio digest identifies the staged recording (checked
             # in ``_validate``).  It is deliberately not recomputed after WAV
-            # decoding: the historical staging digest predates PCM rounding.
+            # decoding because a staging digest may predate PCM rounding.
             local[shard_index].append(
                 PreferencePair(
                     pair_id=pair_id,

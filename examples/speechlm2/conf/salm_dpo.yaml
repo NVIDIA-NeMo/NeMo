@@ -1,0 +1,50 @@
+# Generic finite direct-Lhotse SpeechLM2 DPO configuration schema.
+#
+# This file is intentionally not an experiment recipe. Every model, data,
+# topology, optimizer, and trajectory value must be supplied by the owning
+# experiment repository. See examples/speechlm2/README_dpo.md.
+
+trainer:
+  devices: ???
+  num_nodes: ???
+  precision: ???
+  max_steps: ???
+  # The DPO model clips selected gradients explicitly during manual
+  # optimization. Lightning must not register a second clip.
+  gradient_clip_val: null
+
+model:
+  base_experiment_config: ???
+
+dpo:
+  source_checkpoint: ???
+  output_root: ???
+  seed: ???
+  beta: ???
+  learning_rate: ???
+  gradient_clip_norm: ???
+  pairs_per_update: ???
+  source_shards: ???
+  world_size: ???
+  explicit_passes: 2
+  expected_updates: ???
+  checkpoint_steps: ???
+  optimizer:
+    name: ???
+    betas: ???
+    eps: ???
+    weight_decay: ???
+    foreach: ???
+    fused: ???
+  lora: false
+  peft: false
+  adapters: false
+
+data:
+  cuts_path: ???
+  expected_rows: ???
+  pairs_per_update: ???
+  source_shards: ???
+  world_size: ???
+  shuffle: false
+  cycle: false

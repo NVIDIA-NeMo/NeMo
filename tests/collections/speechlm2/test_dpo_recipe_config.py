@@ -22,34 +22,45 @@ class _ManualClipModule(LightningModule):
         self.weight = torch.nn.Parameter(torch.tensor([2.0]))
 
 
-def test_hero2_r5_dpo_config_has_explicit_finite_two_pass_accounting():
+def test_generic_dpo_config_is_path_free_and_requires_experiment_values():
     root = Path(__file__).parents[3]
-    cfg = OmegaConf.load(root / "examples/speechlm2/conf/salm_dpo_hero2_ami_historical_r5.yaml")
-    assert cfg.trainer.devices == 8
-    assert cfg.trainer.num_nodes == 1
-    assert cfg.trainer.max_steps == 20
+    cfg = OmegaConf.load(root / "examples/speechlm2/conf/salm_dpo.yaml")
+    required = (
+        "trainer.devices",
+        "trainer.num_nodes",
+        "trainer.precision",
+        "trainer.max_steps",
+        "model.base_experiment_config",
+        "dpo.source_checkpoint",
+        "dpo.output_root",
+        "dpo.beta",
+        "dpo.learning_rate",
+        "dpo.pairs_per_update",
+        "dpo.checkpoint_steps",
+        "data.cuts_path",
+        "data.expected_rows",
+    )
+    assert all(
+        OmegaConf.is_missing(OmegaConf.select(cfg, key.rsplit(".", 1)[0]), key.rsplit(".", 1)[1]) for key in required
+    )
     assert cfg.trainer.gradient_clip_val is None
     assert cfg.dpo.explicit_passes == 2
-    assert cfg.dpo.expected_updates == 20
-    assert cfg.dpo.pairs_per_update == 435
-    assert cfg.dpo.source_shards == 10
-    assert cfg.data.expected_rows == cfg.dpo.pairs_per_update * cfg.dpo.source_shards
     assert cfg.data.shuffle is False and cfg.data.cycle is False
-    assert cfg.dpo.beta == 0.2
-    assert cfg.dpo.learning_rate == 2.5e-6
-    assert cfg.dpo.optimizer.betas == [0.9, 0.95]
     assert cfg.dpo.lora is False and cfg.dpo.peft is False and cfg.dpo.adapters is False
+    rendered = OmegaConf.to_yaml(cfg)
+    assert "/lustre" not in rendered
+    assert "AMI" not in rendered
+    assert "Hero" not in rendered
 
 
-def test_435_pair_schedule_has_fixed_multirank_ownership_and_five_padding_slots():
-    active = rank_active_slots(pairs_per_update=435, world_size=8)
-    assert active == (55, 55, 55, 54, 54, 54, 54, 54)
-    assert sum(active) == 435
-    assert 8 * max(active) - sum(active) == 5
-    # Ownership restarts per source shard.  Therefore all ten shards have the
-    # same 55-slot local accumulation shape, instead of a rotating global
-    # modulo partition caused by the 435 % 8 offset.
-    assert [active for _ in range(10)] == [(55, 55, 55, 54, 54, 54, 54, 54)] * 10
+def test_nondivisible_schedule_has_fixed_multirank_ownership_and_padding():
+    active = rank_active_slots(pairs_per_update=11, world_size=3)
+    assert active == (4, 4, 3)
+    assert sum(active) == 11
+    assert 3 * max(active) - sum(active) == 1
+    # Ownership restarts per source shard, so every shard has the same local
+    # accumulation shape instead of a rotating global modulo partition.
+    assert [active for _ in range(4)] == [(4, 4, 3)] * 4
 
 
 def test_preference_batch_accepts_stock_lightning_bf16_input_conversion():
@@ -71,7 +82,7 @@ def test_preference_batch_accepts_stock_lightning_bf16_input_conversion():
     assert batch.pairs[0].audio.dtype is torch.float32
 
 
-def test_stock_lightning_accepts_historical_manual_clip_when_trainer_clip_is_null():
+def test_stock_lightning_accepts_manual_clip_when_trainer_clip_is_null():
     trainer = Trainer(accelerator="cpu", devices=1, gradient_clip_val=None, logger=False, enable_checkpointing=False)
     module = _ManualClipModule()
     module._trainer = trainer
@@ -81,7 +92,7 @@ def test_stock_lightning_accepts_historical_manual_clip_when_trainer_clip_is_nul
     assert module.weight.grad.item() == pytest.approx(1.0, abs=1e-5)
 
 
-def test_dpo_uses_inherited_mesh_aware_clip_once_with_historical_norm():
+def test_dpo_uses_inherited_mesh_aware_clip_once_with_configured_norm():
     """DPO must not bypass SALMAutomodel's existing mixed-DTensor handler."""
 
     assert DPOSALMAutomodel.configure_gradient_clipping is SALMAutomodel.configure_gradient_clipping
@@ -108,14 +119,3 @@ def test_selected_gradient_layout_receipt_is_data_free_for_local_tensors():
         "dtype": "torch.float32",
         "layout": {"kind": "local"},
     }
-
-
-def test_r22_server_entrypoint_uses_direct_pinned_source_without_a_runtime_overlay():
-    root = Path(__file__).parents[3]
-    script = (root / "examples/speechlm2/serve_salm_dpo_hero2_vllm_r22.sh").read_text(encoding="utf-8")
-    assert "R22_NEMO_SOURCE" in script
-    assert "R22_TRANSFORMER_ENCODER_SHA256" in script
-    assert "pip install --no-deps \"$R22_NEMO_SOURCE\"" in script
-    assert "PYTHONPATH" not in script
-    assert "cp " not in script
-    assert "\npatch " not in script

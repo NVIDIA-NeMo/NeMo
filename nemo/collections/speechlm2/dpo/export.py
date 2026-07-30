@@ -4,7 +4,7 @@
 
 This is the serving bridge for the finite SpeechLM2 DPO recipe.  It is a
 normal, offline conversion in the owning package: every served tensor is read
-from the candidate model DCP, and the immutable Hero2 serving directory is
+from the candidate model DCP, and the immutable source serving directory is
 used only for non-weight HuggingFace assets and a namespace/type contract.
 """
 
@@ -109,7 +109,7 @@ def read_surface_contract(trajectory: Path) -> tuple[str, ...]:
         or surface.get("dtypes") != ["torch.float32"]
         or payload.get("lora") is not False
     ):
-        raise RuntimeError("trajectory does not declare the exact Hero2 DPO FP32 surface")
+        raise RuntimeError("trajectory does not declare the exact SpeechLM2 DPO FP32 surface")
     return expected
 
 

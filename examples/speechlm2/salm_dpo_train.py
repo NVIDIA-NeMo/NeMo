@@ -4,11 +4,13 @@
 
 Example:
     torchrun --standalone --nproc-per-node=8 examples/speechlm2/salm_dpo_train.py \
-      dpo.output_root=/path/to/fresh/output
+      --config-path=/absolute/path/to/experiment/config \
+      --config-name=experiment_name
 
-All algorithmic settings are in the YAML.  This entrypoint performs no runtime
+The checked-in YAML is a path-free required-input schema. Experiment settings
+are owned by an external tracked config. This entrypoint performs no runtime
 source rewriting, package copying, import-hook installation, or compatibility
-overlay.  The NeMo-Speech source used to execute it must be the tracked source
+overlay. The NeMo-Speech source used to execute it must be the tracked source
 snapshot described by the run provenance.
 """
 
@@ -36,8 +38,8 @@ def _prepare_model_config(cfg):
         # Avoid the stale 5600 training checkpoint, but retain the configured
         # ASR archive during construction: it supplies the perception
         # preprocessor/encoder schema absent from the experiment YAML.  The
-        # strict Hero2 step-14400 DCP immediately overwrites those temporary
-        # construction weights before references or updates are permitted.
+        # strict source DCP immediately overwrites those temporary construction
+        # weights before references or updates are permitted.
         model.pretrained_llm_weights = True
         model.pretrained_asr_weights = True
         model.init_configure_model = False
@@ -54,14 +56,14 @@ def _prepare_model_config(cfg):
         trainer.log_every_n_steps = 1
         trainer.use_distributed_sampler = False
         # Lightning disallows trainer-managed clipping for manual optimization.
-        # DPOSALMAutomodel applies the historical global-norm clip explicitly
-        # immediately before AdamW.step(), so preserve that mechanism while
+        # DPOSALMAutomodel applies the configured global-norm clip explicitly
+        # immediately before AdamW.step(), so retain that mechanism while
         # disabling the incompatible Trainer-level duplicate.
         trainer.gradient_clip_val = cfg.trainer.gradient_clip_val
     return model, trainer
 
 
-@hydra_runner(config_path="conf", config_name="salm_dpo_hero2_ami_historical_r5")
+@hydra_runner(config_path="conf", config_name="salm_dpo")
 def main(cfg) -> None:
     OmegaConf.resolve(cfg)
     if not torch.cuda.is_available():

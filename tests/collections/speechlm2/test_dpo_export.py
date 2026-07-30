@@ -25,14 +25,14 @@ def _trajectory() -> dict:
     }
 
 
-def test_read_surface_contract_requires_the_declared_historical_surface(tmp_path: Path):
+def test_read_surface_contract_requires_the_declared_surface(tmp_path: Path):
     path = tmp_path / "TRAJECTORY.json"
     path.write_text(__import__("json").dumps(_trajectory()), encoding="utf-8")
     assert read_surface_contract(path) == selected_parameter_names()
     invalid = _trajectory()
     invalid["surface"]["names"] = invalid["surface"]["names"][:-1]
     path.write_text(__import__("json").dumps(invalid), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="exact Hero2 DPO FP32 surface"):
+    with pytest.raises(RuntimeError, match="exact SpeechLM2 DPO FP32 surface"):
         read_surface_contract(path)
 
 
@@ -66,21 +66,3 @@ def test_shard_plan_is_ordered_bounded_and_exhaustive():
     assert shard_plan(specs, 16) == [["a"], ["b", "c"]]
     with pytest.raises(ValueError, match="positive"):
         shard_plan(specs, 0)
-
-
-def test_r22_server_entrypoint_uses_a_verified_staged_package_artifact():
-    script = (
-        Path(__file__).resolve().parents[3]
-        / "examples/speechlm2/serve_salm_dpo_hero2_vllm_r22.sh"
-    ).read_text(encoding="utf-8")
-    assert "R22_NEMO_SERVER_FINGERPRINT_SHA256" in script
-    assert "stage_verified_r22_package" in script
-    assert "! -name collections" in script
-    assert "-P 8 cp -a -t \"$stage_root/source/nemo/collections\"" in script
-    assert "--force-reinstall \"$R22_STAGE_ROOT/source\"" in script
-    assert "--verify-r22-package-install" in script
-    assert "python3 -m venv \"$target/venv\"" in script
-    assert "R22_PACKAGE_INSTALL_RECEIPT" in script
-    assert "pip-install.log" in script
-    assert "write_install_receipt false pip_install" in script
-    assert "PYTHONPATH" not in script

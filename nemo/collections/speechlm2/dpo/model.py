@@ -196,7 +196,7 @@ class DPOSALMAutomodel(SALMAutomodel):
     Reference values are captured exactly once through the grad-enabled policy
     path before the first AdamW update, detached to FP32 scalars, and reused
     for both explicit ordered passes.  Manual optimization exists only to
-    retain r2's bounded 55-pair FSDP accumulation; optimizer, backward,
+    retain bounded per-rank FSDP accumulation; optimizer, backward,
     clipping, checkpoint, and distributed state remain native Lightning/PyTorch
     lifecycle operations.
     """
@@ -236,7 +236,7 @@ class DPOSALMAutomodel(SALMAutomodel):
         load(state, checkpoint_id=str(self._initial_checkpoint))
         incompatible = self.load_state_dict(state["state_dict"], strict=True)
         if incompatible.missing_keys or incompatible.unexpected_keys:
-            raise RuntimeError(f"strict Hero2 model DCP load failed: {incompatible}")
+            raise RuntimeError(f"strict source model DCP load failed: {incompatible}")
         post_dcp_state = self.state_dict()
         post_dcp_sample = _state_sample_digest(post_dcp_state)
         local_receipt = {
@@ -256,7 +256,7 @@ class DPOSALMAutomodel(SALMAutomodel):
         else:
             receipts[0] = local_receipt
         if any(receipt is None or receipt["missing_keys"] or receipt["unexpected_keys"] for receipt in receipts):
-            raise RuntimeError("strict Hero2 DCP authority receipt is incomplete")
+            raise RuntimeError("strict source DCP authority receipt is incomplete")
         if self.global_rank == 0:
             _write_json(
                 self._output_root / "MODEL_AUTHORITY.json",
@@ -421,7 +421,7 @@ class DPOSALMAutomodel(SALMAutomodel):
             dist.barrier()
 
     def _clip_selected_gradients(self, optimizer: Any) -> None:
-        """Apply the one historical norm-1 clip via inherited mesh-aware code."""
+        """Apply the configured norm clip via inherited mesh-aware code."""
 
         self.configure_gradient_clipping(
             optimizer,

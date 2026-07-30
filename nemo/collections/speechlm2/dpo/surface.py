@@ -1,11 +1,11 @@
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 
-"""Declared Hero2 partial-acoustic DPO mutation surface.
+"""Declared SpeechLM2 partial-acoustic DPO mutation surface.
 
 This is normal SpeechLM2 code.  It does not import or alter an installed
 dependency, rebind an imported implementation, or create an adapter.  The
-parameter selection is deliberately explicit because it is part of the AMI
-experiment's algorithmic contract.
+parameter selection is deliberately explicit because it is part of the model
+update contract.
 """
 
 from __future__ import annotations
@@ -24,24 +24,22 @@ MAMBA_SUFFIXES = (
     "mixer.A_log", "mixer.D", "mixer.conv1d.bias", "mixer.conv1d.weight", "mixer.dt_bias", "mixer.in_proj.weight",
     "mixer.norm.weight", "mixer.out_proj.weight", "norm.weight",
 )
-HERO2_ENCODER_SUFFIXES = (
+ACOUSTIC_ENCODER_SUFFIXES = (
     "norm1.weight", "norm1.bias", "attn.w_qkv.weight", "attn.out_proj.weight", "attn.out_proj.bias", "attn.q_norm.weight",
     "attn.q_norm.bias", "attn.k_norm.weight", "attn.k_norm.bias", "norm2.weight", "norm2.bias", "ffn.net.0.weight",
     "ffn.net.0.bias", "ffn.net.3.weight", "ffn.net.3.bias",
 )
-HERO2_ACOUSTIC_LAYERS = (30, 31)
+ACOUSTIC_LAYERS = (30, 31)
 SELECTED_TENSOR_COUNT = 269
-# Read directly from the preserved historical-r5 r2 s01 DCP metadata, not
-# from hand arithmetic.  The 269 selected names/shapes total 1,074,318,016
-# scalars.  The old compatibility program declared 1,074,327,616 (9,600 too
-# high) but never dynamically asserted that value.
+# Read from the verified source DCP metadata rather than hand arithmetic. The
+# 269 selected names and shapes total 1,074,318,016 scalars.
 SELECTED_SCALAR_COUNT = 1_074_318_016
 
-# SHA256 of newline-joined ``name|shape|numel`` records from the immutable r2
-# checkpoint metadata.  It is provenance for the count above; the live
+# SHA256 of newline-joined ``name|shape|numel`` records from the verified
+# checkpoint metadata. It is provenance for the count above; the live
 # inventory remains the authoritative runtime check.
-HISTORICAL_R2_SURFACE_INVENTORY_SHA256 = "20cd5cb3a3fbdaa5a91e430e7a65dfdc53c463b72382e0d62a56039b4a7f9dfc"
-HISTORICAL_R2_SURFACE_NAMES_SHA256 = "b7066381abcfd73486e7bcd2e56cec6798b70bc8a3ba6afe46a702848e440cc2"
+VERIFIED_SURFACE_INVENTORY_SHA256 = "20cd5cb3a3fbdaa5a91e430e7a65dfdc53c463b72382e0d62a56039b4a7f9dfc"
+VERIFIED_SURFACE_NAMES_SHA256 = "b7066381abcfd73486e7bcd2e56cec6798b70bc8a3ba6afe46a702848e440cc2"
 
 
 def canonical_name(name: str) -> str:
@@ -55,10 +53,14 @@ def selected_parameter_names() -> tuple[str, ...]:
     for layer in range(52):
         suffixes = ATTENTION_SUFFIXES if layer in ATTENTION_LAYERS else MAMBA_SUFFIXES if layer in MAMBA_LAYERS else ()
         native.extend(f"llm.model.layers.{layer}.{suffix}" for suffix in suffixes)
-    acoustic = [f"perception.encoder.layers.{layer}.{suffix}" for layer in HERO2_ACOUSTIC_LAYERS for suffix in HERO2_ENCODER_SUFFIXES]
+    acoustic = [
+        f"perception.encoder.layers.{layer}.{suffix}"
+        for layer in ACOUSTIC_LAYERS
+        for suffix in ACOUSTIC_ENCODER_SUFFIXES
+    ]
     names = tuple(native + acoustic + ["perception.proj.weight", "perception.proj.bias"])
     if len(names) != SELECTED_TENSOR_COUNT or len(set(names)) != len(names):
-        raise RuntimeError("Hero2 DPO surface inventory drift")
+        raise RuntimeError("SpeechLM2 DPO surface inventory drift")
     return names
 
 
@@ -80,7 +82,7 @@ def inventory(model: torch.nn.Module) -> SurfaceInventory:
     found = {canonical_name(name): parameter for name, parameter in model.named_parameters() if canonical_name(name) in expected}
     if set(found) != expected:
         missing, unexpected = sorted(expected - set(found)), sorted(set(found) - expected)
-        raise RuntimeError(f"Hero2 DPO surface names differ: missing={missing[:4]} unexpected={unexpected[:4]}")
+        raise RuntimeError(f"SpeechLM2 DPO surface names differ: missing={missing[:4]} unexpected={unexpected[:4]}")
     ordered = tuple(found[name] for name in selected_parameter_names())
     scalars = sum(int(parameter.numel()) for parameter in ordered)
     return SurfaceInventory(
@@ -98,9 +100,10 @@ def _replace_with_fp32(parameter: torch.nn.Parameter) -> None:
 
 
 def configure_partial_acoustic_surface(model: torch.nn.Module) -> SurfaceInventory:
-    """Freeze all but the declared 269 FP32 Hero2 DPO tensors.
+    """Freeze all but the declared 269 FP32 SpeechLM2 DPO tensors.
 
-    This is the r2 mutation contract expressed as a normal model capability.
+    This is the verified mutation contract expressed as a normal model
+    capability.
     The FSDP refresh is necessary after the acoustic child tensors are promoted
     to FP32; it uses the normal PyTorch FSDP object associated with the model.
     """
@@ -117,12 +120,12 @@ def configure_partial_acoustic_surface(model: torch.nn.Module) -> SurfaceInvento
             _replace_with_fp32(selected_before[name])
     after = inventory(model)
     if after.tensor_count != SELECTED_TENSOR_COUNT or after.scalar_count != SELECTED_SCALAR_COUNT:
-        raise RuntimeError(f"Hero2 DPO surface count drift: {after}")
+        raise RuntimeError(f"SpeechLM2 DPO surface count drift: {after}")
     selected_after = {canonical_name(name): parameter for name, parameter in model.named_parameters()}
     for name in after.names:
         selected_after[name].requires_grad_(True)
     if set(after.dtypes) != {"torch.float32"}:
-        raise RuntimeError(f"Hero2 DPO surface must be FP32, got {after.dtypes}")
+        raise RuntimeError(f"SpeechLM2 DPO surface must be FP32, got {after.dtypes}")
     perception = modules["perception"]
     get_state = getattr(perception, "_get_fsdp_state", None)
     if callable(get_state):

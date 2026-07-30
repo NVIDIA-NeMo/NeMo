@@ -33,31 +33,29 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 if TRITON_AVAILABLE:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice
 
 ACTIVATIONS = ("relu", "sigmoid", "tanh")
-_ACTIVATION_IDS = {name: index for index, name in enumerate(ACTIVATIONS)}
 
 
 if TRITON_AVAILABLE:
 
     @triton.jit
-    def _activate(value, activation_id: tl.constexpr):
-        if activation_id == 0:
+    def _activate(value, activation: tl.constexpr):
+        if activation == "relu":
             return tl.maximum(value, 0.0)
-        if activation_id == 1:
+        if activation == "sigmoid":
             return tl.sigmoid(value)
-        return libdevice.tanh(value)
+        # Triton exposes tanh only through the CUDA-specific libdevice namespace
+        return (2.0 * tl.sigmoid(2.0 * value)) - 1.0
 
     @triton.jit
-    def _activation_grad_from_pre(pre_activation, activation_id: tl.constexpr):
+    def _activation_grad_from_pre(pre_activation, activation: tl.constexpr):
         """d act / d pre-activation, recomputed from the pre-activation."""
-        if activation_id == 0:
+        if activation == "relu":
             return tl.where(pre_activation > 0.0, 1.0, 0.0)
-        if activation_id == 1:
-            output = tl.sigmoid(pre_activation)
+        output = _activate(pre_activation, activation)
+        if activation == "sigmoid":
             return output * (1.0 - output)
-        output = libdevice.tanh(pre_activation)
         return 1.0 - (output * output)
 
     @triton.jit
@@ -68,7 +66,7 @@ if TRITON_AVAILABLE:
         source_steps,
         target_states,
         hidden_size,
-        activation_id: tl.constexpr,
+        activation: tl.constexpr,
         block_hidden: tl.constexpr,
     ):
         row = tl.program_id(0).to(tl.int64)
@@ -85,7 +83,7 @@ if TRITON_AVAILABLE:
             mask=mask,
             other=0.0,
         ).to(tl.float32)
-        tl.store(hidden_ptr + row * hidden_size + offsets, _activate(encoder + predictor, activation_id), mask=mask)
+        tl.store(hidden_ptr + row * hidden_size + offsets, _activate(encoder + predictor, activation), mask=mask)
 
     @triton.jit
     def _join_grad_encoder_kernel(
@@ -96,7 +94,7 @@ if TRITON_AVAILABLE:
         source_steps,
         target_states,
         hidden_size,
-        activation_id: tl.constexpr,
+        activation: tl.constexpr,
         block_hidden: tl.constexpr,
     ):
         """Sum ``grad_hidden * act'(pre)`` over the target axis, one (batch, source) row each.
@@ -120,7 +118,7 @@ if TRITON_AVAILABLE:
             grad_hidden = tl.load(grad_hidden_ptr + grad_base + target_idx * hidden_size, mask=mask, other=0.0).to(
                 tl.float32
             )
-            total += grad_hidden * _activation_grad_from_pre(encoder + predictor, activation_id)
+            total += grad_hidden * _activation_grad_from_pre(encoder + predictor, activation)
         tl.store(grad_encoder_ptr + row * hidden_size + offsets, total, mask=mask)
 
     @triton.jit
@@ -132,7 +130,7 @@ if TRITON_AVAILABLE:
         source_steps,
         target_states,
         hidden_size,
-        activation_id: tl.constexpr,
+        activation: tl.constexpr,
         block_hidden: tl.constexpr,
     ):
         """Sum ``grad_hidden * act'(pre)`` over the source axis, one (batch, target) row each."""
@@ -153,7 +151,7 @@ if TRITON_AVAILABLE:
             grad_hidden = tl.load(grad_hidden_ptr + grad_base + source_idx * source_stride, mask=mask, other=0.0).to(
                 tl.float32
             )
-            total += grad_hidden * _activation_grad_from_pre(encoder + predictor, activation_id)
+            total += grad_hidden * _activation_grad_from_pre(encoder + predictor, activation)
         tl.store(grad_predictor_ptr + row * hidden_size + offsets, total, mask=mask)
 
 
@@ -174,7 +172,7 @@ class _JoinActivate(torch.autograd.Function):
             source_steps=source_steps,
             target_states=target_states,
             hidden_size=hidden_size,
-            activation_id=_ACTIVATION_IDS[activation],
+            activation=activation,
             block_hidden=block_hidden,
         )
         ctx.save_for_backward(encoder, predictor)
@@ -187,7 +185,7 @@ class _JoinActivate(torch.autograd.Function):
         grad_hidden = grad_hidden.contiguous()
         batch, source_steps, hidden_size = encoder.shape
         target_states = predictor.shape[1]
-        activation_id = _ACTIVATION_IDS[ctx.activation]
+        activation = ctx.activation
         block_hidden = min(1024, triton.next_power_of_2(hidden_size))
         hidden_blocks = triton.cdiv(hidden_size, block_hidden)
 
@@ -201,7 +199,7 @@ class _JoinActivate(torch.autograd.Function):
             source_steps=source_steps,
             target_states=target_states,
             hidden_size=hidden_size,
-            activation_id=activation_id,
+            activation=activation,
             block_hidden=block_hidden,
         )
         grad_predictor = torch.empty_like(predictor)
@@ -213,7 +211,7 @@ class _JoinActivate(torch.autograd.Function):
             source_steps=source_steps,
             target_states=target_states,
             hidden_size=hidden_size,
-            activation_id=activation_id,
+            activation=activation,
             block_hidden=block_hidden,
         )
         return grad_encoder, grad_predictor, None
@@ -232,7 +230,7 @@ def join_activate(encoder: torch.Tensor, predictor: torch.Tensor, activation: st
     """
     if not TRITON_AVAILABLE:
         raise RuntimeError("Triton is required for the fused RNN-T joint activation")
-    if activation not in _ACTIVATION_IDS:
+    if activation not in ACTIVATIONS:
         raise ValueError(f"Unsupported RNN-T joint activation: {activation}")
     if encoder.ndim != 3 or predictor.ndim != 3:
         raise ValueError(f"expected [B, T, H] and [B, U + 1, H], got {tuple(encoder.shape)} {tuple(predictor.shape)}")

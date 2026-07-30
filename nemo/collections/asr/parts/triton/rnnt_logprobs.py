@@ -89,6 +89,7 @@ if TRITON_AVAILABLE:
         blank_id: int,
         grad_target_scores_ptr,
         grad_blank_scores_ptr,
+        upstream_scale_ptr,
         clamp: float,
         CLAMP_GRAD: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
@@ -132,23 +133,10 @@ if TRITON_AVAILABLE:
         )
 
         if CLAMP_GRAD:
-            # Numba clamps the unit-scale per-sample gradient before multiplying by
-            # the loss reduction or AMP scale. The final blank transition has unit
-            # occupation, so its incoming gradient is exactly -upstream_scale.
-            valid_lengths = (
-                (source_len >= 1)
-                & (source_len <= max_source_len)
-                & (target_len >= 0)
-                & (target_len < max_target_len_plus_1)
-            )
-            final_blank_offset = (batch_i * max_source_len + source_len - 1) * max_target_len_plus_1 + target_len
-            upstream_scale = -tl.load(
-                grad_blank_scores_ptr + final_blank_offset,
-                mask=valid_lengths,
-                other=0.0,
-            ).to(tl.float32)
-            nonzero_scale = upstream_scale != 0.0
-            inverse_scale = tl.where(nonzero_scale, 1.0 / upstream_scale, 0.0)
+            # Numba clamps the unit-scale per-sample gradient before multiplying by the loss
+            # reduction or AMP scale, so divide that scale out, clamp, and reapply it below.
+            upstream_scale = tl.load(upstream_scale_ptr + batch_i).to(tl.float32)
+            inverse_scale = tl.where(upstream_scale != 0.0, 1.0 / upstream_scale, 0.0)
             blank_grad *= inverse_scale
             target_grad *= inverse_scale
 
@@ -215,6 +203,7 @@ class RnntLogProbs(torch.autograd.Function):
         target_lengths: torch.Tensor | None,
         clamp: float,
         reuse_logits_for_grad: bool,
+        upstream_scale: torch.Tensor | None,
     ):
         """
 
@@ -268,6 +257,9 @@ class RnntLogProbs(torch.autograd.Function):
         ctx.clamp = float(clamp) if clamp > 0.0 else 0.0
         ctx.reuse_logits_for_grad = reuse_logits_for_grad
         ctx.reused_logits_consumed = False
+        # Held outside save_for_backward: the loss fills it during its own backward, which
+        # runs before ours because these scores are what it consumes.
+        ctx.upstream_scale = upstream_scale
         return target_scores, blank_scores
 
     @staticmethod
@@ -294,6 +286,9 @@ class RnntLogProbs(torch.autograd.Function):
         grad_blank_scores = grad_blank_scores.contiguous()
         grad_logits = logits if ctx.reuse_logits_for_grad else torch.zeros_like(logits)
         block_size = triton.next_power_of_2(logits.shape[-1])
+        # Any valid pointer will do when clamping is off: CLAMP_GRAD is a constexpr, so the
+        # only branch that reads this argument is compiled out.
+        upstream_scale = ctx.upstream_scale if ctx.upstream_scale is not None else grad_blank_scores
         _rnnt_logprobs_bwd_kernel[(logits.shape[0], logits.shape[1], logits.shape[2])](
             logits_ptr=logits,
             grad_logits_ptr=grad_logits,
@@ -306,11 +301,12 @@ class RnntLogProbs(torch.autograd.Function):
             blank_id=blank_id,
             grad_target_scores_ptr=grad_target_scores,
             grad_blank_scores_ptr=grad_blank_scores,
+            upstream_scale_ptr=upstream_scale,
             clamp=clamp,
             CLAMP_GRAD=clamp > 0.0,
             BLOCK_SIZE=block_size,
         )
-        return grad_logits, None, None, None, None, None, None
+        return grad_logits, None, None, None, None, None, None, None
 
 
 def rnnt_logprobs_triton(
@@ -321,6 +317,7 @@ def rnnt_logprobs_triton(
     target_lengths: torch.Tensor | None = None,
     clamp: float = -1.0,
     reuse_logits_for_grad: bool = False,
+    upstream_scale: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given logits, calculate log probabilities for blank and target labels needed for transducer loss calculation.
@@ -336,6 +333,9 @@ def rnnt_logprobs_triton(
             per-sample upstream scale
         reuse_logits_for_grad: overwrite logits with their gradient during backward; only safe for private,
             disposable logits; a second backward through the same graph raises
+        upstream_scale: ``[B]`` float32 buffer carrying each sample's upstream gradient, filled by
+            ``rnnt_loss_triton`` during its backward. Required when clamping, because the clamp
+            applies to the unit-scale gradient and autograd has already folded that scale in.
 
     Returns:
         Tuple of tensors with log probabilities for targets and blank labels, both of size [B, T, U+1].
@@ -344,4 +344,14 @@ def rnnt_logprobs_triton(
     if not TRITON_AVAILABLE:
         raise RuntimeError("Triton is required to extract RNN-T log probabilities")
     _validate_rnnt_logprobs_inputs(logits, targets, blank_id, source_lengths, target_lengths)
-    return RnntLogProbs.apply(logits, targets, blank_id, source_lengths, target_lengths, clamp, reuse_logits_for_grad)
+    if clamp > 0.0:
+        if upstream_scale is None:
+            raise ValueError("Clamping the RNN-T gradient requires upstream_scale")
+        if upstream_scale.shape != (logits.shape[0],) or upstream_scale.dtype != torch.float32:
+            raise ValueError(
+                f"upstream_scale must be a float32 tensor of shape ({logits.shape[0]},), "
+                f"got {tuple(upstream_scale.shape)} of {upstream_scale.dtype}"
+            )
+    return RnntLogProbs.apply(
+        logits, targets, blank_id, source_lengths, target_lengths, clamp, reuse_logits_for_grad, upstream_scale
+    )

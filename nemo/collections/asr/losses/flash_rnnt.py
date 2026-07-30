@@ -14,6 +14,8 @@
 
 """Exact RNN-T with a bounded joint workspace and activation recomputation."""
 
+from functools import partial
+
 import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
@@ -70,8 +72,7 @@ class FlashRNNTLoss(torch.nn.Module):
     disposable joint workspace. Source time is divided into balanced tiles so
     that the final tile is not substantially smaller than the others. A tile
     contains at least one source step, so B * (U + 1) can exceed the requested
-    budget. Gradient clamping requires the global final blank transition and
-    therefore disables time tiling.
+    budget.
     """
 
     def __init__(
@@ -134,6 +135,7 @@ def _chunk_scores(
     dropout_p: float,
     blank: int,
     clamp: float,
+    upstream_scale: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Calculate transition scores for one disposable joint chunk."""
     from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
@@ -149,6 +151,7 @@ def _chunk_scores(
         target_lengths=target_lengths,
         clamp=clamp,
         reuse_logits_for_grad=True,
+        upstream_scale=upstream_scale,
     )
 
 
@@ -177,20 +180,20 @@ def _time_tiled_chunk_scores(
     blank: int,
     clamp: float,
     max_joint_rows: int,
+    upstream_scale: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Checkpoint one balanced source tile at a time."""
     source_steps = projected_encoder.shape[1]
-    if clamp > 0.0:
-        # Clamping rescales by a per-sample upstream factor recovered from the global final
-        # blank transition, which is only present in a tile spanning all of source time.
-        time_tile = source_steps
-    else:
-        time_tile = _balanced_time_tile_size(
-            source_steps,
-            projected_encoder.shape[0],
-            projected_predictor.shape[1],
-            max_joint_rows,
-        )
+    time_tile = _balanced_time_tile_size(
+        source_steps,
+        projected_encoder.shape[0],
+        projected_predictor.shape[1],
+        max_joint_rows,
+    )
+
+    # Bound rather than passed: the loss fills this buffer during backward, and checkpoint
+    # rejects a tensor argument whose version changed between forward and recomputation.
+    score_tile = partial(_chunk_scores, upstream_scale=upstream_scale)
 
     target_score_tiles = []
     blank_score_tiles = []
@@ -198,7 +201,7 @@ def _time_tiled_chunk_scores(
         source_end = min(source_begin + time_tile, source_steps)
         tile_source_lengths = (source_lengths - source_begin).clamp(min=0, max=source_end - source_begin)
         target_score_tile, blank_score_tile = checkpoint(
-            _chunk_scores,
+            score_tile,
             projected_encoder[:, source_begin:source_end],
             projected_predictor,
             targets,
@@ -216,14 +219,6 @@ def _time_tiled_chunk_scores(
         )
         target_score_tiles.append(target_score_tile)
         blank_score_tiles.append(blank_score_tile)
-
-    if clamp > 0.0 and len(target_score_tiles) != 1:
-        # Splitting source time under clamping corrupts gradients without changing the loss,
-        # so refuse rather than train on silently wrong gradients.
-        raise ValueError(
-            "Gradient clamping recovers each sample's upstream scale from the global final blank "
-            f"transition, so a chunk must be scored in one source tile, got {len(target_score_tiles)}"
-        )
 
     return torch.cat(target_score_tiles, dim=1), torch.cat(blank_score_tiles, dim=1)
 
@@ -284,6 +279,11 @@ def _compute_flash_rnnt(
 
     from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 
+    # Clamping applies to the unit-scale gradient, but autograd folds each sample's upstream
+    # gradient into the score gradients before the chunks see them. The loss backward publishes
+    # that scale here so every chunk can divide it out, whatever the tiling.
+    upstream_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
+
     target_score_chunks = []
     blank_score_chunks = []
     output = joint.joint_net[-1]
@@ -304,6 +304,7 @@ def _compute_flash_rnnt(
             blank,
             clamp,
             max_joint_rows,
+            upstream_scale[begin:end] if upstream_scale is not None else None,
         )
         padding = (
             0,
@@ -326,5 +327,6 @@ def _compute_flash_rnnt(
         source_lengths,
         target_lengths,
         fastemit_lambda,
+        upstream_scale=upstream_scale,
     )
     return losses.index_select(0, inverse_order)

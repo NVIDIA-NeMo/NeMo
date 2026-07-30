@@ -409,8 +409,7 @@ class RNNTLoss(Loss):
             longest member costs, so prefer the smallest value that still saturates the GPU.
             ``max_joint_rows`` sets a workspace budget by dividing source time into balanced tiles;
             it trades peak memory for kernel launches without changing what is computed. A tile
-            cannot be shorter than one source step, and positive gradient clamping disables tiling,
-            so a clamped run materializes a whole chunk regardless of the budget.
+            cannot be shorter than one source step.
 
         Warning:
             In the case that GPU memory is exhausted in order to compute RNNTLoss, it might cause

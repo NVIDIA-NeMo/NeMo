@@ -710,8 +710,7 @@ Transducer joint, and must be paired with a fused joint step:
 
 A chunk costs what its longest utterance costs, so smaller ``fused_batch_size`` values trim padding
 more aggressively; prefer the smallest value that still saturates the GPU. ``max_joint_rows`` trades
-peak memory for kernel launches without changing the result. Positive ``clamp`` disables source-time
-tiling, so a clamped run materializes a whole chunk regardless of that budget.
+peak memory for kernel launches without changing the result.
 
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^

@@ -34,6 +34,9 @@ def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fast
     Running the same extraction and dynamic programming over materialized logits isolates those
     mechanics, so a mismatch points at the chunking rather than at the kernels.
     """
+    # Clamping needs the unit scale that autograd folds into the score gradients; the loss
+    # backward publishes it here for the extraction backward to divide out.
+    upstream_scale = torch.zeros(logits.shape[0], device=logits.device) if clamp > 0.0 else None
     target_scores, blank_scores = rnnt_logprobs_triton(
         logits,
         labels,
@@ -41,9 +44,15 @@ def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fast
         source_lengths=source_lengths,
         target_lengths=target_lengths,
         clamp=clamp,
+        upstream_scale=upstream_scale,
     )
     return rnnt_loss_triton(
-        target_scores[..., :-1], blank_scores, source_lengths, target_lengths, fastemit_lambda=fastemit_lambda
+        target_scores[..., :-1],
+        blank_scores,
+        source_lengths,
+        target_lengths,
+        fastemit_lambda=fastemit_lambda,
+        upstream_scale=upstream_scale,
     )
 
 
@@ -616,11 +625,11 @@ def _make_joint(fused_batch_size, activation="relu", log_softmax=False, dropout=
 @pytest.mark.parametrize("fused_batch_size", [2, 3])
 @pytest.mark.parametrize(("upstream", "amp_scale"), [("mean_batch", 1.0), ("mean_batch", 1024.0), ("weighted", 1.0)])
 def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream, amp_scale):
-    """Clamping rescales by a per-sample upstream factor recovered from the final blank.
+    """Clamping applies to the unit-scale gradient, which autograd has already scaled.
 
-    That recovery has to survive batch chunking, the loss reduction and the AMP scale at once,
-    so compare against warprnnt_numba, which clamps the same unit-scale gradient, rather than
-    against another Triton path that shares the recovery logic.
+    Dividing that scale back out has to survive batch chunking, source-time tiling, the loss
+    reduction and the AMP scale at once, so compare against warprnnt_numba, which clamps the same
+    unit-scale gradient, rather than against another Triton path sharing the same plumbing.
     """
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
@@ -628,13 +637,16 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream
     joint = _make_joint(fused_batch_size)
     for parameter in joint.parameters():
         torch.nn.init.normal_(parameter, std=0.3)
+    max_joint_rows = 4
     flash_loss = RNNTLoss(
         num_classes=7,
         reduction=None,
         loss_name="flash_rnnt",
-        # Small enough that time tiling would engage if clamping did not disable it.
-        loss_kwargs={"fastemit_lambda": 0.01, "clamp": 0.02, "max_joint_rows": 4},
+        loss_kwargs={"fastemit_lambda": 0.01, "clamp": 0.02, "max_joint_rows": max_joint_rows},
     )
+    # Guard the coverage: a budget that stopped splitting source time would leave the scale
+    # plumbing untested, since a single tile can recover the scale from its own final blank.
+    assert _balanced_time_tile_size(9, fused_batch_size, 6, max_joint_rows) < 9
     joint.set_loss(flash_loss)
     joint.set_wer(object())
 

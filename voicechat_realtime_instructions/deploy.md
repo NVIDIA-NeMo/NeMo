@@ -7,7 +7,7 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 ## Prerequisites
 
 - Completed [prerequisites](prerequisites.md).
-- [NGC CLI](https://docs.ngc.nvidia.com/cli/cmd.html) installed.
+- [NGC CLI](https://org.ngc.nvidia.com/setup/installers/cli) installed. No configuration or API key is required.
 - Alternatively, if you have a HuggingFace or custom NeMo checkpoint, [generate a Triton model repository](generate-model-repo.md) instead of downloading via NGC.
 
 ## Deploy the Container
@@ -36,7 +36,7 @@ docker run -it --rm --name=nemotron-voicechat \
 
 ### Verify Readiness
 
-Wait for the container to finish model setup, then check the health endpoint.
+Server readiness can take up to 5 minutes depending on system configuration. Poll the health endpoint until it returns `ready`:
 
 ```bash
 curl -X 'GET' 'http://localhost:9000/v1/health/ready'

@@ -7,7 +7,7 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 ## Prerequisites
 
 - Completed [prerequisites](prerequisites.md).
-- [NGC CLI](https://docs.ngc.nvidia.com/cli/cmd.html) installed and configured for model download.
+- [NGC CLI](https://docs.ngc.nvidia.com/cli/cmd.html) installed.
 - Alternatively, if you have a HuggingFace or custom NeMo checkpoint, [generate a Triton model repository](generate-model-repo.md) instead of downloading via NGC.
 
 ## Deploy the Container

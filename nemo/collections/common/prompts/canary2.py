@@ -202,6 +202,10 @@ def canary2(cut: Cut, prompt: Canary2PromptFormatter) -> dict[str, torch.Tensor]
     turns = [dict(role="user", slots=slots)]
     # If data has no transcript, create empty response with <eos> only.
     text = ' '.join(s.text for s in cut.supervisions if s.text is not None)
+    if not cut.supervisions:
+        raise RuntimeError(
+            f"Cut {cut.id} has no supervisions; cannot create the assistant turn without a language hint."
+        )
     turns.append(
         dict(
             role="assistant",

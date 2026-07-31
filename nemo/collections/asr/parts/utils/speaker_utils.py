@@ -992,7 +992,8 @@ def get_subsegments(
         slices = np.ceil(num_feat_frames / int(feat_per_sec * shift)).astype(int)
         slice_end = start + shift * slices
     else:
-        slices = np.ceil(1 + (duration - window) / shift).astype(int)
+        base = math.ceil((duration - window) / shift)
+        slices = 1 if base < 0 else base + 1
     if slices == 1:
         if min(duration, window) >= min_subsegment_duration:
             subsegments.append([start, min(duration, window)])

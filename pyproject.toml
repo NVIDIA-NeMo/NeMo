@@ -467,6 +467,9 @@ no-build-isolation-package = [
     "transformer-engine-torch"
 ]
 
+[tool.uv.extra-build-dependencies]
+deep-ep = ["setuptools"]
+
 # --- uv configuration ---
 # Keep Torch wheel indexes explicit per CUDA extra. The pinned Automodel git
 # dependency also carries Torch source metadata; see the static metadata below.

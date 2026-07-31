@@ -8,7 +8,7 @@ This directory contains instructions for deploying the [NVIDIA NemotronLabs Voic
 |----------|-------------|
 | [Prerequisites](prerequisites.md) | Hardware, driver, Docker, and container toolkit requirements |
 | [Deploy and Run](deploy.md) | Launch the container, run voice conversations, and use function calling |
-| [Generate Model Repository](generate-model-repo.md) | Build a Triton model repository from a HuggingFace or custom checkpoint |
+| [Generate Model Repository](generate-model-repo.md) | Alternative to NGC download — build a Triton model repository from a HuggingFace or custom checkpoint |
 | [API Reference](api-reference.md) | WebSocket and HTTP API, audio format, and client/server events |
 
 If your environment is not yet set up, start with [Prerequisites](prerequisites.md). If you have already met the requirements, go directly to [Deploy and Run](deploy.md).

@@ -126,11 +126,12 @@ class Canary2PromptFormatter(PromptFormatter):
             return {}
 
         role = "user"
+        default_slots = _get_default_for_role(role).get("slots", {})
         return [
             {
                 "role": role,
                 "slots": {
-                    slot: _get_default_for_role(role).get("slots", {}).get(slot) for slot in self.get_slots(role)
+                    slot: default_slots.get(slot) for slot in self.get_slots(role)
                 },
             }
         ]

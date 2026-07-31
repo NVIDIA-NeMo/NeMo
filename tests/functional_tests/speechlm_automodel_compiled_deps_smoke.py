@@ -240,7 +240,9 @@ def _make_salm_automodel_smoke_model(*, llm: torch.nn.Module) -> SALMAutomodel:
     return model
 
 
-def _run_salm_automodel_nemotron3_forward_backward(*, dispatcher: str, expect_deepep: bool, ep_size: int | None) -> None:
+def _run_salm_automodel_nemotron3_forward_backward(
+    *, dispatcher: str, expect_deepep: bool, ep_size: int | None
+) -> None:
     local_rank, world_size, device = _require_multi_gpu_torchrun()
     _require_compiled_dependencies()
     if ep_size is None:

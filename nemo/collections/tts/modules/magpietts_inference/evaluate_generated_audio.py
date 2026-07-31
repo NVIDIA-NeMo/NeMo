@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import pprint
+import re
 import tempfile
 import time
 from collections import Counter
@@ -64,6 +65,37 @@ KATAKANA_METRICS_TO_SAVE = [
     'pred_katakana',
 ]
 
+# Regexes mirrored from the IPA preprocessing script that creates
+# custom["text_without_annotation"]. This is used only for text inputs
+# during metric computation when requested.
+_WS_RE = re.compile(r"\s+")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?؟،؛])")
+_TATWEEL_RE = re.compile("\u0640+")
+_ANNOTATION_OR_MARKER_RE = re.compile(
+    r"""
+      \[[^\[\]\n]{1,512}\]          # square annotation: [breath], [نقر]
+    | </?[^<>\n]{1,512}>            # XML/style/language tags
+    | \{/?[^{}\n]{1,512}\}          # curly control/pronunciation tags
+    | [-–—]{2,}                     # multi-dash cutoff: --, ---, ——
+    | (?<=\S)[-–—](?=\s|$)          # trailing single dash after a token: word-
+    | (?:^|(?<=\s))[-–—](?=\s|$)    # standalone dash
+    | \.{3,}                        # ASCII ellipsis
+    | …+                            # Unicode ellipsis
+    | \*+                            # emphasis marker: *word*
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_text_annotations_from_text(text: str) -> str:
+    """Return orthographic text with annotation/control tokens removed."""
+    text = _ANNOTATION_OR_MARKER_RE.sub(" ", str(text))
+    text = _TATWEEL_RE.sub("", text)
+    text = _WS_RE.sub(" ", text).strip()
+    text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
+    return text.strip()
+
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'wer',
@@ -71,6 +103,9 @@ FILEWISE_METRICS_TO_SAVE = [
     'pred_text',
     'gt_audio_text',
     'gt_text',
+    'predicted_phoneme_text',
+    'predicted_phoneme_tokens',
+    'predicted_phoneme_token_labels',
     'gt_audio_filepath',
     'pred_audio_filepath',
     'context_audio_filepath',
@@ -229,18 +264,36 @@ def compute_utmosv2_scores(audio_dir, device):
 
 
 def load_evaluation_models(
-    sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", asr_model_type="nemo", device="cuda"
+    sv_model_type="titanet",
+    asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
+    device="cuda",
 ):
-    """Load ASR and speaker verification models used for evaluation.
+    """Load the ASR and speaker-verification models used for evaluation.
 
     Args:
-        sv_model_type: Speaker verification model type ("wavlm" or "titanet").
-        asr_model_name: Name of the NeMo ASR model (used only when language is "en").
-        device: Device to place models on.
+        sv_model_type: Speaker-verification model type. Supported values are
+            ``"wavlm"`` and ``"titanet"``.
+        asr_model_name: Name or path of the ASR model to load.
+        asr_model_type: ASR model implementation. Supported values are
+            ``"nemo"``, ``"nemo_with_prompt"``, and ``"whisper"``.
+        device: Device on which the evaluation models are loaded.
 
     Returns:
-        Dict with keys: asr_model, whisper_model, whisper_processor, feature_extractor,
-        sv_model, sv_model_alternate.
+        Dictionary containing:
+
+            - ``asr_model``: Loaded ASR transcriber.
+            - ``whisper_model``: Reserved Whisper model entry, currently ``None``.
+            - ``whisper_processor``: Reserved Whisper processor entry, currently
+            ``None``.
+            - ``feature_extractor``: WavLM feature extractor when
+            ``sv_model_type="wavlm"``; otherwise ``None``.
+            - ``sv_model``: Primary speaker-verification model.
+            - ``sv_model_alternate``: Alternate ``titanet_small``
+            speaker-verification model.
+
+    Raises:
+        ValueError: If ``asr_model_type`` is unsupported.
     """
     models = {
         'asr_model': None,
@@ -305,6 +358,7 @@ def evaluate_dir(
     asr_model_name="stt_en_conformer_transducer_large",
     asr_model_type="nemo",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -337,7 +391,12 @@ def evaluate_dir(
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
 
     # 2. Load models
-    models = load_evaluation_models(sv_model_type, asr_model_name, asr_model_type, device)
+    models = load_evaluation_models(
+        sv_model_type=sv_model_type,
+        asr_model_name=asr_model_name,
+        asr_model_type=asr_model_type,
+        device=device,
+    )
 
     asr_model = models['asr_model']
     feature_extractor = models['feature_extractor']
@@ -369,10 +428,14 @@ def evaluate_dir(
     # Transcribe predicted audios
     text_processor = get_text_processor(language)
     pred_texts = asr_model.transcribe(audio_paths=audio_file_lists, language=language, batch_size=asr_batch_size)
+    if strip_text_annotations_for_metrics:
+        pred_texts = [strip_text_annotations_from_text(text) for text in pred_texts]
     pred_texts = [text_processor.process_text_for_wer(text) for text in pred_texts]
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
         gt_audio_texts = asr_model.transcribe(audio_paths=gt_audio_paths, language=language, batch_size=asr_batch_size)
+        if strip_text_annotations_for_metrics:
+            gt_audio_texts = [strip_text_annotations_from_text(text) for text in gt_audio_texts]
         gt_audio_texts = [text_processor.process_text_for_wer(text) for text in gt_audio_texts]
     else:
         gt_audio_texts = [None] * len(records)
@@ -386,7 +449,10 @@ def evaluate_dir(
             text_field = 'normalized_text'
         else:
             text_field = 'text'
-        processed_text = text_processor.process_text_for_wer(record[text_field])
+        text = record[text_field]
+        if strip_text_annotations_for_metrics:
+            text = strip_text_annotations_from_text(text)
+        processed_text = text_processor.process_text_for_wer(text)
         gt_texts_processed.append(processed_text)
 
     # 7. Batched EoU classification
@@ -445,7 +511,7 @@ def evaluate_dir(
                 model=speaker_verification_model_alternate,
                 extractor=feature_extractor,
                 device=device,
-                sv_model_type=sv_model_type,
+                sv_model_type="titanet",  # alternate is always titanet
             )
 
             # Initialize SSIMs with a default since the context or ground truth audio
@@ -512,35 +578,38 @@ def evaluate_dir(
             eou_trailing = float('nan')
             eou_rms_ratio = float('nan')
 
-        filewise_metrics.append(
-            {
-                'gt_text': gt_text,
-                'pred_text': pred_text,
-                'gt_audio_text': gt_audio_text,
-                'detailed_cer': detailed_cer,
-                'detailed_wer': detailed_wer,
-                'cer': detailed_cer[0],
-                'wer': detailed_wer[0],
-                'katakana_cer': katakana_cer,
-                'gt_katakana': gt_katakana,
-                'pred_katakana': pred_katakana,
-                'pred_gt_ssim': pred_gt_ssim,
-                'pred_context_ssim': pred_context_ssim,
-                'gt_context_ssim': gt_context_ssim,
-                'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
-                'pred_context_ssim_alternate': pred_context_ssim_alternate,
-                'gt_context_ssim_alternate': gt_context_ssim_alternate,
-                'gt_audio_filepath': gt_audio_filepath,
-                'pred_audio_filepath': pred_audio_filepath,
-                'context_audio_filepath': context_audio_filepath,
-                'utmosv2': utmosv2_score,
-                'eou_type': eou_type,
-                'eou_trailing_duration': eou_trailing,
-                'eou_trail_rms_ratio': eou_rms_ratio,
-                'total_gen_audio_seconds': file_duration,
-                'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
-            }
-        )
+        metric_row = {
+            'gt_text': gt_text,
+            'pred_text': pred_text,
+            'gt_audio_text': gt_audio_text,
+            'predicted_phoneme_text': record.get('predicted_phoneme_text', ''),
+            'predicted_phoneme_tokens': record.get('predicted_phoneme_tokens', []),
+            'predicted_phoneme_token_labels': record.get('predicted_phoneme_token_labels', []),
+            'detailed_cer': detailed_cer,
+            'detailed_wer': detailed_wer,
+            'cer': detailed_cer[0],
+            'wer': detailed_wer[0],
+            'katakana_cer': katakana_cer,
+            'gt_katakana': gt_katakana,
+            'pred_katakana': pred_katakana,
+            'pred_gt_ssim': pred_gt_ssim,
+            'pred_context_ssim': pred_context_ssim,
+            'gt_context_ssim': gt_context_ssim,
+            'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
+            'pred_context_ssim_alternate': pred_context_ssim_alternate,
+            'gt_context_ssim_alternate': gt_context_ssim_alternate,
+            'gt_audio_filepath': gt_audio_filepath,
+            'pred_audio_filepath': pred_audio_filepath,
+            'context_audio_filepath': context_audio_filepath,
+            'utmosv2': utmosv2_score,
+            'eou_type': eou_type,
+            'eou_trailing_duration': eou_trailing,
+            'eou_trail_rms_ratio': eou_rms_ratio,
+            'total_gen_audio_seconds': file_duration,
+            'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
+        }
+
+        filewise_metrics.append(metric_row)
 
     return filewise_metrics
 
@@ -554,6 +623,7 @@ def evaluate(
     asr_model_name="stt_en_conformer_transducer_large",
     asr_model_type="nemo",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
     with_fcd=True,
     codec_model_path=None,
     asr_batch_size=32,
@@ -592,6 +662,7 @@ def evaluate(
         asr_model_name=asr_model_name,
         asr_model_type=asr_model_type,
         with_utmosv2=with_utmosv2,
+        strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
@@ -747,6 +818,11 @@ def main():
     parser.add_argument('--generated_audio_dir', type=str, default=None)
     parser.add_argument('--language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
+    parser.add_argument(
+        '--strip_text_annotations_for_metrics',
+        action='store_true',
+        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+    )
     args = parser.parse_args()
 
     if args.evalset is not None:
@@ -762,6 +838,7 @@ def main():
         args.language,
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
+        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
     )
 
 

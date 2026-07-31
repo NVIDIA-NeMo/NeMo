@@ -115,7 +115,7 @@ exp_manager:
 
    checkpoint_callback_params:
      filename: "{step}"
-     monitor: val_bleu
+     monitor: val_txt_bleu
      mode: max
      every_n_train_steps: null
      every_n_epochs: 1

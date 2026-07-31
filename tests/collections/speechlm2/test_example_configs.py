@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2021, NVIDIA CORPORATION.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,12 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pathlib import Path
 
-name: Copyright check
+from omegaconf import OmegaConf
 
-on:
-  pull_request:
 
-jobs:
-  copyright-check:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_copyright_check.yml@fb76deb5479e54f22fb02a3b6619a8c33ab1184c # v0.2.0
+REPO_ROOT = Path(__file__).parents[3]
+
+
+def test_salm_automodel_uses_portable_moe_dispatcher():
+    cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/salm_automodel.yaml")
+
+    assert cfg.model.automodel_backend.dispatcher == "torch"

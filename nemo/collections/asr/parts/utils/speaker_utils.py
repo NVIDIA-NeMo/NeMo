@@ -1567,8 +1567,8 @@ class OnlineSegmentor:
                 speech_labels_for_update, self.cumulative_speech_labels = get_speech_labels_for_update(
                     self.frame_start,
                     self.buffer_end,
-                    self.cumulative_speech_labels,
                     vad_timestamps,
+                    self.cumulative_speech_labels,
                     cursor_for_old_segments,
                 )
 

@@ -1213,7 +1213,7 @@ def get_new_cursor_for_update(
     cursor_for_old_segments = frame_start
     cursor_index: int = len(segment_range_ts)
     count = 0
-    while True and len(segment_range_ts) > 0:
+    while len(segment_range_ts) > 0 and count < len(segment_range_ts):
         t_range = segment_range_ts[-1 * (count + 1)]
         if frame_start <= t_range[1]:
             count += 1

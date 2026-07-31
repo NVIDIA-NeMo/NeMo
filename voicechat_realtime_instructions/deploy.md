@@ -7,28 +7,32 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 ## Prerequisites
 
 - Completed [prerequisites](prerequisites.md).
-- To use a custom NeMo checkpoint instead of the downloaded model, first [generate a Triton model repository](generate-model-repo.md).
+- [NGC CLI](https://docs.ngc.nvidia.com/cli/cmd.html) installed and configured for model download.
+- Alternatively, if you have a HuggingFace or custom NeMo checkpoint, [generate a Triton model repository](generate-model-repo.md) instead of downloading via NGC.
 
 ## Deploy the Container
 
-Create a local cache directory and launch the container. The cache avoids repeated model downloads on subsequent runs.
+### Step 1 — Download the model
 
 ```bash
-export LOCAL_NIM_CACHE=~/.cache/nim
-mkdir -p $LOCAL_NIM_CACHE
-chmod 777 $LOCAL_NIM_CACHE
+ngc registry model download-version nim/nvidia/nemotron-voicechat:2.0.0
+```
 
+This creates a `nemotron-voicechat_v2.0.0/` directory in the current working directory containing the Triton model repository.
+
+### Step 2 — Launch the container
+
+```bash
 docker run -it --rm --name=nemotron-voicechat \
   --runtime=nvidia \
   --gpus '"device=0"' \
   --shm-size=8GB \
   -e NIM_HTTP_API_PORT=9000 \
   -p 9000:9000 \
-  -v $LOCAL_NIM_CACHE:/opt/nim/.cache \
+  -v $(pwd)/nemotron-voicechat_v2.0.0:/data/models \
+  --entrypoint /s2s/run_s2s_server.sh \
   nvcr.io/nvidia/nemotron-voicechat:latest
 ```
-
-On first startup, the container downloads the model, which can take up to 30 minutes depending on network speed. Subsequent runs load the model from the cache.
 
 ### Verify Readiness
 
@@ -270,15 +274,15 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 ## Next Steps
 
 - [API Reference](api-reference.md): WebSocket and HTTP API reference.
-- [Generate Model Repository](generate-model-repo.md): Build a Triton model repository from a local NeMo checkpoint.
+- [Generate Model Repository](generate-model-repo.md): Alternative to NGC download — build a Triton model repository from a HuggingFace or custom NeMo checkpoint.
 
 ## Troubleshooting
 
-### Container Startup Takes Longer Than 30 Minutes
+### Container Takes Long to Start
 
-**Cause:** First-run model download.
+**Cause:** Model repository initialization on first launch.
 
-**Solution:** The cache directory mounted at `/opt/nim/.cache` persists the model across restarts. Ensure the volume mount is present in your `docker run` command.
+**Solution:** Ensure `nemotron-voicechat_v2.0.0/` is correctly mounted at `/data/models` and the `--entrypoint /s2s/run_s2s_server.sh` flag is set.
 
 ### GPU Out of Memory (OOM)
 

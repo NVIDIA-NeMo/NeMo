@@ -1,6 +1,6 @@
 # Generate Model Repository
 
-Instead of relying on the container's built-in model download, you can generate a Triton model repository from a checkpoint and mount it directly. This is useful for:
+As an alternative to downloading the prebuilt model via the NGC CLI, you can generate a Triton model repository from a checkpoint and mount it directly. This is useful for:
 
 - **HuggingFace checkpoint** — use the publicly released [Nemotron Voicechat model on HuggingFace](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B).
 - **Custom checkpoint** — use a checkpoint from your own training run (e.g., fine-tuned or experimental weights). Substitute your checkpoint path wherever `~/nemotron-voicechat/hf-checkpoint` appears below.

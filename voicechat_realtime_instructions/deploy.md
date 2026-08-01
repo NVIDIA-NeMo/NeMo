@@ -16,6 +16,7 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 
 ```bash
 ngc registry model download-version nim/nvidia/nemotron-voicechat:2.0.0
+chmod 777 nemotron-voicechat_v2.0.0
 ```
 
 This creates a `nemotron-voicechat_v2.0.0/` directory in the current working directory containing the Triton model repository.

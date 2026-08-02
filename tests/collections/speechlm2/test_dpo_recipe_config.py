@@ -12,7 +12,11 @@ from lightning.pytorch.plugins.precision.half import HalfPrecision
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2.dpo.data import PreferenceBatch, PreferencePair, rank_active_slots
-from nemo.collections.speechlm2.dpo.model import DPOSALMAutomodel, _gradient_layout
+from nemo.collections.speechlm2.dpo.model import (
+    DPOSALMAutomodel,
+    _gradient_layout,
+    _is_exact_fp32_positive_zero,
+)
 from nemo.collections.speechlm2.models.salm_automodel import SALMAutomodel
 
 
@@ -163,3 +167,11 @@ def test_selected_gradient_layout_receipt_is_data_free_for_local_tensors():
         "dtype": "torch.float32",
         "layout": {"kind": "local"},
     }
+
+
+def test_initial_margin_gate_accepts_only_exact_fp32_positive_zero():
+    assert _is_exact_fp32_positive_zero(torch.tensor(0.0, dtype=torch.float32))
+    assert not _is_exact_fp32_positive_zero(torch.tensor(-0.0, dtype=torch.float32))
+    assert not _is_exact_fp32_positive_zero(torch.tensor(1e-45, dtype=torch.float32))
+    assert not _is_exact_fp32_positive_zero(torch.tensor(float("nan"), dtype=torch.float32))
+    assert not _is_exact_fp32_positive_zero(torch.tensor([0.0, 0.0], dtype=torch.float32))

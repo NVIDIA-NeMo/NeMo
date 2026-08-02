@@ -123,6 +123,13 @@ def _local(value: torch.Tensor) -> torch.Tensor:
     return to_local() if callable(to_local) else value
 
 
+def _is_exact_fp32_positive_zero(value: torch.Tensor) -> bool:
+    """Return whether one scalar has the exact FP32 positive-zero bit pattern."""
+
+    scalar = value.detach().float().reshape(-1)
+    return scalar.numel() == 1 and int(scalar.view(torch.int32).item()) == 0
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -503,6 +510,8 @@ class DPOSALMAutomodel(SALMAutomodel):
         local_loss_sum = 0.0
         local_margin_sum = 0.0
         local_active = 0
+        initial_zero_checked = 0
+        initial_zero_violations = 0
         for pair, reference in zip(batch.pairs, references, strict=True):
             chosen, rejected = self._policy_pair(pair)
             ref_chosen = torch.tensor(reference[0], dtype=torch.float32, device=self.device)
@@ -517,11 +526,29 @@ class DPOSALMAutomodel(SALMAutomodel):
             loss = objective.loss * (scale if pair.active else 0.0)
             self.manual_backward(loss)
             if pair.active:
+                if batch.global_step == 1:
+                    initial_zero_checked += 1
+                    initial_zero_violations += int(not _is_exact_fp32_positive_zero(objective.margin))
                 local_loss_sum += float(objective.loss.detach().cpu())
                 local_margin_sum += float(objective.margin.detach().cpu())
                 local_active += 1
             del chosen, rejected, objective, loss
             self._force_reshard()
+        if batch.global_step == 1:
+            initial_zero = torch.tensor(
+                [initial_zero_checked, initial_zero_violations],
+                device=self.device,
+                dtype=torch.int64,
+            )
+            if dist.is_initialized():
+                dist.all_reduce(initial_zero, op=dist.ReduceOp.SUM)
+            if int(initial_zero[0].item()) != int(self.cfg.dpo.pairs_per_update) or int(initial_zero[1].item()) != 0:
+                raise RuntimeError(
+                    "initial pointwise DPO margin must be exact FP32 positive zero "
+                    "for every active pair before the first optimizer update"
+                )
+            if self.global_rank == 0:
+                print("Initial pointwise DPO margin gate passed for " f"{int(initial_zero[0].item())} active pairs")
         grads = [parameter.grad for parameter in named_selected_parameters(self) if parameter.grad is not None]
         if not grads or not all(bool(torch.isfinite(_local(grad)).all()) for grad in grads):
             raise RuntimeError("DPO backward produced missing or nonfinite gradients")

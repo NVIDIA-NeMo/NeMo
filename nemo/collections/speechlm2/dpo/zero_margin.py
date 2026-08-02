@@ -138,9 +138,19 @@ def audit_local_pairs(
             within_shard_index = rank + local_index * world_size
             expected_active = within_shard_index < pairs_per_shard
             _require(bool(pair.active) == expected_active, f"{pair.pair_id}: active padding contract drift")
-            if not pair.active:
-                continue
+            # FSDP collectives must be entered in the same order on every
+            # rank.  The finite DPO data contract pads shorter rank-local
+            # shards by cloning their final active pair with ``active=False``;
+            # the native training loop executes those forwards with zero loss.
+            # Mirror that lockstep forward schedule here, but never admit a
+            # padding pair to the pointwise audit ledger or objective.
             chosen_policy, rejected_policy = model._policy_pair(pair)
+            if not pair.active:
+                del chosen_policy, rejected_policy
+                force_reshard = getattr(model, "_force_reshard", None)
+                if callable(force_reshard):
+                    force_reshard()
+                continue
             chosen_reference = torch.tensor(reference[0], dtype=torch.float32, device=model.device)
             rejected_reference = torch.tensor(reference[1], dtype=torch.float32, device=model.device)
             chosen_delta = chosen_policy - chosen_reference

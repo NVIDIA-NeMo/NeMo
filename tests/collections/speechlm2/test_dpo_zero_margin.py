@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,8 +34,10 @@ class _CachedReferenceHarness:
         self._references = {1: references}
         self._policies = policies
         self.reshards = 0
+        self.policy_pair_ids = []
 
     def _policy_pair(self, pair):
+        self.policy_pair_ids.append(pair.pair_id)
         chosen, rejected = self._policies[pair.pair_id]
         return torch.tensor(chosen, dtype=torch.float32, requires_grad=True), torch.tensor(
             rejected, dtype=torch.float32, requires_grad=True
@@ -115,6 +118,69 @@ def test_actual_cached_reference_path_is_pointwise_exact_before_update():
     for metric in summary["metrics"].values():
         assert metric["bitwise_violation_count"] == 0
         assert metric["nonzero_or_nonexpected_count"] == 0
+
+
+def test_padding_pairs_keep_eight_rank_fsdp_forward_schedule_lockstep():
+    pairs_per_shard = 434
+    world_size = 8
+    source_shards = 26
+    all_records = []
+    calls_per_rank = []
+    for rank in range(world_size):
+        active_count = len(range(rank, pairs_per_shard, world_size))
+        shards = []
+        references_by_shard = {}
+        policies = {}
+        for source_shard in range(1, source_shards + 1):
+            pairs = [
+                _Pair(f"s{source_shard}-r{rank}-p{index}")
+                for index in range(active_count)
+            ]
+            if active_count < 55:
+                pairs.append(_Pair(pairs[-1].pair_id, active=False))
+            references = [
+                (float(source_shard * 100 + index), -float(source_shard * 100 + index))
+                for index in range(active_count)
+            ]
+            if not pairs[-1].active:
+                references.append(references[-1])
+            policies.update(
+                {
+                    pair.pair_id: reference
+                    for pair, reference in zip(pairs, references, strict=True)
+                }
+            )
+            shards.append(pairs)
+            references_by_shard[source_shard] = references
+        model = _CachedReferenceHarness([], policies)
+        model._references = references_by_shard
+
+        records = zero_margin.audit_local_pairs(
+            model,
+            shards,
+            rank=rank,
+            world_size=world_size,
+            pairs_per_shard=pairs_per_shard,
+            beta=0.2,
+        )
+
+        calls_per_rank.append(len(model.policy_pair_ids) // source_shards)
+        assert model.reshards == 55 * source_shards
+        assert len(records) == active_count * source_shards
+        assert all(record["active"] is True for record in records)
+        all_records.extend(records)
+
+    assert calls_per_rank == [55] * world_size
+    assert len(all_records) == pairs_per_shard * source_shards
+    assert Counter(record["source_shard"] for record in all_records) == Counter(
+        {source_shard: pairs_per_shard for source_shard in range(1, source_shards + 1)}
+    )
+    for source_shard in range(1, source_shards + 1):
+        assert sorted(
+            record["within_shard_index"]
+            for record in all_records
+            if record["source_shard"] == source_shard
+        ) == list(range(pairs_per_shard))
 
 
 def test_stale_cached_reference_reports_exact_pair_id_and_nonzero_delta():

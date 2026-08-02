@@ -363,10 +363,15 @@ def test_t5nmt_raises_on_missing_context(tokenizer):
     cut = dummy_cut(0, duration=1.0)
     assert not hasattr(cut, "context")
     assert not hasattr(cut, "default_context")
-    with pytest.raises(RuntimeError, match="Missing context/default_context custom field in cut"):
+    with pytest.raises(RuntimeError) as exc_info:
         from nemo.collections.common.prompts.t5nmt import T5NMTPromptFormatter, t5nmt
 
         t5nmt(cut, T5NMTPromptFormatter(tokenizer))
+
+    msg = str(exc_info.value)
+    assert msg.startswith("Missing context/default_context custom field in cut:")
+    assert "{cut}" not in msg
+    assert str(cut) in msg
 
 
 def test_prompt_format_nemo_sft(nemo_sft_example, tokenizer):

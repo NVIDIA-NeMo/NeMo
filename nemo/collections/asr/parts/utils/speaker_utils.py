@@ -731,7 +731,7 @@ def merge_int_intervals(intervals_in: List[List[int]]) -> List[List[int]]:
     if num_intervals == 0:
         return []
     elif num_intervals == 1:
-        return intervals_in
+        return [[int(intervals_in[0][0]), int(intervals_in[0][1])]]
     else:
         merged_list: List[List[int]] = []
         stt2: int = 0

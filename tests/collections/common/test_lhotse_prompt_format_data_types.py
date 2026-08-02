@@ -369,9 +369,7 @@ def test_t5nmt_raises_on_missing_context(tokenizer):
         t5nmt(cut, T5NMTPromptFormatter(tokenizer))
 
     msg = str(exc_info.value)
-    assert msg.startswith("Missing context/default_context custom field in cut:")
-    assert "{cut}" not in msg
-    assert str(cut) in msg
+    assert msg == f"Missing context/default_context custom field in cut: {cut}"
 
 
 def test_prompt_format_nemo_sft(nemo_sft_example, tokenizer):

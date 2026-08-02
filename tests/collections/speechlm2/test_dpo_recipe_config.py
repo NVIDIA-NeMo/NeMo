@@ -114,6 +114,45 @@ def test_dpo_uses_inherited_mesh_aware_clip_once_with_configured_norm():
     assert calls == [(optimizer, 1.0, "norm")]
 
 
+def test_dpo_policy_pair_owns_precision_forward_context_and_requires_fp32_audio():
+    events = []
+
+    class Context:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            events.append("exit")
+
+    class Plugin:
+        def forward_context(self):
+            return Context()
+
+    class Harness:
+        _trainer = SimpleNamespace(precision_plugin=Plugin())
+
+        def _encoded_pair(self, pair):
+            return "chosen", "rejected"
+
+        def _completion_logprob(self, encoded, audio):
+            assert events == ["enter"] or events == ["enter", "completion"]
+            events.append("completion")
+            return encoded, audio
+
+    audio = torch.tensor([0.123456789, -0.987654321], dtype=torch.float32)
+    pair = PreferencePair("p", "s", "<audio>", "yes", "no", audio, True)
+
+    chosen, rejected = DPOSALMAutomodel._policy_pair(Harness(), pair)
+
+    assert events == ["enter", "completion", "completion", "exit"]
+    assert chosen == ("chosen", audio) and rejected == ("rejected", audio)
+    assert torch.equal(pair.audio, audio)
+
+    pair.audio = pair.audio.to(torch.bfloat16)
+    with pytest.raises(RuntimeError, match="FP32 audio"):
+        DPOSALMAutomodel._policy_pair(Harness(), pair)
+
+
 def test_selected_gradient_layout_receipt_is_data_free_for_local_tensors():
     entry = _gradient_layout("perception.proj.weight", torch.ones((2, 3), dtype=torch.float32))
     assert entry == {

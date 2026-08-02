@@ -329,6 +329,11 @@ def validate_preflight_artifacts(
         _require(_sha256_path(path) == record["sha256"], f"rank ledger hash drift: {path}")
     _require(receipt.get("actual_cached_reference_path") is True, "preflight did not use actual cached-reference path")
     _require(
+        receipt.get("policy_pair_forward_context") == "trainer.precision_plugin.forward_context"
+        and receipt.get("policy_pair_audio_input_dtype") == "torch.float32",
+        "preflight did not exercise the owned precision/audio policy path",
+    )
+    _require(
         receipt.get("comparison") == "exact_fp32_value_and_bit_pattern_no_tolerance", "zero-margin comparison drift"
     )
     _require(receipt.get("rounded_mean_is_sufficient") is False, "rounded mean cannot pass zero-margin audit")
@@ -487,6 +492,8 @@ class ZeroMarginPreflightCallback(Callback):
                     "status": "pass_pointwise_exact_bitwise" if passed else "failed_exact_identity",
                     "passed": passed,
                     "actual_cached_reference_path": True,
+                    "policy_pair_forward_context": "trainer.precision_plugin.forward_context",
+                    "policy_pair_audio_input_dtype": "torch.float32",
                     "comparison": "exact_fp32_value_and_bit_pattern_no_tolerance",
                     "rounded_mean_is_sufficient": False,
                     "on_any_deviation": "stop_and_report_raw_deltas_without_selecting_a_tolerance",

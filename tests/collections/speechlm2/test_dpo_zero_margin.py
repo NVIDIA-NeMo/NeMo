@@ -74,6 +74,8 @@ def _passing_receipt(root, records):
         "status": "pass_pointwise_exact_bitwise",
         "passed": True,
         "actual_cached_reference_path": True,
+        "policy_pair_forward_context": "trainer.precision_plugin.forward_context",
+        "policy_pair_audio_input_dtype": "torch.float32",
         "comparison": "exact_fp32_value_and_bit_pattern_no_tolerance",
         "rounded_mean_is_sufficient": False,
         "world_size": 1,
@@ -132,10 +134,7 @@ def test_padding_pairs_keep_eight_rank_fsdp_forward_schedule_lockstep():
         references_by_shard = {}
         policies = {}
         for source_shard in range(1, source_shards + 1):
-            pairs = [
-                _Pair(f"s{source_shard}-r{rank}-p{index}")
-                for index in range(active_count)
-            ]
+            pairs = [_Pair(f"s{source_shard}-r{rank}-p{index}") for index in range(active_count)]
             if active_count < 55:
                 pairs.append(_Pair(pairs[-1].pair_id, active=False))
             references = [
@@ -144,12 +143,7 @@ def test_padding_pairs_keep_eight_rank_fsdp_forward_schedule_lockstep():
             ]
             if not pairs[-1].active:
                 references.append(references[-1])
-            policies.update(
-                {
-                    pair.pair_id: reference
-                    for pair, reference in zip(pairs, references, strict=True)
-                }
-            )
+            policies.update({pair.pair_id: reference for pair, reference in zip(pairs, references, strict=True)})
             shards.append(pairs)
             references_by_shard[source_shard] = references
         model = _CachedReferenceHarness([], policies)
@@ -177,9 +171,7 @@ def test_padding_pairs_keep_eight_rank_fsdp_forward_schedule_lockstep():
     )
     for source_shard in range(1, source_shards + 1):
         assert sorted(
-            record["within_shard_index"]
-            for record in all_records
-            if record["source_shard"] == source_shard
+            record["within_shard_index"] for record in all_records if record["source_shard"] == source_shard
         ) == list(range(pairs_per_shard))
 
 

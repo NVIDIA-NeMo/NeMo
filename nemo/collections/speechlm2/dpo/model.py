@@ -321,6 +321,8 @@ class DPOSALMAutomodel(SALMAutomodel):
                 {
                     "schema": "speechlm2.dpo.finite_lhotse.v1",
                     "reference_path": "grad_enabled_policy_detached_once",
+                    "policy_pair_forward_context": "trainer.precision_plugin.forward_context",
+                    "policy_pair_audio_input_dtype": "torch.float32",
                     "lhotse": data_module.receipt,
                     "global_updates": self._expected_updates,
                     "explicit_passes": 2,
@@ -380,8 +382,19 @@ class DPOSALMAutomodel(SALMAutomodel):
         return -(losses * mask).sum()
 
     def _policy_pair(self, pair: PreferencePair) -> tuple[torch.Tensor, torch.Tensor]:
-        chosen, rejected = self._encoded_pair(pair)
-        return self._completion_logprob(chosen, pair.audio), self._completion_logprob(rejected, pair.audio)
+        if pair.audio.dtype is not torch.float32:
+            raise RuntimeError(f"{pair.pair_id}: DPO policy pair requires bitwise-preserved FP32 audio")
+        trainer = getattr(self, "_trainer", None)
+        if trainer is None:
+            forward_context = nullcontext()
+        else:
+            precision_plugin = getattr(trainer, "precision_plugin", None)
+            if precision_plugin is None or not callable(getattr(precision_plugin, "forward_context", None)):
+                raise RuntimeError("DPO trainer precision plugin does not expose forward_context")
+            forward_context = precision_plugin.forward_context()
+        with forward_context:
+            chosen, rejected = self._encoded_pair(pair)
+            return self._completion_logprob(chosen, pair.audio), self._completion_logprob(rejected, pair.audio)
 
     def _force_reshard(self) -> None:
         modules: list[torch.nn.Module] = []

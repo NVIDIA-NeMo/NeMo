@@ -1458,7 +1458,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self.activation = jointnet['activation']
 
         # Optional arguments
-        dropout = jointnet.get('dropout', 0.0)
+        self.dropout = jointnet.get('dropout', 0.0)
 
         self.pred, self.enc, self.joint_net = self._joint_net_modules(
             num_classes=self._num_classes,  # add 1 for blank symbol
@@ -1466,7 +1466,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             enc_n_hidden=self.encoder_hidden,
             joint_n_hidden=self.joint_hidden,
             activation=self.activation,
-            dropout=dropout,
+            dropout=self.dropout,
         )
 
         # Flag needed for RNNT export support

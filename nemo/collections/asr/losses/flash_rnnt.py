@@ -27,27 +27,21 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 _DEFAULT_MAX_JOINT_ROWS = 200_000
 
 
-def _validate_joint(joint, blank: int) -> torch.nn.Dropout | None:
-    """Validate the narrow RNNTJoint structure consumed by the flash path."""
+def _validate_joint(joint, blank: int) -> None:
+    """Raise unless the joint behaves the way the flash path assumes.
+
+    The flash path reads the joint's weights directly instead of calling its forward,
+    so anything the forward would have applied has to be rejected here.
+    """
     if joint.is_adapter_available() or joint.masking_prob > 0.0:
         raise ValueError("Flash RNN-T does not support adapters or HAINAN masking")
     if joint.num_extra_outputs != 0 or blank != joint.num_classes_with_blank - 1:
         raise ValueError("Flash RNN-T requires standard RNN-T with a final blank output")
-    if len(joint.joint_net) not in (2, 3) or not isinstance(joint.joint_net[-1], torch.nn.Linear):
-        raise ValueError("Flash RNN-T requires activation, optional dropout, and one output linear layer")
-
-    output = joint.joint_net[-1]
-    if output.out_features != joint.num_classes_with_blank:
+    # HAT joints score blank in a separate head, leaving joint_net one column short.
+    if joint.joint_net[-1].out_features != joint.num_classes_with_blank:
         raise ValueError("Flash RNN-T requires the joint output to include every label and the blank")
-    if not 0 <= blank < output.out_features:
-        raise ValueError(f"blank={blank} must be in [0, {output.out_features})")
-
-    dropout = joint.joint_net[1] if len(joint.joint_net) == 3 else None
-    if dropout is not None and not isinstance(dropout, torch.nn.Dropout):
-        raise ValueError("Flash RNN-T only supports torch.nn.Dropout in the joint network")
     if joint.log_softmax is True or joint.temperature != 1.0:
         raise ValueError("Flash RNN-T requires unnormalized joint logits with temperature 1")
-    return dropout
 
 
 class FlashRNNTLoss(torch.nn.Module):
@@ -244,7 +238,7 @@ def _compute_flash_rnnt(
         raise RuntimeError("Flash RNN-T training requires CUDA tensors")
     if max_samples_per_chunk < 1:
         raise ValueError("max_samples_per_chunk must be positive")
-    dropout = _validate_joint(joint, blank)
+    _validate_joint(joint, blank)
     batch = encoder.shape[0]
     if predictor.shape[0] != batch or targets.shape[0] != batch:
         raise ValueError("encoder, predictor, and targets must have the same batch size")
@@ -286,7 +280,7 @@ def _compute_flash_rnnt(
     target_score_chunks = []
     blank_score_chunks = []
     output = joint.joint_net[-1]
-    dropout_p = dropout.p if dropout is not None and dropout.training else 0.0
+    dropout_p = joint.dropout if joint.training else 0.0
     for chunk_index, (max_source, max_target) in enumerate(chunk_maxima):
         begin = chunk_index * max_samples_per_chunk
         end = min(begin + max_samples_per_chunk, batch)

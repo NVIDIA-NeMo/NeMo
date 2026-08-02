@@ -184,7 +184,7 @@ def test_flash_rnnt_rejects_hat_joint_without_reading_blank_out_of_bounds():
         "activation": "relu",
     }
     standard_joint = RNNTJoint(jointnet=jointnet, num_classes=7, log_softmax=False)
-    assert _validate_joint(standard_joint, blank=7) is None
+    _validate_joint(standard_joint, blank=7)
 
     hat_joint = HATJoint(jointnet=jointnet, num_classes=7, log_softmax=False)
     assert hat_joint.joint_net[-1].out_features == 7

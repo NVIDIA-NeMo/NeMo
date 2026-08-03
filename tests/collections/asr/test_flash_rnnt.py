@@ -19,7 +19,7 @@ from nemo.collections.asr.losses.flash_rnnt import FlashRNNTLoss, _balanced_time
 from nemo.collections.asr.losses.rnnt import NUMBA_RNNT_AVAILABLE, RNNT_LOSS_RESOLVER, RNNTLoss
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint
-from nemo.collections.asr.parts.triton.rnnt_joint import join_activate
+from nemo.collections.asr.parts.triton.rnnt_joint import joint_hidden_state
 from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS, rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE, TRITON_INSTALLATION_MESSAGE
 
@@ -260,7 +260,7 @@ def test_flash_rnnt_join_takes_one_code_path_for_every_chunk_shape(activation):
             predictor_storage = torch.randn(2, padded_target, 8, device="cuda", requires_grad=True)
             predictor = predictor_storage[:, :used_target]
             hidden = torch.utils.checkpoint.checkpoint(
-                join_activate,
+                joint_hidden_state,
                 encoder,
                 predictor,
                 activation,
@@ -302,7 +302,7 @@ def test_flash_rnnt_join_matches_the_eager_broadcast_add(activation, dtype):
         activate = {"relu": torch.relu, "sigmoid": torch.sigmoid, "tanh": torch.tanh}[activation]
         return activate(leaf_encoder.unsqueeze(2) + leaf_predictor.unsqueeze(1))
 
-    fused_hidden, fused_gradients = forward_and_gradients(lambda e, p: join_activate(e, p, activation))
+    fused_hidden, fused_gradients = forward_and_gradients(lambda e, p: joint_hidden_state(e, p, activation))
     eager_hidden, eager_gradients = forward_and_gradients(eager)
 
     atol, rtol = (1e-6, 1e-5) if dtype == torch.float32 else (3e-2, 3e-2)
@@ -695,7 +695,7 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("hidden_size", [6, 8, 1536])
-def test_join_activate_dropout_mask_agrees_across_kernels(hidden_size):
+def test_joint_hidden_state_dropout_mask_agrees_across_kernels(hidden_size):
     """The forward and both backward kernels must reach the same verdict on every element.
 
     Nothing stores the mask and the three kernels walk the joint grid along different axes, so each
@@ -711,7 +711,7 @@ def test_join_activate_dropout_mask_agrees_across_kernels(hidden_size):
     encoder = torch.ones(2, 5, hidden_size, device="cuda", requires_grad=True)
     predictor = torch.zeros(2, 4, hidden_size, device="cuda", requires_grad=True)
 
-    hidden = join_activate(encoder, predictor, "relu", dropout_p)
+    hidden = joint_hidden_state(encoder, predictor, "relu", dropout_p)
     hidden.backward(torch.ones_like(hidden))
 
     torch.testing.assert_close(encoder.grad, hidden.sum(dim=2))
@@ -724,11 +724,11 @@ def test_join_activate_dropout_mask_agrees_across_kernels(hidden_size):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-def test_join_activate_rejects_invalid_dropout():
+def test_joint_hidden_state_rejects_invalid_dropout():
     encoder = torch.randn(1, 2, 8, device="cuda")
     predictor = torch.randn(1, 3, 8, device="cuda")
     with pytest.raises(ValueError, match=r"dropout_p must be in \[0, 1\)"):
-        join_activate(encoder, predictor, "relu", 1.0)
+        joint_hidden_state(encoder, predictor, "relu", 1.0)
 
 
 @pytest.mark.unit

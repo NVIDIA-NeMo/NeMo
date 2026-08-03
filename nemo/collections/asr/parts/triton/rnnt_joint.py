@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fused broadcast-add plus activation for the RNN-T joint network.
+"""Fused broadcast-add, activation and dropout for the RNN-T joint network.
 
 The joint hidden state is ``act(encoder[b, t, :] + predictor[b, u, :])`` over a
 ``[B, T, U + 1, H]`` grid. Writing it as a Triton kernel rather than relying on
@@ -23,10 +23,10 @@ which changes reduced-precision rounding part-way through a run.
 Backward saves only the two projected operands and rebuilds the pre-activation inside the
 reduction kernels, so no ``[B, T, U + 1, H]`` tensor stays live across the step.
 
-Dropout is folded into the same kernels. The mask is never stored: each kernel redraws it from a
-per-call seed and the element's position in the grid, which all three agree on even though they
-traverse different axes. A separate ``torch.nn.functional.dropout`` would instead read and rewrite
-the whole hidden state and keep a mask beside it, tripling the tile's peak.
+Dropout is folded in rather than applied afterwards, and its mask is never stored: each kernel
+redraws the mask from a per-call seed and the element's position in the grid, which all three agree
+on even though they traverse different axes. Applying dropout separately would instead read and
+rewrite the whole hidden state and hold a mask beside it, both of which the peak has to cover.
 """
 
 from __future__ import annotations
@@ -45,31 +45,33 @@ ACTIVATIONS = ("relu", "sigmoid", "tanh")
 if TRITON_AVAILABLE:
 
     @triton.jit
-    def _activate(value, activation: tl.constexpr):
+    def _activate_fwd(value, activation: tl.constexpr):
+        # No fallback branch: an unlisted activation matches nothing and fails to compile.
         if activation == "relu":
             return tl.maximum(value, 0.0)
         if activation == "sigmoid":
             return tl.sigmoid(value)
-        # Triton exposes tanh only through the CUDA-specific libdevice namespace
-        return (2.0 * tl.sigmoid(2.0 * value)) - 1.0
+        if activation == "tanh":
+            return (2.0 * tl.sigmoid(2.0 * value)) - 1.0
 
     @triton.jit
-    def _activation_grad_from_pre(pre_activation, activation: tl.constexpr):
+    def _activate_bwd(pre_activation, activation: tl.constexpr):
         """d act / d pre-activation, recomputed from the pre-activation."""
         if activation == "relu":
             return tl.where(pre_activation > 0.0, 1.0, 0.0)
-        output = _activate(pre_activation, activation)
+        output = _activate_fwd(pre_activation, activation)
         if activation == "sigmoid":
             return output * (1.0 - output)
-        return 1.0 - (output * output)
+        if activation == "tanh":
+            return 1.0 - (output * output)
 
     @triton.jit
     def _rng_row_stride(hidden_size):
-        """Hidden size rounded up to a multiple of four.
+        """Row spacing that keeps every block's first element on a Philox boundary.
 
-        Four consecutive elements share one Philox draw, so spacing the grid's rows this way keeps
-        every block's first element at a multiple of four and its key exactly ``base_index // 4``.
-        The stride is only ever used to place draws, never to address memory.
+        Four consecutive elements share one draw, so rounding each row up to a multiple of four
+        makes a block's key exactly ``base_index // 4``. This spacing places draws only; memory is
+        addressed with ``hidden_size``.
         """
         return ((hidden_size + 3) // 4) * 4
 
@@ -77,24 +79,22 @@ if TRITON_AVAILABLE:
     def _apply_dropout(value, seed, base_index, dropout_p: tl.constexpr, block_hidden: tl.constexpr):
         """Zero the dropped elements of a hidden block and rescale the survivors by 1 / (1 - p).
 
-        ``base_index`` is where the block starts in the padded grid described by
-        ``_rng_row_stride``; each element's draw depends only on its position there, so the forward
-        and both backward kernels reach the same verdict without any of them storing a mask.
+        An element's draw depends only on its position in the grid ``_rng_row_stride`` spaces, which
+        ``base_index`` locates, so the forward and both backward kernels agree without storing a mask.
 
-        Philox emits four values at once and ``tl.rand`` discards three, which costs more than the
-        memory traffic the fusion saves. Taking one key per four elements and unpacking all four
-        keeps the whole draw inside the shadow of the loads already in flight.
+        Philox produces four values per call, so the block draws one key per four elements and
+        unpacks all four.
         """
         if dropout_p > 0.0:
             keys = base_index // 4 + tl.arange(0, block_hidden // 4)
             first, second, third, fourth = tl.rand4x(seed, keys)
-            # interleave back into element order, so the draw does not depend on block_hidden
+            # Interleave back into element order, so the draw does not depend on block_hidden
             uniform = tl.reshape(tl.join(tl.join(first, third), tl.join(second, fourth)), [block_hidden])
             return tl.where(uniform > dropout_p, value / (1.0 - dropout_p), 0.0)
         return value
 
     @triton.jit
-    def _join_activate_kernel(
+    def _joint_fwd_kernel(
         encoder_ptr,
         predictor_ptr,
         hidden_ptr,
@@ -106,8 +106,9 @@ if TRITON_AVAILABLE:
         dropout_p: tl.constexpr,
         block_hidden: tl.constexpr,
     ):
+        """Write ``act(encoder + predictor)`` with dropout applied, one (batch, source, target) row each."""
         row = tl.program_id(0).to(tl.int64)
-        # row indexes the flattened (batch, source, target) grid
+        # Row indexes the flattened (batch, source, target) grid
         target_idx = row % target_states
         source_row = row // target_states
         batch_idx = source_row // source_steps
@@ -120,13 +121,13 @@ if TRITON_AVAILABLE:
             mask=mask,
             other=0.0,
         ).to(tl.float32)
-        hidden = _activate(encoder + predictor, activation)
+        hidden = _activate_fwd(encoder + predictor, activation)
         rng_base = row * _rng_row_stride(hidden_size) + tl.program_id(1) * block_hidden
         hidden = _apply_dropout(hidden, tl.load(seed_ptr), rng_base, dropout_p, block_hidden)
         tl.store(hidden_ptr + row * hidden_size + offsets, hidden, mask=mask)
 
     @triton.jit
-    def _join_grad_encoder_kernel(
+    def _joint_bwd_encoder_kernel(
         encoder_ptr,
         predictor_ptr,
         grad_hidden_ptr,
@@ -152,7 +153,6 @@ if TRITON_AVAILABLE:
         encoder = tl.load(encoder_ptr + row * hidden_size + offsets, mask=mask, other=0.0).to(tl.float32)
         grad_base = row * target_states * hidden_size + offsets
         predictor_base = batch_idx * target_states * hidden_size + offsets
-        # Scalars hoisted out of the loop: each step only advances them by one row.
         seed = tl.load(seed_ptr)
         rng_row_stride = _rng_row_stride(hidden_size)
         rng_base = row * target_states * rng_row_stride + tl.program_id(1) * block_hidden
@@ -167,11 +167,11 @@ if TRITON_AVAILABLE:
             grad_hidden = _apply_dropout(
                 grad_hidden, seed, rng_base + target_idx * rng_row_stride, dropout_p, block_hidden
             )
-            total += grad_hidden * _activation_grad_from_pre(encoder + predictor, activation)
+            total += grad_hidden * _activate_bwd(encoder + predictor, activation)
         tl.store(grad_encoder_ptr + row * hidden_size + offsets, total, mask=mask)
 
     @triton.jit
-    def _join_grad_predictor_kernel(
+    def _joint_bwd_predictor_kernel(
         encoder_ptr,
         predictor_ptr,
         grad_hidden_ptr,
@@ -194,7 +194,6 @@ if TRITON_AVAILABLE:
         source_stride = target_states * hidden_size
         grad_base = batch_idx * source_steps * source_stride + target_idx * hidden_size + offsets
         encoder_base = batch_idx * source_steps * hidden_size + offsets
-        # Scalars hoisted out of the loop: each step only advances them by one source position.
         seed = tl.load(seed_ptr)
         rng_row_stride = _rng_row_stride(hidden_size)
         rng_source_stride = target_states * rng_row_stride
@@ -214,7 +213,7 @@ if TRITON_AVAILABLE:
             grad_hidden = _apply_dropout(
                 grad_hidden, seed, rng_base + source_idx * rng_source_stride, dropout_p, block_hidden
             )
-            total += grad_hidden * _activation_grad_from_pre(encoder + predictor, activation)
+            total += grad_hidden * _activate_bwd(encoder + predictor, activation)
         tl.store(grad_predictor_ptr + row * hidden_size + offsets, total, mask=mask)
 
 
@@ -223,7 +222,7 @@ def _block_hidden(hidden_size: int) -> int:
     return max(4, min(1024, triton.next_power_of_2(hidden_size)))
 
 
-class _JoinActivate(torch.autograd.Function):
+class _JointHiddenState(torch.autograd.Function):
     @staticmethod
     def forward(ctx, encoder: torch.Tensor, predictor: torch.Tensor, activation: str, dropout_p: float):
         batch, source_steps, hidden_size = encoder.shape
@@ -238,7 +237,7 @@ class _JoinActivate(torch.autograd.Function):
             seed.random_(0, 2**31 - 1)
         block_hidden = _block_hidden(hidden_size)
         grid = (batch * source_steps * target_states, triton.cdiv(hidden_size, block_hidden))
-        _join_activate_kernel[grid](
+        _joint_fwd_kernel[grid](
             encoder,
             predictor,
             hidden,
@@ -266,9 +265,9 @@ class _JoinActivate(torch.autograd.Function):
         block_hidden = _block_hidden(hidden_size)
         hidden_blocks = triton.cdiv(hidden_size, block_hidden)
 
-        # broadcast-add backward: sum the target axis for the encoder, the source axis for the predictor
+        # Broadcast-add backward: sum the target axis for the encoder, the source axis for the predictor
         grad_encoder = torch.empty_like(encoder)
-        _join_grad_encoder_kernel[(batch * source_steps, hidden_blocks)](
+        _joint_bwd_encoder_kernel[(batch * source_steps, hidden_blocks)](
             encoder,
             predictor,
             grad_hidden,
@@ -282,7 +281,7 @@ class _JoinActivate(torch.autograd.Function):
             block_hidden=block_hidden,
         )
         grad_predictor = torch.empty_like(predictor)
-        _join_grad_predictor_kernel[(batch * target_states, hidden_blocks)](
+        _joint_bwd_predictor_kernel[(batch * target_states, hidden_blocks)](
             encoder,
             predictor,
             grad_hidden,
@@ -298,10 +297,10 @@ class _JoinActivate(torch.autograd.Function):
         return grad_encoder, grad_predictor, None, None
 
 
-def join_activate(
+def joint_hidden_state(
     encoder: torch.Tensor, predictor: torch.Tensor, activation: str, dropout_p: float = 0.0
 ) -> torch.Tensor:
-    """Return ``dropout(act(encoder.unsqueeze(2) + predictor.unsqueeze(1)))`` without a Dynamo cache.
+    """Return ``dropout(act(encoder.unsqueeze(2) + predictor.unsqueeze(1)))``.
 
     Args:
         encoder: projected encoder states, ``[B, T, H]``.
@@ -324,5 +323,5 @@ def join_activate(
     if encoder.ndim != 3 or predictor.ndim != 3:
         raise ValueError(f"expected [B, T, H] and [B, U + 1, H], got {tuple(encoder.shape)} {tuple(predictor.shape)}")
     if encoder.shape[0] != predictor.shape[0] or encoder.shape[2] != predictor.shape[2]:
-        raise ValueError(f"incompatible join shapes: {tuple(encoder.shape)} and {tuple(predictor.shape)}")
-    return _JoinActivate.apply(encoder.contiguous(), predictor.contiguous(), activation, dropout_p)
+        raise ValueError(f"incompatible joint shapes: {tuple(encoder.shape)} and {tuple(predictor.shape)}")
+    return _JointHiddenState.apply(encoder.contiguous(), predictor.contiguous(), activation, dropout_p)

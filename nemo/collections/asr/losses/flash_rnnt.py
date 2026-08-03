@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from nemo.collections.asr.parts.triton.rnnt_joint import join_activate
+from nemo.collections.asr.parts.triton.rnnt_joint import joint_hidden_state
 from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS, rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
@@ -139,7 +139,7 @@ def _chunk_scores(
     """Calculate transition scores for one disposable joint chunk."""
     from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 
-    hidden = join_activate(projected_encoder, projected_predictor, activation, dropout_p)
+    hidden = joint_hidden_state(projected_encoder, projected_predictor, activation, dropout_p)
     logits = F.linear(hidden, output_weight, output_bias)
     return rnnt_logprobs_triton(
         logits,

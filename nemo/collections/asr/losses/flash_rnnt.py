@@ -276,8 +276,12 @@ def _compute_flash_rnnt(
     # scale autograd already folded in, so each chunk can divide it back out.
     upstream_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
-    target_score_chunks = []
-    blank_score_chunks = []
+    # Chunks are trimmed to their own longest member, so they disagree on the source and target
+    # extents. Writing each into its slice of one padded buffer settles that once, rather than
+    # padding every chunk out to the batch extent and concatenating the results.
+    scores_shape = (batch, encoder.shape[1], predictor.shape[1])
+    target_scores = torch.zeros(scores_shape, device=encoder.device, dtype=torch.float32)
+    blank_scores = torch.zeros_like(target_scores)
     output = joint.joint_net[-1]
     dropout_p = joint.dropout if joint.training else 0.0
     for chunk_index, (max_source, max_target) in enumerate(chunk_maxima):
@@ -298,20 +302,8 @@ def _compute_flash_rnnt(
             max_joint_rows,
             upstream_scale[begin:end] if upstream_scale is not None else None,
         )
-        padding = (
-            0,
-            predictor.shape[1] - max_target - 1,
-            0,
-            encoder.shape[1] - max_source,
-        )
-        if any(padding):
-            chunk_target_scores = F.pad(chunk_target_scores, padding)
-            chunk_blank_scores = F.pad(chunk_blank_scores, padding)
-        target_score_chunks.append(chunk_target_scores)
-        blank_score_chunks.append(chunk_blank_scores)
-
-    target_scores = torch.cat(target_score_chunks)
-    blank_scores = torch.cat(blank_score_chunks)
+        target_scores[begin:end, :max_source, : max_target + 1] = chunk_target_scores
+        blank_scores[begin:end, :max_source, : max_target + 1] = chunk_blank_scores
 
     losses = rnnt_loss_triton(
         target_scores[..., :-1],
